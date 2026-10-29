@@ -1,8 +1,22 @@
 # Configuration
 
-This file describes the whole language. A directive that is not built
-yet is refused by `okena check` ("not supported by this version of okena
-yet"); the README lists what works today.
+This file describes the whole language, including what is designed but
+not built yet. A directive that is not built is refused by `okena check`
+("not supported by this version of okena yet"), never ignored.
+
+## Built today
+
+| Block | Directives |
+|---|---|
+| `okena` | `workers`, `io_engine`, `busy_poll`, `watchdog`, `drain delay= timeout=`, `metrics` |
+| `tcp ADDR...` | `to`, `limits { connections; per_source }`, `timeout { idle }`, `proxy_protocol send v1\|v2` |
+| `http ADDR...` | `host`, `route`, `limits`, `timeout { idle; header; body_idle; response }`, `trusted_proxies`, `access_log` |
+| `route PATH... [METHOD...]` | `to`, `redirect`, `header set\|add\|drop`, `response header set\|add\|drop` |
+| `pool NAME` | `server ADDR [weight=N] [backup]`, `balance least-request\|round-robin\|least-conn\|random`, `connect timeout=`, `health tcp\|http ...`, `slow_start` |
+
+Everything else below (TLS, `udp`, policies, auth, limits on requests,
+caching, files, addons, discovery, the admin API and most tooling) is the
+design the code is heading for.
 
 One file, `okena.conf`, read top to bottom. The smallest useful config is
 two lines; everything else has a default chosen for safety and speed, and
@@ -131,13 +145,15 @@ docker run --network host okena 'http :80 { route /* { to app:3000 } }'
 ```
 okena {
     workers auto              # min(affinity mask, cgroup CPU quota)
-    profile balanced          # balanced | latency | throughput | memory-lean
     io_engine auto            # auto | io_uring | epoll
     busy_poll 50us            # poll this long after activity instead of sleeping
-    reload on-change          # watch the config directory
+    watchdog 2s               # a worker stuck this long is replaced
     drain delay=2s timeout=7s # fits inside docker stop's 10 s
+    metrics :9464             # /metrics, /live, /ready
+    # planned:
+    profile balanced          # balanced | latency | throughput | memory-lean
+    reload on-change          # watch the config directory (today: SIGHUP)
     admin unix:/run/okena/admin.sock
-    metrics :9464
     acme email=ops@example.com
 }
 ```
