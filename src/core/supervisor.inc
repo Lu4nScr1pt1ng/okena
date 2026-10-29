@@ -74,6 +74,7 @@ supervisor_main:
 	mov	[g_watchdog_s],eax
 	call	dns_table_init
 	call	groups_resolve_all
+	call	health_table_init
 
 	; TERM, INT, CHLD and ALRM (the watchdog) arrive through a signalfd.
 	; Blocking them here also makes workers inherit the blocked mask.
@@ -151,6 +152,7 @@ supervisor_main:
 	jb	.spawn_all
 
 	call	spawn_control
+	call	spawn_health
 
 	; check the heartbeats once a second
 	sub	rsp,32
@@ -609,6 +611,21 @@ reap_workers:
 	mov	r12d,[g_siginfo+SI_PID]
 	test	r12d,r12d
 	jz	.done
+	cmp	r12d,[g_health_pid]
+	jne	.not_health
+	mov	dword [g_health_pid],0
+	cmp	dword [g_shutdown],0
+	jne	.next
+	call	log_begin
+	out_lit 'health process exited, restarting it (servers keep their last state)'
+	call	log_end
+	lea	rdi,[ts_respawn_delay]
+	xor	esi,esi
+	mov	eax,SYS_nanosleep
+	syscall
+	call	spawn_health
+	jmp	.next
+.not_health:
 	cmp	r12d,[g_control_pid]
 	jne	.worker
 	; the control process: workers keep the last published addresses
@@ -701,6 +718,13 @@ reap_workers:
 	test	edi,edi
 	jz	@f
 	mov	esi,SIGKILL			; nothing to drain there
+	mov	eax,SYS_kill
+	syscall
+@@:
+	mov	edi,[g_health_pid]
+	test	edi,edi
+	jz	@f
+	mov	esi,SIGKILL
 	mov	eax,SYS_kill
 	syscall
 @@:

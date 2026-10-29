@@ -36,6 +36,9 @@ Early. What works today:
   domains, A and AAAA, every address of a name used, re-resolved by TTL
   and at once when a connect fails, last known addresses kept when DNS
   fails, names that appear later picked up without a restart;
+* active TCP health checks (`health tcp every=2s timeout=1s rise=2
+  fall=3`) run once per instance by a health process, with passive
+  ejection on top and panic mode when every server is down;
 * a watchdog that replaces stuck workers;
 * reload on `SIGHUP` without dropping a connection, validated in a child
   process, rejected as a whole when anything is wrong;

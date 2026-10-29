@@ -26,7 +26,12 @@ PL_PRIMARY	= 12		; d: servers that are not backups
 PL_TIMEOUT	= 16		; 16 bytes: connect timeout as __kernel_timespec
 PL_NAME		= 32		; q
 PL_NLEN		= 40		; d
-PL_SIZE		= 48
+PL_HEALTH	= 44		; d: 1 when active checks run
+PL_H_EVERY	= 48		; d: milliseconds
+PL_H_TIMEOUT	= 52		; d: milliseconds
+PL_H_RISE	= 56		; d
+PL_H_FALL	= 60		; d
+PL_SIZE		= 64
 
 ; Server
 SV_SA		= 0		; sockaddr (sockaddr_un is 110 bytes)
@@ -60,6 +65,7 @@ bss
 	g_plan_drain_timeout	dq ?
 	g_plan_watchdog		dq ?
 	g_plan_busy_poll	dq ?		; microseconds, 0 = off
+	g_plan_health		dd ?		; pools with active checks
 	g_listeners:	rb LS_SIZE * MAX_LISTENERS
 	g_pools:	rb PL_SIZE * MAX_POOLS
 	g_servers:	rb SV_SIZE * MAX_SERVERS
@@ -184,6 +190,9 @@ node_option:
 cstring str_key_delay, 'delay',0
 cstring str_key_timeout, 'timeout',0
 cstring str_key_weight, 'weight',0
+cstring str_key_every, 'every',0
+cstring str_key_rise, 'rise',0
+cstring str_key_fall, 'fall',0
 
 ; rdi = `okena` node.
 compile_settings:
@@ -312,7 +321,66 @@ compile_pool:
 	lea	rcx,[dir_table + D_SIZE*DIR_CONNECT]
 	cmp	rax,rcx
 	je	.connect
+	lea	rcx,[dir_table + D_SIZE*DIR_HEALTH]
+	cmp	rax,rcx
+	je	.health
 	jmp	.advance
+.health:
+	mov	dword [r13+PL_HEALTH],1
+	inc	dword [g_plan_health]
+	mov	dword [r13+PL_H_EVERY],2000
+	mov	dword [r13+PL_H_TIMEOUT],1000
+	mov	dword [r13+PL_H_RISE],2
+	mov	dword [r13+PL_H_FALL],3
+	mov	rdi,rbx
+	lea	rsi,[str_key_every]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	call	.ms
+	mov	[r13+PL_H_EVERY],eax
+@@:
+	mov	rdi,rbx
+	lea	rsi,[str_key_timeout]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	call	.ms
+	mov	[r13+PL_H_TIMEOUT],eax
+@@:
+	mov	rdi,rbx
+	lea	rsi,[str_key_rise]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_decimal
+	mov	[r13+PL_H_RISE],eax
+@@:
+	mov	rdi,rbx
+	lea	rsi,[str_key_fall]
+	call	node_option
+	test	rax,rax
+	jz	.advance
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_decimal
+	mov	[r13+PL_H_FALL],eax
+	jmp	.advance
+; rax = arg with a duration: eax = milliseconds (at least 1)
+.ms:
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_duration
+	xor	edx,edx
+	mov	ecx,1000
+	div	rcx
+	test	eax,eax
+	jnz	@f
+	inc	eax
+@@:
+	ret
 .server:
 	mov	rdi,r13
 	mov	rsi,rbx

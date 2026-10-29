@@ -170,8 +170,15 @@ tcp :{lst2} {{
         # every worker killed under load: no failed connection
         errors = 0
         n = 0
-        for pid in ok.workers():
+        killed = ok.workers()
+        for pid in killed:
             os.kill(pid, signal.SIGKILL)
+        # kill(2) returns before the process is gone: a connection a dying
+        # worker accepted dies with it (a crash costs that worker's
+        # connections). Measure from the moment the old ones are gone.
+        while any(os.path.exists(f"/proc/{pid}/stat") and open(f"/proc/{pid}/stat").read().split()[2] != "Z"
+                  for pid in killed):
+            time.sleep(0.001)
         t0 = time.time()
         while time.time() - t0 < 1.0:
             try:

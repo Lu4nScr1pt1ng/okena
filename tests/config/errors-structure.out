@@ -38,9 +38,10 @@ errors-structure.conf:16:26: error: option `timeout` is given twice
 errors-structure.conf:17:5: error: `http` is not supported by this version of okena yet
     17 |     http
        |     ^^^^
-errors-structure.conf:18:5: error: `health` is not supported by this version of okena yet
+errors-structure.conf:18:30: error: invalid value `0`
     18 |     health tcp every=2s rise=0
-       |     ^^^^^^
+       |                              ^
+       = help: expected a whole number from 1 to 100000000
 errors-structure.conf:21:6: error: invalid value `bad_Name`
     21 | pool bad_Name { server 1.2.3.4:1 }
        |      ^^^^^^^^

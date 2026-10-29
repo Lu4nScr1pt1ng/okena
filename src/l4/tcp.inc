@@ -646,10 +646,25 @@ server_eligible:
 	test	ecx,ecx
 	jz	.no
 .health:
+	mov	rax,[g_health_tbl]
+	cmp	dword [rax+rdi*8],HC_UP
+	jne	.no				; failing its active checks
 	mov	eax,[g_sv_down+rdi*4]
 	cmp	eax,[g_tick]
-	ja	.no
+	ja	.ejected
 .yes:
+	stc
+	ret
+.ejected:
+	; passively ejected here, but the health checks brought it back
+	; since: it returns now (only ejected servers pay for this load)
+	mov	rax,[g_health_tbl]
+	mov	eax,[rax+rdi*8+4]
+	cmp	eax,[g_hc_seen+rdi*4]
+	je	.no
+	mov	[g_hc_seen+rdi*4],eax
+	mov	dword [g_sv_down+rdi*4],0
+	mov	dword [g_sv_fails+rdi*4],0
 	stc
 	ret
 .no:

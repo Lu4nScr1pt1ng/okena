@@ -102,9 +102,11 @@ M_TIMEOUT	= 1 shl CTX_TIMEOUT
 enumdef e_io_engine, 'auto', 'io_uring', 'epoll'
 enumdef e_balance, 'round-robin', 'least-conn', 'random'
 enumdef e_server_flags, 'backup'
+enumdef e_health, 'tcp'
 
 keysdef k_drain, 'delay', T_DURATION, 'timeout', T_DURATION
 keysdef k_server, 'weight', T_WEIGHT
+keysdef k_health, 'every', T_DURATION, 'timeout', T_DURATION, 'rise', T_COUNT, 'fall', T_COUNT
 keysdef k_connect, 'timeout', T_DURATION, 'max', T_FUTURE, 'idle', T_FUTURE, \
 	'warm', T_FUTURE, 'rate', T_FUTURE
 
@@ -119,7 +121,7 @@ enumdef future_names, 'http', 'https', 'udp', 'xdp', 'tls', 'route', 'policy', '
 	'concurrency', 'retry_budget', 'retry', 'outlier', 'slow_start', 'protocol', \
 	'fault', 'files', 'redirect', 'compress', 'canonical', 'idempotency', 'hold', \
 	'body', 'early_hints', 'signed_urls', 'sni', 'default', 'priority', 'hedge', \
-	'response', 'alpn', 'cert', 'warm', 'health', 'per_source'
+	'response', 'alpn', 'cert', 'warm', 'per_source'
 
 rodata
 	align 8
@@ -141,6 +143,7 @@ dirdef DIR_IDLE, 'idle',        M_TIMEOUT, 0,           F_UNIQUE, 1, 1, T_DURATI
 dirdef DIR_SERVER, 'server',      M_POOL,    0,           0, 1, 2, T_BACKEND, e_server_flags, k_server
 dirdef DIR_BALANCE, 'balance',     M_POOL,    0,           F_UNIQUE, 1, 1, e_balance, T_NONE, 0
 dirdef DIR_CONNECT, 'connect',     M_POOL,    0,           F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_connect
+dirdef DIR_HEALTH, 'health',      M_POOL,    0,           F_UNIQUE or F_KEYS_BLOCK, 1, 1, e_health, T_NONE, k_health
 rodata
 	dir_table_end:
 end rodata

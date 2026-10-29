@@ -49,6 +49,7 @@ macro plan_regions action
 	action g_plan_drain_timeout, 8
 	action g_plan_watchdog, 8
 	action g_plan_busy_poll, 8
+	action g_plan_health, 4
 	action g_listeners, LS_SIZE * MAX_LISTENERS
 	action g_pools, PL_SIZE * MAX_POOLS
 	action g_servers, SV_SIZE * MAX_SERVERS
@@ -56,7 +57,14 @@ macro plan_regions action
 end macro
 
 PLAN_SAVE_SIZE = 0
+; offsets of the regions read back from the snapshot
 macro plan_size_of sym, size
+	match =g_listeners, sym
+		PLAN_SAVE_LISTENERS = PLAN_SAVE_SIZE
+	end match
+	match =g_plan_drain_timeout, sym
+		PLAN_SAVE_DRAIN_TIMEOUT = PLAN_SAVE_SIZE
+	end match
 	PLAN_SAVE_SIZE = PLAN_SAVE_SIZE + size
 end macro
 plan_regions plan_size_of
@@ -232,6 +240,16 @@ supervisor_reload:
 	call	dns_table_init			; a new table: the old workers keep theirs
 	call	groups_resolve_all
 	call	spawn_control
+	mov	edi,[g_health_pid]
+	test	edi,edi
+	jz	@f
+	mov	dword [g_health_pid],0
+	mov	esi,SIGKILL
+	mov	eax,SYS_kill
+	syscall
+@@:
+	call	health_table_init
+	call	spawn_health
 	inc	dword [g_gen]
 	xor	ebx,ebx
 .spawn:
@@ -458,7 +476,6 @@ reload_sockets:
 ; edi = new listener. eax = the old listener with the same address, or
 ; -1. The old plan is in g_plan_save (first regions: counters, then the
 ; listener table).
-PLAN_SAVE_LISTENERS = 4 * 6 + 8 * 4
 previous_listener:
 	push	rbx
 	push	r12
@@ -527,7 +544,7 @@ retire_workers:
 	; stragglers are killed after the drain timeout and a margin
 	call	monotonic_seconds
 	mov	rcx,rax
-	mov	rax,[g_plan_save+4*6+8]		; old drain timeout (us)
+	mov	rax,[g_plan_save+PLAN_SAVE_DRAIN_TIMEOUT]	; old drain timeout (us)
 	xor	edx,edx
 	mov	r8d,1000000
 	div	r8
