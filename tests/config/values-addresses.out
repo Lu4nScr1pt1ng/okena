@@ -45,4 +45,16 @@ values-addresses.conf:5:43: error: invalid address `1.2.3:4`: not a valid IP add
      5 | tcp :12 { to :5 -bad.host:1 unix:relative 1.2.3:4 }
        |                                           ^^^^^^^
        = help: expected an address: 10.0.0.11:5432, [2001:db8::1]:443, db.internal:5432, unix:/run/app.sock
-11 errors in values-addresses.conf
+values-addresses.conf:6:30: error: invalid value `10.0.0.0/33`
+     6 | http :8080 { trusted_proxies 10.0.0.0/33 192.168.1.1 ::1/129 fd00::/8 nope
+       |                              ^^^^^^^^^^^
+       = help: expected an IP address or a range: 10.0.0.0/8, 192.168.1.10, 2001:db8::/32
+values-addresses.conf:6:54: error: invalid value `::1/129`
+     6 | http :8080 { trusted_proxies 10.0.0.0/33 192.168.1.1 ::1/129 fd00::/8 nope
+       |                                                      ^^^^^^^
+       = help: expected an IP address or a range: 10.0.0.0/8, 192.168.1.10, 2001:db8::/32
+values-addresses.conf:6:71: error: invalid value `nope`
+     6 | http :8080 { trusted_proxies 10.0.0.0/33 192.168.1.1 ::1/129 fd00::/8 nope
+       |                                                                       ^^^^
+       = help: expected an IP address or a range: 10.0.0.0/8, 192.168.1.10, 2001:db8::/32
+14 errors in values-addresses.conf

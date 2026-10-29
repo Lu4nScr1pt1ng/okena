@@ -507,8 +507,18 @@ alog_exchange:
 	lea	rsi,[rax+P_PEER]
 	call	peer_normalize
 	pop	rdi
+	push	rax
 	lea	rsi,[g_ip_a]
 	mov	edx,eax
+	cmp	dword [r15+H_CKIND],0
+	je	@f
+	lea	rsi,[r15+H_CLIENT]		; what trusted proxies said
+	mov	edx,[r15+H_CKIND]
+@@:
+	call	fmt_ip
+	memit '","peer":"'
+	pop	rdx
+	lea	rsi,[g_ip_a]
 	call	fmt_ip
 	memit '","method":"'
 	lea	rsi,[r15+H_LTEXT_M]
@@ -589,6 +599,7 @@ alog_exchange:
 	mov	dword [r15+H_LMLEN],0
 	mov	dword [r15+H_LHLEN],0
 	mov	dword [r15+H_LTLEN],0
+	mov	dword [r15+H_CKIND],0
 	pop	r15
 	pop	r14
 	pop	r13

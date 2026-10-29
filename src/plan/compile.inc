@@ -26,7 +26,9 @@ LS_HCOUNT	= 88		; d
 LS_T_HEADER	= 92		; d: http: seconds for a whole request head
 LS_T_RESPONSE	= 96		; d: http: seconds a backend has for its response head
 LS_ALOG		= 100		; d: http: access log destination + 1, 0 = none
-LS_SIZE		= 104
+LS_TFIRST	= 104		; d: http: first trusted_proxies range
+LS_TCOUNT	= 108		; d
+LS_SIZE		= 112
 
 ; Host block name (http): routes for requests to that host
 HO_NAME		= 0		; q: the name; for "*.example.com", ".example.com"
@@ -36,6 +38,7 @@ HO_RFIRST	= 16		; d
 HO_RCOUNT	= 20		; d
 HO_SIZE		= 24
 MAX_HOSTS	= 1024
+MAX_TRUST	= 1024		; trusted_proxies ranges, all listeners
 
 LK_TCP		= 0
 LK_HTTP		= 1
@@ -118,11 +121,15 @@ bss
 	g_cmp_per_source dd ?
 	g_cmp_t_header	dd ?
 	g_cmp_alog	dd ?
+	g_cmp_tfirst	dd ?
+	g_cmp_tcount	dd ?
 	g_cmp_t_response dd ?
 	g_cmp_rfirst	dd ?
 	g_cmp_rcount	dd ?
 	g_plan_routes	dd ?
 	g_routes:	rb RT_SIZE * MAX_ROUTES
+	g_plan_trust	dd ?
+	g_trust:	rb TR_SIZE * MAX_TRUST
 	g_plan_hosts	dd ?
 	g_hosts:	rb HO_SIZE * MAX_HOSTS
 	g_cmp_hfirst	dd ?
@@ -881,6 +888,40 @@ compile_listener:
 	call	alog_dest_id
 	mov	[g_cmp_alog],eax
 @@:
+	; trusted_proxies
+	mov	eax,[g_plan_trust]
+	mov	[g_cmp_tfirst],eax
+	mov	dword [g_cmp_tcount],0
+	mov	rdi,r12
+	mov	ecx,DIR_TRUSTED
+	call	find_child
+	test	rax,rax
+	jz	.trust_done
+	push	rbx
+	push	r13
+	mov	rbx,rax
+	xor	r13d,r13d
+.trust:
+	cmp	r13d,[rbx+N_ARGC]
+	jae	.trust_end
+	mov	ecx,[g_plan_trust]
+	cmp	ecx,MAX_TRUST
+	jae	plan_too_many
+	inc	dword [g_plan_trust]
+	inc	dword [g_cmp_tcount]
+	imul	rdx,rcx,TR_SIZE
+	lea	rdx,[g_trust+rdx]
+	imul	rax,r13,A_SIZE
+	add	rax,[rbx+N_ARGS]
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_cidr			; checked already
+	inc	r13d
+	jmp	.trust
+.trust_end:
+	pop	r13
+	pop	rbx
+.trust_done:
 	mov	dword [g_cmp_t_header],DEFAULT_HEADER_SECS
 	mov	dword [g_cmp_t_response],DEFAULT_RESPONSE_SECS
 	mov	rdi,r12
@@ -925,6 +966,10 @@ compile_listener:
 	mov	[rcx+LS_T_RESPONSE],eax
 	mov	eax,[g_cmp_alog]
 	mov	[rcx+LS_ALOG],eax
+	mov	eax,[g_cmp_tfirst]
+	mov	[rcx+LS_TFIRST],eax
+	mov	eax,[g_cmp_tcount]
+	mov	[rcx+LS_TCOUNT],eax
 	mov	[rcx+LS_MAXCONN],r15d		; whole instance; split per worker later
 	imul	rax,r13,A_SIZE
 	add	rax,[r12+N_ARGS]

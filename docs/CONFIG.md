@@ -191,8 +191,18 @@ trusted_proxies 10.0.0.0/8          # believe X-Forwarded-For from these
 access_log /var/log/okena/access.log   # or stdout, stderr, off (default)
 ```
 
+`trusted_proxies` names the peers whose forwarding headers count (load
+balancers, CDNs in front of okena). From any other peer,
+`X-Forwarded-For`, `X-Forwarded-Proto`, `X-Forwarded-Host` and `Forwarded`
+are dropped and okena writes its own. From a trusted peer, the
+`X-Forwarded-For` it sent is extended with the peer's address and its
+`X-Forwarded-Proto` and `X-Forwarded-Host` are kept. The client (in logs,
+and later in limits) is then the rightmost address of that chain that is
+not trusted itself; an entry that is not an address stops the walk at the
+last trusted hop.
+
 Access logs are one JSON line per exchange: `time` (UTC, ms), `listener`,
-`client`, `method`, `host`, `target`, `status`, `bytes` (sent to the
+`client`, `peer` (the TCP peer), `method`, `host`, `target`, `status`, `bytes` (sent to the
 client), `duration_ms` (from the request head to the end of the
 response), `upstream`, `source` (`backend`, or `okena` when okena answered
 itself) and `retried`. Workers never write files: they pass lines to a

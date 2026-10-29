@@ -292,6 +292,82 @@ parse_percent:
 	stc
 	ret
 
+; A range of addresses (trusted_proxies).
+TR_KIND		= 0		; d: 4 or 6
+TR_BITS		= 4		; d: prefix length
+TR_IP		= 8		; 16 bytes, network order (IPv4 in the first 4)
+TR_SIZE		= 24
+
+; rdi/esi = "10.0.0.0/8", "192.168.1.10", "2001:db8::/32". rdx = TR_*
+; record to fill. CF on error.
+parse_cidr:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	mov	r12,rdi
+	mov	r13d,esi
+	mov	r14,rdx
+	xor	eax,eax
+	mov	[r14+TR_IP],rax
+	mov	[r14+TR_IP+8],rax
+	xor	ebx,ebx				; the address part ends at '/'
+	xor	ecx,ecx				; ':' seen
+@@:
+	cmp	ebx,r13d
+	jae	@f
+	cmp	byte [r12+rbx],'/'
+	je	@f
+	cmp	byte [r12+rbx],':'
+	jne	.not_colon
+	inc	ecx
+.not_colon:
+	inc	ebx
+	jmp	@b
+@@:
+	test	ebx,ebx
+	jz	.bad
+	mov	rdi,r12
+	mov	esi,ebx
+	test	ecx,ecx
+	jnz	.v6
+	call	parse_ipv4_text
+	jc	.bad
+	mov	[r14+TR_IP],eax
+	mov	dword [r14+TR_KIND],4
+	mov	dword [r14+TR_BITS],32
+	jmp	.bits
+.v6:
+	lea	rdx,[r14+TR_IP]
+	call	parse_ipv6_text
+	jc	.bad
+	mov	dword [r14+TR_KIND],6
+	mov	dword [r14+TR_BITS],128
+.bits:
+	cmp	ebx,r13d
+	je	.ok
+	lea	rdi,[r12+rbx+1]
+	mov	esi,r13d
+	sub	esi,ebx
+	dec	esi
+	jz	.bad
+	call	parse_decimal
+	jc	.bad
+	cmp	eax,[r14+TR_BITS]
+	ja	.bad
+	mov	[r14+TR_BITS],eax
+.ok:
+	clc
+	jmp	.out
+.bad:
+	stc
+.out:
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
 ; rdi/esi = "a.b.c.d". eax = address in network byte order, CF on error.
 parse_ipv4_text:
 	xor	eax,eax				; result

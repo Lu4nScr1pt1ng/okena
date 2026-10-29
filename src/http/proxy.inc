@@ -45,6 +45,8 @@ H_XBYTES	= 192		; q: bytes sent to the client in this exchange
 H_LMLEN		= 200		; d
 H_LHLEN		= 204		; d
 H_LTLEN		= 208		; d
+H_CKIND		= 212		; d: 4 or 6
+H_CLIENT	= 216		; 16 bytes: the client (the peer, or what trusted proxies say)
 H_LTEXT_M	= H_UP + H_UP_CAP	; method
 H_LTEXT_M_CAP	= 16
 H_LTEXT_H	= H_LTEXT_M + 16	; host
@@ -85,6 +87,8 @@ HX_UPGRADE	= 1024		; the client asks to switch protocols (WebSocket...)
 HX_IDEMPOTENT	= 2048		; GET, HEAD, PUT, DELETE, OPTIONS: may be sent twice
 HX_RETRIED	= 4096		; this request was sent again, to another server
 HX_AVOID	= 8192		; the next connect avoids S_SERVER
+HX_TRUSTED	= 16384		; the peer is in trusted_proxies: its X-Forwarded-* count
+HX_XFPROTO	= 32768		; and it sent X-Forwarded-Proto (forwarded as is)
 
 SIDE_CLIENT	= 0
 SIDE_UP		= 1
@@ -584,6 +588,9 @@ http_write_request_head:
 	mov	[rdi],rax
 	mov	dword [rdi+8],0x0A0D31		; "1\r\n"
 	add	rdi,11
+	push	rdi
+	call	http_client_resolve
+	pop	rdi
 	; fields, except hop-by-hop ones and those okena writes itself
 	xor	ebx,ebx
 .field:
@@ -604,6 +611,26 @@ http_write_request_head:
 	jnz	.skip
 	jmp	.copy
 .end_to_end:
+	; from a trusted proxy, its X-Forwarded-Proto and -Host stand (its
+	; X-Forwarded-For is merged below)
+	test	dword [r15+H_FLAGS],HX_TRUSTED
+	jz	.untrusted
+	push	rdi
+	mov	rdi,r14
+	lea	rsi,[hn_x_forwarded_proto]
+	call	hf_is
+	pop	rdi
+	jnz	@f
+	or	dword [r15+H_FLAGS],HX_XFPROTO
+	jmp	.copy
+@@:
+	push	rdi
+	mov	rdi,r14
+	lea	rsi,[hn_x_forwarded_host]
+	call	hf_is
+	pop	rdi
+	jz	.copy
+.untrusted:
 	push	rdi
 	irp name, hn_x_forwarded_for, hn_x_forwarded_proto, hn_x_forwarded_host, hn_forwarded, hn_expect
 		mov	rdi,r14
@@ -636,9 +663,38 @@ http_write_request_head:
 	inc	ebx
 	jmp	.field
 .own:
-	; the client as okena saw it; never what the client claims
-	mov	rbx,[rsp+24]			; the session (pushed rbx)
+	; X-Forwarded-For: what trusted proxies said, then the peer; from
+	; anyone else, only the peer, never what the client claims
 	memit_x 'X-Forwarded-For: '
+	test	dword [r15+H_FLAGS],HX_TRUSTED
+	jz	.xff_peer
+	xor	ebx,ebx
+.xff:
+	cmp	ebx,[r12+HM_NHDR]
+	jae	.xff_peer
+	imul	r14,rbx,HF_SIZE
+	lea	r14,[r12+HM_HDRS+r14]
+	push	rdi
+	mov	rdi,r14
+	lea	rsi,[hn_x_forwarded_for]
+	call	hf_is
+	pop	rdi
+	jnz	.xff_next
+	mov	ecx,[r14+HF_VLEN]
+	test	ecx,ecx
+	jz	.xff_next
+	lea	rax,[rdi+rcx+2]
+	cmp	rax,r13
+	ja	.full
+	mov	rsi,[r14+HF_VALUE]
+	rep	movsb
+	mov	word [rdi],', '
+	add	rdi,2
+.xff_next:
+	inc	ebx
+	jmp	.xff
+.xff_peer:
+	mov	rbx,[rsp+24]			; the session (pushed rbx)
 	call	peer_ptr
 	push	rdi
 	lea	rdi,[g_ip_a]
@@ -648,8 +704,12 @@ http_write_request_head:
 	lea	rsi,[g_ip_a]
 	mov	edx,eax
 	call	fmt_ip
-	memit_x 13,10,'X-Forwarded-Proto: http',13,10
+	memit_x 13,10
 	h_rec
+	test	dword [r15+H_FLAGS],HX_XFPROTO
+	jnz	@f
+	memit_x 'X-Forwarded-Proto: http',13,10
+@@:
 	mov	eax,[r15+H_BODY]
 	cmp	eax,BK_LENGTH
 	jne	@f
@@ -1413,6 +1473,237 @@ http_retry_other:
 	h_rec
 	mov	dword [r15+H_STATE],HS_CONNECT
 	jmp	h_connect
+
+; ---------------------------------------------------- trusted proxies
+
+; ebx = session, r15 = record, g_hm = the request. H_CLIENT/H_CKIND =
+; the client: the peer, unless the peer is a trusted proxy; then the
+; rightmost address of X-Forwarded-For that is not trusted (the hop a
+; trusted proxy saw), or the leftmost when all are. An entry that is not
+; an address stops the walk at the last trusted hop. Sets HX_TRUSTED.
+http_client_resolve:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	call	peer_ptr
+	lea	rdi,[r15+H_CLIENT]
+	lea	rsi,[rax+P_PEER]
+	call	peer_normalize
+	mov	[r15+H_CKIND],eax
+	call	session_ptr
+	mov	eax,[rax+S_LST]
+	imul	rax,rax,LS_SIZE
+	lea	r14,[g_listeners+rax]
+	cmp	dword [r14+LS_TCOUNT],0
+	je	.done
+	lea	rsi,[r15+H_CLIENT]
+	mov	edx,[r15+H_CKIND]
+	call	trust_match
+	jnc	.done
+	or	dword [r15+H_FLAGS],HX_TRUSTED
+	lea	r12,[g_hm]
+	mov	ebx,[r12+HM_NHDR]
+.header:
+	dec	ebx
+	js	.done
+	imul	rdi,rbx,HF_SIZE
+	lea	rdi,[r12+HM_HDRS+rdi]
+	lea	rsi,[hn_x_forwarded_for]
+	call	hf_is
+	jnz	.header
+	imul	rax,rbx,HF_SIZE
+	lea	rax,[r12+HM_HDRS+rax]
+	mov	r13,[rax+HF_VALUE]
+	mov	ecx,[rax+HF_VLEN]		; entries end here, right to left
+.entry:
+	test	ecx,ecx
+	jz	.header
+	mov	edx,ecx				; end
+@@:
+	dec	ecx
+	js	.first
+	cmp	byte [r13+rcx],','
+	jne	@b
+	jmp	.found
+.first:
+	mov	rcx,-1				; the entry starts at 0 (64-bit: rcx indexes)
+.found:
+	; entry = [ecx+1, edx)
+	push	rcx
+	lea	rdi,[r13+rcx+1]
+	mov	esi,edx
+	sub	esi,ecx
+	dec	esi
+	sub	rsp,16
+	mov	rdx,rsp
+	call	parse_xff_ip			; eax = 4 or 6, CF when not an address
+	jc	.not_address
+	mov	[r15+H_CKIND],eax
+	mov	rcx,[rsp]
+	mov	[r15+H_CLIENT],rcx
+	mov	rcx,[rsp+8]
+	mov	[r15+H_CLIENT+8],rcx
+	add	rsp,16
+	lea	rsi,[r15+H_CLIENT]
+	mov	edx,eax
+	call	trust_match
+	pop	rcx
+	jnc	.done				; not trusted: this is the client
+	cmp	ecx,-1
+	je	.header
+	jmp	.entry
+.not_address:
+	add	rsp,24
+.done:
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; r14 = listener, rsi = 16 address bytes, edx = 4 or 6. CF when the
+; address is in one of the listener's trusted_proxies ranges. Keeps
+; rbx and r12-r15.
+trust_match:
+	mov	r8d,[r14+LS_TFIRST]
+	mov	r9d,r8d
+	add	r9d,[r14+LS_TCOUNT]
+.range:
+	cmp	r8d,r9d
+	jae	.no
+	imul	r10,r8,TR_SIZE
+	lea	r10,[g_trust+r10]
+	inc	r8d
+	cmp	[r10+TR_KIND],edx
+	jne	.range
+	mov	ecx,[r10+TR_BITS]
+	xor	r11d,r11d			; byte index
+.byte:
+	cmp	ecx,8
+	jb	.partial
+	mov	al,[rsi+r11]
+	cmp	al,[r10+TR_IP+r11]
+	jne	.range
+	inc	r11d
+	sub	ecx,8
+	jmp	.byte
+.partial:
+	test	ecx,ecx
+	jz	.yes
+	movzx	eax,byte [rsi+r11]
+	xor	al,[r10+TR_IP+r11]
+	neg	ecx
+	add	ecx,8
+	shr	eax,cl				; only the top (prefix) bits may differ: none
+	test	eax,eax
+	jnz	.range
+.yes:
+	stc
+	ret
+.no:
+	clc
+	ret
+
+; rdi/esi = an X-Forwarded-For entry ("1.2.3.4", " 2001:db8::1",
+; "1.2.3.4:5678", "[2001:db8::1]:443"), rdx = 16-byte output. eax = 4
+; or 6, CF when it is not an address.
+parse_xff_ip:
+	push	rbx
+	push	r12
+	mov	r12,rdx
+	xor	eax,eax
+	mov	[r12],rax
+	mov	[r12+8],rax
+	; trim
+@@:
+	test	esi,esi
+	jz	.bad
+	cmp	byte [rdi],' '
+	je	.lead
+	cmp	byte [rdi],9
+	jne	@f
+.lead:
+	inc	rdi
+	dec	esi
+	jmp	@b
+@@:
+	cmp	byte [rdi+rsi-1],' '
+	je	.trail
+	cmp	byte [rdi+rsi-1],9
+	jne	@f
+.trail:
+	dec	esi
+	jmp	@b
+@@:
+	cmp	byte [rdi],'['
+	jne	.colons
+	inc	rdi				; [v6] or [v6]:port
+	dec	esi
+	xor	ecx,ecx
+@@:
+	cmp	ecx,esi
+	jae	.bad
+	cmp	byte [rdi+rcx],']'
+	je	@f
+	inc	ecx
+	jmp	@b
+@@:
+	mov	esi,ecx
+	jmp	.v6
+.colons:
+	xor	ecx,ecx
+	xor	ebx,ebx				; ':' count
+	xor	edx,edx				; position of the last one
+@@:
+	cmp	ecx,esi
+	jae	@f
+	cmp	byte [rdi+rcx],':'
+	jne	.nc
+	inc	ebx
+	mov	edx,ecx
+.nc:
+	inc	ecx
+	jmp	@b
+@@:
+	test	ebx,ebx
+	jz	.v4
+	cmp	ebx,1
+	jne	.v6
+	mov	esi,edx				; a.b.c.d:port
+.v4:
+	call	parse_ipv4_text
+	jc	.bad
+	mov	[r12],eax
+	mov	eax,4
+	jmp	.ok
+.v6:
+	mov	rdx,r12
+	call	parse_ipv6_text
+	jc	.bad
+	; ::ffff:a.b.c.d is an IPv4 client
+	cmp	qword [r12],0
+	jne	.six
+	cmp	dword [r12+8],0xFFFF0000
+	jne	.six
+	mov	eax,[r12+12]
+	mov	[r12],eax
+	xor	eax,eax
+	mov	[r12+4],eax
+	mov	[r12+8],rax
+	mov	eax,4
+	jmp	.ok
+.six:
+	mov	eax,6
+.ok:
+	clc
+	jmp	.out
+.bad:
+	stc
+.out:
+	pop	r12
+	pop	rbx
+	ret
 
 ; ------------------------------------------------------------ metrics
 

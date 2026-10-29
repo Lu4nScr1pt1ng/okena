@@ -891,6 +891,15 @@ check_value:
 	je	.hostname
 	cmp	r12,T_LOGDEST
 	je	.logdest
+	cmp	r12,T_CIDR
+	je	.cidr
+	jmp	.ok
+.cidr:
+	sub	rsp,TR_SIZE
+	mov	rdx,rsp
+	call	parse_cidr
+	lea	rsp,[rsp+TR_SIZE]		; (keeps CF)
+	jc	.bad
 	jmp	.ok
 .logdest:
 	lea	rdx,[e_logdest]
@@ -1207,6 +1216,11 @@ type_help:
 	cmp	rbx,T_HOSTNAME
 	jne	@f
 	out_lit 'a host name (api.example.com) or *.example.com'
+	jmp	.end
+@@:
+	cmp	rbx,T_CIDR
+	jne	@f
+	out_lit 'an IP address or a range: 10.0.0.0/8, 192.168.1.10, 2001:db8::/32'
 	jmp	.end
 @@:
 	cmp	rbx,T_LOGDEST

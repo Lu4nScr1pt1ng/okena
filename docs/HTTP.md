@@ -127,5 +127,5 @@ doubt.
 
 ## What comes after
 
-`trusted_proxies`, HTTP/2 (phase 4), then the gateway
+TLS (the `tls { }` layer), HTTP/2 (phase 4), then the gateway
 filters of phase 5 on the same exchange structure.

@@ -22,7 +22,7 @@ BIN = ROOT / "build" / "okena"
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "auto"
 # ports 26000-26999: this suite's own range
 BASE = 26000 + os.getpid() % 99 * 20 + (10 if ENGINE == "epoll" else 0)
-BACK, LST, DEAD, QUICK, MET, BAD, BAD2 = (BASE + i for i in range(7))
+BACK, LST, DEAD, QUICK, MET, BAD, BAD2, TRUST = (BASE + i for i in range(8))
 
 
 def read_message(f, head_only=False):
@@ -231,6 +231,11 @@ http 127.0.0.1:{LST} {{
 pool flaky {{
     server 127.0.0.1:{BAD2}
     server 127.0.0.1:{BACK}
+}}
+http 127.0.0.1:{TRUST} {{
+    trusted_proxies 127.0.0.0/8 10.0.0.0/8
+    access_log {tmp}/access.log
+    route /* {{ to 127.0.0.1:{BACK} }}
 }}
 http 127.0.0.1:{QUICK} {{
     timeout {{ header 1s; response 1s }}
@@ -470,6 +475,33 @@ try:
     r = c.response()
     check("the default response clock (30 s) lets a 3 s backend answer", r is not None and r[0] == 200)
 
+    # trusted_proxies (the peer, 127.0.0.1, is trusted on TRUST)
+    def via_trust(target, extra):
+        c3 = Client(TRUST)
+        c3.send(req(b"GET", target, extra))
+        r3 = c3.response()
+        c3.s.close()
+        e3 = echo_of(r3)
+        return {n.lower(): v for n, v in e3["fields"]}, [v for n, v in e3["fields"] if n.lower() == "x-forwarded-for"]
+    names, xff = via_trust(b"/t/chain", b"X-Forwarded-For: 203.0.113.7, 10.1.2.3\r\nX-Forwarded-Proto: https\r\n")
+    check("trusted peer: X-Forwarded-For extended, not replaced",
+          xff == ["203.0.113.7, 10.1.2.3, 127.0.0.1"], str(xff))
+    check("trusted peer: its X-Forwarded-Proto stands", names.get("x-forwarded-proto") == "https")
+    names, xff = via_trust(b"/t/two", b"X-Forwarded-For: 192.0.2.1\r\nAccept: */*\r\nX-Forwarded-For: 10.0.0.9\r\n")
+    check("several X-Forwarded-For lines merge in order", xff == ["192.0.2.1, 10.0.0.9, 127.0.0.1"], str(xff))
+    names, xff = via_trust(b"/t/none", b"")
+    check("trusted peer without X-Forwarded-For: just the peer, proto http",
+          xff == ["127.0.0.1"] and names.get("x-forwarded-proto") == "http", f"{xff} {names.get('x-forwarded-proto')}")
+    via_trust(b"/t/spoof", b"X-Forwarded-For: 1.1.1.1, 198.51.100.9\r\n")
+    via_trust(b"/t/garbage", b"X-Forwarded-For: 198.51.100.1, unknown\r\n")
+    via_trust(b"/t/v6", b"X-Forwarded-For: [2001:db8::5]:443, 10.0.0.1:8080\r\n")
+    c = Client()
+    c.send(req(b"GET", b"/api/spoofed", b"X-Forwarded-For: 1.2.3.4\r\nX-Forwarded-Proto: https\r\n"))
+    e = echo_of(c.response())
+    names = {n.lower(): v for n, v in e["fields"]}
+    check("without trusted_proxies the client's claims are dropped",
+          names.get("x-forwarded-for") == "127.0.0.1" and names.get("x-forwarded-proto") == "http", str(names))
+
     # retries and outliers
     c = Client()
     c.send(req(b"GET", b"/bad/x"))
@@ -561,6 +593,17 @@ try:
           any(json.loads(l)["target"] == "/api/last-words" for l in new), f"{len(new)} new lines")
     check("access log: the last request before shutdown is written",
           "/api/last-words" in by_target)
+    import ipaddress
+    def client_of(t):
+        line = by_target.get(t, {})
+        return line.get("client") and str(ipaddress.ip_address(line["client"])), line.get("peer")
+    check("access log: client = rightmost untrusted hop", client_of("/t/chain") == ("203.0.113.7", "127.0.0.1"),
+          str(client_of("/t/chain")))
+    check("access log: a spoofed leftmost entry is not the client", client_of("/t/spoof")[0] == "198.51.100.9")
+    check("access log: a non-address entry stops at the last trusted hop",
+          client_of("/t/garbage")[0] == "127.0.0.1", str(client_of("/t/garbage")))
+    check("access log: [v6]:port and v4:port entries", client_of("/t/v6")[0] == "2001:db8::5",
+          str(client_of("/t/v6")))
 finally:
     p.send_signal(signal.SIGTERM)
     try:
