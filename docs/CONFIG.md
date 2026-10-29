@@ -14,7 +14,11 @@ not built yet. A directive that is not built is refused by `okena check`
 | `route PATH... [METHOD...]` | `to`, `redirect`, `rewrite path`, `header set\|add\|drop`, `response header set\|add\|drop` |
 | `pool NAME` | `server ADDR [weight=N] [backup]`, `balance least-request\|peak-ewma\|round-robin\|least-conn\|random`, `connect timeout=`, `health tcp\|http ...`, `slow_start` |
 
-Everything else below (TLS, `udp`, policies, auth, limits on requests,
+`tls { cert FILE; key FILE }` (an EC P-256 certificate chain and its key)
+is read and checked by `okena check`, but not served yet: okena refuses to
+start a listener with it until the TLS 1.3 handshake is built.
+
+Everything else below (the rest of TLS, `udp`, policies, auth, limits on requests,
 caching, files, addons, discovery, the admin API and most tooling) is the
 design the code is heading for.
 

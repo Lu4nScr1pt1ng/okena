@@ -23,6 +23,15 @@ include 'config/values.inc'
 include 'config/schema.inc'
 include 'config/check.inc'
 include 'plan/compile.inc'
+include 'core/base64.inc'
+include 'crypto/ct.inc'
+include 'crypto/sha256.inc'
+include 'crypto/hmac.inc'
+include 'crypto/hkdf.inc'
+include 'crypto/x25519.inc'
+include 'crypto/aesgcm.inc'
+include 'crypto/p256.inc'
+include 'tls/certs.inc'
 include 'core/cpu.inc'
 include 'net/resolve.inc'
 include 'core/control.inc'
@@ -54,6 +63,7 @@ start:
 	and	rsp,-16
 	mov	dword [g_out_fd],2
 	call	cpu_require
+	call	crypto_init
 	jmp	cli_main
 
 segment readable

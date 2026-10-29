@@ -29,7 +29,8 @@ LS_ALOG		:= 100		; d: http: access log destination + 1, 0 = none
 LS_TFIRST	:= 104		; d: http: first trusted_proxies range
 LS_TCOUNT	:= 108		; d
 LS_T_BODY	:= 112		; d: http: seconds between bytes of a request body
-LS_SIZE		:= 120
+LS_TLS		:= 120		; d: its tls entry + 1 (certificate, key), 0 = none
+LS_SIZE		:= 128
 
 ; Host block name (http): routes for requests to that host
 HO_NAME		:= 0		; q: the name; for "*.example.com", ".example.com"
@@ -175,6 +176,7 @@ bss
 	g_cmp_per_source dd ?
 	g_cmp_t_header	dd ?
 	g_cmp_alog	dd ?
+	g_cmp_tlsi	dd ?
 	g_cmp_tfirst	dd ?
 	g_cmp_tcount	dd ?
 	g_cmp_t_response dd ?
@@ -1268,6 +1270,9 @@ compile_listener:
 	jne	@f
 	mov	ebx,DEFAULT_HTTP_IDLE_SECS	; keep-alive clients
 @@:
+	mov	rdi,r12
+	call	compile_tls			; reads and checks the files
+	mov	[g_cmp_tlsi],eax
 	mov	dword [g_cmp_alog],0
 	mov	rdi,r12
 	mov	ecx,DIR_ACCESS_LOG
@@ -1367,6 +1372,8 @@ compile_listener:
 	mov	[rcx+LS_T_BODY],eax
 	mov	eax,[g_cmp_alog]
 	mov	[rcx+LS_ALOG],eax
+	mov	eax,[g_cmp_tlsi]
+	mov	[rcx+LS_TLS],eax
 	mov	eax,[g_cmp_tfirst]
 	mov	[rcx+LS_TFIRST],eax
 	mov	eax,[g_cmp_tcount]

@@ -1272,6 +1272,8 @@ check_semantics:
 	inc	dword [g_chk_listeners]
 	mov	rdi,rbx
 	call	check_http
+	mov	rdi,rbx
+	call	check_tls
 	jmp	.advance
 .listener:
 	inc	dword [g_chk_listeners]
@@ -1279,6 +1281,8 @@ check_semantics:
 	call	check_listener
 	mov	rdi,rbx
 	call	check_tcp_timeouts
+	mov	rdi,rbx
+	call	check_tls
 	jmp	.advance
 .pool:
 	inc	dword [g_chk_pools]
@@ -1290,6 +1294,42 @@ check_semantics:
 .unused:
 	call	check_unused_pools
 	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; rdi = listener: a tls block names both its certificate and its key
+; (the files themselves are read when the configuration is compiled).
+check_tls:
+	push	rbx
+	push	r12
+	mov	ecx,DIR_TLS
+	call	find_child
+	test	rax,rax
+	jz	.done
+	mov	rbx,rax
+	mov	rdi,rbx
+	mov	ecx,DIR_CERT
+	call	find_child
+	test	rax,rax
+	jz	.missing
+	mov	rdi,rbx
+	mov	ecx,DIR_KEY
+	call	find_child
+	test	rax,rax
+	jnz	.done
+.missing:
+	mov	rdi,[rbx+N_NAME]
+	mov	esi,[rbx+N_NLEN]
+	mov	edx,[rbx+N_LINE]
+	call	cfg_error
+	out_lit 'a tls block needs its certificate and its key'
+	call	cfg_diag_end
+	call	cfg_note
+	out_lit 'help: `tls { cert /etc/okena/fullchain.pem; key /etc/okena/key.pem }`'
+	call	cfg_note_end
+	call	cfg_error_limit
+.done:
 	pop	r12
 	pop	rbx
 	ret

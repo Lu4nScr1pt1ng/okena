@@ -16,6 +16,7 @@ CTX_TIMEOUT	:= 6
 CTX_HTTP	:= 7
 CTX_ROUTE	:= 8
 CTX_HOST	:= 9
+CTX_TLS		:= 10
 
 ; Flags
 F_BLOCK_REQ	:= 1		; must have a block
@@ -109,6 +110,7 @@ M_TIMEOUT	:= 1 shl CTX_TIMEOUT
 M_HTTP		:= 1 shl CTX_HTTP
 M_ROUTE		:= 1 shl CTX_ROUTE
 M_HOST		:= 1 shl CTX_HOST
+M_TLS		:= 1 shl CTX_TLS
 
 enumdef e_io_engine, 'auto', 'io_uring', 'epoll'
 enumdef e_balance, 'round-robin', 'least-conn', 'random', 'least-request', 'peak-ewma'
@@ -129,10 +131,10 @@ keysdef k_connect, 'timeout', T_DURATION, 'max', T_FUTURE, 'idle', T_FUTURE, \
 	'warm', T_FUTURE, 'rate', T_FUTURE
 
 ; Names of the contexts, for messages, in CTX_* order starting at 1.
-enumdef ctx_names, 'the top level', '`okena`', '`tcp`', '`pool`', '`limits`', '`timeout`', '`http`', '`route`', '`host`'
+enumdef ctx_names, 'the top level', '`okena`', '`tcp`', '`pool`', '`limits`', '`timeout`', '`http`', '`route`', '`host`', '`tls`'
 
 ; Directives of the language that this version does not implement yet.
-enumdef future_names, 'udp', 'xdp', 'tls', 'policy', 'use', \
+enumdef future_names, 'udp', 'xdp', 'policy', 'use', \
 	'addon', 'alerts', 'include', 'admin', 'log', 'reload', 'profile', \
 	'acme', 'discover', 'split', 'mirror', 'header', 'headers', 'cache', \
 	'cors', 'limit', 'auth', 'match', 'source', \
@@ -169,6 +171,9 @@ dirdef DIR_REDIRECT, 'redirect',  M_ROUTE,   0,           F_UNIQUE, 2, 2, e_redi
 dirdef DIR_REWRITE, 'rewrite',    M_ROUTE,   0,           F_UNIQUE, 4, 4, e_rewrite_what, T_ANY, 0
 dirdef DIR_RHEADER, 'header',      M_ROUTE,   0,           0, 2, 3, e_header_ops, T_ANY, 0
 dirdef DIR_RRESPONSE, 'response',  M_ROUTE,   0,           0, 3, 4, e_response_what, T_ANY, 0
+dirdef DIR_TLS, 'tls',          M_TCP or M_HTTP, CTX_TLS,   F_BLOCK_REQ or F_UNIQUE, 0, 0, T_NONE, T_NONE, 0
+dirdef DIR_CERT, 'cert',        M_TLS,     0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
+dirdef DIR_KEY, 'key',          M_TLS,     0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
 dirdef DIR_ACCESS_LOG, 'access_log', M_HTTP,   0,           F_UNIQUE, 1, 1, T_LOGDEST, T_NONE, 0
 dirdef DIR_HEADER, 'header',      M_TIMEOUT, 0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
 dirdef DIR_RESPONSE, 'response',  M_TIMEOUT, 0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0

@@ -100,8 +100,13 @@ additions, a P-256-shaped Montgomery multiply and square on ADX, the
 nonce's inversion blinded; 15.6 us per signature, as fast as OpenSSL 3.5
 on the same machine), all checked by `tests/kat`
 against the published vectors and reference implementations (the
-signatures byte for byte against the cryptography package). Next: the
-key and certificate files, the handshake and kTLS.
+signatures byte for byte against the cryptography package).
+`tls { cert FILE; key FILE }` loads a PEM chain (leaf first) and its EC
+P-256 key (SEC 1 or unencrypted PKCS #8), and `okena check` refuses RSA,
+other curves, encrypted keys, broken PEM and a key that does not match the
+certificate (`tests/tls`); until the handshake exists okena refuses to
+serve such a listener rather than serve it in plaintext. Next: the TLS 1.3
+handshake and kTLS.
 
 * SHA-2, HMAC, HKDF (from fasm2crud), AES-GCM (AES-NI, VAES/VPCLMULQDQ),
   ChaCha20-Poly1305, X25519, ML-KEM-768, P-256 ECDH/ECDSA, Ed25519.

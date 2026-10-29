@@ -42,6 +42,7 @@ test-serial: $(BIN) $(HTTPH) $(KAT)
 	python3 -I tests/http/run.py 5000
 	python3 -I tests/config/run.py
 	python3 -I tests/config/fuzz.py 2000
+	python3 -I tests/tls/run.py
 	python3 -I tests/l4/run.py io_uring
 	python3 -I tests/l4/run.py epoll
 	python3 -I tests/dns/run.py

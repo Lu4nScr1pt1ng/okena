@@ -256,6 +256,10 @@ rodata
 	sc_common filter_compiler
 	sc_check filter_compiler, SYS_mmap, no_exec
 	sc_allow filter_compiler, SYS_madvise
+	sc_check filter_compiler, SYS_openat, read_only	; certificates and keys
+	sc_allow filter_compiler, SYS_read
+	sc_allow filter_compiler, SYS_fstat
+	sc_allow filter_compiler, SYS_close
 	sc_end filter_compiler
 
 	align 8

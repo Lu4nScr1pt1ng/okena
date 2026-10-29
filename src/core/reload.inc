@@ -65,6 +65,10 @@ macro plan_regions action
 	action g_trust, TR_SIZE * MAX_TRUST
 	action g_hhash, 8 * HHASH_SIZE
 	action g_rhash, 8 * RHASH_SIZE
+	action g_plan_tls, 4
+	action g_tls_used, 4
+	action g_tls, TL_SIZE * MAX_TLS
+	action g_tls_store, TLS_STORE
 	action g_plan_acts, 4
 	action g_acts, RA_SIZE * MAX_ACTS
 	action g_plan_hdrops, 4
@@ -305,6 +309,7 @@ supervisor_reload:
 	call	cfg_parse_checked
 	call	plan_reset
 	call	plan_compile
+	call	tls_refuse_serving		; (until the handshake exists)
 	xor	edi,edi
 	jmp	exit_process
 .read_failed:

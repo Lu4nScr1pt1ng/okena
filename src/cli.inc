@@ -464,4 +464,5 @@ out_count_listener:
 cli_run:
 	call	cli_load_config
 	call	plan_compile
+	call	tls_refuse_serving
 	jmp	supervisor_main
