@@ -298,7 +298,11 @@ OP_S_CANCEL	= 13
 OP_S_OPT	= 14
 OP_ACCEPT_A	= 15		; single-shot accept with the client's address
 OP_S_SEND_PP	= 16		; PROXY protocol header
-OP_COUNT	= 17
+OP_H_RECV_C	= 17		; http
+OP_H_RECV_U	= 18
+OP_H_SEND_C	= 19
+OP_H_SEND_U	= 20
+OP_COUNT	= 21
 
 rodata
 	align 8
@@ -306,6 +310,7 @@ rodata
 			dq on_s_socket, on_s_connect, on_s_done, on_s_recv_c, on_s_recv_u
 			dq on_s_send_c, on_s_send_u, on_s_done, on_s_done, on_s_done, on_s_done
 			dq on_accept_a, on_s_send_pp
+			dq on_h_recv_c, on_h_recv_u, on_h_send_c, on_h_send_u
 end rodata
 
 ring_reap:

@@ -36,6 +36,7 @@ S_UC_LEN	= 60
 S_UC_OFF	= 64
 S_WAIT_C	= 68		; next in the buffer wait queue (client side)
 S_WAIT_U	= 72
+S_POOL		= 96		; pool of the current connection (a route's for http)
 S_SIZE		= 128
 S_SHIFT		= 7
 
@@ -53,6 +54,16 @@ SF_COUNTED	= 32		; counted in the server's active connections
 SF_RAW		= 64		; the client is a normal descriptor, not a direct one
 SF_PEER		= 128		; has a side record (client address features)
 SF_FDS_CLOSING	= 256		; closing: the descriptors' closes are submitted
+
+; Jump to target when session ebx belongs to an http listener.
+; Clobbers rax.
+macro if_http target
+	call	session_ptr
+	mov	eax,[rax+S_LST]
+	imul	rax,rax,LS_SIZE
+	cmp	dword [g_listeners+rax+LS_KIND],LK_HTTP
+	je	target
+end macro
 
 ; The SQE in rax works on the client of the session in reg: drop
 ; IOSQE_FIXED_FILE when that client is a normal descriptor.
@@ -208,6 +219,9 @@ sessions_init:
 	or	rax,1
 	mov	[g_rand],rax
 	call	peer_worker_init
+	test	eax,eax
+	js	.done
+	call	http_worker_init
 	test	eax,eax
 	js	.done
 	call	balance_stagger
@@ -546,6 +560,9 @@ on_accept_a:
 	mov	dword [r15+S_UC_BID],NIL
 	mov	ecx,[g_tick]
 	mov	[r15+S_LAST],ecx
+	imul	rcx,r13,LS_SIZE
+	mov	ecx,[g_listeners+rcx+LS_POOL]
+	mov	[r15+S_POOL],ecx
 	mov	edi,ebx
 	call	idle_append
 	call	peer_ptr
@@ -555,6 +572,7 @@ on_accept_a:
 	rep	movsb
 	call	peer_admit			; per_source, PROXY header
 	jc	.over
+	if_http http_start
 	mov	edi,ebx
 	jmp	session_connect
 .over:
@@ -658,6 +676,9 @@ on_accept:
 	mov	dword [rax+S_UC_BID],NIL
 	mov	ecx,[g_tick]
 	mov	[rax+S_LAST],ecx
+	imul	rcx,r13,LS_SIZE
+	mov	ecx,[g_listeners+rcx+LS_POOL]
+	mov	[rax+S_POOL],ecx
 	mov	edi,ebx
 	call	idle_append
 	mov	edi,ebx
@@ -1155,9 +1176,7 @@ session_connect:
 	inc	dword [r12+S_TRIES]
 	; release the previous attempt's server count
 	call	session_uncount
-	mov	eax,[r12+S_LST]
-	imul	rax,rax,LS_SIZE
-	mov	edi,[g_listeners+rax+LS_POOL]
+	mov	edi,[r12+S_POOL]
 	mov	esi,[r12+S_SERVER]
 	call	server_pick
 	cmp	eax,NIL
@@ -1228,9 +1247,7 @@ session_connect:
 	mov	esi,ebx
 	call	sess_sqe
 	mov	byte [rax+SQE_OPCODE],IORING_OP_LINK_TIMEOUT
-	mov	ecx,[r12+S_LST]
-	imul	rcx,rcx,LS_SIZE
-	mov	ecx,[g_listeners+rcx+LS_POOL]
+	mov	ecx,[r12+S_POOL]
 	imul	rcx,rcx,PL_SIZE
 	lea	rcx,[g_pools+rcx+PL_TIMEOUT]
 	mov	[rax+SQE_ADDR],rcx
@@ -1240,12 +1257,12 @@ session_connect:
 	pop	rbx
 	ret
 .nowhere:
-	mov	edi,ebx
-	call	session_close
 	pop	r13
 	pop	r12
 	pop	rbx
-	ret
+	if_http http_connect_failed		; no address: 502
+	mov	edi,ebx
+	jmp	session_close
 
 ; ebx = session: move bytes both ways.
 start_relay:
@@ -1349,6 +1366,7 @@ on_s_connect:
 	mov	dword [r13+S_STATE],ST_OPEN
 	mov	edi,[r13+S_SERVER]
 	call	server_ok
+	if_http http_connected
 	; a PROXY protocol header goes before any byte of the client
 	mov	eax,[r13+S_LST]
 	imul	rax,rax,LS_SIZE
@@ -1362,9 +1380,7 @@ on_s_connect:
 	call	server_failed
 	cmp	dword [r13+S_TRIES],MAX_TRIES
 	jae	.give_up
-	mov	eax,[r13+S_LST]
-	imul	rax,rax,LS_SIZE
-	mov	eax,[g_listeners+rax+LS_POOL]
+	mov	eax,[r13+S_POOL]
 	imul	rax,rax,PL_SIZE
 	mov	ecx,[g_pools+rax+PL_COUNT]
 	cmp	[r13+S_TRIES],ecx
@@ -1372,6 +1388,7 @@ on_s_connect:
 	mov	edi,ebx
 	jmp	session_connect
 .give_up:
+	if_http http_connect_failed
 	mov	edi,ebx
 	jmp	session_close
 .free:

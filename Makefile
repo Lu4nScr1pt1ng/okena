@@ -40,6 +40,8 @@ test: $(BIN) $(HTTPH)
 	python3 -I tests/admin/run.py epoll
 	python3 -I tests/overload/run.py io_uring
 	python3 -I tests/overload/run.py epoll
+	python3 -I tests/httpproxy/run.py io_uring
+	python3 -I tests/httpproxy/run.py epoll
 
 image:
 	docker build -t okena .

@@ -56,6 +56,8 @@ ep_main:
 	inc	ecx
 	cmp	ecx,MAX_POOLS
 	jb	@b
+	mov	dword [g_hready_head],NIL
+	mov	dword [g_hready_tail],NIL
 	mov	edi,EPOLL_CLOEXEC
 	mov	eax,SYS_epoll_create1
 	syscall
@@ -105,6 +107,7 @@ ep_main:
 	inc	ebx
 	jmp	.event
 .timers:
+	call	ep_http_ready
 	call	ep_wake_waiters
 	call	ep_connect_deadlines
 	mov	rax,[g_now_ms]
@@ -247,6 +250,10 @@ ep_dispatch:
 	je	.connecting
 	cmp	dword [rax+S_STATE],ST_OPEN
 	jne	.stale
+	mov	ecx,[rax+S_LST]
+	imul	rcx,rcx,LS_SIZE
+	cmp	dword [g_listeners+rcx+LS_KIND],LK_HTTP
+	je	hep_event
 	; writable first: a flushed buffer lets the source be read again
 	mov	r12d,edi
 	mov	r13d,r8d
@@ -337,6 +344,9 @@ ep_accept:
 	mov	dword [rax+S_UC_BID],NIL
 	mov	ecx,[g_tick]
 	mov	[rax+S_LAST],ecx
+	imul	rcx,r13,LS_SIZE
+	mov	ecx,[g_listeners+rcx+LS_POOL]
+	mov	[rax+S_POOL],ecx
 	mov	edi,ebx
 	call	idle_append
 	mov	edi,r14d
@@ -355,7 +365,21 @@ ep_accept:
 	mov	ecx,28
 	rep	movsb
 	call	peer_admit			; per_source, PROXY header
-	jnc	.connect
+	jc	.over
+	imul	rax,r13,LS_SIZE
+	cmp	dword [g_listeners+rax+LS_KIND],LK_HTTP
+	jne	.connect
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	call	http_start
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	jmp	.next
+.over:
 	inc	qword [g_st_l_source+r13*8]
 	dec	qword [g_st_l_accepted+r13*8]	; refused, not admitted
 	mov	edi,ebx
@@ -407,9 +431,7 @@ ep_connect:
 	mov	eax,SYS_close
 	syscall
 @@:
-	mov	eax,[r12+S_LST]
-	imul	rax,rax,LS_SIZE
-	mov	edi,[g_listeners+rax+LS_POOL]
+	mov	edi,[r12+S_POOL]
 	mov	esi,[r12+S_SERVER]
 	call	server_pick
 	cmp	eax,NIL
@@ -453,9 +475,7 @@ ep_connect:
 	cmp	eax,-EINPROGRESS
 	jne	.failed
 	; wait for writability, with the pool's connect timeout
-	mov	eax,[r12+S_LST]
-	imul	rax,rax,LS_SIZE
-	mov	eax,[g_listeners+rax+LS_POOL]
+	mov	eax,[r12+S_POOL]
 	imul	rcx,rax,PL_SIZE
 	imul	rdx,[g_pools+rcx+PL_TIMEOUT],1000
 	mov	r8,rax
@@ -520,9 +540,7 @@ connect_list_remove:
 	je	.done				; not on a list
 @@:
 	mov	qword [rax+S_DEADLINE],0
-	mov	ecx,[rax+S_LST]
-	imul	rcx,rcx,LS_SIZE
-	mov	ecx,[g_listeners+rcx+LS_POOL]
+	mov	ecx,[rax+S_POOL]
 	mov	edx,[rax+S_CPREV]
 	mov	r8d,[rax+S_CNEXT]
 	cmp	edx,NIL
@@ -620,6 +638,15 @@ ep_connected:
 	mov	dword [rax+S_STATE],ST_OPEN
 	mov	edi,[rax+S_SERVER]
 	call	server_ok
+	call	session_ptr
+	mov	ecx,[rax+S_LST]
+	imul	rcx,rcx,LS_SIZE
+	cmp	dword [g_listeners+rcx+LS_KIND],LK_HTTP
+	jne	@f
+	call	http_connected
+	pop	rbx
+	ret
+@@:
 	; a PROXY protocol header goes first; on a fresh connection it fits
 	; the send buffer, so one write sends it all or the session ends
 	call	session_ptr
@@ -667,9 +694,7 @@ ep_connect_failed:
 	call	server_failed
 	cmp	dword [r12+S_TRIES],MAX_TRIES
 	jae	.give_up
-	mov	eax,[r12+S_LST]
-	imul	rax,rax,LS_SIZE
-	mov	eax,[g_listeners+rax+LS_POOL]
+	mov	eax,[r12+S_POOL]
 	imul	rax,rax,PL_SIZE
 	mov	ecx,[g_pools+rax+PL_COUNT]
 	cmp	[r12+S_TRIES],ecx
@@ -678,6 +703,14 @@ ep_connect_failed:
 	call	ep_connect
 	jmp	.out
 .give_up:
+	call	session_ptr
+	mov	ecx,[rax+S_LST]
+	imul	rcx,rcx,LS_SIZE
+	cmp	dword [g_listeners+rcx+LS_KIND],LK_HTTP
+	jne	@f
+	call	http_connect_failed
+	jmp	.out
+@@:
 	mov	edi,ebx
 	call	ep_close
 .out:

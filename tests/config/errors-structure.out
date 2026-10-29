@@ -35,9 +35,10 @@ errors-structure.conf:15:13: error: `least_conn` is not one of: round-robin leas
 errors-structure.conf:16:26: error: option `timeout` is given twice
     16 |     connect timeout=1s { timeout 2s }
        |                          ^^^^^^^
-errors-structure.conf:17:5: error: `http` is not supported by this version of okena yet
+errors-structure.conf:17:5: error: `http` is not allowed in `pool`
     17 |     http
        |     ^^^^
+       = help: `http` belongs in the top level
 errors-structure.conf:18:30: error: invalid value `0`
     18 |     health tcp every=2s rise=0
        |                              ^

@@ -16,6 +16,8 @@ segment readable executable
 include 'core/util.inc'
 include 'core/arena.inc'
 include 'core/file.inc'
+include 'http/parse.inc'
+include 'http/chunk.inc'
 include 'config/parse.inc'
 include 'config/values.inc'
 include 'config/schema.inc'
@@ -35,6 +37,8 @@ include 'core/worker.inc'
 include 'l4/tcp.inc'
 include 'l4/tcp_epoll.inc'
 include 'l4/peer.inc'
+include 'http/proxy.inc'
+include 'http/engine.inc'
 include 'cli.inc'
 
 start:

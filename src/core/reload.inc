@@ -59,6 +59,8 @@ macro plan_regions action
 	action g_pools, PL_SIZE * MAX_POOLS
 	action g_servers, SV_SIZE * MAX_SERVERS
 	action g_groups, GR_SIZE * MAX_GROUPS
+	action g_plan_routes, 4
+	action g_routes, RT_SIZE * MAX_ROUTES
 end macro
 
 PLAN_SAVE_SIZE = 0

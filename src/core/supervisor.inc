@@ -224,6 +224,23 @@ log_listener:
 	mov	rsi,[rbx+LS_TEXT]
 	mov	edx,[rbx+LS_TLEN]
 	call	out_str
+	cmp	dword [rbx+LS_KIND],LK_HTTP
+	jne	.tcp
+	out_lit ' (http, '
+	mov	eax,[rbx+LS_RCOUNT]
+	push	rax
+	call	out_u64
+	out_lit ' route'
+	pop	rax
+	cmp	eax,1
+	je	@f
+	out_lit 's'
+@@:
+	out_lit ')'
+	call	log_end
+	pop	rbx
+	ret
+.tcp:
 	out_lit ' (tcp, to '
 	mov	eax,[rbx+LS_POOL]
 	imul	rax,rax,PL_SIZE

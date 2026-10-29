@@ -872,6 +872,12 @@ check_value:
 	je	.backend
 	cmp	r12,T_WORKERS
 	je	.workers
+	cmp	r12,T_ROUTE
+	je	.route
+	jmp	.ok
+.route:
+	call	check_route_arg
+	jc	.bad
 	jmp	.ok
 .name:
 	call	check_name
@@ -1010,6 +1016,52 @@ check_value:
 
 cstring e_auto, 'auto',0
 
+; rdi/esi = route argument. CF when it is neither a path nor a method.
+; Paths: "/" then target characters, at most one "*", only as the last
+; segment ("/api/*") or alone after "/" ("/*"). Methods: tchar capitals.
+check_route_arg:
+	test	esi,esi
+	jz	.bad
+	cmp	byte [rdi],'/'
+	jne	.method
+	xor	ecx,ecx
+.path:
+	cmp	ecx,esi
+	jae	.ok
+	movzx	eax,byte [rdi+rcx]
+	cmp	al,'*'
+	je	.star
+	cmp	al,'?'
+	je	.bad				; queries are not part of a route
+	cmp	byte [http_target_ok+rax],0
+	je	.bad
+	inc	ecx
+	jmp	.path
+.star:
+	lea	eax,[rcx+1]
+	cmp	eax,esi
+	jne	.bad				; "*" only at the end
+	cmp	byte [rdi+rcx-1],'/'
+	jne	.bad				; and only as a whole segment
+	jmp	.ok
+.method:
+	xor	ecx,ecx
+.mchar:
+	movzx	eax,byte [rdi+rcx]
+	cmp	al,'A'
+	jb	.bad
+	cmp	al,'Z'
+	ja	.bad
+	inc	ecx
+	cmp	ecx,esi
+	jb	.mchar
+.ok:
+	clc
+	ret
+.bad:
+	stc
+	ret
+
 ; rdx = NUL-separated list. Prints " a b c".
 out_list:
 	push	rbx
@@ -1106,6 +1158,11 @@ type_help:
 	out_lit '`auto` or a number of workers from 1 to 256'
 	jmp	.end
 @@:
+	cmp	rbx,T_ROUTE
+	jne	@f
+	out_lit 'a path (/health, /api/*, /*) or a method in capitals (GET, POST)'
+	jmp	.end
+@@:
 .end:
 	call	cfg_note_end
 	pop	rbx
@@ -1131,6 +1188,14 @@ check_semantics:
 	lea	rcx,[dir_table + D_SIZE*DIR_POOL]
 	cmp	rax,rcx
 	je	.pool
+	lea	rcx,[dir_table + D_SIZE*DIR_HTTP]
+	cmp	rax,rcx
+	je	.http
+	jmp	.advance
+.http:
+	inc	dword [g_chk_listeners]
+	mov	rdi,rbx
+	call	check_http
 	jmp	.advance
 .listener:
 	inc	dword [g_chk_listeners]
@@ -1219,15 +1284,260 @@ check_listener:
 	mov	esi,[r12+N_NLEN]
 	mov	edx,[r12+N_LINE]
 	call	cfg_error
+	lea	rax,[dir_table + D_SIZE*DIR_ROUTE]
+	cmp	[r12+N_DEF],rax
+	jne	@f
+	out_lit 'this route does not send traffic anywhere'
+	jmp	.said
+@@:
 	out_lit 'this listener does not send traffic anywhere'
+.said:
 	call	cfg_diag_end
 	call	cfg_note
 	out_lit 'help: add `to ADDRESS...` or `to pool NAME` to its block'
 	call	cfg_note_end
 	call	cfg_error_limit
 .addresses:
+	lea	rax,[dir_table + D_SIZE*DIR_ROUTE]
+	cmp	[r12+N_DEF],rax
+	je	@f				; a route: its listener checks addresses
 	mov	rdi,r12
 	call	check_listen_addresses
+@@:
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; rdi = node: CF when it is a listener (tcp or http).
+is_listener:
+	mov	rax,[rdi+N_DEF]
+	lea	rcx,[dir_table + D_SIZE*DIR_TCP]
+	cmp	rax,rcx
+	je	.yes
+	lea	rcx,[dir_table + D_SIZE*DIR_HTTP]
+	cmp	rax,rcx
+	je	.yes
+	clc
+	ret
+.yes:
+	stc
+	ret
+
+; rdi = http listener: routes, each sending somewhere, none twice.
+check_http:
+	push	rbx
+	push	r12
+	push	r13
+	mov	r12,rdi
+	xor	r13d,r13d			; routes
+	mov	rbx,[r12+N_CHILD]
+.route:
+	test	rbx,rbx
+	jz	.routes_done
+	lea	rax,[dir_table + D_SIZE*DIR_ROUTE]
+	cmp	[rbx+N_DEF],rax
+	jne	.next
+	inc	r13d
+	mov	rdi,rbx
+	call	check_listener			; its `to`
+	mov	rdi,r12
+	mov	rsi,rbx
+	call	check_route_unique
+	mov	rdi,rbx
+	call	check_route_has_path
+.next:
+	mov	rbx,[rbx+N_NEXT]
+	jmp	.route
+.routes_done:
+	test	r13d,r13d
+	jnz	.addresses
+	mov	rdi,[r12+N_NAME]
+	mov	esi,[r12+N_NLEN]
+	mov	edx,[r12+N_LINE]
+	call	cfg_error
+	out_lit 'this listener has no `route`'
+	call	cfg_diag_end
+	call	cfg_note
+	out_lit 'help: `route /* { to 127.0.0.1:3000 }` sends everything to one backend'
+	call	cfg_note_end
+	call	cfg_error_limit
+.addresses:
+	mov	rdi,r12
+	call	check_listen_addresses
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; Methods as bits (0 = any method).
+RM_GET		= 1
+RM_HEAD		= 2
+RM_POST		= 4
+RM_PUT		= 8
+RM_DELETE	= 16
+RM_PATCH	= 32
+RM_OPTIONS	= 64
+RM_OTHER	= 128
+
+enumdef method_names, 'GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'
+
+; rdi/esi = method name. eax = its bit.
+method_bit:
+	lea	rdx,[method_names]
+	call	list_index
+	test	eax,eax
+	js	.other
+	mov	ecx,eax
+	mov	eax,1
+	shl	eax,cl
+	ret
+.other:
+	mov	eax,RM_OTHER
+	ret
+
+; rdi = route node. eax = the methods it names, 0 when none (any).
+route_methods:
+	push	rbx
+	push	r12
+	push	r13
+	mov	rbx,[rdi+N_ARGS]
+	mov	r12d,[rdi+N_ARGC]
+	xor	r13d,r13d
+.next:
+	test	r12d,r12d
+	jz	.done
+	mov	rdi,[rbx+A_VAL]
+	cmp	byte [rdi],'/'
+	je	.skip
+	mov	esi,[rbx+A_VLEN]
+	call	method_bit
+	or	r13d,eax
+.skip:
+	add	rbx,A_SIZE
+	dec	r12d
+	jmp	.next
+.done:
+	mov	eax,r13d
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; rdi = route: at least one path among its arguments.
+check_route_has_path:
+	mov	rcx,[rdi+N_ARGS]
+	mov	edx,[rdi+N_ARGC]
+.next:
+	test	edx,edx
+	jz	.none
+	mov	rax,[rcx+A_VAL]
+	cmp	byte [rax],'/'
+	je	.ok
+	add	rcx,A_SIZE
+	dec	edx
+	jmp	.next
+.none:
+	push	rdi
+	mov	rsi,[rdi+N_NAME]
+	mov	edx,[rdi+N_NLEN]
+	mov	ecx,[rdi+N_LINE]
+	mov	rdi,rsi
+	mov	esi,edx
+	mov	edx,ecx
+	call	cfg_error
+	out_lit 'a route needs a path: /, /api/*, /*'
+	call	cfg_diag_end
+	call	cfg_error_limit
+	pop	rdi
+.ok:
+	ret
+
+; rdi = http listener, rsi = a route of it: no earlier route of the
+; listener has one of its paths with an overlapping method set.
+check_route_unique:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	mov	r12,rdi
+	mov	r13,rsi
+	mov	rdi,r13
+	call	route_methods
+	mov	r15d,eax			; this route's methods (0 = all)
+	mov	rbx,[r12+N_CHILD]
+.other:
+	cmp	rbx,r13
+	je	.done
+	lea	rax,[dir_table + D_SIZE*DIR_ROUTE]
+	cmp	[rbx+N_DEF],rax
+	jne	.next
+	mov	rdi,rbx
+	call	route_methods
+	; overlap: either is "all", or they share a method
+	test	eax,eax
+	jz	.paths
+	test	r15d,r15d
+	jz	.paths
+	test	eax,r15d
+	jz	.next
+.paths:
+	; a path of this route among the other's paths?
+	xor	r14d,r14d
+.mine:
+	cmp	r14d,[r13+N_ARGC]
+	jae	.next
+	imul	rsi,r14,A_SIZE
+	add	rsi,[r13+N_ARGS]
+	mov	rax,[rsi+A_VAL]
+	cmp	byte [rax],'/'
+	jne	.mine_next
+	mov	rcx,[rbx+N_ARGS]
+	mov	edx,[rbx+N_ARGC]
+.theirs:
+	test	edx,edx
+	jz	.mine_next
+	push	rcx
+	push	rdx
+	push	rsi
+	mov	rdi,rcx
+	call	same_arg_value
+	pop	rsi
+	pop	rdx
+	pop	rcx
+	jc	.dup
+	add	rcx,A_SIZE
+	dec	edx
+	jmp	.theirs
+.mine_next:
+	inc	r14d
+	jmp	.mine
+.dup:
+	mov	r14,rsi
+	mov	rdi,rsi
+	call	arg_value_span
+	mov	edx,[r14+A_LINE]
+	call	cfg_error
+	out_lit 'route '
+	mov	rsi,[r14+A_VAL]
+	mov	edx,[r14+A_VLEN]
+	call	cfg_quote
+	out_lit ' is already defined for these methods'
+	call	cfg_diag_end
+	call	cfg_note
+	out_lit 'note: on line '
+	mov	eax,[rbx+N_LINE]
+	call	out_u64
+	call	cfg_note_end
+	call	cfg_error_limit
+	jmp	.done
+.next:
+	mov	rbx,[rbx+N_NEXT]
+	jmp	.other
+.done:
+	pop	r15
 	pop	r14
 	pop	r13
 	pop	r12
@@ -1260,9 +1570,11 @@ check_listen_addresses:
 .other:
 	test	r14,r14
 	jz	.advance
-	lea	rax,[dir_table + D_SIZE*DIR_TCP]
-	cmp	[r14+N_DEF],rax
-	jne	.other_next
+	push	rdi
+	mov	rdi,r14
+	call	is_listener
+	pop	rdi
+	jnc	.other_next
 	xor	r15d,r15d
 .other_arg:
 	cmp	r14,r12
@@ -1647,27 +1959,49 @@ pool_used:
 .next:
 	test	rbx,rbx
 	jz	.no
+	lea	rax,[dir_table + D_SIZE*DIR_HTTP]
+	cmp	[rbx+N_DEF],rax
+	je	.http
 	lea	rax,[dir_table + D_SIZE*DIR_TCP]
 	cmp	[rbx+N_DEF],rax
 	jne	.skip
 	mov	rdi,rbx
+	call	.uses
+	jc	.yes
+	jmp	.skip
+.http:
+	mov	r13,[rbx+N_CHILD]
+.route:
+	test	r13,r13
+	jz	.skip
+	mov	rdi,r13
+	push	r13
+	call	.uses
+	pop	r13
+	jc	.yes
+	mov	r13,[r13+N_NEXT]
+	jmp	.route
+; rdi = node with a `to`: CF when it is `to pool` + this pool (r12)
+.uses:
 	mov	ecx,DIR_TO
 	call	find_child
 	test	rax,rax
-	jz	.skip
+	jz	.not
 	cmp	dword [rax+N_ARGC],2
-	jne	.skip
+	jne	.not
 	mov	r13,[rax+N_ARGS]
 	mov	rdi,[r13+A_VAL]
 	mov	esi,[r13+A_VLEN]
 	lea	rdx,[str_pool_word]
 	call	mem_eq_cstr
 	test	eax,eax
-	jz	.skip
+	jz	.not
 	lea	rdi,[r13+A_SIZE]
 	mov	rsi,r12
-	call	same_arg_value
-	jc	.yes
+	jmp	same_arg_value
+.not:
+	clc
+	ret
 .skip:
 	mov	rbx,[rbx+N_NEXT]
 	jmp	.next

@@ -18,7 +18,22 @@ LS_TLEN		= 56		; d
 LS_PORT		= 60		; d
 LS_FLAGS	= 64		; d: LSF_*
 LS_PER_SOURCE	= 68		; d: connections per client address, 0 = no limit
+LS_KIND		= 72		; d: LK_*
+LS_RFIRST	= 76		; d: first route (http)
+LS_RCOUNT	= 80		; d
 LS_SIZE		= 96
+
+LK_TCP		= 0
+LK_HTTP		= 1
+
+; Route (http)
+RT_PATH		= 0		; q: path; for a prefix route, without the "*"
+RT_PLEN		= 8		; d
+RT_PREFIX	= 12		; d: 1 for "/x/*" routes
+RT_METHODS	= 16		; d: RM_* bits, 0 = any
+RT_POOL		= 20		; d
+RT_SIZE		= 24
+MAX_ROUTES	= 1024
 
 LSF_PEER	= 1		; sessions need the client's address
 LSF_PP_V1	= 2		; send a PROXY protocol v1 header upstream
@@ -58,6 +73,7 @@ BAL_RANDOM	= 2
 
 DEFAULT_CONNECTIONS	= 65536		; per listener, whole instance
 DEFAULT_IDLE_SECS	= 3600
+DEFAULT_HTTP_IDLE_SECS	= 60
 DEFAULT_CONNECT_US	= 2000000
 DEFAULT_DRAIN_US	= 8000000
 
@@ -84,6 +100,10 @@ bss
 	g_cmp_addr:	rb AD_SIZE
 	g_cmp_flags	dd ?
 	g_cmp_per_source dd ?
+	g_cmp_rfirst	dd ?
+	g_cmp_rcount	dd ?
+	g_plan_routes	dd ?
+	g_routes:	rb RT_SIZE * MAX_ROUTES
 end bss
 
 ; Exits with EXIT_CONFIG when something valid in the language cannot be
@@ -123,7 +143,11 @@ plan_compile:
 	mov	rax,[rbx+N_DEF]
 	lea	rcx,[dir_table + D_SIZE*DIR_TCP]
 	cmp	rax,rcx
+	je	.listener
+	lea	rcx,[dir_table + D_SIZE*DIR_HTTP]
+	cmp	rax,rcx
 	jne	@f
+.listener:
 	mov	rdi,rbx
 	call	compile_listener
 @@:
@@ -659,43 +683,17 @@ compile_listener:
 	push	r14
 	push	r15
 	mov	r12,rdi
-	; pool
+	mov	r14d,-1				; http: routes choose the pool
+	lea	rax,[dir_table + D_SIZE*DIR_HTTP]
+	cmp	[r12+N_DEF],rax
+	je	.http
 	mov	rdi,r12
-	mov	ecx,DIR_TO
-	call	find_child
-	mov	rbx,rax
-	mov	r13,[rbx+N_ARGS]
-	mov	rdi,[r13+A_VAL]
-	mov	esi,[r13+A_VLEN]
-	lea	rdx,[str_word_pool]
-	call	mem_eq_cstr
-	test	eax,eax
-	jz	.inline
-	add	r13,A_SIZE
-	mov	rdi,[r13+A_VAL]
-	mov	esi,[r13+A_VLEN]
-	call	plan_pool_index
+	call	compile_target
 	mov	r14d,eax
 	jmp	.settings
-.inline:
-	xor	edi,edi
-	xor	esi,esi
-	call	pool_new
-	mov	r14d,ecx
-	mov	r15,rax
-	xor	ecx,ecx
-.inline_server:
-	cmp	ecx,[rbx+N_ARGC]
-	jae	.settings
-	push	rcx
-	imul	rdi,rcx,A_SIZE
-	add	rdi,[rbx+N_ARGS]
-	mov	rsi,r15
-	call	server_new
-	inc	dword [r15+PL_PRIMARY]
-	pop	rcx
-	inc	ecx
-	jmp	.inline_server
+.http:
+	mov	rdi,r12
+	call	compile_routes			; g_cmp_rfirst/rcount
 .settings:
 	; limits and timeouts
 	mov	r15d,DEFAULT_CONNECTIONS
@@ -751,6 +749,11 @@ compile_listener:
 	or	[g_cmp_flags],ecx
 @@:
 	mov	ebx,DEFAULT_IDLE_SECS
+	lea	rax,[dir_table + D_SIZE*DIR_HTTP]
+	cmp	[r12+N_DEF],rax
+	jne	@f
+	mov	ebx,DEFAULT_HTTP_IDLE_SECS	; keep-alive clients
+@@:
 	mov	rdi,r12
 	mov	ecx,DIR_TIMEOUT
 	call	find_child
@@ -824,6 +827,21 @@ compile_listener:
 	mov	[rcx+LS_FLAGS],eax
 	mov	eax,[g_cmp_per_source]
 	mov	[rcx+LS_PER_SOURCE],eax
+	xor	eax,eax
+	lea	rdx,[dir_table + D_SIZE*DIR_HTTP]
+	cmp	[r12+N_DEF],rdx
+	jne	@f
+	inc	eax
+@@:
+	mov	[rcx+LS_KIND],eax
+	test	eax,eax
+	jz	@f
+	or	dword [rcx+LS_FLAGS],LSF_PEER	; X-Forwarded-For needs the client
+@@:
+	mov	eax,[g_cmp_rfirst]
+	mov	[rcx+LS_RFIRST],eax
+	mov	eax,[g_cmp_rcount]
+	mov	[rcx+LS_RCOUNT],eax
 	inc	r13d
 	jmp	.address
 .done:
@@ -844,6 +862,123 @@ ip_is_unspecified:
 	ret
 .no:
 	clc
+	ret
+
+; rdi = node with a `to` child (tcp listener or route). eax = its pool:
+; a named one, or a new anonymous pool for `to ADDR...`.
+compile_target:
+	push	rbx
+	push	r12
+	push	r13
+	push	r15
+	mov	r12,rdi
+	mov	ecx,DIR_TO
+	call	find_child
+	mov	rbx,rax
+	mov	r13,[rbx+N_ARGS]
+	mov	rdi,[r13+A_VAL]
+	mov	esi,[r13+A_VLEN]
+	lea	rdx,[str_word_pool]
+	call	mem_eq_cstr
+	test	eax,eax
+	jz	.inline
+	add	r13,A_SIZE
+	mov	rdi,[r13+A_VAL]
+	mov	esi,[r13+A_VLEN]
+	call	plan_pool_index
+	jmp	.out
+.inline:
+	xor	edi,edi
+	xor	esi,esi
+	call	pool_new
+	push	rcx
+	mov	r15,rax
+	xor	ecx,ecx
+.inline_server:
+	cmp	ecx,[rbx+N_ARGC]
+	jae	.inline_done
+	push	rcx
+	imul	rdi,rcx,A_SIZE
+	add	rdi,[rbx+N_ARGS]
+	mov	rsi,r15
+	call	server_new
+	inc	dword [r15+PL_PRIMARY]
+	pop	rcx
+	inc	ecx
+	jmp	.inline_server
+.inline_done:
+	pop	rax
+.out:
+	pop	r15
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; rdi = http node: one route entry per path of each route.
+; g_cmp_rfirst/rcount = its range.
+compile_routes:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	mov	r12,rdi
+	mov	eax,[g_plan_routes]
+	mov	[g_cmp_rfirst],eax
+	mov	dword [g_cmp_rcount],0
+	mov	rbx,[r12+N_CHILD]
+.route:
+	test	rbx,rbx
+	jz	.done
+	lea	rax,[dir_table + D_SIZE*DIR_ROUTE]
+	cmp	[rbx+N_DEF],rax
+	jne	.next
+	mov	rdi,rbx
+	call	compile_target
+	mov	r13d,eax			; pool
+	mov	rdi,rbx
+	call	route_methods
+	mov	r14d,eax
+	xor	r15d,r15d
+.arg:
+	cmp	r15d,[rbx+N_ARGC]
+	jae	.next
+	imul	rsi,r15,A_SIZE
+	add	rsi,[rbx+N_ARGS]
+	mov	rdi,[rsi+A_VAL]
+	cmp	byte [rdi],'/'
+	jne	.arg_next
+	mov	ecx,[g_plan_routes]
+	cmp	ecx,MAX_ROUTES
+	jae	plan_too_many
+	inc	dword [g_plan_routes]
+	inc	dword [g_cmp_rcount]
+	imul	rcx,rcx,RT_SIZE
+	lea	rcx,[g_routes+rcx]
+	mov	[rcx+RT_PATH],rdi
+	mov	eax,[rsi+A_VLEN]
+	mov	dword [rcx+RT_PREFIX],0
+	cmp	byte [rdi+rax-1],'*'
+	jne	@f
+	dec	eax				; "/api/*" matches what starts with "/api/"
+	mov	dword [rcx+RT_PREFIX],1
+@@:
+	mov	[rcx+RT_PLEN],eax
+	mov	[rcx+RT_METHODS],r14d
+	mov	[rcx+RT_POOL],r13d
+.arg_next:
+	inc	r15d
+	jmp	.arg
+.next:
+	mov	rbx,[rbx+N_NEXT]
+	jmp	.route
+.done:
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
 	ret
 
 ; rdi/esi = pool name. eax = index (the checker made sure it exists).

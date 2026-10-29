@@ -22,6 +22,13 @@ https example.com {
 
 Early. What works today:
 
+* an HTTP/1.1 reverse proxy (`http :8080 { route /api/* { to pool api } }`):
+  strict parsing, exact and prefix routes with method filters, heads
+  written anew (hop-by-hop fields dropped, X-Forwarded-For from the real
+  client), bodies streamed with Content-Length or chunked re-framed,
+  keep-alive and pipelining towards clients, 100-continue, 502 for
+  unreachable or malformed backends; one upstream connection per
+  request for now;
 * the configuration language with `okena check` (compiler-style
   diagnostics), configuration on the command line or in `OKENA_CONFIG`;
 * the L4 TCP proxy on io_uring: one worker per CPU (cgroup quota aware),
