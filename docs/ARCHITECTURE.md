@@ -5,6 +5,11 @@ x86-64 assembly (fasm2) for Linux. One static binary, no libc, no runtime.
 This document records how it is built and why. What gets built when is in
 [ROADMAP.md](ROADMAP.md); how it is configured is in [CONFIG.md](CONFIG.md).
 
+It describes the design okena is heading for. Where the code already does
+something differently from the plan, the text says so with **Today:**, so
+this file never claims more than what runs. What works now is listed in
+the README.
+
 ## Goals, in order
 
 1. **Never stall, never fall over.** No request waits on a lock, a blocking syscall, an
@@ -42,12 +47,12 @@ byte of its traffic.
 ```
 supervisor (PID 1 in a container, or under systemd)
  ├─ owns all listening sockets (SO_REUSEPORT, one per worker per listener)
- ├─ runs a short-lived compiler child that turns the configuration into
- │  an immutable plan (memfd, sealed); watches worker heartbeats
+ ├─ runs a short-lived compiler child that validates the configuration
+ │  before the supervisor compiles it; watches worker heartbeats
  ├─ worker 0 ── pinned to CPU 0 ── its own io_uring, memory, upstream connections
  ├─ worker 1 ── pinned to CPU 1
  ├─ ...
- ├─ logger   ── drains access-log rings, writes files/stdout/OTLP
+ ├─ logger   ── reads access-log lines from the workers, writes files/stdout
  ├─ control  ── DNS, service discovery, JWKS and other remote keys, active
  │              health checks; publishes immutable sets to the workers
  ├─ admin    ── admin API and /metrics, reads the workers' stats pages
@@ -93,17 +98,17 @@ This is the rule the rest of the design follows from.
 
 | Shared thing | How it is shared without a lock |
 |---|---|
-| Configuration | Immutable plan in a sealed memfd. A reload maps a new generation and each worker switches its pointer at the top of its loop (RCU by quiescent state: a worker between iterations holds no reference). Connections keep the generation they started on; a generation is unmapped when its count drops to zero. |
+| Configuration | An immutable plan, copied into each worker when it is forked. A reload does not change a running worker: it starts a new generation of workers on the new plan, and the old ones stop accepting and finish their connections. Nothing is shared, so nothing needs a lock or a reference count. (A plan in a sealed memfd swapped by quiescent state would let a reload keep the workers; it is not needed so far.) |
 | Backend sets (DNS, discovery, health) | Same mechanism: the control process publishes a new immutable set, workers swap at loop top. Active health state is a per-backend word written only by the control process. |
-| Passive health (outlier detection) | Each worker counts errors per backend in its own page; the control process sums them every 100 ms and ejects. A worker that sees a connect failure stops using that backend at once, locally, without waiting for the sum. Ejection is not slowed down by having 16 workers each see 1/16 of the errors. |
+| Passive health (outlier detection) | Each worker counts errors per backend in its own memory and ejects locally: 3 failed connects, or 5 failing answers in a row (5xx, no response head in time), take the backend out of that worker for 10 s, never more than half of a pool. **Today** there is no instance-wide sum yet; the plan is for the control process to sum the workers' counts every 100 ms, so 16 workers that each see 1/16 of the errors still eject quickly. |
 | Pool-wide limits (`max` connections, `concurrency`) | Leases, like rate limits: a pool's limit is split into per-worker shares that move to the workers that need them. A pool limit means the whole instance, never per worker. |
-| Statistics | Per-worker counters and histograms, plain stores, in a per-worker shared page. Readers (`/metrics`, `okena top`) sum across workers. Torn reads are avoided with a sequence counter per block (seqlock where the writer never waits). |
-| Access logs | One single-producer/single-consumer ring per worker to the logger. The logger polls the rings on a timer, so the worker makes no syscall to wake it. When a ring is full the line is dropped and counted; the worker never waits for the disk. |
+| Statistics | Per-worker counters, plain increments in the worker's private memory; once a tick (1 s) the worker copies the block to its page of a shared table. Readers (`/metrics`, later `okena top`) sum across workers. Every counter is an aligned 64-bit word, so no single value is ever torn; the values are at most a second old. Histograms will follow the same path. |
+| Access logs | Each worker formats lines into a private 4 KiB buffer and hands it over with one non-blocking `write` to a pipe (at most `PIPE_BUF` bytes, so atomic: lines of different workers never mix), when the buffer is full and once a tick. That is one syscall per ~13 lines. The logger process writes them to files. A full pipe (1 MiB) drops the lines and counts them; the worker never waits for the disk. The pipe outlives the logger and every worker generation, which keeps reloads and logger restarts simple. Per-worker rings the logger polls would save that syscall; they are worth it only if a profile shows it. |
 | Rate limits | Every limit is per instance (all workers together); okena never applies a limit per worker, which would multiply it by the worker count. Token leases: a shared table of buckets (open addressing, 64-byte aligned, one bucket per cache line). A worker takes a batch of tokens with one `lock xadd` and spends them locally; the atomic is paid once per batch, not per request. Lease size adapts to the key's rate: hot keys take big batches, keys near their limit take one token at a time and stay exact. The table has a fixed size; when a flood of new keys fills it, the least recently used keys whose buckets are full (they carry no information) are evicted first, and new keys are admitted under a shared per-route bucket so a key flood cannot bypass the limit. |
 | JWKS, remote keys | Fetched by the control process and published like a backend set. |
 | Caches | Memory tier and verified tokens per worker (no contention). The disk cache is shared: lock-free reads with per-slot versions, inserts by compare-and-swap, append-only segments (see Edge, CDN and caching). |
 | TLS ticket keys | In the plan (read-only), rotated hourly by the supervisor; optionally loaded from a file shared by a fleet of instances. |
-| Supervisor ↔ worker control | Messages over a socketpair read through the worker's own ring. |
+| Supervisor ↔ worker control | Signals: SIGTERM asks a worker to drain, read through a signalfd on the worker's own ring. Generations make anything richer unnecessary so far. |
 
 The only atomics in the process are lease refills, plan reference counts
 and the seqlock counters, none of which a request waits on.
@@ -111,8 +116,9 @@ and the seqlock counters, none of which a request waits on.
 **Nothing blocks the loop.** All I/O goes through io_uring, including file
 reads (static files, certificates on reload), timers, signals (signalfd)
 and DNS. Work that is slow by nature runs elsewhere: certificate issuance
-in the acme process, log formatting and writing in the logger, config
-compilation in the supervisor. TLS handshakes run inline but are
+in the acme process, log writing in the logger (a worker only formats
+its lines, with no syscall for the time), config compilation in the
+supervisor. TLS handshakes run inline but are
 budgeted (see below).
 
 ## Resilience and fault tolerance
@@ -139,10 +145,11 @@ possible unit.
 
 **The supervisor is small and never touches untrusted input.** It forks,
 reaps, holds sockets and swaps generations; nothing else. Parsing and
-compiling the configuration, the riskiest code it would otherwise run,
-happens in a short-lived compiler child that writes the plan into a
-memfd; a bug in the parser kills the child, never the supervisor, and the
-running configuration stays. Under systemd with socket activation, or a
+compiling the configuration, the riskiest code it runs, happens first in a
+short-lived compiler child, inside its own seccomp filter; a bug in the
+parser kills the child, never the supervisor, and the running
+configuration stays. Only bytes the child accepted are then compiled by
+the supervisor itself (the same bytes, read once). Under systemd with socket activation, or a
 container restart policy, even a supervisor crash loses no queued
 connection: the listening sockets outlive it.
 
@@ -258,8 +265,9 @@ A spike has to be absorbed or refused in microseconds, without a cascade.
   kept just below its saturation knee. A spike becomes fast 503s at the
   edge instead of a collapsed backend.
 * **Retry budgets.** Retries are capped as a fraction of live traffic
-  (default 20%) plus a small floor, per pool. A spike can never multiply
-  itself through retries.
+  (default 20%) plus a small floor (10/s), per pool, kept by each worker
+  (a fraction does not depend on how many workers share it). A spike can
+  never multiply itself through retries.
 * **Priorities.** Routes carry a priority class (`critical`, `normal`,
   `bulk`). Shedding, queue admission and h2 scheduling respect it, so
   login and checkout survive when the image thumbnailer is shed.
@@ -478,7 +486,14 @@ faulted in) first. Configuration generations live in arenas that are
 released whole when the generation retires.
 
 **Buffers sized by what a connection does.** An idle connection holds no
-buffer at all (~256 B in okena). A connection gets a 4 KiB buffer on its
+buffer at all (~256 B in okena). **Today** that holds for `tcp`
+sessions (128 B, buffers from the provided ring only while bytes move).
+An `http` session has a 64 KiB record reserved per slot (its request,
+output and response buffers), touched only as far as an exchange uses
+it; 2 s after its last exchange, an idle keep-alive connection gives all
+of it but the first page back (`MADV_DONTNEED`), so it costs ~4.5 KB
+measured. Moving the record's fields out of that page into a dense
+array would bring it to the target. A connection gets a 4 KiB buffer on its
 first bytes, which is enough for most requests; it moves to 16 KiB when
 it fills one (TLS records, large headers) and to 64 KiB for sustained
 streams (downloads, uploads, L4 tunnels), stepping down again when its
@@ -505,6 +520,10 @@ headers, buffer classes, the cache index) are 2 MiB aligned and use
 transparent huge pages (`MADV_HUGEPAGE`) to cut TLB misses; small or
 short-lived ones stay on 4 KiB pages so trimming stays fine-grained.
 Explicit huge pages (`MAP_HUGETLB`) are used when the host provides them.
+**Today** every pool is marked `MADV_NOHUGEPAGE`: with THP on `always`,
+the first touch of a sparse pool committed a whole 2 MiB page and a
+worker at rest grew from 0.7 MB to 13 MB. Huge pages come back per pool,
+for pools dense enough to fill them, once measured.
 
 **Pressure-aware.** The overload manager reads the cgroup's
 `memory.current` and pressure stall information (`memory.pressure`, PSI)
@@ -623,7 +642,7 @@ ECN. 0-RTT off by default and, when on, only for routes marked idempotent.
 
 | Algorithm | When |
 |---|---|
-| `least-request` (power of two choices, weighted) | default for http; no herding, O(1) |
+| `least-request` (power of two choices, weighted) | default for every pool (requests in flight for http, connections for tcp); no herding, O(1): one random draw, no division, no scan |
 | `peak-ewma` | latency-sensitive pools; picks by in-flight x decayed latency |
 | `round-robin` (smooth weighted) | uniform backends, predictable spread |
 | `maglev` / `ring-hash` with bounded load | affinity by header, cookie, path or source |

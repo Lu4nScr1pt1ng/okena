@@ -13,14 +13,21 @@ tcp :5432 {
     to 10.0.0.11:5432 10.0.0.12:5432
 }
 
-https example.com {
-    to 127.0.0.1:3000
+http :80 {
+    route /* { to 127.0.0.1:3000 }
 }
 ```
 
 ## Status
 
-Early. What works today:
+Early: L4 and HTTP/1.1, no TLS yet. What works today:
+
+* HTTP: host blocks with wildcards, routes matched on the normalized
+  path, WebSocket and other upgrades, header/response timeouts (408/504),
+  retries within a per-pool budget, outlier ejection, request ids,
+  `trusted_proxies`, JSON access logs through a logger process, metrics
+  by status class, idle connections that give their memory back;
+* `least-request` (power of two choices) balancing by default;
 
 * an HTTP/1.1 reverse proxy (`http :8080 { route /api/* { to pool api } }`):
   strict parsing, exact and prefix routes with method filters, heads
@@ -56,7 +63,7 @@ Early. What works today:
   HEALTHCHECK;
 * a watchdog that replaces stuck workers;
 * a seccomp filter for each kind of process (no execve, no ptrace, no
-  executable memory anywhere; an io_uring worker may make five system
+  executable memory anywhere; an io_uring worker may make eight system
   calls) and an io_uring opcode allowlist;
 * reload on `SIGHUP` without dropping a connection, validated in a child
   process, rejected as a whole when anything is wrong;
@@ -67,7 +74,7 @@ Early. What works today:
 * a `FROM scratch` image of about 70 KB, non-root, aware of `--cpus`
   and `--cpuset-cpus`.
 
-Next: the rest of phase 0 and 1 in [ROADMAP.md](docs/ROADMAP.md).
+Next: TLS (phase 3) and the rest of phase 2 in [ROADMAP.md](docs/ROADMAP.md).
 
 ## Docker
 

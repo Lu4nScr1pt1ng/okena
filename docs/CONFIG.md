@@ -1,5 +1,9 @@
 # Configuration
 
+This file describes the whole language. A directive that is not built
+yet is refused by `okena check` ("not supported by this version of okena
+yet"); the README lists what works today.
+
 One file, `okena.conf`, read top to bottom. The smallest useful config is
 two lines; everything else has a default chosen for safety and speed, and
 `okena explain` prints the effective config with every default filled in.
@@ -132,7 +136,6 @@ okena {
     drain delay=2s timeout=7s # fits inside docker stop's 10 s
     admin unix:/run/okena/admin.sock
     metrics :9464
-    log access stdout format=json
     acme email=ops@example.com
 }
 ```
@@ -313,8 +316,8 @@ pool api {
     server unix:/run/api.sock
     discover dns api.service.internal port=8080 refresh=ttl
 
-    balance least-request          # least-request | peak-ewma | round-robin
-                                   # | maglev key=... | ring-hash key=... | least-conn
+    balance least-request          # the default; or round-robin | least-conn | random
+                                   # (planned: peak-ewma | maglev key=... | ring-hash key=...)
     protocol h2                    # http1 (default) | h2 | h2c | grpc
     tls sni=api.internal ca=/etc/okena/internal-ca.pem
 
