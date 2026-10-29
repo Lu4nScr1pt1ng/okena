@@ -251,6 +251,17 @@ http_request:
 	jz	@f
 	or	dword [r15+H_FLAGS],HX_UPGRADE
 @@:
+	; TRACE would echo the request (cookies, auth) back: refused
+	cmp	dword [r14+HM_MLEN],5
+	jne	@f
+	mov	rsi,[r14+HM_METHOD]
+	cmp	dword [rsi],'TRAC'
+	jne	@f
+	cmp	byte [rsi+4],'E'
+	jne	@f
+	mov	edi,405
+	jmp	http_error
+@@:
 	; body
 	mov	dword [r15+H_BODY],BK_NONE
 	test	eax,HMF_CHUNKED
@@ -273,7 +284,13 @@ http_request:
 	cmp	dword [r15+H_BODY],BK_NONE
 	jne	@f
 	or	dword [r15+H_FLAGS],HX_NOBODY
+	jmp	.framed
 @@:
+	test	dword [r15+H_FLAGS],HX_UPGRADE
+	jz	.framed
+	mov	edi,400				; an upgrade carrying a body: ambiguous
+	jmp	http_error
+.framed:
 	test	dword [r14+HM_FLAGS],HMF_CONTINUE
 	jz	@f
 	cmp	dword [r15+H_BODY],BK_NONE
@@ -285,9 +302,11 @@ http_request:
 	jbe	@f
 	mov	dword [g_retry_tokens],RETRY_CAP
 @@:
-	call	http_route			; eax = pool or -1
+	call	http_route			; eax = pool, -1 none, -2 unsafe path
 	cmp	eax,-1
 	je	.no_route
+	cmp	eax,-2
+	je	.parse_error_400
 	mov	r13d,eax
 	call	session_ptr
 	mov	[rax+S_POOL],r13d
@@ -314,6 +333,9 @@ http_request:
 	jmp	http_error
 .no_route:
 	mov	edi,404
+	jmp	http_error
+.parse_error_400:
+	mov	edi,400
 	jmp	http_error
 .head_too_large:
 	mov	edi,431
@@ -355,6 +377,15 @@ http_route:
 	lea	rsi,[str_slash]
 	mov	edx,1
 .path:
+	cmp	byte [rsi],'/'
+	jne	@f				; "*" (OPTIONS *): nothing to normalize
+	mov	rdi,rsi
+	mov	esi,edx
+	call	path_normalize			; routes match the normalized path
+	jnc	@f
+	mov	eax,-2
+	jmp	.done
+@@:
 	mov	r14,rsi				; path
 	mov	r15d,edx
 	call	http_route_set			; ecx/r9d = the routes of the host
@@ -433,7 +464,165 @@ http_route:
 	pop	rbx
 	ret
 
+; rdi/esi = path (starts with '/'). rsi/edx = the form routes are
+; matched on, in g_npath; CF when the path cannot be normalized safely.
+;   %XX of an unreserved character (A-Z a-z 0-9 - . _ ~) is decoded,
+;   other %XX kept with upper-case hex; %XX of '/', '\' or a control
+;   byte is refused (the backend could split or join segments on it);
+;   a raw '\' is refused; "//" is one '/'; a "." or ".." segment
+;   (decoded ones included) is refused, so /public/../admin can never
+;   match /public/* while the backend serves /admin.
+; The target forwarded is still the original one.
+path_normalize:
+	lea	r8,[g_npath]
+	xor	ecx,ecx				; input index
+	xor	r9d,r9d				; output length
+.byte:
+	cmp	ecx,esi
+	jae	.segments
+	movzx	eax,byte [rdi+rcx]
+	inc	ecx
+	cmp	al,'\'
+	je	.bad
+	cmp	al,'/'
+	je	.slash
+	cmp	al,'%'
+	jne	.put
+	; %XX
+	lea	edx,[rcx+2]
+	cmp	edx,esi
+	ja	.bad
+	movzx	eax,byte [rdi+rcx]
+	call	.hex
+	jc	.bad
+	mov	r10d,eax
+	movzx	eax,byte [rdi+rcx+1]
+	call	.hex
+	jc	.bad
+	shl	r10d,4
+	or	eax,r10d
+	add	ecx,2
+	cmp	al,'/'
+	je	.bad
+	cmp	al,'\'
+	je	.bad
+	cmp	al,0x20
+	jb	.bad
+	cmp	al,0x7F
+	je	.bad
+	call	.unreserved
+	jnc	.put				; decoded
+	mov	byte [r8+r9],'%'		; kept encoded, canonical case
+	mov	edx,eax
+	shr	edx,4
+	mov	dl,[hex_upper+rdx]
+	mov	[r8+r9+1],dl
+	and	eax,15
+	mov	al,[hex_upper+rax]
+	mov	[r8+r9+2],al
+	add	r9d,3
+	jmp	.byte
+.slash:
+	test	r9d,r9d
+	jz	.put
+	cmp	byte [r8+r9-1],'/'
+	je	.byte				; "//" -> "/"
+.put:
+	mov	[r8+r9],al
+	inc	r9d
+	jmp	.byte
+.segments:
+	; refuse "." and ".." segments
+	xor	ecx,ecx
+.seg:
+	cmp	ecx,r9d
+	jae	.ok
+	cmp	byte [r8+rcx],'/'
+	jne	.seg_next
+	lea	edx,[rcx+1]			; segment start
+	cmp	edx,r9d
+	jae	.ok
+	cmp	byte [r8+rdx],'.'
+	jne	.seg_next
+	inc	edx
+	cmp	edx,r9d
+	jae	.bad				; "/." at the end
+	cmp	byte [r8+rdx],'/'
+	je	.bad				; "/./"
+	cmp	byte [r8+rdx],'.'
+	jne	.seg_next
+	inc	edx
+	cmp	edx,r9d
+	jae	.bad				; "/.." at the end
+	cmp	byte [r8+rdx],'/'
+	je	.bad				; "/../"
+.seg_next:
+	inc	ecx
+	jmp	.seg
+.ok:
+	mov	rsi,r8
+	mov	edx,r9d
+	clc
+	ret
+.bad:
+	stc
+	ret
+; al = hex digit -> eax = value, CF when not one
+.hex:
+	cmp	al,'0'
+	jb	.nothex
+	cmp	al,'9'
+	jbe	.digit
+	or	al,0x20
+	cmp	al,'a'
+	jb	.nothex
+	cmp	al,'f'
+	ja	.nothex
+	sub	al,'a'-10
+	clc
+	ret
+.digit:
+	sub	al,'0'
+	clc
+	ret
+.nothex:
+	stc
+	ret
+; al: CF clear when unreserved
+.unreserved:
+	cmp	al,'-'
+	je	.yes
+	cmp	al,'.'
+	je	.yes
+	cmp	al,'_'
+	je	.yes
+	cmp	al,'~'
+	je	.yes
+	cmp	al,'0'
+	jb	.no
+	cmp	al,'9'
+	jbe	.yes
+	cmp	al,'A'
+	jb	.no
+	cmp	al,'Z'
+	jbe	.yes
+	cmp	al,'a'
+	jb	.no
+	cmp	al,'z'
+	jbe	.yes
+.no:
+	stc
+	ret
+.yes:
+	clc
+	ret
+
+rodata
+	hex_upper	db '0123456789ABCDEF'
+end rodata
+
 bss
+	g_npath		rb H_IN_CAP
 	g_rset_first	dd ?
 	g_rset_count	dd ?
 end bss
@@ -2044,7 +2233,7 @@ macro reasons pairs&
 		end iterate
 	end rodata
 end macro
-reasons 400,'Bad Request', 404,'Not Found', 408,'Request Timeout', \
+reasons 400,'Bad Request', 404,'Not Found', 405,'Method Not Allowed', 408,'Request Timeout', \
 	431,'Request Header Fields Too Large', 501,'Not Implemented', 502,'Bad Gateway', \
 	503,'Service Unavailable', 504,'Gateway Timeout', 505,'HTTP Version Not Supported'
 

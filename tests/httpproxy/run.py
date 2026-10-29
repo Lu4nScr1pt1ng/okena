@@ -364,6 +364,30 @@ try:
     check("the wildcard does not match the bare domain", status(b"w.t", b"/other") == 200)
     check("other hosts use the listener's routes", status(b"elsewhere", b"/x") == 200)
 
+    # paths are matched normalized: /down/* goes to the dead backend (502)
+    for target, code, why in [
+        (b"/%64own/x", 502, "an encoded unreserved character is decoded for matching"),
+        (b"//down/x", 502, "a doubled slash is one"),
+        (b"/api/../down/x", 400, "a dot-dot segment is refused"),
+        (b"/api/%2e%2E/down/x", 400, "an encoded dot-dot segment is refused"),
+        (b"/api/x/.", 400, "a trailing dot segment is refused"),
+        (b"/api/%2Fdown", 400, "an encoded slash is refused"),
+        (b"/api/%5Cdown", 400, "an encoded backslash is refused"),
+        (b"/api/.well-known", 200, "a dot in a name is fine"),
+    ]:
+        c = Client()
+        c.send(req(b"GET", target))
+        r = c.response()
+        check(f"path {target.decode()}: {why} -> {code}", r is not None and r[0] == code, str(r and r[0]))
+    c = Client()
+    c.send(req(b"TRACE", b"/api/x"))
+    r = c.response()
+    check("TRACE -> 405", r is not None and r[0] == 405)
+    c = Client()
+    c.send(req(b"GET", b"/ws", b"Upgrade: websocket\r\nConnection: Upgrade\r\n", body=b"xx"))
+    r = c.response()
+    check("an upgrade with a body -> 400", r is not None and r[0] == 400, str(r and r[0]))
+
     # Expect: 100-continue
     c = Client()
     c.send(b"POST /api/x HTTP/1.1\r\nHost: t\r\nExpect: 100-continue\r\nContent-Length: 4\r\n\r\n")
