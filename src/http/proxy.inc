@@ -684,57 +684,29 @@ http_route_set:
 	jne	@f
 	dec	r14d
 @@:
-	mov	r15d,-1				; best wildcard (length)
-	mov	ebx,[r12+LS_HFIRST]
-	mov	r8d,ebx
-	add	r8d,[r12+LS_HCOUNT]
-.host:
-	cmp	ebx,r8d
-	jae	.wild_done
-	imul	rcx,rbx,HO_SIZE
-	lea	rcx,[g_hosts+rcx]
-	mov	edx,[rcx+HO_NLEN]
-	cmp	dword [rcx+HO_WILD],0
-	jne	.wild
-	cmp	edx,r14d
-	jne	.next
-	push	rcx
-	push	r8
-	mov	rdi,[rcx+HO_NAME]
+	; the exact name: one lookup
 	mov	rsi,r13
-	call	mem_eq_nocase
-	pop	r8
-	pop	rcx
-	test	eax,eax
-	jz	.next
-	jmp	.use				; exact: done
-.wild:
-	; ".example.com" matches "a.example.com", not "example.com"
-	cmp	edx,r14d
-	jae	.next
-	cmp	edx,r15d
-	jle	.next
-	push	rcx
-	push	r8
-	push	rdx
-	mov	rdi,[rcx+HO_NAME]
-	mov	esi,r14d
-	sub	esi,edx
-	lea	rsi,[r13+rsi]
-	call	mem_eq_nocase
-	pop	rdx
-	pop	r8
-	pop	rcx
-	test	eax,eax
-	jz	.next
-	mov	r15d,edx
-	mov	eax,[rcx+HO_RFIRST]
-	mov	[g_rset_first],eax
-	mov	eax,[rcx+HO_RCOUNT]
-	mov	[g_rset_count],eax
-.next:
-	inc	ebx
-	jmp	.host
+	mov	edx,r14d
+	xor	ecx,ecx
+	call	host_find
+	test	rcx,rcx
+	jnz	.use
+	; ".example.com" matches "a.example.com" and "b.a.example.com", not
+	; "example.com": one lookup per label, the longest suffix first
+	xor	ebx,ebx
+.dot:
+	inc	ebx				; a label before the dot
+	cmp	ebx,r14d
+	jae	.wild_done
+	cmp	byte [r13+rbx],'.'
+	jne	.dot
+	lea	rsi,[r13+rbx]
+	mov	edx,r14d
+	sub	edx,ebx
+	mov	ecx,1
+	call	host_find
+	test	rcx,rcx
+	jz	.dot
 .use:
 	mov	eax,[rcx+HO_RFIRST]
 	mov	[g_rset_first],eax
@@ -747,6 +719,63 @@ http_route_set:
 	pop	r13
 	pop	r12
 	pop	rbx
+	ret
+
+; r12 = listener, rsi/edx = name, ecx = 1 for a wildcard suffix. rcx =
+; its host entry, or 0. Keeps rbx, r12-r15.
+host_find:
+	push	rsi
+	push	rdx
+	push	rcx
+	mov	edi,[r12+LS_HFIRST]
+	call	host_hash
+	mov	r11d,eax			; hash
+	pop	rcx
+	pop	rdx
+	pop	rsi
+.probe:
+	and	eax,HHASH_SIZE - 1
+	mov	r10,[g_hhash+rax*8]
+	test	r10,r10
+	jz	.none
+	cmp	r10d,r11d
+	jne	.next
+	mov	r9,r10
+	shr	r9,32
+	dec	r9d				; host entry
+	mov	r8d,r9d
+	sub	r8d,[r12+LS_HFIRST]
+	cmp	r8d,[r12+LS_HCOUNT]
+	jae	.next				; another listener's
+	imul	r9,r9,HO_SIZE
+	lea	r9,[g_hosts+r9]
+	cmp	[r9+HO_WILD],ecx
+	jne	.next
+	cmp	[r9+HO_NLEN],edx
+	jne	.next
+	push	rax
+	push	rcx
+	push	rdx
+	push	rsi
+	push	r9
+	push	r11
+	mov	rdi,[r9+HO_NAME]
+	call	mem_eq_nocase
+	pop	r11
+	pop	r9
+	pop	rsi
+	pop	rdx
+	pop	rcx
+	test	eax,eax
+	pop	rax
+	jz	.next
+	mov	rcx,r9
+	ret
+.next:
+	inc	eax
+	jmp	.probe
+.none:
+	xor	ecx,ecx
 	ret
 
 ; OUT = the request head okena sends upstream. ebx = session, r15 =

@@ -419,6 +419,7 @@ cfg_parse_checked:
 
 cli_check:
 	call	cli_load_config
+	call	plan_compile			; the limits a start would hit
 	mov	edi,1
 	call	out_select
 	mov	rsi,[g_cfg_name]
@@ -428,15 +429,15 @@ cli_check:
 	mov	ecx,0
 	call	out_count_listener
 	out_lit ', '
-	mov	eax,[g_chk_pools]
+	mov	eax,[g_plan_pools]		; as compiled: identical inline targets share one
 	call	out_u64
 	out_lit ' pool'
-	cmp	dword [g_chk_pools],1
+	cmp	dword [g_plan_pools],1
 	je	@f
 	out_lit 's'
 @@:
 	out_lit ', '
-	mov	eax,[g_chk_servers]
+	mov	eax,[g_chk_servers]		; as written (a name reserves room for its addresses)
 	call	out_u64
 	out_lit ' server'
 	cmp	dword [g_chk_servers],1

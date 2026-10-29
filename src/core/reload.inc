@@ -63,6 +63,7 @@ macro plan_regions action
 	action g_routes, RT_SIZE * MAX_ROUTES
 	action g_plan_trust, 4
 	action g_trust, TR_SIZE * MAX_TRUST
+	action g_hhash, 8 * HHASH_SIZE
 	action g_plan_hosts, 4
 	action g_hosts, HO_SIZE * MAX_HOSTS
 end macro

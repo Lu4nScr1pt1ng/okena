@@ -3,7 +3,7 @@
 ; structures here, so the data path never parses text.
 
 MAX_LISTENERS	= 64
-MAX_POOLS	= 64
+MAX_POOLS	= 512
 MAX_SERVERS	= 1024
 
 ; Listener
@@ -38,6 +38,12 @@ HO_WILD		= 12		; d: 1 for a wildcard (matched as a suffix)
 HO_RFIRST	= 16		; d
 HO_RCOUNT	= 20		; d
 HO_SIZE		= 24
+
+; Host names are found through one open-addressing table for the whole
+; plan: key = (the listener's first host entry, wildcard or not, the
+; name in lower case), value = host entry + 1 (0 = empty slot). Load is
+; at most 1/4, so a probe sequence is short.
+HHASH_SIZE	= MAX_HOSTS * 4
 MAX_HOSTS	= 1024
 MAX_TRUST	= 1024		; trusted_proxies ranges, all listeners
 
@@ -134,6 +140,7 @@ bss
 	g_routes:	rb RT_SIZE * MAX_ROUTES
 	g_plan_trust	dd ?
 	g_trust:	rb TR_SIZE * MAX_TRUST
+	g_hhash:	rq HHASH_SIZE
 	g_plan_hosts	dd ?
 	g_hosts:	rb HO_SIZE * MAX_HOSTS
 	g_cmp_hfirst	dd ?
@@ -449,6 +456,32 @@ alog_dest_id:
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process
 
+; edi = seed (a listener's first host entry), rsi/edx = name, ecx = 1
+; for a wildcard suffix. eax = FNV-1a hash of it all, A-Z folded to
+; lower case. Clobbers r8-r10.
+host_hash:
+	mov	eax,2166136261
+	xor	eax,edi
+	imul	eax,eax,16777619
+	xor	eax,ecx
+	imul	eax,eax,16777619
+	xor	r8d,r8d
+.byte:
+	cmp	r8d,edx
+	jae	.done
+	movzx	r9d,byte [rsi+r8]
+	lea	r10d,[r9-'A']
+	cmp	r10d,25
+	ja	@f
+	or	r9d,0x20
+@@:
+	xor	eax,r9d
+	imul	eax,eax,16777619
+	inc	r8d
+	jmp	.byte
+.done:
+	ret
+
 ; rdi = timeout block, ecx = directive. eax = its duration in whole
 ; seconds (at least one), or CF when absent.
 timeout_secs:
@@ -472,7 +505,22 @@ timeout_secs:
 
 plan_too_many:
 	call	log_begin
-	out_lit 'the configuration has more listeners, pools or servers than this build supports'
+	out_lit 'the configuration needs more than this build holds: at most '
+	mov	eax,MAX_LISTENERS
+	call	out_u64
+	out_lit ' listener addresses, '
+	mov	eax,MAX_POOLS
+	call	out_u64
+	out_lit ' pools, '
+	mov	eax,MAX_SERVERS
+	call	out_u64
+	out_lit ' servers, '
+	mov	eax,MAX_ROUTES
+	call	out_u64
+	out_lit ' route paths, '
+	mov	eax,MAX_HOSTS
+	call	out_u64
+	out_lit ' host names'
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process
@@ -1089,6 +1137,11 @@ compile_target:
 	call	plan_pool_index
 	jmp	.out
 .inline:
+	; the same addresses as an earlier inline target: the same pool, so
+	; routes to one backend share its warm connections and its load
+	call	inline_pool_find
+	cmp	eax,-1
+	jne	.out
 	xor	edi,edi
 	xor	esi,esi
 	call	pool_new
@@ -1114,6 +1167,66 @@ compile_target:
 	pop	r13
 	pop	r12
 	pop	rbx
+	ret
+
+; rbx = `to` node with addresses. eax = an inline pool (no name) with
+; exactly these addresses in this order, or -1.
+inline_pool_find:
+	push	r12
+	push	r13
+	xor	r12d,r12d
+.pool:
+	cmp	r12d,[g_plan_pools]
+	jae	.none
+	imul	r13,r12,PL_SIZE
+	lea	r13,[g_pools+r13]
+	cmp	qword [r13+PL_NAME],0
+	jne	.next
+	mov	eax,[r13+PL_COUNT]
+	cmp	eax,[rbx+N_ARGC]
+	jne	.next
+	xor	ecx,ecx
+.server:
+	cmp	ecx,[rbx+N_ARGC]
+	jae	.found
+	mov	eax,[r13+PL_FIRST]
+	add	eax,ecx
+	imul	rax,rax,SV_SIZE
+	lea	r8,[g_servers+rax]
+	imul	rax,rcx,A_SIZE
+	add	rax,[rbx+N_ARGS]
+	mov	edx,[rax+A_VLEN]
+	cmp	edx,[r8+SV_TLEN]
+	jne	.next
+	mov	rsi,[rax+A_VAL]
+	mov	rdi,[r8+SV_TEXT]
+	push	rcx
+	xor	r9d,r9d
+@@:
+	cmp	r9d,edx
+	jae	@f
+	mov	al,[rsi+r9]
+	cmp	al,[rdi+r9]
+	jne	.differ
+	inc	r9d
+	jmp	@b
+@@:
+	pop	rcx
+	inc	ecx
+	jmp	.server
+.differ:
+	pop	rcx
+.next:
+	inc	r12d
+	jmp	.pool
+.found:
+	mov	eax,r12d
+	jmp	.out
+.none:
+	mov	eax,-1
+.out:
+	pop	r13
+	pop	r12
 	ret
 
 ; rdi = http node: a host entry per name of each host block, with that
@@ -1162,6 +1275,27 @@ compile_hosts:
 @@:
 	mov	[r14+HO_NAME],rdi
 	mov	[r14+HO_NLEN],esi
+	; into the lookup table
+	push	rcx
+	mov	edx,esi
+	mov	rsi,rdi
+	mov	edi,[g_cmp_hfirst]
+	mov	ecx,[r14+HO_WILD]
+	call	host_hash
+	pop	rcx
+	mov	edx,HHASH_SIZE - 1
+	mov	r8d,eax
+.probe:
+	and	r8d,edx
+	cmp	qword [g_hhash+r8*8],0
+	je	.slot
+	inc	r8d
+	jmp	.probe
+.slot:
+	lea	r9d,[rcx+1]
+	shl	r9,32
+	or	r9,rax
+	mov	[g_hhash+r8*8],r9
 	mov	eax,[g_cmp_rfirst]
 	mov	[r14+HO_RFIRST],eax
 	mov	eax,[g_cmp_rcount]
