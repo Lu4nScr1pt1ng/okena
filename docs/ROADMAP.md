@@ -1,5 +1,9 @@
 # Roadmap
 
+Phases 0-3 make the first product: an L4 and HTTP/1.1 balancer with TLS
+that runs anywhere, Docker included. Everything after builds on code that
+already carries traffic.
+
 Each phase ends with something usable in production for its scope, and
 with its exit criteria met: tests, fuzzing, and a benchmark against the
 established proxy for that job, on the same machine, cores pinned,
@@ -21,16 +25,31 @@ References used for comparison: HAProxy 3.x (L4 and HTTP/1), nginx
 * Provided buffer rings with incremental consumption, recv/send bundles.
 * Test harness: unit tests in assembly, Python integration runner,
   `okena bench` (open loop, coordinated-omission corrected).
+* Two I/O engines from day one: io_uring and epoll, same code above them,
+  both in CI.
+* Container awareness: cgroup CPU quota and memory limit, `scratch`
+  image, seccomp profile, `okena health`, `okena check --host`.
+* Benchmark topologies: netns/veth on one host (CI) and two hosts over a
+  real NIC; measure the no-op forwarding floor and set the latency targets
+  as floor + X.
 
-Exit: a worker echoes TCP at line rate; 1M idle connections fit in the
-memory budget; config errors point at the right line.
+Exit: a worker echoes TCP at line rate on both engines; 1M idle
+connections fit in the memory budget; config errors point at the right
+line; the image runs under Docker's default profile (epoll) and with the
+okena profile (io_uring), and the startup line says which.
 
 ## Phase 1 — L4
 
 * `tcp` and `udp` listeners, pools, `round-robin`, `least-conn`,
   `source-hash`, `maglev`, `random`.
-* Data path: splice through a pipe pool; sockmap redirect via an eBPF
-  program assembled by fasm2; half-close handled correctly.
+* Data path: copy through provided buffers, splice through a pipe pool,
+  and sockmap via an eBPF program assembled by fasm2 — measured against
+  each other, default chosen per message size; half-close handled.
+* Names as backends (async resolver, `/etc/resolv.conf`, TTLs), so
+  `to db:5432` works in compose.
+* Upstream port management (`IP_BIND_ADDRESS_NO_PORT`, source addresses),
+  `TCP_USER_TIMEOUT`, connect rate limits.
+* Hot-worker detection and steering away from overloaded workers.
 * TCP health checks, passive failure detection, backup servers.
 * PROXY protocol v1/v2 in and out, trusted sources.
 * Reuseport eBPF steering by CPU.
@@ -38,7 +57,8 @@ memory budget; config errors point at the right line.
 * Graceful drain, reload of pools and listeners.
 
 Exit: beats HAProxy `mode tcp` on added latency and connections/s per
-core; reload under load drops nothing.
+core; reload under load drops nothing; chaos suite passes (backend
+killed, black-holed without RST, slow, refusing, port range exhausted).
 
 ## Phase 2 — HTTP/1.1 reverse proxy
 
@@ -50,6 +70,8 @@ core; reload under load drops nothing.
 * Timeouts, retries with budgets, CoDel queueing, adaptive concurrency.
 * Header rewrites, `Forwarded`/`X-Forwarded-*`, request IDs, redirects.
 * WebSocket upgrade (then L4 splicing for the upgraded stream).
+* Strict response parsing (HEAD, 1xx, 204/304, close-delimited), the
+  keep-alive reuse race handled.
 * Access logs through the logger process; `/metrics`.
 * Differential fuzzing of the parser; smuggling test corpus.
 
@@ -65,8 +87,9 @@ Exit: beats HAProxy and nginx on added p99 for h1 keep-alive; survives a
   handshake budget.
 * kTLS handoff, so splice and zero-copy work on TLS connections.
 * `tls` listener (SNI routing, passthrough).
-* TLS to upstreams: X.509 validation, RSA/ECDSA/Ed25519 verification,
-  session resumption.
+* TLS to upstreams: TLS 1.3 and 1.2 client, X.509 validation,
+  RSA/ECDSA/Ed25519 verification, session resumption.
+* TLS 1.2 server (ECDHE + AEAD) for older clients.
 * Known-answer, Wycheproof and differential tests; constant-time checks;
   tlsfuzzer.
 
@@ -76,6 +99,7 @@ certificates; kTLS steady state within a few percent of plaintext.
 ## Phase 4 — HTTP/2 and gRPC
 
 * h2 downstream and upstream, HPACK, RFC 9218 priorities, flow control.
+* Protocol translation h1 ↔ h2 in both directions; WebSocket over h2.
 * Upstream multiplexing; gRPC routing, trailers, gRPC health checks,
   gRPC status mapping.
 * Abuse limits (rapid reset, CONTINUATION, HPACK bomb, floods).
@@ -85,8 +109,10 @@ Exit: beats Envoy on added p99 for gRPC unary and streaming.
 
 ## Phase 5 — Gateway
 
-* JWT/JWKS, API keys, Basic, mTLS identity, forward-auth.
-* Rate limits: local GCRA and global through leases; quotas.
+* JWT/JWKS (fetched by the control process), verified-token cache, API
+  keys, Basic, mTLS identity, forward-auth with answer cache.
+* Rate limits: GCRA per instance through leases, bounded key table with
+  eviction under key floods; quotas.
 * CORS, path rewrites, splits, mirroring, hedging, priorities.
 * HTTP cache with coalescing and stale-while-revalidate.
 * Static files with precompressed variants.
@@ -98,7 +124,9 @@ auth + limit stays within the latency budget in ARCHITECTURE.md.
 ## Phase 6 — Operations
 
 * Binary upgrade with socket handoff; admin API and CLI.
-* Async DNS resolver, DNS/SRV/file discovery.
+* SRV/file discovery, Docker discovery by labels, Kubernetes
+  EndpointSlices.
+* Shared ticket keys and drain API for fleets.
 * ACME (HTTP-01, TLS-ALPN-01) in its own process.
 * OTLP tracing; `okena top`.
 * Landlock, privilege drop, systemd socket activation, container image.
@@ -125,5 +153,6 @@ Exit: packets/s per core comparable to Katran.
 
 * TLS 1.2, RSA certificates (signing), client-certificate auth at scale.
 * Compression (gzip/zstd/brotli) on the fly.
-* Kubernetes, Consul and Docker discovery.
+* Consul discovery, Kubernetes Gateway API.
+* Certificate compression, Encrypted Client Hello.
 * AVX-512 paths where they pay.

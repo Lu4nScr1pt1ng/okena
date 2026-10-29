@@ -45,9 +45,14 @@ supervisor (PID 1 in a container, or under systemd)
  ├─ worker 1 ── pinned to CPU 1
  ├─ ...
  ├─ logger   ── drains access-log rings, writes files/stdout/OTLP
- ├─ resolver ── DNS and service discovery, publishes backend sets
+ ├─ control  ── DNS, service discovery, JWKS and other remote keys, active
+ │              health checks; publishes immutable sets to the workers
+ ├─ admin    ── admin API and /metrics, reads the workers' stats pages
  └─ (optional) acme ── certificate issuance and renewal
 ```
+
+Nothing that serves a scrape, an admin call or a key fetch runs inside a
+worker, so none of it can delay a request.
 
 The design carries over what was measured in fasm2crud: shared-nothing
 worker processes, one ring each, supervisor holding the listeners so a
@@ -62,6 +67,23 @@ cache. With RSS/aRFS configured on the NIC, a flow never crosses cores.
 For QUIC the same program routes by connection ID (QUIC-LB format), so
 migrated clients land on the worker that owns their connection.
 
+**Hot workers.** Affinity has a failure mode: one busy RX queue, or a few
+huge clients, can overload one worker while the others idle. Each worker
+publishes a pressure level in a BPF array map (one word, written by its
+owner). When a worker is above its threshold, the steering program sends
+its new connections to the least loaded worker instead. Long-lived
+connections that pile up on one worker (h2, WebSocket) are rebalanced by
+asking clients to reconnect: h2 `GOAWAY` after a stream count, WebSocket
+never forcibly. When the NIC has fewer queues than workers, or no
+steering program can be loaded, the kernel's reuseport hash is used.
+
+**Cores, SMT and NUMA.** Worker count defaults to one per CPU the process
+may use (affinity mask and cgroup quota, see Containers). The `latency`
+profile uses one worker per physical core and leaves SMT siblings to
+interrupts; which is better is measured per machine in phase 0. On
+multi-socket machines each worker's pools are first-touched on its own
+node, and workers prefer backends' connections created on their node.
+
 ## No locks, anywhere on the request path
 
 This is the rule the rest of the design follows from.
@@ -69,11 +91,15 @@ This is the rule the rest of the design follows from.
 | Shared thing | How it is shared without a lock |
 |---|---|
 | Configuration | Immutable plan in a sealed memfd. A reload maps a new generation and each worker switches its pointer at the top of its loop (RCU by quiescent state: a worker between iterations holds no reference). Connections keep the generation they started on; a generation is unmapped when its count drops to zero. |
-| Backend sets (DNS, discovery, health) | Same mechanism: the resolver publishes a new immutable set, workers swap at loop top. Health state for the set is a per-backend word written by one owner only. |
+| Backend sets (DNS, discovery, health) | Same mechanism: the control process publishes a new immutable set, workers swap at loop top. Active health state is a per-backend word written only by the control process. |
+| Passive health (outlier detection) | Each worker counts errors per backend in its own page; the control process sums them every 100 ms and ejects. A worker that sees a connect failure stops using that backend at once, locally, without waiting for the sum. Ejection is not slowed down by having 16 workers each see 1/16 of the errors. |
+| Pool-wide limits (`max` connections, `concurrency`) | Leases, like rate limits: a pool's limit is split into per-worker shares that move to the workers that need them. A pool limit means the whole instance, never per worker. |
 | Statistics | Per-worker counters and histograms, plain stores, in a per-worker shared page. Readers (`/metrics`, `okena top`) sum across workers. Torn reads are avoided with a sequence counter per block (seqlock where the writer never waits). |
-| Access logs | One single-producer/single-consumer ring per worker to the logger. When it is full the line is dropped and counted; the worker never waits for the disk. |
-| Global rate limits | Token leases: a shared table of buckets (open addressing, 64-byte aligned, one bucket per cache line). A worker takes a batch of tokens with one `lock xadd` and spends them locally; the atomic is paid once per batch, not per request. Lease size adapts to the key's rate so hot keys stay accurate. |
-| Caches (HTTP cache, JWKS, TLS tickets) | Per worker. A response cached on one worker is not looked up on another; cross-worker hit rate is traded for zero contention. Request coalescing works per worker. |
+| Access logs | One single-producer/single-consumer ring per worker to the logger. The logger polls the rings on a timer, so the worker makes no syscall to wake it. When a ring is full the line is dropped and counted; the worker never waits for the disk. |
+| Rate limits | Every limit is per instance (all workers together); okena never applies a limit per worker, which would multiply it by the worker count. Token leases: a shared table of buckets (open addressing, 64-byte aligned, one bucket per cache line). A worker takes a batch of tokens with one `lock xadd` and spends them locally; the atomic is paid once per batch, not per request. Lease size adapts to the key's rate: hot keys take big batches, keys near their limit take one token at a time and stay exact. The table has a fixed size; when a flood of new keys fills it, the least recently used keys whose buckets are full (they carry no information) are evicted first, and new keys are admitted under a shared per-route bucket so a key flood cannot bypass the limit. |
+| JWKS, remote keys | Fetched by the control process and published like a backend set. |
+| Caches (HTTP cache, verified tokens) | Per worker. A response cached on one worker is not looked up on another; cross-worker hit rate is traded for zero contention. Request coalescing works per worker. |
+| TLS ticket keys | In the plan (read-only), rotated hourly by the supervisor; optionally loaded from a file shared by a fleet of instances. |
 | Supervisor ↔ worker control | Messages over a socketpair read through the worker's own ring. |
 
 The only atomics in the process are lease refills, plan reference counts
@@ -98,6 +124,13 @@ A spike has to be absorbed or refused in microseconds, without a cascade.
   item is reused first, and idle tails go back to the kernel
   (`MADV_DONTNEED`) when the load is gone, as in fasm2crud. Hot pools use
   2 MiB pages (THP `madvise`) to cut TLB misses.
+* **Reserved is not resident.** Address space reserved with
+  `MAP_NORESERVE` can still run the machine out of memory when it is
+  touched. Pool ceilings are derived from the memory actually available
+  (cgroup `memory.max`, else `MemAvailable`), the warm reserve is
+  prefaulted and locked (`mlock`), and the overload manager reads the
+  cgroup's `memory.current` and kernel socket memory every tick. okena
+  sheds load before the OOM killer would pick it.
 * **Admission before work.** The order of checks follows cost: XDP/eBPF
   drop list and per-source SYN rate (optional) → kernel SYN cookies →
   per-source connection limit at accept → TLS handshake budget → request
@@ -107,8 +140,7 @@ A spike has to be absorbed or refused in microseconds, without a cascade.
   connection slots, free buffers, loop lag (TSC time between iterations),
   handshake debt. Pressure levels switch on measures in steps, all
   reversible with hysteresis:
-  1. shorten keep-alive idle timeout, stop accepting h2 streams beyond a
-     lower limit;
+  1. shorten keep-alive idle timeout, lower the h2 stream limit;
   2. disable TLS full handshakes for new clients in favour of resumptions,
      send `Connection: close` after responses;
   3. reject new requests on low-priority routes with 503 + `Retry-After`;
@@ -140,6 +172,46 @@ A spike has to be absorbed or refused in microseconds, without a cascade.
   Resumed sessions skip the queue. A handshake flood degrades new-client
   latency, never existing connections.
 
+## Upstream connections
+
+The classic ways a proxy fails under a spike are on the backend side, not
+the client side.
+
+* **Ephemeral ports.** One source address can open ~28k (default range)
+  connections to one backend address before `connect` fails with
+  `EADDRNOTAVAIL`. okena binds upstream sockets with
+  `IP_BIND_ADDRESS_NO_PORT` and `IP_LOCAL_PORT_RANGE` (the kernel picks
+  the port at connect time, per 4-tuple), can spread connections over
+  several source addresses (`source 10.0.0.2 10.0.0.3`), and counts free
+  ports per backend as a pressure signal. Keep-alive and h2 multiplexing
+  keep the need low in the first place.
+* **TIME_WAIT.** okena lets the backend close idle connections when it
+  can (its idle timeout is set below the backend's), so TIME_WAIT lands
+  on the backend, not on okena's port space.
+* **The reuse race.** A backend may close an idle keep-alive connection
+  just as okena sends on it. A request that failed on a reused connection
+  before receiving any response byte is retried once on a new connection
+  if it is idempotent or had no body sent yet; this does not count
+  against the retry budget. Pools close idle connections a little before
+  the backend would (`idle`, default below the common 60 s / 75 s).
+* **Black holes.** A backend that vanishes without RST is found by
+  `TCP_USER_TIMEOUT` and keepalive on upstream sockets, connect
+  deadlines, and response deadlines, not by waiting for the kernel's
+  15-minute retransmission limit.
+* **Connection storms on backends.** New connections to a backend are
+  rate limited per worker (`connect rate=`) and recovering backends warm
+  up through slow start, so a reconnect wave after a restart does not
+  knock the backend over again.
+* **Protocol translation.** Each side speaks its own protocol: h1, h2 or
+  h3 downstream to h1, h2 or h2c upstream, in every combination. okena
+  converts framing (chunked ↔ DATA frames, trailers, `Content-Length`),
+  drops connection-specific headers, maps gRPC errors, and handles the
+  awkward cases explicitly: `HEAD` and 204/304 without bodies, 1xx and
+  `Expect: 100-continue`, responses delimited by close, upgrade to
+  WebSocket over h1, h2 (RFC 8441) and h3 (RFC 9220). Responses from
+  backends are parsed as strictly as requests; a malformed response
+  becomes a 502, never forwarded bytes.
+
 ## Latency
 
 A proxy's latency is what it adds on top of the backend. The budget we
@@ -153,8 +225,18 @@ design for, measured on loopback with pinned cores and open-loop load
 | `http` with TLS (kTLS), auth and rate limit | < 20 us | < 50 us | < 150 us |
 
 These hold up to the knee of the throughput curve; past it the overload
-manager sheds instead of letting queues (and the tail) grow. What buys
-them:
+manager sheds instead of letting queues (and the tail) grow.
+
+The numbers are a starting point, not a promise: a proxy hop costs at
+least two extra trips through the kernel's TCP stack, and on loopback
+that floor alone is several microseconds. Phase 0 measures the floor (a
+no-op forwarder) on the reference machine and the targets are set as
+"floor + X". Loopback also hides NIC, interrupt and RSS effects, so every
+benchmark runs on two topologies: network namespaces over veth on one
+host (repeatable, in CI) and two hosts over a real NIC (the numbers that
+count). The load generator, okena and the backend get disjoint cores.
+
+What buys them:
 
 * **No queues inside okena.** A request is parsed, routed and written to
   the upstream in the same loop iteration its bytes arrived in. There is
@@ -178,10 +260,25 @@ them:
   for everything; completions reaped in budgets so a burst on one
   connection cannot delay the others by more than one budget.
 * **Predictable CPU.** Workers pinned, no migration; interrupts for a
-  queue on the same core as its worker; `SCHED_FIFO` optional; hot code
-  and data laid out by cache line; no page faults on the hot path once
+  queue on the same core as its worker; hot code and data laid out by
+  cache line; no real-time scheduling (a `SCHED_FIFO` worker that busy
+  polls starves the softirq and kernel threads on its own core and causes
+  the stalls it was meant to avoid); no page faults on the hot path once
   warm (pools prefaulted up to their warm reserve); no syscalls for time
   (TSC, vDSO).
+* **Expensive checks run once.** A signature check on a JWT costs tens of
+  microseconds (ES256 verification, RSA-2048 a bit less), which alone
+  would break the budget above. Verified tokens are cached per worker by
+  a hash of the token until their `exp` (bounded size, CLOCK eviction), so
+  a client pays the verification once per token, not once per request.
+  Forward-auth answers are cached the same way when the auth service
+  allows it (`Cache-Control`). API keys are compared by a keyed hash
+  lookup, not a scan.
+* **First visit is fast too.** TLS 1.3 is one round trip; resumption skips
+  the certificate; ECDSA chains are small enough for the server's first
+  flight to fit the initial congestion window (`okena check` warns when a
+  chain does not). HTTP/3 removes the TCP round trip, `Alt-Svc` and HTTPS
+  DNS records advertise it.
 * **Tail-cutting features:** request hedging (send a second copy after the
   pool's p95 for idempotent routes, cancel the loser), `peak-ewma`
   balancing that steers away from a backend before it times out, outlier
@@ -204,14 +301,29 @@ adaptive busy polling timed by the TSC), plus what a proxy needs:
   holds many idle keep-alive connections, so unlike fasm2crud a connection
   does not own an input buffer while idle: it costs its ~256-byte header
   and a buffer is attached only when bytes arrive. One million idle
-  connections is ~256 MB, not 16 GB.
+  connections cost okena ~256 MB instead of 16 GB; the kernel adds a few
+  KiB per socket on top, which `limits connections` accounts for.
+  Backpressure is kept as in fasm2crud: a connection has at most one
+  receive armed (single-shot with buffer selection, or multishot capped to
+  one buffer), and none while its peer's output is full, so TCP flow
+  control still slows down whoever sends too fast.
 * **Zero-copy forwarding.** Bodies and L4 streams are not copied through
-  user space when they do not need to be inspected:
-  * `sockmap`/`sk_msg` redirect for `tcp` mode (bytes go socket to socket
-    inside the kernel);
-  * `splice` through a per-worker pipe pool otherwise;
-  * `SEND_ZC` for large writes from our buffers (threshold measured, about
-    16 KiB; below it a copy is cheaper than the notification);
+  user space when they do not need to be inspected. Three ways exist, and
+  phase 1 measures them against each other before one becomes the
+  default per case:
+  * `sockmap` with an `sk_skb` verdict program (bytes go socket to socket
+    inside the kernel). Fastest on paper, but okena must still watch
+    for half-close and errors, and kernel versions differ in how well it
+    handles backpressure;
+  * `splice` through pipes. A pipe is held by a connection while its
+    destination is full, so pipes come from a bounded pool, sized down
+    with `F_SETPIPE_SZ`, with a copy path when the pool is empty; io_uring
+    may run a splice on its worker threads instead of inline, which adds
+    latency, so this is measured, not assumed;
+  * receive into a provided buffer and send it, with `SEND_ZC` for large
+    writes (threshold measured, around 16 KiB; below it a copy is cheaper
+    than the completion notification). One copy, simplest, often the
+    fastest for small messages.
   * zero-copy receive (`zcrx`) with NIC header/data split, where the NIC
     supports it.
 * **kTLS.** The handshake runs in okena; the session keys are then handed
@@ -228,6 +340,17 @@ adaptive busy polling timed by the TSC), plus what a proxy needs:
 
 Target kernel: 6.12 LTS or newer for the full feature set; 6.1 runs with
 fallbacks (no incremental buffers, no bundles, no zcrx).
+
+**epoll engine.** io_uring is blocked by the default seccomp profiles of
+Docker (since 25.0), containerd and Kubernetes `RuntimeDefault`, by
+gVisor, and by some hardened kernels (`kernel.io_uring_disabled`). okena
+ships with a second I/O engine on epoll (edge triggered, `EPOLLEXCLUSIVE`
+not needed with per-worker sockets) with `recvmmsg`/`sendmmsg` for UDP,
+`splice` and kTLS still available. The engine is chosen at startup (or
+forced with `io_engine`) and logged; everything above the engine is the
+same code. okena also ships the seccomp profile that allows exactly what
+the io_uring engine needs, so the fast engine is one flag away
+(see Containers).
 
 ## Memory layout
 
@@ -290,7 +413,10 @@ ECN. 0-RTT off by default and, when on, only for routes marked idempotent.
 
 ## TLS
 
-* TLS 1.3 first; TLS 1.2 (ECDHE + AEAD only) for clients that need it.
+* TLS 1.3 first; TLS 1.2 (ECDHE + AEAD only) for clients that need it,
+  and early as a client, because many internal backends still speak only
+  TLS 1.2 with RSA certificates.
+* Certificate compression (RFC 8879) and Encrypted Client Hello later.
 * Key exchange: **X25519MLKEM768** (post-quantum hybrid, default),
   X25519, P-256.
 * AEAD: AES-128/256-GCM (AES-NI, VAES + VPCLMULQDQ), ChaCha20-Poly1305
@@ -328,7 +454,7 @@ ECN. 0-RTT off by default and, when on, only for routes marked idempotent.
   interval by the whole process, not once per worker; results are
   published like any backend set.
 * Discovery: static, DNS (A/AAAA/SRV with TTL; okena has its own async
-  resolver), files watched through inotify, the admin API; Docker, Consul
+  resolver), files watched through inotify, the admin API, Docker labels; Consul
   and Kubernetes endpoints later.
 
 ## Gateway features
@@ -376,10 +502,108 @@ proxies lose their latency.
   (which listener, route, filters, pool and backend a request would get),
   `okena bench` (open-loop load generator with coordinated-omission
   correction, built on the same engine).
-* Containers from `scratch`, systemd unit with socket activation.
+* Containers from `scratch` (see Containers), systemd unit with socket activation.
+
+## Containers
+
+okena must be as good inside Docker or Kubernetes as on bare metal, and
+trivial to run there. Containers change several facts the design depends
+on, so each one is handled explicitly:
+
+| Container fact | What okena does |
+|---|---|
+| `--cpus=2` on a 16-core host still shows 16 CPUs in the affinity mask; 16 workers would hit the CFS quota and stall for whole periods (the worst tail latency there is) | `workers auto` = min(affinity mask, ceil(cgroup `cpu.max` quota)); a warning when a quota is set, recommending `--cpuset-cpus` for pinned, unthrottled cores; throttling (`cpu.stat nr_throttled`) is a metric |
+| `--memory` limit | pool ceilings come from `memory.max`; the overload manager watches `memory.current` |
+| io_uring blocked by the default seccomp profile | epoll engine by default in that case; `okena.seccomp.json` in the image enables io_uring with an allowlist; the startup line says which engine runs and why |
+| No `CAP_BPF`/`CAP_NET_ADMIN` | no XDP, sockmap or steering program; reuseport hash and splice instead; each fallback logged once |
+| Published ports go through `docker-proxy` (fasm2crud measured 295k req/s through it against 755k direct) | docs and the compose example use host networking or `userland-proxy: false` for performance, and `okena check --host` detects docker-proxy in the path |
+| Service names (`api:8080`) resolve through Docker's DNS (127.0.0.11) or cluster DNS | the resolver reads `/etc/resolv.conf` and `search`/`ndots`, honours TTLs, and re-resolves; names are first class in `to` and `server` |
+| `docker stop` sends SIGTERM and kills after 10 s | drain: readiness turns false first (`/ready` fails, load balancers and Kubernetes stop sending), wait `drain_delay`, then close idle connections and finish in-flight ones; defaults fit inside 10 s and a warning says so if `drain_timeout` does not |
+| Config edited on a bind mount or a ConfigMap (atomic symlink swap) | `reload on-change` watches the directory, not the file, so editor renames and `..data` swaps are seen; a broken edit is rejected and logged |
+| No shell, no curl in a `scratch` image | `okena health` subcommand for `HEALTHCHECK`; `okena check`, `okena route` and `okena top` work with `docker exec` |
+| Many network sysctls are per network namespace | the compose example sets `net.core.somaxconn`, `net.ipv4.ip_local_port_range`, `net.ipv4.tcp_tw_reuse`; `okena check --host` prints what is missing |
+
+Ways to configure, from quickest to fullest, all the same language:
+
+```
+docker run --network host okena tcp :5432 to db1:5432 db2:5432
+docker run -e OKENA_CONFIG='https example.com { to app:3000 }' okena
+docker run -v ./okena.conf:/etc/okena/okena.conf:ro okena
+```
+
+`OKENA_*` environment variables are not a second config system: the
+command line and `OKENA_CONFIG` are config text, and `${env:NAME}`
+inside a file reads any variable, so secrets come from the orchestrator.
+
+The image is `FROM scratch`: the static binary, the seccomp profile, a
+default config that serves a status page, runs as a non-root user with
+a read-only root filesystem, and binds ports below 1024 through
+`ip_unprivileged_port_start` (Docker sets it to 0) or
+`CAP_NET_BIND_SERVICE`. Logs go to stdout as JSON by default.
+
+Docker discovery (`discover docker label=okena.pool=api`, reading the
+Docker API on its Unix socket) and Kubernetes (EndpointSlices, later
+Gateway API) come in phase 6.
+
+## Host and kernel limits
+
+Many failures under a spike are not okena's code but host limits it
+inherits. `okena check --host` inspects them and says what to change:
+
+* `net.core.somaxconn`, `net.ipv4.tcp_max_syn_backlog`, SYN cookies on;
+* `nf_conntrack`: a full conntrack table drops new connections for the
+  whole host; proxy ports should be exempt (`NOTRACK`) or the table sized;
+* ephemeral port range and `tcp_tw_reuse`;
+* `RLIMIT_NOFILE` (registered descriptor tables count against it too);
+* socket memory (`tcp_mem`, `tcp_rmem`, `tcp_wmem`) against the expected
+  connection count;
+* NIC queues, RSS, IRQ affinity against the worker layout, THP mode,
+  invariant TSC, clock source;
+* `initcwnd` on the route towards clients.
+
+## Fleet and high availability
+
+okena is one instance per host; a fleet is several instances behind
+anycast/ECMP, a cloud L4 balancer, DNS, or VRRP (keepalived). What a fleet
+needs from okena:
+
+* `xdp` mode uses Maglev with the same table on every instance, so a flow
+  that moves between instances (ECMP change) usually keeps its backend;
+* TLS ticket keys can come from a shared file, so resumption works across
+  instances and survives restarts;
+* rate limits are per instance; a fleet-wide limit is configured as the
+  per-instance share (`limit ... instances=4`), and an exact distributed
+  limiter is out of scope until a shared store is worth its latency;
+* health and drain state are exposed through the admin API so a fleet
+  controller can drain an instance before maintenance.
+
+## Non-goals
+
+* A user-space TCP stack or DPDK: the kernel stack with io_uring, XDP and
+  kTLS keeps the operating system's tools (tcpdump, ss, sysctls) and gets
+  within reach of bypass stacks for proxy workloads.
+* Scripting (Lua, WASM): extensions are built-in filters plus forward-auth.
+* A WAF rule engine; IP lists, limits and strict parsing cover the
+  protocol-level abuse, application rules belong to a dedicated WAF.
+* Sharing caches between workers.
+
+## Risks
+
+* **Scope.** TLS, HTTP/2, QUIC and all crypto in assembly is years of
+  work. The roadmap delivers a production L4 balancer first, then HTTP,
+  then TLS, so value arrives early and later phases build on code that
+  already carries traffic.
+* **Crypto correctness.** Mitigated by known-answer and Wycheproof
+  vectors, differential testing against reference libraries,
+  constant-time checks, fuzzing, and by supporting few algorithms.
+* **Kernel features move.** Each fast path has a fallback and a startup
+  probe; CI runs on the oldest supported kernel as well as a recent one.
 
 ## Security
 
+* eBPF programs and XDP need `CAP_BPF` and `CAP_NET_ADMIN`; the supervisor
+  loads them at startup and drops both before forking workers. Without
+  them okena runs on the fallbacks.
 * Seccomp filter per process type, io_uring opcode restrictions
   (`IORING_REGISTER_RESTRICTIONS`), Landlock for the filesystem, privileges
   dropped after binding (or `CAP_NET_BIND_SERVICE` only), no writable and

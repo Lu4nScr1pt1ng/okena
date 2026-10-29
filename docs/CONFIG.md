@@ -30,6 +30,13 @@ directive arg arg key=value {
 * `${env:NAME}` and `${file:/path}` substitute at load time (secrets from
   files, never inline).
 * `include "conf.d/*.conf"` splices files in place, in sorted order.
+* Options go on the directive's line as `key=value`. When they do not fit,
+  the same keys can be written as a block, one per line:
+  `connect timeout=1s warm=4` and `connect { timeout 1s; warm 4 }` mean
+  the same; `okena fmt` picks the line form when it fits in 80 columns.
+* On the command line (`okena tcp :5432 to db1:5432`) and in
+  `OKENA_CONFIG`, the text is the same language; a listener with a single
+  directive may drop its braces.
 * `policy NAME { ... }` defines a reusable set of route directives; `use
   NAME` applies it. Directives written in the route override the policy.
 
@@ -51,6 +58,12 @@ https example.com {
 }
 ```
 
+Inside Docker, with the backend as a compose service:
+
+```
+docker run --network host okena https example.com to app:3000
+```
+
 `https NAME` implies `:443`, a certificate for `NAME` from ACME, an `:80`
 listener that redirects to HTTPS and serves ACME challenges, HTTP/2 and
 HTTP/3. Each implied thing can be overridden or turned off.
@@ -59,8 +72,11 @@ HTTP/3. Each implied thing can be overridden or turned off.
 
 ```
 okena {
-    workers auto              # one per CPU in the affinity mask
+    workers auto              # min(affinity mask, cgroup CPU quota)
     profile balanced          # balanced | latency | throughput | memory-lean
+    io_engine auto            # auto | io_uring | epoll
+    reload on-change          # watch the config directory
+    drain delay=2s timeout=7s # fits inside docker stop's 10 s
     admin unix:/run/okena/admin.sock
     metrics :9464
     log access stdout format=json
@@ -94,7 +110,7 @@ limits {
     body_size 10MiB
     h2_streams 128
 }
-timeouts {
+timeout {
     handshake 5s
     header 10s
     idle 60s
@@ -128,6 +144,9 @@ xdp 203.0.113.10:80 203.0.113.10:443 {
 ## HTTP routes
 
 A route matches on host, path, method, headers and query, in that order.
+Inside a route, `match` narrows further; its conditions use the same
+names as limit keys (`method`, `header:NAME`, `query:NAME`, `cookie:NAME`,
+`client.ip`), joined by AND.
 The most specific match wins (exact host over wildcard, static path over
 parameter over `*`); ties are an error at load time, not a surprise in
 production.
@@ -140,7 +159,9 @@ https api.example.com www.example.com {
     }
 
     route /v1/* {
-        header x-canary ~ "^yes$"   to pool api-canary
+        match header:x-canary=yes {
+            to pool api-canary
+        }
         to pool api
     }
 
@@ -165,14 +186,21 @@ header set   x-request-start "${time.us}"
 header drop  x-internal-*
 response header set strict-transport-security "max-age=63072000"
 priority critical                # critical | normal | bulk (shedding order)
-timeout 5s                       # total, including retries
+timeout total=5s try=2s          # whole request incl. retries / one attempt
 retry 2 on=connect,reset,503 idempotent-only
 hedge after=p95 max=1            # tail cutting for idempotent requests
 cache 30s stale-while-revalidate=5m vary=accept-encoding
 cors origins=https://app.example.com methods=GET,POST credentials
+
+match method=POST header:content-type=application/json {
+    limit 20/s key=client.ip       # a block applies only when it matches
+}
 limit 100/s burst=200 key=client.ip
-limit 10000/m key=header:x-api-key scope=global
+limit 10000/m key=header:x-api-key instances=4   # share of a fleet-wide limit
 ```
+
+Every limit, rate or count is for the whole instance (all workers
+together), never per worker.
 
 ## Authentication
 
@@ -215,7 +243,8 @@ pool api {
     protocol h2                    # http1 (default) | h2 | h2c | grpc
     tls sni=api.internal ca=/etc/okena/internal-ca.pem
 
-    connect timeout=1s warm=4 max=512 idle=90s
+    connect timeout=1s warm=4 max=512 idle=55s rate=200/s
+    source 10.0.0.2 10.0.0.3       # more source addresses, more ports
     concurrency adaptive           # or: concurrency 256
     retry_budget 20% min=10/s
 
@@ -229,8 +258,10 @@ pool api {
 
 ```
 pool users {
+    server users:8080                        # a name: resolved, re-resolved by TTL
     discover file /etc/okena/users.list      # one address per line, watched
     discover srv _users._tcp.service.consul
+    discover docker label=okena.pool=users port=8080
 }
 ```
 
@@ -252,8 +283,40 @@ okena explain                      # effective config, defaults included
 okena route 'GET https://api.example.com/v1/users/42 x-canary:yes'
 okena top                          # live per-route/backend view
 okena bench https://localhost/v1/ --rate 200k --duration 60s
+okena health                       # exit 0 when ready (Docker HEALTHCHECK)
+okena check --host                 # kernel features, limits, sysctls, container
 ```
 
 `okena route` answers "where does this request go": listener, matched
 route and why, filters in order, pool, chosen backend and the limits that
 apply.
+
+## Docker Compose
+
+```yaml
+services:
+  okena:
+    image: okena
+    network_mode: host             # no docker-proxy in the path
+    cpuset: "0-3"                  # pinned cores, no CFS throttling
+    security_opt:
+      - seccomp=okena.seccomp.json # enables the io_uring engine
+    volumes:
+      - ./okena.conf:/etc/okena/okena.conf:ro
+    environment:
+      JWT_AUDIENCE: api
+    stop_grace_period: 10s
+```
+
+With host networking the sysctls are the host's (`okena check --host`
+lists them). Without it, publish ports with the daemon's `userland-proxy`
+disabled and set the per-namespace ones on the service:
+
+```yaml
+    sysctls:
+      net.core.somaxconn: 65535
+      net.ipv4.ip_local_port_range: "1024 65535"
+      net.ipv4.tcp_tw_reuse: 1
+```
+ Without the seccomp profile okena still runs,
+on the epoll engine, and says so at startup.
