@@ -107,6 +107,8 @@ try:
     check("requests no longer wait for the black hole", max(times) < 0.5, f"max {max(times) * 1000:.0f} ms")
 
     errors, seen = 0, set()
+    error_kinds = []
+    T0 = time.time()
     stop = threading.Event()
 
     def hammer():
@@ -119,8 +121,10 @@ try:
                     seen.add(r)
                 else:
                     errors += 1
-            except OSError:
+                    error_kinds.append(f"empty answer at {time.time() - T0:.2f}s")
+            except OSError as e:
                 errors += 1
+                error_kinds.append(f"{e!r} at {time.time() - T0:.2f}s")
             time.sleep(0.002)
     th = threading.Thread(target=hammer)
     th.start()
@@ -142,7 +146,7 @@ try:
         print("errors so far", errors)
     stop.set()
     th.join()
-    check("no client error through all of it", errors == 0, f"{errors} errors")
+    check("no client error through all of it", errors == 0, f"{errors} errors {error_kinds[:3]}")
 
     hp = int(subprocess.check_output(["pgrep", "-P", str(p.pid), "-x", "okena-health"]))
     os.kill(hp, signal.SIGKILL)
@@ -167,7 +171,7 @@ finally:
         p.wait(10)
     except subprocess.TimeoutExpired:
         p.kill()
-    if failures or "-v" in sys.argv:
+    if failures or sys.exc_info()[0] or "-v" in sys.argv:
         print(text())
 print(f"health: {'all passed' if not failures else f'{failures} failed'}")
 sys.exit(1 if failures else 0)

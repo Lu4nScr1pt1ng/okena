@@ -108,6 +108,14 @@ try:
     for _ in range(10):
         c = socket.create_connection(("127.0.0.1", LST), timeout=3)
         fresh_ok += alive(c)
+        # wait for okena's EOF (the session has ended) before the next one,
+        # so a slot freed by this client is free whatever the machine's load
+        try:
+            c.shutdown(socket.SHUT_WR)
+            while c.recv(4096):
+                pass
+        except OSError:
+            pass
         c.close()
     stop.set()
     th.join()

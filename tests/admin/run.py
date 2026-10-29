@@ -110,12 +110,18 @@ try:
     check("okena health: ready", h.returncode == 0 and h.stdout.strip() == "ready")
 
     # traffic: 10 connections, 1000 bytes each way
+    # each one half-closes and waits for okena's EOF, which comes when the
+    # session has ended: at most one earlier session is still finishing
+    # when the next starts, inside per_source 2 whatever the machine's load
     for _ in range(10):
         c = socket.create_connection(("127.0.0.1", LST), timeout=3)
         c.sendall(b"x" * 1000)
         got = b""
         while len(got) < 1000:
             got += c.recv(4096)
+        c.shutdown(socket.SHUT_WR)
+        while c.recv(4096):
+            pass
         c.close()
     # a session ends when both sides have closed (through the backend), and
     # counts for per_source until then: let the ten finish first

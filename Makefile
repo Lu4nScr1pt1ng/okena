@@ -4,7 +4,7 @@ SOURCES   := $(shell find src -name '*.asm' -o -name '*.inc')
 BIN       := build/okena
 HTTPH     := build/httpharness
 
-.PHONY: all toolchain test fuzz bench image docker-test clean
+.PHONY: all toolchain test test-serial fuzz bench image docker-test clean
 
 all: $(BIN)
 
@@ -25,7 +25,12 @@ $(HTTPH): tests/http/harness.asm $(SOURCES) | $(FASMG)
 	@chmod +x $@.tmp
 	@mv -f $@.tmp $@
 
+# every suite at once, each in its own network namespace (tests/run_all.py)
 test: $(BIN) $(HTTPH)
+	python3 -I tests/run_all.py
+
+# one after the other, all output shown (slower; for reading a suite's log)
+test-serial: $(BIN) $(HTTPH)
 	python3 -I tests/http/run.py 5000
 	python3 -I tests/config/run.py
 	python3 -I tests/config/fuzz.py 2000

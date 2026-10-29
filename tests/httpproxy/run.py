@@ -170,7 +170,15 @@ def failing_backend(port):
 
 class Client:
     def __init__(self, port=None):
-        self.s = socket.create_connection(("127.0.0.1", port or LST), timeout=5)
+        try:
+            self.s = socket.create_connection(("127.0.0.1", port or LST), timeout=5)
+        except OSError:
+            # what the kernel holds for that port when a connect fails
+            port = port or LST
+            print(subprocess.run(["ss", "-tanoi", f"( sport = :{port} or dport = :{port} )"],
+                                 capture_output=True, text=True).stdout)
+            print(subprocess.run(["ss", "-ltn", f"sport = :{port}"], capture_output=True, text=True).stdout)
+            raise
         self.f = self.s.makefile("rb")
 
     def send(self, raw):
@@ -205,10 +213,26 @@ def echo_of(r):
 failures = 0
 
 
+check_lock = threading.Lock()
+
+
 def check(name, ok, detail=""):
     global failures
-    print(("ok   " if ok else "FAIL ") + name + (f": {detail}" if detail else ""))
-    failures += not ok
+    with check_lock:
+        print(("ok   " if ok else "FAIL ") + name + (f": {detail}" if detail else ""))
+        failures += not ok
+
+
+def background(fn):
+    """Run a group of checks in a thread; an exception in it is a failure."""
+    def run():
+        try:
+            fn()
+        except Exception as e:
+            check(f"{fn.__name__} raised", False, repr(e))
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    return t
 
 
 backend()
@@ -221,6 +245,7 @@ okena {{
     workers 2
     io_engine {ENGINE}
     metrics 127.0.0.1:{MET}
+    drain delay=0s timeout=1s
 }}
 http 127.0.0.1:{LST} {{
     access_log {tmp}/access.log
@@ -465,59 +490,75 @@ try:
     r = c.response()
     check("101 nobody asked for -> 502", r is not None and r[0] == 502, str(r and r[0]))
 
-    # phase timeouts (the QUICK listener: header 1s, response 1s)
-    c = Client(QUICK)
-    t0 = time.time()
-    c.send(b"GET /api/x HTTP/1.1\r\nHost: t\r\n")        # and never the end of it
-    r = c.response()
-    check("slow request head -> 408 and close", r is not None and r[0] == 408 and c.closed()
-          and time.time() - t0 < 4, str(r and r[0]))
-    c = Client(QUICK)
-    t0 = time.time()
-    c.s.settimeout(4)
-    try:
-        silent = c.s.recv(1) == b""
-    except OSError:
-        silent = False
-    check("connected and silent: closed without a word", silent and time.time() - t0 < 3.5, f"{time.time() - t0:.1f}s")
-    c = Client(QUICK)
-    c.send(b"GET /api/x HTTP/1.1\r\nHo")
-    time.sleep(0.5)
-    c.send(b"st: t\r\n\r\n")
-    r = c.response()
-    check("a head that arrives in pieces in time is served", r is not None and r[0] == 200)
-    time.sleep(2.5)                     # idle keep-alive: not the header clock
-    c.send(req(b"GET", b"/api/again"))
-    r = c.response()
-    check("an idle keep-alive connection is not cut by the header clock",
-          r is not None and r[0] == 200, str(r and r[0]))
-    t0 = time.time()
-    c.send(req(b"GET", b"/slow"))
-    r = c.response()
-    check("slow backend -> 504 and close", r is not None and r[0] == 504 and c.closed()
-          and time.time() - t0 < 3, str(r and r[0]))
-    c = Client(QUICK)
-    t0 = time.time()
-    c.send(b"POST /api/up HTTP/1.1\r\nHost: t\r\nContent-Length: 10\r\n\r\nabc")   # and then nothing
-    r = c.response()
-    check("a request body that stops coming -> 408", r is not None and r[0] == 408 and time.time() - t0 < 4,
-          f"{r and r[0]} {time.time() - t0:.1f}s")
-    c = Client(QUICK)
-    c.send(b"POST /api/up HTTP/1.1\r\nHost: t\r\nContent-Length: 6\r\n\r\n")
-    for ch in b"slowly":
+    # phase timeouts (the QUICK listener: header 1s, response 1s, body_idle
+    # 1s). Each waits on its own clock, on its own connection: they run in
+    # threads, alongside the rest of the suite, and are joined before the
+    # metrics that count their answers. Same assertions, same bounds.
+    def slow_head():
+        c = Client(QUICK)
+        t0 = time.time()
+        c.send(b"GET /api/x HTTP/1.1\r\nHost: t\r\n")        # and never the end of it
+        r = c.response()
+        check("slow request head -> 408 and close", r is not None and r[0] == 408 and c.closed()
+              and time.time() - t0 < 4, str(r and r[0]))
+
+    def silent():
+        c = Client(QUICK)
+        t0 = time.time()
+        c.s.settimeout(4)
+        try:
+            quiet = c.s.recv(1) == b""
+        except OSError:
+            quiet = False
+        check("connected and silent: closed without a word", quiet and time.time() - t0 < 3.5, f"{time.time() - t0:.1f}s")
+
+    def keepalive_then_504():
+        c = Client(QUICK)
+        c.send(b"GET /api/x HTTP/1.1\r\nHo")
         time.sleep(0.5)
-        c.send(bytes([ch]))
-    r = c.response()
-    check("a slow body that keeps coming is fine (each byte restarts the clock)",
-          r is not None and r[0] == 200 and echo_of(r)["body_len"] == 6, str(r and r[0]))
-    c = Client(QUICK)
-    c.send(req(b"GET", b"/api/after-504"))
-    r = c.response()
-    check("then the listener keeps serving", r is not None and r[0] == 200)
-    c = Client()
-    c.send(req(b"GET", b"/slow"))
-    r = c.response()
-    check("the default response clock (30 s) lets a 3 s backend answer", r is not None and r[0] == 200)
+        c.send(b"st: t\r\n\r\n")
+        r = c.response()
+        check("a head that arrives in pieces in time is served", r is not None and r[0] == 200)
+        time.sleep(2.5)                     # idle keep-alive: not the header clock
+        c.send(req(b"GET", b"/api/again"))
+        r = c.response()
+        check("an idle keep-alive connection is not cut by the header clock",
+              r is not None and r[0] == 200, str(r and r[0]))
+        t0 = time.time()
+        c.send(req(b"GET", b"/slow"))
+        r = c.response()
+        check("slow backend -> 504 and close", r is not None and r[0] == 504 and c.closed()
+              and time.time() - t0 < 3, str(r and r[0]))
+        c = Client(QUICK)
+        c.send(req(b"GET", b"/api/after-504"))
+        r = c.response()
+        check("then the listener keeps serving", r is not None and r[0] == 200)
+
+    def body_stops():
+        c = Client(QUICK)
+        t0 = time.time()
+        c.send(b"POST /api/up HTTP/1.1\r\nHost: t\r\nContent-Length: 10\r\n\r\nabc")   # and then nothing
+        r = c.response()
+        check("a request body that stops coming -> 408", r is not None and r[0] == 408 and time.time() - t0 < 4,
+              f"{r and r[0]} {time.time() - t0:.1f}s")
+
+    def body_slow():
+        c = Client(QUICK)
+        c.send(b"POST /api/up HTTP/1.1\r\nHost: t\r\nContent-Length: 6\r\n\r\n")
+        for ch in b"slowly":
+            time.sleep(0.5)
+            c.send(bytes([ch]))
+        r = c.response()
+        check("a slow body that keeps coming is fine (each byte restarts the clock)",
+              r is not None and r[0] == 200 and echo_of(r)["body_len"] == 6, str(r and r[0]))
+
+    def default_clock():
+        c = Client()
+        c.send(req(b"GET", b"/slow"))
+        r = c.response()
+        check("the default response clock (30 s) lets a 3 s backend answer", r is not None and r[0] == 200)
+
+    timed = [background(f) for f in (slow_head, silent, keepalive_then_504, body_stops, body_slow, default_clock)]
 
     # trusted_proxies (the peer, 127.0.0.1, is trusted on TRUST)
     def via_trust(target, extra):
@@ -593,19 +634,24 @@ try:
     r = c.response()
     check("a request with a body is never sent twice", r is not None and r[0] == 503
           and BAD_HITS[BAD] == 3, f"{r and r[0]} hits={BAD_HITS[BAD]}")
+    # every worker ejects on its own (per-worker outlier detection), after
+    # 5 failing answers in a row from what it sends there: GETs until both
+    # have, each of them still answered 200 (retried elsewhere)
     codes = []
-    for i in range(40):
-        c = Client()
-        c.send(req(b"GET", b"/retry/%d" % i))
-        r = c.response()
-        codes.append(r and r[0])
-        c.s.close()
-        time.sleep(0.03)
+    ejected = lambda: all(f"worker {w}: backend 127.0.0.1:{BAD2} ejected for 10 s after 5 failing answers"
+                          in (log.seek(0) or log.read()) for w in (0, 1))
+    t0 = time.time()
+    while not ejected() and time.time() - t0 < 10:
+        for i in range(10):
+            c = Client()
+            c.send(req(b"GET", b"/retry/%d" % i))
+            r = c.response()
+            codes.append(r and r[0])
+            c.s.close()
     check("GETs to a pool with a failing server all succeed (retried elsewhere)",
-          codes == [200] * 40 and BAD_HITS[BAD2] > 0, f"{codes} hits={BAD_HITS[BAD2]}")
-    log.seek(0)
-    check("the failing server is ejected after 5 failing answers",
-          f"127.0.0.1:{BAD2} ejected for 10 s after 5 failing answers" in log.read())
+          codes and all(x == 200 for x in codes) and BAD_HITS[BAD2] > 0,
+          f"{len(codes)} requests, {sorted(set(codes), key=str)} hits={BAD_HITS[BAD2]}")
+    check("the failing server is ejected after 5 failing answers (by every worker)", ejected())
     before = BAD_HITS[BAD2]
     codes = []
     for i in range(10):
@@ -616,6 +662,9 @@ try:
         c.s.close()
     check("while ejected it gets no traffic (POSTs, not retried, all succeed)",
           codes == [200] * 10 and BAD_HITS[BAD2] == before, f"{codes} {before}->{BAD_HITS[BAD2]}")
+
+    for t in timed:
+        t.join()
 
     # metrics: what the QUICK listener answered above, by class and source
     time.sleep(1.2)                     # workers publish once a second
