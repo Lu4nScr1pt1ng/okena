@@ -4,6 +4,7 @@ SOURCES   := $(shell find src -name '*.asm' -o -name '*.inc')
 BIN       := build/okena
 HTTPH     := build/httpharness
 KAT       := build/kat
+TLSH      := build/tlsserver
 
 .PHONY: all toolchain test test-serial fuzz bench image docker-test clean
 
@@ -33,16 +34,23 @@ $(KAT): tests/kat/kat.asm $(SOURCES) | $(FASMG)
 	@chmod +x $@.tmp
 	@mv -f $@.tmp $@
 
-test: $(BIN) $(HTTPH) $(KAT)
+$(TLSH): tests/tls/server.asm $(SOURCES) | $(FASMG)
+	@mkdir -p build
+	INCLUDE="$(TOOLCHAIN)/include" $(FASMG) -e100 -i "Include 'fasm2.inc'" tests/tls/server.asm $@.tmp
+	@chmod +x $@.tmp
+	@mv -f $@.tmp $@
+
+test: $(BIN) $(HTTPH) $(KAT) $(TLSH)
 	python3 -I tests/run_all.py
 
 # one after the other, all output shown (slower; for reading a suite's log)
-test-serial: $(BIN) $(HTTPH) $(KAT)
+test-serial: $(BIN) $(HTTPH) $(KAT) $(TLSH)
 	python3 -I tests/kat/run.py
 	python3 -I tests/http/run.py 5000
 	python3 -I tests/config/run.py
 	python3 -I tests/config/fuzz.py 2000
 	python3 -I tests/tls/run.py
+	python3 -I tests/tls/handshake.py
 	python3 -I tests/l4/run.py io_uring
 	python3 -I tests/l4/run.py epoll
 	python3 -I tests/dns/run.py

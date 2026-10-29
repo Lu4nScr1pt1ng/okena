@@ -105,8 +105,14 @@ signatures byte for byte against the cryptography package).
 P-256 key (SEC 1 or unencrypted PKCS #8), and `okena check` refuses RSA,
 other curves, encrypted keys, broken PEM and a key that does not match the
 certificate (`tests/tls`); until the handshake exists okena refuses to
-serve such a listener rather than serve it in plaintext. Next: the TLS 1.3
-handshake and kTLS.
+serve such a listener rather than serve it in plaintext. The TLS 1.3
+server handshake (`src/tls/handshake.inc`: x25519, AES-128-GCM, ECDSA
+P-256, ALPN, middlebox compatibility) and user-space records pass
+`tests/tls/handshake.py` through an echo harness, against OpenSSL,
+`s_client` and curl: records split and dribbled, a forged Finished, and the
+refusals with their alerts. Next: the handshake in the listeners (both
+engines), the kTLS handoff with the user-space records as the fallback,
+then HelloRetryRequest and session tickets.
 
 * SHA-2, HMAC, HKDF (from fasm2crud), AES-GCM (AES-NI, VAES/VPCLMULQDQ),
   ChaCha20-Poly1305, X25519, ML-KEM-768, P-256 ECDH/ECDSA, Ed25519.

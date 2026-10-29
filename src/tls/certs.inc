@@ -10,14 +10,6 @@
 ; (RFC 8446 4.4.2: uint24 length, the DER, empty extensions per entry),
 ; ready to send.
 
-MAX_TLS		:= 64				; tls blocks in a plan
-TLS_STORE	:= 1 shl 20			; their chains
-TL_CHAIN	:= 0				; d: offset in g_tls_store
-TL_CLEN		:= 4				; d: certificate_list length
-TL_KEY		:= 8				; 32 bytes: d, big endian
-TL_PUB		:= 40				; 65 bytes: 04 | X | Y
-TL_SIZE		:= 112
-TLS_DER_MAX	:= 1 shl 16			; one certificate
 
 bss
 	align 8
@@ -577,6 +569,8 @@ compile_tls:
 	mov	eax,[g_tls_used]
 	sub	eax,[r13+TL_CHAIN]
 	mov	[r13+TL_CLEN],eax
+	cmp	eax,TLS_CHAIN_MAX
+	ja	.chain_big
 	lea	rsi,[g_tls_cpub]
 	lea	rdi,[r13+TL_PUB]
 	mov	ecx,65
@@ -652,6 +646,8 @@ end macro
 	tls_fail TC_CERT, 'no CERTIFICATE block in this file (PEM expected)'
 .too_big:
 	tls_fail TC_CERT, 'the certificate chains of this configuration pass 1 MiB'
+.chain_big:
+	tls_fail TC_CERT, 'this certificate chain passes 24 KiB (send the server certificate and its intermediates, not the root)'
 .cert_kind:
 	cmp	ecx,TLS_E_RSA
 	je	.cert_rsa

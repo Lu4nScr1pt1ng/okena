@@ -42,6 +42,7 @@ SUITES = [
     ("http parser", ["tests/http/run.py", "5000"]),
     ("crypto kat", ["tests/kat/run.py"]),
     ("tls certs", ["tests/tls/run.py"]),
+    ("tls handshake", ["tests/tls/handshake.py"]),
     ("peer io_uring", ["tests/peer/run.py", "io_uring"]),
     ("peer epoll", ["tests/peer/run.py", "epoll"]),
     ("config fuzz", ["tests/config/fuzz.py", "2000"]),
