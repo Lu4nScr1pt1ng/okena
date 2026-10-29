@@ -19,7 +19,7 @@ errors-semantics.conf:3:1: error: this listener does not send traffic anywhere
 errors-semantics.conf:4:46: error: a tcp listener has no requests to time: this is an `http` timeout
      4 | tcp :6001 { to 1.1.1.1:1; timeout { idle 5s; header 1s } }
        |                                              ^^^^^^
-       = help: a tcp connection has `idle`; `header` and `response` time HTTP exchanges
+       = help: a tcp connection has `idle`; `header`, `body_idle` and `response` time HTTP exchanges
 errors-semantics.conf:7:12: error: server `10.0.0.11:5432` is listed twice in this pool
      7 |     server 10.0.0.11:5432
        |            ^^^^^^^^^^^^^^

@@ -1297,6 +1297,9 @@ check_tcp_timeouts:
 	lea	rax,[dir_table + D_SIZE*DIR_HEADER]
 	cmp	[rbx+N_DEF],rax
 	je	.http_only
+	lea	rax,[dir_table + D_SIZE*DIR_BODY_IDLE]
+	cmp	[rbx+N_DEF],rax
+	je	.http_only
 	lea	rax,[dir_table + D_SIZE*DIR_RESPONSE]
 	cmp	[rbx+N_DEF],rax
 	jne	.advance
@@ -1308,7 +1311,7 @@ check_tcp_timeouts:
 	out_lit 'a tcp listener has no requests to time: this is an `http` timeout'
 	call	cfg_diag_end
 	call	cfg_note
-	out_lit 'help: a tcp connection has `idle`; `header` and `response` time HTTP exchanges'
+	out_lit 'help: a tcp connection has `idle`; `header`, `body_idle` and `response` time HTTP exchanges'
 	call	cfg_note_end
 	call	cfg_error_limit
 .advance:

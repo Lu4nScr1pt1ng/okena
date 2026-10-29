@@ -28,7 +28,8 @@ LS_T_RESPONSE	= 96		; d: http: seconds a backend has for its response head
 LS_ALOG		= 100		; d: http: access log destination + 1, 0 = none
 LS_TFIRST	= 104		; d: http: first trusted_proxies range
 LS_TCOUNT	= 108		; d
-LS_SIZE		= 112
+LS_T_BODY	= 112		; d: http: seconds between bytes of a request body
+LS_SIZE		= 120
 
 ; Host block name (http): routes for requests to that host
 HO_NAME		= 0		; q: the name; for "*.example.com", ".example.com"
@@ -94,6 +95,7 @@ DEFAULT_IDLE_SECS	= 3600
 DEFAULT_HTTP_IDLE_SECS	= 60
 DEFAULT_HEADER_SECS	= 10		; slow clients (slowloris) get 408
 DEFAULT_RESPONSE_SECS	= 30		; slow backends get 504
+DEFAULT_BODY_SECS	= 30		; a request body that stops coming gets 408
 DEFAULT_CONNECT_US	= 2000000
 DEFAULT_DRAIN_US	= 8000000
 
@@ -125,6 +127,7 @@ bss
 	g_cmp_tfirst	dd ?
 	g_cmp_tcount	dd ?
 	g_cmp_t_response dd ?
+	g_cmp_t_body	dd ?
 	g_cmp_rfirst	dd ?
 	g_cmp_rcount	dd ?
 	g_plan_routes	dd ?
@@ -926,6 +929,7 @@ compile_listener:
 .trust_done:
 	mov	dword [g_cmp_t_header],DEFAULT_HEADER_SECS
 	mov	dword [g_cmp_t_response],DEFAULT_RESPONSE_SECS
+	mov	dword [g_cmp_t_body],DEFAULT_BODY_SECS
 	mov	rdi,r12
 	mov	ecx,DIR_TIMEOUT
 	call	find_child
@@ -943,6 +947,12 @@ compile_listener:
 	call	timeout_secs
 	jc	@f
 	mov	[g_cmp_t_response],eax
+@@:
+	mov	rdi,[rsp]
+	mov	ecx,DIR_BODY_IDLE
+	call	timeout_secs
+	jc	@f
+	mov	[g_cmp_t_body],eax
 @@:
 	pop	rdi
 	mov	ecx,DIR_IDLE
@@ -966,6 +976,8 @@ compile_listener:
 	mov	[rcx+LS_T_HEADER],eax
 	mov	eax,[g_cmp_t_response]
 	mov	[rcx+LS_T_RESPONSE],eax
+	mov	eax,[g_cmp_t_body]
+	mov	[rcx+LS_T_BODY],eax
 	mov	eax,[g_cmp_alog]
 	mov	[rcx+LS_ALOG],eax
 	mov	eax,[g_cmp_tfirst]

@@ -244,7 +244,7 @@ http 127.0.0.1:{TRUST} {{
     route /* {{ to 127.0.0.1:{BACK} }}
 }}
 http 127.0.0.1:{QUICK} {{
-    timeout {{ header 1s; response 1s }}
+    timeout {{ header 1s; response 1s; body_idle 1s }}
     route /* {{ to 127.0.0.1:{BACK} }}
 }}
 """)
@@ -497,6 +497,20 @@ try:
     check("slow backend -> 504 and close", r is not None and r[0] == 504 and c.closed()
           and time.time() - t0 < 3, str(r and r[0]))
     c = Client(QUICK)
+    t0 = time.time()
+    c.send(b"POST /api/up HTTP/1.1\r\nHost: t\r\nContent-Length: 10\r\n\r\nabc")   # and then nothing
+    r = c.response()
+    check("a request body that stops coming -> 408", r is not None and r[0] == 408 and time.time() - t0 < 4,
+          f"{r and r[0]} {time.time() - t0:.1f}s")
+    c = Client(QUICK)
+    c.send(b"POST /api/up HTTP/1.1\r\nHost: t\r\nContent-Length: 6\r\n\r\n")
+    for ch in b"slowly":
+        time.sleep(0.5)
+        c.send(bytes([ch]))
+    r = c.response()
+    check("a slow body that keeps coming is fine (each byte restarts the clock)",
+          r is not None and r[0] == 200 and echo_of(r)["body_len"] == 6, str(r and r[0]))
+    c = Client(QUICK)
     c.send(req(b"GET", b"/api/after-504"))
     r = c.response()
     check("then the listener keeps serving", r is not None and r[0] == 200)
@@ -615,9 +629,9 @@ try:
         if line.startswith("okena_http_responses_total{") and f':{QUICK}"' in line:
             k, v = line.rsplit(" ", 1)
             vals[k.split(",", 1)[1]] = int(v)
-    check("metrics: backend 2xx counted", vals.get('code="2xx",source="backend"}') == 3, str(vals))
-    check("metrics: okena's 408 and 504 counted as its own 4xx and 5xx",
-          vals.get('code="4xx",source="okena"}') == 1 and vals.get('code="5xx",source="okena"}') == 1)
+    check("metrics: backend 2xx counted", vals.get('code="2xx",source="backend"}') == 4, str(vals))
+    check("metrics: okena's 408s and 504 counted as its own 4xx and 5xx",
+          vals.get('code="4xx",source="okena"}') == 2 and vals.get('code="5xx",source="okena"}') == 1)
     check("metrics: no backend 5xx", vals.get('code="5xx",source="backend"}') == 0)
     trimmed = [int(l.rsplit(" ", 1)[1]) for l in text.decode().splitlines()
                if l.startswith("okena_http_idle_trimmed_total ")]

@@ -1231,6 +1231,10 @@ http_req_pump:
 	mov	dword [r15+H_INLEN],0
 	mov	dword [r15+H_INOFF],0
 	mov	dword [r15+H_STATE],HS_REQ_READ
+	mov	edi,ebx				; more of the body: its clock starts again
+	mov	esi,PH_BODY
+	call	ph_arm
+	h_rec
 	mov	ecx,SIDE_CLIENT
 	lea	rdi,[r15+H_IN]
 	mov	esi,H_IN_CAP
@@ -2107,7 +2111,8 @@ http_count:
 PH_HEAD		= 1
 PH_RESPONSE	= 2
 PH_TRIM		= 3		; idle keep-alive: give the record's buffers back
-PH_KINDS	= 3
+PH_BODY		= 4		; the request body must keep coming: `body_idle`
+PH_KINDS	= 4
 TRIM_SECS	= 2
 
 bss
@@ -2129,8 +2134,7 @@ ph_arm:
 	mov	ecx,[g_tick]
 	mov	[rax+S_PH_AT],ecx
 	mov	ecx,[rax+S_LST]
-	lea	ecx,[rcx+rcx*2]
-	lea	ecx,[rcx+rsi-1]
+	lea	ecx,[rcx*4+rsi-1]
 	mov	edx,[g_ph_tail+rcx*4]
 	mov	[rax+S_PH_PREV],edx
 	mov	dword [rax+S_PH_NEXT],NIL
@@ -2155,8 +2159,7 @@ ph_disarm:
 	jz	.none
 	mov	dword [rax+S_PH_KIND],0
 	mov	ecx,[rax+S_LST]
-	lea	ecx,[rcx+rcx*2]
-	lea	ecx,[rcx+rsi-1]
+	lea	ecx,[rcx*4+rsi-1]
 	mov	edx,[rax+S_PH_PREV]
 	mov	r8d,[rax+S_PH_NEXT]
 	cmp	edx,NIL
@@ -2203,10 +2206,12 @@ ph_expire:
 	mov	r13d,[g_listeners+rax+LS_T_RESPONSE]
 	cmp	r14d,PH_RESPONSE
 	je	.oldest
+	mov	r13d,[g_listeners+rax+LS_T_BODY]
+	cmp	r14d,PH_BODY
+	je	.oldest
 	mov	r13d,TRIM_SECS
 .oldest:
-	lea	ecx,[r12+r12*2]
-	lea	ecx,[rcx+r14-1]
+	lea	ecx,[r12*4+r14-1]
 	mov	ebx,[g_ph_head+rcx*4]
 	cmp	ebx,NIL
 	je	.next_kind
@@ -2250,6 +2255,8 @@ http_phase_expired:
 	h_rec
 	cmp	esi,PH_TRIM
 	je	.trim
+	cmp	esi,PH_BODY
+	je	.body
 	cmp	esi,PH_HEAD
 	jne	.response
 	cmp	dword [r15+H_STATE],HS_HEAD
@@ -2261,6 +2268,12 @@ http_phase_expired:
 .silent:
 	mov	edi,ebx
 	jmp	session_close
+.body:
+	; the client stopped sending its body (a stall, or slow upload abuse)
+	cmp	dword [r15+H_STATE],HS_REQ_READ
+	jne	.out
+	mov	edi,408
+	jmp	http_error
 .trim:
 	; idle between requests: everything but the first page (the record's
 	; fields, and where the next request's first bytes land) goes back to
