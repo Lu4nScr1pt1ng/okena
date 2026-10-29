@@ -42,6 +42,7 @@ S_PH_NEXT	:= 104
 S_PH_AT		:= 108		; tick the phase started
 S_PH_KIND	:= 112		; PH_*, 0 = no phase timer
 S_SERVER2	:= 116		; the server tried before S_SERVER (a third try avoids both)
+S_T0		:= 120		; q: peak-ewma, tcp: TSC when the connect started, 0 = none
 S_SIZE		:= 128
 S_SHIFT		:= 7
 
@@ -1014,6 +1015,131 @@ sv_ramp:
 	clc
 	ret
 
+; peak-ewma, per worker: each server's latency in microseconds, an
+; exponentially weighted moving average that jumps to a slower sample at
+; once (the peak) and otherwise follows samples and decays toward 0 with
+; time constant EWMA_TAU: e' = (e * tau + s * dt) / (tau + dt), the
+; rational form of e * w + s * (1 - w) with w = tau / (tau + dt). Read
+; and written only for pools that balance by it.
+EWMA_TAU_US	:= 10000000
+
+bss
+	g_sv_ewma	rq MAX_SERVERS		; microseconds
+	g_sv_ewt	rq MAX_SERVERS		; when it was last updated (TSC us)
+end bss
+
+; rax = TSC microseconds. Clobbers rdx.
+tsc_now_us:
+	rdtsc
+	shl	rdx,32
+	or	rax,rdx
+	xor	edx,edx
+	div	qword [g_tsc_per_us]
+	ret
+
+; edi = server, rsi = sample in us (0: just let time pass). rax = the
+; new value. Keeps every register but rax, rdx.
+sv_ewma_observe:
+	push	rcx
+	push	r8
+	push	r9
+	call	tsc_now_us
+	mov	rcx,rax
+	sub	rcx,[g_sv_ewt+rdi*8]		; dt
+	mov	[g_sv_ewt+rdi*8],rax
+	mov	rax,[g_sv_ewma+rdi*8]
+	cmp	rsi,rax
+	ja	.peak
+	; (e * tau + s * dt) / (tau + dt)
+	mov	r8,EWMA_TAU_US
+	mov	r9,EWMA_TAU_US * 16
+	cmp	rcx,r9
+	jbe	@f
+	mov	rcx,r9				; capped: the old value weighs 1/17 at most
+@@:
+	imul	rax,r8
+	mov	r9,rsi
+	imul	r9,rcx
+	add	rax,r9
+	add	rcx,r8
+	xor	edx,edx
+	div	rcx
+	jmp	.store
+.peak:
+	mov	rax,rsi
+.store:
+	mov	[g_sv_ewma+rdi*8],rax
+	pop	r9
+	pop	r8
+	pop	rcx
+	ret
+
+; edi = server. rax = its latency, decayed to now. Keeps all but rax, rdx.
+sv_ewma_cost:
+	push	rsi
+	xor	esi,esi
+	call	sv_ewma_observe
+	pop	rsi
+	ret
+
+; ebx = session, its connect just succeeded: for a tcp listener whose
+; pool balances by peak-ewma, the connect time is the latency sample.
+; Keeps every register.
+sv_connect_sample:
+	push	rax
+	push	rdx
+	push	rsi
+	push	rdi
+	call	session_ptr
+	mov	rdx,rax
+	mov	rax,[rdx+S_T0]
+	test	rax,rax
+	jz	.out
+	mov	qword [rdx+S_T0],0
+	push	rdx
+	mov	rsi,rax
+	rdtsc
+	shl	rdx,32
+	or	rax,rdx
+	sub	rax,rsi
+	xor	edx,edx
+	div	qword [g_tsc_per_us]
+	mov	rsi,rax
+	pop	rdx
+	mov	edi,[rdx+S_SERVER]
+	call	sv_ewma_observe
+.out:
+	pop	rdi
+	pop	rsi
+	pop	rdx
+	pop	rax
+	ret
+
+; r12 = session (tcp listener), its server just picked: start the connect
+; clock when the pool balances by peak-ewma. Keeps every register.
+sv_connect_start:
+	push	rax
+	push	rdx
+	push	rcx
+	mov	qword [r12+S_T0],0
+	mov	eax,[r12+S_LST]
+	imul	rax,rax,LS_SIZE
+	cmp	dword [g_listeners+rax+LS_KIND],LK_TCP
+	jne	.out
+	mov	eax,[r12+S_POOL]
+	imul	rax,rax,PL_SIZE
+	cmp	dword [g_pools+rax+PL_BALANCE],BAL_PEAK_EWMA
+	jne	.out
+	rdtsc
+	shl	rdx,32
+	or	rax,rdx
+	mov	[r12+S_T0],rax
+.out:
+	pop	rcx
+	pop	rdx
+	pop	rax
+	ret
+
 ; edi = server, rbx = its pool. eax = its weight, scaled down while it
 ; slow-starts. Keeps every register but rax.
 sv_weight:
@@ -1114,7 +1240,10 @@ server_pick:
 	; (backups, panic, avoidance with one server left) only when the
 	; draws find nothing usable.
 	cmp	dword [rbx+PL_BALANCE],BAL_LEAST_REQ
+	je	@f
+	cmp	dword [rbx+PL_BALANCE],BAL_PEAK_EWMA
 	jne	.pass
+@@:
 	mov	r14d,ebp
 	call	.p2c
 	cmp	eax,NIL
@@ -1164,6 +1293,8 @@ server_pick:
 	je	.least
 	cmp	eax,BAL_LEAST_REQ
 	je	.least				; the draws failed: scan this pass
+	cmp	eax,BAL_PEAK_EWMA
+	je	.least
 	cmp	eax,BAL_RANDOM
 	je	.random
 	; smooth weighted round robin
@@ -1341,6 +1472,8 @@ server_pick:
 	jnc	.only_a
 	test	r10b,r10b
 	jz	.take_b
+	cmp	dword [rbx+PL_BALANCE],BAL_PEAK_EWMA
+	je	.ewma
 	; both: in_flight[a] * weight[b] against in_flight[b] * weight[a]
 	mov	edi,r11d
 	call	sv_weight
@@ -1358,6 +1491,36 @@ server_pick:
 	ret
 .take_b:
 	mov	eax,r12d
+	ret
+.ewma:
+	; (latency + 1) x (in flight + 1) / weight: the cheaper of the two
+	mov	edi,r11d
+	call	sv_ewma_cost			; rax = latency in us, decayed
+	inc	rax
+	mov	ecx,[g_sv_active+r11*4]
+	inc	rcx
+	imul	rax,rcx
+	push	rax				; cost a, before weights
+	mov	edi,r12d
+	call	sv_ewma_cost
+	inc	rax
+	mov	ecx,[g_sv_active+r12*4]
+	inc	rcx
+	imul	rax,rcx
+	push	rax				; cost b
+	mov	edi,r11d
+	call	sv_weight
+	mov	r8d,eax				; weight a
+	mov	edi,r12d
+	call	sv_weight
+	mov	r9d,eax				; weight b
+	pop	rdx				; cost b
+	pop	rax				; cost a
+	imul	rax,r9				; cost a x weight b
+	imul	rdx,r8				; cost b x weight a
+	cmp	rax,rdx
+	ja	.take_b
+	mov	eax,r11d
 	ret
 .only_a:
 	test	r10b,r10b
@@ -1472,6 +1635,7 @@ session_connect:
 	mov	ecx,[r12+S_SERVER]
 	mov	[r12+S_SERVER2],ecx
 	mov	[r12+S_SERVER],eax
+	call	sv_connect_start
 	inc	dword [g_sv_active+rax*4]
 	or	dword [r12+S_FLAGS],SF_COUNTED
 	imul	r13,rax,SV_SIZE
@@ -1658,6 +1822,7 @@ on_s_connect:
 	mov	dword [r13+S_STATE],ST_OPEN
 	mov	edi,[r13+S_SERVER]
 	call	server_ok
+	call	sv_connect_sample
 	if_http http_connected
 	; a PROXY protocol header goes before any byte of the client
 	mov	eax,[r13+S_LST]

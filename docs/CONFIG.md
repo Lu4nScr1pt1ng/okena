@@ -12,7 +12,7 @@ not built yet. A directive that is not built is refused by `okena check`
 | `tcp ADDR...` | `to`, `limits { connections; per_source }`, `timeout { idle }`, `proxy_protocol send v1\|v2` |
 | `http ADDR...` | `host`, `route`, `limits`, `timeout { idle; header; body_idle; response }`, `trusted_proxies`, `access_log` |
 | `route PATH... [METHOD...]` | `to`, `redirect`, `header set\|add\|drop`, `response header set\|add\|drop` |
-| `pool NAME` | `server ADDR [weight=N] [backup]`, `balance least-request\|round-robin\|least-conn\|random`, `connect timeout=`, `health tcp\|http ...`, `slow_start` |
+| `pool NAME` | `server ADDR [weight=N] [backup]`, `balance least-request\|peak-ewma\|round-robin\|least-conn\|random`, `connect timeout=`, `health tcp\|http ...`, `slow_start` |
 
 Everything else below (TLS, `udp`, policies, auth, limits on requests,
 caching, files, addons, discovery, the admin API and most tooling) is the
@@ -349,8 +349,8 @@ pool api {
     server unix:/run/api.sock
     discover dns api.service.internal port=8080 refresh=ttl
 
-    balance least-request          # the default; or round-robin | least-conn | random
-                                   # (planned: peak-ewma | maglev key=... | ring-hash key=...)
+    balance least-request          # the default; or peak-ewma | round-robin | least-conn | random
+                                   # (planned: maglev key=... | ring-hash key=...)
     protocol h2                    # http1 (default) | h2 | h2c | grpc
     tls sni=api.internal ca=/etc/okena/internal-ca.pem
 

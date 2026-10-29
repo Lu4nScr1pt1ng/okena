@@ -58,6 +58,7 @@ H_RID		:= 236		; the request id (RID_MAX bytes)
 RID_MAX		:= 128
 H_BUF		:= 368		; q: this session's buffers
 H_ACT		:= 376		; d: the route's action + 1 (redirect, header changes), 0 = none
+H_UPT0		:= 384		; q: peak-ewma: TSC when the request was sent, 0 = none
 assert H_BUF + 8 <= 1 shl H_SHIFT
 HB_LTEXT_M	:= HB_UP + H_UP_CAP	; access log: method
 H_LTEXT_M_CAP	:= 16
@@ -1483,6 +1484,17 @@ fmt_hex32:
 
 http_start_response:
 	h_rec
+	mov	qword [r15+H_UPT0],0
+	call	session_ptr
+	mov	eax,[rax+S_POOL]
+	imul	rax,rax,PL_SIZE
+	cmp	dword [g_pools+rax+PL_BALANCE],BAL_PEAK_EWMA
+	jne	@f
+	rdtsc					; the backend's latency starts now
+	shl	rdx,32
+	or	rax,rdx
+	mov	[r15+H_UPT0],rax
+@@:
 	mov	dword [r15+H_UPLEN],0
 	mov	dword [r15+H_UPOFF],0
 	mov	dword [r15+H_STATE],HS_RESP_HEAD
@@ -1575,6 +1587,7 @@ http_resp_head:
 	push	rax
 	mov	edi,ebx
 	call	ph_disarm
+	call	http_latency_sample
 	pop	rax
 	mov	edi,eax
 	call	http_backend_status		; may send the request elsewhere
@@ -1866,6 +1879,28 @@ http_last_chunk:
 	lea	rdi,[str_last_chunk]
 	mov	esi,str_last_chunk.len
 	jmp	h_send
+
+; ebx = session, r15 = state, its final response head just parsed: the
+; time since the request was sent is its server's latency sample.
+http_latency_sample:
+	mov	rcx,[r15+H_UPT0]
+	test	rcx,rcx
+	jz	.out
+	mov	qword [r15+H_UPT0],0
+	rdtsc
+	shl	rdx,32
+	or	rax,rdx
+	sub	rax,rcx
+	xor	edx,edx
+	div	qword [g_tsc_per_us]
+	mov	rsi,rax
+	call	session_ptr
+	mov	edi,[rax+S_SERVER]
+	cmp	edi,NIL
+	je	.out
+	call	sv_ewma_observe
+.out:
+	ret
 
 ; ------------------------------------------------- retries and outliers
 

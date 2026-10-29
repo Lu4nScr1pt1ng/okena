@@ -134,6 +134,7 @@ BAL_ROUND_ROBIN	:= 0
 BAL_LEAST_CONN	:= 1
 BAL_RANDOM	:= 2
 BAL_LEAST_REQ	:= 3		; the default: power of two choices
+BAL_PEAK_EWMA	:= 4		; power of two choices on latency x load
 
 DEFAULT_CONNECTIONS	:= 65536		; per listener, whole instance
 DEFAULT_IDLE_SECS	:= 3600

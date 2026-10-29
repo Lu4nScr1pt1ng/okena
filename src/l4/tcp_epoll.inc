@@ -455,6 +455,7 @@ ep_connect:
 	mov	ecx,[r12+S_SERVER]
 	mov	[r12+S_SERVER2],ecx
 	mov	[r12+S_SERVER],eax
+	call	sv_connect_start
 	inc	dword [g_sv_active+rax*4]
 	or	dword [r12+S_FLAGS],SF_COUNTED
 	imul	r13,rax,SV_SIZE
@@ -656,6 +657,7 @@ ep_connected:
 	mov	dword [rax+S_STATE],ST_OPEN
 	mov	edi,[rax+S_SERVER]
 	call	server_ok
+	call	sv_connect_sample
 	call	session_ptr
 	mov	ecx,[rax+S_LST]
 	imul	rcx,rcx,LS_SIZE

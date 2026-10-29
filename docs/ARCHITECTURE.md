@@ -643,7 +643,7 @@ ECN. 0-RTT off by default and, when on, only for routes marked idempotent.
 | Algorithm | When |
 |---|---|
 | `least-request` (power of two choices, weighted) | default for every pool (requests in flight for http, connections for tcp); no herding, O(1): one random draw, no division, no scan |
-| `peak-ewma` | latency-sensitive pools; picks by in-flight x decayed latency |
+| `peak-ewma` | latency-sensitive pools; two random servers, the lower (latency + 1) x (in flight + 1) / weight wins. Latency per server and worker: for http from the request sent to the response head, for tcp the connect time; a slower sample is taken at once (the peak), others blend in and the value decays toward 0 with tau = 10 s, so a slow server is tried again once its latency has decayed to the others'. The TSC is read only for pools that use it |
 | `round-robin` (smooth weighted) | uniform backends, predictable spread |
 | `maglev` / `ring-hash` with bounded load | affinity by header, cookie, path or source |
 | `source-hash`, `random` | L4 and simple cases |

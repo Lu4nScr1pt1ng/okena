@@ -141,5 +141,97 @@ finally:
         p.kill()
     if failures or sys.exc_info()[0]:
         print(text())
+# peak-ewma: a backend 20 ms slower gets little of a sequential load,
+# where least-request (nothing ever in flight to compare) splits it evenly
+H0, H1, EW, LR = BASE + 4, BASE + 5, BASE + 6, BASE + 7
+
+
+def http_backend(port, tag, delay):
+    s = socket.socket()
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(("127.0.0.1", port))
+    s.listen(256)
+
+    def handle(c):
+        f = c.makefile("rb")
+        try:
+            while True:
+                line = f.readline()
+                if not line:
+                    return
+                while f.readline() not in (b"\r\n", b""):
+                    pass
+                time.sleep(delay)
+                c.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n" + tag)
+        except OSError:
+            pass
+        finally:
+            c.close()
+
+    def loop():
+        while True:
+            c, _ = s.accept()
+            threading.Thread(target=handle, args=(c,), daemon=True).start()
+    threading.Thread(target=loop, daemon=True).start()
+
+
+http_backend(H0, b"h0", 0)
+http_backend(H1, b"h1", 0.02)
+conf2 = tmp / "okena-ewma.conf"
+conf2.write_text(f"""
+okena {{ workers 1 }}
+pool ewma {{
+    balance peak-ewma
+    server 127.0.0.1:{H0}
+    server 127.0.0.1:{H1}
+}}
+pool lr {{
+    server 127.0.0.1:{H0}
+    server 127.0.0.1:{H1}
+}}
+http 127.0.0.1:{EW} {{ route /* {{ to pool ewma }} }}
+http 127.0.0.1:{LR} {{ route /* {{ to pool lr }} }}
+""")
+log2 = open(tmp / "log2", "w+")
+p2 = subprocess.Popen([str(BIN), "-c", str(conf2)], stderr=log2)
+
+
+def slow_share(port, seconds):
+    c = socket.create_connection(("127.0.0.1", port), timeout=3)
+    f = c.makefile("rb")
+    n = slow = 0
+    t0 = time.time()
+    while time.time() - t0 < seconds:
+        c.sendall(b"GET / HTTP/1.1\r\nHost: t\r\n\r\n")
+        f.readline()
+        while f.readline() not in (b"\r\n", b""):
+            pass
+        slow += f.read(2) == b"h1"
+        n += 1
+    c.close()
+    return slow / max(n, 1), n
+
+
+try:
+    for _ in range(100):
+        log2.seek(0)
+        if "started with" in log2.read():
+            break
+        time.sleep(0.02)
+    lr, n1 = slow_share(LR, 1.5)
+    ew, n2 = slow_share(EW, 1.5)
+    check("least-request: a slow backend still gets about half of a sequential load", 0.3 < lr < 0.7, f"slow {lr:.0%} of {n1}")
+    check("peak-ewma: the slow backend gets little of it", ew < 0.15, f"slow {ew:.0%} of {n2}")
+    check("and the load goes faster", n2 > n1 * 1.5, f"{n2} requests against {n1}")
+finally:
+    p2.send_signal(signal.SIGTERM)
+    try:
+        p2.wait(10)
+    except subprocess.TimeoutExpired:
+        p2.kill()
+    if failures:
+        log2.seek(0)
+        print(log2.read())
+
 print(f"lb: {'all passed' if not failures else f'{failures} failed'}")
 sys.exit(1 if failures else 0)

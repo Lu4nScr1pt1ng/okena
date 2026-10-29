@@ -28,7 +28,8 @@ Early: L4 and HTTP/1.1, no TLS yet. What works today:
   retries within a per-pool budget, outlier ejection, request ids,
   `trusted_proxies`, JSON access logs through a logger process, metrics
   by status class, idle connections that give their memory back;
-* `least-request` (power of two choices) balancing by default, and
+* `least-request` (power of two choices) balancing by default, `peak-ewma`
+  for latency (a backend that answers slower gets less), and
   `slow_start 30s` in a pool: a server that comes back is given a share
   of traffic that grows smoothly over the window;
 
