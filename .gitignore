@@ -1,0 +1,5 @@
+/build/
+/.toolchain/
+*.o
+__pycache__/
+/.env
