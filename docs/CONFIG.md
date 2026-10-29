@@ -308,8 +308,11 @@ with `{*}` = the rest, the request's query kept. Header changes apply to what go
 written. Names are lower-case tokens and never one okena owns itself
 (`host`, framing, `connection` and the other hop-by-hop fields,
 `x-forwarded-*`, `forwarded`, `x-request-id`); values never contain CR,
-LF or NUL, so a header change cannot inject one. Values are literal for
-now (`${...}` variables are planned).
+LF or NUL, so a header change cannot inject one. A value may use
+`${client.ip}` (the client, after `trusted_proxies`), `${request.id}`,
+`${time.us}` and `${time.s}` (wall clock, microseconds or seconds since
+the epoch): `header set x-request-start "t=${time.us}"`. Any other name
+is an error at load.
 
 Every limit, rate or count is for the whole instance (all workers
 together), never per worker.

@@ -28,13 +28,19 @@ errors-routes.conf:10:20: error: a header name is a lower-case token (x-env); dr
 errors-routes.conf:11:25: error: a header operation is set, add or drop
     11 |         response header move x-c
        |                         ^^^^
-errors-routes.conf:14:24: error: a rewrite is `rewrite path /from/{*} -> /to/{*}` (paths, the source ending with {*})
-    14 |     route /e { rewrite path /a/{*} => /b; to 1.1.1.1:1 }
-       |                        ^^^^
+errors-routes.conf:14:32: error: unknown variable: the ones a header value can use are ${client.ip} ${request.id} ${time.us} ${time.s}
+    14 |     route /h { header set x-a "${nope}"; header set x-b "${time.us"; to 1.1.1.1:1 }
+       |                                ^^^^^^^
+errors-routes.conf:14:58: error: unknown variable: the ones a header value can use are ${client.ip} ${request.id} ${time.us} ${time.s}
+    14 |     route /h { header set x-a "${nope}"; header set x-b "${time.us"; to 1.1.1.1:1 }
+       |                                                          ^^^^^^^^^
 errors-routes.conf:15:24: error: a rewrite is `rewrite path /from/{*} -> /to/{*}` (paths, the source ending with {*})
-    15 |     route /f { rewrite path /a -> /b; to 1.1.1.1:1 }
+    15 |     route /e { rewrite path /a/{*} => /b; to 1.1.1.1:1 }
        |                        ^^^^
 errors-routes.conf:16:24: error: a rewrite is `rewrite path /from/{*} -> /to/{*}` (paths, the source ending with {*})
-    16 |     route /g { rewrite path /a/{*} -> /b?x=1; to 1.1.1.1:1 }
+    16 |     route /f { rewrite path /a -> /b; to 1.1.1.1:1 }
        |                        ^^^^
-11 errors in errors-routes.conf
+errors-routes.conf:17:24: error: a rewrite is `rewrite path /from/{*} -> /to/{*}` (paths, the source ending with {*})
+    17 |     route /g { rewrite path /a/{*} -> /b?x=1; to 1.1.1.1:1 }
+       |                        ^^^^
+13 errors in errors-routes.conf

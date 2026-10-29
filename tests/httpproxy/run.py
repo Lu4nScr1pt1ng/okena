@@ -263,6 +263,9 @@ http 127.0.0.1:{LST} {{
     route /exact-old {{ redirect 308 https://example.com/x }}
     route /hdr/* {{
         header set x-env prod
+        header set x-start "t=${{time.us}}"
+        header set x-who "${{client.ip}} ${{request.id}}"
+        response header set x-served-at "${{time.s}}"
         header add x-added yes
         header drop x-secret-*
         response header set cache-control no-store
@@ -478,6 +481,14 @@ try:
     check("header add keeps it and adds", sorted(v for n, v in sent if n == "x-added") == ["client", "yes"], str(sent))
     check("header drop with a prefix removes every match", not any(n.startswith("x-secret-") for n, _ in sent)
           and ("x-kept", "k") in sent, str(sent))
+    names2 = dict(sent)
+    now_us = time.time() * 1e6
+    start = names2.get("x-start", "")
+    check("${time.us} in a header value", start.startswith("t=") and abs(int(start[2:]) - now_us) < 5e6, start)
+    who = names2.get("x-who", "").split(" ")
+    check("${client.ip} and ${request.id}", who[:1] == ["127.0.0.1"] and len(who) == 2
+          and who[1] == names2.get("x-request-id"), str(who))
+    check("${time.s} in a response header", abs(int(r[1].get("x-served-at", "0")) - time.time()) < 5, str(r[1].get("x-served-at")))
     check("response header set and drop", r[1].get("cache-control") == "no-store" and "x-back" not in r[1], str(r[1]))
 
     c = Client()

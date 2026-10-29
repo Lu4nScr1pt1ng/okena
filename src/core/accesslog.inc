@@ -686,6 +686,27 @@ fmt_pad:
 	jnz	@b
 	ret
 
+; rax = the wall clock now, nanoseconds since the epoch (the tick's
+; reading extended with the TSC: no system call). Clobbers rdx, rcx.
+wall_ns:
+	cmp	qword [g_alog_base_ns],0
+	jne	@f
+	push	rdi
+	push	rsi
+	call	alog_clock
+	pop	rsi
+	pop	rdi
+@@:
+	rdtsc
+	shl	rdx,32
+	or	rax,rdx
+	sub	rax,[g_alog_base_tsc]
+	imul	rax,rax,1000
+	xor	edx,edx
+	div	qword [g_tsc_per_us]
+	add	rax,[g_alog_base_ns]
+	ret
+
 ; rdi = output: the wall clock now, 2026-10-29T12:34:56.789Z.
 alog_fmt_time:
 	cmp	qword [g_alog_base_ns],0

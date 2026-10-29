@@ -2400,7 +2400,8 @@ hdrop_emit:
 .op:
 	cmp	dword [r8+HD_KIND],HOP_DROP
 	je	.next
-	mov	eax,[r8+HD_NLEN]
+	imul	eax,[r8+HD_VARS],40		; a variable is at most 39 bytes
+	add	eax,[r8+HD_NLEN]
 	add	eax,[r8+HD_VLEN]
 	lea	rax,[rdi+rax+4]
 	cmp	rax,r13
@@ -2412,7 +2413,13 @@ hdrop_emit:
 	add	rdi,2
 	mov	rsi,[r8+HD_VAL]
 	mov	ecx,[r8+HD_VLEN]
+	cmp	dword [r8+HD_VARS],0
+	jne	.vars
 	rep	movsb
+	jmp	.eol
+.vars:
+	call	hvar_expand
+.eol:
 	mov	word [rdi],0x0A0D
 	add	rdi,2
 .next:
@@ -2424,6 +2431,78 @@ hdrop_emit:
 	ret
 .full:
 	stc
+	ret
+
+; rdi = output, rsi/ecx = a header value with ${...} in it (checked at
+; load), r15 = state: the value with each variable written. rdi = after
+; it. Keeps rbx, r8, r9, r12-r15.
+hvar_expand:
+	push	r8
+	push	r9
+.byte:
+	test	ecx,ecx
+	jz	.done
+	cmp	ecx,2
+	jb	.copy
+	cmp	word [rsi],'${'
+	jne	.copy
+	; which one: by its first letters (the names were checked)
+	cmp	byte [rsi+2],'c'
+	je	.client
+	cmp	byte [rsi+2],'r'
+	je	.rid
+	push	rsi
+	push	rcx
+	mov	r8d,1000000000			; time.s
+	cmp	byte [rsi+7],'u'
+	jne	@f
+	mov	r8d,1000			; time.us
+@@:
+	push	r8
+	call	wall_ns				; (may read the clock: rcx, r11 go)
+	pop	r8
+	xor	edx,edx
+	div	r8
+	call	fmt_u64
+	pop	rcx
+	pop	rsi
+	jmp	.skip_var
+.client:
+	push	rsi
+	push	rcx
+	lea	rsi,[r15+H_CLIENT]
+	mov	edx,[r15+H_CKIND]
+	test	edx,edx
+	jz	@f
+	call	fmt_ip
+@@:
+	pop	rcx
+	pop	rsi
+	jmp	.skip_var
+.rid:
+	push	rsi
+	push	rcx
+	lea	rsi,[r15+H_RID]
+	mov	ecx,[r15+H_RIDLEN]
+	rep	movsb
+	pop	rcx
+	pop	rsi
+.skip_var:
+	; past the "}"
+@@:
+	mov	al,[rsi]
+	inc	rsi
+	dec	ecx
+	cmp	al,'}'
+	jne	@b
+	jmp	.byte
+.copy:
+	movsb
+	dec	ecx
+	jmp	.byte
+.done:
+	pop	r9
+	pop	r8
 	ret
 
 ; rdi = output, rsi/ecx = the request's target (origin form). When the

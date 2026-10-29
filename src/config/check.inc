@@ -2382,6 +2382,8 @@ check_header_ops:
 	mov	esi,[r14+2*A_SIZE+A_VLEN]
 	cmp	esi,1024
 	ja	.bad_value
+	call	check_header_vars
+	jc	.bad_var
 	xor	ecx,ecx
 @@:
 	cmp	ecx,esi
@@ -2473,6 +2475,15 @@ check_header_ops:
 	call	cfg_diag_end
 	call	cfg_error_limit
 	jmp	.next
+.bad_var:
+	lea	rdi,[r14+2*A_SIZE]
+	call	arg_value_span
+	mov	edx,[r14+2*A_SIZE+A_LINE]
+	call	cfg_error
+	out_lit 'unknown variable: the ones a header value can use are ${client.ip} ${request.id} ${time.us} ${time.s}'
+	call	cfg_diag_end
+	call	cfg_error_limit
+	jmp	.next
 .bad_value:
 	lea	rdi,[r14+2*A_SIZE]
 	call	arg_value_span
@@ -2490,6 +2501,54 @@ check_header_ops:
 	pop	r12
 	pop	rbx
 	ret
+
+; rdi/esi = a header value: CF when a ${...} in it is not a known
+; variable (or is not closed). Keeps rdi, rsi.
+check_header_vars:
+	xor	ecx,ecx
+.scan:
+	lea	eax,[rcx+1]
+	cmp	eax,esi
+	jae	.ok
+	cmp	word [rdi+rcx],'${'
+	je	.var
+	inc	ecx
+	jmp	.scan
+.var:
+	add	ecx,2
+	mov	edx,ecx				; name start
+@@:
+	cmp	ecx,esi
+	jae	.bad				; not closed
+	cmp	byte [rdi+rcx],'}'
+	je	@f
+	inc	ecx
+	jmp	@b
+@@:
+	push	rdi
+	push	rsi
+	push	rcx
+	lea	rax,[rdi+rdx]
+	mov	esi,ecx
+	sub	esi,edx
+	mov	rdi,rax
+	lea	rdx,[e_header_vars]
+	call	list_index
+	pop	rcx
+	pop	rsi
+	pop	rdi
+	test	eax,eax
+	js	.bad
+	inc	ecx
+	jmp	.scan
+.ok:
+	clc
+	ret
+.bad:
+	stc
+	ret
+
+enumdef e_header_vars, 'client.ip', 'request.id', 'time.us', 'time.s'
 
 enumdef e_owned_headers, 'host', 'content-length', 'transfer-encoding', 'connection', 'keep-alive', \
 	'upgrade', 'te', 'trailer', 'proxy-connection', 'expect', 'x-forwarded-for', \

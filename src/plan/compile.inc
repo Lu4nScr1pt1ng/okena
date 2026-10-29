@@ -80,7 +80,8 @@ HD_NLEN		:= 8		; d: name length (without the *)
 HD_VLEN		:= 12		; d
 HD_NAME		:= 16		; q
 HD_VAL		:= 24		; q
-HD_SIZE		:= 32
+HD_VARS		:= 32		; d: ${...} in the value (how many), 0 = literal
+HD_SIZE		:= 40
 MAX_HDROPS	:= 4096
 HOP_SET		:= 1
 HOP_ADD		:= 2
@@ -648,6 +649,22 @@ compile_route_action:
 	mov	[r8+HD_VAL],rax
 	mov	eax,[r9+2*A_SIZE+A_VLEN]
 	mov	[r8+HD_VLEN],eax
+	; count the ${...} (checked already)
+	mov	dword [r8+HD_VARS],0
+	mov	rdx,rax
+	mov	rax,[r8+HD_VAL]
+	xor	ecx,ecx
+@@:
+	lea	r10d,[rcx+1]
+	cmp	r10d,edx
+	jae	@f
+	cmp	word [rax+rcx],'${'
+	jne	.no_var
+	inc	dword [r8+HD_VARS]
+.no_var:
+	inc	ecx
+	jmp	@b
+@@:
 .next_line:
 	mov	rbx,[rbx+N_NEXT]
 	jmp	.line
