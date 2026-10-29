@@ -22,7 +22,7 @@ BIN = ROOT / "build" / "okena"
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "auto"
 # ports 26000-26999: this suite's own range
 BASE = 26000 + os.getpid() % 99 * 10 + (5 if ENGINE == "epoll" else 0)
-BACK, LST, DEAD, QUICK = BASE, BASE + 1, BASE + 2, BASE + 3
+BACK, LST, DEAD, QUICK, MET = BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4
 
 
 def read_message(f, head_only=False):
@@ -184,6 +184,7 @@ conf.write_text(f"""
 okena {{
     workers 2
     io_engine {ENGINE}
+    metrics 127.0.0.1:{MET}
 }}
 http 127.0.0.1:{LST} {{
     route /api/* {{ to 127.0.0.1:{BACK} }}
@@ -431,6 +432,23 @@ try:
     c.send(req(b"GET", b"/slow"))
     r = c.response()
     check("the default response clock (30 s) lets a 3 s backend answer", r is not None and r[0] == 200)
+
+    # metrics: what the QUICK listener answered above, by class and source
+    time.sleep(1.2)                     # workers publish once a second
+    m = socket.create_connection(("127.0.0.1", MET), timeout=5)
+    m.sendall(b"GET /metrics HTTP/1.1\r\nHost: m\r\nConnection: close\r\n\r\n")
+    text = b""
+    while chunk := m.recv(65536):
+        text += chunk
+    vals = {}
+    for line in text.decode().splitlines():
+        if line.startswith("okena_http_responses_total{") and f':{QUICK}"' in line:
+            k, v = line.rsplit(" ", 1)
+            vals[k.split(",", 1)[1]] = int(v)
+    check("metrics: backend 2xx counted", vals.get('code="2xx",source="backend"}') == 3, str(vals))
+    check("metrics: okena's 408 and 504 counted as its own 4xx and 5xx",
+          vals.get('code="4xx",source="okena"}') == 1 and vals.get('code="5xx",source="okena"}') == 1)
+    check("metrics: no backend 5xx", vals.get('code="5xx",source="backend"}') == 0)
 
     log.seek(0)
     check("no crash", "killed by signal" not in log.read() and p.poll() is None)

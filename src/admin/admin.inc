@@ -407,6 +407,7 @@ OFF_S_CONNECTS	= g_st_s_connects - g_st_begin
 OFF_S_FAILS	= g_st_s_fails - g_st_begin
 OFF_L_EVICTED	= g_st_l_evicted - g_st_begin
 OFF_SRC_OPEN	= g_st_src_open - g_st_begin
+OFF_L_HTTP	= g_st_l_http - g_st_begin
 
 ; rdi = output, ebx = listener: {listener="..."
 listener_label:
@@ -542,6 +543,50 @@ metrics_render:
 	inc	ebx
 	jmp	.l5
 .l5_done:
+	memit '# HELP okena_http_responses_total HTTP responses sent to clients, by status class; source="okena" for the ones okena answered itself (errors, timeouts).',10
+	memit '# TYPE okena_http_responses_total counter',10
+	xor	ebx,ebx
+.l6:
+	cmp	ebx,[g_plan_listeners]
+	jae	.l6_done
+	imul	rax,rbx,LS_SIZE
+	cmp	dword [g_listeners+rax+LS_KIND],LK_HTTP
+	jne	.l6_next
+	xor	r12d,r12d			; source * 5 + class
+.l6_cell:
+	memit 'okena_http_responses_total'
+	call	listener_label
+	memit ',code="'
+	mov	eax,r12d
+	xor	edx,edx
+	mov	ecx,5
+	div	ecx
+	push	rax
+	lea	eax,[rdx+'1']
+	mov	[rdi],al
+	mov	word [rdi+1],'xx'
+	add	rdi,3
+	pop	rax
+	test	eax,eax
+	jnz	@f
+	memit '",source="backend"} '
+	jmp	.l6_value
+@@:
+	memit '",source="okena"} '
+.l6_value:
+	imul	ecx,ebx,10
+	add	ecx,r12d
+	lea	rcx,[OFF_L_HTTP+rcx*8]
+	call	stats_sum_q
+	call	fmt_u64
+	memit 10
+	inc	r12d
+	cmp	r12d,10
+	jb	.l6_cell
+.l6_next:
+	inc	ebx
+	jmp	.l6
+.l6_done:
 	; backends
 	memit '# TYPE okena_backend_connects_total counter',10
 	mov	r12d,OFF_S_CONNECTS

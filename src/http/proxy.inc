@@ -989,6 +989,9 @@ http_resp_head:
 	pop	rax
 	h_rec
 	lea	r14,[g_hm]
+	mov	edi,eax
+	xor	esi,esi
+	call	http_count
 	mov	[r15+H_STATUS],eax
 	mov	dword [r15+H_RBODY],BK_NONE
 	and	dword [r15+H_FLAGS],not HX_CHUNKOUT
@@ -1000,6 +1003,9 @@ http_resp_head:
 	pop	rax
 	h_rec
 	lea	r14,[g_hm]
+	mov	edi,eax
+	xor	esi,esi
+	call	http_count
 	and	dword [r15+H_FLAGS],not HX_UPGRADE	; the backend did not switch
 	mov	[r15+H_STATUS],eax
 	cmp	dword [r14+HM_VERSION],11
@@ -1241,6 +1247,32 @@ http_last_chunk:
 	lea	rdi,[str_last_chunk]
 	mov	esi,str_last_chunk.len
 	jmp	h_send
+
+; ------------------------------------------------------------ metrics
+
+; edi = status, esi = 0 when the backend's, 5 when okena's own. ebx =
+; session. Keeps everything but rcx, rdx.
+http_count:
+	push	rax
+	mov	eax,edi
+	xor	edx,edx
+	mov	ecx,100
+	div	ecx
+	dec	eax				; 1xx -> 0 ... 5xx -> 4
+	cmp	eax,4
+	jbe	@f
+	mov	eax,4
+@@:
+	add	eax,esi
+	mov	ecx,ebx
+	shl	rcx,S_SHIFT
+	add	rcx,[g_sess_base]
+	mov	ecx,[rcx+S_LST]
+	imul	ecx,ecx,10
+	add	eax,ecx
+	inc	qword [g_st_l_http+rax*8]
+	pop	rax
+	ret
 
 ; ------------------------------------------------------ phase timeouts
 
@@ -1491,6 +1523,9 @@ http_error:
 	h_rec
 	or	dword [r15+H_FLAGS],HX_CLOSE or HX_STARTED
 	mov	dword [r15+H_STATE],HS_ERROR_SEND
+	mov	edi,eax
+	mov	esi,5
+	call	http_count
 	lea	rdi,[r15+H_OUT]
 	push	rax
 	memit_x 'HTTP/1.1 '
