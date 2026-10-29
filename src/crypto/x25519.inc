@@ -602,20 +602,19 @@ end macro
 ; x2/x3 and z2/z3 at [rsp+XL_*] swapped when rdx is all ones, a whole
 ; field element per ymm register.
 macro ladder_cswap
-	vmovq	xmm0,rdx
-	vpbroadcastq ymm0,xmm0
 	irp <a,b>, XL_X2,XL_X3, XL_Z2,XL_Z3
-		vmovdqu	ymm1,[rsp+a]
-		vmovdqu	ymm2,[rsp+b]
-		vpxor	ymm3,ymm1,ymm2
-		vpand	ymm3,ymm3,ymm0
-		vpxor	ymm1,ymm1,ymm3
-		vpxor	ymm2,ymm2,ymm3
-		vmovdqu	[rsp+a],ymm1
-		vmovdqu	[rsp+b],ymm2
+		repeat 4, i:0
+			mov	rax,[rsp+a+i*8]
+			mov	rcx,[rsp+b+i*8]
+			mov	r8,rax
+			xor	r8,rcx
+			and	r8,rdx
+			xor	rax,r8
+			xor	rcx,r8
+			mov	[rsp+a+i*8],rax
+			mov	[rsp+b+i*8],rcx
+		end repeat
 	end irp
-	vpxor	ymm0,ymm0,ymm0
-	vzeroupper
 end macro
 
 ; rdi = out[32], rsi = scalar[32], rdx = u[32] (RFC 7748 encodings).

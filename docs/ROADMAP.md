@@ -90,8 +90,9 @@ Exit: beats HAProxy and nginx on added p99 for h1 keep-alive; survives a
 
 Progress: `src/crypto/` has SHA-256 (SHA-NI, and a scalar path for
 CPUs without it, picked by CPUID), HMAC, HKDF and the TLS 1.3
-HKDF-Expand-Label, X25519 (constant time; ~65 us, a mulx version is
-next) and AES-128-GCM (AES-NI and PCLMULQDQ; in place with the tag
+HKDF-Expand-Label, X25519 (constant time; mulx/adcx/adox, the ladder in
+OpenSSL's order; 25.6 us, as fast as OpenSSL 3.5 on the same machine)
+and AES-128-GCM (AES-NI and PCLMULQDQ; in place with the tag
 after the record, the tag checked in constant time before anything is
 decrypted) and P-256 ECDSA (deterministic nonces, RFC 6979; a fixed-base
 table of 37 Booth windows with constant-time selection and Jacobian mixed
