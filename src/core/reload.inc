@@ -50,6 +50,11 @@ macro plan_regions action
 	action g_plan_watchdog, 8
 	action g_plan_busy_poll, 8
 	action g_plan_health, 4
+	action g_plan_metrics, 4
+	action g_plan_metrics_salen, 4
+	action g_plan_metrics_text, 8
+	action g_plan_metrics_tlen, 4
+	action g_plan_metrics_sa, 28
 	action g_listeners, LS_SIZE * MAX_LISTENERS
 	action g_pools, PL_SIZE * MAX_POOLS
 	action g_servers, SV_SIZE * MAX_SERVERS
@@ -250,6 +255,18 @@ supervisor_reload:
 @@:
 	call	health_table_init
 	call	spawn_health
+	call	stats_table_init		; the old workers keep their pages
+	mov	edi,[g_admin_pid]
+	test	edi,edi
+	jz	@f
+	mov	dword [g_admin_pid],0
+	mov	esi,SIGKILL
+	mov	eax,SYS_kill
+	syscall
+@@:
+	call	spawn_admin
+	mov	edi,SG_RELOADS
+	call	stats_global_inc
 	inc	dword [g_gen]
 	xor	ebx,ebx
 .spawn:
@@ -315,6 +332,8 @@ supervisor_reload:
 	call	plan_restore
 .undo_arenas:
 	call	arenas_swap
+	mov	edi,SG_RELOAD_FAILS
+	call	stats_global_inc
 .out:
 	pop	r15
 	pop	r14

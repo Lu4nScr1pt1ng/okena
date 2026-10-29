@@ -28,6 +28,8 @@ test: $(BIN)
 	python3 -I tests/health/run.py
 	python3 -I tests/peer/run.py io_uring
 	python3 -I tests/peer/run.py epoll
+	python3 -I tests/admin/run.py io_uring
+	python3 -I tests/admin/run.py epoll
 
 image:
 	docker build -t okena .

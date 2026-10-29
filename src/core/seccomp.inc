@@ -222,6 +222,15 @@ rodata
 	sc_allow filter_health, SYS_clock_gettime
 	sc_end filter_health
 
+	; admin process: one connection at a time on the metrics socket
+	sc_begin filter_admin
+	sc_common filter_admin
+	sc_allow filter_admin, SYS_accept4
+	sc_allow filter_admin, SYS_read
+	sc_allow filter_admin, SYS_close
+	sc_allow filter_admin, SYS_setsockopt
+	sc_end filter_admin
+
 	; reload compiler: parses bytes already in memory, prints, exits
 	sc_begin filter_compiler
 	sc_common filter_compiler

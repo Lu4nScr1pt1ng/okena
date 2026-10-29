@@ -73,6 +73,11 @@ bss
 	g_plan_watchdog		dq ?
 	g_plan_busy_poll	dq ?		; microseconds, 0 = off
 	g_plan_health		dd ?		; pools with active checks
+	g_plan_metrics		dd ?		; 1 when an admin address is set
+	g_plan_metrics_salen	dd ?
+	g_plan_metrics_text	dq ?
+	g_plan_metrics_tlen	dd ?
+	g_plan_metrics_sa:	rb 28
 	g_listeners:	rb LS_SIZE * MAX_LISTENERS
 	g_pools:	rb PL_SIZE * MAX_POOLS
 	g_servers:	rb SV_SIZE * MAX_SERVERS
@@ -228,6 +233,24 @@ compile_settings:
 	lea	rcx,[dir_table + D_SIZE*DIR_BUSY_POLL]
 	cmp	rax,rcx
 	je	.busy_poll
+	lea	rcx,[dir_table + D_SIZE*DIR_METRICS]
+	cmp	rax,rcx
+	je	.metrics
+	jmp	.advance
+.metrics:
+	mov	rax,[rbx+N_ARGS]
+	mov	rdi,[rax+A_VAL]
+	mov	[g_plan_metrics_text],rdi
+	mov	esi,[rax+A_VLEN]
+	mov	[g_plan_metrics_tlen],esi
+	lea	rdx,[g_cmp_addr]
+	xor	ecx,ecx
+	call	parse_address
+	lea	rdi,[g_plan_metrics_sa]
+	lea	rsi,[g_cmp_addr]
+	call	sockaddr_build
+	mov	[g_plan_metrics_salen],eax
+	mov	dword [g_plan_metrics],1
 	jmp	.advance
 .busy_poll:
 	mov	rdi,rbx

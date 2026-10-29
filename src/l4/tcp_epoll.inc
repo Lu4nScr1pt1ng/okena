@@ -324,6 +324,7 @@ ep_accept:
 	je	.refuse
 	mov	ebx,eax
 	inc	dword [g_ls_active+r13*4]
+	inc	qword [g_st_l_accepted+r13*8]
 	inc	dword [g_active]
 	call	session_ptr
 	mov	dword [rax+S_STATE],ST_CONNECTING
@@ -355,6 +356,8 @@ ep_accept:
 	rep	movsb
 	call	peer_admit			; per_source, PROXY header
 	jnc	.connect
+	inc	qword [g_st_l_source+r13*8]
+	dec	qword [g_st_l_accepted+r13*8]	; refused, not admitted
 	mov	edi,ebx
 	call	ep_close
 	jmp	.next
@@ -363,6 +366,7 @@ ep_accept:
 	call	ep_connect
 	jmp	.next
 .refuse:
+	inc	qword [g_st_l_full+r13*8]
 	mov	edi,r14d
 	mov	eax,SYS_close
 	syscall
@@ -814,6 +818,13 @@ ep_pump:
 	syscall
 	test	rax,rax
 	jle	.no_data
+	mov	ecx,[r12+S_LST]
+	lea	rdx,[g_st_l_in+rcx*8]
+	cmp	dword [rsp],EK_CLIENT
+	je	@f
+	lea	rdx,[g_st_l_out+rcx*8]
+@@:
+	add	[rdx],rax
 	mov	[r12+r15+4],eax			; LEN
 	mov	dword [r12+r15+8],0		; OFF
 	mov	edi,ebx

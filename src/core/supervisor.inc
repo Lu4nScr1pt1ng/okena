@@ -76,6 +76,8 @@ supervisor_main:
 	call	groups_resolve_all
 	call	health_table_init
 	call	peer_global_init		; per_source table: lives across reloads
+	call	stats_table_init
+	call	metrics_open
 
 	; TERM, INT, CHLD and ALRM (the watchdog) arrive through a signalfd.
 	; Blocking them here also makes workers inherit the blocked mask.
@@ -156,6 +158,7 @@ supervisor_main:
 
 	call	spawn_control
 	call	spawn_health
+	call	spawn_admin
 
 	; check the heartbeats once a second
 	sub	rsp,32
@@ -614,6 +617,18 @@ reap_workers:
 	mov	r12d,[g_siginfo+SI_PID]
 	test	r12d,r12d
 	jz	.done
+	cmp	r12d,[g_admin_pid]
+	jne	.not_admin
+	mov	dword [g_admin_pid],0
+	cmp	dword [g_shutdown],0
+	jne	.next
+	lea	rdi,[ts_respawn_delay]
+	xor	esi,esi
+	mov	eax,SYS_nanosleep
+	syscall
+	call	spawn_admin
+	jmp	.next
+.not_admin:
 	cmp	r12d,[g_health_pid]
 	jne	.not_health
 	mov	dword [g_health_pid],0
@@ -698,6 +713,8 @@ reap_workers:
 	call	out_u64
 	out_lit ', restarting'
 	call	log_end
+	mov	edi,SG_RESTARTS
+	call	stats_global_inc
 	; A worker that dies right after starting is crash-looping; slow the
 	; restarts down so the supervisor does not spin.
 	call	monotonic_seconds
@@ -731,6 +748,13 @@ reap_workers:
 	mov	eax,SYS_kill
 	syscall
 @@:
+	mov	edi,[g_admin_pid]
+	test	edi,edi
+	jz	@f
+	mov	esi,SIGKILL
+	mov	eax,SYS_kill
+	syscall
+@@:
 	call	log_begin
 	out_lit 'all workers stopped'
 	call	log_end
@@ -752,6 +776,8 @@ begin_shutdown:
 	jmp	.signal
 .first:
 	mov	dword [g_shutdown],1
+	mov	rax,[g_stats_tbl]
+	mov	qword [rax+SG_OFF+SG_DRAINING],1	; /ready answers 503 from now on
 	call	log_begin
 	out_lit 'shutting down: draining connections'
 	call	log_end

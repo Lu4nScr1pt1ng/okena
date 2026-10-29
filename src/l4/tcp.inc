@@ -522,6 +522,7 @@ on_accept_a:
 	je	.refuse
 	mov	ebx,eax
 	inc	dword [g_ls_active+r13*4]
+	inc	qword [g_st_l_accepted+r13*8]
 	inc	dword [g_active]
 	call	session_ptr
 	mov	r15,rax
@@ -549,9 +550,13 @@ on_accept_a:
 	mov	edi,ebx
 	jmp	session_connect
 .over:
+	; refused, not admitted: count it there only
+	inc	qword [g_st_l_source+r13*8]
+	dec	qword [g_st_l_accepted+r13*8]
 	mov	edi,ebx
 	jmp	session_close
 .refuse:
+	inc	qword [g_st_l_full+r13*8]
 	call	ring_get_sqe
 	mov	byte [rax+SQE_OPCODE],IORING_OP_CLOSE
 	mov	[rax+SQE_FD],r14d
@@ -629,6 +634,7 @@ on_accept:
 	je	.refuse
 	mov	r12d,eax
 	inc	dword [g_ls_active+rbx*4]
+	inc	qword [g_st_l_accepted+rbx*8]
 	inc	dword [g_active]
 	mov	r13d,ebx			; listener
 	mov	ebx,r12d
@@ -650,6 +656,7 @@ on_accept:
 	jmp	session_connect
 .refuse:
 	; no slot: close the new connection at once
+	inc	qword [g_st_l_full+rbx*8]
 	call	ring_get_sqe
 	mov	byte [rax+SQE_OPCODE],IORING_OP_CLOSE
 	lea	ecx,[r14+1]
@@ -1283,6 +1290,7 @@ on_s_connect:
 
 ; edi = server: a connection succeeded.
 server_ok:
+	inc	qword [g_st_s_connects+rdi*8]
 	cmp	dword [g_sv_down+rdi*4],0
 	je	@f
 	mov	dword [g_sv_down+rdi*4],0
@@ -1301,6 +1309,7 @@ server_ok:
 
 ; edi = server, rsi = -errno of the failed attempt.
 server_failed:
+	inc	qword [g_st_s_fails+rdi*8]
 	; a name's address that fails may be stale: ask for a fresh lookup
 	imul	rax,rdi,SV_SIZE
 	mov	eax,[g_servers+rax+SV_GROUP]
@@ -1469,6 +1478,8 @@ on_s_recv_c:
 	jne	.not_open
 	test	r14,r14
 	jle	.end_or_error
+	mov	eax,[r13+S_LST]
+	add	[g_st_l_in+rax*8],r14
 	mov	eax,r15d
 	shr	eax,IORING_CQE_BUFFER_SHIFT
 	mov	[r13+S_CU_BID],eax
@@ -1536,6 +1547,8 @@ on_s_recv_u:
 	jne	.not_open
 	test	r14,r14
 	jle	.end_or_error
+	mov	eax,[r13+S_LST]
+	add	[g_st_l_out+rax*8],r14
 	mov	eax,r15d
 	shr	eax,IORING_CQE_BUFFER_SHIFT
 	mov	[r13+S_UC_BID],eax

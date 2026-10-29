@@ -43,6 +43,9 @@ Early. What works today:
   with the real source and destination, IPv4-mapped addresses
   normalized, and `limits { per_source N }` counted for the whole
   instance;
+* `metrics ADDRESS`: Prometheus `/metrics`, `/live`, `/ready` (503 while
+  draining) from an admin process, and `okena health` for Docker's
+  HEALTHCHECK;
 * a watchdog that replaces stuck workers;
 * a seccomp filter for each kind of process (no execve, no ptrace, no
   executable memory anywhere; an io_uring worker may make five system
