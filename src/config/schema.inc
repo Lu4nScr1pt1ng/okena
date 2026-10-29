@@ -15,6 +15,7 @@ CTX_LIMITS	= 5
 CTX_TIMEOUT	= 6
 CTX_HTTP	= 7
 CTX_ROUTE	= 8
+CTX_HOST	= 9
 
 ; Flags
 F_BLOCK_REQ	= 1		; must have a block
@@ -37,6 +38,7 @@ T_BACKEND	= 11		; backend address (names and unix paths too)
 T_WORKERS	= 12		; auto or 1 .. 256
 T_TARGET	= 13		; `to pool NAME` or `to ADDR...`
 T_FUTURE	= 14		; an option of the language not implemented yet
+T_HOSTNAME	= 16		; a host name, or *.example.com
 T_ROUTE		= 15		; a path ("/x", "/x/*", "/*") or a method (GET, POST...)
 
 ; Directive entry
@@ -103,6 +105,7 @@ M_LIMITS	= 1 shl CTX_LIMITS
 M_TIMEOUT	= 1 shl CTX_TIMEOUT
 M_HTTP		= 1 shl CTX_HTTP
 M_ROUTE		= 1 shl CTX_ROUTE
+M_HOST		= 1 shl CTX_HOST
 
 enumdef e_io_engine, 'auto', 'io_uring', 'epoll'
 enumdef e_balance, 'round-robin', 'least-conn', 'random'
@@ -118,10 +121,10 @@ keysdef k_connect, 'timeout', T_DURATION, 'max', T_FUTURE, 'idle', T_FUTURE, \
 	'warm', T_FUTURE, 'rate', T_FUTURE
 
 ; Names of the contexts, for messages, in CTX_* order starting at 1.
-enumdef ctx_names, 'the top level', '`okena`', '`tcp`', '`pool`', '`limits`', '`timeout`', '`http`', '`route`'
+enumdef ctx_names, 'the top level', '`okena`', '`tcp`', '`pool`', '`limits`', '`timeout`', '`http`', '`route`', '`host`'
 
 ; Directives of the language that this version does not implement yet.
-enumdef future_names, 'https', 'udp', 'xdp', 'tls', 'policy', 'use', \
+enumdef future_names, 'udp', 'xdp', 'tls', 'policy', 'use', \
 	'addon', 'alerts', 'include', 'admin', 'log', 'reload', 'profile', \
 	'acme', 'discover', 'split', 'mirror', 'rewrite', 'header', 'headers', 'cache', \
 	'cors', 'limit', 'auth', 'match', 'trusted_proxies', 'source', \
@@ -143,7 +146,8 @@ dirdef DIR_BUSY_POLL, 'busy_poll',   M_OKENA,   0,           F_UNIQUE, 1, 1, T_D
 dirdef DIR_DRAIN, 'drain',       M_OKENA,   0,           F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_drain
 dirdef DIR_TCP, 'tcp',         M_TOP,     CTX_TCP,     F_BLOCK_REQ, 1, 16, T_LISTEN, T_LISTEN, 0
 dirdef DIR_HTTP, 'http',        M_TOP,     CTX_HTTP,    F_BLOCK_REQ, 1, 16, T_LISTEN, T_LISTEN, 0
-dirdef DIR_ROUTE, 'route',      M_HTTP,    CTX_ROUTE,   F_BLOCK_REQ, 1, 32, T_ROUTE, T_ROUTE, 0
+dirdef DIR_HOST, 'host',        M_HTTP,    CTX_HOST,    F_BLOCK_REQ, 1, 64, T_HOSTNAME, T_HOSTNAME, 0
+dirdef DIR_ROUTE, 'route',      M_HTTP or M_HOST,    CTX_ROUTE,   F_BLOCK_REQ, 1, 32, T_ROUTE, T_ROUTE, 0
 dirdef DIR_POOL, 'pool',        M_TOP,     CTX_POOL,    F_BLOCK_REQ, 1, 1, T_NAME, T_NONE, 0
 dirdef DIR_TO, 'to',          M_TCP or M_ROUTE, 0,           F_UNIQUE, 1, 64, T_TARGET, T_TARGET, 0
 dirdef DIR_PROXY_PROTOCOL, 'proxy_protocol', M_TCP, 0,      F_UNIQUE, 2, 2, e_pp_mode, e_pp_version, 0

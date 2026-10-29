@@ -31,7 +31,7 @@ Every listener picks the cheapest engine that does the job:
 |---|---|---|---|
 | `xdp` | L4 balancing in the NIC driver, Maglev hashing, IPIP/GUE encapsulation, direct server return | eBPF in the kernel, no socket at all | none (flow table entry) |
 | `tcp` / `udp` | L4 proxy: terminates TCP, picks a backend, moves bytes | sockmap redirect in the kernel when possible, otherwise io_uring splice | two sockets, ~256 B state |
-| `tls-passthrough` | L4 routing by SNI/ALPN, no decryption | peek ClientHello, then like `tcp` | as `tcp` |
+| `tcp` + `tls passthrough` | L4 routing by SNI/ALPN, no decryption | peek ClientHello, then like `tcp` | as `tcp` |
 | `http` | L7 proxy and gateway: HTTP/1.1, HTTP/2, HTTP/3, WebSocket, gRPC | io_uring, kTLS, zero-copy body forwarding | ~256 B idle, buffers only while active |
 
 An application that only needs `tcp` gets a balancer that never parses a

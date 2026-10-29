@@ -311,15 +311,16 @@ http_route:
 .path:
 	mov	r14,rsi				; path
 	mov	r15d,edx
+	call	http_route_set			; ecx/r9d = the routes of the host
 	mov	rdi,[r13+HM_METHOD]
 	mov	esi,[r13+HM_MLEN]
 	call	method_bit
 	mov	r13d,eax			; method bit
 	mov	eax,-1				; best pool
 	mov	r8d,-1				; best score
-	mov	ecx,[r12+LS_RFIRST]
+	mov	ecx,[g_rset_first]
 	mov	r9d,ecx
-	add	r9d,[r12+LS_RCOUNT]
+	add	r9d,[g_rset_count]
 .next:
 	cmp	ecx,r9d
 	jae	.done
@@ -378,6 +379,118 @@ http_route:
 .skip:
 	inc	ecx
 	jmp	.next
+.done:
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+bss
+	g_rset_first	dd ?
+	g_rset_count	dd ?
+end bss
+
+; The route set for g_hm's Host on listener r12: an exact host name,
+; else the longest wildcard suffix, else the listener's own routes.
+; Sets g_rset_first/count. Keeps r12-r15.
+http_route_set:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	mov	eax,[r12+LS_RFIRST]
+	mov	[g_rset_first],eax
+	mov	eax,[r12+LS_RCOUNT]
+	mov	[g_rset_count],eax
+	cmp	dword [r12+LS_HCOUNT],0
+	je	.done
+	lea	rax,[g_hm]
+	mov	ecx,[rax+HM_HOST]
+	cmp	ecx,-1
+	je	.done
+	imul	rcx,rcx,HF_SIZE
+	lea	rcx,[rax+HM_HDRS+rcx]
+	mov	r13,[rcx+HF_VALUE]
+	mov	r14d,[rcx+HF_VLEN]
+	; without its port ("[::1]:80" keeps its brackets)
+	mov	ecx,r14d
+@@:
+	test	ecx,ecx
+	jz	.portless
+	dec	ecx
+	cmp	byte [r13+rcx],']'
+	je	.portless
+	cmp	byte [r13+rcx],':'
+	jne	@b
+	mov	r14d,ecx
+.portless:
+	; a trailing dot names the same host
+	test	r14d,r14d
+	jz	.done
+	cmp	byte [r13+r14-1],'.'
+	jne	@f
+	dec	r14d
+@@:
+	mov	r15d,-1				; best wildcard (length)
+	mov	ebx,[r12+LS_HFIRST]
+	mov	r8d,ebx
+	add	r8d,[r12+LS_HCOUNT]
+.host:
+	cmp	ebx,r8d
+	jae	.wild_done
+	imul	rcx,rbx,HO_SIZE
+	lea	rcx,[g_hosts+rcx]
+	mov	edx,[rcx+HO_NLEN]
+	cmp	dword [rcx+HO_WILD],0
+	jne	.wild
+	cmp	edx,r14d
+	jne	.next
+	push	rcx
+	push	r8
+	mov	rdi,[rcx+HO_NAME]
+	mov	rsi,r13
+	call	mem_eq_nocase
+	pop	r8
+	pop	rcx
+	test	eax,eax
+	jz	.next
+	jmp	.use				; exact: done
+.wild:
+	; ".example.com" matches "a.example.com", not "example.com"
+	cmp	edx,r14d
+	jae	.next
+	cmp	edx,r15d
+	jle	.next
+	push	rcx
+	push	r8
+	push	rdx
+	mov	rdi,[rcx+HO_NAME]
+	mov	esi,r14d
+	sub	esi,edx
+	lea	rsi,[r13+rsi]
+	call	mem_eq_nocase
+	pop	rdx
+	pop	r8
+	pop	rcx
+	test	eax,eax
+	jz	.next
+	mov	r15d,edx
+	mov	eax,[rcx+HO_RFIRST]
+	mov	[g_rset_first],eax
+	mov	eax,[rcx+HO_RCOUNT]
+	mov	[g_rset_count],eax
+.next:
+	inc	ebx
+	jmp	.host
+.use:
+	mov	eax,[rcx+HO_RFIRST]
+	mov	[g_rset_first],eax
+	mov	eax,[rcx+HO_RCOUNT]
+	mov	[g_rset_count],eax
+.wild_done:
 .done:
 	pop	r15
 	pop	r14

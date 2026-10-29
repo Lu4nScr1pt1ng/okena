@@ -256,6 +256,19 @@ report_unknown:
 	mov	edx,[r12+N_NLEN]
 	call	cfg_quote
 	call	cfg_diag_end
+	; HTTPS is a layer, not a listener
+	mov	rdi,[r12+N_NAME]
+	mov	esi,[r12+N_NLEN]
+	cstring str_https, 'https',0
+	lea	rdx,[str_https]
+	call	mem_eq_cstr
+	test	eax,eax
+	jz	@f
+	call	cfg_note
+	out_lit 'help: HTTPS is `http` with a TLS layer: `http :443 { tls { cert auto } ... }`'
+	call	cfg_note_end
+	jmp	.out
+@@:
 	; suggest among the directives of this context
 	mov	rdi,[r12+N_NAME]
 	mov	esi,[r12+N_NLEN]
@@ -874,6 +887,20 @@ check_value:
 	je	.workers
 	cmp	r12,T_ROUTE
 	je	.route
+	cmp	r12,T_HOSTNAME
+	je	.hostname
+	jmp	.ok
+.hostname:
+	; "*.example.com" or a name; matched without case
+	cmp	esi,2
+	jb	@f
+	cmp	word [rdi],'*.'
+	jne	@f
+	add	rdi,2
+	sub	esi,2
+@@:
+	call	check_hostname
+	jc	.bad
 	jmp	.ok
 .route:
 	call	check_route_arg
@@ -1163,6 +1190,11 @@ type_help:
 	out_lit 'a path (/health, /api/*, /*) or a method in capitals (GET, POST)'
 	jmp	.end
 @@:
+	cmp	rbx,T_HOSTNAME
+	jne	@f
+	out_lit 'a host name (api.example.com) or *.example.com'
+	jmp	.end
+@@:
 .end:
 	call	cfg_note_end
 	pop	rbx
@@ -1325,32 +1357,45 @@ is_listener:
 	stc
 	ret
 
-; rdi = http listener: routes, each sending somewhere, none twice.
+; rdi = http listener: routes, each sending somewhere, none twice in the
+; same set (the listener's own, or a host block's); hosts named once.
 check_http:
 	push	rbx
 	push	r12
 	push	r13
+	push	r14
 	mov	r12,rdi
 	xor	r13d,r13d			; routes
+	mov	rdi,r12
+	call	check_route_set
+	add	r13d,eax
 	mov	rbx,[r12+N_CHILD]
-.route:
+.host:
 	test	rbx,rbx
-	jz	.routes_done
-	lea	rax,[dir_table + D_SIZE*DIR_ROUTE]
+	jz	.hosts_done
+	lea	rax,[dir_table + D_SIZE*DIR_HOST]
 	cmp	[rbx+N_DEF],rax
-	jne	.next
-	inc	r13d
+	jne	.next_host
 	mov	rdi,rbx
-	call	check_listener			; its `to`
+	call	check_route_set
+	add	r13d,eax
+	test	eax,eax
+	jnz	@f
+	mov	rdi,[rbx+N_NAME]
+	mov	esi,[rbx+N_NLEN]
+	mov	edx,[rbx+N_LINE]
+	call	cfg_error
+	out_lit 'this host has no `route`'
+	call	cfg_diag_end
+	call	cfg_error_limit
+@@:
 	mov	rdi,r12
 	mov	rsi,rbx
-	call	check_route_unique
-	mov	rdi,rbx
-	call	check_route_has_path
-.next:
+	call	check_host_unique
+.next_host:
 	mov	rbx,[rbx+N_NEXT]
-	jmp	.route
-.routes_done:
+	jmp	.host
+.hosts_done:
 	test	r13d,r13d
 	jnz	.addresses
 	mov	rdi,[r12+N_NAME]
@@ -1366,6 +1411,116 @@ check_http:
 .addresses:
 	mov	rdi,r12
 	call	check_listen_addresses
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; rdi = listener or host block: check the routes directly in it.
+; eax = how many.
+check_route_set:
+	push	rbx
+	push	r12
+	push	r13
+	mov	r12,rdi
+	xor	r13d,r13d
+	mov	rbx,[r12+N_CHILD]
+.route:
+	test	rbx,rbx
+	jz	.done
+	lea	rax,[dir_table + D_SIZE*DIR_ROUTE]
+	cmp	[rbx+N_DEF],rax
+	jne	.next
+	inc	r13d
+	mov	rdi,rbx
+	call	check_listener			; its `to`
+	mov	rdi,r12
+	mov	rsi,rbx
+	call	check_route_unique
+	mov	rdi,rbx
+	call	check_route_has_path
+.next:
+	mov	rbx,[rbx+N_NEXT]
+	jmp	.route
+.done:
+	mov	eax,r13d
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; rdi = http listener, rsi = a host block of it: none of its names is
+; also named by an earlier host block (names compared without case).
+check_host_unique:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	mov	r12,rdi
+	mov	r13,rsi
+	xor	r14d,r14d			; argument of this block
+.mine:
+	cmp	r14d,[r13+N_ARGC]
+	jae	.done
+	imul	r15,r14,A_SIZE
+	add	r15,[r13+N_ARGS]
+	mov	rbx,[r12+N_CHILD]
+.other:
+	cmp	rbx,r13
+	je	.mine_next			; only earlier blocks
+	lea	rax,[dir_table + D_SIZE*DIR_HOST]
+	cmp	[rbx+N_DEF],rax
+	jne	.other_next
+	mov	rcx,[rbx+N_ARGS]
+	mov	edx,[rbx+N_ARGC]
+.theirs:
+	test	edx,edx
+	jz	.other_next
+	mov	eax,[rcx+A_VLEN]
+	cmp	eax,[r15+A_VLEN]
+	jne	.theirs_next
+	push	rcx
+	push	rdx
+	mov	rdi,[rcx+A_VAL]
+	mov	rsi,[r15+A_VAL]
+	mov	edx,eax
+	call	mem_eq_nocase
+	pop	rdx
+	pop	rcx
+	test	eax,eax
+	jnz	.dup
+.theirs_next:
+	add	rcx,A_SIZE
+	dec	edx
+	jmp	.theirs
+.other_next:
+	mov	rbx,[rbx+N_NEXT]
+	jmp	.other
+.dup:
+	mov	rdi,r15
+	call	arg_value_span
+	mov	edx,[r15+A_LINE]
+	call	cfg_error
+	out_lit 'host '
+	mov	rsi,[r15+A_VAL]
+	mov	edx,[r15+A_VLEN]
+	call	cfg_quote
+	out_lit ' already has a block'
+	call	cfg_diag_end
+	call	cfg_note
+	out_lit 'note: on line '
+	mov	eax,[rbx+N_LINE]
+	call	out_u64
+	call	cfg_note_end
+	call	cfg_error_limit
+.mine_next:
+	inc	r14d
+	jmp	.mine
+.done:
+	pop	r15
+	pop	r14
 	pop	r13
 	pop	r12
 	pop	rbx
@@ -1974,13 +2129,37 @@ pool_used:
 .route:
 	test	r13,r13
 	jz	.skip
+	lea	rax,[dir_table + D_SIZE*DIR_HOST]
+	cmp	[r13+N_DEF],rax
+	je	.host
 	mov	rdi,r13
 	push	r13
 	call	.uses
 	pop	r13
 	jc	.yes
+.route_next:
 	mov	r13,[r13+N_NEXT]
 	jmp	.route
+.host:
+	; the routes of a host block
+	push	r13
+	mov	r13,[r13+N_CHILD]
+.host_route:
+	test	r13,r13
+	jz	.host_done
+	mov	rdi,r13
+	push	r13
+	call	.uses
+	pop	r13
+	jc	.host_yes
+	mov	r13,[r13+N_NEXT]
+	jmp	.host_route
+.host_yes:
+	pop	r13
+	jmp	.yes
+.host_done:
+	pop	r13
+	jmp	.route_next
 ; rdi = node with a `to`: CF when it is `to pool` + this pool (r12)
 .uses:
 	mov	ecx,DIR_TO

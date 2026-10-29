@@ -174,6 +174,8 @@ http 127.0.0.1:{LST} {{
     route /only-get GET {{ to 127.0.0.1:{BACK} }}
     route /down/* {{ to 127.0.0.1:{DEAD} }}
     route /* {{ to 127.0.0.1:{BACK} }}
+    host api.t {{ route /* {{ to 127.0.0.1:{DEAD} }} }}
+    host *.w.t {{ route /only-wild {{ to 127.0.0.1:{BACK} }} }}
 }}
 """)
 log = open(tmp / "log", "w+")
@@ -282,6 +284,21 @@ try:
     c.send(req(b"GET", b"/down/x"))
     r = c.response()
     check("backend down: 502", r[0] == 502 and c.closed())
+
+    # host blocks
+    def status(host, target):
+        c3 = Client()
+        c3.send(req(b"GET", target, host=host))
+        r3 = c3.response()
+        c3.s.close()
+        return r3 and r3[0]
+    check("host block chosen by exact name", status(b"api.t", b"/x") == 502)
+    check("host match ignores case, port and a trailing dot", status(b"API.T.:8080", b"/x") == 502)
+    check("wildcard host, one and several labels", status(b"a.w.t", b"/only-wild") == 200
+          and status(b"b.a.w.t", b"/only-wild") == 200)
+    check("a host block does not fall back to the listener's routes", status(b"a.w.t", b"/other") == 404)
+    check("the wildcard does not match the bare domain", status(b"w.t", b"/other") == 200)
+    check("other hosts use the listener's routes", status(b"elsewhere", b"/x") == 200)
 
     # Expect: 100-continue
     c = Client()

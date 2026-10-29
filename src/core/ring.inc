@@ -31,22 +31,57 @@ bss
 end bss
 
 ; eax = 0 or -errno (or -1 when the kernel lacks a required feature).
+; The rings need contiguous kernel memory. When the kernel has none at
+; that moment (ENOMEM: fragmentation, dying processes not torn down yet),
+; try again with rings half the size, down to an eighth, pausing a little
+; between attempts, before giving up.
+RING_MIN_SHIFT	= 3
+
 ring_init:
 	push	rbx
 	push	r12
+	push	r13
+	xor	r13d,r13d			; size reduction (shift)
+.attempt:
 	lea	rdi,[g_uparams]
 	xor	eax,eax
 	mov	ecx,UP_SIZE/8
 	rep	stosq
 	mov	dword [g_uparams+UP_FLAGS],IORING_SETUP_SINGLE_ISSUER or IORING_SETUP_DEFER_TASKRUN or IORING_SETUP_SUBMIT_ALL or IORING_SETUP_NO_SQARRAY or IORING_SETUP_CQSIZE or IORING_SETUP_CLAMP or IORING_SETUP_R_DISABLED
-	mov	dword [g_uparams+UP_CQ_ENTRIES],CQ_ENTRIES
+	mov	eax,CQ_ENTRIES
+	mov	ecx,r13d
+	shr	eax,cl
+	mov	[g_uparams+UP_CQ_ENTRIES],eax
 	mov	edi,RING_ENTRIES
+	shr	edi,cl
 	lea	rsi,[g_uparams]
 	mov	eax,SYS_io_uring_setup
 	syscall
+	cmp	eax,-ENOMEM
+	jne	.created
+	cmp	r13d,RING_MIN_SHIFT
+	jae	.done				; still no memory: the caller decides
+	inc	r13d
+	mov	eax,20
+	call	sleep_ms
+	jmp	.attempt
+.created:
 	test	eax,eax
 	js	.done
 	mov	[g_ring_fd],eax
+	test	r13d,r13d
+	jz	@f
+	push	rax
+	call	log_begin
+	out_lit 'kernel memory was short: io_uring rings made '
+	mov	eax,1
+	mov	ecx,r13d
+	shl	eax,cl
+	call	out_u64
+	out_lit ' times smaller'
+	call	log_end
+	pop	rax
+@@:
 	mov	ebx,eax
 
 	mov	eax,[g_uparams+UP_FEATURES]
@@ -135,6 +170,7 @@ ring_init:
 .registered:
 	xor	eax,eax
 .done:
+	pop	r13
 	pop	r12
 	pop	rbx
 	ret

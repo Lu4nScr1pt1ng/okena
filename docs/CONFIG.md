@@ -8,6 +8,8 @@ two lines; everything else has a default chosen for safety and speed, and
 
 * **Say what, not how.** You declare listeners, routes and pools; okena
   picks the engine (XDP, sockmap, splice, HTTP) that does it cheapest.
+* **One layer, one place.** Every setting lives in the block of the
+  network layer it acts on (see Layers).
 * **One way to write each thing.** No synonyms, no deprecated spellings.
 * **Units in the values:** `250ms`, `30s`, `5m`; `16KiB`, `4MiB`; `100/s`,
   `5000/m`; `20%`.
@@ -41,6 +43,27 @@ directive arg arg key=value {
 * `policy NAME { ... }` defines a reusable set of route directives; `use
   NAME` applies it. Directives written in the route override the policy.
 
+## Layers
+
+A configuration reads the way a connection travels up the network
+stack. A listener's keyword says what okena speaks with clients on that
+address; inside it, each block belongs to one layer, in the order data
+goes up:
+
+| Layer | OSI | Where it is configured |
+|---|---|---|
+| address and transport | 3-4 | the listener: `tcp`, `udp`, `http` (HTTP is over TCP), its addresses, `limits`, `timeout`, `proxy_protocol` |
+| session and presentation | 5-6 | `tls { }` inside a `tcp` or `http` listener: certificates, versions, ALPN, client certificates, or SNI routing without decrypting |
+| application | 7 | inside an `http` listener: `host`, `route`, headers, auth, limits on requests |
+
+Backends mirror it: a `pool` has `server`s (address), `connect` (L4),
+`tls` (encryption towards them), `protocol` (h1, h2, grpc) and `health`
+checks at the layer they test (`tcp`, `tls`, `http`).
+
+Nothing is configured at a layer it does not act on: a TCP listener has
+no routes, an HTTP route has no TCP options, and a certificate is always
+in a `tls` block, whatever runs on top of it.
+
 ## The smallest configs
 
 L4 TCP balancer (PostgreSQL replicas):
@@ -51,23 +74,51 @@ tcp :5432 {
 }
 ```
 
-HTTPS reverse proxy with an automatic certificate:
+HTTP reverse proxy:
 
 ```
-https example.com {
-    to 127.0.0.1:3000
+http :80 {
+    route /* { to 127.0.0.1:3000 }
 }
 ```
 
-Inside Docker, with the backend as a compose service:
+HTTPS: the same, with the TLS layer added:
 
 ```
-docker run --network host okena https example.com to app:3000
+http :443 {
+    tls { cert auto }               # ACME for the hosts below
+    host example.com {
+        route /* { to 127.0.0.1:3000 }
+    }
+}
 ```
 
-`https NAME` implies `:443`, a certificate for `NAME` from ACME, an `:80`
-listener that redirects to HTTPS and serves ACME challenges, HTTP/2 and
-HTTP/3. Each implied thing can be overridden or turned off.
+TLS ends at okena, raw TCP behind (IMAP, a database):
+
+```
+tcp :993 {
+    tls { cert /etc/okena/mail.pem }
+    to 10.0.0.30:143
+}
+```
+
+TLS passes through untouched, routed by the name the client asks for:
+
+```
+tcp :443 {
+    tls passthrough {
+        sni api.example.com to pool api-tls
+        sni *.internal      to pool internal
+    }
+}
+```
+
+On the command line, inside Docker:
+
+```
+docker run --network host okena tcp :5432 to db:5432
+docker run --network host okena 'http :80 { route /* { to app:3000 } }'
+```
 
 ## Top level
 
@@ -94,53 +145,49 @@ setting can still be overridden.
 ## Listeners
 
 ```
-tcp     ADDR...            { ... }   # L4 TCP proxy
-udp     ADDR...            { ... }   # L4 UDP proxy (DNS, games, syslog)
-xdp     ADDR...            { ... }   # L4 in the kernel, DSR (needs backend setup)
-tls     ADDR...            { ... }   # SNI routing without decryption
-http    ADDR...            { ... }   # plaintext HTTP
-https   HOST|ADDR...       { ... }   # HTTP over TLS (+ h2, h3)
+tcp     ADDR...   { ... }   # L4 stream proxy; with tls { } it terminates or routes TLS
+udp     ADDR...   { ... }   # L4 datagrams (DNS, games, syslog)
+http    ADDR...   { ... }   # L7; with tls { } it is HTTPS (and HTTP/2, HTTP/3)
 ```
 
-Common listener directives:
+`xdp` (L4 in the kernel, direct server return) is a mode of `tcp` and
+`udp` listeners: `tcp 203.0.113.10:80 { mode xdp; to pool web }`.
+
+Transport settings, the same in every listener:
 
 ```
 limits {
     connections 200000
     per_source 256                  # connections per client address
-    header_size 32KiB
-    body_size 10MiB
-    h2_streams 128
 }
 timeout {
-    handshake 5s
-    header 10s
     idle 60s
-    body_idle 30s
 }
+proxy_protocol send v2              # tcp: tell the backend who the client is
 proxy_protocol accept from=10.0.0.0/8   # believe PROXY v1/v2 from these
-trusted_proxies 10.0.0.0/8              # believe X-Forwarded-For from these
 ```
 
-## L4
+The TLS layer:
 
 ```
-tcp :443 {
-    to pool web-tls
-    proxy_protocol send v2
+tls {
+    cert auto                       # ACME; or a file, or one per host
+    versions 1.2 1.3
+    alpn h2 http/1.1
+    client_ca /etc/okena/clients.pem required
 }
+tls passthrough {                   # tcp only: route on SNI, never decrypt
+    sni api.example.com to pool api-tls
+    default reject
+}
+```
 
-tls :443 {
-    sni api.example.com   to pool api-tls
-    sni *.internal        to pool internal
-    default               reject
-}
+The application layer (http) adds its own limits and timeouts:
 
-xdp 203.0.113.10:80 203.0.113.10:443 {
-    to pool web
-    balance maglev
-    encap gue               # ipip | gue; backends answer clients directly
-}
+```
+limits { header_size 32KiB; body_size 10MiB; h2_streams 128 }
+timeout { header 10s; body_idle 30s; response 30s }
+trusted_proxies 10.0.0.0/8          # believe X-Forwarded-For from these
 ```
 
 ## HTTP routes
@@ -154,7 +201,9 @@ parameter over `*`); ties are an error at load time, not a surprise in
 production.
 
 ```
-https api.example.com www.example.com {
+http :443 {
+    tls { cert auto }
+    host api.example.com www.example.com {
     route /v1/users/{id} GET PUT {
         use authenticated
         to pool users
@@ -173,6 +222,7 @@ https api.example.com www.example.com {
 
     route /old/* {
         redirect 301 /new/{*}
+    }
     }
 }
 ```
@@ -260,7 +310,8 @@ pool api {
 ## Sites, caching and the edge
 
 ```
-https example.com www.example.com {
+http :443 {
+    tls { cert auto }
     canonical example.com              # www -> apex, 301
     headers preset=secure              # HSTS, nosniff, frame and referrer policy
     compress gzip zstd min=1KiB
@@ -284,7 +335,8 @@ https example.com www.example.com {
     }
 }
 
-https cdn.example.com {
+http :443 {
+    tls { cert /etc/okena/cdn.pem }
     trusted_proxies cloudflare         # provider ranges, refreshed
     cache disk=/var/cache/okena size=200GiB memory=2GiB {
         key host path query=v,lang
@@ -295,7 +347,8 @@ https cdn.example.com {
     to pool shield
 }
 
-https grafana.example.com {
+http :443 {
+    tls { cert auto }
     auth oidc issuer=https://accounts.google.com client=${env:OIDC_ID} secret=${env:OIDC_SECRET} allow_domain=example.com
     to grafana:3000
 }

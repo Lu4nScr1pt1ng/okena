@@ -21,7 +21,18 @@ LS_PER_SOURCE	= 68		; d: connections per client address, 0 = no limit
 LS_KIND		= 72		; d: LK_*
 LS_RFIRST	= 76		; d: first route (http)
 LS_RCOUNT	= 80		; d
+LS_HFIRST	= 84		; d: first host block (http)
+LS_HCOUNT	= 88		; d
 LS_SIZE		= 96
+
+; Host block name (http): routes for requests to that host
+HO_NAME		= 0		; q: the name; for "*.example.com", ".example.com"
+HO_NLEN		= 8		; d
+HO_WILD		= 12		; d: 1 for a wildcard (matched as a suffix)
+HO_RFIRST	= 16		; d
+HO_RCOUNT	= 20		; d
+HO_SIZE		= 24
+MAX_HOSTS	= 1024
 
 LK_TCP		= 0
 LK_HTTP		= 1
@@ -104,6 +115,10 @@ bss
 	g_cmp_rcount	dd ?
 	g_plan_routes	dd ?
 	g_routes:	rb RT_SIZE * MAX_ROUTES
+	g_plan_hosts	dd ?
+	g_hosts:	rb HO_SIZE * MAX_HOSTS
+	g_cmp_hfirst	dd ?
+	g_cmp_hcount	dd ?
 end bss
 
 ; Exits with EXIT_CONFIG when something valid in the language cannot be
@@ -693,7 +708,9 @@ compile_listener:
 	jmp	.settings
 .http:
 	mov	rdi,r12
-	call	compile_routes			; g_cmp_rfirst/rcount
+	call	compile_hosts			; g_cmp_hfirst/hcount
+	mov	rdi,r12
+	call	compile_routes			; g_cmp_rfirst/rcount: the default routes
 .settings:
 	; limits and timeouts
 	mov	r15d,DEFAULT_CONNECTIONS
@@ -842,6 +859,10 @@ compile_listener:
 	mov	[rcx+LS_RFIRST],eax
 	mov	eax,[g_cmp_rcount]
 	mov	[rcx+LS_RCOUNT],eax
+	mov	eax,[g_cmp_hfirst]
+	mov	[rcx+LS_HFIRST],eax
+	mov	eax,[g_cmp_hcount]
+	mov	[rcx+LS_HCOUNT],eax
 	inc	r13d
 	jmp	.address
 .done:
@@ -910,6 +931,68 @@ compile_target:
 	pop	rax
 .out:
 	pop	r15
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; rdi = http node: a host entry per name of each host block, with that
+; block's routes. g_cmp_hfirst/hcount = the range.
+compile_hosts:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	mov	r12,rdi
+	mov	eax,[g_plan_hosts]
+	mov	[g_cmp_hfirst],eax
+	mov	dword [g_cmp_hcount],0
+	mov	rbx,[r12+N_CHILD]
+.block:
+	test	rbx,rbx
+	jz	.done
+	lea	rax,[dir_table + D_SIZE*DIR_HOST]
+	cmp	[rbx+N_DEF],rax
+	jne	.next
+	mov	rdi,rbx
+	call	compile_routes
+	xor	r13d,r13d
+.name:
+	cmp	r13d,[rbx+N_ARGC]
+	jae	.next
+	mov	ecx,[g_plan_hosts]
+	cmp	ecx,MAX_HOSTS
+	jae	plan_too_many
+	inc	dword [g_plan_hosts]
+	inc	dword [g_cmp_hcount]
+	imul	r14,rcx,HO_SIZE
+	lea	r14,[g_hosts+r14]
+	imul	rax,r13,A_SIZE
+	add	rax,[rbx+N_ARGS]
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	mov	dword [r14+HO_WILD],0
+	cmp	esi,2
+	jb	@f
+	cmp	word [rdi],'*.'
+	jne	@f
+	inc	rdi				; keep the dot: ".example.com"
+	dec	esi
+	mov	dword [r14+HO_WILD],1
+@@:
+	mov	[r14+HO_NAME],rdi
+	mov	[r14+HO_NLEN],esi
+	mov	eax,[g_cmp_rfirst]
+	mov	[r14+HO_RFIRST],eax
+	mov	eax,[g_cmp_rcount]
+	mov	[r14+HO_RCOUNT],eax
+	inc	r13d
+	jmp	.name
+.next:
+	mov	rbx,[rbx+N_NEXT]
+	jmp	.block
+.done:
+	pop	r14
 	pop	r13
 	pop	r12
 	pop	rbx

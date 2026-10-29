@@ -61,6 +61,8 @@ macro plan_regions action
 	action g_groups, GR_SIZE * MAX_GROUPS
 	action g_plan_routes, 4
 	action g_routes, RT_SIZE * MAX_ROUTES
+	action g_plan_hosts, 4
+	action g_hosts, HO_SIZE * MAX_HOSTS
 end macro
 
 PLAN_SAVE_SIZE = 0
