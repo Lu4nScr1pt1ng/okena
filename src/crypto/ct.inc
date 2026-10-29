@@ -34,6 +34,10 @@ crypto_init:
 	mov	eax,7
 	xor	ecx,ecx
 	cpuid
+	mov	eax,ebx
+	shr	eax,19				; ADX (adcx, adox)
+	and	al,1
+	mov	[g_cpu_adx],al
 	shr	ebx,29				; SHA extensions
 	and	bl,1
 	mov	[g_cpu_shani],bl

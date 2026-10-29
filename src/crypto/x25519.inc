@@ -8,13 +8,19 @@
 ; swaps with masks, never with branches, and no table is indexed by a
 ; secret. The inversion's exponent (p - 2) is public.
 ;
-; This first version multiplies with plain mul in memory: simple to check
-; against the reference. A mulx version is the measured follow-up.
+; Multiplication: in registers with mulx and the two carry chains of
+; adcx/adox where the CPU has ADX (all since Broadwell / Zen), else with
+; mul in memory. Squaring has its own routine (6 cross products doubled
+; plus 4 squares) on mulx alone. The inversion is the usual addition
+; chain for 2^255 - 21: 254 squarings and 11 multiplications.
 
 FE_SIZE		:= 32
 
 ; rdi = out, rsi = a, rdx = b (out may be a or b): a * b, below 2^256.
 fe_mul:
+	cmp	byte [g_cpu_adx],0
+	jne	fe_mul_adx
+fe_mul_generic:
 	push	rbx
 	push	r12
 	push	r13
@@ -72,6 +78,180 @@ fe_mul:
 	pop	rbx
 	ret
 
+; out = r8..r11 + 38 * r12..r15 (an eight-limb product), below 2^256.
+; Clobbers rax, rbx, rdx, r12.
+macro fe_reduce_store
+	mov	edx,38
+	mulx	rbx,rax,r12
+	add	r8,rax
+	adc	r9,rbx
+	mulx	rbx,rax,r14
+	adc	r10,rax
+	adc	r11,rbx
+	mov	r12d,0
+	adc	r12,0				; carry above limb 3
+	mulx	rbx,rax,r13
+	add	r9,rax
+	adc	r10,rbx
+	mulx	rbx,rax,r15
+	adc	r11,rax
+	adc	r12,rbx				; r12 = what is above 2^256 (small)
+	imul	r12,r12,38
+	add	r8,r12
+	adc	r9,0
+	adc	r10,0
+	adc	r11,0
+	sbb	rax,rax				; one more carry: at most once
+	and	eax,38
+	add	r8,rax
+	mov	[rdi],r8
+	mov	[rdi+8],r9
+	mov	[rdi+16],r10
+	mov	[rdi+24],r11
+end macro
+
+; fe_mul with mulx/adcx/adox: rows of a[i] * b added on two carry chains
+; (adcx for the low halves, adox for the high halves), all in registers.
+fe_mul_adx:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	call	fe_mul_core
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; fe_mul_adx's body for callers that saved rbx and r12-r15 themselves
+; (the ladder): clobbers them.
+fe_mul_core:
+	mov	rcx,rdx				; b
+	; row 0
+	mov	rdx,[rsi]
+	mulx	r9,r8,[rcx]
+	mulx	r10,rax,[rcx+8]
+	add	r9,rax
+	mulx	r11,rax,[rcx+16]
+	adc	r10,rax
+	mulx	r12,rax,[rcx+24]
+	adc	r11,rax
+	adc	r12,0
+	; rows 1..3: acc[i..i+4] += a[i] * b
+	irp <ai,c0,c1,c2,c3,c4>, 8,r9,r10,r11,r12,r13, 16,r10,r11,r12,r13,r14, 24,r11,r12,r13,r14,r15
+		mov	rdx,[rsi+ai]
+		xor	c4,c4				; also clears CF and OF
+		mulx	rbx,rax,[rcx]
+		adcx	c0,rax
+		adox	c1,rbx
+		mulx	rbx,rax,[rcx+8]
+		adcx	c1,rax
+		adox	c2,rbx
+		mulx	rbx,rax,[rcx+16]
+		adcx	c2,rax
+		adox	c3,rbx
+		mulx	rbx,rax,[rcx+24]
+		adcx	c3,rax
+		adox	c4,rbx
+		mov	eax,0
+		adcx	c4,rax
+	end irp
+	fe_reduce_store
+	ret
+
+; rdi = out, rsi = a: a^2, below 2^256 (mulx, no ADX needed).
+fe_sq:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	call	fe_sq_core
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; fe_sq's body: clobbers rbx and r12-r15.
+fe_sq_core:
+	; cross products a_i a_j (i < j) at positions 1..7
+	xor	r13d,r13d
+	xor	r14d,r14d
+	xor	r15d,r15d
+	mov	rdx,[rsi]
+	mulx	r10,r9,[rsi+8]			; a0 a1: 1, 2
+	mulx	r11,rax,[rsi+16]		; a0 a2: 2, 3
+	add	r10,rax
+	mulx	r12,rax,[rsi+24]		; a0 a3: 3, 4
+	adc	r11,rax
+	adc	r12,0
+	mov	rdx,[rsi+8]
+	mulx	rbx,rax,[rsi+16]		; a1 a2: 3, 4
+	add	r11,rax
+	adc	r12,rbx
+	adc	r13,0
+	mulx	rbx,rax,[rsi+24]		; a1 a3: 4, 5
+	add	r12,rax
+	adc	r13,rbx
+	adc	r14,0
+	mov	rdx,[rsi+16]
+	mulx	rbx,rax,[rsi+24]		; a2 a3: 5, 6
+	add	r13,rax
+	adc	r14,rbx
+	adc	r15,0
+	; doubled
+	add	r9,r9
+	adc	r10,r10
+	adc	r11,r11
+	adc	r12,r12
+	adc	r13,r13
+	adc	r14,r14
+	adc	r15,r15
+	; plus the squares a_i^2 at positions 2i, 2i+1
+	mov	rdx,[rsi]
+	mulx	rax,r8,rdx
+	mov	rdx,[rsi+8]
+	mulx	rcx,rbx,rdx
+	add	r9,rax
+	adc	r10,rbx
+	adc	r11,rcx
+	mov	rdx,[rsi+16]
+	mulx	rcx,rbx,rdx
+	adc	r12,rbx
+	adc	r13,rcx
+	mov	rdx,[rsi+24]
+	mulx	rcx,rbx,rdx
+	adc	r14,rbx
+	adc	r15,rcx
+	fe_reduce_store
+	ret
+
+; rdi = a (in place), ecx = n: a^(2^n).
+fe_sqn:
+	push	rbx
+	mov	ebx,ecx
+@@:
+	mov	rsi,rdi
+	push	rdi
+	call	fe_sq
+	pop	rdi
+	dec	ebx
+	jnz	@b
+	pop	rbx
+	ret
+
+; The ladder's multiply: the core when the CPU has ADX (its caller saved
+; the registers), else the generic one.
+fe_mul_l:
+	cmp	byte [g_cpu_adx],0
+	jne	fe_mul_core
+	jmp	fe_mul_generic
+
 ; rdi = out, rsi = a, rdx = b: a + b.
 fe_add:
 	mov	rax,[rsi]
@@ -125,32 +305,22 @@ fe_sub:
 ; rdi = out, rsi = a: a * 121665 ((A - 2) / 4, the ladder's constant).
 fe_mul_a24:
 	push	rbx
-	mov	ebx,121665
-	mov	rax,[rsi]
-	mul	rbx
-	mov	r8,rax
-	mov	r9,rdx
-	mov	rax,[rsi+8]
-	mul	rbx
+	mov	edx,121665
+	mulx	r9,r8,[rsi]
+	mulx	r10,rax,[rsi+8]
 	add	r9,rax
-	adc	rdx,0
-	mov	r10,rdx
-	mov	rax,[rsi+16]
-	mul	rbx
-	add	r10,rax
-	adc	rdx,0
-	mov	r11,rdx
-	mov	rax,[rsi+24]
-	mul	rbx
-	add	r11,rax
-	adc	rdx,0				; rdx = above 2^256
-	imul	rdx,rdx,38
-	add	r8,rdx
+	mulx	r11,rax,[rsi+16]
+	adc	r10,rax
+	mulx	rcx,rax,[rsi+24]
+	adc	r11,rax
+	adc	rcx,0				; above 2^256
+	imul	rcx,rcx,38
+	add	r8,rcx
 	adc	r9,0
 	adc	r10,0
 	adc	r11,0
 	sbb	rax,rax
-	and	rax,38
+	and	eax,38
 	add	r8,rax
 	mov	[rdi],r8
 	mov	[rdi+8],r9
@@ -224,51 +394,81 @@ fe_canon:
 	mov	[rdi+24],r9
 	ret
 
-; rdi = out, rsi = a: a^(p-2) = 1/a. Square and multiply over the public
-; exponent 2^255 - 21 (bits 254..8 set, then 11101011).
+; rdi = out, rsi = a: a^(p-2) = 1/a, by the addition chain for 2^255 - 21
+; (254 squarings, 11 multiplications).
+IV_Z2		:= 0
+IV_Z9		:= 32
+IV_Z11		:= 64
+IV_T		:= 96				; 2^5-1, 2^10-1, ... as the chain goes
+IV_U		:= 128
+IV_A		:= 160
+IV_Z50		:= 192
+IV_Z10		:= 224
+IV_SIZE		:= 256
+macro iv_op op*, d*, a*, b
+	lea	rdi,[rsp+d]
+	lea	rsi,[rsp+a]
+	match any, b
+		lea	rdx,[rsp+b]
+	end match
+	call	op
+end macro
+macro iv_copy d*, a*
+	lea	rdi,[rsp+d]
+	lea	rsi,[rsp+a]
+	mov	ecx,4
+	rep	movsq
+end macro
+macro iv_sqn d*, n*
+	lea	rdi,[rsp+d]
+	mov	ecx,n
+	call	fe_sqn
+end macro
 fe_inv:
-	push	rbx
 	push	r12
 	push	r13
-	sub	rsp,64
+	sub	rsp,IV_SIZE
 	mov	r12,rdi
-	mov	r13,rsi
-	; r = a (bit 254)
-	lea	rdi,[rsp]
-	mov	rsi,r13
+	lea	rdi,[rsp+IV_A]
 	mov	ecx,4
-	rep	movsq
-	mov	ebx,253
-.bit:
-	lea	rdi,[rsp]
-	lea	rsi,[rsp]
-	lea	rdx,[rsp]
-	call	fe_mul				; square
-	; bit ebx of 2^255 - 21
-	cmp	ebx,8
-	jae	.one
-	mov	eax,0xEB
-	bt	eax,ebx
-	jnc	.next
-.one:
-	lea	rdi,[rsp]
-	lea	rsi,[rsp]
-	mov	rdx,r13
-	call	fe_mul
-.next:
-	dec	ebx
-	jns	.bit
+	rep	movsq				; a
+	iv_op fe_sq, IV_Z2, IV_A		; z^2
+	iv_op fe_sq, IV_T, IV_Z2		; z^4
+	iv_op fe_sq, IV_T, IV_T			; z^8
+	iv_op fe_mul, IV_Z9, IV_T, IV_A		; z^9
+	iv_op fe_mul, IV_Z11, IV_Z9, IV_Z2	; z^11
+	iv_op fe_sq, IV_T, IV_Z11		; z^22
+	iv_op fe_mul, IV_T, IV_T, IV_Z9		; z^(2^5 - 1)
+	iv_copy IV_U, IV_T
+	iv_sqn IV_U, 5
+	iv_op fe_mul, IV_Z10, IV_U, IV_T	; 2^10 - 1
+	iv_copy IV_U, IV_Z10
+	iv_sqn IV_U, 10
+	iv_op fe_mul, IV_T, IV_U, IV_Z10	; 2^20 - 1
+	iv_copy IV_U, IV_T
+	iv_sqn IV_U, 20
+	iv_op fe_mul, IV_U, IV_U, IV_T		; 2^40 - 1
+	iv_sqn IV_U, 10
+	iv_op fe_mul, IV_Z50, IV_U, IV_Z10	; 2^50 - 1
+	iv_copy IV_U, IV_Z50
+	iv_sqn IV_U, 50
+	iv_op fe_mul, IV_T, IV_U, IV_Z50	; 2^100 - 1
+	iv_copy IV_U, IV_T
+	iv_sqn IV_U, 100
+	iv_op fe_mul, IV_U, IV_U, IV_T		; 2^200 - 1
+	iv_sqn IV_U, 50
+	iv_op fe_mul, IV_U, IV_U, IV_Z50	; 2^250 - 1
+	iv_sqn IV_U, 5				; 2^255 - 2^5
 	mov	rdi,r12
-	lea	rsi,[rsp]
-	mov	ecx,4
-	rep	movsq
+	lea	rsi,[rsp+IV_U]
+	lea	rdx,[rsp+IV_Z11]
+	call	fe_mul				; 2^255 - 21
 	mov	rdi,rsp
-	mov	ecx,64
+	mov	ecx,IV_SIZE
 	call	secure_zero
-	add	rsp,64
+	add	rsp,IV_SIZE
 	pop	r13
 	pop	r12
-	pop	rbx
 	ret
 
 ; The ladder's working set.
@@ -287,7 +487,77 @@ XL_C		:= 352
 XL_D		:= 384
 XL_DA		:= 416
 XL_CB		:= 448
-XL_SIZE		:= 480
+XL_OUT		:= 480				; q
+XL_BIT		:= 488				; d
+XL_SWAP		:= 492				; d
+XL_SIZE		:= 512
+
+macro fe_add_inline
+	mov	rax,[rsi]
+	add	rax,[rdx]
+	mov	rcx,[rsi+8]
+	adc	rcx,[rdx+8]
+	mov	r8,[rsi+16]
+	adc	r8,[rdx+16]
+	mov	r9,[rsi+24]
+	adc	r9,[rdx+24]
+	sbb	r10,r10
+	and	r10,38
+	add	rax,r10
+	adc	rcx,0
+	adc	r8,0
+	adc	r9,0
+	sbb	r10,r10
+	and	r10,38
+	add	rax,r10
+	mov	[rdi],rax
+	mov	[rdi+8],rcx
+	mov	[rdi+16],r8
+	mov	[rdi+24],r9
+end macro
+
+macro fe_sub_inline
+	mov	rax,[rsi]
+	sub	rax,[rdx]
+	mov	rcx,[rsi+8]
+	sbb	rcx,[rdx+8]
+	mov	r8,[rsi+16]
+	sbb	r8,[rdx+16]
+	mov	r9,[rsi+24]
+	sbb	r9,[rdx+24]
+	sbb	r10,r10
+	and	r10,38
+	sub	rax,r10
+	sbb	rcx,0
+	sbb	r8,0
+	sbb	r9,0
+	sbb	r10,r10
+	and	r10,38
+	sub	rax,r10
+	mov	[rdi],rax
+	mov	[rdi+8],rcx
+	mov	[rdi+16],r8
+	mov	[rdi+24],r9
+end macro
+
+; x2/x3 and z2/z3 at [rsp+XL_*] swapped when rdx is all ones, a whole
+; field element per ymm register.
+macro ladder_cswap
+	vmovq	xmm0,rdx
+	vpbroadcastq ymm0,xmm0
+	irp <a,b>, XL_X2,XL_X3, XL_Z2,XL_Z3
+		vmovdqu	ymm1,[rsp+a]
+		vmovdqu	ymm2,[rsp+b]
+		vpxor	ymm3,ymm1,ymm2
+		vpand	ymm3,ymm3,ymm0
+		vpxor	ymm1,ymm1,ymm3
+		vpxor	ymm2,ymm2,ymm3
+		vmovdqu	[rsp+a],ymm1
+		vmovdqu	[rsp+b],ymm2
+	end irp
+	vpxor	ymm0,ymm0,ymm0
+	vzeroupper
+end macro
 
 ; rdi = out[32], rsi = scalar[32], rdx = u[32] (RFC 7748 encodings).
 x25519:
@@ -297,7 +567,7 @@ x25519:
 	push	r14
 	push	r15
 	sub	rsp,XL_SIZE
-	mov	r12,rdi
+	mov	[rsp+XL_OUT],rdi
 	; k: clamped
 	lea	rdi,[rsp+XL_K]
 	push	rdx
@@ -324,96 +594,83 @@ x25519:
 	end repeat
 	mov	byte [rsp+XL_X2],1
 	mov	byte [rsp+XL_Z3],1
-	xor	r14d,r14d			; swap
-	mov	r13d,254			; bit
+	mov	dword [rsp+XL_SWAP],0
+	mov	dword [rsp+XL_BIT],254
 .step:
 	; k_t, without a branch on it
-	mov	eax,r13d
+	mov	eax,[rsp+XL_BIT]
+	mov	ecx,eax
 	shr	eax,3
-	movzx	ecx,byte [rsp+XL_K+rax]
-	mov	eax,r13d
-	and	eax,7
-	xchg	eax,ecx
+	movzx	eax,byte [rsp+XL_K+rax]
+	and	ecx,7
 	shr	eax,cl
 	and	eax,1				; k_t
-	mov	r15d,eax
-	xor	r14d,eax			; swap ^= k_t
-	mov	rdx,r14
+	mov	edx,[rsp+XL_SWAP]
+	mov	[rsp+XL_SWAP],eax		; swap = k_t (for the next step)
+	xor	edx,eax				; swap ^ k_t
 	neg	rdx				; 0 or all ones
-	push	rdx
-	lea	rdi,[rsp+8+XL_X2]
-	lea	rsi,[rsp+8+XL_X3]
-	call	fe_cswap
-	pop	rdx
-	lea	rdi,[rsp+XL_Z2]
-	lea	rsi,[rsp+XL_Z3]
-	call	fe_cswap
-	mov	r14d,r15d			; swap = k_t
+	ladder_cswap
 	; A = x2 + z2, AA = A^2, B = x2 - z2, BB = B^2, E = AA - BB
 	lea	rdi,[rsp+XL_A]
 	lea	rsi,[rsp+XL_X2]
 	lea	rdx,[rsp+XL_Z2]
-	call	fe_add
+	fe_add_inline
 	lea	rdi,[rsp+XL_AA]
 	lea	rsi,[rsp+XL_A]
-	lea	rdx,[rsp+XL_A]
-	call	fe_mul
+	call	fe_sq_core
 	lea	rdi,[rsp+XL_B]
 	lea	rsi,[rsp+XL_X2]
 	lea	rdx,[rsp+XL_Z2]
-	call	fe_sub
+	fe_sub_inline
 	lea	rdi,[rsp+XL_BB]
 	lea	rsi,[rsp+XL_B]
-	lea	rdx,[rsp+XL_B]
-	call	fe_mul
+	call	fe_sq_core
 	lea	rdi,[rsp+XL_E]
 	lea	rsi,[rsp+XL_AA]
 	lea	rdx,[rsp+XL_BB]
-	call	fe_sub
+	fe_sub_inline
 	; C = x3 + z3, D = x3 - z3, DA = D * A, CB = C * B
 	lea	rdi,[rsp+XL_C]
 	lea	rsi,[rsp+XL_X3]
 	lea	rdx,[rsp+XL_Z3]
-	call	fe_add
+	fe_add_inline
 	lea	rdi,[rsp+XL_D]
 	lea	rsi,[rsp+XL_X3]
 	lea	rdx,[rsp+XL_Z3]
-	call	fe_sub
+	fe_sub_inline
 	lea	rdi,[rsp+XL_DA]
 	lea	rsi,[rsp+XL_D]
 	lea	rdx,[rsp+XL_A]
-	call	fe_mul
+	call	fe_mul_l
 	lea	rdi,[rsp+XL_CB]
 	lea	rsi,[rsp+XL_C]
 	lea	rdx,[rsp+XL_B]
-	call	fe_mul
+	call	fe_mul_l
 	; x3 = (DA + CB)^2
 	lea	rdi,[rsp+XL_X3]
 	lea	rsi,[rsp+XL_DA]
 	lea	rdx,[rsp+XL_CB]
-	call	fe_add
+	fe_add_inline
 	lea	rdi,[rsp+XL_X3]
 	lea	rsi,[rsp+XL_X3]
-	lea	rdx,[rsp+XL_X3]
-	call	fe_mul
+	call	fe_sq_core
 	; z3 = x1 * (DA - CB)^2
 	lea	rdi,[rsp+XL_Z3]
 	lea	rsi,[rsp+XL_DA]
 	lea	rdx,[rsp+XL_CB]
-	call	fe_sub
+	fe_sub_inline
 	lea	rdi,[rsp+XL_Z3]
 	lea	rsi,[rsp+XL_Z3]
-	lea	rdx,[rsp+XL_Z3]
-	call	fe_mul
+	call	fe_sq_core
 	lea	rdi,[rsp+XL_Z3]
 	lea	rsi,[rsp+XL_Z3]
 	lea	rdx,[rsp+XL_X1]
-	call	fe_mul
+	call	fe_mul_l
 	; x2 = AA * BB
 	lea	rdi,[rsp+XL_X2]
 	lea	rsi,[rsp+XL_AA]
 	lea	rdx,[rsp+XL_BB]
-	call	fe_mul
+	call	fe_mul_l
 	; z2 = E * (AA + a24 * E)
 	lea	rdi,[rsp+XL_Z2]
 	lea	rsi,[rsp+XL_E]
@@ -421,23 +678,16 @@ x25519:
 	lea	rdi,[rsp+XL_Z2]
 	lea	rsi,[rsp+XL_AA]
 	lea	rdx,[rsp+XL_Z2]
-	call	fe_add
+	fe_add_inline
 	lea	rdi,[rsp+XL_Z2]
 	lea	rsi,[rsp+XL_E]
 	lea	rdx,[rsp+XL_Z2]
-	call	fe_mul
-	dec	r13d
+	call	fe_mul_l
+	dec	dword [rsp+XL_BIT]
 	jns	.step
-	mov	rdx,r14
+	mov	edx,[rsp+XL_SWAP]
 	neg	rdx
-	push	rdx
-	lea	rdi,[rsp+8+XL_X2]
-	lea	rsi,[rsp+8+XL_X3]
-	call	fe_cswap
-	pop	rdx
-	lea	rdi,[rsp+XL_Z2]
-	lea	rsi,[rsp+XL_Z3]
-	call	fe_cswap
+	ladder_cswap
 	; x2 / z2, canonical, little endian
 	lea	rdi,[rsp+XL_Z2]
 	lea	rsi,[rsp+XL_Z2]
@@ -445,10 +695,10 @@ x25519:
 	lea	rdi,[rsp+XL_X2]
 	lea	rsi,[rsp+XL_X2]
 	lea	rdx,[rsp+XL_Z2]
-	call	fe_mul
+	call	fe_mul_l
 	lea	rdi,[rsp+XL_X2]
 	call	fe_canon
-	mov	rdi,r12
+	mov	rdi,[rsp+XL_OUT]
 	lea	rsi,[rsp+XL_X2]
 	mov	ecx,4
 	rep	movsq

@@ -11,6 +11,7 @@
 ;   'E' P-256 ECDSA (RFC 6979): d (32), digest (32) -> the DER signature
 ;   'M' mont_mul mod p, 'a' mod_add, 'b' mod_sub: a, b (4 limbs each, little endian)
 ;   'I' mod_inv mod p: a (4 limbs, Montgomery form); 'D' G + G (projective, raw)
+;   'B' benchmark: op ('x' or 'E'), count (4, LE), the op's input -> ns per op
 ;   'G' AES-128-GCM open: key, iv, aad len, aad, ciphertext | tag; 'FAIL' if wrong
 
 format ELF64 executable 3
@@ -86,6 +87,8 @@ start:
 	je	.p256_pub
 	cmp	al,'M'
 	je	.mont
+	cmp	al,'B'
+	je	.bench
 	cmp	al,'I'
 	je	.minv
 	cmp	al,'a'
@@ -250,6 +253,61 @@ start:
 	call	p256_add
 	mov	esi,96
 	jmp	.print
+.bench:
+	movzx	r12d,byte [rsi]			; which
+	mov	r13d,[rsi+1]			; how many
+	lea	r14,[rsi+5]			; its input
+	call	.now
+	mov	r15,rax
+.again:
+	cmp	r12b,'m'
+	jne	.not_m
+	mov	rdi,r14				; in place: a chain of dependent products
+	mov	rsi,r14
+	mov	rdx,r14
+	call	fe_mul
+	jmp	.counted
+.not_m:
+	cmp	r12b,'q'
+	jne	.not_q
+	mov	rdi,r14
+	mov	rsi,r14
+	call	fe_sq
+	jmp	.counted
+.not_q:
+	cmp	r12b,'x'
+	jne	@f
+	lea	rdi,[g_out]
+	mov	rsi,r14
+	lea	rdx,[r14+32]
+	call	x25519
+	jmp	.counted
+@@:
+	lea	rdi,[g_label]
+	mov	rsi,r14
+	lea	rdx,[r14+32]
+	call	p256_sign
+.counted:
+	dec	r13d
+	jnz	.again
+	call	.now
+	sub	rax,r15
+	mov	ecx,[g_in+2]			; the count again
+	xor	edx,edx
+	div	rcx
+	lea	rdi,[g_in]
+	call	out_u64_to
+	jmp	.write_line
+.now:
+	sub	rsp,16
+	mov	edi,CLOCK_MONOTONIC
+	mov	rsi,rsp
+	mov	eax,SYS_clock_gettime
+	syscall
+	imul	rax,[rsp],1000000000
+	add	rax,[rsp+8]
+	add	rsp,16
+	ret
 .mont:
 	; (debug) a, b: 4 limbs each, little endian; mont_mul mod p
 	lea	rdi,[g_out]
@@ -299,6 +357,7 @@ start:
 	add	rdi,2
 	inc	ecx
 	jmp	.hex
+.write_line:
 .write:
 	mov	byte [rdi],10
 	inc	rdi
@@ -312,6 +371,25 @@ start:
 	mov	eax,SYS_exit_group
 	syscall
 .digits	db '0123456789abcdef'
+
+; rax = value, rdi = output: decimal. rdi = after it.
+out_u64_to:
+	sub	rsp,24
+	lea	rsi,[rsp+24]
+	mov	ecx,10
+@@:
+	xor	edx,edx
+	div	rcx
+	add	dl,'0'
+	dec	rsi
+	mov	[rsi],dl
+	test	rax,rax
+	jnz	@b
+	lea	rcx,[rsp+24]
+	sub	rcx,rsi
+	rep	movsb
+	add	rsp,24
+	ret
 
 segment readable
 	rodata_emit

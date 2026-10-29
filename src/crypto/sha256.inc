@@ -104,6 +104,7 @@ sha256_blocks_ni:
 
 bss
 	g_cpu_shani	db ?		; 1: SHA-NI blocks
+	g_cpu_adx	db ?		; 1: adcx/adox multiplications
 end bss
 
 ; rdi = state, rsi = data, rdx = blocks: whichever this CPU runs best.
