@@ -182,6 +182,15 @@ the connection closed when its framing can no longer be trusted.
 | Reload during heavy traffic | no dropped connections; old generations freed as connections finish |
 | Binary upgrade | listeners handed over, old workers drain |
 | Worker crash | only its connections lost; queued connections wait for the replacement |
+| Worker hung (infinite loop) | heartbeat watchdog kills and replaces it after 2 s |
+| The same request crashes workers repeatedly | fingerprint quarantined after two crashes, 400 for an hour, alert |
+| Parser bug in the configuration | compiler child dies, supervisor and running config unaffected |
+| Control process crash | workers keep last backend sets, keys and health; restarted |
+| DNS returns nothing or fails | last addresses kept (stale), pool never emptied by DNS |
+| JWKS endpoint down | cached keys valid for `stale`; new key IDs retried with backoff |
+| Invalid configuration at startup | `last_good` starts the last configuration that compiled |
+| Disk cache I/O errors | cache bypassed, requests go to origin |
+| Supervisor crash | systemd socket activation / restart policy; sockets outlive it |
 | Disk full (cache, logs) | cache stops admitting, logs drop and count, traffic unaffected |
 | Clock jumps (NTP step, VM migration) | monotonic clock for deadlines; wall clock only for `Date`, logs, certificates and JWT `exp` (with leeway) |
 | Running out of file descriptors | limit checked at start against `limits connections`, 503 before `EMFILE` |

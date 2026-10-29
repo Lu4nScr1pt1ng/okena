@@ -7,9 +7,11 @@ This document records how it is built and why. What gets built when is in
 
 ## Goals, in order
 
-1. **Never stall.** No request waits on a lock, a blocking syscall, an
+1. **Never stall, never fall over.** No request waits on a lock, a blocking syscall, an
    allocation or another core. A slow backend, a slow client, a reload or a
-   traffic spike degrades only the traffic that caused it.
+   traffic spike degrades only the traffic that caused it. Every
+   component can fail; each failure stays inside its own unit and the
+   rest keeps serving with the last state it knew.
 2. **Survive monstrous spikes.** Every resource has a fixed ceiling reserved
    up front; past it, okena sheds load early and cheaply instead of
    queueing. Latency of the traffic it accepts stays flat.
@@ -40,7 +42,8 @@ byte of its traffic.
 ```
 supervisor (PID 1 in a container, or under systemd)
  ├─ owns all listening sockets (SO_REUSEPORT, one per worker per listener)
- ├─ compiles the configuration into an immutable plan (memfd, sealed)
+ ├─ runs a short-lived compiler child that turns the configuration into
+ │  an immutable plan (memfd, sealed); watches worker heartbeats
  ├─ worker 0 ── pinned to CPU 0 ── its own io_uring, memory, upstream connections
  ├─ worker 1 ── pinned to CPU 1
  ├─ ...
@@ -111,6 +114,104 @@ and DNS. Work that is slow by nature runs elsewhere: certificate issuance
 in the acme process, log formatting and writing in the logger, config
 compilation in the supervisor. TLS handshakes run inline but are
 budgeted (see below).
+
+## Resilience and fault tolerance
+
+okena assumes that everything fails: its own code, the machine, the
+backends, the network, the services it depends on. The rule is **static
+stability**: when something okena depends on fails, the data path keeps
+working with what it last knew, and the failure stays inside the smallest
+possible unit.
+
+**Failure domains, smallest first**
+
+| Unit | When it fails | Blast radius |
+|---|---|---|
+| a request | bad input, timeout, backend error | that request (and its connection when framing is lost) |
+| a connection | protocol abuse, slow peer, reset | that connection |
+| a backend | crash, black hole, slowness | ejected; its requests retried within the budget |
+| an addon | crash, hang, slowness | its routes follow `on_error`; it is restarted |
+| a worker | crash, hang | its connections; the kernel queues new ones for its replacement |
+| the control process | crash | nothing on the data path; workers keep the last published state; it is restarted |
+| the logger / disk | crash, disk full | log lines dropped and counted |
+| the supervisor | must not fail | see below |
+| the host | power, kernel | the fleet: other instances, BGP withdrawal, DNS failover |
+
+**The supervisor is small and never touches untrusted input.** It forks,
+reaps, holds sockets and swaps generations; nothing else. Parsing and
+compiling the configuration, the riskiest code it would otherwise run,
+happens in a short-lived compiler child that writes the plan into a
+memfd; a bug in the parser kills the child, never the supervisor, and the
+running configuration stays. Under systemd with socket activation, or a
+container restart policy, even a supervisor crash loses no queued
+connection: the listening sockets outlive it.
+
+**Hung workers are found and replaced.** Each worker bumps a heartbeat in
+its stats page every loop iteration. A worker whose heartbeat has not
+moved for `watchdog` (default 2 s) while it has work is killed and
+replaced; the stall is logged with its last known state. An infinite
+loop or a deadlock-shaped bug costs two seconds of one worker's
+connections, not the service.
+
+**Queries of death.** A request that crashes a worker would crash its
+replacement too, and the next. Before running risky stages (parsing,
+decompression, addon replies), a worker writes a fingerprint of the
+request (listener, route, a hash of the request head) into its shared
+page. When a worker dies, the supervisor reads the fingerprint; after two
+crashes with the same one, workers refuse requests with that fingerprint
+(400, logged and alerted) for an hour. One poisoned request cannot take
+down the fleet one worker at a time.
+
+**Dependencies fail safe, with last known good state:**
+
+* DNS failing or answering empty: backends keep their last addresses
+  (stale) until DNS answers again; an empty answer never empties a pool
+  that had backends, unless the operator removes them.
+* Discovery source down (Docker, Kubernetes, files): the last set stays.
+* JWKS endpoint down: cached keys stay valid for `stale` (default 24 h);
+  new key IDs are fetched when they appear, rate limited.
+* ACME or the CA down: the current certificate stays; renewal retries
+  with backoff long before expiry.
+* Health checker unable to run (control process restarting): backends
+  keep their last state; passive detection continues in the workers.
+* Configuration invalid at startup: with `last_good` on (default for
+  reloads, optional at startup) okena starts on the last configuration
+  that compiled, saved next to the file, and says so loudly.
+* Disk cache I/O errors: the cache is bypassed and the error counted;
+  requests go to the origin.
+
+**Backends fail; requests should not.** Covered in detail elsewhere:
+outlier ejection, retries with budgets, hedging, deploy hold, panic mode,
+`stale-if-error`, circuit breakers and adaptive concurrency, all chosen
+so that a failing backend sheds its own load instead of spreading it.
+
+**Every fast path has a slow path.** io_uring → epoll, sockmap → splice
+→ copy, kTLS → user-space records, zcrx → normal receive, eBPF steering
+→ reuseport hash, huge pages → normal pages. A feature that fails at
+startup or at runtime switches to its fallback for that connection or
+worker, logs it once, and exposes it as a metric. okena never refuses to
+serve because an optimisation is unavailable.
+
+**State that matters survives restarts:** ticket keys (optionally on
+disk), the disk cache (its index is rebuilt from the segments in the
+background after a restart, serving misses meanwhile), the last good
+configuration, the last known backend sets (so a restart during a DNS
+outage still has backends). Rate-limit and outlier state are deliberately
+not persisted: they rebuild in seconds.
+
+**Health of okena itself:** `/live` answers as long as the supervisor and
+one worker run; `/ready` fails while starting, draining, or when no pool
+of the default route has a backend. Fleets and orchestrators use them to
+take an instance out before it fails.
+
+**Faults are tested, not hoped for.** `make chaos` runs the service under
+load while killing workers (SIGKILL and SIGSTOP), the control process,
+addons and backends; filling the disk; injecting packet loss, delay and
+reordering (netem); black-holing backends with iptables; exhausting ports
+and memory (cgroup limits); stepping the clock. A run passes when every
+request got either a correct response or a fast, explicit error, never a
+hang. Routes can also inject faults on purpose (`fault delay=100ms 5%`,
+`fault abort=503 1%`) to test the clients and backends behind okena.
 
 ## Surviving spikes
 

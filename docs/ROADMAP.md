@@ -24,7 +24,9 @@ References used for comparison: HAProxy 3.x (L4 and HTTP/1), nginx
 * Timer wheel (hierarchical, O(1)), TSC/vDSO time, CPUID dispatch,
   kernel feature probing (`okena check --host`).
 * Configuration: lexer, parser, validator with suggestions, compiler to
-  the sealed plan; `okena check`, `okena fmt`, `okena explain`.
+  the sealed plan (in a compiler child); `okena check`, `okena fmt`,
+  `okena explain`; last good configuration kept.
+* Worker heartbeat watchdog and query-of-death quarantine.
 * Provided buffer rings with incremental consumption, recv/send bundles.
 * Test harness: unit tests in assembly, Python integration runner,
   `okena bench` (open loop, coordinated-omission corrected).
@@ -58,6 +60,8 @@ okena profile (io_uring), and the startup line says which.
 * Reuseport eBPF steering by CPU.
 * Overload manager v1 (slots, loop lag), per-source connection limits.
 * Graceful drain, reload of pools and listeners.
+* `make chaos`: workers killed and stopped, backends killed and
+  black-holed, netem loss/delay, port and memory exhaustion.
 
 Exit: beats HAProxy `mode tcp` on added latency and connections/s per
 core; reload under load drops nothing; chaos suite passes (backend
@@ -120,6 +124,7 @@ Exit: beats Envoy on added p99 for gRPC unary and streaming.
 * HTTP cache with coalescing and stale-while-revalidate.
 * Static files and SPAs (fallback, ranges, ETag), precompressed variants,
   on-the-fly gzip/zstd for text, 103 Early Hints.
+* Fault injection per route (`fault delay=`, `fault abort=`).
 * OIDC login, idempotency keys, GeoIP, redirect maps, security header
   presets, `body raw` for signed webhooks, deploy hold.
 * `okena route` dry-run.
@@ -139,7 +144,8 @@ auth + limit stays within the latency budget in ARCHITECTURE.md.
 * Landlock, privilege drop, systemd socket activation, container image.
 
 Exit: a week-long soak with reloads and upgrades every minute under load
-loses no request.
+loses no request; `make chaos` passes with every dependency (DNS,
+discovery, JWKS, ACME, control process, logger, disk) failed in turn.
 
 ## Phase 7 — Addons
 
