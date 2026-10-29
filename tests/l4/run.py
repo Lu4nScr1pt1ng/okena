@@ -18,7 +18,9 @@ import time
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BIN = ROOT / "build" / "okena"
-BASE = 25000 + os.getpid() % 2000 * 10      # avoid clashes between runs
+# below the ephemeral range (32768+), so outgoing connections never hold
+# our ports; varied by pid so parallel runs do not collide
+BASE = 20000 + os.getpid() % 1000 * 10
 
 
 def echo_backend(port: int, tag: bytes) -> None:
