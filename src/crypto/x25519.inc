@@ -81,7 +81,28 @@ fe_mul_generic:
 ; out = r8..r11 + 38 * r12..r15 (an eight-limb product), below 2^256.
 ; Clobbers rax, rbx, rdx, r12.
 macro fe_reduce_store
+	local plain, fold
 	mov	edx,38
+	cmp	byte [g_cpu_adx],0
+	je	plain
+	; with ADX: 38 * high half added on both carry chains
+	xor	ebx,ebx				; (clears CF and OF)
+	mulx	rbx,rax,r12
+	adcx	r8,rax
+	adox	r9,rbx
+	mulx	rbx,rax,r13
+	adcx	r9,rax
+	adox	r10,rbx
+	mulx	rbx,rax,r14
+	adcx	r10,rax
+	adox	r11,rbx
+	mulx	r12,rax,r15
+	adcx	r11,rax
+	mov	ebx,0
+	adox	r12,rbx
+	adcx	r12,rbx				; r12 = what is above 2^256 (small)
+	jmp	fold
+plain:
 	mulx	rbx,rax,r12
 	add	r8,rax
 	adc	r9,rbx
@@ -96,6 +117,7 @@ macro fe_reduce_store
 	mulx	rbx,rax,r15
 	adc	r11,rax
 	adc	r12,rbx				; r12 = what is above 2^256 (small)
+fold:
 	imul	r12,r12,38
 	add	r8,r12
 	adc	r9,0
@@ -204,6 +226,35 @@ fe_sq_core:
 	add	r13,rax
 	adc	r14,rbx
 	adc	r15,0
+	cmp	byte [g_cpu_adx],0
+	je	.plain
+	; doubled (adcx) and the squares added (adox) on two chains at once
+	mov	rdx,[rsi]
+	mulx	rax,r8,rdx			; a0^2
+	mov	rdx,[rsi+8]
+	mulx	rcx,rbx,rdx			; a1^2
+	xor	edx,edx				; (clears CF and OF)
+	adcx	r9,r9
+	adox	r9,rax
+	adcx	r10,r10
+	adox	r10,rbx
+	adcx	r11,r11
+	adox	r11,rcx
+	mov	rdx,[rsi+16]
+	mulx	rcx,rbx,rdx			; a2^2
+	adcx	r12,r12
+	adox	r12,rbx
+	adcx	r13,r13
+	adox	r13,rcx
+	mov	rdx,[rsi+24]
+	mulx	rcx,rbx,rdx			; a3^2
+	adcx	r14,r14
+	adox	r14,rbx
+	adcx	r15,r15
+	adox	r15,rcx
+	fe_reduce_store
+	ret
+.plain:
 	; doubled
 	add	r9,r9
 	adc	r10,r10
@@ -234,14 +285,22 @@ fe_sq_core:
 ; rdi = a (in place), ecx = n: a^(2^n).
 fe_sqn:
 	push	rbx
-	mov	ebx,ecx
+	push	rbp
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	mov	ebp,ecx				; (the core keeps rbp and rdi)
 @@:
 	mov	rsi,rdi
-	push	rdi
-	call	fe_sq
-	pop	rdi
-	dec	ebx
+	call	fe_sq_core
+	dec	ebp
 	jnz	@b
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbp
 	pop	rbx
 	ret
 
@@ -610,26 +669,16 @@ x25519:
 	xor	edx,eax				; swap ^ k_t
 	neg	rdx				; 0 or all ones
 	ladder_cswap
-	; A = x2 + z2, AA = A^2, B = x2 - z2, BB = B^2, E = AA - BB
+	; the order of OpenSSL's ladder: additions first, then independent
+	; multiplications next to each other, so they overlap in the CPU
 	lea	rdi,[rsp+XL_A]
 	lea	rsi,[rsp+XL_X2]
 	lea	rdx,[rsp+XL_Z2]
 	fe_add_inline
-	lea	rdi,[rsp+XL_AA]
-	lea	rsi,[rsp+XL_A]
-	call	fe_sq_core
 	lea	rdi,[rsp+XL_B]
 	lea	rsi,[rsp+XL_X2]
 	lea	rdx,[rsp+XL_Z2]
 	fe_sub_inline
-	lea	rdi,[rsp+XL_BB]
-	lea	rsi,[rsp+XL_B]
-	call	fe_sq_core
-	lea	rdi,[rsp+XL_E]
-	lea	rsi,[rsp+XL_AA]
-	lea	rdx,[rsp+XL_BB]
-	fe_sub_inline
-	; C = x3 + z3, D = x3 - z3, DA = D * A, CB = C * B
 	lea	rdi,[rsp+XL_C]
 	lea	rsi,[rsp+XL_X3]
 	lea	rdx,[rsp+XL_Z3]
@@ -646,32 +695,34 @@ x25519:
 	lea	rsi,[rsp+XL_C]
 	lea	rdx,[rsp+XL_B]
 	call	fe_mul_l
-	; x3 = (DA + CB)^2
+	lea	rdi,[rsp+XL_AA]
+	lea	rsi,[rsp+XL_A]
+	call	fe_sq_core
+	lea	rdi,[rsp+XL_BB]
+	lea	rsi,[rsp+XL_B]
+	call	fe_sq_core
 	lea	rdi,[rsp+XL_X3]
 	lea	rsi,[rsp+XL_DA]
 	lea	rdx,[rsp+XL_CB]
 	fe_add_inline
-	lea	rdi,[rsp+XL_X3]
-	lea	rsi,[rsp+XL_X3]
-	call	fe_sq_core
-	; z3 = x1 * (DA - CB)^2
 	lea	rdi,[rsp+XL_Z3]
 	lea	rsi,[rsp+XL_DA]
 	lea	rdx,[rsp+XL_CB]
 	fe_sub_inline
-	lea	rdi,[rsp+XL_Z3]
-	lea	rsi,[rsp+XL_Z3]
-	call	fe_sq_core
-	lea	rdi,[rsp+XL_Z3]
-	lea	rsi,[rsp+XL_Z3]
-	lea	rdx,[rsp+XL_X1]
-	call	fe_mul_l
-	; x2 = AA * BB
+	lea	rdi,[rsp+XL_E]
+	lea	rsi,[rsp+XL_AA]
+	lea	rdx,[rsp+XL_BB]
+	fe_sub_inline
 	lea	rdi,[rsp+XL_X2]
 	lea	rsi,[rsp+XL_AA]
 	lea	rdx,[rsp+XL_BB]
 	call	fe_mul_l
-	; z2 = E * (AA + a24 * E)
+	lea	rdi,[rsp+XL_X3]
+	lea	rsi,[rsp+XL_X3]
+	call	fe_sq_core
+	lea	rdi,[rsp+XL_Z3]
+	lea	rsi,[rsp+XL_Z3]
+	call	fe_sq_core
 	lea	rdi,[rsp+XL_Z2]
 	lea	rsi,[rsp+XL_E]
 	call	fe_mul_a24
@@ -679,6 +730,10 @@ x25519:
 	lea	rsi,[rsp+XL_AA]
 	lea	rdx,[rsp+XL_Z2]
 	fe_add_inline
+	lea	rdi,[rsp+XL_Z3]
+	lea	rsi,[rsp+XL_Z3]
+	lea	rdx,[rsp+XL_X1]
+	call	fe_mul_l
 	lea	rdi,[rsp+XL_Z2]
 	lea	rsi,[rsp+XL_E]
 	lea	rdx,[rsp+XL_Z2]
