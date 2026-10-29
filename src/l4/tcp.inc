@@ -84,6 +84,7 @@ bss
 	align 8
 	g_acc_count	dd ?
 	g_acc:		rb AC_SIZE * ACC_MAX
+	g_acc_addr:	rb 28
 	g_sessions	dd ?		; slots per worker
 	g_sess_hwm	dd ?		; slots ever used (memory follows load)
 	g_sess_free	dd ?		; free list head
@@ -502,6 +503,13 @@ arm_accept_slot:
 ; ebx = accept slot, r14 = normal descriptor or -errno.
 on_accept_a:
 	mov	r12d,ebx
+	; take the client's address out of the slot before re-arming it: a
+	; re-armed accept may complete into the same buffer
+	imul	rcx,r12,AC_SIZE
+	lea	rsi,[g_acc+rcx+AC_SA]
+	lea	rdi,[g_acc_addr]
+	mov	ecx,28
+	rep	movsb
 	cmp	dword [g_draining],2
 	jae	@f
 	cmp	r14,-ECANCELED
@@ -541,8 +549,7 @@ on_accept_a:
 	call	idle_append
 	call	peer_ptr
 	mov	rdi,rax
-	imul	rcx,r12,AC_SIZE
-	lea	rsi,[g_acc+rcx+AC_SA]
+	lea	rsi,[g_acc_addr]
 	mov	ecx,28
 	rep	movsb
 	call	peer_admit			; per_source, PROXY header
@@ -740,15 +747,17 @@ idle_remove:
 	mov	[g_ls_tail+rcx*4],edx
 	ret
 
-; edi = session: activity now; move it to the end of its list.
+; edi = session: activity now; move it to the end of its list. A true
+; LRU (not once per second): pressure closes the least recently used,
+; and within a second that order still has to be right.
 idle_touch:
 	mov	eax,edi
 	shl	rax,S_SHIFT
 	add	rax,[g_sess_base]
 	mov	ecx,[g_tick]
-	cmp	[rax+S_LAST],ecx
-	je	.done				; already touched this second
 	mov	[rax+S_LAST],ecx
+	cmp	dword [rax+S_NEXT],NIL
+	je	.done				; already the newest
 	push	rdi
 	call	idle_remove
 	pop	rdi
@@ -758,13 +767,71 @@ idle_touch:
 
 ; Close sessions idle for longer than their listener allows. Oldest first,
 ; so this stops at the first one still in time: O(expired).
+;
+; It is also the overload manager for connections. A listener holding
+; 90% of its connections is under pressure: its idle timeout drops to at
+; most PRESSURE_IDLE seconds. At 95%, the sessions idle the longest (at
+; least a second) are closed until it is back to 90%, so new clients get
+; room instead of being refused while idle ones sit on it. Each episode
+; is logged once; closures are counted (okena_listener_evicted_total).
+PRESSURE_IDLE	= 10
+
 idle_expire:
 	push	rbx
 	push	r12
+	push	r13
+	push	r14
+	push	r15
 	xor	r12d,r12d
 .listener:
 	cmp	r12d,[g_plan_listeners]
 	jae	.done
+	imul	rdx,r12,LS_SIZE
+	mov	r13d,[g_listeners+rdx+LS_IDLE]	; idle limit
+	mov	eax,[g_ls_cap+r12*4]
+	imul	r14d,eax,9
+	xor	edx,edx
+	mov	eax,r14d
+	mov	ecx,10
+	div	ecx
+	mov	r14d,eax			; 90%: pressure starts, eviction target
+	mov	eax,[g_ls_cap+r12*4]
+	imul	eax,eax,19
+	xor	edx,edx
+	mov	ecx,20
+	div	ecx
+	mov	r15d,eax			; 95%: eviction starts
+	mov	eax,[g_ls_active+r12*4]
+	cmp	eax,r14d
+	jb	.calm
+	cmp	r13d,PRESSURE_IDLE
+	jbe	@f
+	mov	r13d,PRESSURE_IDLE
+@@:
+	cmp	byte [g_ls_pressure+r12],0
+	jne	.evict_check
+	mov	byte [g_ls_pressure+r12],1
+	call	log_begin
+	out_lit 'listener '
+	imul	rax,r12,LS_SIZE
+	mov	rsi,[g_listeners+rax+LS_TEXT]
+	mov	edx,[g_listeners+rax+LS_TLEN]
+	call	out_str
+	out_lit ' holds 90% of its connections: idle timeout down to 10 s, the longest idle closed above 95%'
+	call	log_end
+.evict_check:
+	; above 95%: evict down to 90%
+	xor	eax,eax
+	mov	ecx,[g_ls_active+r12*4]
+	cmp	ecx,r15d
+	jb	@f
+	inc	eax
+@@:
+	mov	[g_evicting],eax
+	jmp	.head
+.calm:
+	mov	byte [g_ls_pressure+r12],0
+	mov	dword [g_evicting],0
 .head:
 	mov	ebx,[g_ls_head+r12*4]
 	cmp	ebx,NIL
@@ -772,19 +839,43 @@ idle_expire:
 	call	session_ptr
 	mov	ecx,[g_tick]
 	sub	ecx,[rax+S_LAST]
-	imul	rdx,r12,LS_SIZE
-	cmp	ecx,[g_listeners+rdx+LS_IDLE]
-	jbe	.next				; never early: a tick may be a second late, not early
+	cmp	ecx,r13d
+	ja	.close				; never early: a tick may be a second late, not early
+	cmp	dword [g_evicting],0
+	je	.next
+	test	ecx,ecx
+	jz	.next				; active this second: keep it
+	mov	eax,[g_ls_active+r12*4]
+	sub	eax,[g_evicted_now]
+	cmp	eax,r14d
+	jbe	.stop_evicting
+	inc	qword [g_st_l_evicted+r12*8]
+	cmp	dword [g_engine],ENGINE_EPOLL
+	je	.close				; epoll frees the slot at once
+	inc	dword [g_evicted_now]
+.close:
 	mov	edi,ebx
 	call	session_close
 	jmp	.head
+.stop_evicting:
+	mov	dword [g_evicting],0
 .next:
+	mov	dword [g_evicted_now],0
 	inc	r12d
 	jmp	.listener
 .done:
+	pop	r15
+	pop	r14
+	pop	r13
 	pop	r12
 	pop	rbx
 	ret
+
+bss
+	g_ls_pressure	rb MAX_LISTENERS
+	g_evicting	dd ?
+	g_evicted_now	dd ?		; closures this tick (they free their slots later)
+end bss
 
 ; ------------------------------------------------------------- balancing
 

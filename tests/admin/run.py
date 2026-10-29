@@ -18,7 +18,8 @@ import urllib.request
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BIN = ROOT / "build" / "okena"
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "auto"
-BASE = 20500 + os.getpid() % 300 * 10 + (5 if ENGINE == "epoll" else 0)
+# ports 21000-21999: this suite's own range (none overlap)
+BASE = 21000 + os.getpid() % 99 * 10 + (5 if ENGINE == "epoll" else 0)
 BACK, LST, MET = BASE, BASE + 1, BASE + 2
 
 
@@ -99,6 +100,9 @@ try:
         if "started with" in log.read():
             break
         time.sleep(0.05)
+    else:
+        log.seek(0)
+        sys.exit("okena did not start:\n" + log.read())
     check("/live", get("/live")[0] == 200)
     check("/ready while serving", get("/ready")[0] == 200)
     check("unknown path is 404", get("/nope")[0] == 404)
@@ -113,10 +117,17 @@ try:
         while len(got) < 1000:
             got += c.recv(4096)
         c.close()
+    # a session ends when both sides have closed (through the backend), and
+    # counts for per_source until then: let the ten finish first
+    t0 = time.time()
+    while time.time() - t0 < 5 and metrics()[f"okena_listener_active{L}}}"] != 0:
+        time.sleep(0.2)
     held = [socket.create_connection(("127.0.0.1", LST), timeout=3) for _ in range(2)]
+    ok_held = 0
     for c in held:
         c.sendall(b"y")
-        c.recv(1)
+        ok_held += c.recv(1) == b"y"
+    check("two connections held", ok_held == 2)
     refused = 0
     for _ in range(3):
         c = socket.create_connection(("127.0.0.1", LST), timeout=3)
@@ -131,8 +142,10 @@ try:
     check("connections counted", m[f"okena_listener_connections_total{L}}}"] == 12 + 0, str(m[f"okena_listener_connections_total{L}}}"]))
     check("bytes counted each way", m[f'okena_listener_bytes_total{L},direction="in"}}'] == 10002
           and m[f'okena_listener_bytes_total{L},direction="out"}}'] == 10002)
-    check("active connections", m[f"okena_listener_active{L}}}"] == 2)
-    check("per_source refusals counted", m[f'okena_listener_refused_total{L},reason="per_source"}}'] == 3 == refused)
+    check("active connections", m[f"okena_listener_active{L}}}"] == 2, str(m[f"okena_listener_active{L}}}"]))
+    check("per_source refusals counted", m[f'okena_listener_refused_total{L},reason="per_source"}}'] == 3 == refused,
+          f"{m[f'okena_listener_refused_total{L},reason=\"per_source\"}}']} counted, {refused} seen, "
+          f"{m['okena_per_source_untracked_total']} untracked")
     srv = f'{{pool="echo",server="127.0.0.1:{BACK}"}}'
     check("backend connects counted", m[f"okena_backend_connects_total{srv}"] == 12)
     for c in held:

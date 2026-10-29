@@ -20,7 +20,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 BIN = ROOT / "build" / "okena"
 # below the ephemeral range (32768+), so outgoing connections never hold
 # our ports; varied by pid so parallel runs do not collide
-BASE = 20000 + os.getpid() % 1000 * 10
+# ports 20000-20999: this suite's own range (none overlap)
+BASE = 20000 + os.getpid() % 99 * 10
 
 
 def echo_backend(port: int, tag: bytes) -> None:
@@ -206,6 +207,45 @@ tcp :{lst2} {{
                 errors += 1
         check("service whole again after the replacement", errors == 0, f"{errors} errors")
 
+        # a replacement that cannot start (here: no descriptors left) is
+        # retried with a growing delay instead of stopping the service
+        if engine == "io_uring":
+            soft_hard = subprocess.check_output(["prlimit", "--pid", str(ok.p.pid), "--nofile", "-o", "SOFT,HARD",
+                                                 "--noheadings"]).split()
+            subprocess.check_call(["prlimit", "--pid", str(ok.p.pid), "--nofile=40:" + soft_hard[1].decode()])
+            victim = ok.workers()[0]
+            os.kill(victim, signal.SIGKILL)
+            time.sleep(1.2)
+            retrying = "could not start (see above), retrying" in ok.text()
+            check("replacement that cannot start is retried, not fatal", retrying and ok.p.poll() is None)
+            # the kernel still hashes some connections to the missing worker's
+            # socket: they wait in its queue; the others are served at once
+            served, queued = 0, []
+            for _ in range(12):
+                c = socket.create_connection(("127.0.0.1", lst2), timeout=5)
+                c.settimeout(0.5)
+                c.sendall(b"who\n")
+                try:
+                    served += c.recv(10).strip() == b"b0"
+                    c.close()
+                except TimeoutError:
+                    queued.append(c)
+            check("the other worker keeps serving meanwhile", served > 0, f"{served} served, {len(queued)} queued")
+            subprocess.check_call(["prlimit", "--pid", str(ok.p.pid), "--nofile=" + b":".join(soft_hard).decode()])
+            t0 = time.time()
+            while time.time() - t0 < 8 and len(ok.workers()) < 2:
+                time.sleep(0.1)
+            check("it starts once the cause is gone", len(ok.workers()) == 2, f"{time.time() - t0:.1f}s")
+            late = 0
+            for c in queued:
+                c.settimeout(5)
+                try:
+                    late += c.recv(10).strip() == b"b0"
+                except OSError:
+                    pass
+                c.close()
+            check("connections queued meanwhile are served then, not lost", late == len(queued), f"{late}/{len(queued)}")
+
         # graceful drain keeps in-flight connections
         c = socket.create_connection(("127.0.0.1", lst2), timeout=5)
         ok.p.send_signal(signal.SIGTERM)
@@ -218,8 +258,13 @@ tcp :{lst2} {{
             check("exits once the last connection closes", ok.p.returncode == 0, f"status {ok.p.returncode}")
         except subprocess.TimeoutExpired:
             check("exits once the last connection closes", False, "still running")
+    except BaseException:
+        print(ok.text())
+        raise
     finally:
         ok.stop()
+        if failures:
+            print(ok.text())
     print(f"l4 ({engine}): {'all passed' if not failures else f'{failures} failed'}")
     return 1 if failures else 0
 

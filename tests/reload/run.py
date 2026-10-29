@@ -19,7 +19,8 @@ import time
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BIN = ROOT / "build" / "okena"
-BASE = 22000 + os.getpid() % 500 * 10
+# ports 23000-23999: this suite's own range (none overlap)
+BASE = 23000 + os.getpid() % 99 * 10
 B0, B1, L1, L2, L3, BUSY = BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4, BASE + 5
 
 

@@ -17,6 +17,8 @@ bss
 	g_sigmask	dq ?
 	g_worker_pid	rd MAX_WORKERS
 	g_worker_born	rq MAX_WORKERS
+	g_spawned	rd MAX_WORKERS		; starts of each worker index
+	g_spawn_delay	rd MAX_WORKERS		; current retry delay (ms)
 	g_hb_seen	rq MAX_WORKERS		; heartbeat at the last check
 	g_hb_stale	rd MAX_WORKERS		; checks without progress
 	g_hb		dq ?			; shared page: one cache line per worker
@@ -561,10 +563,42 @@ hb_line:
 	shl	rax,6
 	ret
 
+; eax = previous delay (ms): the next one, 250 ms doubling up to 5 s, kept
+; for worker ebx. eax = it.
+start_backoff:
+	test	eax,eax
+	jnz	@f
+	mov	eax,125
+@@:
+	add	eax,eax
+	cmp	eax,5000
+	jbe	@f
+	mov	eax,5000
+@@:
+	mov	[g_spawn_delay+rbx*4],eax
+	ret
+
+; eax = milliseconds.
+sleep_ms:
+	sub	rsp,16
+	xor	edx,edx
+	mov	ecx,1000
+	div	ecx
+	mov	[rsp],rax
+	imul	rdx,rdx,1000000
+	mov	[rsp+8],rdx
+	mov	rdi,rsp
+	xor	esi,esi
+	mov	eax,SYS_nanosleep
+	syscall
+	add	rsp,16
+	ret
+
 ; edi = worker index.
 spawn_worker:
 	push	rbx
 	mov	ebx,edi
+	inc	dword [g_spawned+rbx*4]
 	; a new worker starts with a clean slate, and one check of grace: its
 	; first tick comes a second after its setup, not after the fork
 	mov	dword [g_hb_stale+rbx*4],-1
@@ -685,6 +719,14 @@ reap_workers:
 	jne	.crashed
 	cmp	dword [g_siginfo+SI_STATUS],EXIT_FATAL
 	jne	.crashed
+	; A worker that cannot start at all, on the very first start, means
+	; this host cannot run the configuration: stop. Later (a replacement
+	; or a reload), it is most likely passing (memory, the kernel still
+	; tearing down a dead worker's ring): keep retrying, slower each time.
+	cmp	dword [g_gen],0
+	jne	.retry_start
+	cmp	dword [g_spawned+rbx*4],1
+	ja	.retry_start
 	call	log_begin
 	out_lit 'worker '
 	mov	eax,ebx
@@ -694,7 +736,24 @@ reap_workers:
 	mov	dword [g_exit_code],EXIT_FAILURE
 	call	begin_shutdown
 	jmp	.next
+.retry_start:
+	call	log_begin
+	out_lit 'worker '
+	mov	eax,ebx
+	call	out_u64
+	out_lit ' could not start (see above), retrying in '
+	mov	eax,[g_spawn_delay+rbx*4]
+	call	start_backoff
+	call	out_u64
+	out_lit ' ms'
+	call	log_end
+	mov	eax,[g_spawn_delay+rbx*4]
+	call	sleep_ms
+	mov	edi,ebx
+	call	spawn_worker
+	jmp	.next
 .crashed:
+	mov	dword [g_spawn_delay+rbx*4],0
 	call	log_begin
 	out_lit 'worker '
 	mov	eax,ebx

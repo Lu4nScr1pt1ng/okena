@@ -33,7 +33,6 @@ bss
 	g_peer_base	dq ?
 	g_src_tbl	dq ?		; shared
 	g_src_seed	rq 2
-	g_src_open	dq ?		; connections let in uncounted (table full)
 	g_ip_a:		rb 16		; scratch: normalized addresses
 	g_ip_b:		rb 16
 end bss
@@ -219,7 +218,7 @@ src_acquire:
 	dec	r10d
 	jnz	.attempt
 .full:
-	inc	qword [g_src_open]		; fail open
+	inc	qword [g_st_src_open]		; fail open
 	clc
 	jmp	.out
 .over:

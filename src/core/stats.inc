@@ -14,6 +14,8 @@ bss
 	g_st_l_out	rq MAX_LISTENERS	; bytes to clients
 	g_st_s_connects	rq MAX_SERVERS
 	g_st_s_fails	rq MAX_SERVERS
+	g_st_l_evicted	rq MAX_LISTENERS	; idle sessions closed under pressure
+	g_st_src_open	dq ?			; let in uncounted: per_source table full
 	g_st_end:
 	g_stats_tbl	dq ?			; shared: one page set per worker
 end bss

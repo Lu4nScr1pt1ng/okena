@@ -149,7 +149,8 @@ try:
         time.sleep(0.05)
     check("name from /etc/hosts", ask(8001) == b"five")
     check("name through a search domain", ask(8002) == b"two")
-    check("IPv6 address from AAAA", ask(8005) == b"six")
+    # ::1 on a loopback that was just brought up can take a moment
+    check("IPv6 address from AAAA", wait_for(8005, b"six", 3) is not None)
     seen = {ask(8004) for _ in range(40)}
     check("every address of a name gets traffic", seen == {b"three", b"four"}, str(seen))
     check("a name that does not exist yet does not stop okena", p.poll() is None)

@@ -15,7 +15,8 @@ import time
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BIN = ROOT / "build" / "okena"
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "auto"
-BASE = 24000 + os.getpid() % 500 * 10 + (5 if ENGINE == "epoll" else 0)
+# ports 25000-25999: this suite's own range (none overlap)
+BASE = 25000 + os.getpid() % 99 * 10 + (5 if ENGINE == "epoll" else 0)
 BACK, V1, V2, DUAL, LIM = BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4
 SIG = b"\r\n\r\n\x00\r\nQUIT\n"
 
@@ -145,6 +146,9 @@ try:
         if "started with" in log.read():
             break
         time.sleep(0.05)
+    else:
+        log.seek(0)
+        sys.exit("okena did not start:\n" + log.read())
     me, r, h = through("127.0.0.1", V1, b"v1")
     check("PROXY v1: header with the client's address and ports",
           r == b"ok" and h == ("TCP4", "127.0.0.1", "127.0.0.1", me[1], V1), str(h))

@@ -405,6 +405,8 @@ OFF_L_IN	= g_st_l_in - g_st_begin
 OFF_L_OUT	= g_st_l_out - g_st_begin
 OFF_S_CONNECTS	= g_st_s_connects - g_st_begin
 OFF_S_FAILS	= g_st_s_fails - g_st_begin
+OFF_L_EVICTED	= g_st_l_evicted - g_st_begin
+OFF_SRC_OPEN	= g_st_src_open - g_st_begin
 
 ; rdi = output, ebx = listener: {listener="..."
 listener_label:
@@ -443,6 +445,11 @@ metrics_render:
 	memit 10,'# TYPE okena_reload_failures_total counter',10,'okena_reload_failures_total '
 	mov	rax,[g_stats_tbl]
 	mov	rax,[rax+SG_OFF+SG_RELOAD_FAILS]
+	call	fmt_u64
+	memit 10,'# HELP okena_per_source_untracked_total Connections let in without per_source counting (table neighbourhood full).',10
+	memit '# TYPE okena_per_source_untracked_total counter',10,'okena_per_source_untracked_total '
+	mov	ecx,OFF_SRC_OPEN
+	call	stats_sum_q
 	call	fmt_u64
 	memit 10
 	; listeners
@@ -519,6 +526,22 @@ metrics_render:
 	inc	ebx
 	jmp	.l4
 .l4_done:
+	memit '# HELP okena_listener_evicted_total Idle connections closed to make room under pressure.',10
+	memit '# TYPE okena_listener_evicted_total counter',10
+	xor	ebx,ebx
+.l5:
+	cmp	ebx,[g_plan_listeners]
+	jae	.l5_done
+	memit 'okena_listener_evicted_total'
+	call	listener_label
+	memit '} '
+	lea	rcx,[OFF_L_EVICTED+rbx*8]
+	call	stats_sum_q
+	call	fmt_u64
+	memit 10
+	inc	ebx
+	jmp	.l5
+.l5_done:
 	; backends
 	memit '# TYPE okena_backend_connects_total counter',10
 	mov	r12d,OFF_S_CONNECTS
