@@ -201,6 +201,7 @@ for _ in range(120):
     a = rng.choice(edge + [rng.randrange(P)])
     b = rng.choice(edge + [rng.randrange(P)])
     check(f"p256 mont_mul {a:x} {b:x}", num(run(b"M", limbs(a) + limbs(b))), a * b * pow(R, -1, P) % P)
+    check(f"p256 sqr {a:x}", num(run(b"Q", limbs(a))), a * a * pow(R, -1, P) % P)
     check(f"p256 add {a:x} {b:x}", num(run(b"a", limbs(a) + limbs(b))), (a + b) % P)
     check(f"p256 sub {a:x} {b:x}", num(run(b"b", limbs(a) + limbs(b))), (a - b) % P)
     if a:

@@ -10,7 +10,7 @@ KAT = pathlib.Path(__file__).resolve().parents[2] / "build" / "kat"
 
 def ns(op, inp, n):
     out = subprocess.run([str(KAT)], input=b"B" + op + n.to_bytes(4, "little") + inp, capture_output=True)
-    return int(out.stdout)
+    return int(out.stdout) / n
 
 
 def openssl():

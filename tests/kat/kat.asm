@@ -87,6 +87,8 @@ start:
 	je	.p256_pub
 	cmp	al,'M'
 	je	.mont
+	cmp	al,'Q'
+	je	.msqr
 	cmp	al,'B'
 	je	.bench
 	cmp	al,'I'
@@ -275,6 +277,38 @@ start:
 	call	fe_sq
 	jmp	.counted
 .not_q:
+	cmp	r12b,'w'
+	jne	.not_w
+	mov	rdi,r14				; P-256 Montgomery multiply, in place
+	mov	rsi,r14
+	mov	rdx,r14
+	lea	rcx,[p256_p]
+	call	mont_mul
+	jmp	.counted
+.not_w:
+	cmp	r12b,'i'
+	jne	.not_i
+	lea	rdi,[g_out]			; inversion mod p
+	mov	rsi,r14
+	lea	rcx,[p256_p]
+	call	mod_inv
+	jmp	.counted
+.not_i:
+	cmp	r12b,'n'
+	jne	.not_n
+	lea	rdi,[g_out]			; inversion mod n
+	mov	rsi,r14
+	lea	rcx,[p256_n]
+	call	mod_inv
+	jmp	.counted
+.not_n:
+	cmp	r12b,'g'
+	jne	.not_g
+	lea	rdi,[g_out]			; k * G
+	mov	rsi,r14
+	call	p256_mul_g
+	jmp	.counted
+.not_g:
 	cmp	r12b,'x'
 	jne	@f
 	lea	rdi,[g_out]
@@ -291,10 +325,7 @@ start:
 	dec	r13d
 	jnz	.again
 	call	.now
-	sub	rax,r15
-	mov	ecx,[g_in+2]			; the count again
-	xor	edx,edx
-	div	rcx
+	sub	rax,r15				; total ns (the caller divides)
 	lea	rdi,[g_in]
 	call	out_u64_to
 	jmp	.write_line
@@ -308,6 +339,12 @@ start:
 	add	rax,[rsp+8]
 	add	rsp,16
 	ret
+.msqr:
+	lea	rdi,[g_out]
+	lea	rcx,[p256_p]
+	call	mont_sqr
+	mov	esi,32
+	jmp	.print
 .mont:
 	; (debug) a, b: 4 limbs each, little endian; mont_mul mod p
 	lea	rdi,[g_out]
