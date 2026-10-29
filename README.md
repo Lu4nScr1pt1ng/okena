@@ -26,9 +26,10 @@ Early. What works today:
   strict parsing, exact and prefix routes with method filters, heads
   written anew (hop-by-hop fields dropped, X-Forwarded-For from the real
   client), bodies streamed with Content-Length or chunked re-framed,
-  keep-alive and pipelining towards clients, 100-continue, 502 for
-  unreachable or malformed backends; one upstream connection per
-  request for now;
+  keep-alive and pipelining towards clients, keep-alive pools towards
+  backends (idle connections watched, so one the backend closed is
+  never reused), 100-continue, 502 for unreachable or malformed
+  backends;
 * the configuration language with `okena check` (compiler-style
   diagnostics), configuration on the command line or in `OKENA_CONFIG`;
 * the L4 TCP proxy on io_uring: one worker per CPU (cgroup quota aware),

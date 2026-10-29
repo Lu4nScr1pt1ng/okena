@@ -168,6 +168,7 @@ rodata
 	sc_allow filter_supervisor, SYS_getsockopt
 	sc_allow filter_supervisor, SYS_shutdown
 	sc_allow filter_supervisor, SYS_getsockname
+	sc_allow filter_supervisor, SYS_recvfrom
 	sc_end filter_supervisor
 
 	; io_uring worker: the ring does the I/O
@@ -194,6 +195,7 @@ rodata
 	sc_allow filter_worker_epoll, SYS_clock_gettime
 	sc_allow filter_worker_epoll, SYS_madvise
 	sc_allow filter_worker_epoll, SYS_getsockname
+	sc_allow filter_worker_epoll, SYS_recvfrom	; liveness peek of pooled connections
 	sc_end filter_worker_epoll
 
 	; control process: DNS over UDP, resolv.conf and hosts read-only

@@ -62,6 +62,10 @@ HX_STARTED	= 4		; response bytes reached the client
 HX_CHUNKOUT	= 8		; the response goes out chunked (re-framed)
 HX_CONTINUE	= 16		; the client waits for 100 Continue
 HX_LASTCHUNK	= 32		; the last chunk is being written
+HX_REUSED	= 64		; the upstream connection came from the pool
+HX_NOBODY	= 128		; the request has no body (safe to send twice)
+HX_NOPOOL	= 256		; connect afresh (a reused one just failed)
+HX_UPKEEP	= 512		; the upstream connection may go back to the pool
 
 SIDE_CLIENT	= 0
 SIDE_UP		= 1
@@ -222,6 +226,10 @@ http_request:
 	mov	dword [r15+H_BODY],BK_LENGTH
 	mov	[r15+H_REMAIN],rax
 .route:
+	cmp	dword [r15+H_BODY],BK_NONE
+	jne	@f
+	or	dword [r15+H_FLAGS],HX_NOBODY
+@@:
 	test	dword [r14+HM_FLAGS],HMF_CONTINUE
 	jz	@f
 	cmp	dword [r15+H_BODY],BK_NONE
@@ -488,7 +496,7 @@ http_write_request_head:
 	jne	.conn
 	memit_x 'Transfer-Encoding: chunked',13,10
 .conn:
-	memit_x 'Connection: close',13,10,13,10
+	memit_x 13,10				; HTTP/1.1 keep-alive towards the backend
 	lea	rax,[r15+H_OUT]
 	sub	rdi,rax
 	mov	[r15+H_OUTLEN],edi
@@ -519,6 +527,26 @@ http_connected:
 	lea	rdi,[r15+H_OUT]
 	mov	esi,[r15+H_OUTLEN]
 	jmp	h_send
+
+; A pooled connection failed before any response byte: the backend
+; closed it as okena reused it. A request without a body is sent again
+; on a new connection; anything else is a 502. Does not return when it
+; retries.
+http_retry_fresh:
+	h_rec
+	test	dword [r15+H_FLAGS],HX_REUSED
+	jz	.no
+	test	dword [r15+H_FLAGS],HX_NOBODY
+	jz	.no
+	add	rsp,8				; we do not return
+	and	dword [r15+H_FLAGS],not HX_REUSED
+	or	dword [r15+H_FLAGS],HX_NOPOOL
+	call	h_upclose
+	h_rec
+	mov	dword [r15+H_STATE],HS_CONNECT
+	jmp	h_connect
+.no:
+	ret
 
 ; No server could be reached.
 http_connect_failed:
@@ -556,7 +584,12 @@ http_recv_done:
 	jmp	http_req_pump
 .resp_head:
 	test	rax,rax
-	jle	.bad_gateway
+	jg	@f
+	cmp	dword [r15+H_UPLEN],0
+	jne	.bad_gateway
+	call	http_retry_fresh		; returns only when it may not retry
+	jmp	.bad_gateway
+@@:
 	add	[r15+H_UPLEN],eax
 	mov	edi,ebx
 	call	idle_touch
@@ -612,6 +645,10 @@ http_send_done:
 .failed:
 	cmp	ecx,SIDE_UP
 	jne	.close
+	cmp	dword [r15+H_STATE],HS_SEND_HEAD
+	jne	@f
+	call	http_retry_fresh		; returns only when it may not retry
+@@:
 	mov	edi,502				; the backend went away under the request
 	jmp	http_error
 .close:
@@ -789,6 +826,12 @@ http_resp_head:
 	jmp	http_resp_head
 .final:
 	mov	[r15+H_STATUS],eax
+	cmp	dword [r14+HM_VERSION],11
+	jne	@f
+	test	dword [r14+HM_FLAGS],HMF_CLOSE
+	jnz	@f
+	or	dword [r15+H_FLAGS],HX_UPKEEP
+@@:
 	; the response body
 	mov	dword [r15+H_RBODY],BK_NONE
 	test	dword [r15+H_FLAGS],HX_HEAD
@@ -814,6 +857,7 @@ http_resp_head:
 	mov	dword [r15+H_RBODY],BK_LENGTH
 	jmp	.write
 .close_delimited:
+	and	dword [r15+H_FLAGS],not HX_UPKEEP	; the end is the close
 	mov	dword [r15+H_RBODY],BK_CLOSE
 	or	dword [r15+H_FLAGS],HX_CHUNKOUT	; framed for the client
 .write:
@@ -1012,7 +1056,13 @@ http_last_chunk:
 http_exchange_done:
 	h_rec
 	and	dword [r15+H_FLAGS],not HX_LASTCHUNK
+	test	dword [r15+H_FLAGS],HX_UPKEEP
+	jz	.drop
+	call	h_park				; back to the pool, or closed when full
+	jmp	.next
+.drop:
 	call	h_upclose
+.next:
 	h_rec
 	test	dword [r15+H_FLAGS],HX_CLOSE
 	jnz	.close

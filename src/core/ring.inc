@@ -139,15 +139,16 @@ ring_init:
 	pop	rbx
 	ret
 
-; Direct descriptors: a sparse table of 2 * sessions. Accepts allocate
-; from the first half (the kernel picks a free slot); the upstream socket
-; of session n uses slot sessions + n, set explicitly. Sockets never enter
+; Direct descriptors: a sparse table of 3 * sessions. Accepts allocate
+; from the first third (the kernel picks a free slot); upstream sockets
+; take slots from the rest through upslot_alloc, so an idle upstream
+; connection can outlive its session in a pool. Sockets never enter
 ; the process fd table, which saves the fd lookup and reference counting
 ; on every operation. eax = 0 or -errno.
 ring_register_files:
 	sub	rsp,40
 	mov	eax,[g_sessions]
-	add	eax,eax
+	imul	eax,eax,3			; clients, then twice as many upstreams
 	mov	[rsp],eax				; nr
 	mov	dword [rsp+4],IORING_RSRC_REGISTER_SPARSE
 	xor	eax,eax
@@ -186,7 +187,7 @@ rodata
 	irp op, IORING_OP_NOP, IORING_OP_TIMEOUT, IORING_OP_ACCEPT, IORING_OP_ASYNC_CANCEL, \
 		IORING_OP_LINK_TIMEOUT, IORING_OP_CONNECT, IORING_OP_CLOSE, IORING_OP_READ, \
 		IORING_OP_SEND, IORING_OP_RECV, IORING_OP_SHUTDOWN, IORING_OP_SOCKET, \
-		IORING_OP_URING_CMD
+		IORING_OP_URING_CMD, IORING_OP_POLL_ADD
 		dw IORING_RESTRICTION_SQE_OP
 		db op, 0
 		dd 0, 0, 0
@@ -302,7 +303,8 @@ OP_H_RECV_C	= 17		; http
 OP_H_RECV_U	= 18
 OP_H_SEND_C	= 19
 OP_H_SEND_U	= 20
-OP_COUNT	= 21
+OP_POOL_WATCH	= 21		; an idle pooled connection changed
+OP_COUNT	= 22
 
 rodata
 	align 8
@@ -311,6 +313,7 @@ rodata
 			dq on_s_send_c, on_s_send_u, on_s_done, on_s_done, on_s_done, on_s_done
 			dq on_accept_a, on_s_send_pp
 			dq on_h_recv_c, on_h_recv_u, on_h_send_c, on_h_send_u
+			dq on_pool_watch
 end rodata
 
 ring_reap:

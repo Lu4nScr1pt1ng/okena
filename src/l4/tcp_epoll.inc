@@ -235,6 +235,8 @@ ep_dispatch:
 	je	.listener
 	cmp	eax,EK_SIGNAL
 	je	.signal
+	cmp	eax,EK_POOL
+	je	.pooled
 	; a session side: check the generation
 	mov	r8d,eax				; side
 	mov	r9,rsi
@@ -281,6 +283,10 @@ ep_dispatch:
 .listener:
 	mov	edi,esi
 	jmp	ep_accept
+.pooled:
+	; an idle pooled connection: the backend closed it or sent something
+	mov	edi,esi
+	jmp	pool_drop_handle
 .signal:
 	sub	rsp,8
 	mov	edi,[g_sigfd]
@@ -431,9 +437,14 @@ ep_connect:
 	mov	eax,SYS_close
 	syscall
 @@:
+	mov	eax,[g_force_server]
+	mov	dword [g_force_server],NIL
+	cmp	eax,NIL
+	jne	@f
 	mov	edi,[r12+S_POOL]
 	mov	esi,[r12+S_SERVER]
 	call	server_pick
+@@:
 	cmp	eax,NIL
 	je	.no_socket			; nowhere to go: close
 	mov	[r12+S_SERVER],eax

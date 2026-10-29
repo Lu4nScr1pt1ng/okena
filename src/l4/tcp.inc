@@ -149,10 +149,13 @@ sessions_init:
 	inc	ebx
 	jmp	.listener
 .sized:
-	; two direct descriptors per session, within RLIMIT_NOFILE
+	; three direct descriptors per session (client, upstream, pooled),
+	; within RLIMIT_NOFILE, and within the slot tables
 	mov	rax,[g_nofile]
 	sub	rax,64
-	shr	rax,1
+	xor	edx,edx
+	mov	ecx,3
+	div	rcx
 	cmp	rax,r12
 	jae	@f
 	mov	r12d,eax
@@ -224,6 +227,7 @@ sessions_init:
 	call	http_worker_init
 	test	eax,eax
 	js	.done
+	mov	dword [g_force_server],NIL
 	call	balance_stagger
 	xor	eax,eax
 .done:
@@ -1176,11 +1180,16 @@ session_connect:
 	inc	dword [r12+S_TRIES]
 	; release the previous attempt's server count
 	call	session_uncount
+	mov	eax,[g_force_server]
+	mov	dword [g_force_server],NIL
+	cmp	eax,NIL
+	jne	@f
 	mov	edi,[r12+S_POOL]
 	mov	esi,[r12+S_SERVER]
 	call	server_pick
 	cmp	eax,NIL
 	je	.nowhere
+@@:
 	mov	[r12+S_SERVER],eax
 	inc	dword [g_sv_active+rax*4]
 	or	dword [r12+S_FLAGS],SF_COUNTED
@@ -1194,11 +1203,17 @@ session_connect:
 	call	sess_sqe
 	mov	byte [rax+SQE_OPCODE],IORING_OP_CLOSE
 	mov	byte [rax+SQE_FLAGS],IOSQE_IO_HARDLINK
-	mov	ecx,[g_sessions]
-	add	ecx,ebx
+	mov	ecx,[g_upslot+rbx*4]
 	inc	ecx
 	mov	[rax+SQE_FILE_INDEX],ecx
+	jmp	.slot_ready
 .socket:
+	; a slot for the upstream socket
+	call	upslot_alloc
+	cmp	eax,NIL
+	je	.nowhere			; out of slots: as if unreachable
+	mov	[g_upslot+rbx*4],eax
+.slot_ready:
 	or	dword [r12+S_FLAGS],SF_UP_OPEN
 	mov	edi,OP_S_SOCKET
 	mov	esi,ebx
@@ -1208,8 +1223,7 @@ session_connect:
 	mov	ecx,[r13+SV_FAMILY]
 	mov	[rax+SQE_FD],ecx		; domain
 	mov	qword [rax+SQE_OFF],SOCK_STREAM	; type
-	mov	ecx,[g_sessions]
-	add	ecx,ebx
+	mov	ecx,[g_upslot+rbx*4]
 	inc	ecx
 	mov	[rax+SQE_FILE_INDEX],ecx
 	cmp	dword [r13+SV_FAMILY],AF_UNIX
@@ -1221,8 +1235,7 @@ session_connect:
 	call	sess_sqe
 	mov	byte [rax+SQE_OPCODE],IORING_OP_URING_CMD
 	mov	byte [rax+SQE_FLAGS],IOSQE_FIXED_FILE or IOSQE_IO_HARDLINK
-	mov	ecx,[g_sessions]
-	add	ecx,ebx
+	mov	ecx,[g_upslot+rbx*4]
 	mov	[rax+SQE_FD],ecx
 	mov	dword [rax+SQE_CMD_OP],SOCKET_URING_OP_SETSOCKOPT
 	mov	dword [rax+SQE_LEVEL],IPPROTO_TCP
@@ -1236,8 +1249,7 @@ session_connect:
 	call	sess_sqe
 	mov	byte [rax+SQE_OPCODE],IORING_OP_CONNECT
 	mov	byte [rax+SQE_FLAGS],IOSQE_FIXED_FILE or IOSQE_IO_LINK
-	mov	ecx,[g_sessions]
-	add	ecx,ebx
+	mov	ecx,[g_upslot+rbx*4]
 	mov	[rax+SQE_FD],ecx
 	lea	rcx,[r13+SV_SA]
 	mov	[rax+SQE_ADDR],rcx
@@ -1280,8 +1292,7 @@ post_send_pp:
 	call	sess_sqe
 	mov	byte [rax+SQE_OPCODE],IORING_OP_SEND
 	mov	byte [rax+SQE_FLAGS],IOSQE_FIXED_FILE
-	mov	ecx,[g_sessions]
-	add	ecx,ebx
+	mov	ecx,[g_upslot+rbx*4]
 	mov	[rax+SQE_FD],ecx
 	mov	rdx,rax
 	call	peer_ptr
@@ -1513,8 +1524,7 @@ post_recv_u:
 	pop	rsi
 	mov	byte [rax+SQE_OPCODE],IORING_OP_RECV
 	mov	byte [rax+SQE_FLAGS],IOSQE_FIXED_FILE or IOSQE_BUFFER_SELECT
-	mov	ecx,[g_sessions]
-	add	ecx,esi
+	mov	ecx,[g_upslot+rsi*4]
 	mov	[rax+SQE_FD],ecx
 	mov	word [rax+SQE_BUF_GROUP],0
 	ret
@@ -1528,8 +1538,7 @@ post_send_u:
 	pop	rsi
 	mov	byte [rax+SQE_OPCODE],IORING_OP_SEND
 	mov	byte [rax+SQE_FLAGS],IOSQE_FIXED_FILE
-	mov	ecx,[g_sessions]
-	add	ecx,esi
+	mov	ecx,[g_upslot+rsi*4]
 	mov	[rax+SQE_FD],ecx
 	mov	ecx,[rdx+S_CU_BID]
 	shl	rcx,BUF_SHIFT
@@ -1614,8 +1623,7 @@ on_s_recv_c:
 	call	sess_sqe
 	mov	byte [rax+SQE_OPCODE],IORING_OP_SHUTDOWN
 	mov	byte [rax+SQE_FLAGS],IOSQE_FIXED_FILE
-	mov	ecx,[g_sessions]
-	add	ecx,ebx
+	mov	ecx,[g_upslot+rbx*4]
 	mov	[rax+SQE_FD],ecx
 	mov	dword [rax+SQE_LEN],SHUT_WR
 	ret
@@ -1835,8 +1843,7 @@ session_close:
 	mov	esi,ebx
 	call	sess_sqe
 	mov	byte [rax+SQE_OPCODE],IORING_OP_ASYNC_CANCEL
-	mov	ecx,[g_sessions]
-	add	ecx,ebx
+	mov	ecx,[g_upslot+rbx*4]
 	mov	[rax+SQE_FD],ecx
 	mov	dword [rax+SQE_OP_FLAGS],IORING_ASYNC_CANCEL_FD or IORING_ASYNC_CANCEL_FD_FIXED or IORING_ASYNC_CANCEL_ALL
 .done:
@@ -1868,10 +1875,11 @@ session_close_fds:
 	mov	esi,ebx
 	call	sess_sqe
 	mov	byte [rax+SQE_OPCODE],IORING_OP_CLOSE
-	mov	ecx,[g_sessions]
-	add	ecx,ebx
+	mov	ecx,[g_upslot+rbx*4]
 	inc	ecx
 	mov	[rax+SQE_FILE_INDEX],ecx
+	mov	edi,[g_upslot+rbx*4]
+	call	upslot_free
 .done:
 	ret
 

@@ -204,3 +204,4 @@ O_CREAT		= 0x40
 O_TRUNC		= 0x200
 O_APPEND	= 0x400
 SYS_getsockname	= 51
+MSG_PEEK	= 0x02

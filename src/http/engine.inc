@@ -69,20 +69,92 @@ h_sqe_fd:
 	client_sqe rdx
 	ret
 .upstream:
-	mov	ecx,[g_sessions]
-	add	ecx,ebx
+	mov	ecx,[g_upslot+rbx*4]
 	mov	[rax+SQE_FD],ecx
 	mov	byte [rax+SQE_FLAGS],IOSQE_FIXED_FILE
 	ret
 
-; ebx = session: connect to a server of its pool.
+; ebx = session: a connection to a server of its pool, an idle one from
+; that server's pool when there is one.
 h_connect:
+	push	r12
+	push	r13
 	call	session_ptr
-	mov	dword [rax+S_STATE],ST_CONNECTING
+	mov	r12,rax
+	mov	dword [r12+S_STATE],ST_CONNECTING
+	h_rec
+	test	dword [r15+H_FLAGS],HX_NOPOOL
+	jnz	.connect
+	mov	edi,[r12+S_POOL]
+	mov	esi,NIL
+	call	server_pick
+	cmp	eax,NIL
+	je	.connect
+	mov	r13d,eax
+	mov	edi,eax
+	call	pool_take
+	cmp	eax,NIL
+	je	.fresh
+	; reuse it
+	mov	[r12+S_SERVER],r13d
+	inc	dword [g_sv_active+r13*4]
+	or	dword [r12+S_FLAGS],SF_COUNTED or SF_UP_OPEN
+	mov	dword [r12+S_STATE],ST_OPEN
+	h_rec
+	or	dword [r15+H_FLAGS],HX_REUSED
+	cmp	dword [g_engine],ENGINE_EPOLL
+	je	.epoll_reuse
+	mov	[g_upslot+rbx*4],eax
+	pop	r13
+	pop	r12
+	jmp	http_connected
+.epoll_reuse:
+	mov	[r12+S_UPFD],eax
+	; its epoll registration still names the session that parked it
+	mov	edi,eax
+	mov	edx,EK_UPSTREAM
+	call	ep_session_data
+	mov	esi,EPOLLIN or EPOLLOUT or EPOLLRDHUP or EPOLLET
+	call	ep_mod
+	pop	r13
+	pop	r12
+	jmp	http_connected
+.fresh:
+	mov	[g_force_server],r13d		; the server just picked, not another
+.connect:
+	h_rec
+	and	dword [r15+H_FLAGS],not HX_REUSED
+	pop	r13
+	pop	r12
 	cmp	dword [g_engine],ENGINE_EPOLL
 	je	hep_connect
 	mov	edi,ebx
 	jmp	session_connect
+
+; ebx = session: its upstream connection goes to its server's pool (or
+; is closed when the pool is full). Keeps rbx.
+h_park:
+	push	r12
+	call	session_ptr
+	mov	r12,rax
+	test	dword [r12+S_FLAGS],SF_UP_OPEN
+	jz	.done
+	mov	esi,[g_upslot+rbx*4]
+	cmp	dword [g_engine],ENGINE_EPOLL
+	jne	@f
+	mov	esi,[r12+S_UPFD]
+@@:
+	mov	edi,[r12+S_SERVER]
+	call	pool_put
+	jc	.full
+	and	dword [r12+S_FLAGS],not SF_UP_OPEN
+	call	session_uncount
+.done:
+	pop	r12
+	ret
+.full:
+	pop	r12
+	jmp	h_upclose
 
 ; ebx = session: close its upstream connection (nothing in flight on it).
 ; Keeps rbx.
@@ -100,10 +172,11 @@ h_upclose:
 	mov	esi,ebx
 	call	sess_sqe
 	mov	byte [rax+SQE_OPCODE],IORING_OP_CLOSE
-	mov	ecx,[g_sessions]
-	add	ecx,ebx
+	mov	ecx,[g_upslot+rbx*4]
 	inc	ecx
 	mov	[rax+SQE_FILE_INDEX],ecx
+	mov	edi,[g_upslot+rbx*4]
+	call	upslot_free
 	jmp	.done
 .epoll:
 	mov	edi,[r12+S_UPFD]
@@ -181,7 +254,22 @@ H_RGEN		= 180		; d: generation when queued
 bss
 	g_hready_head	dd ?
 	g_hready_tail	dd ?
+	g_force_server	dd ?		; NIL, or the server the next connect uses
 end bss
+
+; edi = fd, esi = events, rdx = data: change a registration.
+ep_mod:
+	sub	rsp,16
+	mov	[rsp],esi
+	mov	[rsp+4],rdx
+	mov	r10,rsp
+	mov	edx,edi
+	mov	edi,[g_epfd]
+	mov	esi,3				; EPOLL_CTL_MOD
+	mov	eax,SYS_epoll_ctl
+	syscall
+	add	rsp,16
+	ret
 
 ; ebx = session, ecx = side: the socket.
 hep_fd:

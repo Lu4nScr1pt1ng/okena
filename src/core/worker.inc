@@ -260,6 +260,7 @@ tick_work:
 	inc	dword [g_tick]
 	call	groups_refresh
 	call	health_follow
+	call	pool_expire
 	call	stats_publish
 	mov	eax,[g_hb_slot]
 	add	rax,[g_hb]

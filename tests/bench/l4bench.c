@@ -1,7 +1,9 @@
-// Test harness only (not part of okena): an epoll echo backend and a
-// closed-loop ping-pong client that reports latency percentiles.
+// Test harness only (not part of okena): an epoll echo backend, a tiny
+// keep-alive HTTP backend, and a closed-loop ping-pong client that
+// reports latency percentiles.
 //
 //   l4bench echo PORT THREADS
+//   l4bench http PORT THREADS     answers every request with 200 and "ok"
 //   l4bench ping HOST PORT CONNS THREADS SECONDS SIZE
 #define _GNU_SOURCE
 #include <arpa/inet.h>
@@ -15,7 +17,7 @@
 #include <time.h>
 #include <unistd.h>
 
-static int port_g;
+static int port_g, http_g;
 static void *echo_thread(void *arg) {
     (void)arg;
     int ls = socket(AF_INET, SOCK_STREAM, 0), one = 1;
@@ -41,6 +43,16 @@ static void *echo_thread(void *arg) {
             }
             ssize_t r = read(fd, buf, sizeof buf);
             if (r <= 0) { close(fd); continue; }
+            if (http_g) {
+                // one response per request head in what was read (no bodies)
+                static const char resp[] = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+                int n = 0;
+                for (ssize_t k = 3; k < r; k++)
+                    if (buf[k] == '\n' && buf[k - 1] == '\r' && buf[k - 2] == '\n' && buf[k - 3] == '\r') n++;
+                for (int k = 0; k < n; k++)
+                    if (write(fd, resp, sizeof resp - 1) < 0) break;
+                continue;
+            }
             ssize_t off = 0;
             while (off < r) { ssize_t w = write(fd, buf + off, r - off); if (w <= 0) break; off += w; }
         }
@@ -84,7 +96,8 @@ static void *ping_thread(void *arg) {
 static int cmp(const void *a, const void *b) { long x = *(long *)a, y = *(long *)b; return (x > y) - (x < y); }
 
 int main(int argc, char **argv) {
-    if (argc >= 4 && !strcmp(argv[1], "echo")) {
+    if (argc >= 4 && (!strcmp(argv[1], "echo") || !strcmp(argv[1], "http"))) {
+        http_g = !strcmp(argv[1], "http");
         port_g = atoi(argv[2]); int t = atoi(argv[3]);
         pthread_t th; for (int i = 0; i < t; i++) pthread_create(&th, 0, echo_thread, 0);
         pause(); return 0;

@@ -55,6 +55,9 @@ def read_message(f, head_only=False):
     return start, fields, body
 
 
+BACKEND_CONNS = []
+
+
 def backend():
     s = socket.socket()
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -63,6 +66,7 @@ def backend():
 
     def handle(c):
         f = c.makefile("rb")
+        BACKEND_CONNS.append(1)
         try:
             while True:
                 m = read_message(f)
@@ -79,6 +83,12 @@ def backend():
                         piece = echo[i:i + 7]
                         c.sendall(b"%x;ext=1\r\n%s\r\n" % (len(piece), piece))
                     c.sendall(b"0\r\nX-Trailer: 1\r\n\r\n")
+                elif target.startswith("/drop-after"):
+                    # keep-alive claimed, then the connection is dropped: the
+                    # next request on it must be sent again on a new one
+                    c.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n" % len(echo) + echo)
+                    time.sleep(0.05)
+                    return
                 elif target.startswith("/close"):
                     c.sendall(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n" + echo)
                     return
@@ -188,7 +198,7 @@ try:
     check("X-Forwarded-For is okena's, not the client's", names.get("x-forwarded-for") == "127.0.0.1", names.get("x-forwarded-for"))
     check("X-Forwarded-Proto set", names.get("x-forwarded-proto") == "http")
     check("hop-by-hop fields dropped (Connection, the fields it names, Keep-Alive, TE)",
-          not ({"x-drop", "keep-alive", "te"} & set(names)) and names.get("connection") == "close")
+          not ({"x-drop", "keep-alive", "te", "connection"} & set(names)))
     check("end-to-end fields kept (Host, Accept)", names.get("host") == "t" and names.get("accept") == "*/*")
     check("response hop-by-hop fields dropped, others kept",
           "x-secret" not in r[1] and r[1].get("x-back") == "yes" and "keep-alive" not in r[1].get("connection", ""))
@@ -230,12 +240,45 @@ try:
     c.send(req(b"GET", b"/api/after"))
     check("the connection still works after it", echo_of(c.response())["target"] == "/api/after")
 
+    # upstream keep-alive: many requests, few backend connections
+    before = len(BACKEND_CONNS)
+    for i in range(50):
+        c.send(req(b"GET", b"/api/reuse/%d" % i))
+        assert echo_of(c.response())["target"] == "/api/reuse/%d" % i
+    check("upstream connections reused (pool)", len(BACKEND_CONNS) - before <= 4, f"{len(BACKEND_CONNS) - before} new for 50 requests")
+    # the backend drops an idle pooled connection: the next request is sent again
+    c.send(req(b"GET", b"/drop-after"))
+    c.response()
+    time.sleep(0.2)
+    ok = True
+    for i in range(6):
+        c.send(req(b"GET", b"/api/after-drop/%d" % i))
+        r = c.response()
+        ok = ok and r[0] == 200 and echo_of(r)["target"] == "/api/after-drop/%d" % i
+    check("a pooled connection the backend closed: request resent, no error", ok)
+    # watched while idle: once the backend closes it, it leaves the pool, so
+    # even a request with a body (never sent twice) does not meet it
+    for i in range(4):
+        c2 = Client()
+        c2.send(req(b"GET", b"/drop-after"))
+        c2.response()
+        c2.s.close()
+    time.sleep(0.3)
+    bodies_ok = 0
+    for i in range(8):
+        c2 = Client()
+        c2.send(req(b"POST", b"/api/with-body", body=b"payload"))
+        r = c2.response()
+        bodies_ok += r is not None and r[0] == 200
+        c2.s.close()
+    check("idle pooled connections closed by the backend are dropped before reuse", bodies_ok == 8, f"{bodies_ok}/8")
+
     # routing
     c.send(req(b"GET", b"/api/exact"))
     check("exact route", echo_of(c.response())["target"] == "/api/exact")
     c.send(req(b"POST", b"/only-get", body=b"x"))
     r = c.response()
-    check("method filter: POST /only-get falls back to /*", r[0] == 200)
+    check("method filter: POST /only-get falls back to /*", r is not None and r[0] == 200, str(r and r[:2]))
     c.send(req(b"GET", b"/down/x"))
     r = c.response()
     check("backend down: 502", r[0] == 502 and c.closed())
