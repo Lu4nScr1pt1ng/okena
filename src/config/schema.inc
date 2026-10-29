@@ -118,6 +118,7 @@ enumdef e_pp_mode, 'send'
 enumdef e_redirect_codes, '301', '302', '303', '307', '308'
 enumdef e_header_ops, 'set', 'add', 'drop'
 enumdef e_response_what, 'header'
+enumdef e_rewrite_what, 'path'
 enumdef e_pp_version, 'v1', 'v2'
 
 keysdef k_drain, 'delay', T_DURATION, 'timeout', T_DURATION
@@ -133,7 +134,7 @@ enumdef ctx_names, 'the top level', '`okena`', '`tcp`', '`pool`', '`limits`', '`
 ; Directives of the language that this version does not implement yet.
 enumdef future_names, 'udp', 'xdp', 'tls', 'policy', 'use', \
 	'addon', 'alerts', 'include', 'admin', 'log', 'reload', 'profile', \
-	'acme', 'discover', 'split', 'mirror', 'rewrite', 'header', 'headers', 'cache', \
+	'acme', 'discover', 'split', 'mirror', 'header', 'headers', 'cache', \
 	'cors', 'limit', 'auth', 'match', 'source', \
 	'concurrency', 'retry_budget', 'retry', 'outlier', 'protocol', \
 	'fault', 'files', 'compress', 'canonical', 'idempotency', 'hold', \
@@ -165,6 +166,7 @@ dirdef DIR_TIMEOUT, 'timeout',     M_TCP or M_HTTP,     CTX_TIMEOUT, F_BLOCK_REQ
 dirdef DIR_IDLE, 'idle',        M_TIMEOUT, 0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
 dirdef DIR_TRUSTED, 'trusted_proxies', M_HTTP, 0,         F_UNIQUE, 1, 64, T_CIDR, T_CIDR, 0
 dirdef DIR_REDIRECT, 'redirect',  M_ROUTE,   0,           F_UNIQUE, 2, 2, e_redirect_codes, T_ANY, 0
+dirdef DIR_REWRITE, 'rewrite',    M_ROUTE,   0,           F_UNIQUE, 4, 4, e_rewrite_what, T_ANY, 0
 dirdef DIR_RHEADER, 'header',      M_ROUTE,   0,           0, 2, 3, e_header_ops, T_ANY, 0
 dirdef DIR_RRESPONSE, 'response',  M_ROUTE,   0,           0, 3, 4, e_response_what, T_ANY, 0
 dirdef DIR_ACCESS_LOG, 'access_log', M_HTTP,   0,           F_UNIQUE, 1, 1, T_LOGDEST, T_NONE, 0

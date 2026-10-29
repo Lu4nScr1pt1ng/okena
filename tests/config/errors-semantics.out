@@ -42,33 +42,6 @@ errors-semantics.conf:15:30: error: an http check needs a path
 errors-semantics.conf:16:42: error: a health check asks with GET or HEAD
     16 | pool hc3 { server 1.1.1.1:4; health http POST /x }
        |                                          ^^^^
-errors-semantics.conf:18:16: error: a route either forwards (`to`) or redirects, not both
-    18 |     route /a { to 1.1.1.1:1; redirect 301 /b }
-       |                ^^
-errors-semantics.conf:19:29: error: a redirect goes to a path or an http(s) URL, printable, with {*} at most once
-    19 |     route /c { redirect 301 nowhere }
-       |                             ^^^^^^^
-       = help: `redirect 301 /new/{*}` or `redirect 308 https://example.com{*}`
-errors-semantics.conf:21:20: error: okena writes this header itself (framing, connection or forwarding): it cannot be changed here
-    21 |         header set host evil
-       |                    ^^^^
-errors-semantics.conf:22:9: error: set and add take a name and a value, drop a name
-    22 |         header set x-a
-       |         ^^^^^^
-       = help: `header set x-env prod`, `header drop x-internal-*`, `response header set cache-control no-store`
-errors-semantics.conf:23:9: error: set and add take a name and a value, drop a name
-    23 |         header drop x-b value
-       |         ^^^^^^
-       = help: `header set x-env prod`, `header drop x-internal-*`, `response header set cache-control no-store`
-errors-semantics.conf:24:20: error: a header name is a lower-case token (x-env); drop may end it with *
-    24 |         header set X-Upper v
-       |                    ^^^^^^^
-errors-semantics.conf:25:20: error: a header name is a lower-case token (x-env); drop may end it with *
-    25 |         header set x-* v
-       |                    ^^^
-errors-semantics.conf:26:25: error: a header operation is set, add or drop
-    26 |         response header move x-c
-       |                         ^^^^
 errors-semantics.conf:5:6: warning: pool `pg` is not used by any listener
      5 | pool pg {
        |      ^^
@@ -90,4 +63,4 @@ errors-semantics.conf:15:6: warning: pool `hc2` is not used by any listener
 errors-semantics.conf:16:6: warning: pool `hc3` is not used by any listener
     16 | pool hc3 { server 1.1.1.1:4; health http POST /x }
        |      ^^^
-19 errors in errors-semantics.conf
+11 errors in errors-semantics.conf

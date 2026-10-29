@@ -256,6 +256,10 @@ http 127.0.0.1:{LST} {{
     route /bad/* {{ to 127.0.0.1:{BAD} }}
     route /deep/* {{ to 127.0.0.1:{BACK} }}
     route /old/* {{ redirect 301 /new/{{*}} }}
+    route /v1/* {{
+        rewrite path /v1/{{*}} -> /api/v2/{{*}}
+        to 127.0.0.1:{BACK}
+    }}
     route /exact-old {{ redirect 308 https://example.com/x }}
     route /hdr/* {{
         header set x-env prod
@@ -437,6 +441,15 @@ try:
         c.send(req(method, target, body=b"" if method == b"POST" else None))
         r = c.response()
         check(f"route {method.decode()} {target.decode()}: {why}", r is not None and r[0] == code, str(r and r[0]))
+    # rewrite path: the backend gets the new path, the query kept
+    c = Client()
+    c.send(req(b"GET", b"/v1/users/42?full=1"))
+    e = echo_of(c.response())
+    check("rewrite path: /v1/{*} -> /api/v2/{*}, query kept", e["target"] == "/api/v2/users/42?full=1", e["target"])
+    c.send(req(b"GET", b"/v1//users"))
+    e = echo_of(c.response())
+    check("rewrite applies to the normalized path", e["target"] == "/api/v2/users", e["target"])
+
     # route actions: redirects answered by okena, header changes
     c = Client()
     c.send(req(b"GET", b"/old/a/b?q=1&r=2"))

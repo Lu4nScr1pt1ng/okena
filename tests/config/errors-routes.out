@@ -1,0 +1,40 @@
+exit: 2
+--- stdout
+--- stderr
+errors-routes.conf:3:16: error: a route either forwards (`to`) or redirects, not both
+     3 |     route /a { to 1.1.1.1:1; redirect 301 /b }
+       |                ^^
+errors-routes.conf:4:29: error: a redirect goes to a path or an http(s) URL, printable, with {*} at most once
+     4 |     route /c { redirect 301 nowhere }
+       |                             ^^^^^^^
+       = help: `redirect 301 /new/{*}` or `redirect 308 https://example.com{*}`
+errors-routes.conf:6:20: error: okena writes this header itself (framing, connection or forwarding): it cannot be changed here
+     6 |         header set host evil
+       |                    ^^^^
+errors-routes.conf:7:9: error: set and add take a name and a value, drop a name
+     7 |         header set x-a
+       |         ^^^^^^
+       = help: `header set x-env prod`, `header drop x-internal-*`, `response header set cache-control no-store`
+errors-routes.conf:8:9: error: set and add take a name and a value, drop a name
+     8 |         header drop x-b value
+       |         ^^^^^^
+       = help: `header set x-env prod`, `header drop x-internal-*`, `response header set cache-control no-store`
+errors-routes.conf:9:20: error: a header name is a lower-case token (x-env); drop may end it with *
+     9 |         header set X-Upper v
+       |                    ^^^^^^^
+errors-routes.conf:10:20: error: a header name is a lower-case token (x-env); drop may end it with *
+    10 |         header set x-* v
+       |                    ^^^
+errors-routes.conf:11:25: error: a header operation is set, add or drop
+    11 |         response header move x-c
+       |                         ^^^^
+errors-routes.conf:14:24: error: a rewrite is `rewrite path /from/{*} -> /to/{*}` (paths, the source ending with {*})
+    14 |     route /e { rewrite path /a/{*} => /b; to 1.1.1.1:1 }
+       |                        ^^^^
+errors-routes.conf:15:24: error: a rewrite is `rewrite path /from/{*} -> /to/{*}` (paths, the source ending with {*})
+    15 |     route /f { rewrite path /a -> /b; to 1.1.1.1:1 }
+       |                        ^^^^
+errors-routes.conf:16:24: error: a rewrite is `rewrite path /from/{*} -> /to/{*}` (paths, the source ending with {*})
+    16 |     route /g { rewrite path /a/{*} -> /b?x=1; to 1.1.1.1:1 }
+       |                        ^^^^
+11 errors in errors-routes.conf

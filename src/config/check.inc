@@ -1546,6 +1546,14 @@ check_route_set:
 	call	check_listener			; its `to`
 .actions:
 	mov	rdi,rbx
+	mov	ecx,DIR_REWRITE
+	call	find_child
+	test	rax,rax
+	jz	@f
+	mov	rdi,rax
+	call	check_rewrite
+@@:
+	mov	rdi,rbx
 	call	check_header_ops
 	mov	rdi,r12
 	mov	rsi,rbx
@@ -2173,6 +2181,97 @@ check_health:
 	ret
 
 enumdef e_health_methods, 'GET', 'HEAD'
+
+; rdi = rewrite node: `rewrite path FROM/{*} -> TO`, FROM a path ending
+; with {*}, TO a path with at most one {*}.
+check_rewrite:
+	push	rbx
+	mov	rbx,[rdi+N_ARGS]
+	mov	rax,[rbx+2*A_SIZE+A_VAL]
+	cmp	dword [rbx+2*A_SIZE+A_VLEN],2
+	jne	.bad
+	cmp	word [rax],'->'
+	jne	.bad
+	; FROM
+	mov	rdi,[rbx+A_SIZE+A_VAL]
+	mov	esi,[rbx+A_SIZE+A_VLEN]
+	cmp	esi,4
+	jb	.bad
+	cmp	byte [rdi],'/'
+	jne	.bad
+	cmp	byte [rdi+rsi-3],'{'
+	jne	.bad
+	cmp	word [rdi+rsi-2],'*}'
+	jne	.bad
+	sub	esi,3
+	call	.printable_no_star
+	jc	.bad
+	; TO
+	mov	rdi,[rbx+3*A_SIZE+A_VAL]
+	mov	esi,[rbx+3*A_SIZE+A_VLEN]
+	cmp	byte [rdi],'/'
+	jne	.bad
+	cmp	esi,1024
+	ja	.bad
+	xor	ecx,ecx
+	xor	edx,edx
+.to:
+	cmp	ecx,esi
+	jae	.done
+	movzx	eax,byte [rdi+rcx]
+	cmp	al,0x21
+	jb	.bad
+	cmp	al,0x7E
+	ja	.bad
+	cmp	al,'?'
+	je	.bad				; the query is the request's
+	cmp	al,'{'
+	jne	.to_next
+	lea	eax,[rcx+3]
+	cmp	eax,esi
+	ja	.to_next
+	cmp	word [rdi+rcx+1],'*}'
+	jne	.to_next
+	inc	edx
+	cmp	edx,1
+	ja	.bad
+.to_next:
+	inc	ecx
+	jmp	.to
+.bad:
+	mov	rdi,rbx
+	call	arg_value_span
+	mov	edx,[rbx+A_LINE]
+	call	cfg_error
+	out_lit 'a rewrite is `rewrite path /from/{*} -> /to/{*}` (paths, the source ending with {*})'
+	call	cfg_diag_end
+	call	cfg_error_limit
+.done:
+	pop	rbx
+	ret
+; rdi/esi: printable, no '{' or '?'. CF otherwise.
+.printable_no_star:
+	xor	ecx,ecx
+@@:
+	cmp	ecx,esi
+	jae	@f
+	movzx	eax,byte [rdi+rcx]
+	cmp	al,0x21
+	jb	.np
+	cmp	al,0x7E
+	ja	.np
+	cmp	al,'{'
+	je	.np
+	cmp	al,'?'
+	je	.np
+	inc	ecx
+	jmp	@b
+@@:
+	clc
+	ret
+.np:
+	stc
+	ret
 
 ; rdi = redirect node: its target is a path or an http(s) URL, printable,
 ; with at most one {*}.

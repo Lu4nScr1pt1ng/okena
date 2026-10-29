@@ -443,6 +443,7 @@ http_route:
 	lea	rsi,[str_slash]
 	mov	edx,1
 .path:
+	mov	dword [g_npath_len],0		; (a "*" target has no path to keep)
 	cmp	byte [rsi],'/'
 	jne	@f				; "*" (OPTIONS *): nothing to normalize
 	mov	rdi,rsi
@@ -910,6 +911,8 @@ http_write_request_head:
 	inc	rdi
 	jmp	.version
 .target:
+	call	http_rewrite_target		; the route's rewrite, if it applies
+	jnc	.version
 	rep	movsb
 .version:
 	mov	rax,' HTTP/1.'
@@ -2420,6 +2423,87 @@ hdrop_emit:
 	clc
 	ret
 .full:
+	stc
+	ret
+
+; rdi = output, rsi/ecx = the request's target (origin form). When the
+; route rewrites and the path starts with its prefix: TO is written with
+; {*} = the rest of the (normalized) path, then the request's query; CF
+; clear. Otherwise CF set and nothing is written. Keeps rsi, rcx when it
+; does not apply; r12-r15, rbx always.
+http_rewrite_target:
+	mov	eax,[r15+H_ACT]
+	test	eax,eax
+	jz	.no
+	dec	eax
+	imul	rax,rax,RA_SIZE
+	lea	r8,[g_acts+rax]
+	mov	r9,[r8+RA_WFROM]
+	test	r9,r9
+	jz	.no
+	mov	edx,[r8+RA_WFLEN]
+	cmp	[g_npath_len],edx
+	jb	.no
+	push	rsi
+	push	rcx
+	push	rdi
+	lea	rdi,[g_npath]
+	mov	rsi,r9
+	mov	ecx,edx
+	repe	cmpsb
+	pop	rdi
+	pop	rcx
+	pop	rsi
+	jne	.no
+	; the query: from the first '?' of the original target
+	mov	r10,rsi
+	mov	r11d,ecx
+@@:
+	test	r11d,r11d
+	jz	@f
+	cmp	byte [r10],'?'
+	je	@f
+	inc	r10
+	dec	r11d
+	jmp	@b
+@@:
+	; TO, with {*} = the normalized path after the prefix
+	mov	rsi,[r8+RA_WTO]
+	mov	ecx,[r8+RA_WTLEN]
+.to:
+	test	ecx,ecx
+	jz	.query
+	mov	al,[rsi]
+	cmp	al,'{'
+	jne	.byte
+	cmp	ecx,3
+	jb	.byte
+	cmp	word [rsi+1],'*}'
+	jne	.byte
+	push	rsi
+	push	rcx
+	mov	ecx,[g_npath_len]
+	sub	ecx,edx
+	lea	rsi,[g_npath+rdx]
+	rep	movsb
+	pop	rcx
+	pop	rsi
+	add	rsi,3
+	sub	ecx,3
+	jmp	.to
+.byte:
+	mov	[rdi],al
+	inc	rdi
+	inc	rsi
+	dec	ecx
+	jmp	.to
+.query:
+	mov	rsi,r10
+	mov	ecx,r11d
+	rep	movsb
+	clc
+	ret
+.no:
 	stc
 	ret
 

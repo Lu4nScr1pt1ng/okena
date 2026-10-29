@@ -68,7 +68,11 @@ RA_QFIRST	:= 16		; d: request header changes
 RA_QCOUNT	:= 20
 RA_PFIRST	:= 24		; d: response header changes
 RA_PCOUNT	:= 28
-RA_SIZE		:= 32
+RA_WFROM	:= 32		; q: rewrite: the prefix it replaces (FROM without {*}), 0 = none
+RA_WFLEN	:= 40		; d
+RA_WTLEN	:= 44		; d
+RA_WTO		:= 48		; q: what replaces it
+RA_SIZE		:= 64
 MAX_ACTS	:= MAX_ROUTES
 HD_KIND		:= 0		; d: HOP_SET, HOP_ADD, HOP_DROP
 HD_PREFIX	:= 4		; d: 1 when the name ends with * (drop)
@@ -525,6 +529,9 @@ compile_route_action:
 	lea	rcx,[dir_table + D_SIZE*DIR_RRESPONSE]
 	cmp	rax,rcx
 	je	@f
+	lea	rcx,[dir_table + D_SIZE*DIR_REWRITE]
+	cmp	rax,rcx
+	je	@f
 	mov	rbx,[rbx+N_NEXT]
 	jmp	@b
 @@:
@@ -550,6 +557,22 @@ compile_route_action:
 	mov	eax,[rbx+A_SIZE+A_VLEN]
 	mov	[r13+RA_TLEN],eax
 .ops:
+	mov	rdi,r12
+	mov	ecx,DIR_REWRITE
+	call	find_child
+	test	rax,rax
+	jz	@f
+	mov	rbx,[rax+N_ARGS]
+	mov	rax,[rbx+A_SIZE+A_VAL]
+	mov	[r13+RA_WFROM],rax
+	mov	eax,[rbx+A_SIZE+A_VLEN]
+	sub	eax,3				; without {*}
+	mov	[r13+RA_WFLEN],eax
+	mov	rax,[rbx+3*A_SIZE+A_VAL]
+	mov	[r13+RA_WTO],rax
+	mov	eax,[rbx+3*A_SIZE+A_VLEN]
+	mov	[r13+RA_WTLEN],eax
+@@:
 	mov	eax,[g_plan_hdrops]
 	mov	[r13+RA_QFIRST],eax
 	mov	ecx,DIR_RHEADER

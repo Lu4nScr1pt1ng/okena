@@ -11,7 +11,7 @@ not built yet. A directive that is not built is refused by `okena check`
 | `okena` | `workers`, `io_engine`, `busy_poll`, `watchdog`, `drain delay= timeout=`, `metrics` |
 | `tcp ADDR...` | `to`, `limits { connections; per_source }`, `timeout { idle }`, `proxy_protocol send v1\|v2` |
 | `http ADDR...` | `host`, `route`, `limits`, `timeout { idle; header; body_idle; response }`, `trusted_proxies`, `access_log` |
-| `route PATH... [METHOD...]` | `to`, `redirect`, `header set\|add\|drop`, `response header set\|add\|drop` |
+| `route PATH... [METHOD...]` | `to`, `redirect`, `rewrite path`, `header set\|add\|drop`, `response header set\|add\|drop` |
 | `pool NAME` | `server ADDR [weight=N] [backup]`, `balance least-request\|peak-ewma\|round-robin\|least-conn\|random`, `connect timeout=`, `health tcp\|http ...`, `slow_start` |
 
 Everything else below (TLS, `udp`, policies, auth, limits on requests,
@@ -282,7 +282,7 @@ header add   x-via okena           # keeps it, adds one more
 header drop  x-internal-*          # a name, or a prefix with *
 response header set strict-transport-security "max-age=63072000"
 response header drop server
-rewrite path /v1/{*} -> /{*}       # (planned)
+rewrite path /v1/{*} -> /{*}       # the backend sees /users for /v1/users
 priority critical                # critical | normal | bulk (shedding order)
 timeout total=5s try=2s          # whole request incl. retries / one attempt
 retry 2 on=connect,reset,503 idempotent-only
@@ -301,7 +301,9 @@ A route either forwards (`to`) or redirects (`redirect CODE TARGET`, with
 301, 302, 303, 307 or 308; TARGET a path or an `http(s)://` URL). A
 redirect keeps the request's query unless TARGET has its own, and keeps
 the connection open (it closes it when the request had a body, which
-okena does not read). Header changes apply to what goes to the backend
+okena does not read). `rewrite path FROM/{*} -> TO` changes what the
+backend is asked for when the (normalized) path starts with FROM: TO
+with `{*}` = the rest, the request's query kept. Header changes apply to what goes to the backend
 (`header`) or back to the client (`response header`), in the order
 written. Names are lower-case tokens and never one okena owns itself
 (`host`, framing, `connection` and the other hop-by-hop fields,
