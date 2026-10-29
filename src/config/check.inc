@@ -889,6 +889,20 @@ check_value:
 	je	.route
 	cmp	r12,T_HOSTNAME
 	je	.hostname
+	cmp	r12,T_LOGDEST
+	je	.logdest
+	jmp	.ok
+.logdest:
+	lea	rdx,[e_logdest]
+	call	list_index
+	test	rax,rax
+	jns	.ok
+	mov	rdi,[rbx+A_VAL]
+	mov	esi,[rbx+A_VLEN]
+	cmp	byte [rdi],'/'
+	jne	.bad
+	cmp	esi,ALOG_PATH - 1
+	jae	.bad
 	jmp	.ok
 .hostname:
 	; "*.example.com" or a name; matched without case
@@ -1193,6 +1207,11 @@ type_help:
 	cmp	rbx,T_HOSTNAME
 	jne	@f
 	out_lit 'a host name (api.example.com) or *.example.com'
+	jmp	.end
+@@:
+	cmp	rbx,T_LOGDEST
+	jne	@f
+	out_lit '`stdout`, `stderr`, `off`, or an absolute file path (/var/log/okena/access.log)'
 	jmp	.end
 @@:
 .end:
@@ -1573,6 +1592,7 @@ RM_PATCH	= 32
 RM_OPTIONS	= 64
 RM_OTHER	= 128
 
+enumdef e_logdest, 'stdout', 'stderr', 'off'
 enumdef method_names, 'GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'
 
 ; rdi/esi = method name. eax = its bit.

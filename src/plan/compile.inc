@@ -25,6 +25,7 @@ LS_HFIRST	= 84		; d: first host block (http)
 LS_HCOUNT	= 88		; d
 LS_T_HEADER	= 92		; d: http: seconds for a whole request head
 LS_T_RESPONSE	= 96		; d: http: seconds a backend has for its response head
+LS_ALOG		= 100		; d: http: access log destination + 1, 0 = none
 LS_SIZE		= 104
 
 ; Host block name (http): routes for requests to that host
@@ -116,6 +117,7 @@ bss
 	g_cmp_flags	dd ?
 	g_cmp_per_source dd ?
 	g_cmp_t_header	dd ?
+	g_cmp_alog	dd ?
 	g_cmp_t_response dd ?
 	g_cmp_rfirst	dd ?
 	g_cmp_rcount	dd ?
@@ -365,6 +367,75 @@ pool_new:
 	mov	qword [rax+PL_TIMEOUT],DEFAULT_CONNECT_US / 1000000
 	mov	qword [rax+PL_TIMEOUT+8],(DEFAULT_CONNECT_US mod 1000000) * 1000
 	ret
+
+; Access log destinations. The table only grows while the supervisor
+; lives: a destination keeps its number across reloads, so lines from
+; workers still draining an older configuration reach the right file.
+ALOG_MAX	= 32
+ALOG_PATH	= 256
+
+bss
+	g_alog_dest	rb ALOG_MAX * ALOG_PATH	; NUL-terminated: stdout, stderr or a path
+	g_alog_count	dd ?
+end bss
+
+; rdi/esi = `access_log` argument. eax = destination + 1, or 0 for off.
+alog_dest_id:
+	cmp	esi,3
+	jne	@f
+	cmp	word [rdi],'of'
+	jne	@f
+	cmp	byte [rdi+2],'f'
+	jne	@f
+	xor	eax,eax
+	ret
+@@:
+	push	rbx
+	xor	ebx,ebx
+.find:
+	cmp	ebx,[g_alog_count]
+	jae	.add
+	imul	r8,rbx,ALOG_PATH
+	lea	r8,[g_alog_dest+r8]
+	xor	ecx,ecx
+.cmp:
+	cmp	ecx,esi
+	je	.end
+	mov	al,[rdi+rcx]
+	cmp	al,[r8+rcx]
+	jne	.other
+	inc	ecx
+	jmp	.cmp
+.end:
+	cmp	byte [r8+rcx],0
+	je	.found
+.other:
+	inc	ebx
+	jmp	.find
+.add:
+	cmp	ebx,ALOG_MAX
+	jae	.too_many
+	imul	r8,rbx,ALOG_PATH
+	lea	r8,[g_alog_dest+r8]
+	xor	ecx,ecx
+@@:
+	mov	al,[rdi+rcx]
+	mov	[r8+rcx],al
+	inc	ecx
+	cmp	ecx,esi
+	jb	@b
+	mov	byte [r8+rcx],0
+	inc	dword [g_alog_count]
+.found:
+	lea	eax,[rbx+1]
+	pop	rbx
+	ret
+.too_many:
+	call	log_begin
+	out_lit 'more than 32 different access log destinations since okena started'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
 
 ; rdi = timeout block, ecx = directive. eax = its duration in whole
 ; seconds (at least one), or CF when absent.
@@ -798,6 +869,18 @@ compile_listener:
 	jne	@f
 	mov	ebx,DEFAULT_HTTP_IDLE_SECS	; keep-alive clients
 @@:
+	mov	dword [g_cmp_alog],0
+	mov	rdi,r12
+	mov	ecx,DIR_ACCESS_LOG
+	call	find_child
+	test	rax,rax
+	jz	@f
+	mov	rax,[rax+N_ARGS]
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	alog_dest_id
+	mov	[g_cmp_alog],eax
+@@:
 	mov	dword [g_cmp_t_header],DEFAULT_HEADER_SECS
 	mov	dword [g_cmp_t_response],DEFAULT_RESPONSE_SECS
 	mov	rdi,r12
@@ -840,6 +923,8 @@ compile_listener:
 	mov	[rcx+LS_T_HEADER],eax
 	mov	eax,[g_cmp_t_response]
 	mov	[rcx+LS_T_RESPONSE],eax
+	mov	eax,[g_cmp_alog]
+	mov	[rcx+LS_ALOG],eax
 	mov	[rcx+LS_MAXCONN],r15d		; whole instance; split per worker later
 	imul	rax,r13,A_SIZE
 	add	rax,[r12+N_ARGS]

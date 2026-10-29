@@ -18,6 +18,7 @@ bss
 	g_st_l_http	rq MAX_LISTENERS * 10	; responses: [source: backend, okena][1xx..5xx]
 	g_st_l_retries	rq MAX_LISTENERS	; requests sent again to another server
 	g_st_src_open	dq ?			; let in uncounted: per_source table full
+	g_st_alog_dropped dq ?			; access log lines lost to a full pipe
 	g_st_end:
 	g_stats_tbl	dq ?			; shared: one page set per worker
 end bss

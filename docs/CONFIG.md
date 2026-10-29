@@ -188,7 +188,19 @@ The application layer (http) adds its own limits and timeouts:
 limits { header_size 32KiB; body_size 10MiB; h2_streams 128 }
 timeout { header 10s; body_idle 30s; response 30s }
 trusted_proxies 10.0.0.0/8          # believe X-Forwarded-For from these
+access_log /var/log/okena/access.log   # or stdout, stderr, off (default)
 ```
+
+Access logs are one JSON line per exchange: `time` (UTC, ms), `listener`,
+`client`, `method`, `host`, `target`, `status`, `bytes` (sent to the
+client), `duration_ms` (from the request head to the end of the
+response), `upstream`, `source` (`backend`, or `okena` when okena answered
+itself) and `retried`. Workers never write files: they pass lines to a
+logger process through a pipe and drop them (counted in
+`okena_access_log_dropped_total`) rather than wait when it falls behind.
+Lines of different workers may be up to a second out of order. A reload
+or `SIGUSR1` makes the logger reopen its files, so logrotate needs only
+`kill -USR1`.
 
 ## HTTP routes
 

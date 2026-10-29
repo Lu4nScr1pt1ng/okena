@@ -145,6 +145,7 @@ worker_main:
 	call	ring_reap
 	jmp	.loop
 .drained:
+	call	alog_flush
 	mov	edi,EXIT_OK
 	jmp	exit_process
 
@@ -214,6 +215,8 @@ worker_main:
 
 ; TSC ticks per microsecond (the TSC is invariant on every x86-64-v3 CPU).
 tsc_calibrate:
+	cmp	qword [g_tsc_per_us],0
+	jne	.known				; measured by the supervisor, inherited
 	rdtsc
 	shl	rdx,32
 	or	rax,rdx
@@ -231,6 +234,7 @@ tsc_calibrate:
 	mov	ecx,10000
 	div	rcx
 	mov	[g_tsc_per_us],rax
+.known:
 	ret
 
 ; Multishot one-second tick: idle timeouts and drain deadlines.
@@ -268,6 +272,7 @@ tick_work:
 	call	idle_expire
 	call	ph_expire
 	call	retry_budget_tick
+	call	alog_tick
 	cmp	dword [g_draining],0
 	je	.done
 	mov	eax,[g_tick]

@@ -148,6 +148,8 @@ supervisor_main:
 @@:
 	call	log_end
 
+	call	alog_pipe_init
+	call	tsc_calibrate			; once, for every worker (busy_poll, access log)
 	; from here on the supervisor and everything it forks are confined
 	call	seccomp_supervisor
 	xor	ebx,ebx
@@ -161,6 +163,7 @@ supervisor_main:
 	call	spawn_control
 	call	spawn_health
 	call	spawn_admin
+	call	spawn_logger
 
 	; check the heartbeats once a second
 	sub	rsp,32
@@ -193,7 +196,7 @@ supervisor_main:
 	cmp	eax,SIGHUP
 	je	.reload
 	cmp	eax,SIGUSR1
-	je	.wait_signal
+	je	.reopen
 	call	begin_shutdown
 	jmp	.wait_signal
 .child:
@@ -205,6 +208,14 @@ supervisor_main:
 	jmp	.wait_signal
 .reload:
 	call	supervisor_reload
+	jmp	.wait_signal
+.reopen:
+	mov	edi,[g_logger_pid]		; logrotate: the logger reopens its files
+	test	edi,edi
+	jz	.wait_signal
+	mov	esi,SIGUSR1
+	mov	eax,SYS_kill
+	syscall
 	jmp	.wait_signal
 
 .no_signalfd:
@@ -680,6 +691,18 @@ reap_workers:
 	call	spawn_admin
 	jmp	.next
 .not_admin:
+	cmp	r12d,[g_logger_pid]
+	jne	.not_logger
+	mov	dword [g_logger_pid],0
+	cmp	dword [g_shutdown],0
+	jne	.next
+	lea	rdi,[ts_respawn_delay]
+	xor	esi,esi
+	mov	eax,SYS_nanosleep
+	syscall
+	call	spawn_logger			; lines wait in the pipe meanwhile
+	jmp	.next
+.not_logger:
 	cmp	r12d,[g_health_pid]
 	jne	.not_health
 	mov	dword [g_health_pid],0
@@ -831,6 +854,7 @@ reap_workers:
 	mov	eax,SYS_kill
 	syscall
 @@:
+	call	logger_finish			; what the workers logged last
 	call	log_begin
 	out_lit 'all workers stopped'
 	call	log_end

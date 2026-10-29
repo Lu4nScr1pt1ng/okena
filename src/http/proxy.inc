@@ -39,6 +39,19 @@ H_OUT		= H_IN + H_IN_CAP	; heads okena writes, chunk framing
 H_OUT_CAP	= 20480
 H_UP		= H_OUT + H_OUT_CAP	; upstream bytes: the response
 H_UP_CAP	= 16384
+; access log: the request as it was, and its exchange's counters
+H_LT0		= 184		; q: TSC when the request head was parsed, 0 = none
+H_XBYTES	= 192		; q: bytes sent to the client in this exchange
+H_LMLEN		= 200		; d
+H_LHLEN		= 204		; d
+H_LTLEN		= 208		; d
+H_LTEXT_M	= H_UP + H_UP_CAP	; method
+H_LTEXT_M_CAP	= 16
+H_LTEXT_H	= H_LTEXT_M + 16	; host
+H_LTEXT_H_CAP	= 255
+H_LTEXT_T	= H_LTEXT_H + 256	; target
+H_LTEXT_T_CAP	= 1024
+assert H_LTEXT_T + H_LTEXT_T_CAP <= 1 shl H_SHIFT
 
 HS_HEAD		= 1		; reading a request head
 HS_CONTINUE	= 2		; writing our 100 Continue
@@ -211,6 +224,9 @@ http_request:
 	jz	@f
 	or	dword [r15+H_FLAGS],HX_IDEMPOTENT
 @@:
+	call	alog_request
+	h_rec
+	lea	r14,[g_hm]
 	mov	eax,[r14+HM_FLAGS]
 	test	eax,HMF_CLOSE
 	jz	@f
@@ -797,7 +813,7 @@ http_send_done:
 	cmp	edx,HS_RESP_SEND
 	je	.resp
 	cmp	edx,HS_ERROR_SEND
-	je	.close
+	je	.error_sent
 	cmp	edx,HS_TUNNEL_UP
 	je	http_tunnel_in
 	cmp	edx,HS_TUNNEL_IN
@@ -821,6 +837,9 @@ http_send_done:
 @@:
 	mov	edi,502				; the backend went away under the request
 	jmp	http_error
+.error_sent:
+	mov	esi,1
+	call	alog_exchange
 .close:
 	mov	edi,ebx
 	jmp	session_close
@@ -1619,6 +1638,8 @@ http_tunnel_in:
 	jmp	h_send
 
 http_tunnel_start:
+	xor	esi,esi
+	call	alog_exchange			; the 101 exchange; then bytes, unlogged
 	call	session_ptr
 	or	dword [rax+S_FLAGS],SF_TUNNEL
 	cmp	dword [g_engine],ENGINE_EPOLL
@@ -1642,6 +1663,8 @@ http_tunnel_start:
 ; One exchange is over: drop the upstream connection, then the next
 ; request on the client connection, or close it.
 http_exchange_done:
+	xor	esi,esi
+	call	alog_exchange
 	h_rec
 	and	dword [r15+H_FLAGS],not HX_LASTCHUNK
 	test	dword [r15+H_FLAGS],HX_UPKEEP
@@ -1673,6 +1696,7 @@ http_error:
 	h_rec
 	or	dword [r15+H_FLAGS],HX_CLOSE or HX_STARTED
 	mov	dword [r15+H_STATE],HS_ERROR_SEND
+	mov	[r15+H_STATUS],eax
 	mov	edi,eax
 	mov	esi,5
 	call	http_count

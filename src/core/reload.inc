@@ -269,6 +269,7 @@ supervisor_reload:
 	syscall
 @@:
 	call	spawn_admin
+	call	logger_restart			; destinations may have changed
 	mov	edi,SG_RELOADS
 	call	stats_global_inc
 	inc	dword [g_gen]

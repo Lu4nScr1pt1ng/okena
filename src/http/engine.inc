@@ -26,6 +26,14 @@ h_recv:
 
 ; ebx = session, ecx = side, rdi = bytes, esi = length.
 h_send:
+	test	ecx,ecx
+	jnz	@f
+	mov	eax,ebx				; bytes towards the client (access log)
+	shl	rax,H_SHIFT
+	add	rax,[g_http_base]
+	mov	r8d,esi
+	add	[rax+H_XBYTES],r8
+@@:
 	cmp	dword [g_engine],ENGINE_EPOLL
 	je	hep_send
 	mov	eax,ebx

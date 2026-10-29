@@ -122,6 +122,7 @@ ep_main:
 	call	tick_work
 	jmp	.loop
 .drained:
+	call	alog_flush
 	mov	edi,EXIT_OK
 	jmp	exit_process
 .no_epoll:

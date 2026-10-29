@@ -40,6 +40,7 @@ T_TARGET	= 13		; `to pool NAME` or `to ADDR...`
 T_FUTURE	= 14		; an option of the language not implemented yet
 T_HOSTNAME	= 16		; a host name, or *.example.com
 T_ROUTE		= 15		; a path ("/x", "/x/*", "/*") or a method (GET, POST...)
+T_LOGDEST	= 17		; stdout, stderr, off, or an absolute file path
 
 ; Directive entry
 D_NAME		= 0		; 24 bytes, NUL-padded
@@ -156,6 +157,7 @@ dirdef DIR_CONNECTIONS, 'connections', M_LIMITS,  0,           F_UNIQUE, 1, 1, T
 dirdef DIR_PER_SOURCE, 'per_source', M_LIMITS,  0,           F_UNIQUE, 1, 1, T_COUNT, T_NONE, 0
 dirdef DIR_TIMEOUT, 'timeout',     M_TCP or M_HTTP,     CTX_TIMEOUT, F_BLOCK_REQ or F_UNIQUE, 0, 0, T_NONE, T_NONE, 0
 dirdef DIR_IDLE, 'idle',        M_TIMEOUT, 0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
+dirdef DIR_ACCESS_LOG, 'access_log', M_HTTP,   0,           F_UNIQUE, 1, 1, T_LOGDEST, T_NONE, 0
 dirdef DIR_HEADER, 'header',      M_TIMEOUT, 0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
 dirdef DIR_RESPONSE, 'response',  M_TIMEOUT, 0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
 dirdef DIR_SERVER, 'server',      M_POOL,    0,           0, 1, 2, T_BACKEND, e_server_flags, k_server

@@ -113,6 +113,13 @@ macro sc_end f*
 	f#.read_only:				; openat: flags are args[2]
 	bpf_ld 32
 	bpf_jset O_WRONLY or O_RDWR or O_CREAT or O_TRUNC or O_APPEND, f#.trap, f#.allow
+	f#.append_only:				; openat: read, or write at the end only
+	bpf_ld 32
+	bpf_jset O_RDWR or O_TRUNC, f#.trap, f#.ap1
+	f#.ap1:
+	bpf_jset O_WRONLY, f#.ap2, f#.allow
+	f#.ap2:
+	bpf_jset O_APPEND, f#.allow, f#.trap
 	f#.trap:
 	bpf_ret SECCOMP_RET_TRAP
 	f#.kill:
@@ -138,7 +145,7 @@ rodata
 	sc_allow filter_supervisor, SYS_read
 	sc_allow filter_supervisor, SYS_close
 	sc_allow filter_supervisor, SYS_fstat
-	sc_check filter_supervisor, SYS_openat, read_only
+	sc_check filter_supervisor, SYS_openat, append_only	; config; access logs (logger)
 	sc_check filter_supervisor, SYS_mmap, no_exec
 	sc_allow filter_supervisor, SYS_madvise
 	sc_allow filter_supervisor, SYS_fork
@@ -177,6 +184,7 @@ rodata
 	sc_allow filter_worker_uring, SYS_io_uring_enter
 	sc_allow filter_worker_uring, SYS_madvise
 	sc_allow filter_worker_uring, SYS_getsockname	; PROXY protocol, wildcard listeners
+	sc_allow filter_worker_uring, SYS_clock_gettime	; once a tick: access log time
 	sc_end filter_worker_uring
 
 	; epoll worker
@@ -232,6 +240,15 @@ rodata
 	sc_allow filter_admin, SYS_close
 	sc_allow filter_admin, SYS_setsockopt
 	sc_end filter_admin
+
+	; logger: access log lines from the pipe to their files
+	sc_begin filter_logger
+	sc_common filter_logger
+	sc_allow filter_logger, SYS_read
+	sc_allow filter_logger, SYS_close
+	sc_check filter_logger, SYS_openat, append_only
+	sc_allow filter_logger, SYS_epoll_wait
+	sc_end filter_logger
 
 	; reload compiler: parses bytes already in memory, prints, exits
 	sc_begin filter_compiler

@@ -408,6 +408,7 @@ OFF_S_FAILS	= g_st_s_fails - g_st_begin
 OFF_L_EVICTED	= g_st_l_evicted - g_st_begin
 OFF_SRC_OPEN	= g_st_src_open - g_st_begin
 OFF_L_HTTP	= g_st_l_http - g_st_begin
+OFF_ALOG_DROPPED = g_st_alog_dropped - g_st_begin
 OFF_L_RETRIES	= g_st_l_retries - g_st_begin
 
 ; rdi = output, ebx = listener: {listener="..."
@@ -451,6 +452,11 @@ metrics_render:
 	memit 10,'# HELP okena_per_source_untracked_total Connections let in without per_source counting (table neighbourhood full).',10
 	memit '# TYPE okena_per_source_untracked_total counter',10,'okena_per_source_untracked_total '
 	mov	ecx,OFF_SRC_OPEN
+	call	stats_sum_q
+	call	fmt_u64
+	memit 10,'# HELP okena_access_log_dropped_total Access log lines lost because the logger could not keep up.',10
+	memit '# TYPE okena_access_log_dropped_total counter',10,'okena_access_log_dropped_total '
+	mov	ecx,OFF_ALOG_DROPPED
 	call	stats_sum_q
 	call	fmt_u64
 	memit 10

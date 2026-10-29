@@ -217,6 +217,7 @@ okena {{
     metrics 127.0.0.1:{MET}
 }}
 http 127.0.0.1:{LST} {{
+    access_log {tmp}/access.log
     route /api/* {{ to 127.0.0.1:{BACK} }}
     route /api/exact {{ to 127.0.0.1:{BACK} }}
     route /only-get GET {{ to 127.0.0.1:{BACK} }}
@@ -525,6 +526,41 @@ try:
 
     log.seek(0)
     check("no crash", "killed by signal" not in log.read() and p.poll() is None)
+
+    # access log: rotation (SIGUSR1 reopens), then a last request just
+    # before shutdown must still be written
+    time.sleep(1.2)
+    os.rename(tmp / "access.log", tmp / "access.log.1")
+    p.send_signal(signal.SIGUSR1)
+    time.sleep(0.5)
+    c = Client()
+    c.send(req(b"GET", b"/api/last-words"))
+    r = c.response()
+    p.send_signal(signal.SIGTERM)
+    p.wait(10)
+    old = (tmp / "access.log.1").read_text().splitlines()
+    new = (tmp / "access.log").read_text().splitlines() if (tmp / "access.log").exists() else []
+    try:
+        lines = [json.loads(l) for l in old + new]
+        parsed = True
+    except ValueError as e:
+        lines, parsed = [], False
+    check("access log: every line is JSON", parsed and len(lines) > 20, f"{len(old)}+{len(new)} lines")
+    by_target = {l["target"]: l for l in lines}
+    first = by_target.get("/api/users?x=1", {})
+    check("access log: an exchange with its fields", first.get("method") == "GET" and first.get("status") == 200
+          and first.get("host") == "t" and first.get("client") == "127.0.0.1"
+          and first.get("upstream") == f"127.0.0.1:{BACK}" and first.get("source") == "backend"
+          and first.get("bytes", 0) > 100 and first.get("time", "").endswith("Z"), str(first))
+    down = by_target.get("/down/x", {})
+    check("access log: okena's own answer", down.get("status") == 502 and down.get("source") == "okena"
+          and down.get("upstream") is None, str(down))
+    bad = next((l for l in lines if l["target"] == "/bad/x" and l["method"] == "GET"), {})
+    check("access log: a retried request is marked", bad.get("retried") is True, str(bad))
+    check("access log: SIGUSR1 reopens the file (logrotate)",
+          any(json.loads(l)["target"] == "/api/last-words" for l in new), f"{len(new)} new lines")
+    check("access log: the last request before shutdown is written",
+          "/api/last-words" in by_target)
 finally:
     p.send_signal(signal.SIGTERM)
     try:
