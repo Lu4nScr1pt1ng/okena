@@ -103,6 +103,8 @@ enumdef e_io_engine, 'auto', 'io_uring', 'epoll'
 enumdef e_balance, 'round-robin', 'least-conn', 'random'
 enumdef e_server_flags, 'backup'
 enumdef e_health, 'tcp'
+enumdef e_pp_mode, 'send'
+enumdef e_pp_version, 'v1', 'v2'
 
 keysdef k_drain, 'delay', T_DURATION, 'timeout', T_DURATION
 keysdef k_server, 'weight', T_WEIGHT
@@ -117,11 +119,11 @@ enumdef ctx_names, 'the top level', '`okena`', '`tcp`', '`pool`', '`limits`', '`
 enumdef future_names, 'http', 'https', 'udp', 'xdp', 'tls', 'route', 'policy', 'use', \
 	'addon', 'alerts', 'include', 'admin', 'metrics', 'log', 'reload', 'profile', \
 	'acme', 'discover', 'split', 'mirror', 'rewrite', 'header', 'headers', 'cache', \
-	'cors', 'limit', 'auth', 'match', 'proxy_protocol', 'trusted_proxies', 'source', \
+	'cors', 'limit', 'auth', 'match', 'trusted_proxies', 'source', \
 	'concurrency', 'retry_budget', 'retry', 'outlier', 'slow_start', 'protocol', \
 	'fault', 'files', 'redirect', 'compress', 'canonical', 'idempotency', 'hold', \
 	'body', 'early_hints', 'signed_urls', 'sni', 'default', 'priority', 'hedge', \
-	'response', 'alpn', 'cert', 'warm', 'per_source'
+	'response', 'alpn', 'cert', 'warm'
 
 rodata
 	align 8
@@ -136,8 +138,10 @@ dirdef DIR_DRAIN, 'drain',       M_OKENA,   0,           F_UNIQUE or F_KEYS_BLOC
 dirdef DIR_TCP, 'tcp',         M_TOP,     CTX_TCP,     F_BLOCK_REQ, 1, 16, T_LISTEN, T_LISTEN, 0
 dirdef DIR_POOL, 'pool',        M_TOP,     CTX_POOL,    F_BLOCK_REQ, 1, 1, T_NAME, T_NONE, 0
 dirdef DIR_TO, 'to',          M_TCP,     0,           F_UNIQUE, 1, 64, T_TARGET, T_TARGET, 0
+dirdef DIR_PROXY_PROTOCOL, 'proxy_protocol', M_TCP, 0,      F_UNIQUE, 2, 2, e_pp_mode, e_pp_version, 0
 dirdef DIR_LIMITS, 'limits',      M_TCP,     CTX_LIMITS,  F_BLOCK_REQ or F_UNIQUE, 0, 0, T_NONE, T_NONE, 0
 dirdef DIR_CONNECTIONS, 'connections', M_LIMITS,  0,           F_UNIQUE, 1, 1, T_COUNT, T_NONE, 0
+dirdef DIR_PER_SOURCE, 'per_source', M_LIMITS,  0,           F_UNIQUE, 1, 1, T_COUNT, T_NONE, 0
 dirdef DIR_TIMEOUT, 'timeout',     M_TCP,     CTX_TIMEOUT, F_BLOCK_REQ or F_UNIQUE, 0, 0, T_NONE, T_NONE, 0
 dirdef DIR_IDLE, 'idle',        M_TIMEOUT, 0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
 dirdef DIR_SERVER, 'server',      M_POOL,    0,           0, 1, 2, T_BACKEND, e_server_flags, k_server

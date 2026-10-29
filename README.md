@@ -39,6 +39,10 @@ Early. What works today:
 * active TCP health checks (`health tcp every=2s timeout=1s rise=2
   fall=3`) run once per instance by a health process, with passive
   ejection on top and panic mode when every server is down;
+* PROXY protocol v1 and v2 towards backends (`proxy_protocol send v2`),
+  with the real source and destination, IPv4-mapped addresses
+  normalized, and `limits { per_source N }` counted for the whole
+  instance;
 * a watchdog that replaces stuck workers;
 * a seccomp filter for each kind of process (no execve, no ptrace, no
   executable memory anywhere; an io_uring worker may make five system

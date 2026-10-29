@@ -42,6 +42,8 @@ bss
 	g_cl_tail	rd MAX_POOLS
 	g_buf_stack	rd BUF_MAX
 	g_ep_events:	rb EPOLL_EVENT * EP_EVENTS
+	g_ep_sa:	rb 28
+	g_ep_salen	dd ?
 end bss
 
 ; Never returns.
@@ -301,6 +303,13 @@ ep_accept:
 	mov	edi,r15d
 	xor	esi,esi
 	xor	edx,edx
+	imul	rax,r13,LS_SIZE
+	test	dword [g_listeners+rax+LS_FLAGS],LSF_PEER
+	jz	@f
+	mov	dword [g_ep_salen],28
+	lea	rsi,[g_ep_sa]
+	lea	rdx,[g_ep_salen]
+@@:
 	mov	r10d,SOCK_NONBLOCK or SOCK_CLOEXEC
 	mov	eax,SYS_accept4
 	syscall
@@ -334,6 +343,22 @@ ep_accept:
 	mov	edx,EK_CLIENT
 	call	ep_session_data
 	call	ep_add
+	imul	rax,r13,LS_SIZE
+	test	dword [g_listeners+rax+LS_FLAGS],LSF_PEER
+	jz	.connect
+	call	session_ptr
+	or	dword [rax+S_FLAGS],SF_PEER
+	call	peer_ptr
+	mov	rdi,rax
+	lea	rsi,[g_ep_sa]
+	mov	ecx,28
+	rep	movsb
+	call	peer_admit			; per_source, PROXY header
+	jnc	.connect
+	mov	edi,ebx
+	call	ep_close
+	jmp	.next
+.connect:
 	mov	edi,ebx
 	call	ep_connect
 	jmp	.next
@@ -591,6 +616,28 @@ ep_connected:
 	mov	dword [rax+S_STATE],ST_OPEN
 	mov	edi,[rax+S_SERVER]
 	call	server_ok
+	; a PROXY protocol header goes first; on a fresh connection it fits
+	; the send buffer, so one write sends it all or the session ends
+	call	session_ptr
+	mov	ecx,[rax+S_LST]
+	imul	rcx,rcx,LS_SIZE
+	test	dword [g_listeners+rcx+LS_FLAGS],LSF_PP_V1 or LSF_PP_V2
+	jz	.relay
+	mov	edi,[rax+S_UPFD]
+	call	peer_ptr
+	lea	rsi,[rax+P_HDR]
+	mov	edx,[rax+P_HLEN]
+	push	rdx
+	mov	eax,SYS_write
+	syscall
+	pop	rdx
+	cmp	eax,edx
+	je	.relay
+	mov	edi,ebx
+	call	ep_close
+	pop	rbx
+	ret
+.relay:
 	mov	edi,ebx
 	mov	esi,EK_CLIENT
 	call	ep_pump
@@ -959,6 +1006,10 @@ ep_close:
 	mov	dword [r12+S_CU_BID],NIL
 	mov	dword [r12+S_UC_BID],NIL
 	call	session_uncount
+	test	dword [r12+S_FLAGS],SF_PEER
+	jz	@f
+	call	src_release
+@@:
 	and	dword [r12+S_FLAGS],0
 	mov	dword [r12+S_STATE],ST_FREE
 	inc	dword [r12+S_GEN]

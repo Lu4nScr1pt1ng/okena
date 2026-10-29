@@ -16,7 +16,14 @@ LS_MAXCONN	= 44		; d: per worker
 LS_TEXT		= 48		; q: address as written
 LS_TLEN		= 56		; d
 LS_PORT		= 60		; d
-LS_SIZE		= 64
+LS_FLAGS	= 64		; d: LSF_*
+LS_PER_SOURCE	= 68		; d: connections per client address, 0 = no limit
+LS_SIZE		= 96
+
+LSF_PEER	= 1		; sessions need the client's address
+LSF_PP_V1	= 2		; send a PROXY protocol v1 header upstream
+LSF_PP_V2	= 4		; send a PROXY protocol v2 header upstream
+LSF_WILDCARD	= 8		; bound to every address: the local one comes from getsockname
 
 ; Pool
 PL_FIRST	= 0		; d: first server
@@ -70,6 +77,8 @@ bss
 	g_pools:	rb PL_SIZE * MAX_POOLS
 	g_servers:	rb SV_SIZE * MAX_SERVERS
 	g_cmp_addr:	rb AD_SIZE
+	g_cmp_flags	dd ?
+	g_cmp_per_source dd ?
 end bss
 
 ; Exits with EXIT_CONFIG when something valid in the language cannot be
@@ -681,6 +690,43 @@ compile_listener:
 	call	node_decimal
 	mov	r15d,eax
 @@:
+	; client address features
+	xor	eax,eax
+	mov	[g_cmp_flags],eax
+	mov	[g_cmp_per_source],eax
+	mov	rdi,r12
+	mov	ecx,DIR_LIMITS
+	call	find_child
+	test	rax,rax
+	jz	@f
+	mov	rdi,rax
+	mov	ecx,DIR_PER_SOURCE
+	call	find_child
+	test	rax,rax
+	jz	@f
+	mov	rdi,rax
+	call	node_decimal
+	mov	[g_cmp_per_source],eax
+	or	dword [g_cmp_flags],LSF_PEER
+@@:
+	mov	rdi,r12
+	mov	ecx,DIR_PROXY_PROTOCOL
+	call	find_child
+	test	rax,rax
+	jz	@f
+	mov	rax,[rax+N_ARGS]
+	add	rax,A_SIZE			; the version
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	lea	rdx,[e_pp_version]
+	call	list_index
+	mov	ecx,LSF_PEER or LSF_PP_V1
+	test	eax,eax
+	jz	.pp
+	mov	ecx,LSF_PEER or LSF_PP_V2
+.pp:
+	or	[g_cmp_flags],ecx
+@@:
 	mov	ebx,DEFAULT_IDLE_SECS
 	mov	rdi,r12
 	mov	ecx,DIR_TIMEOUT
@@ -741,6 +787,20 @@ compile_listener:
 @@:
 	mov	eax,[g_cmp_addr+AD_PORT]
 	mov	[rcx+LS_PORT],eax
+	mov	eax,[g_cmp_flags]
+	cmp	dword [g_cmp_addr+AD_KIND],ADDR_ANY
+	je	.wild
+	push	rcx
+	lea	rdi,[g_cmp_addr+AD_IP]
+	call	ip_is_unspecified
+	pop	rcx
+	jnc	@f
+.wild:
+	or	eax,LSF_WILDCARD
+@@:
+	mov	[rcx+LS_FLAGS],eax
+	mov	eax,[g_cmp_per_source]
+	mov	[rcx+LS_PER_SOURCE],eax
 	inc	r13d
 	jmp	.address
 .done:
@@ -749,6 +809,18 @@ compile_listener:
 	pop	r13
 	pop	r12
 	pop	rbx
+	ret
+
+; rdi = 16 address bytes (IPv4 in the first 4). CF when all zero.
+; Keeps rax.
+ip_is_unspecified:
+	mov	rdx,[rdi]
+	or	rdx,[rdi+8]
+	jnz	.no
+	stc
+	ret
+.no:
+	clc
 	ret
 
 ; rdi/esi = pool name. eax = index (the checker made sure it exists).

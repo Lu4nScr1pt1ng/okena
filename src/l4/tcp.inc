@@ -50,6 +50,18 @@ SF_C_WAIT	= 4		; client receive waits for a buffer
 SF_U_WAIT	= 8
 SF_UP_OPEN	= 16		; the upstream slot holds a socket
 SF_COUNTED	= 32		; counted in the server's active connections
+SF_RAW		= 64		; the client is a normal descriptor, not a direct one
+SF_PEER		= 128		; has a side record (client address features)
+
+; The SQE in rax works on the client of the session in reg: drop
+; IOSQE_FIXED_FILE when that client is a normal descriptor.
+macro client_sqe reg
+	local fixed
+	test	dword [reg+S_FLAGS],SF_RAW
+	jz	fixed
+	and	byte [rax+SQE_FLAGS],not IOSQE_FIXED_FILE
+	fixed:
+end macro
 
 NIL		= -1
 
@@ -61,8 +73,17 @@ MAX_TRIES	= 3
 FAIL_THRESHOLD	= 3		; consecutive connect failures before ejection
 EJECT_TICKS	= 10
 
+ACC_PER_SOCKET	= 8		; accepts in flight per socket that needs addresses
+ACC_MAX		= 2048
+AC_SID		= 0		; d: socket id
+AC_LEN		= 4		; d: address length
+AC_SA		= 8		; 28 bytes
+AC_SIZE		= 40
+
 bss
 	align 8
+	g_acc_count	dd ?
+	g_acc:		rb AC_SIZE * ACC_MAX
 	g_sessions	dd ?		; slots per worker
 	g_sess_hwm	dd ?		; slots ever used (memory follows load)
 	g_sess_free	dd ?		; free list head
@@ -184,6 +205,9 @@ sessions_init:
 	xor	rax,rcx
 	or	rax,1
 	mov	[g_rand],rax
+	call	peer_worker_init
+	test	eax,eax
+	js	.done
 	call	balance_stagger
 	xor	eax,eax
 .done:
@@ -419,8 +443,152 @@ arm_accepts:
 	lea	rsi,[arm_accept]
 	jmp	for_each_socket
 
-; edi = socket id.
+; edi = socket id: a listener that needs client addresses gets
+; ACC_PER_SOCKET single-shot accepts, each with its own address buffer;
+; the others one multishot accept into direct descriptors.
 arm_accept:
+	mov	eax,edi
+	and	eax,0xFF
+	imul	rax,rax,LS_SIZE
+	test	dword [g_listeners+rax+LS_FLAGS],LSF_PEER
+	jz	arm_accept_multi
+	push	rbx
+	push	r12
+	mov	r12d,edi
+	mov	ebx,ACC_PER_SOCKET
+.slot:
+	mov	eax,[g_acc_count]
+	cmp	eax,ACC_MAX
+	jae	.done
+	inc	dword [g_acc_count]
+	imul	rcx,rax,AC_SIZE
+	mov	[g_acc+rcx+AC_SID],r12d
+	mov	edi,eax
+	call	arm_accept_slot
+	dec	ebx
+	jnz	.slot
+.done:
+	pop	r12
+	pop	rbx
+	ret
+
+; edi = accept slot.
+arm_accept_slot:
+	push	rbx
+	mov	ebx,edi
+	imul	rcx,rbx,AC_SIZE
+	mov	dword [g_acc+rcx+AC_LEN],28
+	call	ring_get_sqe
+	mov	byte [rax+SQE_OPCODE],IORING_OP_ACCEPT
+	imul	rcx,rbx,AC_SIZE
+	lea	rdx,[g_acc+rcx+AC_SA]
+	mov	[rax+SQE_ADDR],rdx
+	lea	rdx,[g_acc+rcx+AC_LEN]
+	mov	[rax+SQE_OFF],rdx
+	mov	dword [rax+SQE_OP_FLAGS],SOCK_CLOEXEC
+	push	rax
+	mov	edi,[g_acc+rcx+AC_SID]
+	call	listener_fd
+	mov	ecx,eax
+	pop	rax
+	mov	[rax+SQE_FD],ecx
+	mov	ecx,ebx
+	mov	rdx,OP_ACCEPT_A shl 56
+	or	rcx,rdx
+	mov	[rax+SQE_USER_DATA],rcx
+	pop	rbx
+	ret
+
+; ebx = accept slot, r14 = normal descriptor or -errno.
+on_accept_a:
+	mov	r12d,ebx
+	cmp	dword [g_draining],2
+	jae	@f
+	cmp	r14,-ECANCELED
+	je	@f
+	mov	edi,ebx
+	call	arm_accept_slot			; ready for the next one
+@@:
+	test	r14,r14
+	js	.out
+	imul	rcx,r12,AC_SIZE
+	mov	r13d,[g_acc+rcx+AC_SID]
+	and	r13d,0xFF			; listener
+	mov	eax,[g_ls_active+r13*4]
+	cmp	eax,[g_ls_cap+r13*4]
+	jae	.refuse
+	call	session_alloc
+	cmp	eax,NIL
+	je	.refuse
+	mov	ebx,eax
+	inc	dword [g_ls_active+r13*4]
+	inc	dword [g_active]
+	call	session_ptr
+	mov	r15,rax
+	mov	dword [r15+S_STATE],ST_CONNECTING
+	mov	dword [r15+S_INFL],0
+	mov	dword [r15+S_FLAGS],SF_RAW or SF_PEER
+	mov	[r15+S_CLIENT],r14d
+	mov	[r15+S_LST],r13d
+	mov	dword [r15+S_TRIES],0
+	mov	dword [r15+S_SERVER],NIL
+	mov	dword [r15+S_CU_BID],NIL
+	mov	dword [r15+S_UC_BID],NIL
+	mov	ecx,[g_tick]
+	mov	[r15+S_LAST],ecx
+	mov	edi,ebx
+	call	idle_append
+	call	peer_ptr
+	mov	rdi,rax
+	imul	rcx,r12,AC_SIZE
+	lea	rsi,[g_acc+rcx+AC_SA]
+	mov	ecx,28
+	rep	movsb
+	call	peer_admit			; per_source, PROXY header
+	jc	.over
+	mov	edi,ebx
+	jmp	session_connect
+.over:
+	mov	edi,ebx
+	jmp	session_close
+.refuse:
+	call	ring_get_sqe
+	mov	byte [rax+SQE_OPCODE],IORING_OP_CLOSE
+	mov	[rax+SQE_FD],r14d
+	mov	rcx,OP_IGNORE shl 56
+	mov	[rax+SQE_USER_DATA],rcx
+.out:
+	ret
+
+; ebx = session (client address in its side record, client descriptor
+; in S_CLIENT), r13d = listener. Applies per_source and builds the PROXY
+; header. CF when the client is over its per-source limit.
+peer_admit:
+	call	peer_ptr
+	mov	dword [rax+P_SLOT],-1
+	mov	dword [rax+P_HLEN],0
+	imul	rcx,r13,LS_SIZE
+	cmp	dword [g_listeners+rcx+LS_PER_SOURCE],0
+	je	.pp
+	call	src_acquire
+	jc	.over
+.pp:
+	imul	rcx,r13,LS_SIZE
+	test	dword [g_listeners+rcx+LS_FLAGS],LSF_PP_V1 or LSF_PP_V2
+	jz	.ok
+	call	session_ptr
+	mov	edi,[rax+S_CLIENT]
+	call	peer_local
+	call	pp_build
+.ok:
+	clc
+	ret
+.over:
+	stc
+	ret
+
+; edi = socket id: one multishot accept into direct descriptors.
+arm_accept_multi:
 	push	rbx
 	mov	ebx,edi
 	call	ring_get_sqe
@@ -980,6 +1148,62 @@ session_connect:
 	pop	rbx
 	ret
 
+; ebx = session: move bytes both ways.
+start_relay:
+	mov	edi,ebx
+	call	post_recv_c
+	mov	edi,ebx
+	jmp	post_recv_u
+
+; edi = session: send (the rest of) its PROXY header upstream.
+post_send_pp:
+	push	rbx
+	mov	ebx,edi
+	mov	esi,edi
+	mov	edi,OP_S_SEND_PP
+	call	sess_sqe
+	mov	byte [rax+SQE_OPCODE],IORING_OP_SEND
+	mov	byte [rax+SQE_FLAGS],IOSQE_FIXED_FILE
+	mov	ecx,[g_sessions]
+	add	ecx,ebx
+	mov	[rax+SQE_FD],ecx
+	mov	rdx,rax
+	call	peer_ptr
+	mov	ecx,[rax+P_HOFF]
+	lea	rsi,[rax+P_HDR+rcx]
+	mov	[rdx+SQE_ADDR],rsi
+	mov	esi,[rax+P_HLEN]
+	sub	esi,ecx
+	mov	[rdx+SQE_LEN],esi
+	mov	dword [rdx+SQE_OP_FLAGS],MSG_NOSIGNAL
+	pop	rbx
+	ret
+
+on_s_send_pp:
+	call	sess_complete
+	jc	.out
+	cmp	dword [rax+S_STATE],ST_OPEN
+	jne	.not_open
+	test	r14,r14
+	jle	.failed
+	call	peer_ptr
+	add	[rax+P_HOFF],r14d
+	mov	ecx,[rax+P_HOFF]
+	cmp	ecx,[rax+P_HLEN]
+	jb	.more
+	jmp	start_relay
+.more:
+	mov	edi,ebx
+	jmp	post_send_pp
+.failed:
+	mov	edi,ebx
+	jmp	session_close
+.not_open:
+	mov	edi,ebx
+	jmp	session_maybe_free
+.out:
+	ret
+
 ; Drop the session (in r12) from its server's active count.
 session_uncount:
 	test	dword [r12+S_FLAGS],SF_COUNTED
@@ -1026,10 +1250,13 @@ on_s_connect:
 	mov	dword [r13+S_STATE],ST_OPEN
 	mov	edi,[r13+S_SERVER]
 	call	server_ok
+	; a PROXY protocol header goes before any byte of the client
+	mov	eax,[r13+S_LST]
+	imul	rax,rax,LS_SIZE
+	test	dword [g_listeners+rax+LS_FLAGS],LSF_PP_V1 or LSF_PP_V2
+	jz	start_relay
 	mov	edi,ebx
-	call	post_recv_c
-	mov	edi,ebx
-	jmp	post_recv_u
+	jmp	post_send_pp
 .failed:
 	mov	edi,[r13+S_SERVER]
 	mov	rsi,r14
@@ -1156,6 +1383,7 @@ post_recv_c:
 	mov	ecx,[rdx+S_CLIENT]
 	mov	[rax+SQE_FD],ecx
 	mov	word [rax+SQE_BUF_GROUP],0
+	client_sqe rdx
 	ret
 
 ; edi = session: receive from the upstream.
@@ -1206,6 +1434,7 @@ post_send_c:
 	pop	rsi
 	mov	byte [rax+SQE_OPCODE],IORING_OP_SEND
 	mov	byte [rax+SQE_FLAGS],IOSQE_FIXED_FILE
+	client_sqe rdx
 	mov	ecx,[rdx+S_CLIENT]
 	mov	[rax+SQE_FD],ecx
 	mov	ecx,[rdx+S_UC_BID]
@@ -1331,6 +1560,7 @@ on_s_recv_u:
 	call	sess_sqe
 	mov	byte [rax+SQE_OPCODE],IORING_OP_SHUTDOWN
 	mov	byte [rax+SQE_FLAGS],IOSQE_FIXED_FILE
+	client_sqe r13
 	mov	ecx,[r13+S_CLIENT]
 	mov	[rax+SQE_FD],ecx
 	mov	dword [rax+SQE_LEN],SHUT_WR
@@ -1464,13 +1694,23 @@ session_close:
 	mov	ecx,[r12+S_CLIENT]
 	mov	[rax+SQE_FD],ecx
 	mov	dword [rax+SQE_OP_FLAGS],IORING_ASYNC_CANCEL_FD or IORING_ASYNC_CANCEL_FD_FIXED or IORING_ASYNC_CANCEL_ALL
+	test	dword [r12+S_FLAGS],SF_RAW
+	jz	@f
+	mov	dword [rax+SQE_OP_FLAGS],IORING_ASYNC_CANCEL_FD or IORING_ASYNC_CANCEL_ALL
+@@:
 	mov	edi,OP_S_CLOSE
 	mov	esi,ebx
 	call	sess_sqe
 	mov	byte [rax+SQE_OPCODE],IORING_OP_CLOSE
 	mov	ecx,[r12+S_CLIENT]
+	test	dword [r12+S_FLAGS],SF_RAW
+	jz	.client_direct
+	mov	[rax+SQE_FD],ecx		; a normal descriptor
+	jmp	.client_closed
+.client_direct:
 	inc	ecx
 	mov	[rax+SQE_FILE_INDEX],ecx
+.client_closed:
 	test	dword [r12+S_FLAGS],SF_UP_OPEN
 	jz	.done
 	and	dword [r12+S_FLAGS],not SF_UP_OPEN
@@ -1524,6 +1764,10 @@ session_maybe_free:
 	pop	rbx
 @@:
 	call	session_uncount
+	test	dword [r12+S_FLAGS],SF_PEER
+	jz	@f
+	call	src_release
+@@:
 	and	dword [r12+S_FLAGS],not (SF_C_WAIT or SF_U_WAIT)
 	mov	dword [r12+S_STATE],ST_FREE
 	inc	dword [r12+S_GEN]

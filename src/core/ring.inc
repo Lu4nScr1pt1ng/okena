@@ -296,13 +296,16 @@ OP_S_SHUT	= 11
 OP_S_CLOSE	= 12
 OP_S_CANCEL	= 13
 OP_S_OPT	= 14
-OP_COUNT	= 15
+OP_ACCEPT_A	= 15		; single-shot accept with the client's address
+OP_S_SEND_PP	= 16		; PROXY protocol header
+OP_COUNT	= 17
 
 rodata
 	align 8
 	dispatch_tbl	dq on_accept, on_timer, on_signal, on_ignore
 			dq on_s_socket, on_s_connect, on_s_done, on_s_recv_c, on_s_recv_u
 			dq on_s_send_c, on_s_send_u, on_s_done, on_s_done, on_s_done, on_s_done
+			dq on_accept_a, on_s_send_pp
 end rodata
 
 ring_reap:

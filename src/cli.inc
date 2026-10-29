@@ -140,10 +140,23 @@ cli_source_from_args:
 	mov	[g_cli_path],rax
 	jmp	.done
 .single:
-	; one argument that is not a directive name: a file
+	; one argument that is not a directive name: a file, unless it holds
+	; a space or a brace (configuration text in one quoted argument)
 	lea	rcx,[rbx+1]
 	cmp	rcx,[g_argc]
 	jne	.words
+	xor	ecx,ecx
+.scan:
+	movzx	eax,byte [r12+rcx]
+	test	eax,eax
+	jz	.scanned
+	cmp	al,' '
+	je	.words
+	cmp	al,'{'
+	je	.words
+	inc	ecx
+	jmp	.scan
+.scanned:
 	mov	rdi,r12
 	xor	esi,esi
 @@:

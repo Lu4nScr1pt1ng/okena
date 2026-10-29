@@ -167,6 +167,7 @@ rodata
 	sc_allow filter_supervisor, SYS_accept4
 	sc_allow filter_supervisor, SYS_getsockopt
 	sc_allow filter_supervisor, SYS_shutdown
+	sc_allow filter_supervisor, SYS_getsockname
 	sc_end filter_supervisor
 
 	; io_uring worker: the ring does the I/O
@@ -174,6 +175,7 @@ rodata
 	sc_common filter_worker_uring
 	sc_allow filter_worker_uring, SYS_io_uring_enter
 	sc_allow filter_worker_uring, SYS_madvise
+	sc_allow filter_worker_uring, SYS_getsockname	; PROXY protocol, wildcard listeners
 	sc_end filter_worker_uring
 
 	; epoll worker
@@ -191,6 +193,7 @@ rodata
 	sc_allow filter_worker_epoll, SYS_shutdown
 	sc_allow filter_worker_epoll, SYS_clock_gettime
 	sc_allow filter_worker_epoll, SYS_madvise
+	sc_allow filter_worker_epoll, SYS_getsockname
 	sc_end filter_worker_epoll
 
 	; control process: DNS over UDP, resolv.conf and hosts read-only

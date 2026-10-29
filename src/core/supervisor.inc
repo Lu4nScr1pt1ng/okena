@@ -75,6 +75,7 @@ supervisor_main:
 	call	dns_table_init
 	call	groups_resolve_all
 	call	health_table_init
+	call	peer_global_init		; per_source table: lives across reloads
 
 	; TERM, INT, CHLD and ALRM (the watchdog) arrive through a signalfd.
 	; Blocking them here also makes workers inherit the blocked mask.

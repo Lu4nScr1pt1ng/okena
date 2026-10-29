@@ -32,6 +32,7 @@ include 'core/ring.inc'
 include 'core/worker.inc'
 include 'l4/tcp.inc'
 include 'l4/tcp_epoll.inc'
+include 'l4/peer.inc'
 include 'cli.inc'
 
 start:
