@@ -8,7 +8,7 @@
 ; out_* calls and written with out_flush, so a message is one write(2)
 ; and lines from different processes do not interleave.
 
-OUT_CAP = 16384
+OUT_CAP := 16384
 
 bss
 	g_argc		dq ?

@@ -12,9 +12,9 @@
 ; up: a restart must not take the whole service down until checks pass.
 ; When every server of a pool is down, workers try them anyway (panic).
 
-HC_UP		= 0
-HC_DOWN		= 1
-HC_TICK_MS	= 100
+HC_UP		:= 0
+HC_DOWN		:= 1
+HC_TICK_MS	:= 100
 
 bss
 	align 8
@@ -39,8 +39,8 @@ rodata
 end rodata
 
 assert 1 shl 4 = 16
-HC_RBUF		= 16		; "HTTP/1.1 200 " is all a check reads
-HC_STATUS_BASE	= 100000	; -(HC_STATUS_BASE + N): answered with status N
+HC_RBUF		:= 16		; "HTTP/1.1 200 " is all a check reads
+HC_STATUS_BASE	:= 100000	; -(HC_STATUS_BASE + N): answered with status N
 
 ; Shared table, before forking a generation (zero: everyone up).
 health_table_init:

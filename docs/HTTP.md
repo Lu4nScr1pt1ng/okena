@@ -91,6 +91,16 @@ left out for 10 s by that worker, never more than half of its pool;
 any other answer resets its count.
 When every server is out, they are all used again (panic), as in L4.
 
+## Route actions
+
+A matched route can redirect: okena writes the answer itself (status,
+`Location`, `Content-Length: 0`, the request id), counts and logs it as
+its own (`source=okena`), and reads the next request on the connection.
+Its header changes are compiled into one list per route: while a head is
+written anew, a field that a `drop` names (or prefixes) or that a `set`
+replaces is not copied, then the `set` and `add` fields are written with
+okena's own. A route without changes runs none of this.
+
 ## Routing
 
 Routes are compiled per listener:

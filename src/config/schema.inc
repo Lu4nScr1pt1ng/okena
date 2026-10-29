@@ -7,59 +7,59 @@
 ; as a block with the same keys: `connect timeout=1s` = `connect { timeout 1s }`.
 
 ; Contexts (a directive's block opens one of these)
-CTX_TOP		= 1
-CTX_OKENA	= 2
-CTX_TCP		= 3
-CTX_POOL	= 4
-CTX_LIMITS	= 5
-CTX_TIMEOUT	= 6
-CTX_HTTP	= 7
-CTX_ROUTE	= 8
-CTX_HOST	= 9
+CTX_TOP		:= 1
+CTX_OKENA	:= 2
+CTX_TCP		:= 3
+CTX_POOL	:= 4
+CTX_LIMITS	:= 5
+CTX_TIMEOUT	:= 6
+CTX_HTTP	:= 7
+CTX_ROUTE	:= 8
+CTX_HOST	:= 9
 
 ; Flags
-F_BLOCK_REQ	= 1		; must have a block
-F_UNIQUE	= 2		; at most once per block
-F_KEYS_BLOCK	= 4		; options may be written as a block
+F_BLOCK_REQ	:= 1		; must have a block
+F_UNIQUE	:= 2		; at most once per block
+F_KEYS_BLOCK	:= 4		; options may be written as a block
 
 ; Value types. Values of 4096 and above are pointers to enum lists.
-T_NONE		= 0
-T_ANY		= 1
-T_NAME		= 2
-T_UINT		= 3		; 0 .. 2^31
-T_COUNT		= 4		; 1 .. 100 000 000
-T_WEIGHT	= 5		; 1 .. 1000
-T_DURATION	= 6
-T_SIZE		= 7
-T_RATE		= 8
-T_PERCENT	= 9
-T_LISTEN	= 10		; listen address
-T_BACKEND	= 11		; backend address (names and unix paths too)
-T_WORKERS	= 12		; auto or 1 .. 256
-T_TARGET	= 13		; `to pool NAME` or `to ADDR...`
-T_FUTURE	= 14		; an option of the language not implemented yet
-T_HOSTNAME	= 16		; a host name, or *.example.com
-T_ROUTE		= 15		; a path ("/x", "/x/*", "/*") or a method (GET, POST...)
-T_LOGDEST	= 17		; stdout, stderr, off, or an absolute file path
-T_CIDR		= 18		; an IP address or a range: 10.0.0.0/8, 2001:db8::/32
-T_STATUSES	= 19		; an HTTP status or a range: 200, 200..299
+T_NONE		:= 0
+T_ANY		:= 1
+T_NAME		:= 2
+T_UINT		:= 3		; 0 .. 2^31
+T_COUNT		:= 4		; 1 .. 100 000 000
+T_WEIGHT	:= 5		; 1 .. 1000
+T_DURATION	:= 6
+T_SIZE		:= 7
+T_RATE		:= 8
+T_PERCENT	:= 9
+T_LISTEN	:= 10		; listen address
+T_BACKEND	:= 11		; backend address (names and unix paths too)
+T_WORKERS	:= 12		; auto or 1 .. 256
+T_TARGET	:= 13		; `to pool NAME` or `to ADDR...`
+T_FUTURE	:= 14		; an option of the language not implemented yet
+T_HOSTNAME	:= 16		; a host name, or *.example.com
+T_ROUTE		:= 15		; a path ("/x", "/x/*", "/*") or a method (GET, POST...)
+T_LOGDEST	:= 17		; stdout, stderr, off, or an absolute file path
+T_CIDR		:= 18		; an IP address or a range: 10.0.0.0/8, 2001:db8::/32
+T_STATUSES	:= 19		; an HTTP status or a range: 200, 200..299
 
 ; Directive entry
-D_NAME		= 0		; 24 bytes, NUL-padded
-D_CTX		= 24		; d: mask of contexts (1 shl CTX_*)
-D_CHILD		= 28		; d: context of its block, 0 = none
-D_FLAGS		= 32		; d
-D_MINP		= 36		; w
-D_MAXP		= 38		; w
-D_TYPE1		= 40		; q: type of the first positional argument
-D_TYPEN		= 48		; q: type of the others
-D_KEYS		= 56		; q: options table or 0
-D_SIZE		= 64
+D_NAME		:= 0		; 24 bytes, NUL-padded
+D_CTX		:= 24		; d: mask of contexts (1 shl CTX_*)
+D_CHILD		:= 28		; d: context of its block, 0 = none
+D_FLAGS		:= 32		; d
+D_MINP		:= 36		; w
+D_MAXP		:= 38		; w
+D_TYPE1		:= 40		; q: type of the first positional argument
+D_TYPEN		:= 48		; q: type of the others
+D_KEYS		:= 56		; q: options table or 0
+D_SIZE		:= 64
 
 ; Option entry
-K_NAME		= 0		; 24 bytes
-K_TYPE		= 24		; q
-K_SIZE		= 32
+K_NAME		:= 0		; 24 bytes
+K_TYPE		:= 24		; q
+K_SIZE		:= 32
 
 macro enumdef label*, items&
 	rodata
@@ -100,21 +100,24 @@ macro dirdef id*, name*, ctxmask*, child*, flags*, minp*, maxp*, type1*, typen*,
 	end rodata
 end macro
 
-M_TOP		= 1 shl CTX_TOP
-M_OKENA		= 1 shl CTX_OKENA
-M_TCP		= 1 shl CTX_TCP
-M_POOL		= 1 shl CTX_POOL
-M_LIMITS	= 1 shl CTX_LIMITS
-M_TIMEOUT	= 1 shl CTX_TIMEOUT
-M_HTTP		= 1 shl CTX_HTTP
-M_ROUTE		= 1 shl CTX_ROUTE
-M_HOST		= 1 shl CTX_HOST
+M_TOP		:= 1 shl CTX_TOP
+M_OKENA		:= 1 shl CTX_OKENA
+M_TCP		:= 1 shl CTX_TCP
+M_POOL		:= 1 shl CTX_POOL
+M_LIMITS	:= 1 shl CTX_LIMITS
+M_TIMEOUT	:= 1 shl CTX_TIMEOUT
+M_HTTP		:= 1 shl CTX_HTTP
+M_ROUTE		:= 1 shl CTX_ROUTE
+M_HOST		:= 1 shl CTX_HOST
 
 enumdef e_io_engine, 'auto', 'io_uring', 'epoll'
 enumdef e_balance, 'round-robin', 'least-conn', 'random', 'least-request'
 enumdef e_server_flags, 'backup'
 enumdef e_health, 'tcp', 'http'
 enumdef e_pp_mode, 'send'
+enumdef e_redirect_codes, '301', '302', '303', '307', '308'
+enumdef e_header_ops, 'set', 'add', 'drop'
+enumdef e_response_what, 'header'
 enumdef e_pp_version, 'v1', 'v2'
 
 keysdef k_drain, 'delay', T_DURATION, 'timeout', T_DURATION
@@ -133,7 +136,7 @@ enumdef future_names, 'udp', 'xdp', 'tls', 'policy', 'use', \
 	'acme', 'discover', 'split', 'mirror', 'rewrite', 'header', 'headers', 'cache', \
 	'cors', 'limit', 'auth', 'match', 'source', \
 	'concurrency', 'retry_budget', 'retry', 'outlier', 'protocol', \
-	'fault', 'files', 'redirect', 'compress', 'canonical', 'idempotency', 'hold', \
+	'fault', 'files', 'compress', 'canonical', 'idempotency', 'hold', \
 	'body', 'early_hints', 'signed_urls', 'sni', 'default', 'priority', 'hedge', \
 	'response', 'alpn', 'cert', 'warm'
 
@@ -161,6 +164,9 @@ dirdef DIR_PER_SOURCE, 'per_source', M_LIMITS,  0,           F_UNIQUE, 1, 1, T_C
 dirdef DIR_TIMEOUT, 'timeout',     M_TCP or M_HTTP,     CTX_TIMEOUT, F_BLOCK_REQ or F_UNIQUE, 0, 0, T_NONE, T_NONE, 0
 dirdef DIR_IDLE, 'idle',        M_TIMEOUT, 0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
 dirdef DIR_TRUSTED, 'trusted_proxies', M_HTTP, 0,         F_UNIQUE, 1, 64, T_CIDR, T_CIDR, 0
+dirdef DIR_REDIRECT, 'redirect',  M_ROUTE,   0,           F_UNIQUE, 2, 2, e_redirect_codes, T_ANY, 0
+dirdef DIR_RHEADER, 'header',      M_ROUTE,   0,           0, 2, 3, e_header_ops, T_ANY, 0
+dirdef DIR_RRESPONSE, 'response',  M_ROUTE,   0,           0, 3, 4, e_response_what, T_ANY, 0
 dirdef DIR_ACCESS_LOG, 'access_log', M_HTTP,   0,           F_UNIQUE, 1, 1, T_LOGDEST, T_NONE, 0
 dirdef DIR_HEADER, 'header',      M_TIMEOUT, 0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
 dirdef DIR_RESPONSE, 'response',  M_TIMEOUT, 0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0

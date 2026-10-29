@@ -12,9 +12,9 @@
 ; backend keep-alive timeouts so okena closes first, not the backend in
 ; the middle of a reuse.
 
-POOL_MAX	= 64
-POOL_IDLE	= 50
-UPSLOT_MAX	= 2 shl 20
+POOL_MAX	:= 64
+POOL_IDLE	:= 50
+UPSLOT_MAX	:= 2 shl 20
 
 bss
 	align 8
@@ -37,7 +37,7 @@ end bss
 ;   the slot's watch generation.
 ;   epoll: the descriptor's registration names the pool (EK_POOL).
 
-EK_POOL		= 4
+EK_POOL		:= 4
 
 ; edi = server, esi = handle: watch it.
 pool_watch:

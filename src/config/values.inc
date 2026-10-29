@@ -5,20 +5,20 @@
 
 ; Parsed address (ADDR_*). Listen addresses may be ADDR_ANY (":port");
 ; backends may be names, resolved later.
-AD_KIND		= 0		; d
-AD_PORT		= 4		; d: host byte order
-AD_IP		= 8		; 16 bytes: IPv4 in the first 4, network order
-AD_NAME		= 24		; q: name or unix path in the source
-AD_NLEN		= 32		; d
-AD_SIZE		= 40
+AD_KIND		:= 0		; d
+AD_PORT		:= 4		; d: host byte order
+AD_IP		:= 8		; 16 bytes: IPv4 in the first 4, network order
+AD_NAME		:= 24		; q: name or unix path in the source
+AD_NLEN		:= 32		; d
+AD_SIZE		:= 40
 
-ADDR_ANY	= 0
-ADDR_V4		= 1
-ADDR_V6		= 2
-ADDR_UNIX	= 3
-ADDR_NAME	= 4
+ADDR_ANY	:= 0
+ADDR_V4		:= 1
+ADDR_V6		:= 2
+ADDR_UNIX	:= 3
+ADDR_NAME	:= 4
 
-UNIX_PATH_MAX	= 107
+UNIX_PATH_MAX	:= 107
 
 ; rdi/esi = decimal digits only. rax = value (at most 2^63), CF on error.
 parse_decimal:
@@ -293,10 +293,10 @@ parse_percent:
 	ret
 
 ; A range of addresses (trusted_proxies).
-TR_KIND		= 0		; d: 4 or 6
-TR_BITS		= 4		; d: prefix length
-TR_IP		= 8		; 16 bytes, network order (IPv4 in the first 4)
-TR_SIZE		= 24
+TR_KIND		:= 0		; d: 4 or 6
+TR_BITS		:= 4		; d: prefix length
+TR_IP		:= 8		; 16 bytes, network order (IPv4 in the first 4)
+TR_SIZE		:= 24
 
 ; rdi/esi = "10.0.0.0/8", "192.168.1.10", "2001:db8::/32". rdx = TR_*
 ; record to fill. CF on error.
@@ -665,12 +665,12 @@ check_hostname:
 ; rdi/esi = text, rdx = AD_SIZE output, ecx = 1 when names and unix
 ; paths are allowed (backends), 0 for listen addresses.
 ; CF on error; eax = ADDR_ERR_* reason.
-ADDR_ERR_SYNTAX	= 1
-ADDR_ERR_PORT	= 2
-ADDR_ERR_IP	= 3
-ADDR_ERR_NAME	= 4
-ADDR_ERR_ANY	= 5		; ":port" where a host is needed
-ADDR_ERR_PATH	= 6
+ADDR_ERR_SYNTAX	:= 1
+ADDR_ERR_PORT	:= 2
+ADDR_ERR_IP	:= 3
+ADDR_ERR_NAME	:= 4
+ADDR_ERR_ANY	:= 5		; ":port" where a host is needed
+ADDR_ERR_PATH	:= 6
 
 parse_address:
 	push	rbx

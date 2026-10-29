@@ -1,6 +1,6 @@
 ; Whole-file reads, used for configuration and certificates.
 
-FILE_MAX = 64 shl 20			; refuse anything larger
+FILE_MAX := 64 shl 20			; refuse anything larger
 
 ; rdi = NUL-terminated path, rsi = arena.
 ; rax = contents (followed by 64 zero bytes) or -errno, rdx = length.

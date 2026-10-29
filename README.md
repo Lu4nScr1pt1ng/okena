@@ -22,7 +22,8 @@ http :80 {
 
 Early: L4 and HTTP/1.1, no TLS yet. What works today:
 
-* HTTP: host blocks with wildcards, routes matched on the normalized
+* HTTP: redirects and header changes per route (`redirect 301 /new/{*}`,
+  `header set|add|drop`, `response header ...`), host blocks with wildcards, routes matched on the normalized
   path, WebSocket and other upgrades, header/response timeouts (408/504),
   retries within a per-pool budget, outlier ejection, request ids,
   `trusted_proxies`, JSON access logs through a logger process, metrics
@@ -100,7 +101,7 @@ performance, and `--cpuset-cpus` rather than `--cpus` for steady
 latency.
 
 ```
-make          # build/okena
+make          # build/okena (constants are `:=`: a name defined twice is a build error)
 make test     # every suite at once (~10 s), each in its own network namespace
 make test-serial   # the same, one after the other, with all output
 python3 tests/run_all.py http l4   # only the suites whose name has a word

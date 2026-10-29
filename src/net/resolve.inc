@@ -3,27 +3,27 @@
 ; AAAA. Blocking, with short timeouts: it runs only in the supervisor at
 ; startup and in the control process, never in a worker.
 
-RS_MAX_SERVERS	= 3
-RS_MAX_SEARCH	= 6
-DNS_TIMEOUT_S	= 1
-DNS_ATTEMPTS	= 2
-DNS_MAX_ADDRS	= 8		; addresses kept per name
-DNS_TTL_MIN	= 1
-DNS_TTL_MAX	= 60		; re-resolve at least once a minute
-DNS_RETRY_S	= 2		; after a failure
+RS_MAX_SERVERS	:= 3
+RS_MAX_SEARCH	:= 6
+DNS_TIMEOUT_S	:= 1
+DNS_ATTEMPTS	:= 2
+DNS_MAX_ADDRS	:= 8		; addresses kept per name
+DNS_TTL_MIN	:= 1
+DNS_TTL_MAX	:= 60		; re-resolve at least once a minute
+DNS_RETRY_S	:= 2		; after a failure
 
 ; Result of a lookup (rs_result)
-RR_COUNT	= 0		; d
-RR_TTL		= 4		; d: seconds
-RR_STATUS	= 8		; d: RS_*
-RR_ADDRS	= 16		; DNS_MAX_ADDRS * 16: IPv4 (first 4 bytes) or IPv6
-RR_FAMILY	= RR_ADDRS + DNS_MAX_ADDRS * 16	; DNS_MAX_ADDRS bytes: 4 or 6
-RR_SIZE		= RR_FAMILY + DNS_MAX_ADDRS
+RR_COUNT	:= 0		; d
+RR_TTL		:= 4		; d: seconds
+RR_STATUS	:= 8		; d: RS_*
+RR_ADDRS	:= 16		; DNS_MAX_ADDRS * 16: IPv4 (first 4 bytes) or IPv6
+RR_FAMILY	:= RR_ADDRS + DNS_MAX_ADDRS * 16	; DNS_MAX_ADDRS bytes: 4 or 6
+RR_SIZE		:= RR_FAMILY + DNS_MAX_ADDRS
 
-RS_OK		= 0
-RS_NXDOMAIN	= 1		; the name does not exist
-RS_NODATA	= 2		; exists, no address
-RS_FAILED	= 3		; no answer (timeout, server failure)
+RS_OK		:= 0
+RS_NXDOMAIN	:= 1		; the name does not exist
+RS_NODATA	:= 2		; exists, no address
+RS_FAILED	:= 3		; no answer (timeout, server failure)
 
 bss
 	align 8

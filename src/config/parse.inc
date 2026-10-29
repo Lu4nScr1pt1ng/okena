@@ -14,49 +14,49 @@
 ; file:line:column, the source line and a caret under the offending text.
 
 ; Tokens
-TK_EOF		= 0
-TK_EOL		= 1
-TK_LBRACE	= 2
-TK_RBRACE	= 3
-TK_WORD		= 4
-TK_STRING	= 5
-TK_KV		= 6
+TK_EOF		:= 0
+TK_EOL		:= 1
+TK_LBRACE	:= 2
+TK_RBRACE	:= 3
+TK_WORD		:= 4
+TK_STRING	:= 5
+TK_KV		:= 6
 
 ; Node (one directive)
-N_NAME		= 0		; q: name in the source
-N_NLEN		= 8		; d
-N_LINE		= 12		; d
-N_COL		= 16		; d
-N_ARGC		= 20		; d
-N_ARGS		= 24		; q: first argument
-N_CHILD		= 32		; q: first nested directive
-N_NEXT		= 40		; q: next sibling
-N_PARENT	= 48		; q
-N_BLOCK		= 56		; d: 1 when the directive has a block
-N_BLINE		= 60		; d: line of its '{'
-N_BRACE		= 64		; q: the '{' in the source
-N_DEF		= 72		; q: schema entry, set by the checker
-N_SIZE		= 80
+N_NAME		:= 0		; q: name in the source
+N_NLEN		:= 8		; d
+N_LINE		:= 12		; d
+N_COL		:= 16		; d
+N_ARGC		:= 20		; d
+N_ARGS		:= 24		; q: first argument
+N_CHILD		:= 32		; q: first nested directive
+N_NEXT		:= 40		; q: next sibling
+N_PARENT	:= 48		; q
+N_BLOCK		:= 56		; d: 1 when the directive has a block
+N_BLINE		:= 60		; d: line of its '{'
+N_BRACE		:= 64		; q: the '{' in the source
+N_DEF		:= 72		; q: schema entry, set by the checker
+N_SIZE		:= 80
 
 ; Argument
-A_KIND		= 0		; d: ARG_*
-A_LINE		= 4		; d
-A_KLEN		= 8		; d: key length (ARG_KV)
-A_VLEN		= 12		; d: value length
-A_KEY		= 16		; q: key (ARG_KV)
-A_VAL		= 24		; q: value (unescaped for strings)
-A_RAW		= 32		; q: the argument in the source, for carets
-A_RAWLEN	= 40		; d
-A_QUOTED	= 44		; d: the value was a quoted string
-A_SIZE		= 48
+A_KIND		:= 0		; d: ARG_*
+A_LINE		:= 4		; d
+A_KLEN		:= 8		; d: key length (ARG_KV)
+A_VLEN		:= 12		; d: value length
+A_KEY		:= 16		; q: key (ARG_KV)
+A_VAL		:= 24		; q: value (unescaped for strings)
+A_RAW		:= 32		; q: the argument in the source, for carets
+A_RAWLEN	:= 40		; d
+A_QUOTED	:= 44		; d: the value was a quoted string
+A_SIZE		:= 48
 
-ARG_WORD	= 0
-ARG_STRING	= 1
-ARG_KV		= 2
+ARG_WORD	:= 0
+ARG_STRING	:= 1
+ARG_KV		:= 2
 
-CFG_MAX_DEPTH	= 16
-CFG_MAX_ERRORS	= 20
-CFG_MAX_ARGS	= 256		; per directive
+CFG_MAX_DEPTH	:= 16
+CFG_MAX_ERRORS	:= 20
+CFG_MAX_ARGS	:= 256		; per directive
 
 bss
 	g_cfg_src	dq ?		; source text, NUL after the end
@@ -350,7 +350,8 @@ cfg_begin:
 	ret
 
 ; Byte classes for words: anything printable except { } ; " and space.
-; '#' and '=' are ordinary inside a word.
+; '#' and '=' are ordinary inside a word, and so is "{*}" after its first
+; byte.
 ; al = byte. ZF set when it ends a word.
 macro lex_word_end_test
 	cmp	al,' '
@@ -496,6 +497,22 @@ lex_next:
 	movzx	eax,byte [rsi]
 	cmp	al,'='
 	je	.equals
+	; "{*}" inside a word is part of it (a redirect target: /new/{*});
+	; a block opens with a '{' of its own
+	cmp	al,'{'
+	jne	.not_star
+	cmp	rsi,rdi
+	je	.not_star
+	lea	rax,[rsi+3]
+	cmp	rax,[g_cfg_end]
+	ja	.not_star
+	cmp	word [rsi+1],'*}'
+	jne	.not_star
+	add	rsi,3
+	xor	r8d,r8d
+	jmp	.word_loop
+.not_star:
+	movzx	eax,byte [rsi]
 	lex_word_end_test
 	test	r8d,r8d
 	jz	.word_next

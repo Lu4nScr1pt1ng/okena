@@ -15,7 +15,7 @@
 ;      generation is gone. Any failure before the commit restores the old
 ;      plan and closes what was opened.
 
-MAX_OLD		= MAX_WORKERS * 4
+MAX_OLD		:= MAX_WORKERS * 4
 
 bss
 	align 8
@@ -65,6 +65,10 @@ macro plan_regions action
 	action g_trust, TR_SIZE * MAX_TRUST
 	action g_hhash, 8 * HHASH_SIZE
 	action g_rhash, 8 * RHASH_SIZE
+	action g_plan_acts, 4
+	action g_acts, RA_SIZE * MAX_ACTS
+	action g_plan_hdrops, 4
+	action g_hdrops, HD_SIZE * MAX_HDROPS
 	action g_plan_hosts, 4
 	action g_hosts, HO_SIZE * MAX_HOSTS
 end macro

@@ -2,123 +2,147 @@
 ; tables the workers read and never write. Addresses become sockaddr
 ; structures here, so the data path never parses text.
 
-MAX_LISTENERS	= 64
-MAX_POOLS	= 512
-MAX_SERVERS	= 1024
+MAX_LISTENERS	:= 64
+MAX_POOLS	:= 512
+MAX_SERVERS	:= 1024
 
 ; Listener
-LS_SA		= 0		; sockaddr_in6 / sockaddr_in (28 bytes)
-LS_SALEN	= 28		; d
-LS_FAMILY	= 32		; d: AF_INET, AF_INET6, or 0 for ":port" (dual stack)
-LS_POOL		= 36		; d
-LS_IDLE		= 40		; d: idle timeout in seconds
-LS_MAXCONN	= 44		; d: per worker
-LS_TEXT		= 48		; q: address as written
-LS_TLEN		= 56		; d
-LS_PORT		= 60		; d
-LS_FLAGS	= 64		; d: LSF_*
-LS_PER_SOURCE	= 68		; d: connections per client address, 0 = no limit
-LS_KIND		= 72		; d: LK_*
-LS_RFIRST	= 76		; d: first route (http)
-LS_RCOUNT	= 80		; d
-LS_HFIRST	= 84		; d: first host block (http)
-LS_HCOUNT	= 88		; d
-LS_T_HEADER	= 92		; d: http: seconds for a whole request head
-LS_T_RESPONSE	= 96		; d: http: seconds a backend has for its response head
-LS_ALOG		= 100		; d: http: access log destination + 1, 0 = none
-LS_TFIRST	= 104		; d: http: first trusted_proxies range
-LS_TCOUNT	= 108		; d
-LS_T_BODY	= 112		; d: http: seconds between bytes of a request body
-LS_SIZE		= 120
+LS_SA		:= 0		; sockaddr_in6 / sockaddr_in (28 bytes)
+LS_SALEN	:= 28		; d
+LS_FAMILY	:= 32		; d: AF_INET, AF_INET6, or 0 for ":port" (dual stack)
+LS_POOL		:= 36		; d
+LS_IDLE		:= 40		; d: idle timeout in seconds
+LS_MAXCONN	:= 44		; d: per worker
+LS_TEXT		:= 48		; q: address as written
+LS_TLEN		:= 56		; d
+LS_PORT		:= 60		; d
+LS_FLAGS	:= 64		; d: LSF_*
+LS_PER_SOURCE	:= 68		; d: connections per client address, 0 = no limit
+LS_KIND		:= 72		; d: LK_*
+LS_RFIRST	:= 76		; d: first route (http)
+LS_RCOUNT	:= 80		; d
+LS_HFIRST	:= 84		; d: first host block (http)
+LS_HCOUNT	:= 88		; d
+LS_T_HEADER	:= 92		; d: http: seconds for a whole request head
+LS_T_RESPONSE	:= 96		; d: http: seconds a backend has for its response head
+LS_ALOG		:= 100		; d: http: access log destination + 1, 0 = none
+LS_TFIRST	:= 104		; d: http: first trusted_proxies range
+LS_TCOUNT	:= 108		; d
+LS_T_BODY	:= 112		; d: http: seconds between bytes of a request body
+LS_SIZE		:= 120
 
 ; Host block name (http): routes for requests to that host
-HO_NAME		= 0		; q: the name; for "*.example.com", ".example.com"
-HO_NLEN		= 8		; d
-HO_WILD		= 12		; d: 1 for a wildcard (matched as a suffix)
-HO_RFIRST	= 16		; d
-HO_RCOUNT	= 20		; d
-HO_SIZE		= 24
+HO_NAME		:= 0		; q: the name; for "*.example.com", ".example.com"
+HO_NLEN		:= 8		; d
+HO_WILD		:= 12		; d: 1 for a wildcard (matched as a suffix)
+HO_RFIRST	:= 16		; d
+HO_RCOUNT	:= 20		; d
+HO_SIZE		:= 24
 
 ; Host names are found through one open-addressing table for the whole
 ; plan: key = (the listener's first host entry, wildcard or not, the
 ; name in lower case), value = host entry + 1 (0 = empty slot). Load is
 ; at most 1/4, so a probe sequence is short.
-HHASH_SIZE	= MAX_HOSTS * 4
-MAX_HOSTS	= 1024
-MAX_TRUST	= 1024		; trusted_proxies ranges, all listeners
+HHASH_SIZE	:= MAX_HOSTS * 4
+MAX_HOSTS	:= 1024
+MAX_TRUST	:= 1024		; trusted_proxies ranges, all listeners
 
-LK_TCP		= 0
-LK_HTTP		= 1
+LK_TCP		:= 0
+LK_HTTP		:= 1
 
 ; Route (http)
-RT_PATH		= 0		; q: path; for a prefix route, without the "*"
-RT_PLEN		= 8		; d
-RT_PREFIX	= 12		; d: 1 for "/x/*" routes
-RT_METHODS	= 16		; d: RM_* bits, 0 = any
-RT_POOL		= 20		; d
-RT_SIZE		= 24
+RT_PATH		:= 0		; q: path; for a prefix route, without the "*"
+RT_PLEN		:= 8		; d
+RT_PREFIX	:= 12		; d: 1 for "/x/*" routes
+RT_METHODS	:= 16		; d: RM_* bits, 0 = any
+RT_POOL		:= 20		; d: -1 for a route that redirects
+RT_ACT		:= 24		; d: its action + 1 (redirect, header changes), 0 = none
+RT_SIZE		:= 32
+
+; Route actions: a redirect, and the header changes of requests and of
+; responses (ranges of g_hdrops).
+RA_CODE		:= 0		; d: redirect status, 0 = forward
+RA_TLEN		:= 4		; d
+RA_TGT		:= 8		; q: redirect target
+RA_QFIRST	:= 16		; d: request header changes
+RA_QCOUNT	:= 20
+RA_PFIRST	:= 24		; d: response header changes
+RA_PCOUNT	:= 28
+RA_SIZE		:= 32
+MAX_ACTS	:= MAX_ROUTES
+HD_KIND		:= 0		; d: HOP_SET, HOP_ADD, HOP_DROP
+HD_PREFIX	:= 4		; d: 1 when the name ends with * (drop)
+HD_NLEN		:= 8		; d: name length (without the *)
+HD_VLEN		:= 12		; d
+HD_NAME		:= 16		; q
+HD_VAL		:= 24		; q
+HD_SIZE		:= 32
+MAX_HDROPS	:= 4096
+HOP_SET		:= 1
+HOP_ADD		:= 2
+HOP_DROP	:= 3
 
 ; Routes are found through one open-addressing table: key = (the route
 ; set's first entry, exact or prefix, the path), value = route entry + 1.
 ; Routes that share a path with different methods share a key: a lookup
 ; walks every entry of its probe sequence.
-RHASH_SIZE	= MAX_ROUTES * 4
-MAX_ROUTES	= 1024
+RHASH_SIZE	:= MAX_ROUTES * 4
+MAX_ROUTES	:= 1024
 
-LSF_PEER	= 1		; sessions need the client's address
-LSF_PP_V1	= 2		; send a PROXY protocol v1 header upstream
-LSF_PP_V2	= 4		; send a PROXY protocol v2 header upstream
-LSF_WILDCARD	= 8		; bound to every address: the local one comes from getsockname
+LSF_PEER	:= 1		; sessions need the client's address
+LSF_PP_V1	:= 2		; send a PROXY protocol v1 header upstream
+LSF_PP_V2	:= 4		; send a PROXY protocol v2 header upstream
+LSF_WILDCARD	:= 8		; bound to every address: the local one comes from getsockname
 
 ; Pool
-PL_FIRST	= 0		; d: first server
-PL_COUNT	= 4		; d
-PL_BALANCE	= 8		; d: BAL_*
-PL_PRIMARY	= 12		; d: servers that are not backups
-PL_TIMEOUT	= 16		; 16 bytes: connect timeout as __kernel_timespec
-PL_NAME		= 32		; q
-PL_NLEN		= 40		; d
-PL_HEALTH	= 44		; d: 1 when active checks run
-PL_H_EVERY	= 48		; d: milliseconds
-PL_H_TIMEOUT	= 52		; d: milliseconds
-PL_H_RISE	= 56		; d
-PL_H_FALL	= 60		; d
-PL_H_HTTP	= 64		; d: 1 for an HTTP check (0: TCP)
-PL_H_PLEN	= 68		; d
-PL_H_PATH	= 72		; q
-PL_H_LO		= 80		; d: statuses that pass
-PL_H_HI		= 84		; d
-PL_H_HOST	= 88		; q: Host of the check, 0 = the server as written
-PL_H_HLEN	= 96		; d
-PL_H_HEAD	= 100		; d: 1 for HEAD
-PL_SLOW		= 104		; d: slow start window in seconds, 0 = none
-PL_SIZE		= 128
+PL_FIRST	:= 0		; d: first server
+PL_COUNT	:= 4		; d
+PL_BALANCE	:= 8		; d: BAL_*
+PL_PRIMARY	:= 12		; d: servers that are not backups
+PL_TIMEOUT	:= 16		; 16 bytes: connect timeout as __kernel_timespec
+PL_NAME		:= 32		; q
+PL_NLEN		:= 40		; d
+PL_HEALTH	:= 44		; d: 1 when active checks run
+PL_H_EVERY	:= 48		; d: milliseconds
+PL_H_TIMEOUT	:= 52		; d: milliseconds
+PL_H_RISE	:= 56		; d
+PL_H_FALL	:= 60		; d
+PL_H_HTTP	:= 64		; d: 1 for an HTTP check (0: TCP)
+PL_H_PLEN	:= 68		; d
+PL_H_PATH	:= 72		; q
+PL_H_LO		:= 80		; d: statuses that pass
+PL_H_HI		:= 84		; d
+PL_H_HOST	:= 88		; q: Host of the check, 0 = the server as written
+PL_H_HLEN	:= 96		; d
+PL_H_HEAD	:= 100		; d: 1 for HEAD
+PL_SLOW		:= 104		; d: slow start window in seconds, 0 = none
+PL_SIZE		:= 128
 
 ; Server
-SV_SA		= 0		; sockaddr (sockaddr_un is 110 bytes)
-SV_SALEN	= 112		; d
-SV_FAMILY	= 116		; d
-SV_WEIGHT	= 120		; d
-SV_BACKUP	= 124		; d
-SV_TEXT		= 128		; q
-SV_TLEN		= 136		; d
-SV_ACTIVE	= 140		; d: holds an address (names: once resolved)
-SV_GROUP	= 144		; d: name group + 1, or 0 for an address
-SV_SIZE		= 160
+SV_SA		:= 0		; sockaddr (sockaddr_un is 110 bytes)
+SV_SALEN	:= 112		; d
+SV_FAMILY	:= 116		; d
+SV_WEIGHT	:= 120		; d
+SV_BACKUP	:= 124		; d
+SV_TEXT		:= 128		; q
+SV_TLEN		:= 136		; d
+SV_ACTIVE	:= 140		; d: holds an address (names: once resolved)
+SV_GROUP	:= 144		; d: name group + 1, or 0 for an address
+SV_SIZE		:= 160
 
-BAL_ROUND_ROBIN	= 0
-BAL_LEAST_CONN	= 1
-BAL_RANDOM	= 2
-BAL_LEAST_REQ	= 3		; the default: power of two choices
+BAL_ROUND_ROBIN	:= 0
+BAL_LEAST_CONN	:= 1
+BAL_RANDOM	:= 2
+BAL_LEAST_REQ	:= 3		; the default: power of two choices
 
-DEFAULT_CONNECTIONS	= 65536		; per listener, whole instance
-DEFAULT_IDLE_SECS	= 3600
-DEFAULT_HTTP_IDLE_SECS	= 60
-DEFAULT_HEADER_SECS	= 10		; slow clients (slowloris) get 408
-DEFAULT_RESPONSE_SECS	= 30		; slow backends get 504
-DEFAULT_BODY_SECS	= 30		; a request body that stops coming gets 408
-DEFAULT_CONNECT_US	= 2000000
-DEFAULT_DRAIN_US	= 8000000
+DEFAULT_CONNECTIONS	:= 65536		; per listener, whole instance
+DEFAULT_IDLE_SECS	:= 3600
+DEFAULT_HTTP_IDLE_SECS	:= 60
+DEFAULT_HEADER_SECS	:= 10		; slow clients (slowloris) get 408
+DEFAULT_RESPONSE_SECS	:= 30		; slow backends get 504
+DEFAULT_BODY_SECS	:= 30		; a request body that stops coming gets 408
+DEFAULT_CONNECT_US	:= 2000000
+DEFAULT_DRAIN_US	:= 8000000
 
 bss
 	align 8
@@ -157,6 +181,11 @@ bss
 	g_trust:	rb TR_SIZE * MAX_TRUST
 	g_hhash:	rq HHASH_SIZE
 	g_rhash:	rq RHASH_SIZE
+	g_plan_acts	dd ?
+	g_acts:		rb RA_SIZE * MAX_ACTS
+	g_plan_hdrops	dd ?
+	g_hdrops:	rb HD_SIZE * MAX_HDROPS
+	g_cmp_act	dd ?
 	g_plan_hosts	dd ?
 	g_hosts:	rb HO_SIZE * MAX_HOSTS
 	g_cmp_hfirst	dd ?
@@ -408,8 +437,8 @@ pool_new:
 ; Access log destinations. The table only grows while the supervisor
 ; lives: a destination keeps its number across reloads, so lines from
 ; workers still draining an older configuration reach the right file.
-ALOG_MAX	= 32
-ALOG_PATH	= 256
+ALOG_MAX	:= 32
+ALOG_PATH	:= 256
 
 bss
 	g_alog_dest	rb ALOG_MAX * ALOG_PATH	; NUL-terminated: stdout, stderr or a path
@@ -473,6 +502,135 @@ alog_dest_id:
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process
+
+; rdi = route node. eax = its action + 1, or 0 when it only forwards.
+compile_route_action:
+	push	rbx
+	push	r12
+	push	r13
+	mov	r12,rdi
+	; anything to do?
+	mov	rbx,[r12+N_CHILD]
+@@:
+	test	rbx,rbx
+	jz	.none
+	mov	rax,[rbx+N_DEF]
+	lea	rcx,[dir_table + D_SIZE*DIR_REDIRECT]
+	cmp	rax,rcx
+	je	@f
+	lea	rcx,[dir_table + D_SIZE*DIR_RHEADER]
+	cmp	rax,rcx
+	je	@f
+	lea	rcx,[dir_table + D_SIZE*DIR_RRESPONSE]
+	cmp	rax,rcx
+	je	@f
+	mov	rbx,[rbx+N_NEXT]
+	jmp	@b
+@@:
+	mov	ecx,[g_plan_acts]
+	cmp	ecx,MAX_ACTS
+	jae	plan_too_many
+	inc	dword [g_plan_acts]
+	push	rcx
+	imul	r13,rcx,RA_SIZE
+	lea	r13,[g_acts+r13]
+	mov	rdi,r12
+	mov	ecx,DIR_REDIRECT
+	call	find_child
+	test	rax,rax
+	jz	.ops
+	mov	rbx,[rax+N_ARGS]
+	mov	rdi,[rbx+A_VAL]
+	mov	esi,[rbx+A_VLEN]
+	call	parse_decimal
+	mov	[r13+RA_CODE],eax
+	mov	rax,[rbx+A_SIZE+A_VAL]
+	mov	[r13+RA_TGT],rax
+	mov	eax,[rbx+A_SIZE+A_VLEN]
+	mov	[r13+RA_TLEN],eax
+.ops:
+	mov	eax,[g_plan_hdrops]
+	mov	[r13+RA_QFIRST],eax
+	mov	ecx,DIR_RHEADER
+	xor	edx,edx
+	call	.collect
+	mov	eax,[g_plan_hdrops]
+	sub	eax,[r13+RA_QFIRST]
+	mov	[r13+RA_QCOUNT],eax
+	mov	eax,[g_plan_hdrops]
+	mov	[r13+RA_PFIRST],eax
+	mov	ecx,DIR_RRESPONSE
+	mov	edx,1				; after "header"
+	call	.collect
+	mov	eax,[g_plan_hdrops]
+	sub	eax,[r13+RA_PFIRST]
+	mov	[r13+RA_PCOUNT],eax
+	pop	rax
+	inc	eax
+	jmp	.out
+.none:
+	xor	eax,eax
+.out:
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+; ecx = directive, edx = arguments before the operation: one entry per
+; such line of the route, in order.
+.collect:
+	push	r14
+	push	r15
+	imul	ecx,ecx,D_SIZE
+	lea	r14,[dir_table+rcx]
+	mov	r15d,edx
+	mov	rbx,[r12+N_CHILD]
+.line:
+	test	rbx,rbx
+	jz	.collected
+	cmp	[rbx+N_DEF],r14
+	jne	.next_line
+	mov	ecx,[g_plan_hdrops]
+	cmp	ecx,MAX_HDROPS
+	jae	plan_too_many
+	inc	dword [g_plan_hdrops]
+	imul	r8,rcx,HD_SIZE
+	lea	r8,[g_hdrops+r8]
+	imul	r9,r15,A_SIZE
+	add	r9,[rbx+N_ARGS]			; the operation
+	mov	rax,[r9+A_VAL]
+	mov	ecx,HOP_SET
+	cmp	byte [rax],'s'
+	je	@f
+	mov	ecx,HOP_ADD
+	cmp	byte [rax],'a'
+	je	@f
+	mov	ecx,HOP_DROP
+@@:
+	mov	[r8+HD_KIND],ecx
+	mov	rax,[r9+A_SIZE+A_VAL]
+	mov	[r8+HD_NAME],rax
+	mov	eax,[r9+A_SIZE+A_VLEN]
+	mov	dword [r8+HD_PREFIX],0
+	mov	rdx,[r9+A_SIZE+A_VAL]
+	cmp	byte [rdx+rax-1],'*'
+	jne	@f
+	dec	eax
+	mov	dword [r8+HD_PREFIX],1
+@@:
+	mov	[r8+HD_NLEN],eax
+	cmp	ecx,HOP_DROP
+	je	.next_line
+	mov	rax,[r9+2*A_SIZE+A_VAL]
+	mov	[r8+HD_VAL],rax
+	mov	eax,[r9+2*A_SIZE+A_VLEN]
+	mov	[r8+HD_VLEN],eax
+.next_line:
+	mov	rbx,[rbx+N_NEXT]
+	jmp	.line
+.collected:
+	pop	r15
+	pop	r14
+	ret
 
 ; rcx = route entry, edx = its index: into g_rhash.
 route_insert:
@@ -1471,9 +1629,19 @@ compile_routes:
 	lea	rax,[dir_table + D_SIZE*DIR_ROUTE]
 	cmp	[rbx+N_DEF],rax
 	jne	.next
+	mov	r13d,-1				; a redirect has no pool
+	mov	rdi,rbx
+	mov	ecx,DIR_REDIRECT
+	call	find_child
+	test	rax,rax
+	jnz	@f
 	mov	rdi,rbx
 	call	compile_target
 	mov	r13d,eax			; pool
+@@:
+	mov	rdi,rbx
+	call	compile_route_action
+	mov	[g_cmp_act],eax
 	mov	rdi,rbx
 	call	route_methods
 	mov	r14d,eax
@@ -1504,6 +1672,8 @@ compile_routes:
 	mov	[rcx+RT_PLEN],eax
 	mov	[rcx+RT_METHODS],r14d
 	mov	[rcx+RT_POOL],r13d
+	mov	eax,[g_cmp_act]
+	mov	[rcx+RT_ACT],eax
 	push	rsi
 	push	rdi
 	mov	edx,[g_plan_routes]

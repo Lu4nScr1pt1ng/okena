@@ -14,21 +14,21 @@
 ; upstream side, listener, signalfd. The generation drops events that
 ; were already fetched for a session closed earlier in the same batch.
 
-S_UPFD		= 76		; upstream fd (epoll engine)
-S_DEADLINE	= 80		; q: connect deadline, monotonic ms
-S_CPREV		= 88		; pool connect list
-S_CNEXT		= 92
+S_UPFD		:= 76		; upstream fd (epoll engine)
+S_DEADLINE	:= 80		; q: connect deadline, monotonic ms
+S_CPREV		:= 88		; pool connect list
+S_CNEXT		:= 92
 
-EK_CLIENT	= 0
-EK_UPSTREAM	= 1
-EK_LISTENER	= 2
-EK_SIGNAL	= 3
+EK_CLIENT	:= 0
+EK_UPSTREAM	:= 1
+EK_LISTENER	:= 2
+EK_SIGNAL	:= 3
 
-ENGINE_URING	= 0
-ENGINE_EPOLL	= 1
+ENGINE_URING	:= 0
+ENGINE_EPOLL	:= 1
 
-EP_EVENTS	= 256
-ACCEPT_BATCH	= 64
+EP_EVENTS	:= 256
+ACCEPT_BATCH	:= 64
 
 bss
 	align 8

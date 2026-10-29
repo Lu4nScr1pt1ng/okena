@@ -12,10 +12,10 @@
 ; logger strips it and appends the line to that file. A reload or SIGUSR1
 ; makes the logger reopen its files (logrotate).
 
-P_PID		= 1
-ALOG_BUF	= 4096
-LG_IN		= 1 shl 16
-LG_OUT		= 1 shl 16
+P_PID		:= 1
+ALOG_BUF	:= 4096
+LG_IN		:= 1 shl 16
+LG_OUT		:= 1 shl 16
 
 bss
 	align 8

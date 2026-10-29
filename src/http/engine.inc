@@ -264,16 +264,16 @@ on_h_send_u:
 ; the main loop (ep_http_ready), never from inside the call, so a long
 ; body does not turn into deep recursion.
 
-H_SSIDE		= 68		; d: side of the pending send
-H_EPOP		= 136		; d: 0 none, 1 recv waiting, 2 send waiting
-H_EPSIDE	= 140
-H_EPBUF		= 144		; q: receive buffer
-H_EPLEN		= 152		; d: its room
-H_READY		= 156		; d: queued result's kind (1 recv, 2 send), 0 none
-H_RSIDE		= 160
-H_RESULT	= 168		; q
-H_RNEXT		= 176		; d: ready queue link
-H_RGEN		= 180		; d: generation when queued
+H_SSIDE		:= 68		; d: side of the pending send
+H_EPOP		:= 136		; d: 0 none, 1 recv waiting, 2 send waiting
+H_EPSIDE	:= 140
+H_EPBUF		:= 144		; q: receive buffer
+H_EPLEN		:= 152		; d: its room
+H_READY		:= 156		; d: queued result's kind (1 recv, 2 send), 0 none
+H_RSIDE		:= 160
+H_RESULT	:= 168		; q
+H_RNEXT		:= 176		; d: ready queue link
+H_RGEN		:= 180		; d: generation when queued
 
 bss
 	g_hready_head	dd ?

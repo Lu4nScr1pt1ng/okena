@@ -16,17 +16,17 @@
 ; the same instant may land in two entries; the limit is then a little
 ; loose for that client, never tight for others.
 
-P_PEER		= 0		; sockaddr of the client (28 bytes)
-P_LOCAL		= 32		; local sockaddr (28 bytes)
-P_SLOT		= 60		; d: per-source entry, -1 = not counted
-P_HLEN		= 64		; d: PROXY header length (0 = none)
-P_HOFF		= 68		; d: bytes of it sent
-P_HDR		= 72		; the header (v1 at most 107 bytes)
-P_SIZE		= 256
-P_SHIFT		= 8
+P_PEER		:= 0		; sockaddr of the client (28 bytes)
+P_LOCAL		:= 32		; local sockaddr (28 bytes)
+P_SLOT		:= 60		; d: per-source entry, -1 = not counted
+P_HLEN		:= 64		; d: PROXY header length (0 = none)
+P_HOFF		:= 68		; d: bytes of it sent
+P_HDR		:= 72		; the header (v1 at most 107 bytes)
+P_SIZE		:= 256
+P_SHIFT		:= 8
 
-SRC_BITS	= 20		; 1M entries, 8 MiB of address space
-SRC_PROBE	= 16
+SRC_BITS	:= 20		; 1M entries, 8 MiB of address space
+SRC_PROBE	:= 16
 
 bss
 	align 8

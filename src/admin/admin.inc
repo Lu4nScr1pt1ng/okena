@@ -6,7 +6,7 @@
 ; slow or silent client can hold it at most that long. /ready answers 503
 ; once the instance drains, so orchestrators stop sending traffic first.
 
-ADMIN_BUF	= 8 shl 20
+ADMIN_BUF	:= 8 shl 20
 
 bss
 	align 8
@@ -398,19 +398,19 @@ stats_sum_d:
 	ret
 
 ; offsets of the counters inside a page
-OFF_L_ACCEPTED	= g_st_l_accepted - g_st_begin
-OFF_L_FULL	= g_st_l_full - g_st_begin
-OFF_L_SOURCE	= g_st_l_source - g_st_begin
-OFF_L_IN	= g_st_l_in - g_st_begin
-OFF_L_OUT	= g_st_l_out - g_st_begin
-OFF_S_CONNECTS	= g_st_s_connects - g_st_begin
-OFF_S_FAILS	= g_st_s_fails - g_st_begin
-OFF_L_EVICTED	= g_st_l_evicted - g_st_begin
-OFF_SRC_OPEN	= g_st_src_open - g_st_begin
-OFF_L_HTTP	= g_st_l_http - g_st_begin
-OFF_ALOG_DROPPED = g_st_alog_dropped - g_st_begin
-OFF_HTTP_TRIMMED = g_st_http_trimmed - g_st_begin
-OFF_L_RETRIES	= g_st_l_retries - g_st_begin
+OFF_L_ACCEPTED	:= g_st_l_accepted - g_st_begin
+OFF_L_FULL	:= g_st_l_full - g_st_begin
+OFF_L_SOURCE	:= g_st_l_source - g_st_begin
+OFF_L_IN	:= g_st_l_in - g_st_begin
+OFF_L_OUT	:= g_st_l_out - g_st_begin
+OFF_S_CONNECTS	:= g_st_s_connects - g_st_begin
+OFF_S_FAILS	:= g_st_s_fails - g_st_begin
+OFF_L_EVICTED	:= g_st_l_evicted - g_st_begin
+OFF_SRC_OPEN	:= g_st_src_open - g_st_begin
+OFF_L_HTTP	:= g_st_l_http - g_st_begin
+OFF_ALOG_DROPPED := g_st_alog_dropped - g_st_begin
+OFF_HTTP_TRIMMED := g_st_http_trimmed - g_st_begin
+OFF_L_RETRIES	:= g_st_l_retries - g_st_begin
 
 ; rdi = output, ebx = listener: {listener="..."
 listener_label:

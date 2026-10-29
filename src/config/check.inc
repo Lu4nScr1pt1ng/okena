@@ -1518,7 +1518,35 @@ check_route_set:
 	jne	.next
 	inc	r13d
 	mov	rdi,rbx
+	mov	ecx,DIR_REDIRECT
+	call	find_child
+	test	rax,rax
+	jz	.forwards
+	push	rax
+	mov	rdi,rbx
+	mov	ecx,DIR_TO
+	call	find_child
+	pop	rdi
+	test	rax,rax
+	jz	.redirects
+	push	rdi
+	mov	rdi,[rax+N_NAME]
+	mov	esi,[rax+N_NLEN]
+	mov	edx,[rax+N_LINE]
+	call	cfg_error
+	out_lit 'a route either forwards (`to`) or redirects, not both'
+	call	cfg_diag_end
+	call	cfg_error_limit
+	pop	rdi
+.redirects:
+	call	check_redirect_target
+	jmp	.actions
+.forwards:
+	mov	rdi,rbx
 	call	check_listener			; its `to`
+.actions:
+	mov	rdi,rbx
+	call	check_header_ops
 	mov	rdi,r12
 	mov	rsi,rbx
 	call	check_route_unique
@@ -1611,14 +1639,14 @@ check_host_unique:
 	ret
 
 ; Methods as bits (0 = any method).
-RM_GET		= 1
-RM_HEAD		= 2
-RM_POST		= 4
-RM_PUT		= 8
-RM_DELETE	= 16
-RM_PATCH	= 32
-RM_OPTIONS	= 64
-RM_OTHER	= 128
+RM_GET		:= 1
+RM_HEAD		:= 2
+RM_POST		:= 4
+RM_PUT		:= 8
+RM_DELETE	:= 16
+RM_PATCH	:= 32
+RM_OPTIONS	:= 64
+RM_OTHER	:= 128
 
 enumdef e_logdest, 'stdout', 'stderr', 'off'
 enumdef method_names, 'GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'
@@ -2145,6 +2173,228 @@ check_health:
 	ret
 
 enumdef e_health_methods, 'GET', 'HEAD'
+
+; rdi = redirect node: its target is a path or an http(s) URL, printable,
+; with at most one {*}.
+check_redirect_target:
+	push	rbx
+	mov	rbx,[rdi+N_ARGS]
+	add	rbx,A_SIZE			; the target
+	mov	rdi,[rbx+A_VAL]
+	mov	esi,[rbx+A_VLEN]
+	cmp	esi,1024
+	ja	.bad
+	cmp	byte [rdi],'/'
+	je	.chars
+	cmp	esi,8
+	jb	.bad
+	mov	rax,'https://'
+	cmp	[rdi],rax
+	je	.chars
+	mov	eax,[rdi]
+	cmp	eax,'http'
+	jne	.bad
+	cmp	word [rdi+4],':/'
+	jne	.bad
+	cmp	byte [rdi+6],'/'
+	jne	.bad
+.chars:
+	xor	ecx,ecx
+	xor	edx,edx				; {*} seen
+.char:
+	cmp	ecx,esi
+	jae	.done
+	movzx	eax,byte [rdi+rcx]
+	cmp	al,0x21
+	jb	.bad
+	cmp	al,0x7E
+	ja	.bad
+	cmp	al,'{'
+	jne	.next
+	lea	eax,[rcx+3]
+	cmp	eax,esi
+	ja	.next
+	cmp	word [rdi+rcx+1],'*}'
+	jne	.next
+	inc	edx
+	cmp	edx,1
+	ja	.bad
+.next:
+	inc	ecx
+	jmp	.char
+.bad:
+	mov	rdi,rbx
+	call	arg_value_span
+	mov	edx,[rbx+A_LINE]
+	call	cfg_error
+	out_lit 'a redirect goes to a path or an http(s) URL, printable, with {*} at most once'
+	call	cfg_diag_end
+	call	cfg_note
+	out_lit 'help: `redirect 301 /new/{*}` or `redirect 308 https://example.com{*}`'
+	call	cfg_note_end
+	call	cfg_error_limit
+.done:
+	pop	rbx
+	ret
+
+; rdi = route: its `header` and `response header` lines. set/add take a
+; name and a value, drop a name (or a prefix: x-internal-*). Names are
+; lower-case tokens and never one okena owns (framing, hop-by-hop,
+; forwarding); values carry no CR, LF or NUL.
+check_header_ops:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	mov	r12,rdi
+	mov	rbx,[r12+N_CHILD]
+.node:
+	test	rbx,rbx
+	jz	.done
+	xor	r13d,r13d			; first argument of the operation
+	lea	rax,[dir_table + D_SIZE*DIR_RHEADER]
+	cmp	[rbx+N_DEF],rax
+	je	.op
+	lea	rax,[dir_table + D_SIZE*DIR_RRESPONSE]
+	cmp	[rbx+N_DEF],rax
+	jne	.next
+	inc	r13d				; after "header"
+	mov	rax,[rbx+N_ARGS]
+	mov	rdi,[rax+A_SIZE+A_VAL]		; the operation must be there
+	cmp	dword [rbx+N_ARGC],3
+	jb	.shape
+.op:
+	imul	r14,r13,A_SIZE
+	add	r14,[rbx+N_ARGS]		; operation
+	mov	rdi,[r14+A_VAL]
+	mov	esi,[r14+A_VLEN]
+	lea	rdx,[e_header_ops]
+	call	list_index
+	test	eax,eax
+	js	.bad_op
+	mov	ecx,[rbx+N_ARGC]
+	sub	ecx,r13d			; operation, name, [value]
+	cmp	eax,2
+	je	.drop
+	cmp	ecx,3
+	jne	.shape
+	; the value
+	mov	rdi,[r14+2*A_SIZE+A_VAL]
+	mov	esi,[r14+2*A_SIZE+A_VLEN]
+	cmp	esi,1024
+	ja	.bad_value
+	xor	ecx,ecx
+@@:
+	cmp	ecx,esi
+	jae	.name
+	mov	al,[rdi+rcx]
+	cmp	al,13
+	je	.bad_value
+	cmp	al,10
+	je	.bad_value
+	test	al,al
+	jz	.bad_value
+	inc	ecx
+	jmp	@b
+.drop:
+	cmp	ecx,2
+	jne	.shape
+.name:
+	mov	rdi,[r14+A_SIZE+A_VAL]
+	mov	esi,[r14+A_SIZE+A_VLEN]
+	xor	ecx,ecx
+.nchar:
+	cmp	ecx,esi
+	jae	.owned
+	movzx	eax,byte [rdi+rcx]
+	cmp	al,'*'
+	jne	@f
+	lea	edx,[rcx+1]
+	cmp	edx,esi
+	jne	.bad_name			; only a trailing *
+	mov	rax,[r14+A_VAL]
+	cmp	byte [rax],'d'
+	jne	.bad_name			; and only for drop
+	inc	ecx
+	jmp	.nchar
+@@:
+	cmp	al,'A'
+	jb	@f
+	cmp	al,'Z'
+	jbe	.bad_name			; lower case
+@@:
+	cmp	byte [http_tchar+rax],0
+	je	.bad_name
+	inc	ecx
+	jmp	.nchar
+.owned:
+	test	esi,esi
+	jz	.bad_name
+	lea	rdx,[e_owned_headers]
+	call	list_index
+	test	eax,eax
+	jns	.owned_name
+	jmp	.next
+.shape:
+	mov	rdi,[rbx+N_NAME]
+	mov	esi,[rbx+N_NLEN]
+	mov	edx,[rbx+N_LINE]
+	call	cfg_error
+	out_lit 'set and add take a name and a value, drop a name'
+	call	cfg_diag_end
+	call	cfg_note
+	out_lit 'help: `header set x-env prod`, `header drop x-internal-*`, `response header set cache-control no-store`'
+	call	cfg_note_end
+	call	cfg_error_limit
+	jmp	.next
+.bad_op:
+	mov	rdi,r14
+	call	arg_value_span
+	mov	edx,[r14+A_LINE]
+	call	cfg_error
+	out_lit 'a header operation is set, add or drop'
+	call	cfg_diag_end
+	call	cfg_error_limit
+	jmp	.next
+.bad_name:
+	lea	rdi,[r14+A_SIZE]
+	call	arg_value_span
+	mov	edx,[r14+A_SIZE+A_LINE]
+	call	cfg_error
+	out_lit 'a header name is a lower-case token (x-env); drop may end it with *'
+	call	cfg_diag_end
+	call	cfg_error_limit
+	jmp	.next
+.owned_name:
+	lea	rdi,[r14+A_SIZE]
+	call	arg_value_span
+	mov	edx,[r14+A_SIZE+A_LINE]
+	call	cfg_error
+	out_lit 'okena writes this header itself (framing, connection or forwarding): it cannot be changed here'
+	call	cfg_diag_end
+	call	cfg_error_limit
+	jmp	.next
+.bad_value:
+	lea	rdi,[r14+2*A_SIZE]
+	call	arg_value_span
+	mov	edx,[r14+2*A_SIZE+A_LINE]
+	call	cfg_error
+	out_lit 'a header value is at most 1024 bytes, without CR, LF or NUL'
+	call	cfg_diag_end
+	call	cfg_error_limit
+.next:
+	mov	rbx,[rbx+N_NEXT]
+	jmp	.node
+.done:
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+enumdef e_owned_headers, 'host', 'content-length', 'transfer-encoding', 'connection', 'keep-alive', \
+	'upgrade', 'te', 'trailer', 'proxy-connection', 'expect', 'x-forwarded-for', \
+	'x-forwarded-proto', 'x-forwarded-host', 'forwarded', 'x-request-id'
 
 ; rdi = node. eax = its arguments that are not key=value (they come first).
 positional_count:

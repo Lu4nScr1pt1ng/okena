@@ -35,7 +35,7 @@ end bss
 ; that moment (ENOMEM: fragmentation, dying processes not torn down yet),
 ; try again with rings half the size, down to an eighth, pausing a little
 ; between attempts, before giving up.
-RING_MIN_SHIFT	= 3
+RING_MIN_SHIFT	:= 3
 
 ring_init:
 	push	rbx
@@ -318,29 +318,29 @@ ring_enter:
 ; Every handler receives:
 ;   ebx = index, r12d = generation, r14 = res (sign extended),
 ;   r15d = cqe flags. Handlers may clobber rbx, r12-r15 but keep rbp.
-OP_ACCEPT	= 0
-OP_TIMER	= 1
-OP_SIGNAL	= 2
-OP_IGNORE	= 3
-OP_S_SOCKET	= 4		; session ops from here on
-OP_S_CONNECT	= 5
-OP_S_LTIMEOUT	= 6
-OP_S_RECV_C	= 7		; from the client
-OP_S_RECV_U	= 8		; from the upstream
-OP_S_SEND_C	= 9		; to the client
-OP_S_SEND_U	= 10		; to the upstream
-OP_S_SHUT	= 11
-OP_S_CLOSE	= 12
-OP_S_CANCEL	= 13
-OP_S_OPT	= 14
-OP_ACCEPT_A	= 15		; single-shot accept with the client's address
-OP_S_SEND_PP	= 16		; PROXY protocol header
-OP_H_RECV_C	= 17		; http
-OP_H_RECV_U	= 18
-OP_H_SEND_C	= 19
-OP_H_SEND_U	= 20
-OP_POOL_WATCH	= 21		; an idle pooled connection changed
-OP_COUNT	= 22
+OP_ACCEPT	:= 0
+OP_TIMER	:= 1
+OP_SIGNAL	:= 2
+OP_IGNORE	:= 3
+OP_S_SOCKET	:= 4		; session ops from here on
+OP_S_CONNECT	:= 5
+OP_S_LTIMEOUT	:= 6
+OP_S_RECV_C	:= 7		; from the client
+OP_S_RECV_U	:= 8		; from the upstream
+OP_S_SEND_C	:= 9		; to the client
+OP_S_SEND_U	:= 10		; to the upstream
+OP_S_SHUT	:= 11
+OP_S_CLOSE	:= 12
+OP_S_CANCEL	:= 13
+OP_S_OPT	:= 14
+OP_ACCEPT_A	:= 15		; single-shot accept with the client's address
+OP_S_SEND_PP	:= 16		; PROXY protocol header
+OP_H_RECV_C	:= 17		; http
+OP_H_RECV_U	:= 18
+OP_H_SEND_C	:= 19
+OP_H_SEND_U	:= 20
+OP_POOL_WATCH	:= 21		; an idle pooled connection changed
+OP_COUNT	:= 22
 
 rodata
 	align 8

@@ -255,6 +255,16 @@ http 127.0.0.1:{LST} {{
     route /down/* {{ to 127.0.0.1:{DEAD} }}
     route /bad/* {{ to 127.0.0.1:{BAD} }}
     route /deep/* {{ to 127.0.0.1:{BACK} }}
+    route /old/* {{ redirect 301 /new/{{*}} }}
+    route /exact-old {{ redirect 308 https://example.com/x }}
+    route /hdr/* {{
+        header set x-env prod
+        header add x-added yes
+        header drop x-secret-*
+        response header set cache-control no-store
+        response header drop x-back
+        to 127.0.0.1:{BACK}
+    }}
     route /deep/a/b/* {{ to 127.0.0.1:{BACK} }}
     route /deep/a/* {{ to 127.0.0.1:{DEAD} }}
     route /deep/a/b/c GET {{ to 127.0.0.1:{DEAD} }}
@@ -427,6 +437,36 @@ try:
         c.send(req(method, target, body=b"" if method == b"POST" else None))
         r = c.response()
         check(f"route {method.decode()} {target.decode()}: {why}", r is not None and r[0] == code, str(r and r[0]))
+    # route actions: redirects answered by okena, header changes
+    c = Client()
+    c.send(req(b"GET", b"/old/a/b?q=1&r=2"))
+    r = c.response()
+    check("redirect: {*} and the query carried into Location", r is not None and r[0] == 301
+          and r[1].get("location") == "/new/a/b?q=1&r=2" and r[1].get("content-length") == "0"
+          and "connection" not in r[1], str(r and r[:2]))
+    c.send(req(b"GET", b"/api/after-redirect"))
+    r = c.response()
+    check("and the connection goes on", r is not None and r[0] == 200)
+    c.send(req(b"GET", b"/exact-old?z=1"))
+    r = c.response()
+    check("redirect of an exact route to a URL", r is not None and r[0] == 308
+          and r[1].get("location") == "https://example.com/x?z=1", str(r and r[:2]))
+    c = Client()
+    c.send(req(b"POST", b"/old/x", body=b"unread"))
+    r = c.response()
+    check("a redirected request with a body: answered, then closed", r is not None and r[0] == 301
+          and r[1].get("connection") == "close" and c.closed(), str(r and r[:2]))
+    c = Client()
+    c.send(req(b"GET", b"/hdr/x", b"X-Env: dev\r\nX-Added: client\r\nX-Secret-Token: s\r\nX-Secret-Other: t\r\nX-Kept: k\r\n"))
+    r = c.response()
+    e = echo_of(r)
+    sent = [(n.lower(), v) for n, v in e["fields"]]
+    check("header set replaces the client's value", [v for n, v in sent if n == "x-env"] == ["prod"], str(sent))
+    check("header add keeps it and adds", sorted(v for n, v in sent if n == "x-added") == ["client", "yes"], str(sent))
+    check("header drop with a prefix removes every match", not any(n.startswith("x-secret-") for n, _ in sent)
+          and ("x-kept", "k") in sent, str(sent))
+    check("response header set and drop", r[1].get("cache-control") == "no-store" and "x-back" not in r[1], str(r[1]))
+
     c = Client()
     c.send(req(b"TRACE", b"/api/x"))
     r = c.response()
@@ -740,6 +780,9 @@ try:
           and down.get("upstream") is None, str(down))
     bad = next((l for l in lines if l["target"] == "/bad/x" and l["method"] == "GET"), {})
     check("access log: a retried request is marked", bad.get("retried") is True, str(bad))
+    red = by_target.get("/old/a/b?q=1&r=2", {})
+    check("access log: a redirect is okena's own answer", red.get("status") == 301 and red.get("source") == "okena"
+          and red.get("upstream") is None, str(red))
     check("access log: the request id the backend saw", by_target.get("/api/rid", {}).get("request_id") == RID,
           str(by_target.get("/api/rid", {}).get("request_id")))
     check("access log: SIGUSR1 reopens the file (logrotate)",

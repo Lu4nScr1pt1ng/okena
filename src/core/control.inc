@@ -13,22 +13,22 @@
 ; pool. A name that does not resolve yet (a container that starts later)
 ; does not stop okena from starting.
 
-MAX_GROUPS	= 64
-DT_SIZE		= 256		; one shared entry per name
-DT_SEQ		= 0		; q: odd while being written
-DT_COUNT	= 8		; d
-DT_ADDRS	= 16		; DNS_MAX_ADDRS * 16
-DT_FAMILY	= DT_ADDRS + DNS_MAX_ADDRS * 16	; DNS_MAX_ADDRS bytes
-DT_WANT_OFF	= MAX_GROUPS * DT_SIZE		; then one dword per name: refresh wanted
+MAX_GROUPS	:= 64
+DT_SIZE		:= 256		; one shared entry per name
+DT_SEQ		:= 0		; q: odd while being written
+DT_COUNT	:= 8		; d
+DT_ADDRS	:= 16		; DNS_MAX_ADDRS * 16
+DT_FAMILY	:= DT_ADDRS + DNS_MAX_ADDRS * 16	; DNS_MAX_ADDRS bytes
+DT_WANT_OFF	:= MAX_GROUPS * DT_SIZE		; then one dword per name: refresh wanted
 
 ; Group (plan)
-GR_NAME		= 0		; q
-GR_NLEN		= 8		; d
-GR_PORT		= 12		; d
-GR_FIRST	= 16		; d: first server slot
-GR_SIZE		= 32
+GR_NAME		:= 0		; q
+GR_NLEN		:= 8		; d
+GR_PORT		:= 12		; d
+GR_FIRST	:= 16		; d: first server slot
+GR_SIZE		:= 32
 
-CONTROL_POLL_NS	= 250000000	; refresh requests are noticed within 250 ms
+CONTROL_POLL_NS	:= 250000000	; refresh requests are noticed within 250 ms
 
 bss
 	align 8

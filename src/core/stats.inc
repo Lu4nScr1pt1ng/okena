@@ -24,21 +24,21 @@ bss
 	g_stats_tbl	dq ?			; shared: one page set per worker
 end bss
 
-ST_BLOCK	= g_st_end - g_st_begin
+ST_BLOCK	:= g_st_end - g_st_begin
 ; a worker's page: counters, then active connections per listener and
 ; per server, then its engine
-STP_LACTIVE	= ST_BLOCK
-STP_SACTIVE	= STP_LACTIVE + MAX_LISTENERS * 4
-STP_ENGINE	= STP_SACTIVE + MAX_SERVERS * 4
-STP_ALIVE	= STP_ENGINE + 4
-STP_SIZE	= (STP_ALIVE + 4 + 4095) and not 4095
+STP_LACTIVE	:= ST_BLOCK
+STP_SACTIVE	:= STP_LACTIVE + MAX_LISTENERS * 4
+STP_ENGINE	:= STP_SACTIVE + MAX_SERVERS * 4
+STP_ALIVE	:= STP_ENGINE + 4
+STP_SIZE	:= (STP_ALIVE + 4 + 4095) and not 4095
 
 ; The supervisor's own counters, at the end of the table.
-SG_RESTARTS	= 0
-SG_RELOADS	= 8
-SG_RELOAD_FAILS	= 16
-SG_DRAINING	= 24
-SG_OFF		= STP_SIZE * MAX_WORKERS
+SG_RESTARTS	:= 0
+SG_RELOADS	:= 8
+SG_RELOAD_FAILS	:= 16
+SG_DRAINING	:= 24
+SG_OFF		:= STP_SIZE * MAX_WORKERS
 
 ; Before forking a generation: a fresh table (old workers keep theirs).
 stats_table_init:

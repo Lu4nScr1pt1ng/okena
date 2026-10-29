@@ -19,12 +19,12 @@
 ;
 ; Derived from fasm2crud's filters.
 
-SECCOMP_RET_TRAP = 0x00030000
-SA_SIGINFO	= 4
-SA_RESTORER	= 0x04000000
-SIGSYS		= 31
-SI_SYSCALL	= 24		; siginfo_t, SIGSYS: si_syscall
-X32_SYSCALL_BIT	= 0x40000000
+SECCOMP_RET_TRAP := 0x00030000
+SA_SIGINFO	:= 4
+SA_RESTORER	:= 0x04000000
+SIGSYS		:= 31
+SI_SYSCALL	:= 24		; siginfo_t, SIGSYS: si_syscall
+X32_SYSCALL_BIT	:= 0x40000000
 
 ; BPF over struct seccomp_data: nr at 0, arch at 4, args[i] at 16 + 8 * i.
 macro bpf_ld off*

@@ -5,10 +5,10 @@
 ; touches. Allocations are 8-byte aligned and zeroed (fresh anonymous
 ; pages are zero, and arenas are never reused).
 
-AR_BASE	= 0
-AR_NEXT	= 8
-AR_END	= 16
-AR_SIZE	= 24
+AR_BASE	:= 0
+AR_NEXT	:= 8
+AR_END	:= 16
+AR_SIZE	:= 24
 
 ; rdi = arena, rsi = bytes to reserve. Exits when the kernel refuses.
 arena_init:

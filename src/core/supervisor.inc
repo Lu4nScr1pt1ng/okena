@@ -6,7 +6,7 @@
 ; that crashes does not take its accept queues with it: connections the
 ; kernel already routed to its sockets wait there for the replacement.
 
-LISTEN_BACKLOG	= 4096
+LISTEN_BACKLOG	:= 4096
 
 bss
 	g_sup_pid	dd ?

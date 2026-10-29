@@ -17,49 +17,49 @@
 ; descriptors, and free the session when its last completion is in.
 
 ; Session (128 bytes)
-S_STATE		= 0
-S_GEN		= 4
-S_INFL		= 8		; completions still expected
-S_FLAGS		= 12
-S_CLIENT	= 16		; direct descriptor of the client
-S_LST		= 20		; listener
-S_SERVER	= 24		; server of the current attempt
-S_TRIES		= 28
-S_LAST		= 32		; tick of the last activity
-S_PREV		= 36		; idle list (per listener), -1 = none
-S_NEXT		= 40		; idle list, or the free list
-S_CU_BID	= 44		; client -> upstream buffer in flight, -1 = none
-S_CU_LEN	= 48
-S_CU_OFF	= 52
-S_UC_BID	= 56		; upstream -> client
-S_UC_LEN	= 60
-S_UC_OFF	= 64
-S_WAIT_C	= 68		; next in the buffer wait queue (client side)
-S_WAIT_U	= 72
-S_POOL		= 96		; pool of the current connection (a route's for http)
-S_PH_PREV	= 100		; http phase deadline list (per listener and phase)
-S_PH_NEXT	= 104
-S_PH_AT		= 108		; tick the phase started
-S_PH_KIND	= 112		; PH_*, 0 = no phase timer
-S_SERVER2	= 116		; the server tried before S_SERVER (a third try avoids both)
-S_SIZE		= 128
-S_SHIFT		= 7
+S_STATE		:= 0
+S_GEN		:= 4
+S_INFL		:= 8		; completions still expected
+S_FLAGS		:= 12
+S_CLIENT	:= 16		; direct descriptor of the client
+S_LST		:= 20		; listener
+S_SERVER	:= 24		; server of the current attempt
+S_TRIES		:= 28
+S_LAST		:= 32		; tick of the last activity
+S_PREV		:= 36		; idle list (per listener), -1 = none
+S_NEXT		:= 40		; idle list, or the free list
+S_CU_BID	:= 44		; client -> upstream buffer in flight, -1 = none
+S_CU_LEN	:= 48
+S_CU_OFF	:= 52
+S_UC_BID	:= 56		; upstream -> client
+S_UC_LEN	:= 60
+S_UC_OFF	:= 64
+S_WAIT_C	:= 68		; next in the buffer wait queue (client side)
+S_WAIT_U	:= 72
+S_POOL		:= 96		; pool of the current connection (a route's for http)
+S_PH_PREV	:= 100		; http phase deadline list (per listener and phase)
+S_PH_NEXT	:= 104
+S_PH_AT		:= 108		; tick the phase started
+S_PH_KIND	:= 112		; PH_*, 0 = no phase timer
+S_SERVER2	:= 116		; the server tried before S_SERVER (a third try avoids both)
+S_SIZE		:= 128
+S_SHIFT		:= 7
 
-ST_FREE		= 0
-ST_CONNECTING	= 1
-ST_OPEN		= 2
-ST_CLOSING	= 3
+ST_FREE		:= 0
+ST_CONNECTING	:= 1
+ST_OPEN		:= 2
+ST_CLOSING	:= 3
 
-SF_C_EOF	= 1		; client sent FIN
-SF_U_EOF	= 2		; upstream sent FIN
-SF_C_WAIT	= 4		; client receive waits for a buffer
-SF_U_WAIT	= 8
-SF_UP_OPEN	= 16		; the upstream slot holds a socket
-SF_COUNTED	= 32		; counted in the server's active connections
-SF_RAW		= 64		; the client is a normal descriptor, not a direct one
-SF_PEER		= 128		; has a side record (client address features)
-SF_FDS_CLOSING	= 256		; closing: the descriptors' closes are submitted
-SF_TUNNEL	= 512		; an http session switched to a byte tunnel
+SF_C_EOF	:= 1		; client sent FIN
+SF_U_EOF	:= 2		; upstream sent FIN
+SF_C_WAIT	:= 4		; client receive waits for a buffer
+SF_U_WAIT	:= 8
+SF_UP_OPEN	:= 16		; the upstream slot holds a socket
+SF_COUNTED	:= 32		; counted in the server's active connections
+SF_RAW		:= 64		; the client is a normal descriptor, not a direct one
+SF_PEER		:= 128		; has a side record (client address features)
+SF_FDS_CLOSING	:= 256		; closing: the descriptors' closes are submitted
+SF_TUNNEL	:= 512		; an http session switched to a byte tunnel
 
 ; Jump to target when session ebx belongs to an http listener.
 ; Clobbers rax.
@@ -81,22 +81,22 @@ macro client_sqe reg
 	fixed:
 end macro
 
-NIL		= -1
+NIL		:= -1
 
-BUF_SIZE	= 16384
-BUF_SHIFT	= 14
-BUF_GROW	= 64		; buffers added to the ring at a time (1 MiB)
-BUF_MAX		= 8192		; per worker (128 MiB of address space)
-MAX_TRIES	= 3
-FAIL_THRESHOLD	= 3		; consecutive connect failures before ejection
-EJECT_TICKS	= 10
+BUF_SIZE	:= 16384
+BUF_SHIFT	:= 14
+BUF_GROW	:= 64		; buffers added to the ring at a time (1 MiB)
+BUF_MAX		:= 8192		; per worker (128 MiB of address space)
+MAX_TRIES	:= 3
+FAIL_THRESHOLD	:= 3		; consecutive connect failures before ejection
+EJECT_TICKS	:= 10
 
-ACC_PER_SOCKET	= 8		; accepts in flight per socket that needs addresses
-ACC_MAX		= 2048
-AC_SID		= 0		; d: socket id
-AC_LEN		= 4		; d: address length
-AC_SA		= 8		; 28 bytes
-AC_SIZE		= 40
+ACC_PER_SOCKET	:= 8		; accepts in flight per socket that needs addresses
+ACC_MAX		:= 2048
+AC_SID		:= 0		; d: socket id
+AC_LEN		:= 4		; d: address length
+AC_SA		:= 8		; 28 bytes
+AC_SIZE		:= 40
 
 bss
 	align 8
@@ -819,7 +819,7 @@ idle_touch:
 ; least a second) are closed until it is back to 90%, so new clients get
 ; room instead of being refused while idle ones sit on it. Each episode
 ; is logged once; closures are counted (okena_listener_evicted_total).
-PRESSURE_IDLE	= 10
+PRESSURE_IDLE	:= 10
 
 idle_expire:
 	push	rbx

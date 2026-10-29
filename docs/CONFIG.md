@@ -32,7 +32,9 @@ directive arg arg key=value {
 ```
 
 * One directive per line; `#` starts a comment.
-* Strings need quotes only when they contain spaces or `{}#=`.
+* Strings need quotes only when they contain spaces, `{`, `}` or `;`
+  (`#` and `=` are ordinary inside a word, and so is the placeholder
+  `{*}`: `redirect 301 /new/{*}`).
 * `${env:NAME}` and `${file:/path}` substitute at load time (secrets from
   files, never inline).
 * `include "conf.d/*.conf"` splices files in place, in sorted order.
@@ -258,10 +260,13 @@ Route directives:
 to pool NAME                     # or: to ADDR... for an inline pool
 split api=95% api-canary=5% sticky=cookie:okena_split
 mirror pool shadow 10%           # copy of the request, response ignored
-rewrite path /v1/{*} -> /{*}
-header set   x-request-start "${time.us}"
-header drop  x-internal-*
+redirect 301 /new/{*}             # okena answers; {*} = the path after the route's prefix
+header set   x-env prod            # replaces what the client sent
+header add   x-via okena           # keeps it, adds one more
+header drop  x-internal-*          # a name, or a prefix with *
 response header set strict-transport-security "max-age=63072000"
+response header drop server
+rewrite path /v1/{*} -> /{*}       # (planned)
 priority critical                # critical | normal | bulk (shedding order)
 timeout total=5s try=2s          # whole request incl. retries / one attempt
 retry 2 on=connect,reset,503 idempotent-only
@@ -275,6 +280,18 @@ match method=POST header:content-type=application/json {
 limit 100/s burst=200 key=client.ip
 limit 10000/m key=header:x-api-key instances=4   # share of a fleet-wide limit
 ```
+
+A route either forwards (`to`) or redirects (`redirect CODE TARGET`, with
+301, 302, 303, 307 or 308; TARGET a path or an `http(s)://` URL). A
+redirect keeps the request's query unless TARGET has its own, and keeps
+the connection open (it closes it when the request had a body, which
+okena does not read). Header changes apply to what goes to the backend
+(`header`) or back to the client (`response header`), in the order
+written. Names are lower-case tokens and never one okena owns itself
+(`host`, framing, `connection` and the other hop-by-hop fields,
+`x-forwarded-*`, `forwarded`, `x-request-id`); values never contain CR,
+LF or NUL, so a header change cannot inject one. Values are literal for
+now (`${...}` variables are planned).
 
 Every limit, rate or count is for the whole instance (all workers
 together), never per worker.

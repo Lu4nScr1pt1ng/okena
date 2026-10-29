@@ -30,8 +30,8 @@ bss
 	g_cli_command	dd ?
 end bss
 
-CMD_RUN		= 0
-CMD_CHECK	= 1
+CMD_RUN		:= 0
+CMD_CHECK	:= 1
 
 cli_main:
 	mov	rcx,[g_argc]

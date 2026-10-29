@@ -14,51 +14,51 @@
 ;
 ; Parsing is in place: the message refers to the input buffer.
 
-HM_MAX_HEADERS	= 100
+HM_MAX_HEADERS	:= 100
 
 ; Message
-HM_METHOD	= 0		; q: method (request) / version text (response)
-HM_MLEN		= 8		; d
-HM_TARGET	= 16		; q: request target / reason phrase
-HM_TLEN		= 24		; d
-HM_PLEN		= 28		; d: path part of the target (before '?')
-HM_VERSION	= 32		; d: 10 or 11
-HM_STATUS	= 36		; d: response status code
-HM_NHDR		= 40		; d
-HM_FLAGS	= 44		; d: HMF_*
-HM_LENGTH	= 48		; q: Content-Length, -1 when absent
-HM_HOST		= 56		; d: index of the Host field, -1 when absent
-HM_HEADLEN	= 60		; d: bytes of the head, CRLFCRLF included
-HM_ERROR	= 64		; d: HE_* when parsing failed
-HM_HDRS		= 72		; HM_MAX_HEADERS * HF_SIZE
-HM_SIZE		= HM_HDRS + HM_MAX_HEADERS * 32
+HM_METHOD	:= 0		; q: method (request) / version text (response)
+HM_MLEN		:= 8		; d
+HM_TARGET	:= 16		; q: request target / reason phrase
+HM_TLEN		:= 24		; d
+HM_PLEN		:= 28		; d: path part of the target (before '?')
+HM_VERSION	:= 32		; d: 10 or 11
+HM_STATUS	:= 36		; d: response status code
+HM_NHDR		:= 40		; d
+HM_FLAGS	:= 44		; d: HMF_*
+HM_LENGTH	:= 48		; q: Content-Length, -1 when absent
+HM_HOST		:= 56		; d: index of the Host field, -1 when absent
+HM_HEADLEN	:= 60		; d: bytes of the head, CRLFCRLF included
+HM_ERROR	:= 64		; d: HE_* when parsing failed
+HM_HDRS		:= 72		; HM_MAX_HEADERS * HF_SIZE
+HM_SIZE		:= HM_HDRS + HM_MAX_HEADERS * 32
 
 ; Field
-HF_NAME		= 0		; q
-HF_NLEN		= 8		; d
-HF_VLEN		= 12		; d
-HF_VALUE	= 16		; q
-HF_FLAGS	= 24		; d: HFF_*
-HF_SIZE		= 32
+HF_NAME		:= 0		; q
+HF_NLEN		:= 8		; d
+HF_VLEN		:= 12		; d
+HF_VALUE	:= 16		; q
+HF_FLAGS	:= 24		; d: HFF_*
+HF_SIZE		:= 32
 
-HFF_HOP		= 1		; hop-by-hop: not forwarded
-HFF_HOST	= 2
-HFF_LENGTH	= 4
-HFF_TE		= 8
+HFF_HOP		:= 1		; hop-by-hop: not forwarded
+HFF_HOST	:= 2
+HFF_LENGTH	:= 4
+HFF_TE		:= 8
 
-HMF_CHUNKED	= 1		; Transfer-Encoding: chunked
-HMF_CLOSE	= 2		; Connection: close (or HTTP/1.0 without keep-alive)
-HMF_UPGRADE	= 4		; Connection: upgrade and an Upgrade field
-HMF_CONTINUE	= 8		; Expect: 100-continue
-HMF_KEEPALIVE	= 16		; Connection: keep-alive
-HMF_HAS_UPGRADE	= 32		; an Upgrade field is present
+HMF_CHUNKED	:= 1		; Transfer-Encoding: chunked
+HMF_CLOSE	:= 2		; Connection: close (or HTTP/1.0 without keep-alive)
+HMF_UPGRADE	:= 4		; Connection: upgrade and an Upgrade field
+HMF_CONTINUE	:= 8		; Expect: 100-continue
+HMF_KEEPALIVE	:= 16		; Connection: keep-alive
+HMF_HAS_UPGRADE	:= 32		; an Upgrade field is present
 
 ; Errors (they map to statuses)
-HE_NONE		= 0
-HE_BAD		= 400		; malformed
-HE_TOO_LARGE	= 431		; too many fields
-HE_VERSION	= 505		; HTTP version not supported
-HE_NOT_IMPL	= 501		; a transfer coding we do not take
+HE_NONE		:= 0
+HE_BAD		:= 400		; malformed
+HE_TOO_LARGE	:= 431		; too many fields
+HE_VERSION	:= 505		; HTTP version not supported
+HE_NOT_IMPL	:= 501		; a transfer coding we do not take
 
 rodata
 	align 8

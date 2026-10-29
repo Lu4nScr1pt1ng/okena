@@ -20,93 +20,96 @@
 ; idle keep-alive connection keeps. Its buffers are 64 KiB of address
 ; space of their own, touched only as far as an exchange uses them, and
 ; given back whole when the connection is idle (PH_TRIM).
-H_SHIFT		= 9		; state
-HB_SHIFT	= 16		; buffers
-H_STATE		= 0
-H_INLEN		= 4		; bytes in IN
-H_INOFF		= 8		; first unconsumed byte of IN
-H_OUTLEN	= 12
-H_UPLEN		= 16
-H_UPOFF		= 20
-H_BODY		= 24		; BK_* of the request body
-H_RBODY		= 28		; BK_* of the response body
-H_REMAIN	= 32		; q: request body bytes left (BK_LENGTH)
-H_RREMAIN	= 40		; q: response body bytes left
-H_FLAGS		= 48		; HX_*
-H_STATUS	= 52
-H_SPTR		= 56		; q: what an engine still has to send
-H_SLEN		= 64		; d
-H_CK		= 72		; request chunked decoder (CK_SIZE)
-H_RCK		= 104		; response chunked decoder
+H_SHIFT		:= 9		; state
+HB_SHIFT	:= 16		; buffers
+H_STATE		:= 0
+H_INLEN		:= 4		; bytes in IN
+H_INOFF		:= 8		; first unconsumed byte of IN
+H_OUTLEN	:= 12
+H_UPLEN		:= 16
+H_UPOFF		:= 20
+H_BODY		:= 24		; BK_* of the request body
+H_RBODY		:= 28		; BK_* of the response body
+H_REMAIN	:= 32		; q: request body bytes left (BK_LENGTH)
+H_RREMAIN	:= 40		; q: response body bytes left
+H_FLAGS		:= 48		; HX_*
+H_STATUS	:= 52
+H_SPTR		:= 56		; q: what an engine still has to send
+H_SLEN		:= 64		; d
+H_CK		:= 72		; request chunked decoder (CK_SIZE)
+H_RCK		:= 104		; response chunked decoder
 ; buffers, from H_BUF
-HB_IN		= 0		; client bytes: the request head, then its body
-H_IN_CAP	= 16384
-HB_OUT		= HB_IN + H_IN_CAP	; heads okena writes, chunk framing
-H_OUT_CAP	= 20480
-HB_UP		= HB_OUT + H_OUT_CAP	; upstream bytes: the response
-H_UP_CAP	= 16384
+HB_IN		:= 0		; client bytes: the request head, then its body
+H_IN_CAP	:= 16384
+HB_OUT		:= HB_IN + H_IN_CAP	; heads okena writes, chunk framing
+H_OUT_CAP	:= 20480
+HB_UP		:= HB_OUT + H_OUT_CAP	; upstream bytes: the response
+H_UP_CAP	:= 16384
 ; access log: the request as it was, and its exchange's counters
-H_LT0		= 184		; q: TSC when the request head was parsed, 0 = none
-H_XBYTES	= 192		; q: bytes sent to the client in this exchange
-H_LMLEN		= 200		; d
-H_LHLEN		= 204		; d
-H_LTLEN		= 208		; d
-H_CKIND		= 212		; d: 4 or 6
-H_CLIENT	= 216		; 16 bytes: the client (the peer, or what trusted proxies say)
-H_RIDLEN	= 232		; d: request id length, 0 = none yet
-H_RID		= 236		; the request id (RID_MAX bytes)
-RID_MAX		= 128
-H_BUF		= 368		; q: this session's buffers
+H_LT0		:= 184		; q: TSC when the request head was parsed, 0 = none
+H_XBYTES	:= 192		; q: bytes sent to the client in this exchange
+H_LMLEN		:= 200		; d
+H_LHLEN		:= 204		; d
+H_LTLEN		:= 208		; d
+H_CKIND		:= 212		; d: 4 or 6
+H_CLIENT	:= 216		; 16 bytes: the client (the peer, or what trusted proxies say)
+H_RIDLEN	:= 232		; d: request id length, 0 = none yet
+H_RID		:= 236		; the request id (RID_MAX bytes)
+RID_MAX		:= 128
+H_BUF		:= 368		; q: this session's buffers
+H_ACT		:= 376		; d: the route's action + 1 (redirect, header changes), 0 = none
 assert H_BUF + 8 <= 1 shl H_SHIFT
-HB_LTEXT_M	= HB_UP + H_UP_CAP	; access log: method
-H_LTEXT_M_CAP	= 16
-HB_LTEXT_H	= HB_LTEXT_M + 16	; host
-H_LTEXT_H_CAP	= 255
-HB_LTEXT_T	= HB_LTEXT_H + 256	; target
-H_LTEXT_T_CAP	= 1024
+HB_LTEXT_M	:= HB_UP + H_UP_CAP	; access log: method
+H_LTEXT_M_CAP	:= 16
+HB_LTEXT_H	:= HB_LTEXT_M + 16	; host
+H_LTEXT_H_CAP	:= 255
+HB_LTEXT_T	:= HB_LTEXT_H + 256	; target
+H_LTEXT_T_CAP	:= 1024
 assert HB_LTEXT_T + H_LTEXT_T_CAP <= 1 shl HB_SHIFT
 
-HS_HEAD		= 1		; reading a request head
-HS_CONTINUE	= 2		; writing our 100 Continue
-HS_CONNECT	= 3
-HS_SEND_HEAD	= 4
-HS_REQ_SEND	= 5		; writing request body bytes upstream
-HS_REQ_READ	= 6		; reading request body bytes
-HS_RESP_HEAD	= 7		; reading a response head
-HS_RESP_SEND	= 8		; writing response head or body to the client
-HS_RESP_READ	= 9
-HS_ERROR_SEND	= 10		; writing an error, then closing
-HS_TUNNEL_UP	= 11		; 101 sent: bytes the backend sent early go to the client
-HS_TUNNEL_IN	= 12		; then bytes the client sent early go to the backend
-HS_INTERIM_SEND	= 13		; writing a 1xx (103 Early Hints...) before the final response
+HS_HEAD		:= 1		; reading a request head
+HS_CONTINUE	:= 2		; writing our 100 Continue
+HS_CONNECT	:= 3
+HS_SEND_HEAD	:= 4
+HS_REQ_SEND	:= 5		; writing request body bytes upstream
+HS_REQ_READ	:= 6		; reading request body bytes
+HS_RESP_HEAD	:= 7		; reading a response head
+HS_RESP_SEND	:= 8		; writing response head or body to the client
+HS_RESP_READ	:= 9
+HS_ERROR_SEND	:= 10		; writing an error, then closing
+HS_TUNNEL_UP	:= 11		; 101 sent: bytes the backend sent early go to the client
+HS_TUNNEL_IN	:= 12		; then bytes the client sent early go to the backend
+HS_INTERIM_SEND	:= 13		; writing a 1xx (103 Early Hints...) before the final response
+HS_SELF_SEND	:= 14		; writing okena's own answer (a redirect), connection kept
 
-BK_NONE		= 0
-BK_LENGTH	= 1
-BK_CHUNKED	= 2
-BK_CLOSE	= 3		; until the backend closes
+BK_NONE		:= 0
+BK_LENGTH	:= 1
+BK_CHUNKED	:= 2
+BK_CLOSE	:= 3		; until the backend closes
 
-HX_CLOSE	= 1		; close the client connection after this response
-HX_HEAD		= 2		; a HEAD request
-HX_STARTED	= 4		; response bytes reached the client
-HX_CHUNKOUT	= 8		; the response goes out chunked (re-framed)
-HX_CONTINUE	= 16		; the client waits for 100 Continue
-HX_LASTCHUNK	= 32		; the last chunk is being written
-HX_REUSED	= 64		; the upstream connection came from the pool
-HX_NOBODY	= 128		; the request has no body (safe to send twice)
-HX_NOPOOL	= 256		; connect afresh (a reused one just failed)
-HX_UPKEEP	= 512		; the upstream connection may go back to the pool
-HX_UPGRADE	= 1024		; the client asks to switch protocols (WebSocket...)
-HX_IDEMPOTENT	= 2048		; GET, HEAD, PUT, DELETE, OPTIONS: may be sent twice
-HX_RETRIED	= 4096		; this request was sent again, to another server
-HX_AVOID	= 8192		; the next connect avoids S_SERVER
-HX_TRUSTED	= 16384		; the peer is in trusted_proxies: its X-Forwarded-* count
-HX_XFPROTO	= 32768		; and it sent X-Forwarded-Proto (forwarded as is)
-HX_RIDKEPT	= 65536		; the request id is the one a trusted proxy sent
-HX_HTTP10	= 131072	; the client speaks HTTP/1.0 (no 1xx for it)
-HX_INTERIM	= 262144	; the head being written is an interim (1xx) one
+HX_CLOSE	:= 1		; close the client connection after this response
+HX_HEAD		:= 2		; a HEAD request
+HX_STARTED	:= 4		; response bytes reached the client
+HX_CHUNKOUT	:= 8		; the response goes out chunked (re-framed)
+HX_CONTINUE	:= 16		; the client waits for 100 Continue
+HX_LASTCHUNK	:= 32		; the last chunk is being written
+HX_REUSED	:= 64		; the upstream connection came from the pool
+HX_NOBODY	:= 128		; the request has no body (safe to send twice)
+HX_NOPOOL	:= 256		; connect afresh (a reused one just failed)
+HX_UPKEEP	:= 512		; the upstream connection may go back to the pool
+HX_UPGRADE	:= 1024		; the client asks to switch protocols (WebSocket...)
+HX_IDEMPOTENT	:= 2048		; GET, HEAD, PUT, DELETE, OPTIONS: may be sent twice
+HX_RETRIED	:= 4096		; this request was sent again, to another server
+HX_AVOID	:= 8192		; the next connect avoids S_SERVER
+HX_TRUSTED	:= 16384		; the peer is in trusted_proxies: its X-Forwarded-* count
+HX_XFPROTO	:= 32768		; and it sent X-Forwarded-Proto (forwarded as is)
+HX_RIDKEPT	:= 65536		; the request id is the one a trusted proxy sent
+HX_HTTP10	:= 131072	; the client speaks HTTP/1.0 (no 1xx for it)
+HX_INTERIM	:= 262144	; the head being written is an interim (1xx) one
+HX_SELF		:= 524288	; okena answers this request itself (a redirect)
 
-SIDE_CLIENT	= 0
-SIDE_UP		= 1
+SIDE_CLIENT	:= 0
+SIDE_UP		:= 1
 
 bss
 	align 8
@@ -198,6 +201,7 @@ http_next_request:
 	mov	dword [r15+H_STATE],HS_HEAD
 	and	dword [r15+H_FLAGS],HX_CLOSE
 	mov	dword [r15+H_RIDLEN],0
+	mov	dword [r15+H_ACT],0
 	; the unconsumed bytes (a pipelined request) move to the front
 	mov	ecx,[r15+H_INLEN]
 	mov	eax,[r15+H_INOFF]
@@ -347,12 +351,23 @@ http_request:
 	je	@f
 	or	dword [r15+H_FLAGS],HX_CONTINUE
 @@:
-	call	http_route			; eax = pool, -1 none, -2 unsafe path
+	call	http_route			; eax = route entry, -1 none, -2 unsafe path
 	cmp	eax,-1
 	je	.no_route
 	cmp	eax,-2
 	je	.parse_error_400
-	mov	r13d,eax
+	imul	rcx,rax,RT_SIZE
+	lea	rcx,[g_routes+rcx]
+	mov	edx,[rcx+RT_ACT]
+	mov	[r15+H_ACT],edx
+	test	edx,edx
+	jz	@f
+	dec	edx
+	imul	rdx,rdx,RA_SIZE
+	cmp	dword [g_acts+rdx+RA_CODE],0
+	jne	http_redirect
+@@:
+	mov	r13d,[rcx+RT_POOL]
 	add	dword [g_retry_tokens+r13*4],RETRY_PER_REQ	; the pool's budget grows with its traffic
 	cmp	dword [g_retry_tokens+r13*4],RETRY_CAP
 	jbe	@f
@@ -432,6 +447,7 @@ http_route:
 	mov	rdi,rsi
 	mov	esi,edx
 	call	path_normalize			; routes match the normalized path
+	mov	[g_npath_len],edx
 	jnc	@f
 	mov	eax,-2
 	jmp	.done
@@ -699,7 +715,7 @@ route_lookup:
 	test	eax,eax
 	pop	rax
 	jz	.next
-	mov	eax,[r8+RT_POOL]
+	mov	eax,r10d			; the route entry
 	ret
 .next:
 	inc	eax
@@ -708,10 +724,11 @@ route_lookup:
 	mov	eax,-1
 	ret
 
-PFX_MAX		= 256
+PFX_MAX		:= 256
 bss
 	g_pfx_hash	rd PFX_MAX
 	g_pfx_len	rd PFX_MAX
+	g_npath_len	dd ?
 	g_npath		rb H_IN_CAP
 	g_rset_first	dd ?
 	g_rset_count	dd ?
@@ -921,6 +938,22 @@ http_write_request_head:
 	jnz	.skip
 	jmp	.copy
 .end_to_end:
+	; the route's header changes: a field it sets or drops is not copied
+	mov	eax,[r15+H_ACT]
+	test	eax,eax
+	jz	@f
+	dec	eax
+	imul	rax,rax,RA_SIZE
+	mov	esi,[g_acts+rax+RA_QFIRST]
+	mov	edx,[g_acts+rax+RA_QCOUNT]
+	test	edx,edx
+	jz	@f
+	push	rdi
+	mov	rdi,r14
+	call	hdrop_skip
+	pop	rdi
+	jc	.skip
+@@:
 	; from a trusted proxy, its X-Forwarded-Proto and -Host stand (its
 	; X-Forwarded-For is merged below)
 	test	dword [r15+H_FLAGS],HX_TRUSTED
@@ -1003,6 +1036,16 @@ http_write_request_head:
 	mov	ecx,[r15+H_RIDLEN]
 	rep	movsb
 	memit_x 13,10
+@@:
+	mov	eax,[r15+H_ACT]			; the route's set and add
+	test	eax,eax
+	jz	@f
+	dec	eax
+	imul	rax,rax,RA_SIZE
+	mov	esi,[g_acts+rax+RA_QFIRST]
+	mov	edx,[g_acts+rax+RA_QCOUNT]
+	call	hdrop_emit
+	jc	.full
 @@:
 	; X-Forwarded-For: what trusted proxies said, then the peer; from
 	; anyone else, only the peer, never what the client claims
@@ -1273,7 +1316,13 @@ http_send_done:
 	je	http_tunnel_start
 	cmp	edx,HS_INTERIM_SEND
 	je	.interim_sent
+	cmp	edx,HS_SELF_SEND
+	je	.self_sent
 	ret
+.self_sent:
+	test	dword [r15+H_FLAGS],HX_CLOSE
+	jnz	.error_sent			; logged, then closed
+	jmp	http_exchange_done
 .interim_sent:
 	mov	dword [r15+H_STATE],HS_RESP_HEAD
 	jmp	http_resp_head			; the next head may be in UP already
@@ -1612,7 +1661,7 @@ http_write_response_head:
 	imul	r14,rbx,HF_SIZE
 	lea	r14,[r12+HM_HDRS+r14]
 	test	dword [r14+HF_FLAGS],HFF_HOP
-	jz	.copy
+	jz	.e2e
 	test	dword [r15+H_FLAGS],HX_UPGRADE	; a 101 keeps its Upgrade field
 	jz	.skip
 	push	rdi
@@ -1621,6 +1670,24 @@ http_write_response_head:
 	call	hf_is
 	pop	rdi
 	jnz	.skip
+.e2e:
+	; the route's response header changes (final heads only)
+	test	dword [r15+H_FLAGS],HX_INTERIM
+	jnz	.copy
+	mov	eax,[r15+H_ACT]
+	test	eax,eax
+	jz	.copy
+	dec	eax
+	imul	rax,rax,RA_SIZE
+	mov	esi,[g_acts+rax+RA_PFIRST]
+	mov	edx,[g_acts+rax+RA_PCOUNT]
+	test	edx,edx
+	jz	.copy
+	push	rdi
+	mov	rdi,r14
+	call	hdrop_skip
+	pop	rdi
+	jc	.skip
 .copy:
 	mov	eax,[r14+HF_NLEN]
 	add	eax,[r14+HF_VLEN]
@@ -1651,6 +1718,16 @@ http_write_response_head:
 	jz	@f
 	memit_x 'Connection: upgrade',13,10,13,10
 	jmp	.done
+@@:
+	mov	eax,[r15+H_ACT]			; the route's response set and add
+	test	eax,eax
+	jz	@f
+	dec	eax
+	imul	rax,rax,RA_SIZE
+	mov	esi,[g_acts+rax+RA_PFIRST]
+	mov	edx,[g_acts+rax+RA_PCOUNT]
+	call	hdrop_emit
+	jc	.full
 @@:
 	mov	eax,[r15+H_RBODY]
 	test	dword [r15+H_FLAGS],HX_CHUNKOUT
@@ -1801,11 +1878,11 @@ http_last_chunk:
 ; before any response byte. A budget keeps retries from multiplying a
 ; failure: per worker, at most a fifth of the requests plus 10 per second
 ; (tokens in tenths of a retry).
-OUTLIER_5XX	= 5
-RETRY_COST	= 10
-RETRY_PER_REQ	= 2
-RETRY_FLOOR	= 100
-RETRY_CAP	= 1000
+OUTLIER_5XX	:= 5
+RETRY_COST	:= 10
+RETRY_PER_REQ	:= 2
+RETRY_FLOOR	:= 100
+RETRY_CAP	:= 1000
 
 bss
 	g_sv_5xx	rd MAX_SERVERS
@@ -2225,6 +2302,204 @@ http_count:
 	pop	rax
 	ret
 
+; --------------------------------------------------------- route actions
+
+; rdi = field (HF_*), esi/edx = first and count of header changes. CF
+; when the field is not to be copied: a drop names it (or a prefix of
+; it), or a set replaces it. Keeps rbx, r12-r15.
+hdrop_skip:
+	test	edx,edx
+	jz	.keep
+	imul	r8,rsi,HD_SIZE
+	lea	r8,[g_hdrops+r8]
+	mov	r9d,edx
+.op:
+	cmp	dword [r8+HD_KIND],HOP_ADD
+	je	.next				; add keeps what the message had
+	mov	ecx,[r8+HD_NLEN]
+	mov	eax,[rdi+HF_NLEN]
+	cmp	dword [r8+HD_PREFIX],0
+	jne	.prefix
+	cmp	eax,ecx
+	jne	.next
+	jmp	.compare
+.prefix:
+	cmp	eax,ecx
+	jb	.next
+.compare:
+	push	rdi
+	push	r8
+	push	r9
+	mov	edx,ecx
+	mov	rsi,[rdi+HF_NAME]
+	mov	rdi,[r8+HD_NAME]
+	call	mem_eq_nocase
+	pop	r9
+	pop	r8
+	pop	rdi
+	test	eax,eax
+	jnz	.drop
+.next:
+	add	r8,HD_SIZE
+	dec	r9d
+	jnz	.op
+.keep:
+	clc
+	ret
+.drop:
+	stc
+	ret
+
+; rdi = output, esi/edx = first and count of header changes, r13 = the
+; limit. Writes the set and add ones; CF when they do not fit. Keeps
+; rbx, r12-r15.
+hdrop_emit:
+	test	edx,edx
+	jz	.done
+	imul	r8,rsi,HD_SIZE
+	lea	r8,[g_hdrops+r8]
+	mov	r9d,edx
+.op:
+	cmp	dword [r8+HD_KIND],HOP_DROP
+	je	.next
+	mov	eax,[r8+HD_NLEN]
+	add	eax,[r8+HD_VLEN]
+	lea	rax,[rdi+rax+4]
+	cmp	rax,r13
+	ja	.full
+	mov	rsi,[r8+HD_NAME]
+	mov	ecx,[r8+HD_NLEN]
+	rep	movsb
+	mov	word [rdi],': '
+	add	rdi,2
+	mov	rsi,[r8+HD_VAL]
+	mov	ecx,[r8+HD_VLEN]
+	rep	movsb
+	mov	word [rdi],0x0A0D
+	add	rdi,2
+.next:
+	add	r8,HD_SIZE
+	dec	r9d
+	jnz	.op
+.done:
+	clc
+	ret
+.full:
+	stc
+	ret
+
+; A route that redirects: okena answers it, the connection goes on (or
+; closes when the request has a body okena would have to read away).
+; ebx = session, r15 = state, rcx = the matched route entry, rdx = its
+; action's offset in g_acts, g_hm = the request.
+http_redirect:
+	push	r12
+	push	r13
+	lea	r12,[g_acts+rdx]
+	mov	r13,rcx
+	or	dword [r15+H_FLAGS],HX_SELF or HX_STARTED
+	test	dword [r15+H_FLAGS],HX_NOBODY
+	jnz	@f
+	or	dword [r15+H_FLAGS],HX_CLOSE	; its body is not read: close after
+@@:
+	cmp	dword [r15+H_RIDLEN],0
+	jne	@f
+	call	rid_new
+@@:
+	mov	eax,[r12+RA_CODE]
+	mov	[r15+H_STATUS],eax
+	mov	edi,eax
+	mov	esi,5
+	call	http_count
+	mov	rdi,[r15+H_BUF]
+	lea	rdi,[rdi+HB_OUT]
+	memit_x 'HTTP/1.1 '
+	mov	eax,[r12+RA_CODE]
+	call	fmt_u64
+	mov	byte [rdi],' '
+	inc	rdi
+	mov	eax,[r12+RA_CODE]
+	call	http_reason
+	call	fmt_cstr
+	memit_x 13,10,'Location: '
+	; the target, {*} = the rest of the path after the route's prefix
+	mov	rsi,[r12+RA_TGT]
+	mov	ecx,[r12+RA_TLEN]
+	xor	r8d,r8d				; '?' in the target
+.tgt:
+	test	ecx,ecx
+	jz	.query
+	mov	al,[rsi]
+	cmp	al,'?'
+	jne	@f
+	inc	r8d
+@@:
+	cmp	al,'{'
+	jne	.tgt_byte
+	cmp	ecx,3
+	jb	.tgt_byte
+	cmp	word [rsi+1],'*}'
+	jne	.tgt_byte
+	push	rsi
+	push	rcx
+	cmp	dword [r13+RT_PREFIX],0
+	je	.rest_done			; an exact route has no rest
+	mov	ecx,[g_npath_len]
+	sub	ecx,[r13+RT_PLEN]
+	jbe	.rest_done
+	mov	eax,[r13+RT_PLEN]
+	lea	rsi,[g_npath+rax]
+	rep	movsb
+.rest_done:
+	pop	rcx
+	pop	rsi
+	add	rsi,3
+	sub	ecx,3
+	jmp	.tgt
+.tgt_byte:
+	mov	[rdi],al
+	inc	rdi
+	inc	rsi
+	dec	ecx
+	jmp	.tgt
+.query:
+	; the request's query goes along, unless the target has its own
+	test	r8d,r8d
+	jnz	.headers
+	lea	rax,[g_hm]
+	mov	rsi,[rax+HM_TARGET]
+	mov	ecx,[rax+HM_TLEN]
+.find_q:
+	test	ecx,ecx
+	jz	.headers
+	cmp	byte [rsi],'?'
+	je	.copy_q
+	inc	rsi
+	dec	ecx
+	jmp	.find_q
+.copy_q:
+	rep	movsb
+.headers:
+	memit_x 13,10,'Content-Length: 0',13,10,'X-Request-Id: '
+	lea	rsi,[r15+H_RID]
+	mov	ecx,[r15+H_RIDLEN]
+	rep	movsb
+	memit_x 13,10
+	test	dword [r15+H_FLAGS],HX_CLOSE
+	jz	@f
+	memit_x 'Connection: close',13,10
+@@:
+	memit_x 13,10
+	mov	rsi,[r15+H_BUF]
+	lea	rsi,[rsi+HB_OUT]
+	sub	rdi,rsi
+	mov	dword [r15+H_STATE],HS_SELF_SEND
+	mov	ecx,SIDE_CLIENT
+	xchg	rsi,rdi				; rdi = OUT, esi = its length
+	pop	r13
+	pop	r12
+	jmp	h_send
+
 ; ------------------------------------------------------ phase timeouts
 
 ; Two clocks besides the idle one, per listener, each a FIFO list (all
@@ -2236,12 +2511,12 @@ http_count:
 ;                once the request is sent; 504.
 ; While a session waits on its backend it is not idle (idle_expire).
 
-PH_HEAD		= 1
-PH_RESPONSE	= 2
-PH_TRIM		= 3		; idle keep-alive: give the record's buffers back
-PH_BODY		= 4		; the request body must keep coming: `body_idle`
-PH_KINDS	= 4
-TRIM_SECS	= 2
+PH_HEAD		:= 1
+PH_RESPONSE	:= 2
+PH_TRIM		:= 3		; idle keep-alive: give the record's buffers back
+PH_BODY		:= 4		; the request body must keep coming: `body_idle`
+PH_KINDS	:= 4
+TRIM_SECS	:= 2
 
 bss
 	g_ph_head	rd MAX_LISTENERS * PH_KINDS
@@ -2485,7 +2760,10 @@ http_tunnel_start:
 ; One exchange is over: drop the upstream connection, then the next
 ; request on the client connection, or close it.
 http_exchange_done:
+	h_rec
 	xor	esi,esi
+	test	dword [r15+H_FLAGS],HX_SELF
+	setnz	sil				; okena's own answer, or the backend's
 	call	alog_exchange
 	h_rec
 	and	dword [r15+H_FLAGS],not HX_LASTCHUNK
@@ -2593,7 +2871,8 @@ macro reasons pairs&
 		end iterate
 	end rodata
 end macro
-reasons 400,'Bad Request', 404,'Not Found', 405,'Method Not Allowed', 408,'Request Timeout', \
+reasons 301,'Moved Permanently', 302,'Found', 303,'See Other', 307,'Temporary Redirect', \
+	308,'Permanent Redirect', 400,'Bad Request', 404,'Not Found', 405,'Method Not Allowed', 408,'Request Timeout', \
 	431,'Request Header Fields Too Large', 501,'Not Implemented', 502,'Bad Gateway', \
 	503,'Service Unavailable', 504,'Gateway Timeout', 505,'HTTP Version Not Supported'
 

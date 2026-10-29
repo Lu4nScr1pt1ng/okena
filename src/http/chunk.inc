@@ -6,32 +6,32 @@
 ; came. Strict: hex sizes of at most 15 digits, CRLF only, bounded
 ; extensions and trailers.
 
-CK_STATE	= 0		; d
-CK_EXTRA	= 4		; d: bytes of extensions or trailers so far
-CK_REMAIN	= 8		; q: data bytes left in the current chunk
-CK_DIGITS	= 16		; d
-CK_SIZE		= 24
+CK_STATE	:= 0		; d
+CK_EXTRA	:= 4		; d: bytes of extensions or trailers so far
+CK_REMAIN	:= 8		; q: data bytes left in the current chunk
+CK_DIGITS	:= 16		; d
+CK_SIZE		:= 24
 
-CKS_SIZE	= 0		; the first hex digit of a size
-CKS_SIZE_MORE	= 1		; more digits, ';' or CR
-CKS_EXT		= 2		; an extension, up to CR
-CKS_SIZE_LF	= 3
-CKS_DATA	= 4
-CKS_DATA_CR	= 5
-CKS_DATA_LF	= 6
-CKS_TRAIL	= 7		; start of a trailer line (or the final CRLF)
-CKS_TRAIL_LINE	= 8
-CKS_TRAIL_LF	= 9
-CKS_END_LF	= 10
-CKS_DONE	= 11
+CKS_SIZE	:= 0		; the first hex digit of a size
+CKS_SIZE_MORE	:= 1		; more digits, ';' or CR
+CKS_EXT		:= 2		; an extension, up to CR
+CKS_SIZE_LF	:= 3
+CKS_DATA	:= 4
+CKS_DATA_CR	:= 5
+CKS_DATA_LF	:= 6
+CKS_TRAIL	:= 7		; start of a trailer line (or the final CRLF)
+CKS_TRAIL_LINE	:= 8
+CKS_TRAIL_LF	:= 9
+CKS_END_LF	:= 10
+CKS_DONE	:= 11
 
-CK_EXT_MAX	= 4096
-CK_TRAIL_MAX	= 8192
+CK_EXT_MAX	:= 4096
+CK_TRAIL_MAX	:= 8192
 
-CK_MORE		= 0		; everything consumed, more bytes needed
-CK_DATAOUT	= 1		; a data span is ready
-CK_END		= 2		; the body is complete
-CK_ERROR	= -1
+CK_MORE		:= 0		; everything consumed, more bytes needed
+CK_DATAOUT	:= 1		; a data span is ready
+CK_END		:= 2		; the body is complete
+CK_ERROR	:= -1
 
 ; rdi = decoder (zeroed to start), rsi = bytes, edx = how many.
 ; eax = CK_*, ecx = bytes consumed, r8 = data span, r9d = its length
