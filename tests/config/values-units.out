@@ -1,0 +1,32 @@
+exit: 2
+--- stdout
+--- stderr
+values-units.conf:3:31: error: invalid value `1.5us`
+     3 |     drain delay=250ms timeout=1.5us
+       |                               ^^^^^
+       = help: expected a duration with its unit: 250ms, 30s, 5m, 1h (units: us ms s m h d)
+values-units.conf:4:13: error: invalid value `0`
+     4 |     workers 0
+       |             ^
+       = help: expected `auto` or a number of workers from 1 to 256
+values-units.conf:7:29: error: invalid value `1001`
+     7 |     server 1.1.1.1:1 weight=1001
+       |                             ^^^^
+       = help: expected a weight from 1 to 1000
+values-units.conf:8:21: error: invalid value `0.0001s`
+     8 |     connect timeout=0.0001s rate=100/s warm=0 idle=5m
+       |                     ^^^^^^^
+       = help: expected a duration with its unit: 250ms, 30s, 5m, 1h (units: us ms s m h d)
+values-units.conf:9:22: error: invalid value `30`
+     9 |     health tcp every=30 fall=3
+       |                      ^^
+       = help: expected a duration with its unit: 250ms, 30s, 5m, 1h (units: us ms s m h d)
+values-units.conf:11:1: error: `okena` is set twice in the same block
+    11 | okena { workers 300 }
+       | ^^^^^
+       = note: first set on line 1
+values-units.conf:11:17: error: invalid value `300`
+    11 | okena { workers 300 }
+       |                 ^^^
+       = help: expected `auto` or a number of workers from 1 to 256
+7 errors in values-units.conf

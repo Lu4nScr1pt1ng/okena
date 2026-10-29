@@ -1,0 +1,42 @@
+exit: 2
+--- stdout
+--- stderr
+errors-semantics.conf:1:21: error: there is no pool named `pgg`
+     1 | tcp :5432 { to pool pgg }
+       |                     ^^^
+       = help: did you mean `pg`?
+errors-semantics.conf:2:46: error: address `10.0.0.1:1` is listed twice
+     2 | tcp 10.0.0.1:5432 { to 10.0.0.1:1 10.0.0.2:1 10.0.0.1:1 }
+       |                                              ^^^^^^^^^^
+errors-semantics.conf:2:5: error: address `10.0.0.1:5432` is already used
+     2 | tcp 10.0.0.1:5432 { to 10.0.0.1:1 10.0.0.2:1 10.0.0.1:1 }
+       |     ^^^^^^^^^^^^^
+       = note: by `:5432` on line 1
+errors-semantics.conf:3:1: error: this listener does not send traffic anywhere
+     3 | tcp [::]:6000 { }
+       | ^^^
+       = help: add `to ADDRESS...` or `to pool NAME` to its block
+errors-semantics.conf:6:12: error: server `10.0.0.11:5432` is listed twice in this pool
+     6 |     server 10.0.0.11:5432
+       |            ^^^^^^^^^^^^^^
+       = note: first listed on line 5
+errors-semantics.conf:8:1: error: this pool has no `server`
+     8 | pool empty {
+       | ^^^^
+errors-semantics.conf:11:6: error: pool `pg` is defined twice
+    11 | pool pg { server 1.1.1.1:1 }
+       |      ^^
+       = note: first defined on line 4
+errors-semantics.conf:4:6: warning: pool `pg` is not used by any listener
+     4 | pool pg {
+       |      ^^
+errors-semantics.conf:8:6: warning: pool `empty` is not used by any listener
+     8 | pool empty {
+       |      ^^^^^
+errors-semantics.conf:11:6: warning: pool `pg` is not used by any listener
+    11 | pool pg { server 1.1.1.1:1 }
+       |      ^^
+errors-semantics.conf:12:6: warning: pool `lonely` is not used by any listener
+    12 | pool lonely { server 1.1.1.1:1 }
+       |      ^^^^^^
+7 errors in errors-semantics.conf

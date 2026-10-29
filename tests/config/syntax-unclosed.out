@@ -1,0 +1,8 @@
+exit: 2
+--- stdout
+--- stderr
+syntax-unclosed.conf:1:8: error: this block is never closed
+     1 | pool a {
+       |        ^
+       = help: add `}` for the block of `pool`
+1 error in syntax-unclosed.conf

@@ -1,0 +1,11 @@
+exit: 2
+--- stdout
+--- stderr
+syntax-string.conf:1:13: error: unterminated string
+     1 | tcp :1 { to "a b }
+       |             ^
+       = help: close it with " on the same line
+syntax-string.conf:3:1: error: `}` without a matching `{`
+     3 | }
+       | ^
+2 errors in syntax-string.conf

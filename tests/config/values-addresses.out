@@ -1,0 +1,48 @@
+exit: 2
+--- stdout
+--- stderr
+values-addresses.conf:4:5: error: invalid address `[1:::2]:7`: not a valid IP address
+     4 | tcp [1:::2]:7 [1:2:3:4:5:6:7:8:9]:8 [12345::]:9 [1::2::3]:10 [::1]:0 01.2.3.4:11 :65536 { to a:1 }
+       |     ^^^^^^^^^
+       = help: expected a listen address: :443, 10.0.0.1:80, [::1]:8080
+values-addresses.conf:4:15: error: invalid address `[1:2:3:4:5:6:7:8:9]:8`: not a valid IP address
+     4 | tcp [1:::2]:7 [1:2:3:4:5:6:7:8:9]:8 [12345::]:9 [1::2::3]:10 [::1]:0 01.2.3.4:11 :65536 { to a:1 }
+       |               ^^^^^^^^^^^^^^^^^^^^^
+       = help: expected a listen address: :443, 10.0.0.1:80, [::1]:8080
+values-addresses.conf:4:37: error: invalid address `[12345::]:9`: not a valid IP address
+     4 | tcp [1:::2]:7 [1:2:3:4:5:6:7:8:9]:8 [12345::]:9 [1::2::3]:10 [::1]:0 01.2.3.4:11 :65536 { to a:1 }
+       |                                     ^^^^^^^^^^^
+       = help: expected a listen address: :443, 10.0.0.1:80, [::1]:8080
+values-addresses.conf:4:49: error: invalid address `[1::2::3]:10`: not a valid IP address
+     4 | tcp [1:::2]:7 [1:2:3:4:5:6:7:8:9]:8 [12345::]:9 [1::2::3]:10 [::1]:0 01.2.3.4:11 :65536 { to a:1 }
+       |                                                 ^^^^^^^^^^^^
+       = help: expected a listen address: :443, 10.0.0.1:80, [::1]:8080
+values-addresses.conf:4:62: error: invalid address `[::1]:0`: the port must be from 1 to 65535
+     4 | tcp [1:::2]:7 [1:2:3:4:5:6:7:8:9]:8 [12345::]:9 [1::2::3]:10 [::1]:0 01.2.3.4:11 :65536 { to a:1 }
+       |                                                              ^^^^^^^
+       = help: expected a listen address: :443, 10.0.0.1:80, [::1]:8080
+values-addresses.conf:4:70: error: invalid address `01.2.3.4:11`: not a valid IP address
+     4 | tcp [1:::2]:7 [1:2:3:4:5:6:7:8:9]:8 [12345::]:9 [1::2::3]:10 [::1]:0 01.2.3.4:11 :65536 { to a:1 }
+       |                                                                      ^^^^^^^^^^^
+       = help: expected a listen address: :443, 10.0.0.1:80, [::1]:8080
+values-addresses.conf:4:82: error: invalid address `:65536`: the port must be from 1 to 65535
+     4 | tcp [1:::2]:7 [1:2:3:4:5:6:7:8:9]:8 [12345::]:9 [1::2::3]:10 [::1]:0 01.2.3.4:11 :65536 { to a:1 }
+       |                                                                                  ^^^^^^
+       = help: expected a listen address: :443, 10.0.0.1:80, [::1]:8080
+values-addresses.conf:5:14: error: invalid address `:5`: a backend needs a host
+     5 | tcp :12 { to :5 -bad.host:1 unix:relative 1.2.3:4 }
+       |              ^^
+       = help: expected an address: 10.0.0.11:5432, [2001:db8::1]:443, db.internal:5432, unix:/run/app.sock
+values-addresses.conf:5:17: error: invalid address `-bad.host:1`: not a valid host name
+     5 | tcp :12 { to :5 -bad.host:1 unix:relative 1.2.3:4 }
+       |                 ^^^^^^^^^^^
+       = help: expected an address: 10.0.0.11:5432, [2001:db8::1]:443, db.internal:5432, unix:/run/app.sock
+values-addresses.conf:5:29: error: invalid address `unix:relative`: a unix socket path must be absolute and at most 107 bytes
+     5 | tcp :12 { to :5 -bad.host:1 unix:relative 1.2.3:4 }
+       |                             ^^^^^^^^^^^^^
+       = help: expected an address: 10.0.0.11:5432, [2001:db8::1]:443, db.internal:5432, unix:/run/app.sock
+values-addresses.conf:5:43: error: invalid address `1.2.3:4`: not a valid IP address
+     5 | tcp :12 { to :5 -bad.host:1 unix:relative 1.2.3:4 }
+       |                                           ^^^^^^^
+       = help: expected an address: 10.0.0.11:5432, [2001:db8::1]:443, db.internal:5432, unix:/run/app.sock
+11 errors in values-addresses.conf

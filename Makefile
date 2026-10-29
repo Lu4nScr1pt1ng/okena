@@ -1,0 +1,30 @@
+TOOLCHAIN := .toolchain/fasm2
+FASMG     := $(TOOLCHAIN)/fasmg.x64
+SOURCES   := $(shell find src -name '*.asm' -o -name '*.inc')
+BIN       := build/okena
+
+.PHONY: all toolchain test fuzz clean
+
+all: $(BIN)
+
+toolchain: $(FASMG)
+
+$(FASMG):
+	./scripts/fetch-fasm2.sh $(TOOLCHAIN)
+
+$(BIN): $(SOURCES) | $(FASMG)
+	@mkdir -p build
+	INCLUDE="$(TOOLCHAIN)/include" $(FASMG) -e100 -i "Include 'fasm2.inc'" src/main.asm $@
+	@chmod +x $@
+
+test: $(BIN)
+	python3 -I tests/config/run.py
+	python3 -I tests/config/fuzz.py 2000
+
+# Longer runs: make fuzz FUZZ_CASES=1000000
+FUZZ_CASES ?= 100000
+fuzz: $(BIN)
+	python3 -I tests/config/fuzz.py $(FUZZ_CASES)
+
+clean:
+	rm -rf build

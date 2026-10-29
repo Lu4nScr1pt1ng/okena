@@ -1,0 +1,61 @@
+exit: 2
+--- stdout
+--- stderr
+errors-structure.conf:2:2: error: unknown directive `workerss`
+     2 | 	workerss 4
+       | 	^^^^^^^^
+       = help: did you mean `workers`?
+errors-structure.conf:3:12: error: `uring` is not one of: auto io_uring epoll
+     3 | 	io_engine uring
+       | 	          ^^^^^
+errors-structure.conf:4:11: error: invalid value `2x`
+     4 | 	watchdog 2x
+       | 	         ^^
+       = help: expected a duration with its unit: 250ms, 30s, 5m, 1h (units: us ms s m h d)
+errors-structure.conf:8:5: error: `server` is not allowed in `tcp`
+     8 |     server 10.0.0.1:5432
+       |     ^^^^^^
+       = help: `server` belongs in `pool`
+errors-structure.conf:9:24: error: `idle` is set twice in the same block
+     9 |     timeout { idle 1h; idle 2h }
+       |                        ^^^^
+       = note: first set on line 9
+errors-structure.conf:11:16: error: invalid address `10.0.0.1:99999`: the port must be from 1 to 65535
+    11 | tcp :5432 { to 10.0.0.1:99999 }
+       |                ^^^^^^^^^^^^^^
+       = help: expected an address: 10.0.0.11:5432, [2001:db8::1]:443, db.internal:5432, unix:/run/app.sock
+errors-structure.conf:13:27: error: unknown option `weigth` for `server`
+    13 |     server 10.0.0.11:5432 weigth=2
+       |                           ^^^^^^
+       = help: did you mean `weight`?
+errors-structure.conf:15:13: error: `least_conn` is not one of: round-robin least-conn random source-hash maglev
+    15 |     balance least_conn
+       |             ^^^^^^^^^^
+       = help: did you mean `least-conn`?
+errors-structure.conf:16:26: error: option `timeout` is given twice
+    16 |     connect timeout=1s { timeout 2s }
+       |                          ^^^^^^^
+errors-structure.conf:17:5: error: `http` is not supported by this version of okena yet
+    17 |     http
+       |     ^^^^
+errors-structure.conf:18:30: error: invalid value `0`
+    18 |     health tcp every=2s rise=0
+       |                              ^
+       = help: expected a whole number from 1 to 100000000
+errors-structure.conf:21:6: error: invalid value `bad_Name`
+    21 | pool bad_Name { server 1.2.3.4:1 }
+       |      ^^^^^^^^
+       = help: expected a name: lowercase letters, digits, `-` and `_`, starting with a letter or digit
+errors-structure.conf:22:5: error: invalid address `300.1.1.1:80`: not a valid IP address
+    22 | tcp 300.1.1.1:80 "x" { to 999.1.1.1:5 }
+       |     ^^^^^^^^^^^^
+       = help: expected a listen address: :443, 10.0.0.1:80, [::1]:8080
+errors-structure.conf:22:19: error: invalid address `x`
+    22 | tcp 300.1.1.1:80 "x" { to 999.1.1.1:5 }
+       |                   ^
+       = help: expected a listen address: :443, 10.0.0.1:80, [::1]:8080
+errors-structure.conf:22:27: error: invalid address `999.1.1.1:5`: not a valid IP address
+    22 | tcp 300.1.1.1:80 "x" { to 999.1.1.1:5 }
+       |                           ^^^^^^^^^^^
+       = help: expected an address: 10.0.0.11:5432, [2001:db8::1]:443, db.internal:5432, unix:/run/app.sock
+15 errors in errors-structure.conf

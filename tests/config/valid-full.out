@@ -1,0 +1,4 @@
+exit: 0
+--- stdout
+valid-full.conf: ok (2 listeners, 2 pools, 6 servers)
+--- stderr

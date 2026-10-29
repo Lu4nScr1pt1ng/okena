@@ -1,0 +1,18 @@
+exit: 2
+--- stdout
+--- stderr
+syntax-misc.conf:3:1: error: `{` without a directive
+     3 | { stray }
+       | ^
+       = help: a block opens on the same line as its directive: `pool api {`
+syntax-misc.conf:4:22: error: expected the end of the line after `}`
+     4 | tcp :1 { to pool p } extra
+       |                      ^^^^^
+syntax-misc.conf:5:1: error: expected a directive name
+     5 | key=value here
+       | ^^^^^^^^^
+syntax-misc.conf:6:15: error: unknown escape in a string
+     6 | tcp :2 { to "a\qb:1" }
+       |               ^^
+       = help: the escapes are \" \\ \n \t and \$
+4 errors in syntax-misc.conf
