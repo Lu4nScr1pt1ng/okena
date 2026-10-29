@@ -576,6 +576,10 @@ try:
     check("metrics: okena's 408 and 504 counted as its own 4xx and 5xx",
           vals.get('code="4xx",source="okena"}') == 1 and vals.get('code="5xx",source="okena"}') == 1)
     check("metrics: no backend 5xx", vals.get('code="5xx",source="backend"}') == 0)
+    trimmed = [int(l.rsplit(" ", 1)[1]) for l in text.decode().splitlines()
+               if l.startswith("okena_http_idle_trimmed_total ")]
+    check("idle keep-alive connections give their buffers back (and keep working)",
+          trimmed and trimmed[0] >= 1, str(trimmed))
     retries = [int(l.rsplit(" ", 1)[1]) for l in text.decode().splitlines()
                if l.startswith("okena_http_retries_total{") and f':{LST}"' in l]
     check("metrics: retries counted", retries and retries[0] >= 1, str(retries))

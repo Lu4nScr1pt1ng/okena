@@ -152,10 +152,13 @@ sessions_init:
 	add	r12d,eax
 	mov	dword [g_ls_head+rbx*4],NIL
 	mov	dword [g_ls_tail+rbx*4],NIL
-	mov	dword [g_ph_head+rbx*8],NIL
-	mov	dword [g_ph_head+rbx*8+4],NIL
-	mov	dword [g_ph_tail+rbx*8],NIL
-	mov	dword [g_ph_tail+rbx*8+4],NIL
+	imul	ecx,ebx,PH_KINDS
+	mov	dword [g_ph_head+rcx*4],NIL
+	mov	dword [g_ph_head+rcx*4+4],NIL
+	mov	dword [g_ph_head+rcx*4+8],NIL
+	mov	dword [g_ph_tail+rcx*4],NIL
+	mov	dword [g_ph_tail+rcx*4+4],NIL
+	mov	dword [g_ph_tail+rcx*4+8],NIL
 	inc	ebx
 	jmp	.listener
 .sized:

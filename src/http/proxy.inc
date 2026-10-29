@@ -180,6 +180,13 @@ http_next_request:
 .empty:
 	mov	dword [r15+H_INLEN],0
 	mov	dword [r15+H_INOFF],0
+	call	session_ptr
+	cmp	dword [rax+S_PH_KIND],0
+	jne	.read				; a new connection: its header clock runs
+	mov	edi,ebx
+	mov	esi,PH_TRIM
+	call	ph_arm
+	h_rec
 	jmp	.read
 .parse:
 	lea	rdi,[r15+H_IN]
@@ -994,8 +1001,8 @@ http_recv_done:
 	mov	edi,ebx
 	call	idle_touch
 	call	session_ptr
-	cmp	dword [rax+S_PH_KIND],0
-	jne	@f
+	cmp	dword [rax+S_PH_KIND],PH_HEAD
+	je	@f
 	mov	edi,ebx				; the first bytes of a request
 	mov	esi,PH_HEAD
 	call	ph_arm
@@ -1982,10 +1989,13 @@ http_count:
 
 PH_HEAD		= 1
 PH_RESPONSE	= 2
+PH_TRIM		= 3		; idle keep-alive: give the record's buffers back
+PH_KINDS	= 3
+TRIM_SECS	= 2
 
 bss
-	g_ph_head	rd MAX_LISTENERS * 2
-	g_ph_tail	rd MAX_LISTENERS * 2
+	g_ph_head	rd MAX_LISTENERS * PH_KINDS
+	g_ph_tail	rd MAX_LISTENERS * PH_KINDS
 end bss
 
 ; edi = session, esi = PH_*: start that clock now.
@@ -2002,7 +2012,8 @@ ph_arm:
 	mov	ecx,[g_tick]
 	mov	[rax+S_PH_AT],ecx
 	mov	ecx,[rax+S_LST]
-	lea	ecx,[rcx*2+rsi-1]
+	lea	ecx,[rcx+rcx*2]
+	lea	ecx,[rcx+rsi-1]
 	mov	edx,[g_ph_tail+rcx*4]
 	mov	[rax+S_PH_PREV],edx
 	mov	dword [rax+S_PH_NEXT],NIL
@@ -2027,7 +2038,8 @@ ph_disarm:
 	jz	.none
 	mov	dword [rax+S_PH_KIND],0
 	mov	ecx,[rax+S_LST]
-	lea	ecx,[rcx*2+rsi-1]
+	lea	ecx,[rcx+rcx*2]
+	lea	ecx,[rcx+rsi-1]
 	mov	edx,[rax+S_PH_PREV]
 	mov	r8d,[rax+S_PH_NEXT]
 	cmp	edx,NIL
@@ -2072,8 +2084,12 @@ ph_expire:
 	cmp	r14d,PH_HEAD
 	je	.oldest
 	mov	r13d,[g_listeners+rax+LS_T_RESPONSE]
+	cmp	r14d,PH_RESPONSE
+	je	.oldest
+	mov	r13d,TRIM_SECS
 .oldest:
-	lea	ecx,[r12*2+r14-1]
+	lea	ecx,[r12+r12*2]
+	lea	ecx,[rcx+r14-1]
 	mov	ebx,[g_ph_head+rcx*4]
 	cmp	ebx,NIL
 	je	.next_kind
@@ -2097,7 +2113,7 @@ ph_expire:
 	jmp	.oldest
 .next_kind:
 	inc	r14d
-	cmp	r14d,PH_RESPONSE
+	cmp	r14d,PH_KINDS
 	jbe	.kind
 .next:
 	inc	r12d
@@ -2115,6 +2131,8 @@ http_phase_expired:
 	cmp	dword [rax+S_STATE],ST_OPEN
 	jne	.out
 	h_rec
+	cmp	esi,PH_TRIM
+	je	.trim
 	cmp	esi,PH_HEAD
 	jne	.response
 	cmp	dword [r15+H_STATE],HS_HEAD
@@ -2126,6 +2144,21 @@ http_phase_expired:
 .silent:
 	mov	edi,ebx
 	jmp	session_close
+.trim:
+	; idle between requests: everything but the first page (the record's
+	; fields, and where the next request's first bytes land) goes back to
+	; the kernel; a read in flight there just faults a fresh page in
+	cmp	dword [r15+H_STATE],HS_HEAD
+	jne	.out
+	cmp	dword [r15+H_INLEN],0
+	jne	.out
+	lea	rdi,[r15+4096]
+	mov	esi,(1 shl H_SHIFT) - 4096
+	mov	edx,MADV_DONTNEED
+	mov	eax,SYS_madvise
+	syscall
+	inc	qword [g_st_http_trimmed]
+	ret
 .response:
 	cmp	dword [r15+H_STATE],HS_RESP_HEAD
 	jne	.out
