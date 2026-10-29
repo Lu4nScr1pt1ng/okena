@@ -98,12 +98,15 @@ worker_main:
 	call	arm_signal
 	mov	rax,[g_plan_busy_poll]
 	test	rax,rax
-	jz	.loop
+	jz	.confine
 	push	rax
 	call	tsc_calibrate
 	pop	rax
 	imul	rax,[g_tsc_per_us]
 	mov	[g_spin_ticks],rax
+.confine:
+	; set up: from here on only what serving needs
+	seccomp_for filter_worker_uring
 
 	; With busy_poll set, keep polling the ring for that long after the
 	; last completion instead of sleeping: a sleep and a wakeup per

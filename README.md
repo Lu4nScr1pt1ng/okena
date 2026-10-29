@@ -40,6 +40,9 @@ Early. What works today:
   fall=3`) run once per instance by a health process, with passive
   ejection on top and panic mode when every server is down;
 * a watchdog that replaces stuck workers;
+* a seccomp filter for each kind of process (no execve, no ptrace, no
+  executable memory anywhere; an io_uring worker may make five system
+  calls) and an io_uring opcode allowlist;
 * reload on `SIGHUP` without dropping a connection, validated in a child
   process, rejected as a whole when anything is wrong;
 * two I/O engines, io_uring and epoll, chosen automatically: where

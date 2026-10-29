@@ -69,6 +69,7 @@ ep_main:
 	mov	rax,[g_now_ms]
 	add	rax,1000
 	mov	[g_next_tick_ms],rax
+	seccomp_for filter_worker_epoll
 .loop:
 	cmp	dword [g_draining],2
 	jne	@f

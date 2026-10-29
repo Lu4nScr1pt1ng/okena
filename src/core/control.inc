@@ -364,6 +364,7 @@ control_main:
 	lea	rsi,[control_name]
 	mov	eax,SYS_prctl
 	syscall
+	seccomp_for filter_control
 .loop:
 	call	monotonic_seconds
 	mov	r12,rax

@@ -123,12 +123,14 @@ health_main:
 	xor	ebx,ebx
 .resume:
 	cmp	ebx,[g_plan_servers]
-	jae	.loop
+	jae	.confine
 	imul	rax,rbx,SV_SIZE
 	mov	ecx,[g_servers+rax+SV_ACTIVE]
 	mov	[g_hc_active+rbx*4],ecx
 	inc	ebx
 	jmp	.resume
+.confine:
+	seccomp_for filter_health
 .loop:
 	call	hc_clock
 	call	groups_refresh			; addresses of names, as workers do

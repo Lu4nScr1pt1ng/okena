@@ -143,6 +143,8 @@ supervisor_main:
 @@:
 	call	log_end
 
+	; from here on the supervisor and everything it forks are confined
+	call	seccomp_supervisor
 	xor	ebx,ebx
 .spawn_all:
 	mov	edi,ebx
