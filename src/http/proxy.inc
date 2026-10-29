@@ -120,6 +120,8 @@ http_worker_init:
 	cmp	rax,-4096
 	ja	.done
 	mov	[g_http_base],rax
+	call	retry_budget_tick		; budgets start at their floor, not empty
+	mov	rax,[g_http_base]
 	mov	rdi,rax
 	mov	esi,[g_sessions]
 	shl	rsi,H_SHIFT

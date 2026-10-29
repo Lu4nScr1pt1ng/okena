@@ -1031,17 +1031,42 @@ server_pick:
 	; with more than one eligible server, skip the one to avoid
 	mov	r14d,ebp
 	call	.count
-	cmp	eax,1
-	ja	@f
-	mov	r14d,NIL
 	test	eax,eax
 	jnz	@f
+	; none. A retry moves on to the next pass rather than back to a
+	; server it already tried; only the last pass (every primary), with
+	; nothing else left, may give the one tried before the last again
+	cmp	dword [g_pick_avoid2],0
+	je	@f
+	cmp	r13d,2
+	jb	@f				; (count 0: .next_pass below)
+	mov	dword [g_pick_avoid2],0
+	jmp	.pass
+@@:
+	cmp	eax,1
+	ja	.balance
+	mov	r14d,NIL
+	test	eax,eax
+	jz	.next_pass
+	; one eligible server. A retry whose only choice here is the server
+	; that just failed goes to the next pass (backups, then every
+	; primary: panic) rather than back to it; health may simply not have
+	; noticed yet that it is down while another one is back.
+	cmp	ebp,NIL
+	je	.balance
+	cmp	r13d,2
+	jae	.balance
+	mov	edi,ebp
+	mov	esi,r13d
+	call	.eligible
+	jnc	.balance
+.next_pass:
 	inc	r13d
 	cmp	r13d,3
 	jb	.pass
 	mov	eax,NIL				; no address at all (names not resolved)
 	jmp	.out
-@@:
+.balance:
 	mov	eax,[rbx+PL_BALANCE]
 	cmp	eax,BAL_LEAST_CONN
 	je	.least
@@ -1064,7 +1089,7 @@ server_pick:
 	mov	esi,r13d
 	push	rcx
 	push	r8
-	call	server_eligible
+	call	.eligible
 	pop	r8
 	pop	rcx
 	jnc	.rr_next
@@ -1112,7 +1137,7 @@ server_pick:
 	mov	esi,r13d
 	push	rcx
 	push	r9
-	call	server_eligible
+	call	.eligible
 	pop	r9
 	pop	rcx
 	jnc	.lc
@@ -1150,7 +1175,7 @@ server_pick:
 	mov	esi,r13d
 	push	rcx
 	push	r8
-	call	server_eligible
+	call	.eligible
 	pop	r8
 	pop	rcx
 	jnc	@f
@@ -1173,7 +1198,7 @@ server_pick:
 	mov	edi,ecx
 	mov	esi,r13d
 	push	rcx
-	call	server_eligible
+	call	.eligible
 	pop	rcx
 	jnc	.rw_skip
 	imul	rax,rcx,SV_SIZE
@@ -1248,6 +1273,14 @@ server_pick:
 .p2c_none:
 	mov	eax,NIL
 	ret
+; edi = server, esi = pass: CF when eligible and not the server tried
+; before the last (g_pick_avoid2). Every scan and count uses this.
+.eligible:
+	lea	eax,[rdi+1]
+	cmp	eax,[g_pick_avoid2]
+	je	.unusable
+	jmp	server_eligible
+
 ; edi = server: CF when it may be picked now (not avoided, eligible).
 .usable:
 	cmp	edi,r14d
@@ -1274,7 +1307,7 @@ server_pick:
 	mov	esi,r13d
 	push	rcx
 	push	r8
-	call	server_eligible
+	call	.eligible
 	pop	r8
 	pop	rcx
 	adc	r12d,0
