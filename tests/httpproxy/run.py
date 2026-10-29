@@ -526,6 +526,27 @@ try:
     check("without trusted_proxies the client's claims are dropped",
           names.get("x-forwarded-for") == "127.0.0.1" and names.get("x-forwarded-proto") == "http", str(names))
 
+    # request ids
+    import re
+    c = Client()
+    c.send(req(b"GET", b"/api/rid", b"X-Request-Id: spoofed-by-client\r\n"))
+    e = echo_of(c.response())
+    rid = [v for n, v in e["fields"] if n.lower() == "x-request-id"]
+    check("a request id is added (the client's is not believed)", len(rid) == 1 and re.fullmatch(r"[0-9a-f]{16}", rid[0]) is not None, str(rid))
+    RID = rid[0] if rid else ""
+    c.send(req(b"GET", b"/api/rid2"))
+    rid2 = [v for n, v in echo_of(c.response())["fields"] if n.lower() == "x-request-id"]
+    check("each request gets its own id", rid2 and rid2[0] != RID)
+    names, _ = via_trust(b"/t/rid", b"X-Request-Id: edge-42.a:b_c\r\n")
+    check("a trusted proxy's request id is kept", names.get("x-request-id") == "edge-42.a:b_c", str(names.get("x-request-id")))
+    names, _ = via_trust(b"/t/rid-bad", b"X-Request-Id: has space\r\n")
+    check("an invalid one is replaced", re.fullmatch(r"[0-9a-f]{16}", names.get("x-request-id", "")) is not None)
+    c = Client()
+    c.send(req(b"GET", b"/nothing-here", host=b"api.t"))
+    r = c.response()
+    check("okena's errors carry the request id", r is not None and re.fullmatch(r"[0-9a-f]{16}", r[1].get("x-request-id", "")) is not None
+          and b"request id: " + r[1].get("x-request-id", "").encode() in r[2], str(r and (r[1], r[2])))
+
     # retries and outliers
     c = Client()
     c.send(req(b"GET", b"/bad/x"))
@@ -617,6 +638,8 @@ try:
           and down.get("upstream") is None, str(down))
     bad = next((l for l in lines if l["target"] == "/bad/x" and l["method"] == "GET"), {})
     check("access log: a retried request is marked", bad.get("retried") is True, str(bad))
+    check("access log: the request id the backend saw", by_target.get("/api/rid", {}).get("request_id") == RID,
+          str(by_target.get("/api/rid", {}).get("request_id")))
     check("access log: SIGUSR1 reopens the file (logrotate)",
           any(json.loads(l)["target"] == "/api/last-words" for l in new), f"{len(new)} new lines")
     check("access log: the last request before shutdown is written",

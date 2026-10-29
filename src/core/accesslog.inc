@@ -22,6 +22,7 @@ bss
 	g_alog_rfd	dd ?
 	g_alog_wfd	dd ?
 	g_logger_pid	dd ?
+	g_seed		dq ?
 	g_alog_len	dd ?		; worker: bytes waiting in the buffer
 	g_alog_lines	dd ?		; and how many lines they are
 	g_alog_base_ns	dq ?		; wall clock at the last tick
@@ -51,6 +52,11 @@ end rodata
 
 ; At start, before the filters: the pipe.
 alog_pipe_init:
+	lea	rdi,[g_seed]			; (also: 8 random bytes for every worker)
+	mov	esi,8
+	xor	edx,edx
+	mov	eax,SYS_getrandom_
+	syscall
 	sub	rsp,8
 	mov	rdi,rsp
 	mov	esi,O_NONBLOCK or O_CLOEXEC
@@ -520,6 +526,11 @@ alog_exchange:
 	pop	rdx
 	lea	rsi,[g_ip_a]
 	call	fmt_ip
+	memit '","request_id":"'
+	lea	rsi,[r15+H_RID]
+	mov	edx,[r15+H_RIDLEN]
+	mov	ecx,RID_MAX + 8
+	call	json_text
 	memit '","method":"'
 	lea	rsi,[r15+H_LTEXT_M]
 	mov	edx,[r15+H_LMLEN]

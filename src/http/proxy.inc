@@ -47,6 +47,9 @@ H_LHLEN		= 204		; d
 H_LTLEN		= 208		; d
 H_CKIND		= 212		; d: 4 or 6
 H_CLIENT	= 216		; 16 bytes: the client (the peer, or what trusted proxies say)
+H_RIDLEN	= 232		; d: request id length, 0 = none yet
+H_RID		= 236		; the request id (RID_MAX bytes)
+RID_MAX		= 128
 H_LTEXT_M	= H_UP + H_UP_CAP	; method
 H_LTEXT_M_CAP	= 16
 H_LTEXT_H	= H_LTEXT_M + 16	; host
@@ -89,6 +92,7 @@ HX_RETRIED	= 4096		; this request was sent again, to another server
 HX_AVOID	= 8192		; the next connect avoids S_SERVER
 HX_TRUSTED	= 16384		; the peer is in trusted_proxies: its X-Forwarded-* count
 HX_XFPROTO	= 32768		; and it sent X-Forwarded-Proto (forwarded as is)
+HX_RIDKEPT	= 65536		; the request id is the one a trusted proxy sent
 
 SIDE_CLIENT	= 0
 SIDE_UP		= 1
@@ -160,6 +164,7 @@ http_next_request:
 	h_rec
 	mov	dword [r15+H_STATE],HS_HEAD
 	and	dword [r15+H_FLAGS],HX_CLOSE
+	mov	dword [r15+H_RIDLEN],0
 	; the unconsumed bytes (a pipelined request) move to the front
 	mov	ecx,[r15+H_INLEN]
 	mov	eax,[r15+H_INOFF]
@@ -826,9 +831,29 @@ http_write_request_head:
 	call	hf_is
 	pop	rdi
 	jz	.copy
+	push	rdi
+	mov	rdi,r14
+	lea	rsi,[hn_x_request_id]
+	call	hf_is
+	pop	rdi
+	jnz	.untrusted
+	test	dword [r15+H_FLAGS],HX_RIDKEPT
+	jnz	.skip				; one id: the first valid one
+	mov	rsi,[r14+HF_VALUE]
+	mov	edx,[r14+HF_VLEN]
+	call	rid_valid
+	jc	.skip				; not an id we can carry: ours instead
+	or	dword [r15+H_FLAGS],HX_RIDKEPT
+	push	rdi
+	lea	rdi,[r15+H_RID]
+	mov	[r15+H_RIDLEN],edx
+	mov	ecx,edx
+	rep	movsb
+	pop	rdi
+	jmp	.copy
 .untrusted:
 	push	rdi
-	irp name, hn_x_forwarded_for, hn_x_forwarded_proto, hn_x_forwarded_host, hn_forwarded, hn_expect
+	irp name, hn_x_forwarded_for, hn_x_forwarded_proto, hn_x_forwarded_host, hn_forwarded, hn_expect, hn_x_request_id
 		mov	rdi,r14
 		lea	rsi,[name]
 		call	hf_is
@@ -859,6 +884,17 @@ http_write_request_head:
 	inc	ebx
 	jmp	.field
 .own:
+	test	dword [r15+H_FLAGS],HX_RIDKEPT
+	jnz	@f
+	push	rdi
+	call	rid_new
+	pop	rdi
+	memit_x 'X-Request-Id: '
+	lea	rsi,[r15+H_RID]
+	mov	ecx,[r15+H_RIDLEN]
+	rep	movsb
+	memit_x 13,10
+@@:
 	; X-Forwarded-For: what trusted proxies said, then the peer; from
 	; anyone else, only the peer, never what the client claims
 	memit_x 'X-Forwarded-For: '
@@ -942,6 +978,56 @@ cstring hn_x_forwarded_for, 'x-forwarded-for',0
 cstring hn_x_forwarded_proto, 'x-forwarded-proto',0
 cstring hn_x_forwarded_host, 'x-forwarded-host',0
 cstring hn_forwarded, 'forwarded',0
+cstring hn_x_request_id, 'x-request-id',0
+
+; Request ids: a random 64-bit base per worker plus a counter, as 16 hex
+; digits. No system call, unique in practice across workers and
+; restarts.
+bss
+	g_rid_next	dq ?
+end bss
+
+; r15 = record: a fresh id in H_RID. Keeps rbx and r12-r15.
+rid_new:
+	mov	rax,[g_rid_next]
+	inc	qword [g_rid_next]
+	lea	rdi,[r15+H_RID+15]
+	mov	ecx,16
+@@:
+	mov	edx,eax
+	and	edx,15
+	mov	dl,[hex_digits+rdx]
+	mov	[rdi],dl
+	dec	rdi
+	shr	rax,4
+	dec	ecx
+	jnz	@b
+	mov	dword [r15+H_RIDLEN],16
+	ret
+
+; rsi/edx = a client's id: CF unless 1 .. RID_MAX bytes of
+; A-Z a-z 0-9 - _ . : (nothing a log or a header could be split on).
+rid_valid:
+	test	edx,edx
+	jz	.bad
+	cmp	edx,RID_MAX
+	ja	.bad
+	xor	ecx,ecx
+.next:
+	cmp	ecx,edx
+	jae	.ok
+	movzx	eax,byte [rsi+rcx]
+	inc	ecx
+	cmp	al,':'
+	je	.next
+	call	path_normalize.unreserved	; - . _ ~ and alphanumerics
+	jnc	.next
+.bad:
+	stc
+	ret
+.ok:
+	clc
+	ret
 
 
 ; ------------------------------------------------------------- engine
@@ -2262,6 +2348,12 @@ http_error:
 	mov	edi,eax
 	mov	esi,5
 	call	http_count
+	cmp	dword [r15+H_RIDLEN],0
+	jne	@f
+	push	rax
+	call	rid_new
+	pop	rax
+@@:
 	lea	rdi,[r15+H_OUT]
 	push	rax
 	memit_x 'HTTP/1.1 '
@@ -2273,7 +2365,11 @@ http_error:
 	call	http_reason			; rsi = text
 	push	rsi
 	call	fmt_cstr
-	memit_x 13,10,'Content-Type: text/plain',13,10,'Connection: close',13,10,'Content-Length: '
+	memit_x 13,10,'Content-Type: text/plain',13,10,'Connection: close',13,10,'X-Request-Id: '
+	lea	rsi,[r15+H_RID]
+	mov	ecx,[r15+H_RIDLEN]
+	rep	movsb
+	memit_x 13,10,'Content-Length: '
 	mov	rsi,[rsp]
 	xor	eax,eax
 @@:
@@ -2282,11 +2378,16 @@ http_error:
 	inc	eax
 	jmp	@b
 @@:
-	inc	eax				; and a newline
+	add	eax,[r15+H_RIDLEN]
+	add	eax,14				; newline, "request id: ", newline
 	call	fmt_u64
 	memit_x 13,10,13,10
 	pop	rsi
 	call	fmt_cstr
+	memit_x 10,'request id: '
+	lea	rsi,[r15+H_RID]
+	mov	ecx,[r15+H_RIDLEN]
+	rep	movsb
 	mov	byte [rdi],10
 	inc	rdi
 	add	rsp,8

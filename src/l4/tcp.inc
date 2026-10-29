@@ -234,6 +234,10 @@ sessions_init:
 	xor	rax,rcx
 	or	rax,1
 	mov	[g_rand],rax
+	xor	rax,[g_seed]			; request ids: a base no other worker or run shares
+	mov	rdx,0xBF58476D1CE4E5B9
+	imul	rax,rdx
+	mov	[g_rid_next],rax
 	call	peer_worker_init
 	test	eax,eax
 	js	.done
