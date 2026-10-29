@@ -62,19 +62,24 @@ worker_main:
 	test	eax,eax
 	js	.no_memory
 	cmp	dword [g_plan_engine],2
-	je	.no_epoll
+	je	ep_main
+	; io_uring, with epoll as the fallback unless io_engine says io_uring
+	lea	r12,[str_why_setup]
 	call	ring_init
 	test	eax,eax
-	js	.no_ring
+	js	.no_uring
+	lea	r12,[str_why_files]
 	call	ring_register_files
 	test	eax,eax
-	js	.no_files
+	js	.no_uring
+	lea	r12,[str_why_pbuf]
 	call	pbuf_register
 	test	eax,eax
-	js	.no_pbuf
+	js	.no_uring
+	lea	r12,[str_why_lockdown]
 	call	ring_lockdown
 	test	eax,eax
-	js	.no_lockdown
+	js	.no_uring
 
 	call	arm_accepts
 	call	arm_timer
@@ -138,37 +143,51 @@ worker_main:
 	call	log_begin
 	out_lit 'cannot reserve memory (errno '
 	jmp	.fatal
-.no_epoll:
+.no_uring:
+	; r12 = which step failed, eax = -errno
+	mov	r13d,eax
+	cmp	dword [g_plan_engine],1
+	je	.uring_required
+	mov	edi,[g_ring_fd]
+	test	edi,edi
+	jz	@f
+	mov	eax,SYS_close			; drop the half-built ring
+	syscall
+@@:
+	cmp	dword [g_worker_id],0
+	jne	ep_main				; one line for the whole service
 	call	log_begin
-	out_lit 'io_engine epoll is not built yet; use auto or io_uring'
+	out_lit 'io_uring unavailable ('
+	call	.why
+	out_lit '): using the epoll engine'
+	call	log_end
+	jmp	ep_main
+.uring_required:
+	call	log_begin
+	out_lit 'io_uring unavailable ('
+	call	.why
+	out_lit ') and io_engine is io_uring'
 	call	log_end
 	mov	edi,EXIT_FATAL
 	jmp	exit_process
-.no_ring:
+.why:
+	mov	rsi,r12
+	call	out_cstr
+	out_lit ', errno '
+	mov	eax,r13d
+	neg	eax
 	push	rax
-	call	log_begin
-	out_lit 'io_uring is not available (errno '
-	pop	rax
-	neg	rax
 	call	out_u64
-	out_lit '); the epoll engine is not built yet. In Docker, run with the okena seccomp profile'
-	call	log_end
-	mov	edi,EXIT_FATAL
-	jmp	exit_process
-.no_files:
-	push	rax
-	call	log_begin
-	out_lit 'cannot register the descriptor table (errno '
-	jmp	.fatal
-.no_pbuf:
-	push	rax
-	call	log_begin
-	out_lit 'cannot register provided buffers, kernel 5.19 or newer is needed (errno '
-	jmp	.fatal
-.no_lockdown:
-	push	rax
-	call	log_begin
-	out_lit 'cannot restrict the io_uring operations (errno '
+	pop	rax
+	cmp	eax,EPERM
+	jne	@f
+	out_lit ': blocked by seccomp or kernel.io_uring_disabled'
+@@:
+	cmp	eax,ENOSYS
+	jne	@f
+	out_lit ': blocked by seccomp or not in this kernel'
+@@:
+	ret
 .fatal:
 	pop	rax
 	neg	rax
@@ -211,11 +230,18 @@ arm_timer:
 	mov	[rax+SQE_USER_DATA],rcx
 	ret
 
+cstring str_why_setup, 'io_uring_setup',0
+cstring str_why_files, 'registering descriptors',0
+cstring str_why_pbuf, 'registering provided buffers, kernel 5.19+',0
+cstring str_why_lockdown, 'restricting operations',0
+
 on_timer:
 	test	r15d,IORING_CQE_F_MORE
-	jnz	@f
+	jnz	tick_work
 	call	arm_timer
-@@:
+
+; Once a second, both engines: idle timeouts and drain deadlines.
+tick_work:
 	inc	dword [g_tick]
 	call	idle_expire
 	cmp	dword [g_draining],0
@@ -246,6 +272,8 @@ arm_signal:
 ; and give open connections until the drain timeout.
 on_signal:
 	call	arm_signal
+
+drain_begin:
 	cmp	dword [g_draining],0
 	jne	.done
 	mov	dword [g_draining],1
@@ -272,6 +300,8 @@ stop_accepting:
 	call	us_to_ticks
 	add	eax,[g_tick]
 	mov	[g_drain_until],eax
+	cmp	dword [g_engine],ENGINE_EPOLL
+	je	ep_stop_accepting
 	push	rbx
 	xor	ebx,ebx
 .next:

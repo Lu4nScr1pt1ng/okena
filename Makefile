@@ -21,7 +21,8 @@ $(BIN): $(SOURCES) | $(FASMG)
 test: $(BIN)
 	python3 -I tests/config/run.py
 	python3 -I tests/config/fuzz.py 2000
-	python3 -I tests/l4/run.py
+	python3 -I tests/l4/run.py io_uring
+	python3 -I tests/l4/run.py epoll
 
 bench: $(BIN)
 	./tests/bench/l4.sh

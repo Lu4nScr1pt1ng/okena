@@ -171,3 +171,22 @@ SIGQUIT		= 3
 MADV_HUGEPAGE	= 14
 MADV_NOHUGEPAGE	= 15
 SYS_madvise_	= 28
+
+; epoll engine
+SYS_shutdown	= 48
+SYS_getsockopt	= 55
+SYS_epoll_wait	= 232
+SYS_epoll_ctl	= 233
+SYS_accept4	= 288
+SYS_epoll_create1 = 291
+EPOLL_CLOEXEC	= 0x80000
+EPOLL_CTL_ADD	= 1
+EPOLL_CTL_DEL	= 2
+EPOLLIN		= 0x001
+EPOLLOUT	= 0x004
+EPOLLERR	= 0x008
+EPOLLHUP	= 0x010
+EPOLLRDHUP	= 0x2000
+EPOLLET		= 1 shl 31
+EPOLL_EVENT	= 12		; struct epoll_event is packed on x86-64
+SO_ERROR	= 4

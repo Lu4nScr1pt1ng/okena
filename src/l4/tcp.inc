@@ -1371,6 +1371,8 @@ on_s_send_c:
 
 ; edi = session: cancel everything on both sockets and close them.
 session_close:
+	cmp	dword [g_engine],ENGINE_EPOLL
+	je	ep_close
 	push	rbx
 	push	r12
 	mov	ebx,edi

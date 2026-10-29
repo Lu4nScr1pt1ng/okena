@@ -99,12 +99,15 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 
 
 def main() -> int:
+    engine = sys.argv[1] if len(sys.argv) > 1 else "auto"
+    print(f"engine: {engine}")
     b0, b1, dead, lst, lst2 = BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4
     echo_backend(b0, b"b0")
     echo_backend(b1, b"b1")
     ok = Okena(f"""
 okena {{
     workers 2
+    io_engine {engine}
     drain delay=0s timeout=3s
 }}
 pool web {{
@@ -148,6 +151,12 @@ tcp :{lst2} {{
         check("dead servers ejected (log)", "ejected" in ok.text())
         check("connect timeouts do not stall the pool", time.time() - start < 10, f"{time.time() - start:.1f}s")
 
+        # a second instance on the same port must refuse, not share it
+        p = subprocess.run([str(BIN), "tcp", f"127.0.0.1:{lst}", "to", f"127.0.0.1:{b0}"],
+                           capture_output=True, text=True, timeout=10)
+        check("second instance on a used port refuses to start",
+              p.returncode == 1 and "another program is listening" in p.stderr, p.stderr.strip()[-80:])
+
         # dual stack listener
         check("IPv6 client on :port", who(lst2, "::1") == b"b0")
 
@@ -185,7 +194,7 @@ tcp :{lst2} {{
             check("exits once the last connection closes", False, "still running")
     finally:
         ok.stop()
-    print(f"l4: {'all passed' if not failures else f'{failures} failed'}")
+    print(f"l4 ({engine}): {'all passed' if not failures else f'{failures} failed'}")
     return 1 if failures else 0
 
 

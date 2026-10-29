@@ -70,6 +70,8 @@ supervisor_main:
 .listener:
 	cmp	r12d,[g_plan_listeners]
 	jae	.opened
+	mov	edi,r12d
+	call	listener_probe
 	xor	ebx,ebx
 .socket:
 	mov	edi,r12d
@@ -179,11 +181,13 @@ log_listener:
 	pop	rbx
 	ret
 
-; edi = listener index. eax = socket. Exits on failure: a listener that
-; cannot be opened is a configuration the host cannot serve.
-; ":port" is dual stack: an IPv6 socket that takes IPv4 too, or plain IPv4
-; when the kernel has no IPv6.
-listener_open:
+; Refuse to share a port with another program. SO_REUSEPORT lets any
+; process of the same user bind next to us, and the kernel would then
+; split new connections between the two: a second okena started by
+; mistake, or an old one still draining, would silently take part of the
+; traffic. A probe socket without SO_REUSEPORT fails to bind when anyone
+; is listening there. edi = listener.
+listener_probe:
 	push	rbx
 	push	r12
 	push	r13
@@ -202,6 +206,80 @@ listener_open:
 	mov	eax,SYS_socket
 	syscall
 	test	eax,eax
+	js	.done				; listener_open will report it
+	mov	r12d,eax
+	cmp	r13d,AF_INET6
+	jne	@f
+	mov	edi,r12d
+	mov	esi,IPPROTO_IPV6
+	mov	edx,IPV6_V6ONLY
+	lea	r10,[zero_int]
+	test	r14d,r14d
+	jz	.v6only
+	lea	r10,[one_int]
+.v6only:
+	mov	r8d,4
+	mov	eax,SYS_setsockopt
+	syscall
+@@:
+	mov	edi,r12d
+	mov	esi,SOL_SOCKET
+	mov	edx,SO_REUSEADDR		; TIME_WAIT leftovers are fine
+	lea	r10,[one_int]
+	mov	r8d,4
+	mov	eax,SYS_setsockopt
+	syscall
+	mov	edi,r12d
+	lea	rsi,[rbx+LS_SA]
+	mov	edx,[rbx+LS_SALEN]
+	mov	eax,SYS_bind
+	syscall
+	push	rax
+	mov	edi,r12d
+	mov	eax,SYS_close
+	syscall
+	pop	rax
+	cmp	eax,-EADDRINUSE
+	jne	.done
+	call	log_begin
+	out_lit 'cannot listen on '
+	mov	rsi,[rbx+LS_TEXT]
+	mov	edx,[rbx+LS_TLEN]
+	call	out_str
+	out_lit ': another program is listening there (another okena still running?)'
+	call	log_end
+	mov	edi,EXIT_FAILURE
+	jmp	exit_process
+.done:
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; edi = listener index. eax = socket. Exits on failure: a listener that
+; cannot be opened is a configuration the host cannot serve.
+; ":port" is dual stack: an IPv6 socket that takes IPv4 too, or plain IPv4
+; when the kernel has no IPv6.
+listener_open:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	imul	rbx,rdi,LS_SIZE
+	lea	rbx,[g_listeners+rbx]
+	mov	r13d,[rbx+LS_FAMILY]
+	mov	r14d,r13d
+	test	r13d,r13d
+	jnz	@f
+	mov	r13d,AF_INET6
+@@:
+	mov	edi,r13d
+	mov	esi,SOCK_STREAM or SOCK_CLOEXEC or SOCK_NONBLOCK
+	xor	edx,edx
+	mov	eax,SYS_socket
+	syscall
+	test	eax,eax
 	jns	.created
 	test	r14d,r14d
 	jnz	.failed
@@ -211,7 +289,7 @@ listener_open:
 	mov	dword [rbx+LS_SA+4],0
 	mov	dword [rbx+LS_SALEN],16
 	mov	edi,AF_INET
-	mov	esi,SOCK_STREAM or SOCK_CLOEXEC
+	mov	esi,SOCK_STREAM or SOCK_CLOEXEC or SOCK_NONBLOCK
 	xor	edx,edx
 	mov	eax,SYS_socket
 	syscall

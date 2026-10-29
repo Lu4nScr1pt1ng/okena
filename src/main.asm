@@ -26,6 +26,7 @@ include 'core/supervisor.inc'
 include 'core/ring.inc'
 include 'core/worker.inc'
 include 'l4/tcp.inc'
+include 'l4/tcp_epoll.inc'
 include 'cli.inc'
 
 start:
