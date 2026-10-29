@@ -88,6 +88,13 @@ Exit: beats HAProxy and nginx on added p99 for h1 keep-alive; survives a
 
 ## Phase 3 — TLS
 
+Progress: `src/crypto/` has SHA-256 (SHA-NI, and a scalar path for
+CPUs without it, picked by CPUID), HMAC, HKDF and the TLS 1.3
+HKDF-Expand-Label, and X25519 (constant time; ~65 us, a mulx version
+is next), all checked by `tests/kat` against the published vectors and
+reference implementations. Next: AES-128-GCM, P-256 ECDSA, the
+handshake and kTLS.
+
 * SHA-2, HMAC, HKDF (from fasm2crud), AES-GCM (AES-NI, VAES/VPCLMULQDQ),
   ChaCha20-Poly1305, X25519, ML-KEM-768, P-256 ECDH/ECDSA, Ed25519.
 * TLS 1.3 server: X25519MLKEM768, SNI, ALPN, tickets with rotation,
