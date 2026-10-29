@@ -456,6 +456,15 @@ listener_open:
 	mov	edx,TCP_NODELAY
 	lea	r10,[one_int]
 	call	.setsockopt
+	; http: a connection reaches a worker with its first bytes, not before
+	; (one wake-up per request instead of two; silent ones cost nothing)
+	cmp	dword [rbx+LS_KIND],LK_HTTP
+	jne	@f
+	mov	esi,IPPROTO_TCP
+	mov	edx,TCP_DEFER_ACCEPT
+	lea	r10,[rbx+LS_T_HEADER]		; seconds, as the header clock
+	call	.setsockopt
+@@:
 	mov	edi,r12d
 	lea	rsi,[rbx+LS_SA]
 	mov	edx,[rbx+LS_SALEN]
