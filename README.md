@@ -17,3 +17,10 @@ https example.com {
     to 127.0.0.1:3000
 }
 ```
+
+## License
+
+okena is free software under the GNU Affero General Public License,
+version 3 only ([LICENSE](LICENSE), SPDX `AGPL-3.0-only`). Anyone who
+runs a modified okena as a network service must offer its source to the
+users of that service.
