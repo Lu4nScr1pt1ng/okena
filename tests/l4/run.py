@@ -51,6 +51,30 @@ def echo_backend(port: int, tag: bytes) -> None:
     threading.Thread(target=loop, daemon=True).start()
 
 
+def closing_backend(port: int, tag: bytes) -> None:
+    """Answers the first bytes with its tag and closes at once."""
+    s = socket.socket()
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(("127.0.0.1", port))
+    s.listen(1024)
+
+    def handle(c):
+        try:
+            if c.recv(100):
+                c.sendall(tag)
+        except OSError:
+            pass
+        finally:
+            c.close()
+
+    def loop():
+        while True:
+            c, _ = s.accept()
+            threading.Thread(target=handle, args=(c,), daemon=True).start()
+
+    threading.Thread(target=loop, daemon=True).start()
+
+
 def who(port: int, host: str = "127.0.0.1") -> bytes:
     c = socket.create_connection((host, port), timeout=5)
     c.sendall(b"who\n")
@@ -103,8 +127,11 @@ def main() -> int:
     engine = sys.argv[1] if len(sys.argv) > 1 else "auto"
     print(f"engine: {engine}")
     b0, b1, dead, lst, lst2 = BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4
+    c0, c1, lst3 = BASE + 5, BASE + 6, BASE + 7
     echo_backend(b0, b"b0")
     echo_backend(b1, b"b1")
+    closing_backend(c0, b"c0")
+    closing_backend(c1, b"c1")
     ok = Okena(f"""
 okena {{
     workers 2
@@ -119,6 +146,7 @@ pool web {{
     connect timeout=200ms
 }}
 tcp 127.0.0.1:{lst} {{ to pool web }}
+tcp 127.0.0.1:{lst3} {{ to 127.0.0.1:{c0} 127.0.0.1:{c1} }}
 tcp :{lst2} {{
     to 127.0.0.1:{b0}
     timeout {{ idle 1s }}
@@ -136,6 +164,20 @@ tcp :{lst2} {{
         t.join()
         c.close()
         check("8 MB echo through the proxy, half-close", hashlib.sha256(got).digest() == hashlib.sha256(data).digest())
+
+        # backends that answer and close at once, many short connections:
+        # an operation of a finished session must never touch the next
+        # client (a late SHUTDOWN once ended another client's response)
+        empty = 0
+        for _ in range(3000):
+            c = socket.create_connection(("127.0.0.1", lst3), timeout=3)
+            c.sendall(b"q")
+            try:
+                empty += c.recv(10) not in (b"c0", b"c1")
+            except OSError:
+                empty += 1
+            c.close()
+        check("3000 short connections to closing backends, none cut short", empty == 0, f"{empty} cut short")
 
         # failover past a refusing and a black-holed server, balanced
         seen = {}

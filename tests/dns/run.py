@@ -72,6 +72,9 @@ def dns_server():
 threading.Thread(target=dns_server, daemon=True).start()
 
 
+BACKEND_EMPTY = []
+
+
 def echo_backend(addr, port, tag):
     fam = socket.AF_INET6 if ":" in addr else socket.AF_INET
     s = socket.socket(fam)
@@ -81,8 +84,13 @@ def echo_backend(addr, port, tag):
 
     def handle(c):
         try:
-            if c.recv(100):
+            d = c.recv(100)
+            if d:
                 c.sendall(tag)
+            else:
+                BACKEND_EMPTY.append(tag)
+        except OSError as e:
+            BACKEND_EMPTY.append(repr(e))
         finally:
             c.close()
 
@@ -105,7 +113,9 @@ def ask(port):
         r = c.recv(10)
         c.close()
         return r
-    except OSError:
+    except OSError as e:
+        if "--stress" in sys.argv:
+            return repr(e).encode()
         return b""
 
 
@@ -132,7 +142,10 @@ records["multi.svc.test"] = ["127.0.0.3", "127.0.0.4"]
 records["v6.svc.test"] = ["::1"]
 conf = tmp / "okena.conf"
 conf.write_text("""
-okena { workers 2 }
+okena {
+    workers 2
+    metrics 127.0.0.1:9464
+}
 tcp 127.0.0.1:8001 { to fromhosts:7000 }
 tcp 127.0.0.1:8002 { to api:7000 }
 tcp 127.0.0.1:8003 { to late.svc.test:7000 }
@@ -151,6 +164,21 @@ try:
     check("name through a search domain", ask(8002) == b"two")
     # ::1 on a loopback that was just brought up can take a moment
     check("IPv6 address from AAAA", wait_for(8005, b"six", 3) is not None)
+    if "--stress" in sys.argv:
+        import collections
+        t0 = time.time()
+        c = collections.Counter()
+        times = []
+        for _ in range(600):
+            a = time.time()
+            c[ask(8004)] += 1
+            times.append(time.time() - a)
+        print("backend saw no request on:", BACKEND_EMPTY)
+        print("stress:", dict(c), f"max {max(times) * 1000:.0f} ms", f"{time.time() - t0:.1f}s")
+        time.sleep(1.2)
+        import urllib.request
+        text = urllib.request.urlopen("http://127.0.0.1:9464/metrics").read().decode()
+        print("\n".join(l for l in text.splitlines() if "multi" in l and not l.endswith(" 0")))
     seen = {ask(8004) for _ in range(40)}
     check("every address of a name gets traffic", seen == {b"three", b"four"}, str(seen))
     check("a name that does not exist yet does not stop okena", p.poll() is None)
@@ -165,8 +193,9 @@ try:
     # DNS goes away: the last known addresses keep serving
     dns_up.clear()
     time.sleep(3)
-    ok = sum(ask(8002) == b"three" for _ in range(20))
-    check("DNS down: last known addresses keep serving", ok == 20, f"{ok}/20")
+    answers = [ask(8002) for _ in range(20)]
+    ok = answers.count(b"three")
+    check("DNS down: last known addresses keep serving", ok == 20, f"{ok}/20 {sorted(set(answers))}")
     dns_up.set()
     log.seek(0)
     text = log.read()

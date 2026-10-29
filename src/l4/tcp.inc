@@ -52,6 +52,7 @@ SF_UP_OPEN	= 16		; the upstream slot holds a socket
 SF_COUNTED	= 32		; counted in the server's active connections
 SF_RAW		= 64		; the client is a normal descriptor, not a direct one
 SF_PEER		= 128		; has a side record (client address features)
+SF_FDS_CLOSING	= 256		; closing: the descriptors' closes are submitted
 
 ; The SQE in rax works on the client of the session in reg: drop
 ; IOSQE_FIXED_FILE when that client is a normal descriptor.
@@ -1774,7 +1775,16 @@ on_s_send_c:
 
 ; ---------------------------------------------------------------- closing
 
-; edi = session: cancel everything on both sockets and close them.
+; edi = session: close it, in two phases.
+;
+; 1. Cancel everything still in flight on both sockets.
+; 2. Once every operation of the session has completed, close the
+;    descriptors; free the session when the closes are in.
+; The order matters: some operations (IORING_OP_SHUTDOWN, for one) are
+; handed to a kernel worker and resolve their direct descriptor only when
+; they run. Closed early, the slot could already be another client's by
+; then, and the late operation would act on that client (it did: a
+; SHUTDOWN of a finished session ended the next client's response).
 session_close:
 	cmp	dword [g_engine],ENGINE_EPOLL
 	je	ep_close
@@ -1790,7 +1800,7 @@ session_close:
 	mov	dword [r12+S_STATE],ST_CLOSING
 	mov	edi,ebx
 	call	idle_remove
-	; client
+	; phase 1: cancel
 	mov	edi,OP_S_CANCEL
 	mov	esi,ebx
 	call	sess_sqe
@@ -1802,6 +1812,25 @@ session_close:
 	jz	@f
 	mov	dword [rax+SQE_OP_FLAGS],IORING_ASYNC_CANCEL_FD or IORING_ASYNC_CANCEL_ALL
 @@:
+	test	dword [r12+S_FLAGS],SF_UP_OPEN
+	jz	.done
+	mov	edi,OP_S_CANCEL
+	mov	esi,ebx
+	call	sess_sqe
+	mov	byte [rax+SQE_OPCODE],IORING_OP_ASYNC_CANCEL
+	mov	ecx,[g_sessions]
+	add	ecx,ebx
+	mov	[rax+SQE_FD],ecx
+	mov	dword [rax+SQE_OP_FLAGS],IORING_ASYNC_CANCEL_FD or IORING_ASYNC_CANCEL_FD_FIXED or IORING_ASYNC_CANCEL_ALL
+.done:
+	pop	r12
+	pop	rbx
+	ret
+
+; Phase 2 of session_close: rbx = session, r12 = it. Close both
+; descriptors (nothing of the session is in flight any more).
+session_close_fds:
+	or	dword [r12+S_FLAGS],SF_FDS_CLOSING
 	mov	edi,OP_S_CLOSE
 	mov	esi,ebx
 	call	sess_sqe
@@ -1818,14 +1847,6 @@ session_close:
 	test	dword [r12+S_FLAGS],SF_UP_OPEN
 	jz	.done
 	and	dword [r12+S_FLAGS],not SF_UP_OPEN
-	mov	edi,OP_S_CANCEL
-	mov	esi,ebx
-	call	sess_sqe
-	mov	byte [rax+SQE_OPCODE],IORING_OP_ASYNC_CANCEL
-	mov	ecx,[g_sessions]
-	add	ecx,ebx
-	mov	[rax+SQE_FD],ecx
-	mov	dword [rax+SQE_OP_FLAGS],IORING_ASYNC_CANCEL_FD or IORING_ASYNC_CANCEL_FD_FIXED or IORING_ASYNC_CANCEL_ALL
 	mov	edi,OP_S_CLOSE
 	mov	esi,ebx
 	call	sess_sqe
@@ -1835,11 +1856,10 @@ session_close:
 	inc	ecx
 	mov	[rax+SQE_FILE_INDEX],ecx
 .done:
-	pop	r12
-	pop	rbx
 	ret
 
-; edi = session: free it once closing and nothing is in flight.
+; edi = session: once closing and nothing is in flight, close its
+; descriptors (phase 2), and once those closes are in, free it.
 session_maybe_free:
 	push	rbx
 	push	r12
@@ -1850,6 +1870,11 @@ session_maybe_free:
 	jne	.done
 	cmp	dword [r12+S_INFL],0
 	jne	.done
+	test	dword [r12+S_FLAGS],SF_FDS_CLOSING
+	jnz	.free
+	call	session_close_fds
+	jmp	.done
+.free:
 	; buffers still held (their sends completed with an error)
 	mov	edi,[r12+S_CU_BID]
 	cmp	edi,NIL
@@ -1872,7 +1897,7 @@ session_maybe_free:
 	jz	@f
 	call	src_release
 @@:
-	and	dword [r12+S_FLAGS],not (SF_C_WAIT or SF_U_WAIT)
+	and	dword [r12+S_FLAGS],not (SF_C_WAIT or SF_U_WAIT or SF_FDS_CLOSING)
 	mov	dword [r12+S_STATE],ST_FREE
 	inc	dword [r12+S_GEN]
 	mov	eax,[r12+S_LST]

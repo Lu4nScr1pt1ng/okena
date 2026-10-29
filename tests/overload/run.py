@@ -129,7 +129,7 @@ finally:
         p.wait(10)
     except subprocess.TimeoutExpired:
         p.kill()
-    if failures:
+    if failures or sys.exc_info()[0]:
         log.seek(0)
         print(log.read())
 print(f"overload ({ENGINE}): {'all passed' if not failures else f'{failures} failed'}")
