@@ -240,9 +240,13 @@ on_timer:
 	jnz	tick_work
 	call	arm_timer
 
-; Once a second, both engines: idle timeouts and drain deadlines.
+; Once a second, both engines: heartbeat, idle timeouts, drain deadlines.
 tick_work:
 	inc	dword [g_tick]
+	mov	eax,[g_worker_id]
+	shl	rax,6
+	add	rax,[g_hb]
+	inc	qword [rax]
 	call	idle_expire
 	cmp	dword [g_draining],0
 	je	.done

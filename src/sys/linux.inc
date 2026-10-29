@@ -190,3 +190,7 @@ EPOLLRDHUP	= 0x2000
 EPOLLET		= 1 shl 31
 EPOLL_EVENT	= 12		; struct epoll_event is packed on x86-64
 SO_ERROR	= 4
+SYS_setitimer	= 38
+ITIMER_REAL	= 0
+SIGALRM		= 14
+SIGSTOP		= 19

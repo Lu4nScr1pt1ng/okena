@@ -17,6 +17,10 @@ bss
 	g_sigmask	dq ?
 	g_worker_pid	rd MAX_WORKERS
 	g_worker_born	rq MAX_WORKERS
+	g_hb_seen	rq MAX_WORKERS		; heartbeat at the last check
+	g_hb_stale	rd MAX_WORKERS		; checks without progress
+	g_hb		dq ?			; shared page: one cache line per worker
+	g_watchdog_s	dd ?
 	g_lfd		rd MAX_LISTENERS * MAX_WORKERS	; [listener * MAX_WORKERS + worker]
 	g_siginfo:	rb SIGINFO_SIZE
 end bss
@@ -43,9 +47,34 @@ supervisor_main:
 	mov	eax,SYS_rt_sigaction
 	syscall
 
-	; TERM, INT and CHLD arrive through a signalfd. Blocking them here also
-	; makes workers inherit the blocked mask.
-	mov	qword [g_sigmask],(1 shl (SIGTERM-1)) or (1 shl (SIGINT-1)) or (1 shl (SIGCHLD-1))
+	; Heartbeats: workers write theirs, the supervisor reads them. Shared
+	; and mapped before any fork; each worker's counter has its own cache
+	; line, so no two cores ever write the same line.
+	xor	edi,edi
+	mov	esi,MAX_WORKERS * 64
+	mov	edx,PROT_READ or PROT_WRITE
+	mov	r10d,MAP_SHARED or MAP_ANONYMOUS
+	mov	r8,-1
+	xor	r9d,r9d
+	mov	eax,SYS_mmap
+	syscall
+	cmp	rax,-4096
+	ja	.no_signalfd
+	mov	[g_hb],rax
+	mov	rax,[g_plan_watchdog]
+	add	rax,999999
+	xor	edx,edx
+	mov	ecx,1000000
+	div	rcx
+	cmp	eax,2
+	jae	@f
+	mov	eax,2				; a tick is one second: less would misfire
+@@:
+	mov	[g_watchdog_s],eax
+
+	; TERM, INT, CHLD and ALRM (the watchdog) arrive through a signalfd.
+	; Blocking them here also makes workers inherit the blocked mask.
+	mov	qword [g_sigmask],(1 shl (SIGTERM-1)) or (1 shl (SIGINT-1)) or (1 shl (SIGCHLD-1)) or (1 shl (SIGALRM-1))
 	mov	edi,SIG_BLOCK
 	lea	rsi,[g_sigmask]
 	xor	edx,edx
@@ -116,6 +145,19 @@ supervisor_main:
 	cmp	ebx,[g_workers]
 	jb	.spawn_all
 
+	; check the heartbeats once a second
+	sub	rsp,32
+	mov	qword [rsp],1			; it_interval
+	mov	qword [rsp+8],0
+	mov	qword [rsp+16],1		; it_value
+	mov	qword [rsp+24],0
+	mov	edi,ITIMER_REAL
+	mov	rsi,rsp
+	xor	edx,edx
+	mov	eax,SYS_setitimer
+	syscall
+	add	rsp,32
+
 .wait_signal:
 	mov	edi,[g_sup_sigfd]
 	lea	rsi,[g_siginfo]
@@ -129,10 +171,15 @@ supervisor_main:
 	mov	eax,[g_siginfo]			; ssi_signo
 	cmp	eax,SIGCHLD
 	je	.child
+	cmp	eax,SIGALRM
+	je	.watchdog
 	call	begin_shutdown
 	jmp	.wait_signal
 .child:
 	call	reap_workers
+	jmp	.wait_signal
+.watchdog:
+	call	watchdog_check
 	jmp	.wait_signal
 
 .no_signalfd:
@@ -384,10 +431,67 @@ listener_open:
 	mov	edi,EXIT_FAILURE
 	jmp	exit_process
 
+; A worker whose heartbeat has not moved for the watchdog time is stuck
+; (a loop, a syscall that never returns, SIGSTOP): kill it, and the reaper
+; starts a replacement. Its tick moves the heartbeat every second even
+; when idle, so silence means stuck, not quiet.
+watchdog_check:
+	push	rbx
+	xor	ebx,ebx
+.next:
+	cmp	ebx,[g_workers]
+	jae	.done
+	cmp	dword [g_worker_pid+rbx*4],0
+	je	.skip
+	mov	rax,rbx
+	shl	rax,6
+	add	rax,[g_hb]
+	mov	rax,[rax]
+	cmp	rax,[g_hb_seen+rbx*8]
+	je	.stale
+	mov	[g_hb_seen+rbx*8],rax
+	mov	dword [g_hb_stale+rbx*4],0
+	jmp	.skip
+.stale:
+	inc	dword [g_hb_stale+rbx*4]
+	mov	eax,[g_hb_stale+rbx*4]
+	cmp	eax,[g_watchdog_s]
+	jne	.skip				; exactly once per stall
+	call	log_begin
+	out_lit 'worker '
+	mov	eax,ebx
+	call	out_u64
+	out_lit ' (pid '
+	mov	eax,[g_worker_pid+rbx*4]
+	call	out_u64
+	out_lit ') has not made progress for '
+	mov	eax,[g_watchdog_s]
+	call	out_u64
+	out_lit ' s, killing it'
+	call	log_end
+	mov	edi,[g_worker_pid+rbx*4]
+	mov	esi,SIGKILL
+	mov	eax,SYS_kill
+	syscall
+.skip:
+	inc	ebx
+	jmp	.next
+.done:
+	pop	rbx
+	ret
+
 ; edi = worker index.
 spawn_worker:
 	push	rbx
 	mov	ebx,edi
+	; a new worker starts with a clean slate, and one check of grace: its
+	; first tick comes a second after its setup, not after the fork
+	mov	dword [g_hb_stale+rbx*4],-1
+	mov	rax,rbx
+	shl	rax,6
+	add	rax,[g_hb]
+	mov	rax,[rax]
+	mov	[g_hb_seen+rbx*8],rax
 	call	monotonic_seconds
 	mov	[g_worker_born+rbx*8],rax
 	mov	eax,SYS_fork

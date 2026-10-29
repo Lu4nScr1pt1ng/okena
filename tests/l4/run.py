@@ -180,6 +180,25 @@ tcp :{lst2} {{
                 errors += 1
         check("all workers SIGKILLed: queued connections served by replacements", errors == 0 and n > 100, f"{n} ok, {errors} failed")
 
+        # a stuck worker (SIGSTOP) is found by the watchdog and replaced
+        victim = ok.workers()[0]
+        os.kill(victim, signal.SIGSTOP)
+        t0 = time.time()
+        while time.time() - t0 < 6 and victim in ok.workers():
+            time.sleep(0.1)
+        replaced = victim not in ok.workers() and len(ok.workers()) == 2
+        check("stuck worker killed by the watchdog and replaced (and nothing else was)",
+              replaced and ok.text().count("has not made progress") == 1,
+              f"{time.time() - t0:.1f}s")
+        time.sleep(0.5)
+        errors = 0
+        for _ in range(50):
+            try:
+                who(lst2)
+            except OSError:
+                errors += 1
+        check("service whole again after the replacement", errors == 0, f"{errors} errors")
+
         # graceful drain keeps in-flight connections
         c = socket.create_connection(("127.0.0.1", lst2), timeout=5)
         ok.p.send_signal(signal.SIGTERM)
