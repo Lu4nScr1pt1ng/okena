@@ -98,7 +98,9 @@ latency.
 
 ```
 make          # build/okena
-make test     # golden config tests, fuzzing, L4 tests on both engines
+make test     # every suite at once (~10 s), each in its own network namespace
+make test-serial   # the same, one after the other, with all output
+python3 tests/run_all.py http l4   # only the suites whose name has a word
 make docker-test   # the image under both seccomp profiles
 make bench    # added latency of the L4 proxy
 ```
