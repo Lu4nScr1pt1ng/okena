@@ -488,12 +488,12 @@ released whole when the generation retires.
 **Buffers sized by what a connection does.** An idle connection holds no
 buffer at all (~256 B in okena). **Today** that holds for `tcp`
 sessions (128 B, buffers from the provided ring only while bytes move).
-An `http` session has a 64 KiB record reserved per slot (its request,
-output and response buffers), touched only as far as an exchange uses
-it; 2 s after its last exchange, an idle keep-alive connection gives all
-of it but the first page back (`MADV_DONTNEED`), so it costs ~4.5 KB
-measured. Moving the record's fields out of that page into a dense
-array would bring it to the target. A connection gets a 4 KiB buffer on its
+An `http` session has a 512-byte state in a dense array and 64 KiB of
+buffer address space (request, output, response), touched only as far as
+an exchange uses it; 2 s after its last exchange an idle keep-alive
+connection gives all of its buffers back (`MADV_DONTNEED`). Measured:
+~1.2 KB per idle connection (state, session, client address record),
+against 12.7 KB before. A connection gets a 4 KiB buffer on its
 first bytes, which is enough for most requests; it moves to 16 KiB when
 it fills one (TLS records, large headers) and to 64 KiB for sustained
 streams (downloads, uploads, L4 tunnels), stepping down again when its

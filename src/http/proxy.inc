@@ -16,7 +16,12 @@
 ; This first version opens one upstream connection per request; pooling
 ; comes next.
 
-H_SHIFT		= 16		; 64 KiB per session, reserved, touched when used
+; A session's state is 512 bytes in a dense array (8 to a page): what an
+; idle keep-alive connection keeps. Its buffers are 64 KiB of address
+; space of their own, touched only as far as an exchange uses them, and
+; given back whole when the connection is idle (PH_TRIM).
+H_SHIFT		= 9		; state
+HB_SHIFT	= 16		; buffers
 H_STATE		= 0
 H_INLEN		= 4		; bytes in IN
 H_INOFF		= 8		; first unconsumed byte of IN
@@ -33,11 +38,12 @@ H_SPTR		= 56		; q: what an engine still has to send
 H_SLEN		= 64		; d
 H_CK		= 72		; request chunked decoder (CK_SIZE)
 H_RCK		= 104		; response chunked decoder
-H_IN		= 1024		; client bytes: the request head, then its body
+; buffers, from H_BUF
+HB_IN		= 0		; client bytes: the request head, then its body
 H_IN_CAP	= 16384
-H_OUT		= H_IN + H_IN_CAP	; heads okena writes, chunk framing
+HB_OUT		= HB_IN + H_IN_CAP	; heads okena writes, chunk framing
 H_OUT_CAP	= 20480
-H_UP		= H_OUT + H_OUT_CAP	; upstream bytes: the response
+HB_UP		= HB_OUT + H_OUT_CAP	; upstream bytes: the response
 H_UP_CAP	= 16384
 ; access log: the request as it was, and its exchange's counters
 H_LT0		= 184		; q: TSC when the request head was parsed, 0 = none
@@ -50,13 +56,15 @@ H_CLIENT	= 216		; 16 bytes: the client (the peer, or what trusted proxies say)
 H_RIDLEN	= 232		; d: request id length, 0 = none yet
 H_RID		= 236		; the request id (RID_MAX bytes)
 RID_MAX		= 128
-H_LTEXT_M	= H_UP + H_UP_CAP	; method
+H_BUF		= 368		; q: this session's buffers
+assert H_BUF + 8 <= 1 shl H_SHIFT
+HB_LTEXT_M	= HB_UP + H_UP_CAP	; access log: method
 H_LTEXT_M_CAP	= 16
-H_LTEXT_H	= H_LTEXT_M + 16	; host
+HB_LTEXT_H	= HB_LTEXT_M + 16	; host
 H_LTEXT_H_CAP	= 255
-H_LTEXT_T	= H_LTEXT_H + 256	; target
+HB_LTEXT_T	= HB_LTEXT_H + 256	; target
 H_LTEXT_T_CAP	= 1024
-assert H_LTEXT_T + H_LTEXT_T_CAP <= 1 shl H_SHIFT
+assert HB_LTEXT_T + H_LTEXT_T_CAP <= 1 shl HB_SHIFT
 
 HS_HEAD		= 1		; reading a request head
 HS_CONTINUE	= 2		; writing our 100 Continue
@@ -102,34 +110,50 @@ SIDE_UP		= 1
 
 bss
 	align 8
-	g_http_base	dq ?
+	g_http_base	dq ?		; the states
+	g_hbuf_base	dq ?		; the buffers
 	g_hm:		rb HM_SIZE		; the message being parsed
 end bss
 
-; Worker: the session records. eax = 0 or -errno.
+; Worker: the session states and buffers (address space only; pages
+; come with use). eax = 0 or -errno.
 http_worker_init:
+	mov	ecx,H_SHIFT
+	call	.reserve
+	cmp	rax,-4096
+	ja	.done
+	mov	[g_http_base],rax
+	mov	ecx,HB_SHIFT
+	call	.reserve
+	cmp	rax,-4096
+	ja	.done
+	mov	[g_hbuf_base],rax
+	call	retry_budget_tick		; budgets start at their floor, not empty
+	xor	eax,eax
+.done:
+	ret
+; ecx = shift of one session's share. rax = the region or -errno.
+.reserve:
 	xor	edi,edi
 	mov	esi,[g_sessions]
-	shl	rsi,H_SHIFT
+	shl	rsi,cl
+	push	rsi
 	mov	edx,PROT_READ or PROT_WRITE
 	mov	r10d,MAP_PRIVATE or MAP_ANONYMOUS or MAP_NORESERVE
 	mov	r8,-1
 	xor	r9d,r9d
 	mov	eax,SYS_mmap
 	syscall
+	pop	rsi
 	cmp	rax,-4096
-	ja	.done
-	mov	[g_http_base],rax
-	call	retry_budget_tick		; budgets start at their floor, not empty
-	mov	rax,[g_http_base]
+	ja	@f
+	push	rax
 	mov	rdi,rax
-	mov	esi,[g_sessions]
-	shl	rsi,H_SHIFT
 	mov	edx,MADV_NOHUGEPAGE
 	mov	eax,SYS_madvise
 	syscall
-	xor	eax,eax
-.done:
+	pop	rax
+@@:
 	ret
 
 ; Append literal text at rdi (rdi = after it).
@@ -152,6 +176,10 @@ http_start:
 	call	session_ptr
 	mov	dword [rax+S_STATE],ST_OPEN	; no upstream yet: reading the request
 	h_rec
+	mov	eax,ebx				; this slot's buffers
+	shl	rax,HB_SHIFT
+	add	rax,[g_hbuf_base]
+	mov	[r15+H_BUF],rax
 	xor	eax,eax
 	mov	[r15+H_INLEN],eax
 	mov	[r15+H_INOFF],eax
@@ -177,8 +205,10 @@ http_next_request:
 	jz	.empty
 	test	eax,eax
 	jz	.parse
-	lea	rsi,[r15+H_IN+rax]
-	lea	rdi,[r15+H_IN]
+	mov	rsi,[r15+H_BUF]
+	lea	rsi,[rsi+HB_IN+rax]
+	mov	rdi,[r15+H_BUF]
+	lea	rdi,[rdi+HB_IN]
 	mov	[r15+H_INLEN],ecx
 	rep	movsb
 	mov	dword [r15+H_INOFF],0
@@ -199,7 +229,8 @@ http_next_request:
 	h_rec
 	jmp	.read
 .parse:
-	lea	rdi,[r15+H_IN]
+	mov	rdi,[r15+H_BUF]
+	lea	rdi,[rdi+HB_IN]
 	mov	esi,[r15+H_INLEN]
 	call	http_head_end
 	cmp	eax,-1
@@ -211,7 +242,8 @@ http_next_request:
 .read:
 	mov	ecx,SIDE_CLIENT
 	mov	edi,[r15+H_INLEN]
-	lea	rdi,[r15+H_IN+rdi]
+	lea	rdi,[rdi+HB_IN]
+	add	rdi,[r15+H_BUF]
 	mov	esi,H_IN_CAP
 	sub	esi,[r15+H_INLEN]
 	jmp	h_recv
@@ -228,7 +260,8 @@ http_request:
 	mov	edi,ebx
 	call	ph_disarm			; the head is all here
 	h_rec
-	lea	rdi,[r15+H_IN]
+	mov	rdi,[r15+H_BUF]
+	lea	rdi,[rdi+HB_IN]
 	mov	esi,[rsp]
 	lea	rdx,[g_hm]
 	call	http_parse_request
@@ -788,8 +821,10 @@ http_write_request_head:
 	push	r13
 	push	r14
 	lea	r12,[g_hm]
-	lea	rdi,[r15+H_OUT]
-	lea	r13,[r15+H_OUT+H_OUT_CAP-256]	; room kept for what okena adds
+	mov	rdi,[r15+H_BUF]
+	lea	rdi,[rdi+HB_OUT]
+	mov	r13,[r15+H_BUF]	; room kept for what okena adds
+	lea	r13,[r13+HB_OUT+H_OUT_CAP-256]
 	mov	rsi,[r12+HM_METHOD]
 	mov	ecx,[r12+HM_MLEN]
 	rep	movsb
@@ -994,7 +1029,8 @@ http_write_request_head:
 	memit_x 'Connection: upgrade',13,10
 @@:
 	memit_x 13,10				; HTTP/1.1 keep-alive towards the backend
-	lea	rax,[r15+H_OUT]
+	mov	rax,[r15+H_BUF]
+	lea	rax,[rax+HB_OUT]
 	sub	rdi,rax
 	mov	[r15+H_OUTLEN],edi
 	clc
@@ -1071,7 +1107,8 @@ http_connected:
 	h_rec
 	mov	dword [r15+H_STATE],HS_SEND_HEAD
 	mov	ecx,SIDE_UP
-	lea	rdi,[r15+H_OUT]
+	mov	rdi,[r15+H_BUF]
+	lea	rdi,[rdi+HB_OUT]
 	mov	esi,[r15+H_OUTLEN]
 	jmp	h_send
 
@@ -1252,7 +1289,8 @@ http_req_pump:
 	add	[r15+H_INOFF],ecx
 	mov	dword [r15+H_STATE],HS_REQ_SEND
 	mov	esi,ecx
-	lea	rdi,[r15+H_IN+rax]
+	mov	rdi,[r15+H_BUF]
+	lea	rdi,[rdi+HB_IN+rax]
 	mov	ecx,SIDE_UP
 	jmp	h_send
 .done:
@@ -1267,13 +1305,15 @@ http_req_pump:
 	call	ph_arm
 	h_rec
 	mov	ecx,SIDE_CLIENT
-	lea	rdi,[r15+H_IN]
+	mov	rdi,[r15+H_BUF]
+	lea	rdi,[rdi+HB_IN]
 	mov	esi,H_IN_CAP
 	jmp	h_recv
 .chunked:
 	lea	rdi,[r15+H_CK]
 	mov	eax,[r15+H_INOFF]
-	lea	rsi,[r15+H_IN+rax]
+	mov	rsi,[r15+H_BUF]
+	lea	rsi,[rsi+HB_IN+rax]
 	mov	edx,[r15+H_INLEN]
 	sub	edx,eax
 	call	chunk_step
@@ -1290,7 +1330,8 @@ http_req_pump:
 	call	http_frame_chunk		; r8/r9d: OUT = framed chunk
 	mov	dword [r15+H_STATE],HS_REQ_SEND
 	mov	ecx,SIDE_UP
-	lea	rdi,[r15+H_OUT]
+	mov	rdi,[r15+H_BUF]
+	lea	rdi,[rdi+HB_OUT]
 	mov	esi,[r15+H_OUTLEN]
 	jmp	h_send
 .chunk_end:
@@ -1304,7 +1345,8 @@ http_req_pump:
 
 ; r8 = data, r9d = length, r15 = record: OUT = "<hex>\r\n<data>\r\n".
 http_frame_chunk:
-	lea	rdi,[r15+H_OUT]
+	mov	rdi,[r15+H_BUF]
+	lea	rdi,[rdi+HB_OUT]
 	mov	eax,r9d
 	call	fmt_hex32
 	mov	word [rdi],0x0A0D
@@ -1314,7 +1356,8 @@ http_frame_chunk:
 	rep	movsb
 	mov	word [rdi],0x0A0D
 	add	rdi,2
-	lea	rax,[r15+H_OUT]
+	mov	rax,[r15+H_BUF]
+	lea	rax,[rax+HB_OUT]
 	sub	rdi,rax
 	mov	[r15+H_OUTLEN],edi
 	ret
@@ -1359,7 +1402,8 @@ http_start_response:
 	call	ph_arm
 	h_rec
 	mov	ecx,SIDE_UP
-	lea	rdi,[r15+H_UP]
+	mov	rdi,[r15+H_BUF]
+	lea	rdi,[rdi+HB_UP]
 	mov	esi,H_UP_CAP
 	jmp	h_recv
 
@@ -1367,7 +1411,8 @@ http_start_response:
 http_resp_head:
 	h_rec
 	mov	eax,[r15+H_UPOFF]
-	lea	rdi,[r15+H_UP+rax]
+	mov	rdi,[r15+H_BUF]
+	lea	rdi,[rdi+HB_UP+rax]
 	mov	esi,[r15+H_UPLEN]
 	sub	esi,eax
 	call	http_head_end
@@ -1379,14 +1424,16 @@ http_resp_head:
 	jae	.bad				; a response head that large: refused
 	mov	ecx,SIDE_UP
 	mov	edi,[r15+H_UPLEN]
-	lea	rdi,[r15+H_UP+rdi]
+	lea	rdi,[rdi+HB_UP]
+	add	rdi,[r15+H_BUF]
 	mov	esi,H_UP_CAP
 	sub	esi,[r15+H_UPLEN]
 	jmp	h_recv
 .parse:
 	push	rax
 	mov	ecx,[r15+H_UPOFF]
-	lea	rdi,[r15+H_UP+rcx]
+	mov	rdi,[r15+H_BUF]
+	lea	rdi,[rdi+HB_UP+rcx]
 	mov	esi,eax
 	lea	rdx,[g_hm]
 	call	http_parse_response
@@ -1415,7 +1462,8 @@ http_resp_head:
 	jc	http_resp_head			; too large to pass on: dropped
 	mov	dword [r15+H_STATE],HS_INTERIM_SEND
 	mov	ecx,SIDE_CLIENT
-	lea	rdi,[r15+H_OUT]
+	mov	rdi,[r15+H_BUF]
+	lea	rdi,[rdi+HB_OUT]
 	mov	esi,[r15+H_OUTLEN]
 	jmp	h_send
 .switching:
@@ -1488,7 +1536,8 @@ http_resp_head:
 	or	dword [r15+H_FLAGS],HX_STARTED
 	mov	dword [r15+H_STATE],HS_RESP_SEND
 	mov	ecx,SIDE_CLIENT
-	lea	rdi,[r15+H_OUT]
+	mov	rdi,[r15+H_BUF]
+	lea	rdi,[rdi+HB_OUT]
 	mov	esi,[r15+H_OUTLEN]
 	jmp	h_send
 .bad:
@@ -1502,8 +1551,10 @@ http_write_response_head:
 	push	r13
 	push	r14
 	lea	r12,[g_hm]
-	lea	rdi,[r15+H_OUT]
-	lea	r13,[r15+H_OUT+H_OUT_CAP-256]
+	mov	rdi,[r15+H_BUF]
+	lea	rdi,[rdi+HB_OUT]
+	mov	r13,[r15+H_BUF]
+	lea	r13,[r13+HB_OUT+H_OUT_CAP-256]
 	memit_x 'HTTP/1.1 '
 	mov	eax,[r12+HM_STATUS]
 	call	fmt_u64
@@ -1593,7 +1644,8 @@ http_write_response_head:
 	mov	word [rdi],0x0A0D
 	add	rdi,2
 .done:
-	lea	rax,[r15+H_OUT]
+	mov	rax,[r15+H_BUF]
+	lea	rax,[rax+HB_OUT]
 	sub	rdi,rax
 	mov	[r15+H_OUTLEN],edi
 	clc
@@ -1633,7 +1685,8 @@ http_resp_pump:
 	mov	eax,[r15+H_UPOFF]
 	add	[r15+H_UPOFF],ecx
 	mov	esi,ecx
-	lea	rdi,[r15+H_UP+rax]
+	mov	rdi,[r15+H_BUF]
+	lea	rdi,[rdi+HB_UP+rax]
 .send:
 	mov	dword [r15+H_STATE],HS_RESP_SEND
 	mov	ecx,SIDE_CLIENT
@@ -1646,13 +1699,15 @@ http_resp_pump:
 	mov	dword [r15+H_UPOFF],0
 	mov	dword [r15+H_STATE],HS_RESP_READ
 	mov	ecx,SIDE_UP
-	lea	rdi,[r15+H_UP]
+	mov	rdi,[r15+H_BUF]
+	lea	rdi,[rdi+HB_UP]
 	mov	esi,H_UP_CAP
 	jmp	h_recv
 .chunked:
 	lea	rdi,[r15+H_RCK]
 	mov	eax,[r15+H_UPOFF]
-	lea	rsi,[r15+H_UP+rax]
+	mov	rsi,[r15+H_BUF]
+	lea	rsi,[rsi+HB_UP+rax]
 	mov	edx,[r15+H_UPLEN]
 	sub	edx,eax
 	call	chunk_step
@@ -1674,12 +1729,14 @@ http_resp_pump:
 	sub	ecx,[r15+H_UPOFF]
 	jz	.read
 	mov	eax,[r15+H_UPOFF]
-	lea	r8,[r15+H_UP+rax]
+	mov	r8,[r15+H_BUF]
+	lea	r8,[r8+HB_UP+rax]
 	mov	r9d,ecx
 	add	[r15+H_UPOFF],ecx
 .framed:
 	call	http_frame_chunk
-	lea	rdi,[r15+H_OUT]
+	mov	rdi,[r15+H_BUF]
+	lea	rdi,[rdi+HB_OUT]
 	mov	esi,[r15+H_OUTLEN]
 	jmp	.send
 
@@ -2313,8 +2370,8 @@ http_phase_expired:
 	jne	.out
 	cmp	dword [r15+H_INLEN],0
 	jne	.out
-	lea	rdi,[r15+4096]
-	mov	esi,(1 shl H_SHIFT) - 4096
+	mov	rdi,[r15+H_BUF]
+	mov	esi,1 shl HB_SHIFT
 	mov	edx,MADV_DONTNEED
 	mov	eax,SYS_madvise
 	syscall
@@ -2344,7 +2401,8 @@ http_tunnel_up:
 	sub	esi,eax
 	jz	http_tunnel_in
 	mov	[r15+H_UPOFF],esi		; (all taken)
-	lea	rdi,[r15+H_UP+rax]
+	mov	rdi,[r15+H_BUF]
+	lea	rdi,[rdi+HB_UP+rax]
 	mov	ecx,SIDE_CLIENT
 	jmp	h_send
 
@@ -2356,7 +2414,8 @@ http_tunnel_in:
 	sub	esi,eax
 	jz	http_tunnel_start
 	mov	[r15+H_INOFF],esi
-	lea	rdi,[r15+H_IN+rax]
+	mov	rdi,[r15+H_BUF]
+	lea	rdi,[rdi+HB_IN+rax]
 	mov	ecx,SIDE_UP
 	jmp	h_send
 
@@ -2429,7 +2488,8 @@ http_error:
 	call	rid_new
 	pop	rax
 @@:
-	lea	rdi,[r15+H_OUT]
+	mov	rdi,[r15+H_BUF]
+	lea	rdi,[rdi+HB_OUT]
 	push	rax
 	memit_x 'HTTP/1.1 '
 	mov	rax,[rsp]
@@ -2466,11 +2526,13 @@ http_error:
 	mov	byte [rdi],10
 	inc	rdi
 	add	rsp,8
-	lea	rax,[r15+H_OUT]
+	mov	rax,[r15+H_BUF]
+	lea	rax,[rax+HB_OUT]
 	sub	rdi,rax
 	mov	esi,edi
 	mov	ecx,SIDE_CLIENT
-	lea	rdi,[r15+H_OUT]
+	mov	rdi,[r15+H_BUF]
+	lea	rdi,[rdi+HB_OUT]
 	jmp	h_send
 .close:
 	mov	edi,ebx

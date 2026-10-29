@@ -442,7 +442,8 @@ alog_request:
 	mov	rsi,[r8+HM_METHOD]
 	mov	ecx,[r8+HM_MLEN]
 	mov	edx,H_LTEXT_M_CAP
-	lea	rdi,[r15+H_LTEXT_M]
+	mov	rdi,[r15+H_BUF]
+	lea	rdi,[rdi+HB_LTEXT_M]
 	call	.copy
 	mov	[r15+H_LMLEN],ecx
 	xor	ecx,ecx
@@ -454,14 +455,16 @@ alog_request:
 	mov	rsi,[rax+HF_VALUE]
 	mov	ecx,[rax+HF_VLEN]
 	mov	edx,H_LTEXT_H_CAP
-	lea	rdi,[r15+H_LTEXT_H]
+	mov	rdi,[r15+H_BUF]
+	lea	rdi,[rdi+HB_LTEXT_H]
 	call	.copy
 @@:
 	mov	[r15+H_LHLEN],ecx
 	mov	rsi,[r8+HM_TARGET]
 	mov	ecx,[r8+HM_TLEN]
 	mov	edx,H_LTEXT_T_CAP
-	lea	rdi,[r15+H_LTEXT_T]
+	mov	rdi,[r15+H_BUF]
+	lea	rdi,[rdi+HB_LTEXT_T]
 	call	.copy
 	mov	[r15+H_LTLEN],ecx
 	pop	r15
@@ -532,17 +535,20 @@ alog_exchange:
 	mov	ecx,RID_MAX + 8
 	call	json_text
 	memit '","method":"'
-	lea	rsi,[r15+H_LTEXT_M]
+	mov	rsi,[r15+H_BUF]
+	lea	rsi,[rsi+HB_LTEXT_M]
 	mov	edx,[r15+H_LMLEN]
 	mov	ecx,128
 	call	json_text
 	memit '","host":"'
-	lea	rsi,[r15+H_LTEXT_H]
+	mov	rsi,[r15+H_BUF]
+	lea	rsi,[rsi+HB_LTEXT_H]
 	mov	edx,[r15+H_LHLEN]
 	mov	ecx,768
 	call	json_text
 	memit '","target":"'
-	lea	rsi,[r15+H_LTEXT_T]
+	mov	rsi,[r15+H_BUF]
+	lea	rsi,[rsi+HB_LTEXT_T]
 	mov	edx,[r15+H_LTLEN]
 	mov	ecx,1600
 	call	json_text

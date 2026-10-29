@@ -17,10 +17,10 @@ client ─▶ head ─▶ route ─▶ upstream (pooled) ─▶ request head + b
 client ◀─ response head + body ◀─────────────────────────────────────── backend
 ```
 
-* The session reads the request head into its record's 16 KiB input
-  buffer (each session has a 64 KiB record reserved, touched only as far
-  as it is used, given back 2 s after the connection goes idle), so the
-  parser always sees one contiguous head. A head larger than that is 431.
+* The session reads the request head into its 16 KiB input buffer (each
+  session has a 512-byte state and 64 KiB of buffers reserved, touched
+  only as far as they are used and given back 2 s after the connection
+  goes idle), so the parser always sees one contiguous head. A head larger than that is 431.
 * The head is parsed strictly. Errors answer with the HTTP status the
   parser gives (400, 431, 501, 505) and `Connection: close`.
 * Routing picks a route by host and path (see Routing), then a server of
