@@ -24,6 +24,7 @@ test: $(BIN)
 	python3 -I tests/l4/run.py io_uring
 	python3 -I tests/l4/run.py epoll
 	python3 -I tests/dns/run.py
+	python3 -I tests/reload/run.py
 
 image:
 	docker build -t okena .

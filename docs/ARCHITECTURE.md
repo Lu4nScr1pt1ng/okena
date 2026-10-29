@@ -809,9 +809,16 @@ the CDN.
 
 ## Operations
 
-* **Reload** (`SIGHUP`, `okena reload`, admin API): compile, validate, diff,
-  swap. A config that does not validate is rejected and the running one
-  stays. Listeners added or removed are opened/closed by the supervisor.
+* **Reload** (`SIGHUP`; later `okena reload` and the admin API): the file
+  is read once, a compiler child validates those bytes, the supervisor
+  compiles the same bytes, opens new addresses' sockets and keeps the
+  sockets of addresses that stay, then starts a new worker generation;
+  the old one stops accepting and finishes its sessions. Anything that
+  fails before that commit (invalid file, compiler crash, a port another
+  program holds) leaves the running configuration as it was. When the
+  worker count goes down, no socket of a remaining address is closed
+  (it may hold queued connections): the remaining workers serve the
+  extra ones.
 * **Binary upgrade** (`SIGUSR2`): the supervisor execs the new binary,
   hands it the listening sockets, and the old workers drain. No connection
   is refused during an upgrade.

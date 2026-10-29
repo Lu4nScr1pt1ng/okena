@@ -191,45 +191,34 @@ ep_add:
 	ret
 
 ep_add_listeners:
-	push	rbx
-	xor	ebx,ebx
-.next:
-	cmp	ebx,[g_plan_listeners]
-	jae	.done
-	mov	ecx,ebx
-	imul	ecx,ecx,MAX_WORKERS
-	add	ecx,[g_worker_id]
-	mov	edi,[g_lfd+rcx*4]
+	lea	rsi,[ep_add_socket]
+	jmp	for_each_socket
+
+; edi = socket id.
+ep_add_socket:
+	mov	edx,edi
+	mov	rcx,EK_LISTENER shl 56
+	or	rdx,rcx
+	push	rdx
+	call	listener_fd
+	pop	rdx
+	mov	edi,eax
 	mov	esi,EPOLLIN			; level-triggered: accept in batches
-	mov	rdx,EK_LISTENER shl 56
-	or	rdx,rbx
-	call	ep_add
-	inc	ebx
-	jmp	.next
-.done:
-	pop	rbx
-	ret
+	jmp	ep_add
 
 ; Drain: stop watching the listeners (connections wait in the kernel queue).
 ep_stop_accepting:
-	push	rbx
-	xor	ebx,ebx
-.next:
-	cmp	ebx,[g_plan_listeners]
-	jae	.done
-	mov	ecx,ebx
-	imul	ecx,ecx,MAX_WORKERS
-	add	ecx,[g_worker_id]
-	mov	edx,[g_lfd+rcx*4]
+	lea	rsi,[ep_del_socket]
+	jmp	for_each_socket
+
+ep_del_socket:
+	call	listener_fd
+	mov	edx,eax
 	mov	edi,[g_epfd]
 	mov	esi,EPOLL_CTL_DEL
 	xor	r10d,r10d
 	mov	eax,SYS_epoll_ctl
 	syscall
-	inc	ebx
-	jmp	.next
-.done:
-	pop	rbx
 	ret
 
 ; edi = events, rsi = data.
@@ -294,20 +283,21 @@ ep_dispatch:
 .stale:
 	ret
 
-; edi = listener: accept a batch.
+; edi = socket id: accept a batch.
 ep_accept:
 	push	rbx
 	push	r12
 	push	r13
-	mov	r13d,edi
+	push	r15
+	call	listener_fd
+	mov	r15d,eax
+	and	edi,0xFF
+	mov	r13d,edi			; listener
 	mov	r12d,ACCEPT_BATCH
 .next:
 	dec	r12d
 	js	.done
-	mov	ecx,r13d
-	imul	ecx,ecx,MAX_WORKERS
-	add	ecx,[g_worker_id]
-	mov	edi,[g_lfd+rcx*4]
+	mov	edi,r15d
 	xor	esi,esi
 	xor	edx,edx
 	mov	r10d,SOCK_NONBLOCK or SOCK_CLOEXEC
@@ -352,6 +342,7 @@ ep_accept:
 	syscall
 	jmp	.next
 .done:
+	pop	r15
 	pop	r13
 	pop	r12
 	pop	rbx

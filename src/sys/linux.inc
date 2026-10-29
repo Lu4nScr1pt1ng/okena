@@ -197,3 +197,4 @@ SIGSTOP		= 19
 SOCK_DGRAM	= 2
 SYS_recvfrom	= 45
 SYS_getrandom_	= 318
+SIGUSR1		= 10

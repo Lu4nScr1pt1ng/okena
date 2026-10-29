@@ -332,6 +332,9 @@ cfg_begin:
 	mov	dword [g_lex_pushed],0
 	mov	dword [g_cfg_errors],0
 	mov	dword [g_cfg_warnings],0
+	mov	dword [g_chk_listeners],0
+	mov	dword [g_chk_pools],0
+	mov	dword [g_chk_servers],0
 	cmp	qword [g_ar_nodes+AR_BASE],0
 	jne	.ready
 	lea	rdi,[g_ar_nodes]

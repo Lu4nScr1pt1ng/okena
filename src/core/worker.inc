@@ -43,11 +43,22 @@ worker_main:
 	syscall
 	mov	edi,ebx
 	call	pin_to_cpu
+	; sockets a reload is about to close are not ours to keep open
+	xor	ebx,ebx
+@@:
+	cmp	ebx,[g_close_count]
+	jae	@f
+	mov	edi,[g_close_fd+rbx*4]
+	mov	eax,SYS_close
+	syscall
+	inc	ebx
+	jmp	@b
+@@:
 
 	; SIGTERM/SIGINT stay blocked (inherited) and arrive through a signalfd
 	; read on the ring. It is a blocking fd on purpose: io_uring then waits
 	; for it with an internal poll instead of failing with EAGAIN.
-	mov	qword [g_sigmask],(1 shl (SIGTERM-1)) or (1 shl (SIGINT-1))
+	mov	qword [g_sigmask],(1 shl (SIGTERM-1)) or (1 shl (SIGINT-1)) or (1 shl (SIGUSR1-1))
 	mov	edi,-1
 	lea	rsi,[g_sigmask]
 	mov	edx,8
@@ -245,8 +256,7 @@ on_timer:
 tick_work:
 	inc	dword [g_tick]
 	call	groups_refresh
-	mov	eax,[g_worker_id]
-	shl	rax,6
+	mov	eax,[g_hb_slot]
 	add	rax,[g_hb]
 	inc	qword [rax]
 	call	idle_expire
@@ -280,6 +290,14 @@ on_signal:
 	call	arm_signal
 
 drain_begin:
+	; SIGUSR1: a reload replaced this worker; stop accepting right away
+	cmp	dword [g_sig_buf],SIGUSR1
+	jne	.term
+	cmp	dword [g_draining],2
+	jae	.done
+	mov	dword [g_draining],1
+	jmp	stop_accepting
+.term:
 	cmp	dword [g_draining],0
 	jne	.done
 	mov	dword [g_draining],1
@@ -308,23 +326,21 @@ stop_accepting:
 	mov	[g_drain_until],eax
 	cmp	dword [g_engine],ENGINE_EPOLL
 	je	ep_stop_accepting
-	push	rbx
-	xor	ebx,ebx
-.next:
-	cmp	ebx,[g_plan_listeners]
-	jae	.done
+	lea	rsi,[cancel_accept]
+	jmp	for_each_socket
+
+; edi = socket id: cancel its multishot accept.
+cancel_accept:
+	push	rdi
 	call	ring_get_sqe
+	pop	rdi
+	push	rax
+	call	listener_fd
+	mov	ecx,eax
+	pop	rax
 	mov	byte [rax+SQE_OPCODE],IORING_OP_ASYNC_CANCEL
-	mov	ecx,ebx
-	imul	ecx,ecx,MAX_WORKERS
-	add	ecx,[g_worker_id]
-	mov	ecx,[g_lfd+rcx*4]
 	mov	[rax+SQE_FD],ecx
 	mov	dword [rax+SQE_OP_FLAGS],IORING_ASYNC_CANCEL_FD or IORING_ASYNC_CANCEL_ALL
 	mov	rcx,OP_IGNORE shl 56
 	mov	[rax+SQE_USER_DATA],rcx
-	inc	ebx
-	jmp	.next
-.done:
-	pop	rbx
 	ret

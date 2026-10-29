@@ -21,7 +21,8 @@ bss
 	g_hb_stale	rd MAX_WORKERS		; checks without progress
 	g_hb		dq ?			; shared page: one cache line per worker
 	g_watchdog_s	dd ?
-	g_lfd		rd MAX_LISTENERS * MAX_WORKERS	; [listener * MAX_WORKERS + worker]
+	g_lfd		rd MAX_LISTENERS * MAX_WORKERS	; [listener * MAX_WORKERS + socket]
+	g_lsocks	rd MAX_LISTENERS		; sockets of each listener
 	g_siginfo:	rb SIGINFO_SIZE
 end bss
 
@@ -51,7 +52,7 @@ supervisor_main:
 	; and mapped before any fork; each worker's counter has its own cache
 	; line, so no two cores ever write the same line.
 	xor	edi,edi
-	mov	esi,MAX_WORKERS * 64
+	mov	esi,MAX_WORKERS * 64 * 2		; two generations side by side
 	mov	edx,PROT_READ or PROT_WRITE
 	mov	r10d,MAP_SHARED or MAP_ANONYMOUS
 	mov	r8,-1
@@ -76,7 +77,7 @@ supervisor_main:
 
 	; TERM, INT, CHLD and ALRM (the watchdog) arrive through a signalfd.
 	; Blocking them here also makes workers inherit the blocked mask.
-	mov	qword [g_sigmask],(1 shl (SIGTERM-1)) or (1 shl (SIGINT-1)) or (1 shl (SIGCHLD-1)) or (1 shl (SIGALRM-1))
+	mov	qword [g_sigmask],(1 shl (SIGTERM-1)) or (1 shl (SIGINT-1)) or (1 shl (SIGCHLD-1)) or (1 shl (SIGALRM-1)) or (1 shl (SIGHUP-1)) or (1 shl (SIGUSR1-1))
 	mov	edi,SIG_BLOCK
 	lea	rsi,[g_sigmask]
 	xor	edx,edx
@@ -114,6 +115,8 @@ supervisor_main:
 	inc	ebx
 	cmp	ebx,[g_workers]
 	jb	.socket
+	mov	eax,[g_workers]
+	mov	[g_lsocks+r12*4],eax
 	call	log_listener
 	inc	r12d
 	jmp	.listener
@@ -177,6 +180,10 @@ supervisor_main:
 	je	.child
 	cmp	eax,SIGALRM
 	je	.watchdog
+	cmp	eax,SIGHUP
+	je	.reload
+	cmp	eax,SIGUSR1
+	je	.wait_signal
 	call	begin_shutdown
 	jmp	.wait_signal
 .child:
@@ -184,6 +191,10 @@ supervisor_main:
 	jmp	.wait_signal
 .watchdog:
 	call	watchdog_check
+	call	old_workers_check
+	jmp	.wait_signal
+.reload:
+	call	supervisor_reload
 	jmp	.wait_signal
 
 .no_signalfd:
@@ -299,9 +310,16 @@ listener_probe:
 	call	out_str
 	out_lit ': another program is listening there (another okena still running?)'
 	call	log_end
+	cmp	dword [g_reloading],0
+	jne	.busy
 	mov	edi,EXIT_FAILURE
 	jmp	exit_process
+.busy:
+	mov	eax,1
+	jmp	.out
 .done:
+	xor	eax,eax
+.out:
 	pop	r14
 	pop	r13
 	pop	r12
@@ -345,6 +363,7 @@ listener_open:
 	push	r14
 	imul	rbx,rdi,LS_SIZE
 	lea	rbx,[g_listeners+rbx]
+	mov	r12d,-1
 	mov	r13d,[rbx+LS_FAMILY]
 	mov	r14d,r13d
 	test	r13d,r13d
@@ -458,8 +477,23 @@ listener_open:
 	out_lit ')'
 .reported:
 	call	log_end
+	cmp	dword [g_reloading],0
+	jne	.soft
 	mov	edi,EXIT_FAILURE
 	jmp	exit_process
+.soft:
+	test	r12d,r12d
+	js	@f
+	mov	edi,r12d
+	mov	eax,SYS_close
+	syscall
+@@:
+	mov	eax,-1
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
 
 ; A worker whose heartbeat has not moved for the watchdog time is stuck
 ; (a loop, a syscall that never returns, SIGSTOP): kill it, and the reaper
@@ -473,8 +507,7 @@ watchdog_check:
 	jae	.done
 	cmp	dword [g_worker_pid+rbx*4],0
 	je	.skip
-	mov	rax,rbx
-	shl	rax,6
+	call	hb_line
 	add	rax,[g_hb]
 	mov	rax,[rax]
 	cmp	rax,[g_hb_seen+rbx*8]
@@ -510,6 +543,16 @@ watchdog_check:
 	pop	rbx
 	ret
 
+; ebx = worker index. rax = offset of its heartbeat line in this
+; generation (old and new generations of a reload use different lines).
+hb_line:
+	mov	eax,[g_gen]
+	and	eax,1
+	imul	eax,eax,MAX_WORKERS
+	add	eax,ebx
+	shl	rax,6
+	ret
+
 ; edi = worker index.
 spawn_worker:
 	push	rbx
@@ -517,8 +560,8 @@ spawn_worker:
 	; a new worker starts with a clean slate, and one check of grace: its
 	; first tick comes a second after its setup, not after the fork
 	mov	dword [g_hb_stale+rbx*4],-1
-	mov	rax,rbx
-	shl	rax,6
+	call	hb_line
+	mov	[g_hb_slot],eax			; inherited by the worker
 	add	rax,[g_hb]
 	mov	rax,[rax]
 	mov	[g_hb_seen+rbx*8],rax
@@ -583,6 +626,13 @@ reap_workers:
 	call	spawn_control
 	jmp	.next
 .worker:
+	mov	edi,r12d
+	call	reap_old
+	jnc	.current
+	cmp	dword [g_shutdown],0
+	jne	.stopping
+	jmp	.next
+.current:
 	xor	ebx,ebx
 .find:
 	cmp	ebx,[g_workers]
@@ -645,6 +695,8 @@ reap_workers:
 .stopping:
 	cmp	dword [g_alive],0
 	jne	.next
+	cmp	dword [g_old_count],0
+	jne	.next
 	mov	edi,[g_control_pid]
 	test	edi,edi
 	jz	@f
@@ -678,9 +730,22 @@ begin_shutdown:
 	call	log_end
 	cmp	dword [g_alive],0
 	jne	.signal
+	cmp	dword [g_old_count],0
+	jne	.signal
 	mov	edi,[g_exit_code]
 	jmp	exit_process
 .signal:
+	xor	ebx,ebx
+.old:
+	cmp	ebx,[g_old_count]
+	jae	.current
+	mov	edi,[g_old_pid+rbx*4]
+	mov	esi,r12d
+	mov	eax,SYS_kill
+	syscall
+	inc	ebx
+	jmp	.old
+.current:
 	xor	ebx,ebx
 .each:
 	cmp	ebx,[g_workers]

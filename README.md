@@ -37,6 +37,8 @@ Early. What works today:
   and at once when a connect fails, last known addresses kept when DNS
   fails, names that appear later picked up without a restart;
 * a watchdog that replaces stuck workers;
+* reload on `SIGHUP` without dropping a connection, validated in a child
+  process, rejected as a whole when anything is wrong;
 * two I/O engines, io_uring and epoll, chosen automatically: where
   io_uring is blocked (Docker's default seccomp profile, Kubernetes,
   gVisor) okena runs on epoll and says why;

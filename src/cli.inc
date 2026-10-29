@@ -278,11 +278,16 @@ cli_help:
 
 ; Load, parse and check the configuration. Exits with EXIT_CONFIG on any
 ; error. Returns with the checked tree in g_cfg_root.
-cli_load_config:
-	push	rbx
+bss
+	g_src_ptr	dq ?		; configuration text being loaded
+	g_src_len	dq ?
+end bss
+
+; Read the configuration source into memory: g_src_ptr/len. rax = 0 or
+; -errno (file sources only).
+cfg_read_source:
 	cmp	qword [g_cli_text],0
 	jne	.text
-	; file
 	mov	rax,[g_cli_path]
 	mov	[g_cfg_name],rax
 	lea	rdi,[g_ar_text]
@@ -295,14 +300,35 @@ cli_load_config:
 	lea	rsi,[g_ar_text]
 	call	read_file
 	test	rax,rax
-	js	.read_error
-	mov	rdi,rax
-	mov	rsi,rdx
-	jmp	.parse
+	js	.out
+	mov	[g_src_ptr],rax
+	mov	[g_src_len],rdx
+	xor	eax,eax
+.out:
+	ret
 .text:
-	mov	rdi,[g_cli_text]
-	mov	rsi,[g_cli_text_len]
-.parse:
+	mov	rax,[g_cli_text]
+	mov	[g_src_ptr],rax
+	mov	rax,[g_cli_text_len]
+	mov	[g_src_len],rax
+	xor	eax,eax
+	ret
+
+cli_load_config:
+	push	rbx
+	call	cfg_read_source
+	test	rax,rax
+	js	cfg_parse_checked.read_error
+	call	cfg_parse_checked
+	pop	rbx
+	ret
+
+; Parse and check g_src_ptr/len. Exits with EXIT_CONFIG after printing
+; the diagnostics when it is not valid.
+cfg_parse_checked:
+	push	rbx
+	mov	rdi,[g_src_ptr]
+	mov	rsi,[g_src_len]
 	mov	rdx,[g_cfg_name]
 	call	cfg_begin
 	call	cfg_parse

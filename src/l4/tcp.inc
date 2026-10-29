@@ -368,33 +368,69 @@ balance_stagger:
 
 ; ---------------------------------------------------------------- accept
 
-; Multishot accept into direct descriptors on every listener of this
-; worker.
-arm_accepts:
+; A listener has one socket per worker, or more after a reload that
+; lowered the worker count: no socket is closed while it may hold queued
+; connections. Worker w serves sockets w, w + workers, w + 2 * workers...
+; A socket id is listener | index << 8.
+
+; edi = socket id. eax = its fd.
+listener_fd:
+	mov	eax,edi
+	and	eax,0xFF
+	imul	eax,eax,MAX_WORKERS
+	mov	ecx,edi
+	shr	ecx,8
+	add	eax,ecx
+	mov	eax,[g_lfd+rax*4]
+	ret
+
+; Call rsi for every socket id of this worker (in edi). The callback may
+; clobber what a normal routine does.
+for_each_socket:
 	push	rbx
-	xor	ebx,ebx
-.next:
+	push	r12
+	push	r13
+	mov	r13,rsi
+	xor	ebx,ebx				; listener
+.listener:
 	cmp	ebx,[g_plan_listeners]
 	jae	.done
-	mov	edi,ebx
-	call	arm_accept
+	mov	r12d,[g_worker_id]		; socket index
+.socket:
+	cmp	r12d,[g_lsocks+rbx*4]
+	jae	.next
+	mov	edi,r12d
+	shl	edi,8
+	or	edi,ebx
+	call	r13
+	add	r12d,[g_workers]
+	jmp	.socket
+.next:
 	inc	ebx
-	jmp	.next
+	jmp	.listener
 .done:
+	pop	r13
+	pop	r12
 	pop	rbx
 	ret
 
-; edi = listener.
+; Multishot accept into direct descriptors on every socket of this worker.
+arm_accepts:
+	lea	rsi,[arm_accept]
+	jmp	for_each_socket
+
+; edi = socket id.
 arm_accept:
 	push	rbx
 	mov	ebx,edi
 	call	ring_get_sqe
 	mov	byte [rax+SQE_OPCODE],IORING_OP_ACCEPT
 	mov	word [rax+SQE_IOPRIO],IORING_ACCEPT_MULTISHOT
-	mov	ecx,ebx
-	imul	ecx,ecx,MAX_WORKERS
-	add	ecx,[g_worker_id]
-	mov	ecx,[g_lfd+rcx*4]
+	push	rax
+	mov	edi,ebx
+	call	listener_fd
+	mov	ecx,eax
+	pop	rax
 	mov	[rax+SQE_FD],ecx
 	mov	dword [rax+SQE_FILE_INDEX],IORING_FILE_INDEX_ALLOC
 	mov	ecx,ebx
@@ -404,7 +440,7 @@ arm_accept:
 	pop	rbx
 	ret
 
-; ebx = listener, r14 = direct descriptor or -errno, r15d = flags.
+; ebx = socket id, r14 = direct descriptor or -errno, r15d = flags.
 on_accept:
 	test	r15d,IORING_CQE_F_MORE
 	jnz	@f
@@ -413,6 +449,7 @@ on_accept:
 	mov	edi,ebx
 	call	arm_accept			; the multishot ended: re-arm it
 @@:
+	and	ebx,0xFF			; the listener
 	test	r14,r14
 	js	.error
 	; room on this listener?
