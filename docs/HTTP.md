@@ -41,9 +41,10 @@ client ◀─ response head + body ◀──────────────
   the same way (hop-by-hop dropped, framing chosen). Bodies follow the
   rules: none for HEAD, 1xx, 204, 304; `Content-Length`; chunked; or
   until the backend closes (then chunked towards an HTTP/1.1 client).
-* 1xx responses: okena answers `Expect: 100-continue` itself; a 101 is
-  an upgrade (below). **Today** other 1xx from the backend (103 Early
-  Hints) are dropped; forwarding them is planned.
+* 1xx responses: okena answers `Expect: 100-continue` itself (a 100 from
+  the backend is dropped); a 101 is an upgrade (below); any other 1xx
+  (103 Early Hints) is passed to the client before the final response,
+  hop-by-hop fields dropped, unless the client speaks HTTP/1.0.
 * When the exchange ends cleanly and both sides allow it, the client
   connection waits for its next request and the upstream connection goes
   back to its pool.

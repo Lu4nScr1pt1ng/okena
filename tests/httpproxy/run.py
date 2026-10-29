@@ -91,6 +91,12 @@ def backend():
                         c.sendall(data.upper())
                 if target.startswith("/slow"):
                     time.sleep(3)
+                if target.startswith("/hints"):
+                    c.sendall(b"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 103 Early Hints\r\n"
+                              b"Link: </app.css>; rel=preload\r\nConnection: x-hop\r\nX-Hop: 1\r\n\r\n")
+                    time.sleep(0.05)
+                    c.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                    continue
                 if target.startswith("/surprise101"):
                     c.sendall(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\r\n")
                     return
@@ -525,6 +531,22 @@ try:
     names = {n.lower(): v for n, v in e["fields"]}
     check("without trusted_proxies the client's claims are dropped",
           names.get("x-forwarded-for") == "127.0.0.1" and names.get("x-forwarded-proto") == "http", str(names))
+
+    # 1xx: 103 Early Hints passed on, 100 from the backend dropped
+    c = Client()
+    c.send(req(b"GET", b"/hints"))
+    first = c.response(head=True)
+    final = c.response()
+    check("103 Early Hints forwarded before the final response", first is not None and first[0] == 103
+          and first[1].get("link") == "</app.css>; rel=preload" and "x-hop" not in first[1]
+          and final is not None and final[0] == 200 and final[2] == b"ok", f"{first} {final}")
+    c.send(req(b"GET", b"/api/after-hints"))
+    r = c.response()
+    check("and the connection goes on", r is not None and r[0] == 200)
+    c = Client()
+    c.send(b"GET /hints HTTP/1.0\r\n\r\n")
+    r = c.response()
+    check("an HTTP/1.0 client gets no 1xx", r is not None and r[0] == 200 and r[2] == b"ok", str(r))
 
     # request ids
     import re

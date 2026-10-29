@@ -70,6 +70,7 @@ HS_RESP_READ	= 9
 HS_ERROR_SEND	= 10		; writing an error, then closing
 HS_TUNNEL_UP	= 11		; 101 sent: bytes the backend sent early go to the client
 HS_TUNNEL_IN	= 12		; then bytes the client sent early go to the backend
+HS_INTERIM_SEND	= 13		; writing a 1xx (103 Early Hints...) before the final response
 
 BK_NONE		= 0
 BK_LENGTH	= 1
@@ -93,6 +94,8 @@ HX_AVOID	= 8192		; the next connect avoids S_SERVER
 HX_TRUSTED	= 16384		; the peer is in trusted_proxies: its X-Forwarded-* count
 HX_XFPROTO	= 32768		; and it sent X-Forwarded-Proto (forwarded as is)
 HX_RIDKEPT	= 65536		; the request id is the one a trusted proxy sent
+HX_HTTP10	= 131072	; the client speaks HTTP/1.0 (no 1xx for it)
+HX_INTERIM	= 262144	; the head being written is an interim (1xx) one
 
 SIDE_CLIENT	= 0
 SIDE_UP		= 1
@@ -250,7 +253,7 @@ http_request:
 @@:
 	cmp	dword [r14+HM_VERSION],10
 	jne	@f
-	or	dword [r15+H_FLAGS],HX_CLOSE	; HTTP/1.0 clients: one exchange
+	or	dword [r15+H_FLAGS],HX_CLOSE or HX_HTTP10	; HTTP/1.0 clients: one exchange
 @@:
 	cmp	dword [r14+HM_MLEN],4
 	jne	@f
@@ -1160,7 +1163,12 @@ http_send_done:
 	je	http_tunnel_in
 	cmp	edx,HS_TUNNEL_IN
 	je	http_tunnel_start
+	cmp	edx,HS_INTERIM_SEND
+	je	.interim_sent
 	ret
+.interim_sent:
+	mov	dword [r15+H_STATE],HS_RESP_HEAD
+	jmp	http_resp_head			; the next head may be in UP already
 .continued:
 	mov	dword [r15+H_STATE],HS_CONNECT
 	jmp	h_connect
@@ -1355,9 +1363,27 @@ http_resp_head:
 	mov	eax,[r14+HM_STATUS]
 	cmp	eax,200
 	jae	.final
-	; 1xx: 100 Continue was ours already; others are dropped (for now)
+	; 1xx: 100 Continue was ours already; 101 is an upgrade; others (103
+	; Early Hints...) go to the client before the final response, unless
+	; it speaks HTTP/1.0
 	cmp	eax,101
-	jne	http_resp_head
+	je	.switching
+	cmp	eax,100
+	je	http_resp_head
+	test	dword [r15+H_FLAGS],HX_HTTP10
+	jnz	http_resp_head
+	or	dword [r15+H_FLAGS],HX_INTERIM
+	call	http_write_response_head
+	pushf
+	and	dword [r15+H_FLAGS],not HX_INTERIM
+	popf
+	jc	http_resp_head			; too large to pass on: dropped
+	mov	dword [r15+H_STATE],HS_INTERIM_SEND
+	mov	ecx,SIDE_CLIENT
+	lea	rdi,[r15+H_OUT]
+	mov	esi,[r15+H_OUTLEN]
+	jmp	h_send
+.switching:
 	test	dword [r15+H_FLAGS],HX_UPGRADE
 	jz	.bad				; switching protocols nobody asked for
 	push	rax
@@ -1490,6 +1516,11 @@ http_write_response_head:
 	inc	ebx
 	jmp	.field
 .own:
+	test	dword [r15+H_FLAGS],HX_INTERIM
+	jz	@f
+	memit_x 13,10				; an interim head: no framing of its own
+	jmp	.done
+@@:
 	test	dword [r15+H_FLAGS],HX_UPGRADE
 	jz	@f
 	memit_x 'Connection: upgrade',13,10,13,10
