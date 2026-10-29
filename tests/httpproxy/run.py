@@ -21,8 +21,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 BIN = ROOT / "build" / "okena"
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "auto"
 # ports 26000-26999: this suite's own range
-BASE = 26000 + os.getpid() % 99 * 10 + (5 if ENGINE == "epoll" else 0)
-BACK, LST, DEAD, QUICK, MET = BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4
+BASE = 26000 + os.getpid() % 99 * 20 + (10 if ENGINE == "epoll" else 0)
+BACK, LST, DEAD, QUICK, MET, BAD, BAD2 = (BASE + i for i in range(7))
 
 
 def read_message(f, head_only=False):
@@ -134,6 +134,34 @@ def backend():
     threading.Thread(target=loop, daemon=True).start()
 
 
+BAD_HITS = {BAD: 0, BAD2: 0}
+
+
+def failing_backend(port):
+    """Answers every request with 503, keep-alive; counts them."""
+    s = socket.socket()
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(("127.0.0.1", port))
+    s.listen(128)
+
+    def handle(c):
+        f = c.makefile("rb")
+        try:
+            while read_message(f) is not None:
+                BAD_HITS[port] += 1
+                c.sendall(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 4\r\n\r\nbusy")
+        except Exception:
+            pass
+        finally:
+            c.close()
+
+    def loop():
+        while True:
+            c, _ = s.accept()
+            threading.Thread(target=handle, args=(c,), daemon=True).start()
+    threading.Thread(target=loop, daemon=True).start()
+
+
 class Client:
     def __init__(self, port=None):
         self.s = socket.create_connection(("127.0.0.1", port or LST), timeout=5)
@@ -178,6 +206,8 @@ def check(name, ok, detail=""):
 
 
 backend()
+failing_backend(BAD)
+failing_backend(BAD2)
 tmp = pathlib.Path(tempfile.mkdtemp())
 conf = tmp / "okena.conf"
 conf.write_text(f"""
@@ -191,9 +221,15 @@ http 127.0.0.1:{LST} {{
     route /api/exact {{ to 127.0.0.1:{BACK} }}
     route /only-get GET {{ to 127.0.0.1:{BACK} }}
     route /down/* {{ to 127.0.0.1:{DEAD} }}
+    route /bad/* {{ to 127.0.0.1:{BAD} }}
+    route /retry/* {{ to pool flaky }}
     route /* {{ to 127.0.0.1:{BACK} }}
     host api.t {{ route /* {{ to 127.0.0.1:{DEAD} }} }}
     host *.w.t {{ route /only-wild {{ to 127.0.0.1:{BACK} }} }}
+}}
+pool flaky {{
+    server 127.0.0.1:{BAD2}
+    server 127.0.0.1:{BACK}
 }}
 http 127.0.0.1:{QUICK} {{
     timeout {{ header 1s; response 1s }}
@@ -433,6 +469,40 @@ try:
     r = c.response()
     check("the default response clock (30 s) lets a 3 s backend answer", r is not None and r[0] == 200)
 
+    # retries and outliers
+    c = Client()
+    c.send(req(b"GET", b"/bad/x"))
+    r = c.response()
+    check("GET to a failing backend: retried once, then its 503", r is not None and r[0] == 503
+          and BAD_HITS[BAD] == 2, f"{r and r[0]} hits={BAD_HITS[BAD]}")
+    c.send(req(b"POST", b"/bad/x", body=b"once"))
+    r = c.response()
+    check("a request with a body is never sent twice", r is not None and r[0] == 503
+          and BAD_HITS[BAD] == 3, f"{r and r[0]} hits={BAD_HITS[BAD]}")
+    codes = []
+    for i in range(40):
+        c = Client()
+        c.send(req(b"GET", b"/retry/%d" % i))
+        r = c.response()
+        codes.append(r and r[0])
+        c.s.close()
+        time.sleep(0.03)
+    check("GETs to a pool with a failing server all succeed (retried elsewhere)",
+          codes == [200] * 40 and BAD_HITS[BAD2] > 0, f"{codes} hits={BAD_HITS[BAD2]}")
+    log.seek(0)
+    check("the failing server is ejected after 5 failing answers",
+          f"127.0.0.1:{BAD2} ejected for 10 s after 5 failing answers" in log.read())
+    before = BAD_HITS[BAD2]
+    codes = []
+    for i in range(10):
+        c = Client()
+        c.send(req(b"POST", b"/retry/p", body=b"x"))
+        r = c.response()
+        codes.append(r and r[0])
+        c.s.close()
+    check("while ejected it gets no traffic (POSTs, not retried, all succeed)",
+          codes == [200] * 10 and BAD_HITS[BAD2] == before, f"{codes} {before}->{BAD_HITS[BAD2]}")
+
     # metrics: what the QUICK listener answered above, by class and source
     time.sleep(1.2)                     # workers publish once a second
     m = socket.create_connection(("127.0.0.1", MET), timeout=5)
@@ -449,6 +519,9 @@ try:
     check("metrics: okena's 408 and 504 counted as its own 4xx and 5xx",
           vals.get('code="4xx",source="okena"}') == 1 and vals.get('code="5xx",source="okena"}') == 1)
     check("metrics: no backend 5xx", vals.get('code="5xx",source="backend"}') == 0)
+    retries = [int(l.rsplit(" ", 1)[1]) for l in text.decode().splitlines()
+               if l.startswith("okena_http_retries_total{") and f':{LST}"' in l]
+    check("metrics: retries counted", retries and retries[0] >= 1, str(retries))
 
     log.seek(0)
     check("no crash", "killed by signal" not in log.read() and p.poll() is None)

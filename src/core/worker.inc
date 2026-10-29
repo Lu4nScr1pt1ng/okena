@@ -267,6 +267,7 @@ tick_work:
 	inc	qword [rax]
 	call	idle_expire
 	call	ph_expire
+	call	retry_budget_tick
 	cmp	dword [g_draining],0
 	je	.done
 	mov	eax,[g_tick]

@@ -408,6 +408,7 @@ OFF_S_FAILS	= g_st_s_fails - g_st_begin
 OFF_L_EVICTED	= g_st_l_evicted - g_st_begin
 OFF_SRC_OPEN	= g_st_src_open - g_st_begin
 OFF_L_HTTP	= g_st_l_http - g_st_begin
+OFF_L_RETRIES	= g_st_l_retries - g_st_begin
 
 ; rdi = output, ebx = listener: {listener="..."
 listener_label:
@@ -587,6 +588,26 @@ metrics_render:
 	inc	ebx
 	jmp	.l6
 .l6_done:
+	memit '# HELP okena_http_retries_total Requests sent again to another server after a failing answer.',10
+	memit '# TYPE okena_http_retries_total counter',10
+	xor	ebx,ebx
+.l7:
+	cmp	ebx,[g_plan_listeners]
+	jae	.l7_done
+	imul	rax,rbx,LS_SIZE
+	cmp	dword [g_listeners+rax+LS_KIND],LK_HTTP
+	jne	.l7_next
+	memit 'okena_http_retries_total'
+	call	listener_label
+	memit '} '
+	lea	rcx,[OFF_L_RETRIES+rbx*8]
+	call	stats_sum_q
+	call	fmt_u64
+	memit 10
+.l7_next:
+	inc	ebx
+	jmp	.l7
+.l7_done:
 	; backends
 	memit '# TYPE okena_backend_connects_total counter',10
 	mov	r12d,OFF_S_CONNECTS

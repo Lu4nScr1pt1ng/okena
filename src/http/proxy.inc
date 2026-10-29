@@ -69,6 +69,9 @@ HX_NOBODY	= 128		; the request has no body (safe to send twice)
 HX_NOPOOL	= 256		; connect afresh (a reused one just failed)
 HX_UPKEEP	= 512		; the upstream connection may go back to the pool
 HX_UPGRADE	= 1024		; the client asks to switch protocols (WebSocket...)
+HX_IDEMPOTENT	= 2048		; GET, HEAD, PUT, DELETE, OPTIONS: may be sent twice
+HX_RETRIED	= 4096		; this request was sent again, to another server
+HX_AVOID	= 8192		; the next connect avoids S_SERVER
 
 SIDE_CLIENT	= 0
 SIDE_UP		= 1
@@ -201,6 +204,13 @@ http_request:
 	mov	[r15+H_INOFF],ecx		; the body (or the next request) follows
 	; what this exchange has to do
 	lea	r14,[g_hm]
+	mov	rdi,[r14+HM_METHOD]
+	mov	esi,[r14+HM_MLEN]
+	call	method_bit
+	test	eax,RM_GET or RM_HEAD or RM_PUT or RM_DELETE or RM_OPTIONS
+	jz	@f
+	or	dword [r15+H_FLAGS],HX_IDEMPOTENT
+@@:
 	mov	eax,[r14+HM_FLAGS]
 	test	eax,HMF_CLOSE
 	jz	@f
@@ -249,6 +259,11 @@ http_request:
 	cmp	dword [r15+H_BODY],BK_NONE
 	je	@f
 	or	dword [r15+H_FLAGS],HX_CONTINUE
+@@:
+	add	dword [g_retry_tokens],RETRY_PER_REQ
+	cmp	dword [g_retry_tokens],RETRY_CAP
+	jbe	@f
+	mov	dword [g_retry_tokens],RETRY_CAP
 @@:
 	call	http_route			; eax = pool or -1
 	cmp	eax,-1
@@ -736,6 +751,7 @@ http_recv_done:
 	cmp	dword [r15+H_UPLEN],0
 	jne	.bad_gateway
 	call	http_retry_fresh		; returns only when it may not retry
+	call	http_gateway_failed		; or elsewhere, within the budget
 	jmp	.bad_gateway
 @@:
 	add	[r15+H_UPLEN],eax
@@ -1001,6 +1017,8 @@ http_resp_head:
 	mov	edi,ebx
 	call	ph_disarm
 	pop	rax
+	mov	edi,eax
+	call	http_backend_status		; may send the request elsewhere
 	h_rec
 	lea	r14,[g_hm]
 	mov	edi,eax
@@ -1248,6 +1266,135 @@ http_last_chunk:
 	mov	esi,str_last_chunk.len
 	jmp	h_send
 
+; ------------------------------------------------- retries and outliers
+
+; Outlier ejection (per worker, like the connect failures): a server that
+; answers OUTLIER_5XX 5xx in a row (or times out) is ejected for
+; EJECT_TICKS; any other answer resets its count.
+;
+; Retries: a request that is idempotent and has no body goes once more
+; to another server when the backend answers 502, 503 or 504 or closes
+; before any response byte. A budget keeps retries from multiplying a
+; failure: per worker, at most a fifth of the requests plus 10 per second
+; (tokens in tenths of a retry).
+OUTLIER_5XX	= 5
+RETRY_COST	= 10
+RETRY_PER_REQ	= 2
+RETRY_FLOOR	= 100
+RETRY_CAP	= 1000
+
+bss
+	g_sv_5xx	rd MAX_SERVERS
+	g_retry_tokens	dd ?
+end bss
+
+; Tick: the budget's floor.
+retry_budget_tick:
+	cmp	dword [g_retry_tokens],RETRY_FLOOR
+	jae	@f
+	mov	dword [g_retry_tokens],RETRY_FLOOR
+@@:
+	ret
+
+; edi = server: one more failing answer. Keeps rax, rbx.
+server_5xx:
+	cmp	edi,NIL
+	je	.done
+	inc	dword [g_sv_5xx+rdi*4]
+	cmp	dword [g_sv_5xx+rdi*4],OUTLIER_5XX
+	jb	.done
+	mov	dword [g_sv_5xx+rdi*4],0
+	mov	ecx,[g_sv_down+rdi*4]
+	cmp	ecx,[g_tick]
+	ja	.done				; already ejected
+	mov	ecx,[g_tick]
+	add	ecx,EJECT_TICKS
+	mov	[g_sv_down+rdi*4],ecx
+	push	rax
+	push	rdi
+	call	log_begin
+	out_lit 'backend '
+	mov	rdi,[rsp]
+	call	log_server
+	out_lit ' ejected for 10 s after 5 failing answers in a row'
+	call	log_end
+	pop	rdi
+	pop	rax
+.done:
+	ret
+
+; ebx = session, edi = status of the backend's final answer. Keeps rax.
+; Does not return when the request goes to another server.
+http_backend_status:
+	push	rax
+	call	session_ptr
+	mov	ecx,[rax+S_SERVER]
+	cmp	edi,500
+	jae	.failing
+	cmp	ecx,NIL
+	je	.done
+	mov	dword [g_sv_5xx+rcx*4],0
+.done:
+	pop	rax
+	ret
+.failing:
+	push	rdi
+	mov	edi,ecx
+	call	server_5xx
+	pop	rdi
+	cmp	edi,502
+	jb	.done
+	cmp	edi,504
+	ja	.done
+	call	http_may_retry
+	jnc	.done
+	add	rsp,16				; rax, and we do not return
+	jmp	http_retry_other
+
+; ebx = session: the backend closed before answering. Returns when the
+; request may not go elsewhere.
+http_gateway_failed:
+	call	session_ptr
+	mov	edi,[rax+S_SERVER]
+	call	server_5xx
+	call	http_may_retry
+	jnc	.no
+	add	rsp,8
+	jmp	http_retry_other
+.no:
+	ret
+
+; ebx = session. CF when its request may be sent once more (and the
+; budget is charged).
+http_may_retry:
+	h_rec
+	mov	eax,[r15+H_FLAGS]
+	and	eax,HX_NOBODY or HX_IDEMPOTENT or HX_RETRIED or HX_STARTED or HX_UPGRADE
+	cmp	eax,HX_NOBODY or HX_IDEMPOTENT
+	jne	.no
+	cmp	dword [g_retry_tokens],RETRY_COST
+	jb	.no
+	sub	dword [g_retry_tokens],RETRY_COST
+	stc
+	ret
+.no:
+	clc
+	ret
+
+; ebx = session: send the request (its head is still in OUT) to another
+; server, on a new or pooled connection.
+http_retry_other:
+	h_rec
+	or	dword [r15+H_FLAGS],HX_RETRIED or HX_AVOID
+	and	dword [r15+H_FLAGS],not (HX_REUSED or HX_UPKEEP)
+	call	session_ptr
+	mov	eax,[rax+S_LST]
+	inc	qword [g_st_l_retries+rax*8]
+	call	h_upclose
+	h_rec
+	mov	dword [r15+H_STATE],HS_CONNECT
+	jmp	h_connect
+
 ; ------------------------------------------------------------ metrics
 
 ; edi = status, esi = 0 when the backend's, 5 when okena's own. ebx =
@@ -1434,6 +1581,9 @@ http_phase_expired:
 .response:
 	cmp	dword [r15+H_STATE],HS_RESP_HEAD
 	jne	.out
+	call	session_ptr
+	mov	edi,[rax+S_SERVER]
+	call	server_5xx			; a silent backend counts as failing
 	mov	edi,504
 	jmp	http_error
 .out:

@@ -72,6 +72,22 @@ response byte, the request is sent again on a new connection if it is
 idempotent or had no body; this does not count against the retry budget.
 The pool's idle timeout defaults below the common backend values.
 
+## Retries and outliers
+
+A request that is idempotent (GET, HEAD, PUT, DELETE, OPTIONS) and has
+no body is sent once more, to another server when the pool has one, when
+the backend answers 502, 503 or 504 or closes before any response byte.
+Its head is still in the session's output buffer, so nothing is parsed
+again. A per-worker budget stops retries from multiplying an outage: at
+most a fifth of the requests, plus 10 per second
+(`okena_http_retries_total` counts them). A request with a body is never
+sent twice.
+
+Outlier ejection works like the connect failures of L4: a server that
+gives 5 failing answers in a row (5xx, or no response head in time) is
+left out for 10 s by that worker; any other answer resets its count.
+When every server is out, they are all used again (panic), as in L4.
+
 ## Routing
 
 Routes are compiled per listener:
@@ -111,6 +127,5 @@ doubt.
 
 ## What comes after
 
-Retries with budgets, outlier detection on 5xx, access logs, HTTP/2
-(phase 4), then the gateway filters of phase 5 on the same exchange
-structure.
+Access logs, `trusted_proxies`, HTTP/2 (phase 4), then the gateway
+filters of phase 5 on the same exchange structure.
