@@ -255,7 +255,10 @@ ep_dispatch:
 	mov	ecx,[rax+S_LST]
 	imul	rcx,rcx,LS_SIZE
 	cmp	dword [g_listeners+rcx+LS_KIND],LK_HTTP
-	je	hep_event
+	jne	@f
+	test	dword [rax+S_FLAGS],SF_TUNNEL
+	jz	hep_event
+@@:
 	; writable first: a flushed buffer lets the source be read again
 	mov	r12d,edi
 	mov	r13d,r8d

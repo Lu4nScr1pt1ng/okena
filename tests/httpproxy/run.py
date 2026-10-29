@@ -77,6 +77,21 @@ def backend():
                 echo = json.dumps({"method": method, "target": target, "fields": fields,
                                    "body_len": len(body),
                                    "body_sha": hashlib.sha256(body).hexdigest()}).encode()
+                lower = {n.lower(): v for n, v in fields}
+                if target.startswith("/ws") and lower.get("upgrade") == "websocket":
+                    hdr = json.dumps({"upgrade": lower.get("upgrade"),
+                                      "connection": lower.get("connection")}).encode()
+                    # 101, then bytes of the new protocol right behind it
+                    c.sendall(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
+                              b"Connection: Upgrade\r\nX-Seen: %s\r\n\r\nHELLO" % hdr.hex().encode())
+                    while True:
+                        data = f.read1(65536)
+                        if not data:
+                            return
+                        c.sendall(data.upper())
+                if target.startswith("/surprise101"):
+                    c.sendall(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\r\n")
+                    return
                 if target.startswith("/chunked"):
                     c.sendall(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
                     for i in range(0, len(echo), 7):
@@ -333,6 +348,43 @@ try:
     c.send(b"GET /api/v10 HTTP/1.0\r\n\r\n")
     r = c.response()
     check("HTTP/1.0 client: answered, then closed", r[0] == 200 and r[1].get("connection") == "close" and c.closed())
+
+    # upgrades: after the 101 the connection is a byte tunnel
+    c = Client()
+    c.send(req(b"GET", b"/ws", b"Upgrade: websocket\r\nConnection: Upgrade\r\n") + b"early")
+    r = c.response(head=True)
+    seen = json.loads(bytes.fromhex(r[1].get("x-seen", "")))
+    check("101 forwarded with Upgrade and Connection", r[0] == 101 and r[1].get("upgrade") == "websocket"
+          and r[1].get("connection", "").lower() == "upgrade", str(r[:2]))
+    check("backend saw Upgrade: websocket and Connection: upgrade",
+          seen == {"upgrade": "websocket", "connection": "upgrade"}, str(seen))
+    got = b""
+    c.s.settimeout(3)
+    while len(got) < 10:
+        got += c.f.read1(100)
+    check("bytes sent with the 101 and with the request both cross", got == b"HELLOEARLY", repr(got))
+    big = os.urandom(3 << 20).hex().encode()[:3 << 20].lower()
+    threading.Thread(target=c.s.sendall, args=(big,), daemon=True).start()
+    got = b""
+    while len(got) < len(big):
+        piece = c.f.read1(1 << 20)
+        if not piece:
+            break
+        got += piece
+    check("3 MB both ways through the tunnel", got == big.upper())
+    c.s.shutdown(socket.SHUT_WR)
+    check("client end closes the tunnel", c.f.read1(10) == b"")
+    c = Client()
+    c.send(req(b"GET", b"/ws", b"Upgrade: h2c\r\nConnection: Upgrade\r\n"))
+    r = c.response()
+    check("upgrade refused by the backend: a normal response", r is not None and r[0] == 200, str(r and r[0]))
+    c.send(req(b"GET", b"/api/after"))
+    r = c.response()
+    check("and the connection keeps serving requests", r is not None and echo_of(r)["target"] == "/api/after")
+    c = Client()
+    c.send(req(b"GET", b"/surprise101"))
+    r = c.response()
+    check("101 nobody asked for -> 502", r is not None and r[0] == 502, str(r and r[0]))
 
     log.seek(0)
     check("no crash", "killed by signal" not in log.read() and p.poll() is None)

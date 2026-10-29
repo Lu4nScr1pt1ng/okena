@@ -50,6 +50,8 @@ HS_RESP_HEAD	= 7		; reading a response head
 HS_RESP_SEND	= 8		; writing response head or body to the client
 HS_RESP_READ	= 9
 HS_ERROR_SEND	= 10		; writing an error, then closing
+HS_TUNNEL_UP	= 11		; 101 sent: bytes the backend sent early go to the client
+HS_TUNNEL_IN	= 12		; then bytes the client sent early go to the backend
 
 BK_NONE		= 0
 BK_LENGTH	= 1
@@ -66,6 +68,7 @@ HX_REUSED	= 64		; the upstream connection came from the pool
 HX_NOBODY	= 128		; the request has no body (safe to send twice)
 HX_NOPOOL	= 256		; connect afresh (a reused one just failed)
 HX_UPKEEP	= 512		; the upstream connection may go back to the pool
+HX_UPGRADE	= 1024		; the client asks to switch protocols (WebSocket...)
 
 SIDE_CLIENT	= 0
 SIDE_UP		= 1
@@ -206,7 +209,9 @@ http_request:
 	or	dword [r15+H_FLAGS],HX_HEAD
 @@:
 	test	eax,HMF_UPGRADE
-	jnz	.upgrade
+	jz	@f
+	or	dword [r15+H_FLAGS],HX_UPGRADE
+@@:
 	; body
 	mov	dword [r15+H_BODY],BK_NONE
 	test	eax,HMF_CHUNKED
@@ -265,9 +270,6 @@ http_request:
 	jmp	http_error
 .no_route:
 	mov	edi,404
-	jmp	http_error
-.upgrade:
-	mov	edi,501				; WebSocket and other upgrades: next
 	jmp	http_error
 .head_too_large:
 	mov	edi,431
@@ -550,7 +552,18 @@ http_write_request_head:
 	imul	r14,rbx,HF_SIZE
 	lea	r14,[r12+HM_HDRS+r14]
 	test	dword [r14+HF_FLAGS],HFF_HOP
+	jz	.end_to_end
+	; hop-by-hop, but an upgrade carries its Upgrade field to the backend
+	test	dword [r15+H_FLAGS],HX_UPGRADE
+	jz	.skip
+	push	rdi
+	mov	rdi,r14
+	lea	rsi,[hn_upgrade]
+	call	hf_is
+	pop	rdi
 	jnz	.skip
+	jmp	.copy
+.end_to_end:
 	push	rdi
 	irp name, hn_x_forwarded_for, hn_x_forwarded_proto, hn_x_forwarded_host, hn_forwarded, hn_expect
 		mov	rdi,r14
@@ -559,6 +572,7 @@ http_write_request_head:
 		jz	.skip_pop
 	end irp
 	pop	rdi
+.copy:
 	mov	eax,[r14+HF_NLEN]
 	add	eax,[r14+HF_VLEN]
 	add	eax,4
@@ -609,6 +623,10 @@ http_write_request_head:
 	jne	.conn
 	memit_x 'Transfer-Encoding: chunked',13,10
 .conn:
+	test	dword [r15+H_FLAGS],HX_UPGRADE
+	jz	@f
+	memit_x 'Connection: upgrade',13,10
+@@:
 	memit_x 13,10				; HTTP/1.1 keep-alive towards the backend
 	lea	rax,[r15+H_OUT]
 	sub	rdi,rax
@@ -747,6 +765,10 @@ http_send_done:
 	je	.resp
 	cmp	edx,HS_ERROR_SEND
 	je	.close
+	cmp	edx,HS_TUNNEL_UP
+	je	http_tunnel_in
+	cmp	edx,HS_TUNNEL_IN
+	je	http_tunnel_start
 	ret
 .continued:
 	mov	dword [r15+H_STATE],HS_CONNECT
@@ -754,6 +776,8 @@ http_send_done:
 .resp:
 	test	dword [r15+H_FLAGS],HX_LASTCHUNK
 	jnz	http_exchange_done
+	test	dword [r15+H_FLAGS],HX_UPGRADE
+	jnz	http_tunnel_up
 	jmp	http_resp_pump
 .failed:
 	cmp	ecx,SIDE_UP
@@ -935,9 +959,15 @@ http_resp_head:
 	jae	.final
 	; 1xx: 100 Continue was ours already; others are dropped (for now)
 	cmp	eax,101
-	je	.bad				; no upgrades yet
-	jmp	http_resp_head
+	jne	http_resp_head
+	test	dword [r15+H_FLAGS],HX_UPGRADE
+	jz	.bad				; switching protocols nobody asked for
+	mov	[r15+H_STATUS],eax
+	mov	dword [r15+H_RBODY],BK_NONE
+	and	dword [r15+H_FLAGS],not HX_CHUNKOUT
+	jmp	.write
 .final:
+	and	dword [r15+H_FLAGS],not HX_UPGRADE	; the backend did not switch
 	mov	[r15+H_STATUS],eax
 	cmp	dword [r14+HM_VERSION],11
 	jne	@f
@@ -1012,7 +1042,16 @@ http_write_response_head:
 	imul	r14,rbx,HF_SIZE
 	lea	r14,[r12+HM_HDRS+r14]
 	test	dword [r14+HF_FLAGS],HFF_HOP
+	jz	.copy
+	test	dword [r15+H_FLAGS],HX_UPGRADE	; a 101 keeps its Upgrade field
+	jz	.skip
+	push	rdi
+	mov	rdi,r14
+	lea	rsi,[hn_upgrade]
+	call	hf_is
+	pop	rdi
 	jnz	.skip
+.copy:
 	mov	eax,[r14+HF_NLEN]
 	add	eax,[r14+HF_VLEN]
 	add	eax,4
@@ -1033,6 +1072,11 @@ http_write_response_head:
 	inc	ebx
 	jmp	.field
 .own:
+	test	dword [r15+H_FLAGS],HX_UPGRADE
+	jz	@f
+	memit_x 'Connection: upgrade',13,10,13,10
+	jmp	.done
+@@:
 	mov	eax,[r15+H_RBODY]
 	test	dword [r15+H_FLAGS],HX_CHUNKOUT
 	jz	@f
@@ -1064,6 +1108,7 @@ http_write_response_head:
 @@:
 	mov	word [rdi],0x0A0D
 	add	rdi,2
+.done:
 	lea	rax,[r15+H_OUT]
 	sub	rdi,rax
 	mov	[r15+H_OUTLEN],edi
@@ -1163,6 +1208,56 @@ http_last_chunk:
 	lea	rdi,[str_last_chunk]
 	mov	esi,str_last_chunk.len
 	jmp	h_send
+
+; ------------------------------------------------------------- tunnel
+
+; 101 sent. Bytes that arrived after the heads go first: the backend's
+; to the client, then the client's to the backend; then the session is a
+; plain L4 tunnel (the same relay as tcp listeners).
+http_tunnel_up:
+	h_rec
+	mov	dword [r15+H_STATE],HS_TUNNEL_UP
+	mov	esi,[r15+H_UPLEN]
+	mov	eax,[r15+H_UPOFF]
+	sub	esi,eax
+	jz	http_tunnel_in
+	mov	[r15+H_UPOFF],esi		; (all taken)
+	lea	rdi,[r15+H_UP+rax]
+	mov	ecx,SIDE_CLIENT
+	jmp	h_send
+
+http_tunnel_in:
+	h_rec
+	mov	dword [r15+H_STATE],HS_TUNNEL_IN
+	mov	esi,[r15+H_INLEN]
+	mov	eax,[r15+H_INOFF]
+	sub	esi,eax
+	jz	http_tunnel_start
+	mov	[r15+H_INOFF],esi
+	lea	rdi,[r15+H_IN+rax]
+	mov	ecx,SIDE_UP
+	jmp	h_send
+
+http_tunnel_start:
+	call	session_ptr
+	or	dword [rax+S_FLAGS],SF_TUNNEL
+	cmp	dword [g_engine],ENGINE_EPOLL
+	je	.epoll
+	jmp	start_relay
+.epoll:
+	push	rbx
+	mov	edi,ebx
+	mov	esi,EK_CLIENT
+	call	ep_pump
+	pop	rbx
+	call	session_ptr
+	cmp	dword [rax+S_STATE],ST_OPEN
+	jne	.out
+	mov	edi,ebx
+	mov	esi,EK_UPSTREAM
+	jmp	ep_pump
+.out:
+	ret
 
 ; One exchange is over: drop the upstream connection, then the next
 ; request on the client connection, or close it.

@@ -47,6 +47,18 @@ client ◀─ response head + body ◀──────────────
   connection waits for its next request and the upstream connection goes
   back to its pool.
 
+## Upgrades (WebSocket and others)
+
+A request with `Connection: upgrade` and `Upgrade` keeps its `Upgrade`
+field and is sent with `Connection: upgrade`. When the backend answers
+101, the 101 goes to the client with the same two fields; then the bytes
+either side sent behind its head (the backend's first frames, the
+client's early data) are delivered, and the session becomes a plain L4
+tunnel: the same relay as `tcp` listeners, with its backpressure, idle
+timeout and half-close. Its upstream connection never returns to a
+pool. Any other answer is an ordinary response and the connection keeps
+serving requests; a 101 to a request that did not ask for one is a 502.
+
 ## Upstream connection pools
 
 Per worker, per server: a LIFO stack of idle connections (the warmest
@@ -93,7 +105,6 @@ doubt.
 
 ## What comes after
 
-WebSocket and other upgrades (the session becomes an L4 tunnel after the
-101), retries with budgets, outlier detection on 5xx, access logs, HTTP/2
+Retries with budgets, outlier detection on 5xx, access logs, HTTP/2
 (phase 4), then the gateway filters of phase 5 on the same exchange
 structure.

@@ -54,6 +54,7 @@ SF_COUNTED	= 32		; counted in the server's active connections
 SF_RAW		= 64		; the client is a normal descriptor, not a direct one
 SF_PEER		= 128		; has a side record (client address features)
 SF_FDS_CLOSING	= 256		; closing: the descriptors' closes are submitted
+SF_TUNNEL	= 512		; an http session switched to a byte tunnel
 
 ; Jump to target when session ebx belongs to an http listener.
 ; Clobbers rax.
