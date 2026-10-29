@@ -236,6 +236,7 @@ pool api {
     server 10.0.1.10:8080 weight=2
     server 10.0.1.11:8080
     server 10.0.1.12:8080 backup
+    server unix:/run/api.sock
     discover dns api.service.internal port=8080 refresh=ttl
 
     balance least-request          # least-request | peak-ewma | round-robin
@@ -251,6 +252,66 @@ pool api {
     health http GET /healthz every=2s timeout=500ms expect=200..299
     outlier errors=5 eject=30s max_ejected=50%
     slow_start 30s
+}
+```
+
+## Sites, caching and the edge
+
+```
+https example.com www.example.com {
+    canonical example.com              # www -> apex, 301
+    headers preset=secure              # HSTS, nosniff, frame and referrer policy
+    compress gzip zstd min=1KiB
+
+    route /assets/* {
+        files /srv/site precompressed=br,zst,gz cache=immutable
+    }
+    route /api/* {
+        idempotency header=idempotency-key ttl=24h
+        hold 10s                       # wait for a pool that is restarting
+        to pool api
+    }
+    route /webhooks/* {
+        body raw                       # forwarded byte for byte, for signatures
+        allow file:/etc/okena/webhook-sources.list
+        to pool api
+    }
+    route /* {
+        files /srv/site fallback=/index.html   # SPA: client-side routes
+        early_hints /assets/app.css /assets/app.js
+    }
+}
+
+https cdn.example.com {
+    trusted_proxies cloudflare         # provider ranges, refreshed
+    cache disk=/var/cache/okena size=200GiB memory=2GiB {
+        key host path query=v,lang
+        stale_if_error 1h
+        slice 4MiB
+    }
+    signed_urls key=${file:/etc/okena/url.key}
+    to pool shield
+}
+
+https grafana.example.com {
+    auth oidc issuer=https://accounts.google.com client=${env:OIDC_ID} secret=${env:OIDC_SECRET} allow_domain=example.com
+    to grafana:3000
+}
+```
+
+## Addons and alerts
+
+```
+addon waf {
+    run /usr/local/bin/coraza-okena
+    phases request_headers request_body
+    timeout 2ms on_error=allow
+}
+
+alerts {
+    telegram token=${env:TG_TOKEN} chat=${env:TG_CHAT}
+    webhook https://hooks.example.com/okena
+    on backend_down pool_empty cert_expiring overload
 }
 ```
 

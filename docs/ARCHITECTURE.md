@@ -98,7 +98,7 @@ This is the rule the rest of the design follows from.
 | Access logs | One single-producer/single-consumer ring per worker to the logger. The logger polls the rings on a timer, so the worker makes no syscall to wake it. When a ring is full the line is dropped and counted; the worker never waits for the disk. |
 | Rate limits | Every limit is per instance (all workers together); okena never applies a limit per worker, which would multiply it by the worker count. Token leases: a shared table of buckets (open addressing, 64-byte aligned, one bucket per cache line). A worker takes a batch of tokens with one `lock xadd` and spends them locally; the atomic is paid once per batch, not per request. Lease size adapts to the key's rate: hot keys take big batches, keys near their limit take one token at a time and stay exact. The table has a fixed size; when a flood of new keys fills it, the least recently used keys whose buckets are full (they carry no information) are evicted first, and new keys are admitted under a shared per-route bucket so a key flood cannot bypass the limit. |
 | JWKS, remote keys | Fetched by the control process and published like a backend set. |
-| Caches (HTTP cache, verified tokens) | Per worker. A response cached on one worker is not looked up on another; cross-worker hit rate is traded for zero contention. Request coalescing works per worker. |
+| Caches | Memory tier and verified tokens per worker (no contention). The disk cache is shared: lock-free reads with per-slot versions, inserts by compare-and-swap, append-only segments (see Edge, CDN and caching). |
 | TLS ticket keys | In the plan (read-only), rotated hourly by the supervisor; optionally loaded from a file shared by a fleet of instances. |
 | Supervisor ↔ worker control | Messages over a socketpair read through the worker's own ring. |
 
@@ -382,6 +382,13 @@ recv bundle ─▶ TLS (kTLS) ─▶ parse (SIMD) ─▶ route (compiled) ─▶
   → 400; requests are re-serialised to the upstream from the parsed form,
   never forwarded as raw header bytes. Differential fuzzing against other
   parsers keeps it honest.
+* **Paths** are where proxies and backends disagree and auth is bypassed
+  (`/admin/../public`, `%2e%2e`, `%2F`, `//`, `;` parameters, overlong
+  UTF-8). okena decodes and normalises once for routing, rejects what
+  cannot be normalised safely, and forwards either the normalised path or
+  the original (`path forward=normalized|original`), so routing and the
+  backend see the same resource. Matching is case-sensitive unless a
+  route says otherwise.
 * **Routing** is compiled per listener into a decision structure: exact
   host hash → wildcard host suffix trie → per-host path radix tree (static
   segments, `{params}`, `*` tails) → method bitmask → header/query
@@ -428,7 +435,15 @@ ECN. 0-RTT off by default and, when on, only for routes marked idempotent.
 * SNI selects the certificate; ALPN picks h2/http/1.1; resumption with
   tickets encrypted under keys rotated every hour and shared across
   workers through the plan (read-only, so no lock).
-* ACME (RFC 8555) with HTTP-01 and TLS-ALPN-01, in its own process.
+* ACME (RFC 8555) with HTTP-01 and TLS-ALPN-01, in its own process, and
+  DNS-01 through provider APIs (Cloudflare, Route 53, RFC 2136) for
+  wildcard certificates; staging first on new configs, backoff that
+  respects the CA's rate limits, renewal at two thirds of the lifetime
+  (certificates are getting shorter), the old certificate kept until the
+  new one is live.
+* Certificates from files are watched and swapped without a reload; many
+  certificates (thousands of domains) are indexed by name, wildcard
+  included, and IDNA names are matched in their punycode form.
 * All secret-dependent code is constant time; crypto is tested against
   known-answer vectors, Wycheproof, and differential runs against a
   reference library, as fasm2crud already does for SHA-256 and Argon2.
@@ -444,7 +459,9 @@ ECN. 0-RTT off by default and, when on, only for routes marked idempotent.
 | `source-hash`, `random` | L4 and simple cases |
 | `least-conn` | long-lived connections (WebSocket, tcp) |
 
-* Health: active (TCP, HTTP, gRPC health, TLS handshake), passive outlier
+* Health: active (TCP, HTTP, gRPC health, TLS handshake, and protocol
+  checks that know roles: PostgreSQL primary or standby through
+  `pg_is_in_recovery()`, Redis `role`, MySQL read-only), passive outlier
   detection (consecutive 5xx/gateway errors, success-rate ejection, with
   a maximum ejected share so a bad check cannot empty a pool), slow start
   for recovered and new backends, panic mode (use all backends when too
@@ -459,18 +476,152 @@ ECN. 0-RTT off by default and, when on, only for routes marked idempotent.
 
 ## Gateway features
 
-Authentication (JWT with JWKS for HS/RS/PS/ES/EdDSA, API keys hashed in
-the plan, Basic, mTLS identity, forward-auth to an external service),
-rate limiting (GCRA, local or global through leases, keyed by any request
-attribute), quotas, CORS, header and path rewrites, redirects, request and
-response size limits, IP allow/deny with an LPM trie, HTTP caching (RFC
-9111, per worker, with coalescing and stale-while-revalidate), compression
-(precompressed variants, fast gzip/zstd/brotli later), traffic splitting
-(weights, header/cookie overrides for canaries), mirroring, request
-hedging for tail latency, early hints, static files, and maintenance
-pages. Extensions are composed from built-in filters plus forward-auth;
-there is no scripting runtime, because a scripting runtime is where
-proxies lose their latency.
+Built in, in assembly, compiled into the route only where configured:
+
+* **Identity:** JWT with JWKS (HS/RS/PS/ES/EdDSA, leeway for clock skew),
+  API keys hashed in the plan, Basic, mTLS identity, forward-auth, and a
+  full OIDC login (authorization code + PKCE, encrypted session cookie)
+  so internal tools (Grafana, admin panels, a PaaS dashboard) sit behind
+  "sign in with Google" plus an e-mail or domain allowlist.
+* **Traffic control:** rate limits (GCRA per instance through leases,
+  keyed by any request attribute), quotas, concurrency limits, priorities,
+  IP allow/deny with an LPM trie, GeoIP (MaxMind `.mmdb` reader:
+  `client.country`, `client.asn`) for routing and blocking.
+* **Idempotency keys:** for routes marked `idempotency`, a request with an
+  `Idempotency-Key` header is answered once; a repeat while the first is
+  in flight waits for it, a repeat after it gets the stored response
+  (bounded size and time). A double click or a mobile retry on a flaky
+  network becomes one write, enforced at the edge, on top of whatever the
+  application does.
+* **Shaping requests and responses:** header and path rewrites, redirect
+  maps loaded from files (thousands of 301s in a hash, not a list of
+  rules), trailing-slash and `www` canonicalisation, request and response
+  size limits per route, CORS, security header presets (HSTS, nosniff,
+  frame options, referrer policy).
+* **Compression:** precompressed variants (`.br`, `.zst`, `.gz`) picked by
+  `Accept-Encoding`, and on-the-fly gzip and zstd for text responses
+  (JSON, HTML) above a size threshold, at a fast level, with a CPU budget
+  under the overload manager; brotli on the fly later. On a slow mobile
+  network, a 60 KiB JSON going out as 9 KiB is worth more than any
+  microsecond saved in the proxy.
+* **Fast first paint:** 103 Early Hints with `Link: preload` (configured,
+  or learned from the `Link` headers the backend sent last time), so the
+  browser fetches CSS and fonts while the backend is still rendering.
+* **Release safety:** traffic splitting (weights, header/cookie overrides
+  for canaries), mirroring, request hedging, and **deploy hold**: when
+  every backend of a pool refuses connections (a container being
+  replaced), requests wait up to `hold` (default 0, typically 5-10 s)
+  for one to come back instead of failing; names are re-resolved at once
+  on connect failure, since a recreated container usually has a new IP.
+* **Static sites and SPAs:** static files with `sendfile`/splice
+  (zero-copy, kTLS included), `ETag`/`Last-Modified`, ranges, immutable
+  caching for hashed assets, SPA fallback (`fallback /index.html` for
+  client-side routes, never for missing assets), custom error pages.
+* **Webhooks:** routes that carry signed payloads (Stripe, payment and
+  e-mail providers) get `body raw`: the body is forwarded byte for byte,
+  never re-encoded or decompressed, with source IP allowlists.
+
+## Addons
+
+Everything above is built in because it is on the hot path and must be
+in assembly. For everything else there are addons: separate processes,
+in any language, that okena calls at defined phases of a request. They
+cannot slow down routes that do not use them and cannot crash okena.
+
+```
+addon waf {
+    run /usr/local/bin/coraza-okena      # okena starts and supervises it
+    phases request_headers request_body
+    timeout 2ms on_error=allow           # or deny
+    concurrency 1024
+}
+
+route /api/* {
+    use addon waf
+    to pool api
+}
+```
+
+* **Transport:** shared memory, not HTTP or gRPC. Each worker has a pair
+  of single-producer/single-consumer rings with each addon (a memfd the
+  addon maps), messages in a fixed binary layout, header values passed by
+  offset into a shared arena. A worker posts every call of a loop
+  iteration and wakes the addon once (one `eventfd` write per batch); the
+  addon's answers come back through the worker's io_uring. No lock, no
+  copy of the request beyond what the addon asks for.
+* **Phases:** `request_headers`, `request_body` (streamed in chunks or
+  buffered, bounded), `response_headers`, `response_body`, `log`
+  (fire-and-forget, never waited for).
+* **Actions an addon can return:** continue, set/remove headers, set
+  variables for later filters (`addon.waf.score`), pick a pool, rewrite
+  the path, replace the body, or answer directly (status, headers, body).
+* **Isolation:** per-call deadline, concurrency limit and circuit breaker
+  per addon; an addon that crashes is restarted by the supervisor and its
+  pending calls follow `on_error`. Its time shows up as its own column in
+  logs and histograms.
+* **SDKs:** the protocol is small and fixed-layout, so thin SDKs (C, Rust,
+  Go, Python) are a few hundred lines each. An adapter for Envoy's
+  `ext_authz` and `ext_proc` gRPC APIs lets existing services plug in.
+* **Good addon material:** WAF rule engines (Coraza, OWASP CRS), image
+  resizing, bot challenges, OpenAPI request validation, GraphQL depth and
+  cost limits, gRPC-JSON transcoding, custom business rules, analytics.
+
+**Alerts** are an addon in the other direction: okena emits events
+(backend ejected or back, pool empty, certificate expiring in 14 days,
+overload level changed, worker restarted) to a webhook, Telegram or
+Slack, deduplicated and rate limited by the control process.
+
+## Edge, CDN and caching
+
+okena is built to be the software of a CDN node: an edge that caches,
+terminates TLS close to users and protects the origin. A CDN also needs
+network (points of presence, anycast addresses, transit capacity to
+absorb terabit attacks); that part is infrastructure, and okena
+cooperates with it instead of pretending to replace it.
+
+**Cache.** Two tiers:
+
+* **memory**, per worker, for the hottest small objects (no contention);
+* **disk**, shared by the workers of the instance (otherwise disk use
+  would be multiplied by the worker count). Objects are written
+  append-only into large segment files (log structured, no fragmentation,
+  eviction by whole segments); the index is a shared hash table that
+  readers walk without locks (a version per slot, readers retry when a
+  slot changed under them) and writers update with compare-and-swap.
+  Reads go from the page cache to the socket with `sendfile`/splice
+  (zero-copy, kTLS too); `O_DIRECT` reads through io_uring for objects
+  that should not pollute the page cache.
+* Admission with S3-FIFO, so one-hit wonders (crawlers) do not evict the
+  working set.
+
+RFC 9111 semantics, plus what a CDN needs: cache keys configurable
+(host, path, chosen query parameters, headers, cookies), `Vary`
+normalisation (`Accept-Encoding` reduced to the variants served), request
+collapsing, `stale-while-revalidate`, **`stale-if-error`** (origin down
+or mid-deploy → serve the last good copy), revalidation with
+`ETag`/`Last-Modified`, negative caching, range requests and slicing of
+large files (video, downloads), `Cache-Status` (RFC 9211), and purge by
+URL, prefix or tag (`Cache-Tag`/`Surrogate-Key` from the origin) through
+the admin API, fanned out to every node of a fleet.
+
+**Tiers.** An edge's pool can be another okena (`shield`): edges in
+several regions fill from one shield, which alone talks to the origin.
+**Signed URLs** (HMAC with expiry, path prefix, optional client IP) let
+the origin hand out links to protected content that edges validate
+without calling it.
+
+**Distribution.** Nodes in several regions are reached through GeoDNS or
+anycast (BGP announced by a routing daemon such as BIRD, with okena's
+health deciding whether the address is announced: a node that fails its
+own checks withdraws itself).
+
+**Behind someone else's CDN** (Cloudflare and the like), the edge cases
+are about trust: `trusted_proxies cloudflare` loads the provider's
+published ranges (refreshed by the control process), the client address
+comes from the provider's header only when the peer is in those ranges,
+authenticated origin pulls (mTLS from the CDN) can be required, and the
+listener can refuse everyone else, so the origin is not reachable around
+the CDN.
 
 ## Observability
 
@@ -582,9 +733,11 @@ needs from okena:
 * A user-space TCP stack or DPDK: the kernel stack with io_uring, XDP and
   kTLS keeps the operating system's tools (tcpdump, ss, sysctls) and gets
   within reach of bypass stacks for proxy workloads.
-* Scripting (Lua, WASM): extensions are built-in filters plus forward-auth.
-* A WAF rule engine; IP lists, limits and strict parsing cover the
-  protocol-level abuse, application rules belong to a dedicated WAF.
+* Scripting inside the workers (Lua, WASM): extensions are built-in
+  filters plus out-of-process addons, so an extension can never stall a
+  worker.
+* A WAF rule engine in the core; IP lists, limits and strict parsing cover
+  protocol-level abuse, and rule engines plug in as addons.
 * Sharing caches between workers.
 
 ## Risks
@@ -640,6 +793,8 @@ src/crypto/   sha2, hmac, hkdf, aes-gcm, chacha20-poly1305, x25519, ml-kem, p256
 src/lb/       algorithms, health, outlier detection, concurrency limits
 src/gw/       auth, rate limits, cors, cache, rewrites, mirror, hedging
 src/bpf/      eBPF programs (reuseport steering, sockmap, XDP), assembled by fasm2 macros
+src/cache/    memory tier, disk segments, lock-free index, purge
+src/addon/    shared-memory protocol, addon supervision, alerts
 src/admin/    admin API, metrics, top
 tests/        unit, kat, fuzz, conformance, integration, bench
 ```

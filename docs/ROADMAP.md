@@ -4,6 +4,9 @@ Phases 0-3 make the first product: an L4 and HTTP/1.1 balancer with TLS
 that runs anywhere, Docker included. Everything after builds on code that
 already carries traffic.
 
+Every case in [EDGE_CASES.md](EDGE_CASES.md) that a phase touches is a
+test in that phase.
+
 Each phase ends with something usable in production for its scope, and
 with its exit criteria met: tests, fuzzing, and a benchmark against the
 established proxy for that job, on the same machine, cores pinned,
@@ -115,7 +118,10 @@ Exit: beats Envoy on added p99 for gRPC unary and streaming.
   eviction under key floods; quotas.
 * CORS, path rewrites, splits, mirroring, hedging, priorities.
 * HTTP cache with coalescing and stale-while-revalidate.
-* Static files with precompressed variants.
+* Static files and SPAs (fallback, ranges, ETag), precompressed variants,
+  on-the-fly gzip/zstd for text, 103 Early Hints.
+* OIDC login, idempotency keys, GeoIP, redirect maps, security header
+  presets, `body raw` for signed webhooks, deploy hold.
 * `okena route` dry-run.
 
 Exit: each filter's added latency measured and documented; a route with
@@ -127,14 +133,36 @@ auth + limit stays within the latency budget in ARCHITECTURE.md.
 * SRV/file discovery, Docker discovery by labels, Kubernetes
   EndpointSlices.
 * Shared ticket keys and drain API for fleets.
-* ACME (HTTP-01, TLS-ALPN-01) in its own process.
+* ACME (HTTP-01, TLS-ALPN-01, DNS-01 for wildcards) in its own process.
+* Alerts (webhook, Telegram, Slack) from the control process.
 * OTLP tracing; `okena top`.
 * Landlock, privilege drop, systemd socket activation, container image.
 
 Exit: a week-long soak with reloads and upgrades every minute under load
 loses no request.
 
-## Phase 7 — Kernel fast paths
+## Phase 7 — Addons
+
+* Shared-memory addon protocol, supervision, deadlines, circuit breakers.
+* SDKs (C, Rust, Go, Python); a reference WAF addon on Coraza.
+* `ext_authz` / `ext_proc` adapter.
+
+Exit: an addon that answers immediately adds under 5 us at p99; a crashing
+or hanging addon never affects routes that do not use it.
+
+## Phase 8 — Edge and CDN
+
+* Disk cache tier: append-only segments, lock-free shared index, S3-FIFO,
+  sendfile to the socket.
+* Cache keys, `Vary` normalisation, slicing, `stale-if-error`, purge by
+  URL/prefix/tag with fleet fan-out, `Cache-Status`.
+* Shield tier, signed URLs, CDN provider ranges, authenticated origin
+  pulls, health-driven BGP announcement (through BIRD).
+
+Exit: hit path serves from page cache at line rate with zero copies;
+origin load stays flat during a purge-and-refill storm.
+
+## Phase 9 — Kernel fast paths
 
 * `xdp` listener: Maglev in eBPF, IPIP/GUE encapsulation, DSR,
   connection tracking table, backend health from user space.
@@ -143,16 +171,16 @@ loses no request.
 
 Exit: packets/s per core comparable to Katran.
 
-## Phase 8 — HTTP/3 and QUIC
+## Phase 10 — HTTP/3 and QUIC
 
 * QUIC v1/v2, QUIC-LB connection IDs with eBPF steering, retry, recovery,
   CUBIC/BBR, pacing, GSO/GRO, ECN; QPACK; HTTP/3.
 * QUIC interop runner clean.
 
-## Phase 9 — Breadth
+## Phase 11 — Breadth
 
 * TLS 1.2, RSA certificates (signing), client-certificate auth at scale.
-* Compression (gzip/zstd/brotli) on the fly.
+* Brotli on the fly.
 * Consul discovery, Kubernetes Gateway API.
 * Certificate compression, Encrypted Client Hello.
 * AVX-512 paths where they pay.
