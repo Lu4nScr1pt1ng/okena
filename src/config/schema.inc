@@ -110,7 +110,7 @@ M_ROUTE		= 1 shl CTX_ROUTE
 M_HOST		= 1 shl CTX_HOST
 
 enumdef e_io_engine, 'auto', 'io_uring', 'epoll'
-enumdef e_balance, 'round-robin', 'least-conn', 'random'
+enumdef e_balance, 'round-robin', 'least-conn', 'random', 'least-request'
 enumdef e_server_flags, 'backup'
 enumdef e_health, 'tcp'
 enumdef e_pp_mode, 'send'

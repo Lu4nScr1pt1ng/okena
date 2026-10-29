@@ -445,12 +445,15 @@ ep_connect:
 	mov	dword [g_force_server],NIL
 	cmp	eax,NIL
 	jne	@f
+	call	pick_avoid_tried
 	mov	edi,[r12+S_POOL]
 	mov	esi,[r12+S_SERVER]
 	call	server_pick
 @@:
 	cmp	eax,NIL
 	je	.no_socket			; nowhere to go: close
+	mov	ecx,[r12+S_SERVER]
+	mov	[r12+S_SERVER2],ecx
 	mov	[r12+S_SERVER],eax
 	inc	dword [g_sv_active+rax*4]
 	or	dword [r12+S_FLAGS],SF_COUNTED

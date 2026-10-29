@@ -87,6 +87,7 @@ SV_SIZE		= 160
 BAL_ROUND_ROBIN	= 0
 BAL_LEAST_CONN	= 1
 BAL_RANDOM	= 2
+BAL_LEAST_REQ	= 3		; the default: power of two choices
 
 DEFAULT_CONNECTIONS	= 65536		; per listener, whole instance
 DEFAULT_IDLE_SECS	= 3600
@@ -373,6 +374,7 @@ pool_new:
 	mov	[rax+PL_FIRST],edx
 	mov	qword [rax+PL_TIMEOUT],DEFAULT_CONNECT_US / 1000000
 	mov	qword [rax+PL_TIMEOUT+8],(DEFAULT_CONNECT_US mod 1000000) * 1000
+	mov	dword [rax+PL_BALANCE],BAL_LEAST_REQ
 	ret
 
 ; Access log destinations. The table only grows while the supervisor

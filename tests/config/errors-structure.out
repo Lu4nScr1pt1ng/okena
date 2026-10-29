@@ -28,7 +28,7 @@ errors-structure.conf:13:27: error: unknown option `weigth` for `server`
     13 |     server 10.0.0.11:5432 weigth=2
        |                           ^^^^^^
        = help: did you mean `weight`?
-errors-structure.conf:15:13: error: `least_conn` is not one of: round-robin least-conn random
+errors-structure.conf:15:13: error: `least_conn` is not one of: round-robin least-conn random least-request
     15 |     balance least_conn
        |             ^^^^^^^^^^
        = help: did you mean `least-conn`?

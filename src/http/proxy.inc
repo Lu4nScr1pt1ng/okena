@@ -297,17 +297,17 @@ http_request:
 	je	@f
 	or	dword [r15+H_FLAGS],HX_CONTINUE
 @@:
-	add	dword [g_retry_tokens],RETRY_PER_REQ
-	cmp	dword [g_retry_tokens],RETRY_CAP
-	jbe	@f
-	mov	dword [g_retry_tokens],RETRY_CAP
-@@:
 	call	http_route			; eax = pool, -1 none, -2 unsafe path
 	cmp	eax,-1
 	je	.no_route
 	cmp	eax,-2
 	je	.parse_error_400
 	mov	r13d,eax
+	add	dword [g_retry_tokens+r13*4],RETRY_PER_REQ	; the pool's budget grows with its traffic
+	cmp	dword [g_retry_tokens+r13*4],RETRY_CAP
+	jbe	@f
+	mov	dword [g_retry_tokens+r13*4],RETRY_CAP
+@@:
 	call	session_ptr
 	mov	[rax+S_POOL],r13d
 	mov	dword [rax+S_TRIES],0
@@ -1553,15 +1553,22 @@ RETRY_CAP	= 1000
 
 bss
 	g_sv_5xx	rd MAX_SERVERS
-	g_retry_tokens	dd ?
+	g_retry_tokens	rd MAX_POOLS		; per pool, tenths of a retry
 end bss
 
 ; Tick: the budget's floor.
 retry_budget_tick:
-	cmp	dword [g_retry_tokens],RETRY_FLOOR
+	xor	ecx,ecx
+.pool:
+	cmp	ecx,[g_plan_pools]
+	jae	.done
+	cmp	dword [g_retry_tokens+rcx*4],RETRY_FLOOR
 	jae	@f
-	mov	dword [g_retry_tokens],RETRY_FLOOR
+	mov	dword [g_retry_tokens+rcx*4],RETRY_FLOOR
 @@:
+	inc	ecx
+	jmp	.pool
+.done:
 	ret
 
 ; edi = server: one more failing answer. Keeps rax, rbx.
@@ -1575,6 +1582,8 @@ server_5xx:
 	mov	ecx,[g_sv_down+rdi*4]
 	cmp	ecx,[g_tick]
 	ja	.done				; already ejected
+	call	eject_share_full		; never more than half a pool
+	jc	.done
 	mov	ecx,[g_tick]
 	add	ecx,EJECT_TICKS
 	mov	[g_sv_down+rdi*4],ecx
@@ -1589,6 +1598,44 @@ server_5xx:
 	pop	rdi
 	pop	rax
 .done:
+	ret
+
+; ebx = session (its S_POOL), edi = server about to be ejected. CF when
+; half of the pool's servers are out already: a bad signal (a broken
+; health endpoint, a shared dependency failing) must not empty a pool.
+; Runs on the rare ejection only. Keeps rax, rdi.
+eject_share_full:
+	push	rax
+	push	rdi
+	call	session_ptr
+	mov	eax,[rax+S_POOL]
+	imul	rax,rax,PL_SIZE
+	lea	r8,[g_pools+rax]
+	mov	ecx,[r8+PL_FIRST]
+	mov	r9d,ecx
+	add	r9d,[r8+PL_COUNT]
+	xor	edx,edx				; ejected now
+	mov	r10d,[g_tick]
+@@:
+	cmp	ecx,r9d
+	jae	@f
+	cmp	[g_sv_down+rcx*4],r10d
+	jbe	.next
+	inc	edx
+.next:
+	inc	ecx
+	jmp	@b
+@@:
+	inc	edx				; with this one
+	add	edx,edx
+	cmp	edx,[r8+PL_COUNT]
+	pop	rdi
+	pop	rax
+	ja	.full
+	clc
+	ret
+.full:
+	stc
 	ret
 
 ; ebx = session, edi = status of the backend's final answer. Keeps rax.
@@ -1640,9 +1687,11 @@ http_may_retry:
 	and	eax,HX_NOBODY or HX_IDEMPOTENT or HX_RETRIED or HX_STARTED or HX_UPGRADE
 	cmp	eax,HX_NOBODY or HX_IDEMPOTENT
 	jne	.no
-	cmp	dword [g_retry_tokens],RETRY_COST
+	call	session_ptr
+	mov	eax,[rax+S_POOL]
+	cmp	dword [g_retry_tokens+rax*4],RETRY_COST
 	jb	.no
-	sub	dword [g_retry_tokens],RETRY_COST
+	sub	dword [g_retry_tokens+rax*4],RETRY_COST
 	stc
 	ret
 .no:

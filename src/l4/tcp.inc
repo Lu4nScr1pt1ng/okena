@@ -41,6 +41,7 @@ S_PH_PREV	= 100		; http phase deadline list (per listener and phase)
 S_PH_NEXT	= 104
 S_PH_AT		= 108		; tick the phase started
 S_PH_KIND	= 112		; PH_*, 0 = no phase timer
+S_SERVER2	= 116		; the server tried before S_SERVER (a third try avoids both)
 S_SIZE		= 128
 S_SHIFT		= 7
 
@@ -936,6 +937,22 @@ rand64:
 	mov	[g_rand],rax
 	ret
 
+; r12 = session about to pick again: on a third try, also avoid the server
+; tried before the last one (server_pick reads g_pick_avoid2 once).
+pick_avoid_tried:
+	mov	dword [g_pick_avoid2],0
+	cmp	dword [r12+S_TRIES],2
+	jbe	@f
+	mov	eax,[r12+S_SERVER2]
+	inc	eax
+	mov	[g_pick_avoid2],eax		; server + 1, 0 = none
+@@:
+	ret
+
+bss
+	g_pick_avoid2	dd ?
+end bss
+
 ; edi = server index. CF when it may be chosen in pass esi
 ; (0 = healthy primaries, 1 = healthy backups, 2 = every primary).
 server_eligible:
@@ -991,6 +1008,16 @@ server_pick:
 	lea	rbx,[g_pools+rbx]
 	mov	ebp,esi
 	xor	r13d,r13d			; pass
+	; least-request: two random servers, the one with fewer requests in
+	; flight per weight. O(1) whatever the pool size; the passes below
+	; (backups, panic, avoidance with one server left) only when the
+	; draws find nothing usable.
+	cmp	dword [rbx+PL_BALANCE],BAL_LEAST_REQ
+	jne	.pass
+	mov	r14d,ebp
+	call	.p2c
+	cmp	eax,NIL
+	jne	.out
 .pass:
 	; with more than one eligible server, skip the one to avoid
 	mov	r14d,ebp
@@ -1009,6 +1036,8 @@ server_pick:
 	mov	eax,[rbx+PL_BALANCE]
 	cmp	eax,BAL_LEAST_CONN
 	je	.least
+	cmp	eax,BAL_LEAST_REQ
+	je	.least				; the draws failed: scan this pass
 	cmp	eax,BAL_RANDOM
 	je	.random
 	; smooth weighted round robin
@@ -1151,6 +1180,78 @@ server_pick:
 	mov	eax,r12d
 	jmp	.out
 ; eax = eligible servers in pass r13d, not counting r14d
+; eax = a usable server of the pool in rbx (pass r13d, avoiding r14d),
+; or NIL after three draws found none.
+.p2c:
+	mov	r15d,3
+.draw:
+	mov	r12d,[rbx+PL_COUNT]
+	cmp	r12d,2
+	jb	.p2c_none
+	call	rand64
+	mov	r10,rax
+	mov	eax,r10d
+	mul	r12d				; edx = a in [0, n): multiply-shift, no div
+	mov	r11d,edx
+	shr	r10,32
+	mov	eax,r10d
+	lea	ecx,[r12-1]
+	mul	ecx				; b in [0, n-1), then skip a
+	cmp	edx,r11d
+	jb	@f
+	inc	edx
+@@:
+	add	r11d,[rbx+PL_FIRST]
+	add	edx,[rbx+PL_FIRST]
+	mov	r12d,edx
+	mov	edi,r11d
+	call	.usable
+	setc	r10b
+	mov	edi,r12d
+	call	.usable
+	jnc	.only_a
+	test	r10b,r10b
+	jz	.take_b
+	; both: in_flight[a] * weight[b] against in_flight[b] * weight[a]
+	imul	rax,r11,SV_SIZE
+	mov	r8d,[g_servers+rax+SV_WEIGHT]
+	imul	rax,r12,SV_SIZE
+	mov	r9d,[g_servers+rax+SV_WEIGHT]
+	mov	eax,[g_sv_active+r11*4]
+	imul	rax,r9
+	mov	edx,[g_sv_active+r12*4]
+	imul	rdx,r8
+	cmp	rax,rdx
+	ja	.take_b
+	mov	eax,r11d			; a tie keeps a (already random)
+	ret
+.take_b:
+	mov	eax,r12d
+	ret
+.only_a:
+	test	r10b,r10b
+	jz	.redraw
+	mov	eax,r11d
+	ret
+.redraw:
+	dec	r15d
+	jnz	.draw
+.p2c_none:
+	mov	eax,NIL
+	ret
+; edi = server: CF when it may be picked now (not avoided, eligible).
+.usable:
+	cmp	edi,r14d
+	je	.unusable
+	lea	eax,[rdi+1]
+	cmp	eax,[g_pick_avoid2]
+	je	.unusable
+	mov	esi,r13d
+	jmp	server_eligible
+.unusable:
+	clc
+	ret
+
 .count:
 	push	r12
 	xor	r12d,r12d
@@ -1175,6 +1276,7 @@ server_pick:
 	pop	r12
 	ret
 .out:
+	mov	dword [g_pick_avoid2],0
 	pop	rbp
 	pop	r15
 	pop	r14
@@ -1200,12 +1302,15 @@ session_connect:
 	mov	dword [g_force_server],NIL
 	cmp	eax,NIL
 	jne	@f
+	call	pick_avoid_tried
 	mov	edi,[r12+S_POOL]
 	mov	esi,[r12+S_SERVER]
 	call	server_pick
 	cmp	eax,NIL
 	je	.nowhere
 @@:
+	mov	ecx,[r12+S_SERVER]
+	mov	[r12+S_SERVER2],ecx
 	mov	[r12+S_SERVER],eax
 	inc	dword [g_sv_active+rax*4]
 	or	dword [r12+S_FLAGS],SF_COUNTED
