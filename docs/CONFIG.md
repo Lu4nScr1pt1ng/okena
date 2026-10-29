@@ -36,7 +36,8 @@ directive arg arg key=value {
   the same; `okena fmt` picks the line form when it fits in 80 columns.
 * On the command line (`okena tcp :5432 to db1:5432`) and in
   `OKENA_CONFIG`, the text is the same language; a listener with a single
-  directive may drop its braces.
+  directive may drop its braces, and a directive may follow a `}` on the
+  same line (`okena { workers 4 } tcp :5432 to db1:5432`).
 * `policy NAME { ... }` defines a reusable set of route directives; `use
   NAME` applies it. Directives written in the route override the policy.
 
@@ -75,6 +76,7 @@ okena {
     workers auto              # min(affinity mask, cgroup CPU quota)
     profile balanced          # balanced | latency | throughput | memory-lean
     io_engine auto            # auto | io_uring | epoll
+    busy_poll 50us            # poll this long after activity instead of sleeping
     reload on-change          # watch the config directory
     drain delay=2s timeout=7s # fits inside docker stop's 10 s
     admin unix:/run/okena/admin.sock

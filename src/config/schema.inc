@@ -129,6 +129,7 @@ dirdef DIR_OKENA, 'okena',       M_TOP,     CTX_OKENA,   F_BLOCK_REQ or F_UNIQUE
 dirdef DIR_WORKERS, 'workers',     M_OKENA,   0,           F_UNIQUE, 1, 1, T_WORKERS, T_NONE, 0
 dirdef DIR_IO_ENGINE, 'io_engine',   M_OKENA,   0,           F_UNIQUE, 1, 1, e_io_engine, T_NONE, 0
 dirdef DIR_WATCHDOG, 'watchdog',    M_OKENA,   0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
+dirdef DIR_BUSY_POLL, 'busy_poll',   M_OKENA,   0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
 dirdef DIR_DRAIN, 'drain',       M_OKENA,   0,           F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_drain
 dirdef DIR_TCP, 'tcp',         M_TOP,     CTX_TCP,     F_BLOCK_REQ, 1, 16, T_LISTEN, T_LISTEN, 0
 dirdef DIR_POOL, 'pool',        M_TOP,     CTX_POOL,    F_BLOCK_REQ, 1, 1, T_NAME, T_NONE, 0

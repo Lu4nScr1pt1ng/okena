@@ -932,6 +932,12 @@ parse_block:
 	je	.after_eof
 	cmp	eax,TK_RBRACE
 	je	.after_rbrace
+	; on the command line there are no newlines: `okena { ... } tcp ...`
+	cmp	dword [g_cfg_inline],0
+	je	@f
+	cmp	eax,TK_WORD
+	je	.after_rbrace
+@@:
 	mov	rdi,[g_tok_raw]
 	mov	esi,[g_tok_rawlen]
 	mov	edx,[g_tok_line]

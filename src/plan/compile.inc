@@ -57,6 +57,7 @@ bss
 	g_plan_drain_delay	dq ?		; microseconds
 	g_plan_drain_timeout	dq ?
 	g_plan_watchdog		dq ?
+	g_plan_busy_poll	dq ?		; microseconds, 0 = off
 	g_listeners:	rb LS_SIZE * MAX_LISTENERS
 	g_pools:	rb PL_SIZE * MAX_POOLS
 	g_servers:	rb SV_SIZE * MAX_SERVERS
@@ -204,6 +205,14 @@ compile_settings:
 	lea	rcx,[dir_table + D_SIZE*DIR_DRAIN]
 	cmp	rax,rcx
 	je	.drain
+	lea	rcx,[dir_table + D_SIZE*DIR_BUSY_POLL]
+	cmp	rax,rcx
+	je	.busy_poll
+	jmp	.advance
+.busy_poll:
+	mov	rdi,rbx
+	call	node_duration
+	mov	[g_plan_busy_poll],rax
 	jmp	.advance
 .workers:
 	mov	rdi,rbx
