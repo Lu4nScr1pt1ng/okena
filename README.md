@@ -18,6 +18,30 @@ https example.com {
 }
 ```
 
+## Status
+
+Early. What works today:
+
+* the configuration language with `okena check` (compiler-style
+  diagnostics), configuration on the command line or in `OKENA_CONFIG`;
+* the L4 TCP proxy on io_uring: one worker per CPU (cgroup quota aware),
+  dual-stack and IPv6 listeners, IPv4/IPv6/unix backends, round-robin,
+  least-conn and random balancing with weights and backups, connect
+  timeouts with failover, passive ejection of failing backends, idle
+  timeouts, half-close, graceful drain, workers restarted on crash with
+  no lost queued connection;
+* memory that follows the load: a worker uses under 1 MiB at rest.
+
+Next: the epoll engine, busy polling, the container image and its
+seccomp profile, then the rest of phase 0 and 1 in
+[ROADMAP.md](docs/ROADMAP.md).
+
+```
+make          # build/okena
+make test     # golden config tests, fuzzing, L4 integration tests
+make bench    # added latency of the L4 proxy
+```
+
 ## License
 
 okena is free software under the GNU Affero General Public License,

@@ -17,10 +17,18 @@ values-units.conf:8:21: error: invalid value `0.0001s`
      8 |     connect timeout=0.0001s rate=100/s warm=0 idle=5m
        |                     ^^^^^^^
        = help: expected a duration with its unit: 250ms, 30s, 5m, 1h (units: us ms s m h d)
-values-units.conf:9:22: error: invalid value `30`
+values-units.conf:8:29: error: option `rate` is not supported by this version of okena yet
+     8 |     connect timeout=0.0001s rate=100/s warm=0 idle=5m
+       |                             ^^^^
+values-units.conf:8:40: error: option `warm` is not supported by this version of okena yet
+     8 |     connect timeout=0.0001s rate=100/s warm=0 idle=5m
+       |                                        ^^^^
+values-units.conf:8:47: error: option `idle` is not supported by this version of okena yet
+     8 |     connect timeout=0.0001s rate=100/s warm=0 idle=5m
+       |                                               ^^^^
+values-units.conf:9:5: error: `health` is not supported by this version of okena yet
      9 |     health tcp every=30 fall=3
-       |                      ^^
-       = help: expected a duration with its unit: 250ms, 30s, 5m, 1h (units: us ms s m h d)
+       |     ^^^^^^
 values-units.conf:11:1: error: `okena` is set twice in the same block
     11 | okena { workers 300 }
        | ^^^^^
@@ -29,4 +37,4 @@ values-units.conf:11:17: error: invalid value `300`
     11 | okena { workers 300 }
        |                 ^^^
        = help: expected `auto` or a number of workers from 1 to 256
-7 errors in values-units.conf
+10 errors in values-units.conf

@@ -3,7 +3,7 @@ FASMG     := $(TOOLCHAIN)/fasmg.x64
 SOURCES   := $(shell find src -name '*.asm' -o -name '*.inc')
 BIN       := build/okena
 
-.PHONY: all toolchain test fuzz clean
+.PHONY: all toolchain test fuzz bench clean
 
 all: $(BIN)
 
@@ -14,12 +14,17 @@ $(FASMG):
 
 $(BIN): $(SOURCES) | $(FASMG)
 	@mkdir -p build
-	INCLUDE="$(TOOLCHAIN)/include" $(FASMG) -e100 -i "Include 'fasm2.inc'" src/main.asm $@
-	@chmod +x $@
+	INCLUDE="$(TOOLCHAIN)/include" $(FASMG) -e100 -i "Include 'fasm2.inc'" src/main.asm $@.tmp
+	@chmod +x $@.tmp
+	@mv -f $@.tmp $@
 
 test: $(BIN)
 	python3 -I tests/config/run.py
 	python3 -I tests/config/fuzz.py 2000
+	python3 -I tests/l4/run.py
+
+bench: $(BIN)
+	./tests/bench/l4.sh
 
 # Longer runs: make fuzz FUZZ_CASES=1000000
 FUZZ_CASES ?= 100000

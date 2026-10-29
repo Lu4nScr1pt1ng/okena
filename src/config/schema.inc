@@ -34,6 +34,7 @@ T_LISTEN	= 10		; listen address
 T_BACKEND	= 11		; backend address (names and unix paths too)
 T_WORKERS	= 12		; auto or 1 .. 256
 T_TARGET	= 13		; `to pool NAME` or `to ADDR...`
+T_FUTURE	= 14		; an option of the language not implemented yet
 
 ; Directive entry
 D_NAME		= 0		; 24 bytes, NUL-padded
@@ -76,7 +77,12 @@ macro keysdef label*, pairs&
 	end rodata
 end macro
 
-macro dirdef name*, ctxmask*, child*, flags*, minp*, maxp*, type1*, typen*, keys*
+DIR_COUNT = 0
+
+; id becomes the entry's index, for code that looks for one directive.
+macro dirdef id*, name*, ctxmask*, child*, flags*, minp*, maxp*, type1*, typen*, keys*
+	id = DIR_COUNT
+	DIR_COUNT = DIR_COUNT + 1
 	rodata
 		db name
 		db (24 - lengthof name) dup 0
@@ -94,16 +100,13 @@ M_LIMITS	= 1 shl CTX_LIMITS
 M_TIMEOUT	= 1 shl CTX_TIMEOUT
 
 enumdef e_io_engine, 'auto', 'io_uring', 'epoll'
-enumdef e_balance, 'round-robin', 'least-conn', 'random', 'source-hash', 'maglev'
+enumdef e_balance, 'round-robin', 'least-conn', 'random'
 enumdef e_server_flags, 'backup'
-enumdef e_health, 'tcp'
 
 keysdef k_drain, 'delay', T_DURATION, 'timeout', T_DURATION
 keysdef k_server, 'weight', T_WEIGHT
-keysdef k_connect, 'timeout', T_DURATION, 'max', T_COUNT, 'idle', T_DURATION, \
-	'warm', T_UINT, 'rate', T_RATE
-keysdef k_health, 'every', T_DURATION, 'timeout', T_DURATION, 'rise', T_COUNT, \
-	'fall', T_COUNT
+keysdef k_connect, 'timeout', T_DURATION, 'max', T_FUTURE, 'idle', T_FUTURE, \
+	'warm', T_FUTURE, 'rate', T_FUTURE
 
 ; Names of the contexts, for messages, in CTX_* order starting at 1.
 enumdef ctx_names, 'the top level', '`okena`', '`tcp`', '`pool`', '`limits`', '`timeout`'
@@ -116,29 +119,27 @@ enumdef future_names, 'http', 'https', 'udp', 'xdp', 'tls', 'route', 'policy', '
 	'concurrency', 'retry_budget', 'retry', 'outlier', 'slow_start', 'protocol', \
 	'fault', 'files', 'redirect', 'compress', 'canonical', 'idempotency', 'hold', \
 	'body', 'early_hints', 'signed_urls', 'sni', 'default', 'priority', 'hedge', \
-	'response', 'alpn', 'cert', 'warm'
+	'response', 'alpn', 'cert', 'warm', 'health', 'per_source'
 
 rodata
 	align 8
 	dir_table:
 end rodata
-dirdef 'okena',       M_TOP,     CTX_OKENA,   F_BLOCK_REQ or F_UNIQUE, 0, 0, T_NONE, T_NONE, 0
-dirdef 'workers',     M_OKENA,   0,           F_UNIQUE, 1, 1, T_WORKERS, T_NONE, 0
-dirdef 'io_engine',   M_OKENA,   0,           F_UNIQUE, 1, 1, e_io_engine, T_NONE, 0
-dirdef 'watchdog',    M_OKENA,   0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
-dirdef 'drain',       M_OKENA,   0,           F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_drain
-dirdef 'tcp',         M_TOP,     CTX_TCP,     F_BLOCK_REQ, 1, 16, T_LISTEN, T_LISTEN, 0
-dirdef 'pool',        M_TOP,     CTX_POOL,    F_BLOCK_REQ, 1, 1, T_NAME, T_NONE, 0
-dirdef 'to',          M_TCP,     0,           F_UNIQUE, 1, 64, T_TARGET, T_TARGET, 0
-dirdef 'limits',      M_TCP,     CTX_LIMITS,  F_BLOCK_REQ or F_UNIQUE, 0, 0, T_NONE, T_NONE, 0
-dirdef 'connections', M_LIMITS,  0,           F_UNIQUE, 1, 1, T_COUNT, T_NONE, 0
-dirdef 'per_source',  M_LIMITS,  0,           F_UNIQUE, 1, 1, T_COUNT, T_NONE, 0
-dirdef 'timeout',     M_TCP,     CTX_TIMEOUT, F_BLOCK_REQ or F_UNIQUE, 0, 0, T_NONE, T_NONE, 0
-dirdef 'idle',        M_TIMEOUT, 0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
-dirdef 'server',      M_POOL,    0,           0, 1, 2, T_BACKEND, e_server_flags, k_server
-dirdef 'balance',     M_POOL,    0,           F_UNIQUE, 1, 1, e_balance, T_NONE, 0
-dirdef 'connect',     M_POOL,    0,           F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_connect
-dirdef 'health',      M_POOL,    0,           F_UNIQUE or F_KEYS_BLOCK, 1, 1, e_health, T_NONE, k_health
+dirdef DIR_OKENA, 'okena',       M_TOP,     CTX_OKENA,   F_BLOCK_REQ or F_UNIQUE, 0, 0, T_NONE, T_NONE, 0
+dirdef DIR_WORKERS, 'workers',     M_OKENA,   0,           F_UNIQUE, 1, 1, T_WORKERS, T_NONE, 0
+dirdef DIR_IO_ENGINE, 'io_engine',   M_OKENA,   0,           F_UNIQUE, 1, 1, e_io_engine, T_NONE, 0
+dirdef DIR_WATCHDOG, 'watchdog',    M_OKENA,   0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
+dirdef DIR_DRAIN, 'drain',       M_OKENA,   0,           F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_drain
+dirdef DIR_TCP, 'tcp',         M_TOP,     CTX_TCP,     F_BLOCK_REQ, 1, 16, T_LISTEN, T_LISTEN, 0
+dirdef DIR_POOL, 'pool',        M_TOP,     CTX_POOL,    F_BLOCK_REQ, 1, 1, T_NAME, T_NONE, 0
+dirdef DIR_TO, 'to',          M_TCP,     0,           F_UNIQUE, 1, 64, T_TARGET, T_TARGET, 0
+dirdef DIR_LIMITS, 'limits',      M_TCP,     CTX_LIMITS,  F_BLOCK_REQ or F_UNIQUE, 0, 0, T_NONE, T_NONE, 0
+dirdef DIR_CONNECTIONS, 'connections', M_LIMITS,  0,           F_UNIQUE, 1, 1, T_COUNT, T_NONE, 0
+dirdef DIR_TIMEOUT, 'timeout',     M_TCP,     CTX_TIMEOUT, F_BLOCK_REQ or F_UNIQUE, 0, 0, T_NONE, T_NONE, 0
+dirdef DIR_IDLE, 'idle',        M_TIMEOUT, 0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
+dirdef DIR_SERVER, 'server',      M_POOL,    0,           0, 1, 2, T_BACKEND, e_server_flags, k_server
+dirdef DIR_BALANCE, 'balance',     M_POOL,    0,           F_UNIQUE, 1, 1, e_balance, T_NONE, 0
+dirdef DIR_CONNECT, 'connect',     M_POOL,    0,           F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_connect
 rodata
 	dir_table_end:
 end rodata

@@ -454,9 +454,24 @@ check_option:
 	mov	rdi,r12
 	mov	rsi,rbx
 	call	option_repeated
+	cmp	qword [r14+K_TYPE],T_FUTURE
+	je	.future
 	mov	rdi,rbx
 	mov	rsi,[r14+K_TYPE]
 	call	check_value
+	jmp	.out
+.future:
+	mov	rdi,[rbx+A_KEY]
+	mov	esi,[rbx+A_KLEN]
+	mov	edx,[rbx+A_LINE]
+	call	cfg_error
+	out_lit 'option '
+	mov	rsi,[rbx+A_KEY]
+	mov	edx,[rbx+A_KLEN]
+	call	cfg_quote
+	out_lit ' is not supported by this version of okena yet'
+	call	cfg_diag_end
+	call	cfg_error_limit
 	jmp	.out
 .none:
 	mov	rdi,[rbx+A_RAW]
@@ -599,9 +614,24 @@ check_keys_block:
 	mov	rdi,r12
 	mov	rsi,rbx
 	call	keys_block_repeated
+	cmp	qword [r14+K_TYPE],T_FUTURE
+	je	.future
 	mov	rdi,[rbx+N_ARGS]
 	mov	rsi,[r14+K_TYPE]
 	call	check_value
+	jmp	.advance
+.future:
+	mov	rdi,[rbx+N_NAME]
+	mov	esi,[rbx+N_NLEN]
+	mov	edx,[rbx+N_LINE]
+	call	cfg_error
+	out_lit 'option '
+	mov	rsi,[rbx+N_NAME]
+	mov	edx,[rbx+N_NLEN]
+	call	cfg_quote
+	out_lit ' is not supported by this version of okena yet'
+	call	cfg_diag_end
+	call	cfg_error_limit
 	jmp	.advance
 .shape:
 	mov	rdi,[rbx+N_NAME]
@@ -1120,11 +1150,6 @@ check_semantics:
 	pop	r12
 	pop	rbx
 	ret
-
-DIR_TCP		= 5
-DIR_POOL	= 6
-DIR_TO		= 7
-DIR_SERVER	= 13
 
 ; rdi = node. rax = the first child with entry index ecx, or 0.
 find_child:

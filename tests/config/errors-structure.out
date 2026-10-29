@@ -28,7 +28,7 @@ errors-structure.conf:13:27: error: unknown option `weigth` for `server`
     13 |     server 10.0.0.11:5432 weigth=2
        |                           ^^^^^^
        = help: did you mean `weight`?
-errors-structure.conf:15:13: error: `least_conn` is not one of: round-robin least-conn random source-hash maglev
+errors-structure.conf:15:13: error: `least_conn` is not one of: round-robin least-conn random
     15 |     balance least_conn
        |             ^^^^^^^^^^
        = help: did you mean `least-conn`?
@@ -38,10 +38,9 @@ errors-structure.conf:16:26: error: option `timeout` is given twice
 errors-structure.conf:17:5: error: `http` is not supported by this version of okena yet
     17 |     http
        |     ^^^^
-errors-structure.conf:18:30: error: invalid value `0`
+errors-structure.conf:18:5: error: `health` is not supported by this version of okena yet
     18 |     health tcp every=2s rise=0
-       |                              ^
-       = help: expected a whole number from 1 to 100000000
+       |     ^^^^^^
 errors-structure.conf:21:6: error: invalid value `bad_Name`
     21 | pool bad_Name { server 1.2.3.4:1 }
        |      ^^^^^^^^

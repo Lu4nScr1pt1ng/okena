@@ -20,6 +20,12 @@ include 'config/parse.inc'
 include 'config/values.inc'
 include 'config/schema.inc'
 include 'config/check.inc'
+include 'plan/compile.inc'
+include 'core/cpu.inc'
+include 'core/supervisor.inc'
+include 'core/ring.inc'
+include 'core/worker.inc'
+include 'l4/tcp.inc'
 include 'cli.inc'
 
 start:

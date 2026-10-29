@@ -411,8 +411,5 @@ out_count_listener:
 
 cli_run:
 	call	cli_load_config
-	call	log_begin
-	out_lit 'configuration is valid, but this build has no data plane yet'
-	call	log_end
-	mov	edi,EXIT_FAILURE
-	jmp	exit_process
+	call	plan_compile
+	jmp	supervisor_main

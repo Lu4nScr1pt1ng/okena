@@ -96,3 +96,24 @@ CQE_USER_DATA	= 0
 CQE_RES		= 8
 CQE_FLAGS	= 12
 CQE_SIZE	= 16
+
+; added for okena
+IORING_OP_SOCKET		= 45
+IOSQE_IO_HARDLINK		= 1 shl 3
+IOSQE_BUFFER_SELECT		= 1 shl 5
+IORING_CQE_F_BUFFER		= 1 shl 0
+IORING_CQE_BUFFER_SHIFT		= 16
+IORING_REGISTER_PBUF_RING	= 22
+IORING_REGISTER_FILE_ALLOC_RANGE = 25
+SQE_BUF_GROUP			= 40	; u16
+SQE_CMD_OP			= 8	; u32 (uring_cmd)
+SQE_LEVEL			= 16	; u32 (setsockopt)
+SQE_OPTNAME			= 20	; u32
+SQE_OPTLEN			= 44	; u32
+SQE_OPTVAL			= 48	; u64
+SOCKET_URING_OP_SETSOCKOPT	= 3
+; struct io_uring_buf (16 bytes); the ring tail is the u16 at offset 14
+BUF_ADDR			= 0
+BUF_LEN				= 8
+BUF_BID				= 12
+BUF_TAIL			= 14

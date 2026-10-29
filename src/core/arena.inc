@@ -29,6 +29,12 @@ arena_init:
 	mov	[rbx+AR_NEXT],rax
 	add	rax,r12
 	mov	[rbx+AR_END],rax
+	; small and cold: 4 KiB pages, or every touch would commit 2 MiB
+	mov	rdi,[rbx+AR_BASE]
+	mov	rsi,r12
+	mov	edx,MADV_NOHUGEPAGE
+	mov	eax,SYS_madvise
+	syscall
 	pop	r12
 	pop	rbx
 	ret

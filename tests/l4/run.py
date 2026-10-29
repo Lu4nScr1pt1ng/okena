@@ -1,0 +1,191 @@
+#!/usr/bin/env python3
+"""Integration tests for the L4 TCP proxy.
+
+Starts echo backends and okena on loopback ports, then checks data
+integrity, half-close, balancing, failover, connect timeouts, idle
+timeouts, worker crashes and graceful drain.
+"""
+import hashlib
+import os
+import pathlib
+import signal
+import socket
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+
+ROOT = pathlib.Path(__file__).resolve().parents[2]
+BIN = ROOT / "build" / "okena"
+BASE = 25000 + os.getpid() % 2000 * 10      # avoid clashes between runs
+
+
+def echo_backend(port: int, tag: bytes) -> None:
+    s = socket.socket()
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(("127.0.0.1", port))
+    s.listen(1024)
+
+    def handle(c):
+        try:
+            while True:
+                d = c.recv(65536)
+                if not d:
+                    c.shutdown(socket.SHUT_WR)
+                    break
+                c.sendall(tag + b"\n" if d == b"who\n" else d)
+        except OSError:
+            pass
+        finally:
+            c.close()
+
+    def loop():
+        while True:
+            c, _ = s.accept()
+            threading.Thread(target=handle, args=(c,), daemon=True).start()
+
+    threading.Thread(target=loop, daemon=True).start()
+
+
+def who(port: int, host: str = "127.0.0.1") -> bytes:
+    c = socket.create_connection((host, port), timeout=5)
+    c.sendall(b"who\n")
+    r = c.recv(100).strip()
+    c.close()
+    return r
+
+
+class Okena:
+    def __init__(self, conf: str):
+        self.dir = tempfile.TemporaryDirectory()
+        path = pathlib.Path(self.dir.name) / "okena.conf"
+        path.write_text(conf)
+        self.log = open(pathlib.Path(self.dir.name) / "log", "w+")
+        self.p = subprocess.Popen([str(BIN), "-c", str(path)], stderr=self.log)
+        for _ in range(100):
+            self.log.seek(0)
+            if "started with" in self.log.read():
+                return
+            time.sleep(0.02)
+        raise RuntimeError("okena did not start: " + self.text())
+
+    def text(self) -> str:
+        self.log.seek(0)
+        return self.log.read()
+
+    def workers(self):
+        out = subprocess.check_output(["pgrep", "-P", str(self.p.pid)]).split()
+        return [int(x) for x in out]
+
+    def stop(self):
+        if self.p.poll() is None:
+            self.p.send_signal(signal.SIGTERM)
+            try:
+                self.p.wait(10)
+            except subprocess.TimeoutExpired:
+                self.p.kill()
+
+
+failures = 0
+
+
+def check(name: str, ok: bool, detail: str = "") -> None:
+    global failures
+    print(("ok   " if ok else "FAIL ") + name + (f": {detail}" if detail else ""))
+    failures += not ok
+
+
+def main() -> int:
+    b0, b1, dead, lst, lst2 = BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4
+    echo_backend(b0, b"b0")
+    echo_backend(b1, b"b1")
+    ok = Okena(f"""
+okena {{
+    workers 2
+    drain delay=0s timeout=3s
+}}
+pool web {{
+    server 127.0.0.1:{b0}
+    server 127.0.0.1:{b1}
+    server 127.0.0.1:{dead}
+    server 192.0.2.1:9
+    connect timeout=200ms
+}}
+tcp 127.0.0.1:{lst} {{ to pool web }}
+tcp :{lst2} {{
+    to 127.0.0.1:{b0}
+    timeout {{ idle 1s }}
+}}
+""")
+    try:
+        # integrity in both directions with half-close
+        data = os.urandom(8_000_000)
+        c = socket.create_connection(("127.0.0.1", lst2), timeout=10)
+        got = bytearray()
+        t = threading.Thread(target=lambda: [got.extend(d) for d in iter(lambda: c.recv(1 << 20), b"")])
+        t.start()
+        c.sendall(data)
+        c.shutdown(socket.SHUT_WR)
+        t.join()
+        c.close()
+        check("8 MB echo through the proxy, half-close", hashlib.sha256(got).digest() == hashlib.sha256(data).digest())
+
+        # failover past a refusing and a black-holed server, balanced
+        seen = {}
+        errors = 0
+        start = time.time()
+        for _ in range(200):
+            try:
+                r = who(lst)
+                seen[r] = seen.get(r, 0) + 1
+            except OSError:
+                errors += 1
+        check("no client error with 2 of 4 servers dead", errors == 0, f"{errors} errors")
+        check("traffic spread over the live servers", set(seen) == {b"b0", b"b1"} and min(seen.values()) > 50, str(seen))
+        check("dead servers ejected (log)", "ejected" in ok.text())
+        check("connect timeouts do not stall the pool", time.time() - start < 10, f"{time.time() - start:.1f}s")
+
+        # dual stack listener
+        check("IPv6 client on :port", who(lst2, "::1") == b"b0")
+
+        # idle timeout: never early
+        c = socket.create_connection(("127.0.0.1", lst2), timeout=10)
+        t0 = time.time()
+        c.recv(10)
+        idle = time.time() - t0
+        check("idle connection closed after its timeout, not before", 1.0 <= idle < 3.0, f"{idle:.2f}s")
+
+        # every worker killed under load: no failed connection
+        errors = 0
+        n = 0
+        for pid in ok.workers():
+            os.kill(pid, signal.SIGKILL)
+        t0 = time.time()
+        while time.time() - t0 < 1.0:
+            try:
+                n += who(lst2) == b"b0"
+            except OSError:
+                errors += 1
+        check("all workers SIGKILLed: queued connections served by replacements", errors == 0 and n > 100, f"{n} ok, {errors} failed")
+
+        # graceful drain keeps in-flight connections
+        c = socket.create_connection(("127.0.0.1", lst2), timeout=5)
+        ok.p.send_signal(signal.SIGTERM)
+        time.sleep(0.2)
+        c.sendall(b"draining\n")
+        check("in-flight connection keeps working during drain", c.recv(100) == b"draining\n")
+        c.close()
+        try:
+            ok.p.wait(5)
+            check("exits once the last connection closes", ok.p.returncode == 0, f"status {ok.p.returncode}")
+        except subprocess.TimeoutExpired:
+            check("exits once the last connection closes", False, "still running")
+    finally:
+        ok.stop()
+    print(f"l4: {'all passed' if not failures else f'{failures} failed'}")
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
