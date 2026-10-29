@@ -27,7 +27,9 @@ Early: L4 and HTTP/1.1, no TLS yet. What works today:
   retries within a per-pool budget, outlier ejection, request ids,
   `trusted_proxies`, JSON access logs through a logger process, metrics
   by status class, idle connections that give their memory back;
-* `least-request` (power of two choices) balancing by default;
+* `least-request` (power of two choices) balancing by default, and
+  `slow_start 30s` in a pool: a server that comes back is given a share
+  of traffic that grows smoothly over the window;
 
 * an HTTP/1.1 reverse proxy (`http :8080 { route /api/* { to pool api } }`):
   strict parsing, exact and prefix routes with method filters, heads

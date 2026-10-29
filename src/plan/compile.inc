@@ -91,6 +91,7 @@ PL_H_HI		= 84		; d
 PL_H_HOST	= 88		; q: Host of the check, 0 = the server as written
 PL_H_HLEN	= 96		; d
 PL_H_HEAD	= 100		; d: 1 for HEAD
+PL_SLOW		= 104		; d: slow start window in seconds, 0 = none
 PL_SIZE		= 128
 
 ; Server
@@ -621,6 +622,9 @@ compile_pool:
 	lea	rcx,[dir_table + D_SIZE*DIR_BALANCE]
 	cmp	rax,rcx
 	je	.balance
+	lea	rcx,[dir_table + D_SIZE*DIR_SLOW_START]
+	cmp	rax,rcx
+	je	.slow_start
 	lea	rcx,[dir_table + D_SIZE*DIR_CONNECT]
 	cmp	rax,rcx
 	je	.connect
@@ -736,6 +740,20 @@ compile_pool:
 	mov	rdi,r13
 	mov	rsi,rbx
 	call	compile_server
+	jmp	.advance
+.slow_start:
+	mov	rax,[rbx+N_ARGS]
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_duration
+	xor	edx,edx
+	mov	ecx,1000000
+	div	rcx
+	test	eax,eax
+	jnz	@f
+	inc	eax				; at least a second
+@@:
+	mov	[r13+PL_SLOW],eax
 	jmp	.advance
 .balance:
 	mov	rax,[rbx+N_ARGS]

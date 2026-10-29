@@ -78,6 +78,12 @@ health_follow:
 	mov	[g_hc_seen+rcx*4],eax
 	mov	dword [g_sv_down+rcx*4],0
 	mov	dword [g_sv_fails+rcx*4],0
+	push	rcx
+	push	rdx
+	mov	edi,ecx
+	call	sv_comeback			; health says it is back: ramp it up
+	pop	rdx
+	pop	rcx
 .skip:
 	inc	ecx
 	jmp	.next

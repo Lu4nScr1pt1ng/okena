@@ -962,6 +962,90 @@ bss
 	g_pick_avoid2	dd ?
 end bss
 
+; Slow start, per worker: when a server became usable again (health back
+; up, passive ejection over, a connect that succeeded after it), in
+; milliseconds of the TSC + 1; 0 once its pool's window has passed, or
+; for a server that never left. Time is read only while one ramps.
+bss
+	g_sv_since	rd MAX_SERVERS
+end bss
+
+; edi = server: it is usable again from now.
+sv_comeback:
+	push	rdx
+	call	sv_now_ms
+	inc	eax				; stored + 1: 0 means not ramping
+	jnz	@f
+	inc	eax
+@@:
+	mov	[g_sv_since+rdi*4],eax
+	pop	rdx
+	ret
+
+; eax = milliseconds of the TSC (wrapping; differences are what count).
+; Clobbers rdx.
+sv_now_ms:
+	push	rcx
+	rdtsc
+	shl	rdx,32
+	or	rax,rdx
+	imul	rcx,[g_tsc_per_us],1000
+	xor	edx,edx
+	div	rcx
+	pop	rcx
+	ret
+
+; edi = server (ramping), rbx = its pool. eax = milliseconds into its
+; window; CF clear when the window is over (and its mark is cleared).
+; Clobbers rdx.
+sv_ramp:
+	call	sv_now_ms
+	inc	eax
+	sub	eax,[g_sv_since+rdi*4]
+	push	rcx
+	imul	ecx,[rbx+PL_SLOW],1000
+	cmp	eax,ecx
+	pop	rcx
+	jae	.over
+	stc
+	ret
+.over:
+	mov	dword [g_sv_since+rdi*4],0
+	clc
+	ret
+
+; edi = server, rbx = its pool. eax = its weight, scaled down while it
+; slow-starts. Keeps every register but rax.
+sv_weight:
+	imul	eax,edi,SV_SIZE
+	mov	eax,[g_servers+rax+SV_WEIGHT]
+	cmp	dword [g_sv_since+rdi*4],0
+	jne	.ramp
+	ret
+.ramp:
+	push	rcx
+	push	rdx
+	push	rax
+	call	sv_ramp				; eax = ms into the window
+	jnc	.full
+	lea	ecx,[rax+1]
+	pop	rax
+	mul	ecx				; weight * elapsed / window
+	imul	ecx,[rbx+PL_SLOW],1000
+	div	ecx
+	test	eax,eax
+	jnz	@f
+	inc	eax
+@@:
+	pop	rdx
+	pop	rcx
+	ret
+.full:
+	pop	rax
+	pop	rdx
+	pop	rcx
+	ret
+
 ; edi = server index. CF when it may be chosen in pass esi
 ; (0 = healthy primaries, 1 = healthy backups, 2 = every primary).
 server_eligible:
@@ -983,22 +1067,30 @@ server_eligible:
 	mov	rax,[g_health_tbl]
 	cmp	dword [rax+rdi*8],HC_UP
 	jne	.no				; failing its active checks
+	; came back since this worker last looked (the count of comebacks is
+	; in the same 8 bytes as the state): out of any passive ejection,
+	; and ramped up from now, not from the next tick
+	mov	ecx,[rax+rdi*8+4]
+	cmp	ecx,[g_hc_seen+rdi*4]
+	jne	.health_back
 	mov	eax,[g_sv_down+rdi*4]
 	cmp	eax,[g_tick]
-	ja	.ejected
+	ja	.no				; passively ejected here
+	test	eax,eax
+	jnz	.ejection_over
 .yes:
 	stc
 	ret
-.ejected:
-	; passively ejected here, but the health checks brought it back
-	; since: it returns now (only ejected servers pay for this load)
-	mov	rax,[g_health_tbl]
-	mov	eax,[rax+rdi*8+4]
-	cmp	eax,[g_hc_seen+rdi*4]
-	je	.no
-	mov	[g_hc_seen+rdi*4],eax
+.health_back:
+	mov	[g_hc_seen+rdi*4],ecx
 	mov	dword [g_sv_down+rdi*4],0
 	mov	dword [g_sv_fails+rdi*4],0
+	call	sv_comeback
+	stc
+	ret
+.ejection_over:
+	mov	dword [g_sv_down+rdi*4],0	; its time is up: back, slowly
+	call	sv_comeback
 	stc
 	ret
 .no:
@@ -1093,8 +1185,8 @@ server_pick:
 	pop	r8
 	pop	rcx
 	jnc	.rr_next
-	imul	rax,rcx,SV_SIZE
-	mov	eax,[g_servers+rax+SV_WEIGHT]
+	mov	edi,ecx
+	call	sv_weight
 	add	r15d,eax
 	add	[g_sv_cw+rcx*4],eax
 	cmp	r12d,NIL
@@ -1144,10 +1236,12 @@ server_pick:
 	cmp	r12d,NIL
 	je	.lc_best
 	; active[c] * weight[best] < active[best] * weight[c]
-	imul	rax,rcx,SV_SIZE
-	mov	r10d,[g_servers+rax+SV_WEIGHT]
-	imul	rax,r12,SV_SIZE
-	mov	r11d,[g_servers+rax+SV_WEIGHT]
+	mov	edi,ecx
+	call	sv_weight
+	mov	r10d,eax
+	mov	edi,r12d
+	call	sv_weight
+	mov	r11d,eax
 	mov	eax,[g_sv_active+rcx*4]
 	imul	rax,r11
 	mov	edx,[g_sv_active+r12*4]
@@ -1179,8 +1273,9 @@ server_pick:
 	pop	r8
 	pop	rcx
 	jnc	@f
-	imul	rax,rcx,SV_SIZE
-	add	r15d,[g_servers+rax+SV_WEIGHT]
+	mov	edi,ecx
+	call	sv_weight
+	add	r15d,eax
 @@:
 	inc	ecx
 	jmp	.rw
@@ -1201,8 +1296,8 @@ server_pick:
 	call	.eligible
 	pop	rcx
 	jnc	.rw_skip
-	imul	rax,rcx,SV_SIZE
-	mov	eax,[g_servers+rax+SV_WEIGHT]
+	mov	edi,ecx
+	call	sv_weight
 	cmp	r15d,eax
 	jb	.rw_found
 	sub	r15d,eax
@@ -1247,10 +1342,12 @@ server_pick:
 	test	r10b,r10b
 	jz	.take_b
 	; both: in_flight[a] * weight[b] against in_flight[b] * weight[a]
-	imul	rax,r11,SV_SIZE
-	mov	r8d,[g_servers+rax+SV_WEIGHT]
-	imul	rax,r12,SV_SIZE
-	mov	r9d,[g_servers+rax+SV_WEIGHT]
+	mov	edi,r11d
+	call	sv_weight
+	mov	r8d,eax
+	mov	edi,r12d
+	call	sv_weight
+	mov	r9d,eax
 	mov	eax,[g_sv_active+r11*4]
 	imul	rax,r9
 	mov	edx,[g_sv_active+r12*4]
@@ -1289,7 +1386,28 @@ server_pick:
 	cmp	eax,[g_pick_avoid2]
 	je	.unusable
 	mov	esi,r13d
-	jmp	server_eligible
+	cmp	dword [g_sv_since+rdi*4],0
+	je	server_eligible			; the common case: not ramping
+	push	rdi
+	call	server_eligible
+	pop	rdi
+	jnc	.unusable
+	; slow start: drawn with probability elapsed / window, so its share
+	; grows smoothly from nothing to all of it
+	call	sv_ramp				; eax = ms into the window
+	jnc	.ramped
+	push	rax
+	push	rcx
+	call	rand64
+	pop	rcx
+	imul	edx,[rbx+PL_SLOW],1000
+	mul	edx				; edx = uniform in [0, window ms)
+	pop	rax
+	cmp	edx,eax
+	jae	.unusable			; not this time
+.ramped:
+	stc
+	ret
 .unusable:
 	clc
 	ret
@@ -1577,6 +1695,7 @@ server_ok:
 	cmp	dword [g_sv_down+rdi*4],0
 	je	@f
 	mov	dword [g_sv_down+rdi*4],0
+	call	sv_comeback
 	push	rdi
 	call	log_begin
 	out_lit 'backend '

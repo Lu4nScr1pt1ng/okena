@@ -36,6 +36,7 @@ SUITES = [
     ("overload epoll", ["tests/overload/run.py", "epoll"]),
     ("reload", ["tests/reload/run.py"]),
     ("health", ["tests/health/run.py"]),
+    ("lb", ["tests/lb/run.py"]),
     ("admin io_uring", ["tests/admin/run.py", "io_uring"]),
     ("admin epoll", ["tests/admin/run.py", "epoll"]),
     ("http parser", ["tests/http/run.py", "5000"]),
