@@ -23,7 +23,9 @@ LS_RFIRST	= 76		; d: first route (http)
 LS_RCOUNT	= 80		; d
 LS_HFIRST	= 84		; d: first host block (http)
 LS_HCOUNT	= 88		; d
-LS_SIZE		= 96
+LS_T_HEADER	= 92		; d: http: seconds for a whole request head
+LS_T_RESPONSE	= 96		; d: http: seconds a backend has for its response head
+LS_SIZE		= 104
 
 ; Host block name (http): routes for requests to that host
 HO_NAME		= 0		; q: the name; for "*.example.com", ".example.com"
@@ -85,6 +87,8 @@ BAL_RANDOM	= 2
 DEFAULT_CONNECTIONS	= 65536		; per listener, whole instance
 DEFAULT_IDLE_SECS	= 3600
 DEFAULT_HTTP_IDLE_SECS	= 60
+DEFAULT_HEADER_SECS	= 10		; slow clients (slowloris) get 408
+DEFAULT_RESPONSE_SECS	= 30		; slow backends get 504
 DEFAULT_CONNECT_US	= 2000000
 DEFAULT_DRAIN_US	= 8000000
 
@@ -111,6 +115,8 @@ bss
 	g_cmp_addr:	rb AD_SIZE
 	g_cmp_flags	dd ?
 	g_cmp_per_source dd ?
+	g_cmp_t_header	dd ?
+	g_cmp_t_response dd ?
 	g_cmp_rfirst	dd ?
 	g_cmp_rcount	dd ?
 	g_plan_routes	dd ?
@@ -358,6 +364,27 @@ pool_new:
 	mov	[rax+PL_FIRST],edx
 	mov	qword [rax+PL_TIMEOUT],DEFAULT_CONNECT_US / 1000000
 	mov	qword [rax+PL_TIMEOUT+8],(DEFAULT_CONNECT_US mod 1000000) * 1000
+	ret
+
+; rdi = timeout block, ecx = directive. eax = its duration in whole
+; seconds (at least one), or CF when absent.
+timeout_secs:
+	call	find_child
+	test	rax,rax
+	jz	.absent
+	mov	rdi,rax
+	call	node_duration
+	xor	edx,edx
+	mov	ecx,1000000
+	div	rcx
+	test	eax,eax
+	jnz	@f
+	inc	eax
+@@:
+	clc
+	ret
+.absent:
+	stc
 	ret
 
 plan_too_many:
@@ -771,25 +798,30 @@ compile_listener:
 	jne	@f
 	mov	ebx,DEFAULT_HTTP_IDLE_SECS	; keep-alive clients
 @@:
+	mov	dword [g_cmp_t_header],DEFAULT_HEADER_SECS
+	mov	dword [g_cmp_t_response],DEFAULT_RESPONSE_SECS
 	mov	rdi,r12
 	mov	ecx,DIR_TIMEOUT
 	call	find_child
 	test	rax,rax
 	jz	.addresses
+	push	rax
 	mov	rdi,rax
-	mov	ecx,DIR_IDLE
-	call	find_child
-	test	rax,rax
-	jz	.addresses
-	mov	rdi,rax
-	call	node_duration
-	xor	edx,edx
-	mov	ecx,1000000
-	div	rcx
-	test	eax,eax
-	jnz	@f
-	inc	eax				; at least one second
+	mov	ecx,DIR_HEADER
+	call	timeout_secs
+	jc	@f
+	mov	[g_cmp_t_header],eax
 @@:
+	mov	rdi,[rsp]
+	mov	ecx,DIR_RESPONSE
+	call	timeout_secs
+	jc	@f
+	mov	[g_cmp_t_response],eax
+@@:
+	pop	rdi
+	mov	ecx,DIR_IDLE
+	call	timeout_secs
+	jc	.addresses
 	mov	ebx,eax
 .addresses:
 	xor	r13d,r13d
@@ -804,6 +836,10 @@ compile_listener:
 	lea	rcx,[g_listeners+rcx]
 	mov	[rcx+LS_POOL],r14d
 	mov	[rcx+LS_IDLE],ebx
+	mov	eax,[g_cmp_t_header]
+	mov	[rcx+LS_T_HEADER],eax
+	mov	eax,[g_cmp_t_response]
+	mov	[rcx+LS_T_RESPONSE],eax
 	mov	[rcx+LS_MAXCONN],r15d		; whole instance; split per worker later
 	imul	rax,r13,A_SIZE
 	add	rax,[r12+N_ARGS]

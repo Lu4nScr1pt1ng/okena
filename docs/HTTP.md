@@ -90,12 +90,18 @@ the route asks for the normalized one (`path forward=normalized`).
 
 ## Timeouts and errors
 
+Each listener has its own clocks (`timeout { header; response; idle }`).
+A clock is a FIFO list per listener, since all its sessions share one
+limit: arming and stopping are O(1) and a tick looks only at what
+expires. A session waiting on its backend is not idle; the response
+clock owns it.
+
 | Phase | Default | On expiry |
 |---|---|---|
-| request head | 10 s | 408, close |
+| request head (`header`), from the first byte or the connection | 10 s | 408, close; a connection that never sent a byte is closed silently |
 | request body progress | 30 s between bytes | close |
 | connect | pool `connect timeout` | next server, or 502/503 |
-| response head | route `timeout try=` (30 s) | 504 |
+| response head (`response`), from the end of the request | 30 s | 504, close |
 | response body progress | 60 s between bytes | close both |
 | idle keep-alive | 60 s | close |
 

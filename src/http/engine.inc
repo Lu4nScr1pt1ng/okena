@@ -168,6 +168,16 @@ h_upclose:
 	call	session_uncount
 	cmp	dword [g_engine],ENGINE_EPOLL
 	je	.epoll
+	; a read may still wait on it (a timeout): cancel it, then close;
+	; a close alone would leave that read hanging on the socket
+	call	ring_get_sqe
+	mov	byte [rax+SQE_OPCODE],IORING_OP_ASYNC_CANCEL
+	mov	byte [rax+SQE_FLAGS],IOSQE_IO_HARDLINK
+	mov	ecx,[g_upslot+rbx*4]
+	mov	[rax+SQE_FD],ecx
+	mov	dword [rax+SQE_OP_FLAGS],IORING_ASYNC_CANCEL_FD or IORING_ASYNC_CANCEL_FD_FIXED or IORING_ASYNC_CANCEL_ALL
+	mov	rcx,OP_IGNORE shl 56
+	mov	[rax+SQE_USER_DATA],rcx
 	mov	edi,OP_S_CLOSE
 	mov	esi,ebx
 	call	sess_sqe

@@ -127,6 +127,9 @@ http_start:
 	mov	[r15+H_INLEN],eax
 	mov	[r15+H_INOFF],eax
 	mov	[r15+H_FLAGS],eax
+	mov	edi,ebx
+	mov	esi,PH_HEAD
+	call	ph_arm
 	jmp	http_next_request
 
 ; ----------------------------------------------------------- requests
@@ -149,6 +152,10 @@ http_next_request:
 	mov	[r15+H_INLEN],ecx
 	rep	movsb
 	mov	dword [r15+H_INOFF],0
+	mov	edi,ebx				; a pipelined request: its clock starts now
+	mov	esi,PH_HEAD
+	call	ph_arm
+	h_rec
 	jmp	.parse
 .empty:
 	mov	dword [r15+H_INLEN],0
@@ -181,6 +188,8 @@ http_next_request:
 ; ebx = session, eax = length of the head at the start of IN.
 http_request:
 	push	rax
+	mov	edi,ebx
+	call	ph_disarm			; the head is all here
 	h_rec
 	lea	rdi,[r15+H_IN]
 	mov	esi,[rsp]
@@ -704,6 +713,14 @@ http_recv_done:
 	push	rax
 	mov	edi,ebx
 	call	idle_touch
+	call	session_ptr
+	cmp	dword [rax+S_PH_KIND],0
+	jne	@f
+	mov	edi,ebx				; the first bytes of a request
+	mov	esi,PH_HEAD
+	call	ph_arm
+@@:
+	h_rec
 	pop	rax
 	jmp	http_next_request.parse
 .body:
@@ -917,6 +934,10 @@ http_start_response:
 	mov	dword [r15+H_UPLEN],0
 	mov	dword [r15+H_UPOFF],0
 	mov	dword [r15+H_STATE],HS_RESP_HEAD
+	mov	edi,ebx
+	mov	esi,PH_RESPONSE
+	call	ph_arm
+	h_rec
 	mov	ecx,SIDE_UP
 	lea	rdi,[r15+H_UP]
 	mov	esi,H_UP_CAP
@@ -962,11 +983,23 @@ http_resp_head:
 	jne	http_resp_head
 	test	dword [r15+H_FLAGS],HX_UPGRADE
 	jz	.bad				; switching protocols nobody asked for
+	push	rax
+	mov	edi,ebx
+	call	ph_disarm
+	pop	rax
+	h_rec
+	lea	r14,[g_hm]
 	mov	[r15+H_STATUS],eax
 	mov	dword [r15+H_RBODY],BK_NONE
 	and	dword [r15+H_FLAGS],not HX_CHUNKOUT
 	jmp	.write
 .final:
+	push	rax
+	mov	edi,ebx
+	call	ph_disarm
+	pop	rax
+	h_rec
+	lea	r14,[g_hm]
 	and	dword [r15+H_FLAGS],not HX_UPGRADE	; the backend did not switch
 	mov	[r15+H_STATUS],eax
 	cmp	dword [r14+HM_VERSION],11
@@ -1208,6 +1241,171 @@ http_last_chunk:
 	lea	rdi,[str_last_chunk]
 	mov	esi,str_last_chunk.len
 	jmp	h_send
+
+; ------------------------------------------------------ phase timeouts
+
+; Two clocks besides the idle one, per listener, each a FIFO list (all
+; its sessions share one limit, so the oldest is always at the head and
+; a tick looks only at what expires):
+;   PH_HEAD      a request head must arrive whole within `header`
+;                (slowloris); 408, or a silent close when nothing came;
+;   PH_RESPONSE  the backend must start its response within `response`
+;                once the request is sent; 504.
+; While a session waits on its backend it is not idle (idle_expire).
+
+PH_HEAD		= 1
+PH_RESPONSE	= 2
+
+bss
+	g_ph_head	rd MAX_LISTENERS * 2
+	g_ph_tail	rd MAX_LISTENERS * 2
+end bss
+
+; edi = session, esi = PH_*: start that clock now.
+ph_arm:
+	push	rsi
+	push	rdi
+	call	ph_disarm
+	pop	rdi
+	pop	rsi
+	mov	eax,edi
+	shl	rax,S_SHIFT
+	add	rax,[g_sess_base]
+	mov	[rax+S_PH_KIND],esi
+	mov	ecx,[g_tick]
+	mov	[rax+S_PH_AT],ecx
+	mov	ecx,[rax+S_LST]
+	lea	ecx,[rcx*2+rsi-1]
+	mov	edx,[g_ph_tail+rcx*4]
+	mov	[rax+S_PH_PREV],edx
+	mov	dword [rax+S_PH_NEXT],NIL
+	mov	[g_ph_tail+rcx*4],edi
+	cmp	edx,NIL
+	je	.first
+	shl	rdx,S_SHIFT
+	add	rdx,[g_sess_base]
+	mov	[rdx+S_PH_NEXT],edi
+	ret
+.first:
+	mov	[g_ph_head+rcx*4],edi
+	ret
+
+; edi = session: stop its clock, if one runs.
+ph_disarm:
+	mov	eax,edi
+	shl	rax,S_SHIFT
+	add	rax,[g_sess_base]
+	mov	esi,[rax+S_PH_KIND]
+	test	esi,esi
+	jz	.none
+	mov	dword [rax+S_PH_KIND],0
+	mov	ecx,[rax+S_LST]
+	lea	ecx,[rcx*2+rsi-1]
+	mov	edx,[rax+S_PH_PREV]
+	mov	r8d,[rax+S_PH_NEXT]
+	cmp	edx,NIL
+	je	.head
+	mov	r9d,edx
+	shl	r9,S_SHIFT
+	add	r9,[g_sess_base]
+	mov	[r9+S_PH_NEXT],r8d
+	jmp	.next
+.head:
+	mov	[g_ph_head+rcx*4],r8d
+.next:
+	cmp	r8d,NIL
+	je	.tail
+	mov	r9d,r8d
+	shl	r9,S_SHIFT
+	add	r9,[g_sess_base]
+	mov	[r9+S_PH_PREV],edx
+	ret
+.tail:
+	mov	[g_ph_tail+rcx*4],edx
+.none:
+	ret
+
+; Tick: answer the sessions whose clock ran out.
+ph_expire:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	xor	r12d,r12d
+.listener:
+	cmp	r12d,[g_plan_listeners]
+	jae	.done
+	imul	rax,r12,LS_SIZE
+	cmp	dword [g_listeners+rax+LS_KIND],LK_HTTP
+	jne	.next
+	mov	r14d,PH_HEAD
+.kind:
+	imul	rax,r12,LS_SIZE
+	mov	r13d,[g_listeners+rax+LS_T_HEADER]
+	cmp	r14d,PH_HEAD
+	je	.oldest
+	mov	r13d,[g_listeners+rax+LS_T_RESPONSE]
+.oldest:
+	lea	ecx,[r12*2+r14-1]
+	mov	ebx,[g_ph_head+rcx*4]
+	cmp	ebx,NIL
+	je	.next_kind
+	call	session_ptr
+	mov	ecx,[g_tick]
+	sub	ecx,[rax+S_PH_AT]
+	cmp	ecx,r13d
+	jbe	.next_kind			; never early
+	mov	edi,ebx
+	call	ph_disarm
+	push	r12
+	push	r13
+	push	r14
+	push	rbx
+	mov	esi,r14d
+	call	http_phase_expired
+	pop	rbx
+	pop	r14
+	pop	r13
+	pop	r12
+	jmp	.oldest
+.next_kind:
+	inc	r14d
+	cmp	r14d,PH_RESPONSE
+	jbe	.kind
+.next:
+	inc	r12d
+	jmp	.listener
+.done:
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; ebx = session, esi = the PH_* that ran out.
+http_phase_expired:
+	call	session_ptr
+	cmp	dword [rax+S_STATE],ST_OPEN
+	jne	.out
+	h_rec
+	cmp	esi,PH_HEAD
+	jne	.response
+	cmp	dword [r15+H_STATE],HS_HEAD
+	jne	.out
+	cmp	dword [r15+H_INLEN],0
+	je	.silent				; connected, never asked anything
+	mov	edi,408
+	jmp	http_error
+.silent:
+	mov	edi,ebx
+	jmp	session_close
+.response:
+	cmp	dword [r15+H_STATE],HS_RESP_HEAD
+	jne	.out
+	mov	edi,504
+	jmp	http_error
+.out:
+	ret
 
 ; ------------------------------------------------------------- tunnel
 

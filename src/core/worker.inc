@@ -266,6 +266,7 @@ tick_work:
 	add	rax,[g_hb]
 	inc	qword [rax]
 	call	idle_expire
+	call	ph_expire
 	cmp	dword [g_draining],0
 	je	.done
 	mov	eax,[g_tick]

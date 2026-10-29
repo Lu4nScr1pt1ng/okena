@@ -16,27 +16,31 @@ errors-semantics.conf:3:1: error: this listener does not send traffic anywhere
      3 | tcp [::]:6000 { }
        | ^^^
        = help: add `to ADDRESS...` or `to pool NAME` to its block
-errors-semantics.conf:6:12: error: server `10.0.0.11:5432` is listed twice in this pool
-     6 |     server 10.0.0.11:5432
+errors-semantics.conf:4:46: error: a tcp listener has no requests to time: this is an `http` timeout
+     4 | tcp :6001 { to 1.1.1.1:1; timeout { idle 5s; header 1s } }
+       |                                              ^^^^^^
+       = help: a tcp connection has `idle`; `header` and `response` time HTTP exchanges
+errors-semantics.conf:7:12: error: server `10.0.0.11:5432` is listed twice in this pool
+     7 |     server 10.0.0.11:5432
        |            ^^^^^^^^^^^^^^
-       = note: first listed on line 5
-errors-semantics.conf:8:1: error: this pool has no `server`
-     8 | pool empty {
+       = note: first listed on line 6
+errors-semantics.conf:9:1: error: this pool has no `server`
+     9 | pool empty {
        | ^^^^
-errors-semantics.conf:11:6: error: pool `pg` is defined twice
-    11 | pool pg { server 1.1.1.1:1 }
+errors-semantics.conf:12:6: error: pool `pg` is defined twice
+    12 | pool pg { server 1.1.1.1:1 }
        |      ^^
-       = note: first defined on line 4
-errors-semantics.conf:4:6: warning: pool `pg` is not used by any listener
-     4 | pool pg {
+       = note: first defined on line 5
+errors-semantics.conf:5:6: warning: pool `pg` is not used by any listener
+     5 | pool pg {
        |      ^^
-errors-semantics.conf:8:6: warning: pool `empty` is not used by any listener
-     8 | pool empty {
+errors-semantics.conf:9:6: warning: pool `empty` is not used by any listener
+     9 | pool empty {
        |      ^^^^^
-errors-semantics.conf:11:6: warning: pool `pg` is not used by any listener
-    11 | pool pg { server 1.1.1.1:1 }
+errors-semantics.conf:12:6: warning: pool `pg` is not used by any listener
+    12 | pool pg { server 1.1.1.1:1 }
        |      ^^
-errors-semantics.conf:12:6: warning: pool `lonely` is not used by any listener
-    12 | pool lonely { server 1.1.1.1:1 }
+errors-semantics.conf:13:6: warning: pool `lonely` is not used by any listener
+    13 | pool lonely { server 1.1.1.1:1 }
        |      ^^^^^^
-7 errors in errors-semantics.conf
+8 errors in errors-semantics.conf

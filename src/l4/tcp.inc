@@ -37,6 +37,10 @@ S_UC_OFF	= 64
 S_WAIT_C	= 68		; next in the buffer wait queue (client side)
 S_WAIT_U	= 72
 S_POOL		= 96		; pool of the current connection (a route's for http)
+S_PH_PREV	= 100		; http phase deadline list (per listener and phase)
+S_PH_NEXT	= 104
+S_PH_AT		= 108		; tick the phase started
+S_PH_KIND	= 112		; PH_*, 0 = no phase timer
 S_SIZE		= 128
 S_SHIFT		= 7
 
@@ -147,6 +151,10 @@ sessions_init:
 	add	r12d,eax
 	mov	dword [g_ls_head+rbx*4],NIL
 	mov	dword [g_ls_tail+rbx*4],NIL
+	mov	dword [g_ph_head+rbx*8],NIL
+	mov	dword [g_ph_head+rbx*8+4],NIL
+	mov	dword [g_ph_tail+rbx*8],NIL
+	mov	dword [g_ph_tail+rbx*8+4],NIL
 	inc	ebx
 	jmp	.listener
 .sized:
@@ -866,6 +874,13 @@ idle_expire:
 	call	session_ptr
 	mov	ecx,[g_tick]
 	sub	ecx,[rax+S_LAST]
+	jz	.fresh
+	cmp	dword [rax+S_PH_KIND],PH_RESPONSE
+	jne	.fresh
+	mov	edi,ebx				; waiting on its backend: not idle,
+	call	idle_touch			; the response timeout owns it
+	jmp	.head
+.fresh:
 	cmp	ecx,r13d
 	ja	.close				; never early: a tick may be a second late, not early
 	cmp	dword [g_evicting],0
@@ -1826,6 +1841,8 @@ session_close:
 	mov	dword [r12+S_STATE],ST_CLOSING
 	mov	edi,ebx
 	call	idle_remove
+	mov	edi,ebx
+	call	ph_disarm
 	; phase 1: cancel
 	mov	edi,OP_S_CANCEL
 	mov	esi,ebx

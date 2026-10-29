@@ -22,7 +22,7 @@ BIN = ROOT / "build" / "okena"
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "auto"
 # ports 26000-26999: this suite's own range
 BASE = 26000 + os.getpid() % 99 * 10 + (5 if ENGINE == "epoll" else 0)
-BACK, LST, DEAD = BASE, BASE + 1, BASE + 2
+BACK, LST, DEAD, QUICK = BASE, BASE + 1, BASE + 2, BASE + 3
 
 
 def read_message(f, head_only=False):
@@ -89,6 +89,8 @@ def backend():
                         if not data:
                             return
                         c.sendall(data.upper())
+                if target.startswith("/slow"):
+                    time.sleep(3)
                 if target.startswith("/surprise101"):
                     c.sendall(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\r\n")
                     return
@@ -133,8 +135,8 @@ def backend():
 
 
 class Client:
-    def __init__(self):
-        self.s = socket.create_connection(("127.0.0.1", LST), timeout=5)
+    def __init__(self, port=None):
+        self.s = socket.create_connection(("127.0.0.1", port or LST), timeout=5)
         self.f = self.s.makefile("rb")
 
     def send(self, raw):
@@ -191,6 +193,10 @@ http 127.0.0.1:{LST} {{
     route /* {{ to 127.0.0.1:{BACK} }}
     host api.t {{ route /* {{ to 127.0.0.1:{DEAD} }} }}
     host *.w.t {{ route /only-wild {{ to 127.0.0.1:{BACK} }} }}
+}}
+http 127.0.0.1:{QUICK} {{
+    timeout {{ header 1s; response 1s }}
+    route /* {{ to 127.0.0.1:{BACK} }}
 }}
 """)
 log = open(tmp / "log", "w+")
@@ -385,6 +391,46 @@ try:
     c.send(req(b"GET", b"/surprise101"))
     r = c.response()
     check("101 nobody asked for -> 502", r is not None and r[0] == 502, str(r and r[0]))
+
+    # phase timeouts (the QUICK listener: header 1s, response 1s)
+    c = Client(QUICK)
+    t0 = time.time()
+    c.send(b"GET /api/x HTTP/1.1\r\nHost: t\r\n")        # and never the end of it
+    r = c.response()
+    check("slow request head -> 408 and close", r is not None and r[0] == 408 and c.closed()
+          and time.time() - t0 < 4, str(r and r[0]))
+    c = Client(QUICK)
+    t0 = time.time()
+    c.s.settimeout(4)
+    try:
+        silent = c.s.recv(1) == b""
+    except OSError:
+        silent = False
+    check("connected and silent: closed without a word", silent and time.time() - t0 < 3.5, f"{time.time() - t0:.1f}s")
+    c = Client(QUICK)
+    c.send(b"GET /api/x HTTP/1.1\r\nHo")
+    time.sleep(0.5)
+    c.send(b"st: t\r\n\r\n")
+    r = c.response()
+    check("a head that arrives in pieces in time is served", r is not None and r[0] == 200)
+    time.sleep(2.5)                     # idle keep-alive: not the header clock
+    c.send(req(b"GET", b"/api/again"))
+    r = c.response()
+    check("an idle keep-alive connection is not cut by the header clock",
+          r is not None and r[0] == 200, str(r and r[0]))
+    t0 = time.time()
+    c.send(req(b"GET", b"/slow"))
+    r = c.response()
+    check("slow backend -> 504 and close", r is not None and r[0] == 504 and c.closed()
+          and time.time() - t0 < 3, str(r and r[0]))
+    c = Client(QUICK)
+    c.send(req(b"GET", b"/api/after-504"))
+    r = c.response()
+    check("then the listener keeps serving", r is not None and r[0] == 200)
+    c = Client()
+    c.send(req(b"GET", b"/slow"))
+    r = c.response()
+    check("the default response clock (30 s) lets a 3 s backend answer", r is not None and r[0] == 200)
 
     log.seek(0)
     check("no crash", "killed by signal" not in log.read() and p.poll() is None)

@@ -1041,6 +1041,8 @@ ep_close:
 	mov	edi,ebx
 	call	idle_remove
 	mov	edi,ebx
+	call	ph_disarm
+	mov	edi,ebx
 	call	connect_list_remove
 	mov	edi,[r12+S_CLIENT]
 	mov	eax,SYS_close

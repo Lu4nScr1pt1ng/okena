@@ -1233,6 +1233,8 @@ check_semantics:
 	inc	dword [g_chk_listeners]
 	mov	rdi,rbx
 	call	check_listener
+	mov	rdi,rbx
+	call	check_tcp_timeouts
 	jmp	.advance
 .pool:
 	inc	dword [g_chk_pools]
@@ -1245,6 +1247,41 @@ check_semantics:
 	call	check_unused_pools
 	pop	r13
 	pop	r12
+	pop	rbx
+	ret
+
+; rdi = tcp listener: `header` and `response` are http timeouts.
+check_tcp_timeouts:
+	push	rbx
+	mov	ecx,DIR_TIMEOUT
+	call	find_child
+	test	rax,rax
+	jz	.done
+	mov	rbx,[rax+N_CHILD]
+.next:
+	test	rbx,rbx
+	jz	.done
+	lea	rax,[dir_table + D_SIZE*DIR_HEADER]
+	cmp	[rbx+N_DEF],rax
+	je	.http_only
+	lea	rax,[dir_table + D_SIZE*DIR_RESPONSE]
+	cmp	[rbx+N_DEF],rax
+	jne	.advance
+.http_only:
+	mov	rdi,[rbx+N_NAME]
+	mov	esi,[rbx+N_NLEN]
+	mov	edx,[rbx+N_LINE]
+	call	cfg_error
+	out_lit 'a tcp listener has no requests to time: this is an `http` timeout'
+	call	cfg_diag_end
+	call	cfg_note
+	out_lit 'help: a tcp connection has `idle`; `header` and `response` time HTTP exchanges'
+	call	cfg_note_end
+	call	cfg_error_limit
+.advance:
+	mov	rbx,[rbx+N_NEXT]
+	jmp	.next
+.done:
 	pop	rbx
 	ret
 
