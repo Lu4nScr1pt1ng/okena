@@ -147,5 +147,40 @@ try:
 except ImportError:
     print("note: python cryptography not installed; X25519 checked on RFC 7748 only")
 
+# --- AES-128-GCM: McGrew-Viega test cases 1 and 2, then the library
+def seal(key, iv, aad, pt):
+    return run(b"g", key + iv + le16(len(aad)) + aad + pt)
+
+
+def gopen(key, iv, aad, ct):
+    return run(b"G", key + iv + le16(len(aad)) + aad + ct)
+
+
+check("GCM test case 1 (empty)", seal(bytes(16), bytes(12), b"", b""), "58e2fccefa7e3061367f1d57a4e7455a")
+check("GCM test case 2", seal(bytes(16), bytes(12), b"", bytes(16)),
+      "0388dace60b6a392f328c2b971b2fe78" + "ab6e47d42cec13bdf53a67b21257bddf")
+try:
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    lens = list(range(0, 300)) + [rng.randrange(300, 60000) for _ in range(20)]
+    for n in lens:
+        key, iv = rng.randbytes(16), rng.randbytes(12)
+        aad = rng.randbytes(rng.choice([0, 5, 13, 16, 17, 32, rng.randrange(80)]))
+        pt = rng.randbytes(n)
+        want = AESGCM(key).encrypt(iv, pt, aad)
+        check(f"gcm seal {n} aad {len(aad)}", seal(key, iv, aad, pt), want.hex())
+        if n % 7 == 0:
+            check(f"gcm open {n}", gopen(key, iv, aad, want), pt.hex())
+    key, iv, aad, pt = rng.randbytes(16), rng.randbytes(12), b"header", rng.randbytes(100)
+    ct = bytearray(AESGCM(key).encrypt(iv, pt, aad))
+    for name, k2, aad2, ct2 in [
+        ("a flipped ciphertext bit", key, aad, bytes(ct[:10]) + bytes([ct[10] ^ 1]) + bytes(ct[11:])),
+        ("a flipped tag bit", key, aad, bytes(ct[:-1]) + bytes([ct[-1] ^ 0x80])),
+        ("other additional data", key, b"headeR", bytes(ct)),
+        ("another key", rng.randbytes(16), aad, bytes(ct)),
+    ]:
+        check(f"gcm open refuses {name}", gopen(k2, iv, aad2, ct2), "FAIL")
+except ImportError:
+    print("note: python cryptography not installed; AES-GCM checked on the test cases only")
+
 print(f"kat: {'all passed' if not failures else f'{failures} failed'} ({checks} checks)")
 sys.exit(1 if failures else 0)

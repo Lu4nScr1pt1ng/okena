@@ -305,8 +305,8 @@ cpu_require:
 	push	rbx
 	mov	eax,1
 	cpuid
-	and	ecx,(1 shl 27) or (1 shl 28)		; OSXSAVE, AVX
-	cmp	ecx,(1 shl 27) or (1 shl 28)
+	and	ecx,(1 shl 27) or (1 shl 28) or (1 shl 25) or (1 shl 1)	; OSXSAVE, AVX, AES, PCLMULQDQ
+	cmp	ecx,(1 shl 27) or (1 shl 28) or (1 shl 25) or (1 shl 1)
 	jne	.unsupported
 	xor	ecx,ecx
 	xgetbv
@@ -323,7 +323,7 @@ cpu_require:
 	ret
 .unsupported:
 	call	log_begin
-	out_lit 'this CPU lacks AVX2/BMI2 (x86-64-v3 is required)'
+	out_lit 'this CPU lacks AVX2, BMI2, AES-NI or PCLMULQDQ (x86-64-v3 with AES-NI is required)'
 	call	log_end
 	mov	edi,EXIT_FAILURE
 	jmp	exit_process

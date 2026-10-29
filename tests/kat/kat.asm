@@ -6,6 +6,8 @@
 ;   'k' HKDF: salt len (2), salt, ikm len (2), ikm, info len (2), info, out len (2)
 ;   'l' Expand-Label: secret (32), label len (1), label, ctx len (1), ctx, out len (2)
 ;   'x' X25519: scalar (32), u (32)
+;   'g' AES-128-GCM seal: key (16), iv (12), aad len (2), aad, plaintext
+;   'G' AES-128-GCM open: key, iv, aad len, aad, ciphertext | tag; 'FAIL' if wrong
 
 format ELF64 executable 3
 entry start
@@ -22,14 +24,18 @@ include '../../src/crypto/sha256.inc'
 include '../../src/crypto/hmac.inc'
 include '../../src/crypto/hkdf.inc'
 include '../../src/crypto/x25519.inc'
+include '../../src/crypto/aesgcm.inc'
 
 INPUT_MAX := 1 shl 22
 
 bss
 	align 16
 	g_in_len	dq ?
-	g_out:		rb 8192
+	g_out:		rb 70000
 	g_label:	rb 256
+	align 16
+	g_gcm:		rb GCM_SIZE
+	g_gmode		db ?
 	g_in:		rb INPUT_MAX + 64
 end bss
 
@@ -67,6 +73,10 @@ start:
 	je	.label
 	cmp	al,'x'
 	je	.x25519
+	cmp	al,'g'
+	je	.gcm
+	cmp	al,'G'
+	je	.gcm
 .fail:
 	mov	edi,2
 	mov	eax,SYS_exit_group
@@ -141,6 +151,58 @@ start:
 	call	tls13_expand_label
 	pop	rsi
 	jmp	.print
+.gcm:
+	mov	[g_gmode],al
+	mov	rbx,rsi				; key
+	mov	r12,rdx				; bytes
+	lea	rdi,[g_gcm]
+	call	gcm_init
+	movzx	ecx,word [rbx+28]		; aad length
+	lea	rdx,[rbx+30]			; aad
+	lea	r8,[rdx+rcx]			; the text
+	mov	r9,r12
+	sub	r9,30
+	sub	r9,rcx				; its length
+	cmp	byte [g_gmode],'g'
+	je	.seal
+	sub	r9,16				; (the tag follows)
+	push	r8
+	push	r9
+	lea	rdi,[g_gcm]
+	lea	rsi,[rbx+16]
+	call	gcm_open
+	pop	r9
+	pop	r8
+	test	eax,eax
+	jz	.wrong
+	jmp	.text_out
+.seal:
+	push	r8
+	push	r9
+	lea	rdi,[g_gcm]
+	lea	rsi,[rbx+16]
+	call	gcm_seal
+	pop	r9
+	pop	r8
+	add	r9,16				; with the tag
+.text_out:
+	; copy the text to g_out (at most its size) and print it
+	mov	rsi,r8
+	lea	rdi,[g_out]
+	mov	rcx,r9
+	rep	movsb
+	mov	esi,r9d
+	jmp	.print
+.wrong:
+	lea	rsi,[.fail_text]
+	mov	edx,5
+	mov	edi,1
+	mov	eax,SYS_write
+	syscall
+	xor	edi,edi
+	mov	eax,SYS_exit_group
+	syscall
+.fail_text db 'FAIL',10
 .x25519:
 	lea	rdi,[g_out]
 	lea	rdx,[rsi+32]
