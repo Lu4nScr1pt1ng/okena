@@ -595,6 +595,8 @@ rand64:
 ; (0 = healthy primaries, 1 = healthy backups, 2 = every primary).
 server_eligible:
 	imul	rax,rdi,SV_SIZE
+	cmp	dword [g_servers+rax+SV_ACTIVE],0
+	je	.no				; a name slot without an address
 	mov	ecx,[g_servers+rax+SV_BACKUP]
 	cmp	esi,1
 	je	.backups
@@ -641,7 +643,7 @@ server_pick:
 	inc	r13d
 	cmp	r13d,3
 	jb	.pass
-	mov	eax,[rbx+PL_FIRST]		; nothing at all: first server
+	mov	eax,NIL				; no address at all (names not resolved)
 	jmp	.out
 @@:
 	mov	eax,[rbx+PL_BALANCE]
@@ -839,6 +841,8 @@ session_connect:
 	mov	edi,[g_listeners+rax+LS_POOL]
 	mov	esi,[r12+S_SERVER]
 	call	server_pick
+	cmp	eax,NIL
+	je	.nowhere
 	mov	[r12+S_SERVER],eax
 	inc	dword [g_sv_active+rax*4]
 	or	dword [r12+S_FLAGS],SF_COUNTED
@@ -912,6 +916,13 @@ session_connect:
 	lea	rcx,[g_pools+rcx+PL_TIMEOUT]
 	mov	[rax+SQE_ADDR],rcx
 	mov	dword [rax+SQE_LEN],1
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+.nowhere:
+	mov	edi,ebx
+	call	session_close
 	pop	r13
 	pop	r12
 	pop	rbx
@@ -1011,6 +1022,14 @@ server_ok:
 
 ; edi = server, rsi = -errno of the failed attempt.
 server_failed:
+	; a name's address that fails may be stale: ask for a fresh lookup
+	imul	rax,rdi,SV_SIZE
+	mov	eax,[g_servers+rax+SV_GROUP]
+	test	eax,eax
+	jz	@f
+	mov	rcx,[g_dns_table]
+	mov	dword [rcx+DT_WANT_OFF+rax*4-4],1
+@@:
 	inc	dword [g_sv_fails+rdi*4]
 	cmp	dword [g_sv_fails+rdi*4],FAIL_THRESHOLD
 	jb	.done

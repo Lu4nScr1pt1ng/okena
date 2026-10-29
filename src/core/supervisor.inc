@@ -71,6 +71,8 @@ supervisor_main:
 	mov	eax,2				; a tick is one second: less would misfire
 @@:
 	mov	[g_watchdog_s],eax
+	call	dns_table_init
+	call	groups_resolve_all
 
 	; TERM, INT, CHLD and ALRM (the watchdog) arrive through a signalfd.
 	; Blocking them here also makes workers inherit the blocked mask.
@@ -145,6 +147,8 @@ supervisor_main:
 	cmp	ebx,[g_workers]
 	jb	.spawn_all
 
+	call	spawn_control
+
 	; check the heartbeats once a second
 	sub	rsp,32
 	mov	qword [rsp],1			; it_interval
@@ -214,7 +218,7 @@ log_listener:
 	out_lit ': '
 @@:
 	pop	rcx
-	mov	eax,[rcx+PL_COUNT]
+	call	pool_written_count
 	push	rax
 	call	out_u64
 	out_lit ' server'
@@ -302,6 +306,32 @@ listener_probe:
 	pop	r13
 	pop	r12
 	pop	rbx
+	ret
+
+; rcx = pool. eax = servers as written: a name counts once, not as the
+; slots reserved for its addresses.
+pool_written_count:
+	mov	edx,[rcx+PL_FIRST]
+	mov	r8d,edx
+	add	r8d,[rcx+PL_COUNT]
+	xor	eax,eax
+.next:
+	cmp	edx,r8d
+	jae	.done
+	imul	r9,rdx,SV_SIZE
+	mov	r10d,[g_servers+r9+SV_GROUP]
+	test	r10d,r10d
+	jz	.count
+	dec	r10d
+	imul	r10,r10,GR_SIZE
+	cmp	[g_groups+r10+GR_FIRST],edx
+	jne	.skip
+.count:
+	inc	eax
+.skip:
+	inc	edx
+	jmp	.next
+.done:
 	ret
 
 ; edi = listener index. eax = socket. Exits on failure: a listener that
@@ -536,6 +566,23 @@ reap_workers:
 	mov	r12d,[g_siginfo+SI_PID]
 	test	r12d,r12d
 	jz	.done
+	cmp	r12d,[g_control_pid]
+	jne	.worker
+	; the control process: workers keep the last published addresses
+	; meanwhile; start a new one unless stopping
+	mov	dword [g_control_pid],0
+	cmp	dword [g_shutdown],0
+	jne	.next
+	call	log_begin
+	out_lit 'control process exited, restarting it'
+	call	log_end
+	lea	rdi,[ts_respawn_delay]
+	xor	esi,esi
+	mov	eax,SYS_nanosleep
+	syscall
+	call	spawn_control
+	jmp	.next
+.worker:
 	xor	ebx,ebx
 .find:
 	cmp	ebx,[g_workers]
@@ -598,6 +645,13 @@ reap_workers:
 .stopping:
 	cmp	dword [g_alive],0
 	jne	.next
+	mov	edi,[g_control_pid]
+	test	edi,edi
+	jz	@f
+	mov	esi,SIGKILL			; nothing to drain there
+	mov	eax,SYS_kill
+	syscall
+@@:
 	call	log_begin
 	out_lit 'all workers stopped'
 	call	log_end

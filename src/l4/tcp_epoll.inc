@@ -391,6 +391,8 @@ ep_connect:
 	mov	edi,[g_listeners+rax+LS_POOL]
 	mov	esi,[r12+S_SERVER]
 	call	server_pick
+	cmp	eax,NIL
+	je	.no_socket			; nowhere to go: close
 	mov	[r12+S_SERVER],eax
 	inc	dword [g_sv_active+rax*4]
 	or	dword [r12+S_FLAGS],SF_COUNTED

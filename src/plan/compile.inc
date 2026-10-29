@@ -36,7 +36,9 @@ SV_WEIGHT	= 120		; d
 SV_BACKUP	= 124		; d
 SV_TEXT		= 128		; q
 SV_TLEN		= 136		; d
-SV_SIZE		= 144
+SV_ACTIVE	= 140		; d: holds an address (names: once resolved)
+SV_GROUP	= 144		; d: name group + 1, or 0 for an address
+SV_SIZE		= 160
 
 BAL_ROUND_ROBIN	= 0
 BAL_LEAST_CONN	= 1
@@ -386,6 +388,20 @@ compile_server:
 	jne	@f
 	inc	dword [r12+PL_PRIMARY]
 @@:
+	; a name's other slots take the same weight and role
+	cmp	dword [rbx+SV_GROUP],0
+	je	.out
+	mov	eax,[rbx+SV_WEIGHT]
+	mov	ecx,[rbx+SV_BACKUP]
+	mov	edx,DNS_MAX_ADDRS - 1
+	lea	r8,[rbx+SV_SIZE]
+@@:
+	mov	[r8+SV_WEIGHT],eax
+	mov	[r8+SV_BACKUP],ecx
+	add	r8,SV_SIZE
+	dec	edx
+	jnz	@b
+.out:
 	pop	r13
 	pop	r12
 	pop	rbx
@@ -435,21 +451,54 @@ server_new:
 	call	sockaddr_build
 	mov	[rbx+SV_SALEN],eax
 	mov	[rbx+SV_FAMILY],edx
+	mov	dword [rbx+SV_ACTIVE],1
 	mov	rax,rbx
 	pop	r13
 	pop	r12
 	pop	rbx
 	ret
 .name:
-	call	log_begin
-	out_lit 'backend '
-	mov	rsi,[r12+A_VAL]
-	mov	edx,[r12+A_VLEN]
-	call	out_str
-	out_lit ': host names need the DNS resolver, which this version does not have yet; use an IP address'
-	call	log_end
-	mov	edi,EXIT_CONFIG
-	jmp	exit_process
+	; a name: DNS_MAX_ADDRS slots, filled in when it resolves
+	mov	ecx,[g_plan_groups]
+	cmp	ecx,MAX_GROUPS
+	jae	plan_too_many
+	inc	dword [g_plan_groups]
+	imul	rax,rcx,GR_SIZE
+	lea	rax,[g_groups+rax]
+	mov	rdx,[g_cmp_addr+AD_NAME]
+	mov	[rax+GR_NAME],rdx
+	mov	edx,[g_cmp_addr+AD_NLEN]
+	mov	[rax+GR_NLEN],edx
+	mov	edx,[g_cmp_addr+AD_PORT]
+	mov	[rax+GR_PORT],edx
+	mov	edx,[g_plan_servers]
+	dec	edx				; this slot is the first
+	mov	[rax+GR_FIRST],edx
+	inc	ecx
+	mov	[rbx+SV_GROUP],ecx
+	mov	dword [rbx+SV_ACTIVE],0
+	mov	r8d,DNS_MAX_ADDRS - 1
+.more_slots:
+	mov	edx,[g_plan_servers]
+	cmp	edx,MAX_SERVERS
+	jae	plan_too_many
+	inc	dword [g_plan_servers]
+	inc	dword [r13+PL_COUNT]
+	imul	rdx,rdx,SV_SIZE
+	lea	rdx,[g_servers+rdx]
+	mov	dword [rdx+SV_WEIGHT],1
+	mov	rax,[rbx+SV_TEXT]
+	mov	[rdx+SV_TEXT],rax
+	mov	eax,[rbx+SV_TLEN]
+	mov	[rdx+SV_TLEN],eax
+	mov	[rdx+SV_GROUP],ecx
+	dec	r8d
+	jnz	.more_slots
+	mov	rax,rbx
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
 
 ; rdi = sockaddr output, rsi = parsed address.
 ; eax = sockaddr length, edx = family.

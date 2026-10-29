@@ -23,6 +23,7 @@ test: $(BIN)
 	python3 -I tests/config/fuzz.py 2000
 	python3 -I tests/l4/run.py io_uring
 	python3 -I tests/l4/run.py epoll
+	python3 -I tests/dns/run.py
 
 image:
 	docker build -t okena .

@@ -61,6 +61,7 @@ worker_main:
 	call	sessions_init
 	test	eax,eax
 	js	.no_memory
+	call	groups_refresh
 	cmp	dword [g_plan_engine],2
 	je	ep_main
 	; io_uring, with epoll as the fallback unless io_engine says io_uring
@@ -243,6 +244,7 @@ on_timer:
 ; Once a second, both engines: heartbeat, idle timeouts, drain deadlines.
 tick_work:
 	inc	dword [g_tick]
+	call	groups_refresh
 	mov	eax,[g_worker_id]
 	shl	rax,6
 	add	rax,[g_hb]

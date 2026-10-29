@@ -194,3 +194,6 @@ SYS_setitimer	= 38
 ITIMER_REAL	= 0
 SIGALRM		= 14
 SIGSTOP		= 19
+SOCK_DGRAM	= 2
+SYS_recvfrom	= 45
+SYS_getrandom_	= 318

@@ -32,6 +32,11 @@ Early. What works today:
   no lost queued connection;
 * memory that follows the load: a worker uses under 1 MiB at rest.
 
+* backends by name (`to app:3000`): /etc/hosts and DNS with search
+  domains, A and AAAA, every address of a name used, re-resolved by TTL
+  and at once when a connect fails, last known addresses kept when DNS
+  fails, names that appear later picked up without a restart;
+* a watchdog that replaces stuck workers;
 * two I/O engines, io_uring and epoll, chosen automatically: where
   io_uring is blocked (Docker's default seccomp profile, Kubernetes,
   gVisor) okena runs on epoll and says why;
