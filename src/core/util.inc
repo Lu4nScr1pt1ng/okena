@@ -254,6 +254,27 @@ mem_eq:
 	movzx	eax,al
 	ret
 
+; rdi, rsi = buffers, edx = length. eax = 1 when equal ignoring ASCII case.
+mem_eq_nocase:
+	xor	ecx,ecx
+.next:
+	cmp	ecx,edx
+	jae	.yes
+	movzx	eax,byte [rdi+rcx]
+	movzx	r8d,byte [rsi+rcx]
+	or	eax,0x20
+	or	r8d,0x20
+	cmp	eax,r8d
+	jne	.no
+	inc	ecx
+	jmp	.next
+.yes:
+	mov	eax,1
+	ret
+.no:
+	xor	eax,eax
+	ret
+
 ; rdi = "NAME=" prefix, esi = its length. rax = value or 0 when unset.
 getenv:
 	mov	r8,[g_envp]

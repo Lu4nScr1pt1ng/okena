@@ -2,6 +2,7 @@ TOOLCHAIN := .toolchain/fasm2
 FASMG     := $(TOOLCHAIN)/fasmg.x64
 SOURCES   := $(shell find src -name '*.asm' -o -name '*.inc')
 BIN       := build/okena
+HTTPH     := build/httpharness
 
 .PHONY: all toolchain test fuzz bench image docker-test clean
 
@@ -18,7 +19,14 @@ $(BIN): $(SOURCES) | $(FASMG)
 	@chmod +x $@.tmp
 	@mv -f $@.tmp $@
 
-test: $(BIN)
+$(HTTPH): tests/http/harness.asm $(SOURCES) | $(FASMG)
+	@mkdir -p build
+	INCLUDE="$(TOOLCHAIN)/include" $(FASMG) -e100 -i "Include 'fasm2.inc'" tests/http/harness.asm $@.tmp
+	@chmod +x $@.tmp
+	@mv -f $@.tmp $@
+
+test: $(BIN) $(HTTPH)
+	python3 -I tests/http/run.py 5000
 	python3 -I tests/config/run.py
 	python3 -I tests/config/fuzz.py 2000
 	python3 -I tests/l4/run.py io_uring
@@ -44,8 +52,9 @@ bench: $(BIN)
 
 # Longer runs: make fuzz FUZZ_CASES=1000000
 FUZZ_CASES ?= 100000
-fuzz: $(BIN)
+fuzz: $(BIN) $(HTTPH)
 	python3 -I tests/config/fuzz.py $(FUZZ_CASES)
+	python3 -I tests/http/run.py $(FUZZ_CASES)
 
 clean:
 	rm -rf build
