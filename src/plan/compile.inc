@@ -57,6 +57,12 @@ RT_PREFIX	= 12		; d: 1 for "/x/*" routes
 RT_METHODS	= 16		; d: RM_* bits, 0 = any
 RT_POOL		= 20		; d
 RT_SIZE		= 24
+
+; Routes are found through one open-addressing table: key = (the route
+; set's first entry, exact or prefix, the path), value = route entry + 1.
+; Routes that share a path with different methods share a key: a lookup
+; walks every entry of its probe sequence.
+RHASH_SIZE	= MAX_ROUTES * 4
 MAX_ROUTES	= 1024
 
 LSF_PEER	= 1		; sessions need the client's address
@@ -141,6 +147,7 @@ bss
 	g_plan_trust	dd ?
 	g_trust:	rb TR_SIZE * MAX_TRUST
 	g_hhash:	rq HHASH_SIZE
+	g_rhash:	rq RHASH_SIZE
 	g_plan_hosts	dd ?
 	g_hosts:	rb HO_SIZE * MAX_HOSTS
 	g_cmp_hfirst	dd ?
@@ -455,6 +462,63 @@ alog_dest_id:
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process
+
+; rcx = route entry, edx = its index: into g_rhash.
+route_insert:
+	push	rcx
+	push	rdx
+	mov	edi,[g_cmp_rfirst]
+	call	rhash_seed
+	mov	rsi,[rcx+RT_PATH]
+	mov	edx,[rcx+RT_PLEN]
+	call	rhash_bytes
+	mov	rcx,[rsp+8]
+	mov	ecx,[rcx+RT_PREFIX]
+	call	rhash_final
+	pop	rdx
+	pop	rcx
+	mov	r8d,eax
+.probe:
+	and	r8d,RHASH_SIZE - 1
+	cmp	qword [g_rhash+r8*8],0
+	je	.slot
+	inc	r8d
+	jmp	.probe
+.slot:
+	lea	r9d,[rdx+1]
+	shl	r9,32
+	or	r9,rax
+	mov	[g_rhash+r8*8],r9
+	ret
+
+; Path hashing (FNV-1a), in three steps so a request path is hashed in one
+; pass: the state after each '/' is the hash of that prefix.
+; edi = route set's first entry. eax = the initial state.
+rhash_seed:
+	mov	eax,2166136261
+	xor	eax,edi
+	imul	eax,eax,16777619
+	ret
+; eax = state, rsi/edx = bytes. eax = state after them. Clobbers r8, r9.
+rhash_bytes:
+	xor	r8d,r8d
+@@:
+	cmp	r8d,edx
+	jae	@f
+	movzx	r9d,byte [rsi+r8]
+	xor	eax,r9d
+	imul	eax,eax,16777619
+	inc	r8d
+	jmp	@b
+@@:
+	ret
+; eax = state, ecx = 1 for a prefix, 0 for an exact path. eax = the key.
+rhash_final:
+	xor	eax,ecx
+	imul	eax,eax,16777619
+	xor	eax,0x5BD1E995
+	imul	eax,eax,16777619
+	ret
 
 ; edi = seed (a listener's first host entry), rsi/edx = name, ecx = 1
 ; for a wildcard suffix. eax = FNV-1a hash of it all, A-Z folded to
@@ -1364,6 +1428,13 @@ compile_routes:
 	mov	[rcx+RT_PLEN],eax
 	mov	[rcx+RT_METHODS],r14d
 	mov	[rcx+RT_POOL],r13d
+	push	rsi
+	push	rdi
+	mov	edx,[g_plan_routes]
+	dec	edx
+	call	route_insert
+	pop	rdi
+	pop	rsi
 .arg_next:
 	inc	r15d
 	jmp	.arg

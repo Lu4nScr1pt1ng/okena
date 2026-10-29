@@ -443,69 +443,49 @@ http_route:
 	mov	esi,[r13+HM_MLEN]
 	call	method_bit
 	mov	r13d,eax			; method bit
-	mov	eax,-1				; best pool
-	mov	r8d,-1				; best score
-	mov	ecx,[g_rset_first]
-	mov	r9d,ecx
-	add	r9d,[g_rset_count]
-.next:
-	cmp	ecx,r9d
-	jae	.done
-	imul	rbx,rcx,RT_SIZE
-	lea	rbx,[g_routes+rbx]
-	mov	edx,[rbx+RT_METHODS]
-	test	edx,edx
-	jz	@f
-	test	edx,r13d
-	jz	.skip
-@@:
-	mov	edx,[rbx+RT_PLEN]
-	cmp	dword [rbx+RT_PREFIX],0
-	jne	.prefix
-	cmp	edx,r15d
-	jne	.skip
-	push	rcx
-	push	rax
-	push	r8
-	push	r9
-	mov	rdi,[rbx+RT_PATH]
-	mov	rsi,r14
-	call	mem_eq
-	pop	r9
-	pop	r8
-	mov	r10d,eax
-	pop	rax
-	pop	rcx
-	test	r10d,r10d
-	jz	.skip
-	mov	eax,[rbx+RT_POOL]		; exact: nothing beats it
-	jmp	.done
-.prefix:
-	cmp	edx,r15d
-	ja	.skip
-	cmp	edx,r8d
-	jle	.skip				; not better than what we have
-	push	rcx
-	push	rax
-	push	r8
-	push	r9
-	push	rdx
-	mov	rdi,[rbx+RT_PATH]
-	mov	rsi,r14
-	call	mem_eq
-	pop	rdx
-	pop	r9
-	pop	r8
-	mov	r10d,eax
-	pop	rax
-	pop	rcx
-	test	r10d,r10d
-	jz	.skip
-	mov	r8d,edx
-	mov	eax,[rbx+RT_POOL]
-.skip:
+	; one pass over the path: the hash state after each '/' is the hash
+	; of that prefix; the exact path is the full one
+	mov	edi,[g_rset_first]
+	call	rhash_seed
+	xor	ecx,ecx
+	xor	r10d,r10d			; prefixes seen
+.walk:
+	cmp	ecx,r15d
+	jae	.walked
+	movzx	edx,byte [r14+rcx]
+	xor	eax,edx
+	imul	eax,eax,16777619
 	inc	ecx
-	jmp	.next
+	cmp	dl,'/'
+	jne	.walk
+	cmp	r10d,PFX_MAX
+	jae	.walk				; (deeper prefixes than any route can name)
+	mov	[g_pfx_hash+r10*4],eax
+	mov	[g_pfx_len+r10*4],ecx
+	inc	r10d
+	jmp	.walk
+.walked:
+	xor	ecx,ecx				; the exact path first: nothing beats it
+	mov	edx,r15d
+	push	r10
+	call	route_lookup
+	pop	r10
+	cmp	eax,-1
+	jne	.done
+.pfx:
+	dec	r10d				; then prefixes, the longest first
+	js	.none
+	mov	eax,[g_pfx_hash+r10*4]
+	mov	edx,[g_pfx_len+r10*4]
+	mov	ecx,1
+	push	r10
+	call	route_lookup
+	pop	r10
+	cmp	eax,-1
+	je	.pfx
+	jmp	.done
+.none:
+	mov	eax,-1
 .done:
 	pop	r15
 	pop	r14
@@ -671,7 +651,67 @@ rodata
 	hex_upper	db '0123456789ABCDEF'
 end rodata
 
+; eax = hash state of the path's first edx bytes, ecx = 1 prefix / 0
+; exact, r14 = path, r13d = the request's method bit, g_rset_* = the
+; route set. eax = the pool of the route it names, or -1.
+route_lookup:
+	push	rdx
+	call	rhash_final
+	pop	rdx
+	mov	r11d,eax
+.probe:
+	and	eax,RHASH_SIZE - 1
+	mov	r10,[g_rhash+rax*8]
+	test	r10,r10
+	jz	.miss
+	cmp	r10d,r11d
+	jne	.next
+	shr	r10,32
+	dec	r10d				; route entry
+	mov	r9d,r10d
+	sub	r9d,[g_rset_first]
+	cmp	r9d,[g_rset_count]
+	jae	.next				; another set's
+	imul	r8,r10,RT_SIZE
+	lea	r8,[g_routes+r8]
+	cmp	[r8+RT_PREFIX],ecx
+	jne	.next
+	cmp	[r8+RT_PLEN],edx
+	jne	.next
+	mov	r9d,[r8+RT_METHODS]
+	test	r9d,r9d
+	jz	@f
+	test	r9d,r13d
+	jz	.next				; another method's: the chain goes on
+@@:
+	push	rax
+	push	rcx
+	push	rdx
+	push	r8
+	push	r11
+	mov	rdi,[r8+RT_PATH]
+	mov	rsi,r14
+	call	mem_eq
+	pop	r11
+	pop	r8
+	pop	rdx
+	pop	rcx
+	test	eax,eax
+	pop	rax
+	jz	.next
+	mov	eax,[r8+RT_POOL]
+	ret
+.next:
+	inc	eax
+	jmp	.probe
+.miss:
+	mov	eax,-1
+	ret
+
+PFX_MAX		= 256
 bss
+	g_pfx_hash	rd PFX_MAX
+	g_pfx_len	rd PFX_MAX
 	g_npath		rb H_IN_CAP
 	g_rset_first	dd ?
 	g_rset_count	dd ?

@@ -254,6 +254,10 @@ http 127.0.0.1:{LST} {{
     route /only-get GET {{ to 127.0.0.1:{BACK} }}
     route /down/* {{ to 127.0.0.1:{DEAD} }}
     route /bad/* {{ to 127.0.0.1:{BAD} }}
+    route /deep/* {{ to 127.0.0.1:{BACK} }}
+    route /deep/a/b/* {{ to 127.0.0.1:{BACK} }}
+    route /deep/a/* {{ to 127.0.0.1:{DEAD} }}
+    route /deep/a/b/c GET {{ to 127.0.0.1:{DEAD} }}
     route /retry/* {{ to pool flaky }}
     route /* {{ to 127.0.0.1:{BACK} }}
     host api.t {{ route /* {{ to 127.0.0.1:{DEAD} }} }}
@@ -410,6 +414,19 @@ try:
         c.send(req(b"GET", target))
         r = c.response()
         check(f"path {target.decode()}: {why} -> {code}", r is not None and r[0] == code, str(r and r[0]))
+    # route lookup: exact first (with its methods), then the longest prefix
+    for method, target, code, why in [
+        (b"GET", b"/deep/a/b/c", 502, "an exact route beats every prefix"),
+        (b"POST", b"/deep/a/b/c", 200, "another method falls to the longest prefix"),
+        (b"GET", b"/deep/a/b/c/d", 200, "the longest of nested prefixes"),
+        (b"GET", b"/deep/a/x", 502, "a middle prefix"),
+        (b"GET", b"/deep/a", 200, "no trailing slash: not /deep/a/*"),
+        (b"GET", b"/deep/zz", 200, "the shortest prefix"),
+    ]:
+        c = Client()
+        c.send(req(method, target, body=b"" if method == b"POST" else None))
+        r = c.response()
+        check(f"route {method.decode()} {target.decode()}: {why}", r is not None and r[0] == code, str(r and r[0]))
     c = Client()
     c.send(req(b"TRACE", b"/api/x"))
     r = c.response()

@@ -101,9 +101,14 @@ Routes are compiled per listener:
    are a configuration error;
 3. method set, then (later) header and query predicates.
 
-**Today** hosts and routes are compiled into tables scanned in order,
-O(routes); the hash, suffix trie and segment radix tree (with `{param}`)
-come before route tables get large.
+Both are compiled into open-addressing hash tables: an exact host is one
+probe, a wildcard one probe per label of the requested name; a path is
+hashed in one pass (the state after each `/` is that prefix's hash), then
+looked up exact first and prefix by prefix, the longest first. The cost
+depends on the request, not on how many hosts or routes are configured.
+Routes that share a path with different methods share a key, so a method
+that does not match falls through to a shorter prefix. `{param}`
+segments will need a radix tree; they are not in the language yet.
 
 Paths are matched after normalization: unreserved `%XX` decoded, other
 `%XX` in upper case, `//` as `/`. What cannot be normalized safely is a
