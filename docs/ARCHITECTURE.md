@@ -217,7 +217,7 @@ hang. Routes can also inject faults on purpose (`fault delay=100ms 5%`,
 
 A spike has to be absorbed or refused in microseconds, without a cascade.
 
-* **Everything is preallocated as address space.** Connection slots,
+* **Everything is preallocated as address space** (see Memory). Connection slots,
   buffers, upstream connections, h2 streams, timers: each pool is reserved
   once at its maximum (`mmap` with `MAP_NORESERVE`, guard pages) and made
   resident on demand. No `malloc`, no growth, no fragmentation, no page
@@ -453,15 +453,85 @@ same code. okena also ships the seccomp profile that allows exactly what
 the io_uring engine needs, so the fast engine is one flag away
 (see Containers).
 
-## Memory layout
+## Memory
 
-* Connection header: 256 bytes, one cache line for the hot fields (state,
-  flags, deadlines, ring indices), the rest cold.
-* Buffers: 16 KiB (one TLS record plus headroom) from the provided ring;
-  large buffers (128 KiB) on loan with total deadlines.
+Memory follows the load: small at rest, growing in steps a spike can
+use at once, shrinking when the load is gone, never fragmenting, and
+never costing a lock or a syscall on the request path.
+
+**Reserve address space, commit on demand.** Every pool reserves its
+maximum once, as address space (`MAP_NORESERVE`, guard pages at both
+ends). Reserving is free; only touched pages cost memory. A pool grows by
+committing the next chunk of its own range, so its items never move,
+pointers stay valid, and growth needs no copy, no lock and no
+reallocation. The ceiling is derived at startup from the memory really
+available (cgroup `memory.max`, else `MemAvailable`) and the configured
+limits, so "reserved" can never promise more than the machine has.
+
+**Size classes, not a general allocator.** There is no `malloc`. Each
+kind of object has its own pool with a fixed size: connection headers
+(256 B), h2 streams, timers, upstream connections, and I/O buffers in a
+few classes (4, 16, 64 KiB, plus 128 KiB loans with deadlines). Fixed
+sizes mean no fragmentation and O(1) allocation: a pop from a per-worker
+LIFO free list, the most recently freed (still in cache, already
+faulted in) first. Configuration generations live in arenas that are
+released whole when the generation retires.
+
+**Buffers sized by what a connection does.** An idle connection holds no
+buffer at all (~256 B in okena). A connection gets a 4 KiB buffer on its
+first bytes, which is enough for most requests; it moves to 16 KiB when
+it fills one (TLS records, large headers) and to 64 KiB for sustained
+streams (downloads, uploads, L4 tunnels), stepping down again when its
+rate drops — the same idea as the kernel's TCP buffer auto-tuning, so
+memory goes to the connections that move bytes. Socket buffers are
+capped per listener (`SO_RCVBUF`/`SO_SNDBUF`) so the kernel cannot hold
+more than okena accounts for.
+
+**Grow ahead of demand, shrink behind it.** Each pool keeps a warm
+reserve: committed, prefaulted pages ready for an instant spike. The
+reserve tracks an exponentially weighted peak of recent use, so after a
+burst it stays large for a while (the next burst often follows) and
+decays slowly. Growth happens off the request path: on the timer tick,
+when free items fall below the reserve, the next chunk is prefaulted
+with `MADV_POPULATE_WRITE` (one syscall, no page-fault storm under load);
+if a spike outruns that, items are still served from the committed range
+and fault in on first touch. Shrinking is the reverse, with hysteresis:
+items at the bottom of the LIFO stacks, beyond the reserve and unused for
+`trim_idle` (30 s), go back with `MADV_DONTNEED` a bounded number per
+tick. A busy pool never trims, so it never pays faults for trimming.
+
+**Huge pages where they pay.** Large, hot, long-lived pools (connection
+headers, buffer classes, the cache index) are 2 MiB aligned and use
+transparent huge pages (`MADV_HUGEPAGE`) to cut TLB misses; small or
+short-lived ones stay on 4 KiB pages so trimming stays fine-grained.
+Explicit huge pages (`MAP_HUGETLB`) are used when the host provides them.
+
+**Pressure-aware.** The overload manager reads the cgroup's
+`memory.current` and pressure stall information (`memory.pressure`, PSI)
+every tick. Rising pressure first shrinks warm reserves and trims
+harder, then steps down buffer classes for new connections, then sheds
+load; okena gives memory back before the kernel has to take it, and
+never reaches the OOM killer. The minimum working set (the warm
+reserves okena needs to stay responsive) is locked with `mlock`.
+
+**NUMA and cache lines.** Each worker first-touches its own pools, so
+they live on its node. Hot fields of every object share one cache line;
+objects that different cores write are on different cache lines
+(64-byte alignment, no false sharing). Per-worker data is never written
+by another worker.
+
+**Accounting.** Every pool reports reserved, committed, in use and warm
+bytes in `/metrics` and `okena top`, so memory is explained, not
+guessed. Every limit is explicit; when one is reached, okena answers 503
+or applies backpressure instead of growing.
+
+Layout details:
+
+* Connection header: 256 bytes; the first cache line holds the hot
+  fields (state, flags, deadlines, ring indices), the rest is cold.
 * Upstream connections live in per-worker, per-backend LIFO free lists
   (most recently used first: warm in the backend's cache too). Idle ones
-  are closed after `idle_timeout`, so N workers do not keep N times the
+  are closed after `idle`, so N workers do not keep N times the
   connections a backend needs.
 * Strings in the plan (hosts, header names, paths) are interned; routing
   compares indices, not bytes.
