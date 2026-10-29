@@ -363,7 +363,7 @@ services:
     network_mode: host             # no docker-proxy in the path
     cpuset: "0-3"                  # pinned cores, no CFS throttling
     security_opt:
-      - seccomp=okena.seccomp.json # enables the io_uring engine
+      - seccomp=docker/okena.seccomp.json  # enables the io_uring engine
     volumes:
       - ./okena.conf:/etc/okena/okena.conf:ro
     environment:

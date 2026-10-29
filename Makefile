@@ -3,7 +3,7 @@ FASMG     := $(TOOLCHAIN)/fasmg.x64
 SOURCES   := $(shell find src -name '*.asm' -o -name '*.inc')
 BIN       := build/okena
 
-.PHONY: all toolchain test fuzz bench clean
+.PHONY: all toolchain test fuzz bench image docker-test clean
 
 all: $(BIN)
 
@@ -23,6 +23,12 @@ test: $(BIN)
 	python3 -I tests/config/fuzz.py 2000
 	python3 -I tests/l4/run.py io_uring
 	python3 -I tests/l4/run.py epoll
+
+image:
+	docker build -t okena .
+
+docker-test:
+	./tests/docker.sh
 
 bench: $(BIN)
 	./tests/bench/l4.sh

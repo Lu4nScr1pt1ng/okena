@@ -1,0 +1,5 @@
+.git
+.toolchain
+build
+tests
+docs
