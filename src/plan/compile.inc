@@ -83,7 +83,15 @@ PL_H_EVERY	= 48		; d: milliseconds
 PL_H_TIMEOUT	= 52		; d: milliseconds
 PL_H_RISE	= 56		; d
 PL_H_FALL	= 60		; d
-PL_SIZE		= 64
+PL_H_HTTP	= 64		; d: 1 for an HTTP check (0: TCP)
+PL_H_PLEN	= 68		; d
+PL_H_PATH	= 72		; q
+PL_H_LO		= 80		; d: statuses that pass
+PL_H_HI		= 84		; d
+PL_H_HOST	= 88		; q: Host of the check, 0 = the server as written
+PL_H_HLEN	= 96		; d
+PL_H_HEAD	= 100		; d: 1 for HEAD
+PL_SIZE		= 128
 
 ; Server
 SV_SA		= 0		; sockaddr (sockaddr_un is 110 bytes)
@@ -278,6 +286,8 @@ cstring str_key_timeout, 'timeout',0
 cstring str_key_weight, 'weight',0
 cstring str_key_every, 'every',0
 cstring str_key_rise, 'rise',0
+cstring str_key_expect, 'expect',0
+cstring str_key_host, 'host',0
 cstring str_key_fall, 'fall',0
 
 ; rdi = `okena` node.
@@ -625,6 +635,54 @@ compile_pool:
 	mov	dword [r13+PL_H_TIMEOUT],1000
 	mov	dword [r13+PL_H_RISE],2
 	mov	dword [r13+PL_H_FALL],3
+	; http: [GET|HEAD] PATH, expect=, host=
+	mov	rax,[rbx+N_ARGS]
+	mov	rdi,[rax+A_VAL]
+	cmp	byte [rdi],'h'
+	jne	.health_keys
+	mov	dword [r13+PL_H_HTTP],1
+	mov	dword [r13+PL_H_LO],200
+	mov	dword [r13+PL_H_HI],399
+	push	rax
+	mov	rdi,rbx
+	call	positional_count
+	mov	ecx,eax
+	pop	rax
+	cmp	ecx,3
+	jne	@f
+	mov	rdx,[rax+A_SIZE+A_VAL]
+	cmp	byte [rdx],'H'
+	jne	@f
+	mov	dword [r13+PL_H_HEAD],1
+@@:
+	dec	ecx
+	imul	rcx,rcx,A_SIZE
+	add	rax,rcx
+	mov	rdx,[rax+A_VAL]
+	mov	[r13+PL_H_PATH],rdx
+	mov	edx,[rax+A_VLEN]
+	mov	[r13+PL_H_PLEN],edx
+	mov	rdi,rbx
+	lea	rsi,[str_key_expect]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_statuses
+	mov	[r13+PL_H_LO],eax
+	mov	[r13+PL_H_HI],edx
+@@:
+	mov	rdi,rbx
+	lea	rsi,[str_key_host]
+	call	node_option
+	test	rax,rax
+	jz	.health_keys
+	mov	rdx,[rax+A_VAL]
+	mov	[r13+PL_H_HOST],rdx
+	mov	edx,[rax+A_VLEN]
+	mov	[r13+PL_H_HLEN],edx
+.health_keys:
 	mov	rdi,rbx
 	lea	rsi,[str_key_every]
 	call	node_option

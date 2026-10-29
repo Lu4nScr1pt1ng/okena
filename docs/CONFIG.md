@@ -326,7 +326,9 @@ pool api {
     concurrency adaptive           # or: concurrency 256
     retry_budget 20% min=10/s
 
-    health http GET /healthz every=2s timeout=500ms expect=200..299
+    health http GET /healthz every=2s timeout=500ms expect=200..299 host=api.internal
+                                   # or: health tcp (connect only); expect defaults
+                                   # to 200..399, host to the server as written
     outlier errors=5 eject=30s max_ejected=50%
     slow_start 30s
 }

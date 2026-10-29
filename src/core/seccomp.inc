@@ -229,6 +229,7 @@ rodata
 	sc_allow filter_health, SYS_close
 	sc_allow filter_health, SYS_epoll_ctl
 	sc_allow filter_health, SYS_epoll_wait
+	sc_allow filter_health, SYS_read		; HTTP checks: the status line
 	sc_allow filter_health, SYS_clock_gettime
 	sc_end filter_health
 

@@ -42,6 +42,7 @@ T_HOSTNAME	= 16		; a host name, or *.example.com
 T_ROUTE		= 15		; a path ("/x", "/x/*", "/*") or a method (GET, POST...)
 T_LOGDEST	= 17		; stdout, stderr, off, or an absolute file path
 T_CIDR		= 18		; an IP address or a range: 10.0.0.0/8, 2001:db8::/32
+T_STATUSES	= 19		; an HTTP status or a range: 200, 200..299
 
 ; Directive entry
 D_NAME		= 0		; 24 bytes, NUL-padded
@@ -112,13 +113,14 @@ M_HOST		= 1 shl CTX_HOST
 enumdef e_io_engine, 'auto', 'io_uring', 'epoll'
 enumdef e_balance, 'round-robin', 'least-conn', 'random', 'least-request'
 enumdef e_server_flags, 'backup'
-enumdef e_health, 'tcp'
+enumdef e_health, 'tcp', 'http'
 enumdef e_pp_mode, 'send'
 enumdef e_pp_version, 'v1', 'v2'
 
 keysdef k_drain, 'delay', T_DURATION, 'timeout', T_DURATION
 keysdef k_server, 'weight', T_WEIGHT
-keysdef k_health, 'every', T_DURATION, 'timeout', T_DURATION, 'rise', T_COUNT, 'fall', T_COUNT
+keysdef k_health, 'every', T_DURATION, 'timeout', T_DURATION, 'rise', T_COUNT, 'fall', T_COUNT, \
+	'expect', T_STATUSES, 'host', T_HOSTNAME
 keysdef k_connect, 'timeout', T_DURATION, 'max', T_FUTURE, 'idle', T_FUTURE, \
 	'warm', T_FUTURE, 'rate', T_FUTURE
 
@@ -166,7 +168,7 @@ dirdef DIR_BODY_IDLE, 'body_idle', M_TIMEOUT, 0,           F_UNIQUE, 1, 1, T_DUR
 dirdef DIR_SERVER, 'server',      M_POOL,    0,           0, 1, 2, T_BACKEND, e_server_flags, k_server
 dirdef DIR_BALANCE, 'balance',     M_POOL,    0,           F_UNIQUE, 1, 1, e_balance, T_NONE, 0
 dirdef DIR_CONNECT, 'connect',     M_POOL,    0,           F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_connect
-dirdef DIR_HEALTH, 'health',      M_POOL,    0,           F_UNIQUE or F_KEYS_BLOCK, 1, 1, e_health, T_NONE, k_health
+dirdef DIR_HEALTH, 'health',      M_POOL,    0,           F_UNIQUE or F_KEYS_BLOCK, 1, 3, e_health, T_ANY, k_health
 rodata
 	dir_table_end:
 end rodata

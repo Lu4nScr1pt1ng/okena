@@ -893,6 +893,12 @@ check_value:
 	je	.logdest
 	cmp	r12,T_CIDR
 	je	.cidr
+	cmp	r12,T_STATUSES
+	je	.statuses
+	jmp	.ok
+.statuses:
+	call	parse_statuses
+	jc	.bad
 	jmp	.ok
 .cidr:
 	sub	rsp,TR_SIZE
@@ -1216,6 +1222,11 @@ type_help:
 	cmp	rbx,T_HOSTNAME
 	jne	@f
 	out_lit 'a host name (api.example.com) or *.example.com'
+	jmp	.end
+@@:
+	cmp	rbx,T_STATUSES
+	jne	@f
+	out_lit 'an HTTP status or a range of them: 200, 200..299'
 	jmp	.end
 @@:
 	cmp	rbx,T_CIDR
@@ -2015,6 +2026,14 @@ check_pool:
 	mov	rbx,[rbx+N_NEXT]
 	jmp	.server
 .counted:
+	mov	rdi,r12
+	mov	ecx,DIR_HEALTH
+	call	find_child
+	test	rax,rax
+	jz	@f
+	mov	rdi,rax
+	call	check_health
+@@:
 	add	[g_chk_servers],r13d
 	test	r13d,r13d
 	jnz	.out
@@ -2025,6 +2044,177 @@ check_pool:
 	out_lit 'this pool has no `server`'
 	call	cfg_diag_end
 	call	cfg_error_limit
+.out:
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; rdi = health node. `health tcp` takes nothing more; `health http`
+; takes a path, after GET or HEAD if a method is given.
+check_health:
+	push	rbx
+	push	r12
+	mov	r12,rdi
+	mov	rbx,[r12+N_ARGS]
+	call	positional_count
+	mov	ecx,eax
+	mov	rdi,[rbx+A_VAL]
+	cmp	byte [rdi],'t'			; tcp
+	jne	.http
+	cmp	ecx,1
+	je	.out
+	lea	rdi,[rbx+A_SIZE]
+	call	arg_value_span
+	mov	edx,[rbx+A_SIZE+A_LINE]
+	call	cfg_error
+	out_lit 'a tcp check only connects: it has no method or path'
+	call	cfg_diag_end
+	call	cfg_note
+	out_lit 'help: `health http /healthz` checks an HTTP answer'
+	call	cfg_note_end
+	call	cfg_error_limit
+	jmp	.out
+.http:
+	cmp	ecx,1
+	je	.no_path
+	cmp	ecx,3
+	jne	.path
+	; a method first: GET or HEAD
+	lea	rax,[rbx+A_SIZE]
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	lea	rdx,[e_health_methods]
+	call	list_index
+	test	eax,eax
+	jns	.path
+	lea	rdi,[rbx+A_SIZE]
+	call	arg_value_span
+	mov	edx,[rbx+A_SIZE+A_LINE]
+	call	cfg_error
+	out_lit 'a health check asks with GET or HEAD'
+	call	cfg_diag_end
+	call	cfg_error_limit
+	jmp	.out
+.path:
+	mov	rdi,r12
+	call	positional_count
+	lea	ecx,[rax-1]
+	imul	rax,rcx,A_SIZE
+	lea	rax,[rbx+rax]
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	cmp	byte [rdi],'/'
+	jne	.bad_path
+	cmp	esi,1024
+	ja	.bad_path
+	xor	ecx,ecx
+@@:
+	cmp	ecx,esi
+	jae	.out
+	movzx	edx,byte [rdi+rcx]
+	cmp	byte [http_target_ok+rdx],0
+	je	.bad_path
+	inc	ecx
+	jmp	@b
+.bad_path:
+	mov	rdi,rax
+	push	rax
+	call	arg_value_span
+	pop	rax
+	mov	edx,[rax+A_LINE]
+	call	cfg_error
+	out_lit 'a health check path is a request target: /healthz, /status?full=1 (at most 1024 bytes)'
+	call	cfg_diag_end
+	call	cfg_error_limit
+	jmp	.out
+.no_path:
+	mov	rdi,[r12+N_NAME]
+	mov	esi,[r12+N_NLEN]
+	mov	edx,[r12+N_LINE]
+	call	cfg_error
+	out_lit 'an http check needs a path'
+	call	cfg_diag_end
+	call	cfg_note
+	out_lit 'help: `health http /healthz every=2s expect=200..299`'
+	call	cfg_note_end
+	call	cfg_error_limit
+.out:
+	pop	r12
+	pop	rbx
+	ret
+
+enumdef e_health_methods, 'GET', 'HEAD'
+
+; rdi = node. eax = its arguments that are not key=value (they come first).
+positional_count:
+	mov	rdx,[rdi+N_ARGS]
+	mov	ecx,[rdi+N_ARGC]
+	xor	eax,eax
+@@:
+	cmp	eax,ecx
+	jae	@f
+	cmp	dword [rdx+A_KIND],ARG_KV
+	je	@f
+	inc	eax
+	add	rdx,A_SIZE
+	jmp	@b
+@@:
+	ret
+
+; rdi/esi = "200" or "200..299". eax = low, edx = high (100 .. 599, low
+; <= high). CF on error.
+parse_statuses:
+	push	rbx
+	push	r12
+	push	r13
+	mov	r12,rdi
+	mov	r13d,esi
+	xor	ebx,ebx
+@@:
+	cmp	ebx,r13d
+	jae	@f
+	cmp	byte [r12+rbx],'.'
+	je	@f
+	inc	ebx
+	jmp	@b
+@@:
+	mov	rdi,r12
+	mov	esi,ebx
+	call	parse_decimal
+	jc	.bad
+	cmp	rax,100
+	jb	.bad
+	cmp	rax,599
+	ja	.bad
+	mov	r8d,eax
+	mov	edx,eax
+	cmp	ebx,r13d
+	je	.ok
+	lea	eax,[rbx+2]
+	cmp	eax,r13d
+	jae	.bad
+	cmp	byte [r12+rbx+1],'.'
+	jne	.bad
+	lea	rdi,[r12+rbx+2]
+	mov	esi,r13d
+	sub	esi,ebx
+	sub	esi,2
+	push	r8
+	call	parse_decimal
+	pop	r8
+	jc	.bad
+	cmp	rax,599
+	ja	.bad
+	cmp	eax,r8d
+	jb	.bad
+	mov	edx,eax
+.ok:
+	mov	eax,r8d
+	clc
+	jmp	.out
+.bad:
+	stc
 .out:
 	pop	r13
 	pop	r12

@@ -173,5 +173,109 @@ finally:
         p.kill()
     if failures or sys.exc_info()[0] or "-v" in sys.argv:
         print(text())
+# HTTP checks: a backend whose /healthz answer the test controls
+H0, H1, HL = BASE + 3, BASE + 4, BASE + 5
+seen_checks = []
+
+
+def http_backend(port, tag, state):
+    s = socket.socket()
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(("127.0.0.1", port))
+    s.listen(256)
+
+    def handle(c):
+        try:
+            data = c.recv(4096)
+            if data.startswith(b"GET /healthz") or data.startswith(b"HEAD /healthz"):
+                seen_checks.append(data)
+                if state["mode"] == "garbage":
+                    c.sendall(b"nope, not http\r\n")
+                else:
+                    c.sendall(b"HTTP/1.1 %d X\r\nContent-Length: 0\r\n\r\n" % state["status"])
+            elif data:
+                c.sendall(tag)
+        except OSError:
+            pass
+        finally:
+            c.close()
+
+    def loop():
+        while True:
+            c, _ = s.accept()
+            threading.Thread(target=handle, args=(c,), daemon=True).start()
+    threading.Thread(target=loop, daemon=True).start()
+
+
+h0 = {"status": 200, "mode": "http"}
+http_backend(H0, b"h0", h0)
+http_backend(H1, b"h1", {"status": 200, "mode": "http"})
+conf2 = tmp / "okena-http.conf"
+conf2.write_text(f"""
+okena {{ workers 2 }}
+pool app {{
+    server 127.0.0.1:{H0}
+    server 127.0.0.1:{H1}
+    health http GET /healthz every=150ms timeout=300ms rise=2 fall=2 expect=200..299 host=svc.internal
+}}
+tcp 127.0.0.1:{HL} {{ to pool app }}
+""")
+log2 = open(tmp / "log2", "w+")
+p2 = subprocess.Popen([str(BIN), "-c", str(conf2)], stderr=log2)
+
+
+def text2():
+    log2.seek(0)
+    return log2.read()
+
+
+def wait2(needle, count=1, seconds=5):
+    t0 = time.time()
+    while time.time() - t0 < seconds:
+        if text2().count(needle) >= count:
+            return time.time() - t0
+        time.sleep(0.05)
+    return None
+
+
+def who2():
+    c = socket.create_connection(("127.0.0.1", HL), timeout=3)
+    c.sendall(b"who")
+    r = c.recv(10)
+    c.close()
+    return r
+
+
+try:
+    wait2("started with")
+    t0 = time.time()
+    while not seen_checks and time.time() - t0 < 3:
+        time.sleep(0.05)
+    first = seen_checks[0] if seen_checks else b""
+    check("http check: GET /healthz with the configured Host",
+          first.startswith(b"GET /healthz HTTP/1.1\r\n") and b"\r\nHost: svc.internal\r\n" in first
+          and b"Connection: close" in first, repr(first[:120]))
+    h0["status"] = 503
+    t = wait2(f"backend 127.0.0.1:{H0} is down (health check: HTTP status 503")
+    check("a 503 takes the server out, saying why", t is not None and t < 2, f"{t}")
+    seen = {who2() for _ in range(30)}
+    check("then traffic only to the healthy one", seen == {b"h1"}, str(seen))
+    h0["status"] = 204
+    t = wait2(f"backend 127.0.0.1:{H0} is up")
+    check("a status in expect brings it back", t is not None and t < 2, f"{t}")
+    seen = {who2() for _ in range(40)}
+    check("and traffic returns to it", seen == {b"h0", b"h1"}, str(seen))
+    h0["mode"] = "garbage"
+    t = wait2(f"backend 127.0.0.1:{H0} is down", 2)
+    check("an answer that is not HTTP fails the check", t is not None and t < 2, f"{t}")
+finally:
+    p2.send_signal(signal.SIGTERM)
+    try:
+        p2.wait(10)
+    except subprocess.TimeoutExpired:
+        p2.kill()
+    if failures:
+        print(text2())
+
 print(f"health: {'all passed' if not failures else f'{failures} failed'}")
 sys.exit(1 if failures else 0)

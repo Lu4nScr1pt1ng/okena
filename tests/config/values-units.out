@@ -38,4 +38,12 @@ values-units.conf:11:17: error: invalid value `300`
     11 | okena { workers 300 }
        |                 ^^^
        = help: expected `auto` or a number of workers from 1 to 256
-10 errors in values-units.conf
+values-units.conf:13:52: error: invalid value `200..99`
+    13 | pool hc4 { server 1.1.1.1:5; health http /x expect=200..99 }
+       |                                                    ^^^^^^^
+       = help: expected an HTTP status or a range of them: 200, 200..299
+values-units.conf:14:52: error: invalid value `99`
+    14 | pool hc5 { server 1.1.1.1:6; health http /x expect=99 }
+       |                                                    ^^
+       = help: expected an HTTP status or a range of them: 200, 200..299
+12 errors in values-units.conf

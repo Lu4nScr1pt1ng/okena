@@ -2,7 +2,10 @@
 ; backend is checked once per interval, not once per worker.
 ;
 ; TCP checks connect without blocking, many in parallel on one epoll; a
-; check passes when the connect completes within the timeout. `rise`
+; check passes when the connect completes within the timeout. An HTTP
+; check then sends one request (Connection: close) and passes when the
+; status line arrives in time with a status in `expect` (200..399 by
+; default); the rest of the answer is not read. `rise`
 ; passes in a row bring a server back, `fall` failures take it out; each
 ; change is logged once with its reason. The state goes to a shared table
 ; that workers read with one load per decision (0 = up). A server starts
@@ -22,6 +25,9 @@ bss
 	g_hc_next	rq MAX_SERVERS	; when to check next (ms)
 	g_hc_deadline	rq MAX_SERVERS	; in-flight check timeout (ms)
 	g_hc_fd		rd MAX_SERVERS	; in-flight socket, -1 = none
+	g_hc_phase	rd MAX_SERVERS	; 0 connecting, 1 waiting for the HTTP answer
+	g_hc_rlen	rd MAX_SERVERS
+	g_hc_rbuf	rb MAX_SERVERS * HC_RBUF	; the start of the answer
 	g_hc_ok		rd MAX_SERVERS	; consecutive passes
 	g_hc_bad	rd MAX_SERVERS	; consecutive failures
 	g_hc_active	rd MAX_SERVERS	; slot held an address at the last look
@@ -31,6 +37,10 @@ end bss
 rodata
 	health_name	db 'okena-health',0
 end rodata
+
+assert 1 shl 4 = 16
+HC_RBUF		= 16		; "HTTP/1.1 200 " is all a check reads
+HC_STATUS_BASE	= 100000	; -(HC_STATUS_BASE + N): answered with status N
 
 ; Shared table, before forking a generation (zero: everyone up).
 health_table_init:
@@ -149,7 +159,15 @@ health_main:
 	jge	.timeouts
 	imul	rax,rbx,EPOLL_EVENT
 	mov	edi,dword [g_hc_events+rax+4]	; data: server index
+	cmp	edi,MAX_SERVERS
+	jae	.next_event
+	cmp	dword [g_hc_phase+rdi*4],1
+	je	.answer
 	call	hc_connect_done
+	jmp	.next_event
+.answer:
+	call	hc_http_read
+.next_event:
 	inc	ebx
 	jmp	.event
 .timeouts:
@@ -246,6 +264,8 @@ hc_start:
 	test	eax,eax
 	js	.out				; out of descriptors: try next round
 	mov	[g_hc_fd+rbx*4],eax
+	mov	dword [g_hc_phase+rbx*4],0	; connecting
+	mov	dword [g_hc_rlen+rbx*4],0
 	mov	eax,[r13+PL_H_TIMEOUT]
 	add	rax,[g_hc_now]
 	mov	[g_hc_deadline+rbx*8],rax
@@ -290,6 +310,7 @@ hc_start:
 ; edi = server whose check connection became writable.
 hc_connect_done:
 	push	rbx
+	push	r12
 	mov	ebx,edi
 	cmp	ebx,MAX_SERVERS
 	jae	.out
@@ -310,9 +331,176 @@ hc_connect_done:
 	add	rsp,16
 	neg	ecx
 	movsxd	rsi,ecx				; 0 or -errno
+	test	rsi,rsi
+	jnz	.result
+	call	hc_pool_of			; r12 = pool (rbx = server)
+	cmp	dword [r12+PL_H_HTTP],0
+	je	.result
+	mov	edi,ebx
+	call	hc_http_send			; connected: now the request
+	jmp	.out
+.result:
 	mov	edi,ebx
 	call	hc_result
 .out:
+	pop	r12
+	pop	rbx
+	ret
+
+; edi = server whose check connection is up: write the request, then
+; wait for the answer.
+hc_http_send:
+	push	rbx
+	push	r12
+	push	r13
+	mov	ebx,edi
+	call	hc_pool_of			; r12 = pool
+	sub	rsp,2304
+	mov	rdi,rsp
+	cmp	dword [r12+PL_H_HEAD],0
+	jne	@f
+	mov	dword [rdi],'GET '
+	add	rdi,4
+	jmp	.target
+@@:
+	mov	dword [rdi],'HEAD'
+	mov	byte [rdi+4],' '
+	add	rdi,5
+.target:
+	mov	rsi,[r12+PL_H_PATH]
+	mov	ecx,[r12+PL_H_PLEN]
+	rep	movsb
+	lea	rsi,[hc_req_mid]
+	mov	ecx,hc_req_mid.len
+	rep	movsb
+	mov	rsi,[r12+PL_H_HOST]
+	mov	ecx,[r12+PL_H_HLEN]
+	test	rsi,rsi
+	jnz	@f
+	imul	rax,rbx,SV_SIZE			; Host: the server as written
+	mov	rsi,[g_servers+rax+SV_TEXT]
+	mov	ecx,[g_servers+rax+SV_TLEN]
+	cmp	ecx,256
+	jbe	@f
+	mov	ecx,256
+@@:
+	rep	movsb
+	lea	rsi,[hc_req_end]
+	mov	ecx,hc_req_end.len
+	rep	movsb
+	mov	rdx,rdi
+	sub	rdx,rsp
+	mov	edi,[g_hc_fd+rbx*4]
+	mov	rsi,rsp
+	mov	eax,SYS_write
+	syscall
+	mov	r13,rax
+	add	rsp,2304
+	test	r13,r13
+	js	.failed				; (a short write of a small request: the next read fails it)
+	; wait for the answer on the same epoll registration
+	mov	dword [g_hc_phase+rbx*4],1
+	sub	rsp,16
+	mov	dword [rsp],EPOLLIN or EPOLLRDHUP
+	mov	[rsp+4],rbx
+	mov	edi,[g_hc_epfd]
+	mov	esi,EPOLL_CTL_MOD
+	mov	edx,[g_hc_fd+rbx*4]
+	mov	r10,rsp
+	mov	eax,SYS_epoll_ctl
+	syscall
+	add	rsp,16
+	jmp	.out
+.failed:
+	mov	edi,ebx
+	mov	rsi,r13
+	call	hc_result
+.out:
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+cstring hc_req_mid, ' HTTP/1.1',13,10,'Host: '
+cstring hc_req_end, 13,10,'User-Agent: okena-health',13,10,'Connection: close',13,10,13,10
+
+; edi = server with answer bytes: once "HTTP/1.x NNN" is in, judge NNN.
+hc_http_read:
+	push	rbx
+	push	r12
+	mov	ebx,edi
+	mov	edi,[g_hc_fd+rbx*4]
+	cmp	edi,-1
+	je	.out
+	mov	eax,[g_hc_rlen+rbx*4]
+	mov	ecx,ebx
+	shl	ecx,4				; HC_RBUF
+	lea	rsi,[g_hc_rbuf+rcx+rax]
+	mov	edx,HC_RBUF
+	sub	edx,eax
+	xor	eax,eax				; SYS_read
+	syscall
+	cmp	rax,-EAGAIN
+	je	.out
+	test	rax,rax
+	jle	.closed
+	add	[g_hc_rlen+rbx*4],eax
+	cmp	dword [g_hc_rlen+rbx*4],12
+	jb	.out				; not the whole status code yet
+	mov	ecx,ebx
+	shl	ecx,4
+	lea	rsi,[g_hc_rbuf+rcx]
+	cmp	dword [rsi],'HTTP'
+	jne	.not_http
+	cmp	word [rsi+4],'/1'
+	jne	.not_http
+	cmp	byte [rsi+8],' '
+	jne	.not_http
+	xor	eax,eax
+	mov	ecx,9
+@@:
+	movzx	edx,byte [rsi+rcx]
+	sub	edx,'0'
+	cmp	edx,9
+	ja	.not_http
+	imul	eax,eax,10
+	add	eax,edx
+	inc	ecx
+	cmp	ecx,12
+	jb	@b
+	push	rax
+	call	hc_pool_of			; r12 = pool (clobbers eax)
+	pop	rax
+	cmp	eax,[r12+PL_H_LO]
+	jb	.status
+	cmp	eax,[r12+PL_H_HI]
+	ja	.status
+	mov	edi,ebx
+	xor	esi,esi				; passed
+	call	hc_result
+	jmp	.out
+.status:
+	neg	eax
+	sub	eax,HC_STATUS_BASE		; reported as "HTTP status N"
+	movsxd	rsi,eax
+	mov	edi,ebx
+	call	hc_result
+	jmp	.out
+.not_http:
+	mov	edi,ebx
+	mov	rsi,-EPROTO
+	call	hc_result
+	jmp	.out
+.closed:
+	mov	rsi,rax
+	test	rsi,rsi
+	jnz	@f
+	mov	rsi,-ECONNRESET			; closed before a status line
+@@:
+	mov	edi,ebx
+	call	hc_result
+.out:
+	pop	r12
 	pop	rbx
 	ret
 
@@ -392,7 +580,17 @@ hc_result:
 	out_lit ' is down (health check: '
 	mov	rax,r13
 	neg	rax
+	cmp	rax,HC_STATUS_BASE
+	jb	.errno
+	sub	rax,HC_STATUS_BASE
+	push	rax
+	out_lit 'HTTP status '
+	pop	rax
+	call	out_u64
+	jmp	.reason
+.errno:
 	call	errno_text
+.reason:
 	out_lit ', '
 	mov	eax,[r12+PL_H_FALL]
 	call	out_u64
