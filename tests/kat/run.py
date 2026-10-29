@@ -182,5 +182,59 @@ try:
 except ImportError:
     print("note: python cryptography not installed; AES-GCM checked on the test cases only")
 
+# --- P-256: field arithmetic, then keys and RFC 6979 signatures
+P = 2**256 - 2**224 + 2**192 + 2**96 - 1
+N = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
+R = 2**256
+
+
+def limbs(v):
+    return v.to_bytes(32, "little")
+
+
+def num(hexs):
+    return int.from_bytes(bytes.fromhex(hexs), "little")
+
+
+edge = [0, 1, 2, P - 1, P - 2, 2**255, 2**224, 2**64 - 1]
+for _ in range(120):
+    a = rng.choice(edge + [rng.randrange(P)])
+    b = rng.choice(edge + [rng.randrange(P)])
+    check(f"p256 mont_mul {a:x} {b:x}", num(run(b"M", limbs(a) + limbs(b))), a * b * pow(R, -1, P) % P)
+    check(f"p256 add {a:x} {b:x}", num(run(b"a", limbs(a) + limbs(b))), (a + b) % P)
+    check(f"p256 sub {a:x} {b:x}", num(run(b"b", limbs(a) + limbs(b))), (a - b) % P)
+    if a:
+        check(f"p256 inv {a:x}", num(run(b"I", limbs(a * R % P))), pow(a, -1, P) * R % P)
+d = 0xC9AFA9D845BA75166B5C215767B1D6934E50C3DB36E89B127B8A622B120F6721
+sig = run(b"E", d.to_bytes(32, "big") + hashlib.sha256(b"sample").digest())
+r = 0xEFD48B2AACB6A8FD1140DD9CD45E81D69D2C877B56AAF991C34D0EA84EAF3716
+s_ = 0xF7CB1C942D657C41D436C7A1B6E29F65F3E900DBB9AFF4064DC4AB2F843ACDA8
+
+
+def der_int(v):
+    b_ = v.to_bytes(32, "big").lstrip(b"\0") or b"\0"
+    if b_[0] & 0x80:
+        b_ = b"\0" + b_
+    return bytes([2, len(b_)]) + b_
+
+
+body = der_int(r) + der_int(s_)
+check("RFC 6979 A.2.5 P-256 SHA-256 'sample'", sig, (bytes([0x30, len(body)]) + body).hex())
+check("p256 refuses d = 0", run(b"E", bytes(32) + bytes(32)), "FAIL")
+check("p256 refuses d = n", run(b"E", N.to_bytes(32, "big") + bytes(32)), "FAIL")
+try:
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.hazmat.primitives import hashes, serialization
+    for i in range(150):
+        k = ec.generate_private_key(ec.SECP256R1())
+        dd = k.private_numbers().private_value.to_bytes(32, "big")
+        pub = k.public_key().public_bytes(serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)
+        check("p256 public key", run(b"P", dd), pub.hex())
+        msg = rng.randbytes(rng.randrange(200))
+        want = k.sign(msg, ec.ECDSA(hashes.SHA256(), deterministic_signing=True))
+        check("p256 RFC 6979 signature, byte for byte", run(b"E", dd + hashlib.sha256(msg).digest()), want.hex())
+except (ImportError, TypeError):
+    print("note: deterministic ECDSA not in this cryptography; P-256 checked on RFC 6979 only")
+
 print(f"kat: {'all passed' if not failures else f'{failures} failed'} ({checks} checks)")
 sys.exit(1 if failures else 0)

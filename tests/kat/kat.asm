@@ -7,6 +7,10 @@
 ;   'l' Expand-Label: secret (32), label len (1), label, ctx len (1), ctx, out len (2)
 ;   'x' X25519: scalar (32), u (32)
 ;   'g' AES-128-GCM seal: key (16), iv (12), aad len (2), aad, plaintext
+;   'P' P-256 public key: d (32) -> 04 | X | Y
+;   'E' P-256 ECDSA (RFC 6979): d (32), digest (32) -> the DER signature
+;   'M' mont_mul mod p, 'a' mod_add, 'b' mod_sub: a, b (4 limbs each, little endian)
+;   'I' mod_inv mod p: a (4 limbs, Montgomery form); 'D' G + G (projective, raw)
 ;   'G' AES-128-GCM open: key, iv, aad len, aad, ciphertext | tag; 'FAIL' if wrong
 
 format ELF64 executable 3
@@ -25,6 +29,7 @@ include '../../src/crypto/hmac.inc'
 include '../../src/crypto/hkdf.inc'
 include '../../src/crypto/x25519.inc'
 include '../../src/crypto/aesgcm.inc'
+include '../../src/crypto/p256.inc'
 
 INPUT_MAX := 1 shl 22
 
@@ -77,6 +82,20 @@ start:
 	je	.gcm
 	cmp	al,'G'
 	je	.gcm
+	cmp	al,'P'
+	je	.p256_pub
+	cmp	al,'M'
+	je	.mont
+	cmp	al,'I'
+	je	.minv
+	cmp	al,'a'
+	je	.madd
+	cmp	al,'b'
+	je	.msub
+	cmp	al,'D'
+	je	.dbl
+	cmp	al,'E'
+	je	.p256_sign
 .fail:
 	mov	edi,2
 	mov	eax,SYS_exit_group
@@ -203,6 +222,59 @@ start:
 	mov	eax,SYS_exit_group
 	syscall
 .fail_text db 'FAIL',10
+.madd:
+	lea	rdi,[g_out]
+	lea	rdx,[rsi+32]
+	lea	rcx,[p256_p]
+	call	mod_add
+	mov	esi,32
+	jmp	.print
+.msub:
+	lea	rdi,[g_out]
+	lea	rdx,[rsi+32]
+	lea	rcx,[p256_p]
+	call	mod_sub
+	mov	esi,32
+	jmp	.print
+.minv:
+	lea	rdi,[g_out]
+	lea	rcx,[p256_p]
+	call	mod_inv
+	mov	esi,32
+	jmp	.print
+.dbl:
+	; (debug) G + G, projective, Montgomery form
+	lea	rdi,[g_out]
+	lea	rsi,[p256_g_m]
+	lea	rdx,[p256_g_m]
+	call	p256_add
+	mov	esi,96
+	jmp	.print
+.mont:
+	; (debug) a, b: 4 limbs each, little endian; mont_mul mod p
+	lea	rdi,[g_out]
+	lea	rdx,[rsi+32]
+	lea	rcx,[p256_p]
+	call	mont_mul
+	mov	esi,32
+	jmp	.print
+.p256_pub:
+	lea	rdi,[g_out]
+	call	p256_public
+	mov	esi,65
+	jmp	.print
+.p256_sign:
+	mov	rbx,rsi
+	lea	rdi,[g_label]			; r | s
+	lea	rdx,[rsi+32]
+	call	p256_sign
+	test	eax,eax
+	jz	.wrong
+	lea	rdi,[g_out]
+	lea	rsi,[g_label]
+	call	ecdsa_der
+	mov	esi,eax
+	jmp	.print
 .x25519:
 	lea	rdi,[g_out]
 	lea	rdx,[rsi+32]
