@@ -2,8 +2,10 @@
 ; the first byte selects the function, the rest is its input; prints the
 ; result in hex on stdout.
 ;   's' SHA-256 of the rest              'S' the same on the scalar path
+;   '8' SHA-512 of the rest
 ;   '3' SHA3-256, '5' SHA3-512 of the rest; '6' SHAKE128, '7' SHAKE256: out len (2, LE), message
 ;   'q' ML-KEM-768 encapsulation: ek (1184), m (32) -> ciphertext | shared secret
+;   'A' Ed25519 public key: seed; 'F' sign: seed, message; 'f' verify: public, sig, message
 ;   'c' ChaCha20: key, nonce, counter (4, LE), data; 'y' ChaCha20-Poly1305 seal: key (32),
 ;       iv (12), aad len (2), aad, plaintext; 'Z' its open (ciphertext | tag, 'FAIL' if wrong)
 ;   'e' Poly1305: key (32), message (a multiple of 16) -> tag
@@ -34,11 +36,13 @@ segment readable executable
 include '../../src/core/util.inc'
 include '../../src/crypto/ct.inc'
 include '../../src/crypto/sha256.inc'
+include '../../src/crypto/sha512.inc'
 include '../../src/crypto/keccak.inc'
 include '../../src/crypto/mlkem.inc'
 include '../../src/crypto/hmac.inc'
 include '../../src/crypto/hkdf.inc'
 include '../../src/crypto/x25519.inc'
+include '../../src/crypto/ed25519.inc'
 include '../../src/crypto/aesgcm.inc'
 include '../../src/crypto/chacha.inc'
 include '../../src/crypto/p256.inc'
@@ -101,6 +105,8 @@ start:
 	je	.sha
 	cmp	al,'3'
 	je	.sha3_256
+	cmp	al,'8'
+	je	.sha512
 	cmp	al,'5'
 	je	.sha3_512
 	cmp	al,'6'
@@ -117,6 +123,12 @@ start:
 	je	.keccak_x4
 	cmp	al,'c'
 	je	.chacha
+	cmp	al,'A'
+	je	.ed_public
+	cmp	al,'F'
+	je	.ed_sign
+	cmp	al,'f'
+	je	.ed_verify
 	cmp	al,'e'
 	je	.poly1305
 	cmp	al,'y'
@@ -204,6 +216,11 @@ start:
 	call	sha256
 	mov	esi,32
 	jmp	.print
+.sha512:
+	lea	rdi,[g_out]
+	call	sha512
+	mov	esi,64
+	jmp	.print
 .sha3_256:
 	lea	rdi,[g_out]
 	call	sha3_256
@@ -236,6 +253,33 @@ start:
 	lea	rdi,[g_out]
 	call	mlkem768_decaps
 	mov	esi,MLKEM_SS
+	jmp	.print
+.ed_public:					; seed (32) -> public key
+	lea	rdi,[g_out]
+	call	ed25519_public
+	mov	esi,32
+	jmp	.print
+.ed_sign:					; seed (32), message -> signature (64)
+	lea	r12,[rdx-32]
+	mov	r13,rsi
+	lea	rdi,[g_out+64]
+	call	ed25519_public
+	lea	rdi,[g_out]
+	mov	rsi,r13
+	lea	rdx,[g_out+64]
+	lea	rcx,[r13+32]
+	mov	r8,r12
+	call	ed25519_sign
+	mov	esi,64
+	jmp	.print
+.ed_verify:					; public (32), signature (64), message -> 01 / 00
+	lea	rdx,[rdx-96]
+	lea	rcx,[rsi+32]
+	mov	rdi,rsi
+	lea	rsi,[rsi+96]
+	call	ed25519_verify
+	mov	[g_out],al
+	mov	esi,1
 	jmp	.print
 .chacha:					; key (32), nonce (12), counter (4), data
 	lea	r12,[rdx-48]			; -> the data XORed with the key stream
@@ -552,6 +596,25 @@ start:
 	call	mlkem768_encaps
 	jmp	.counted
 .not_K:
+	cmp	r12b,'e'
+	jne	.not_e
+	lea	rdi,[g_out]			; Ed25519 sign: seed (32), public (32), 64-byte message
+	mov	rsi,r14
+	lea	rdx,[r14+32]
+	lea	rcx,[r14+64]
+	mov	r8d,64
+	call	ed25519_sign
+	jmp	.counted
+.not_e:
+	cmp	r12b,'V'
+	jne	.not_V
+	mov	rdi,r14				; Ed25519 verify: public, signature, 64-byte message
+	lea	rsi,[r14+96]
+	mov	edx,64
+	lea	rcx,[r14+32]
+	call	ed25519_verify
+	jmp	.counted
+.not_V:
 	cmp	r12b,'p'
 	jne	.not_p
 	lea	rdi,[g_cp]			; ChaCha20-Poly1305 seal of 16 KiB in place

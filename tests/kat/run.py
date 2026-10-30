@@ -663,6 +663,57 @@ try:
 except (ImportError, TypeError):
     print("note: deterministic ECDSA not in this cryptography; P-256 checked on RFC 6979 only")
 
+# --- SHA-512 against hashlib, around the 128-byte block and its padding
+for n in list(range(0, 260)) + [1000, 4096, 65537]:
+    m = rng.randbytes(n)
+    check(f"sha-512 len {n}", run(b"8", m), hashlib.sha512(m).hexdigest())
+
+# --- Ed25519 (RFC 8032): its test vectors, then the cryptography package
+# (keys, deterministic signatures byte for byte, verification), and the
+# refusals: a flipped bit, S >= L, a key that is not on the curve
+ED_VECTORS = [
+    ("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+     "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a", "",
+     "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"),
+    ("4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",
+     "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c", "72",
+     "92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00"),
+    ("c5aa8df43f9f837bedb7442f31dcb7b166d38535076f094b85ce3a2e0b4458f7",
+     "fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025", "af82",
+     "6291d657deec24024827e69c3abe01a30ce548a284743a445e3680d7db5ac3ac18ff9b538d16f290ae67f760984dc6594a7c15e9716ed28dc027beceea1ec40a"),
+]
+for sk, pk, msg, sig in ED_VECTORS:
+    sk, pk, msg, sig = (bytes.fromhex(x) for x in (sk, pk, msg, sig))
+    check("ed25519 RFC 8032 public key", run(b"A", sk), pk.hex())
+    check("ed25519 RFC 8032 signature", run(b"F", sk + msg), sig.hex())
+    check("ed25519 RFC 8032 verifies", run(b"f", pk + sig + msg), "01")
+L_ED = 2**252 + 27742317777372353535851937790883648493
+pk, sig = bytes.fromhex(ED_VECTORS[0][1]), bytes.fromhex(ED_VECTORS[0][3])
+s_val = int.from_bytes(sig[32:], "little")
+check("ed25519: S + L (not canonical) refused", run(b"f", pk + sig[:32] + (s_val + L_ED).to_bytes(32, "little")), "00")
+off_curve = bytearray(pk)
+off_curve[0] ^= 1                               # almost surely not a point
+check("ed25519: a key off the curve refused", run(b"f", bytes(off_curve) + sig), "00")
+check("ed25519: a key with y >= p refused",
+      run(b"f", (2**255 - 19 + 1).to_bytes(32, "little") + sig), "00")
+try:
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives import serialization as _ser
+    for i in range(60):
+        key = Ed25519PrivateKey.generate()
+        seed = key.private_bytes(_ser.Encoding.Raw, _ser.PrivateFormat.Raw, _ser.NoEncryption())
+        pub = key.public_key().public_bytes(_ser.Encoding.Raw, _ser.PublicFormat.Raw)
+        msg = rng.randbytes(rng.randrange(300))
+        sig = key.sign(msg)
+        check("ed25519 public key", run(b"A", seed), pub.hex())
+        check("ed25519 signature, byte for byte", run(b"F", seed + msg), sig.hex())
+        check("ed25519 verifies", run(b"f", pub + sig + msg), "01")
+        bad = bytearray(sig)
+        bad[rng.randrange(64)] ^= 1 << rng.randrange(8)
+        check("ed25519 flipped bit refused", run(b"f", pub + bytes(bad) + msg), "00")
+except ImportError:
+    print("note: no cryptography package; Ed25519 checked on RFC 8032 only")
+
 # --- ChaCha20-Poly1305 (RFC 8439): the published key stream, then the
 # cryptography package for ChaCha20 at every length around its two-block
 # step, Poly1305 on extreme keys and messages (h near p, all carries), and

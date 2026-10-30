@@ -909,18 +909,9 @@ xb_select:
 	vzeroupper
 	ret
 
-x25519_base:
-	push	rbx
-	push	r12
-	push	r13
-	sub	rsp,XB_SIZE
-	mov	[rsp+XB_OUT],rdi
-	lea	rdi,[rsp+XB_K]
-	mov	ecx,32
-	rep	movsb
-	and	byte [rsp+XB_K],248		; clamped as X25519 does
-	and	byte [rsp+XB_K+31],127
-	or	byte [rsp+XB_K+31],64
+; [rsp+XB_K] = a scalar below 2^255: k * B into the extended sum
+; [rsp+XB_X..XB_T], in constant time (the frame of x25519_base)
+macro xb_mult_body
 	; radix 16, then signed: each digit in [-8, 8)
 	xor	ecx,ecx
 @@:
@@ -977,6 +968,21 @@ x25519_base:
 	add	r12d,2
 	cmp	r12d,64
 	jb	.even
+end macro
+
+x25519_base:
+	push	rbx
+	push	r12
+	push	r13
+	sub	rsp,XB_SIZE
+	mov	[rsp+XB_OUT],rdi
+	lea	rdi,[rsp+XB_K]
+	mov	ecx,32
+	rep	movsb
+	and	byte [rsp+XB_K],248		; clamped as X25519 does
+	and	byte [rsp+XB_K+31],127
+	or	byte [rsp+XB_K+31],64
+	xb_mult_body
 	; u = (Z + Y) / (Z - Y)
 	lea	rdi,[rsp+XB_T0]
 	lea	rsi,[rsp+XB_Z]
