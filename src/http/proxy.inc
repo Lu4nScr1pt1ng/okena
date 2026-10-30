@@ -2845,7 +2845,10 @@ ph_expire:
 	jae	.done
 	imul	rax,r12,LS_SIZE
 	cmp	dword [g_listeners+rax+LS_KIND],LK_HTTP
-	jne	.next
+	je	@f
+	cmp	dword [g_listeners+rax+LS_TLS],0
+	je	.next				; a tcp listener: only its handshakes
+@@:
 	mov	r14d,PH_HEAD
 .kind:
 	imul	rax,r12,LS_SIZE

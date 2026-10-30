@@ -76,6 +76,28 @@ http_tls_cred:
 .none:
 	ret
 
+; ebx = session: a new connection on a tcp listener with tls. The
+; handshake runs on the http machinery (this file), then the session goes
+; on as an L4 one over kTLS. The header timeout bounds the handshake.
+tcp_tls_start:
+	call	session_ptr
+	mov	dword [rax+S_STATE],ST_OPEN	; no upstream yet
+	or	dword [rax+S_FLAGS],SF_TLS_HS
+	h_rec
+	mov	eax,ebx
+	shl	rax,HB_SHIFT
+	add	rax,[g_hbuf_base]
+	mov	[r15+H_BUF],rax
+	xor	eax,eax
+	mov	[r15+H_INLEN],eax
+	mov	[r15+H_INOFF],eax
+	mov	[r15+H_FLAGS],eax
+	mov	[r15+H_UTLS],eax
+	mov	edi,ebx
+	mov	esi,PH_HEAD
+	call	ph_arm
+	h_rec
+
 ; ebx = session, r15 = its record, a new connection on a tls listener.
 http_tls_start:
 	mov	rdi,[r15+H_BUF]
@@ -83,8 +105,12 @@ http_tls_start:
 	mov	ecx,TS_SIZE
 	xor	eax,eax
 	rep	stosb
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_TLS_HS
+	jnz	@f				; tcp: no application protocol to name
 	mov	rax,[r15+H_BUF]
 	mov	dword [rax+HB_TS+TS_FLAGS],TF_ALPN_H1
+@@:
 	mov	dword [r15+H_STATE],HS_TLS_HELLO
 ; read more of the ClientHello
 http_tls_read:
@@ -355,17 +381,33 @@ http_tls_established:
 	add	rdi,HB_TS			; the kernel has the keys: none kept here
 	mov	ecx,TS_SIZE + 2 * KTLS_INFO
 	call	secure_zero
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_TLS_HS
+	jnz	.tcp
+	h_rec
 	xor	eax,eax
 	mov	[r15+H_INLEN],eax
 	mov	[r15+H_INOFF],eax
 	jmp	http_next_request
+.tcp:
+	; a tcp listener: now the upstream, bytes both ways in plaintext
+	and	dword [rax+S_FLAGS],not SF_TLS_HS
+	mov	dword [r15+H_STATE],0
+	mov	edi,ebx
+	call	ph_disarm
+	mov	edi,ebx
+	cmp	dword [g_engine],ENGINE_EPOLL
+	je	ep_connect
+	jmp	session_connect
 
-; Before serving: tls on a tcp listener is not built yet (exits with
-; EXIT_CONFIG and why); tls on an http listener without the kernel's TLS
-; (the module, "tls") works, slower: said once.
+; Before serving: tls without the kernel's TLS (the module, "tls") works
+; on http listeners, slower (said once), and not on tcp ones (exits with
+; EXIT_CONFIG and why: their bytes move without okena seeing them).
 tls_serve_check:
+	push	rbx
 	xor	ecx,ecx
-	xor	edx,edx				; edx = an http listener has tls
+	xor	edx,edx				; edx = listeners with tls
+	xor	ebx,ebx				; ebx = tcp ones
 .listener:
 	cmp	ecx,[g_plan_listeners]
 	jae	.scanned
@@ -373,9 +415,10 @@ tls_serve_check:
 	inc	ecx
 	cmp	dword [g_listeners+rax+LS_TLS],0
 	je	.listener
-	cmp	dword [g_listeners+rax+LS_KIND],LK_HTTP
-	jne	.tcp
 	inc	edx
+	cmp	dword [g_listeners+rax+LS_KIND],LK_HTTP
+	je	.listener
+	inc	ebx
 	jmp	.listener
 .scanned:
 	test	edx,edx
@@ -415,16 +458,19 @@ tls_serve_check:
 	cmp	eax,-ENOENT
 	je	.no_ktls
 .ok:
+	pop	rbx
 	ret
 .no_ktls:
 	mov	dword [g_no_ktls],1		; the workers forked from here know
+	test	ebx,ebx
+	jnz	.tcp
 	call	log_begin
 	out_lit 'no kernel TLS (modprobe tls): TLS records are sealed in user space, which costs more CPU'
+	pop	rbx
 	jmp	log_end
 .tcp:
 	call	log_begin
-	out_lit 'tls { } on a tcp listener is read and checked, but not served yet (it is on http listeners): refusing to serve it in plaintext'
-	jmp	.refuse
+	out_lit 'tls { } on a tcp listener needs kernel TLS, and its module is not loaded: modprobe tls (on the host, for a container)'
 .refuse:
 	call	log_end
 	mov	edi,EXIT_CONFIG
@@ -434,6 +480,9 @@ tls_serve_check:
 
 ; ebx = session, r15 = record, the handshake done: records here from now on.
 http_utls_start:
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_TLS_HS
+	jnz	http_tls_close			; tcp: kTLS or nothing (refused at the start)
 	mov	rdi,[r15+H_BUF]
 	add	rdi,HB_KTLS			; the keys meant for the kernel
 	mov	ecx,2 * KTLS_INFO

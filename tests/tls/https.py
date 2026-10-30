@@ -23,7 +23,7 @@ BIN = ROOT / "build" / "okena"
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
 USER = len(sys.argv) > 2 and sys.argv[2] == "user"   # records sealed in user space, not kTLS
 BASE = 27000 + os.getpid() % 99 * 20 + (5 if ENGINE == "epoll" else 0) + (10 if USER else 0)
-BACK, LST = BASE, BASE + 1
+BACK, LST, ECHO, TLST = BASE, BASE + 1, BASE + 2, BASE + 3
 tmp = pathlib.Path(tempfile.mkdtemp())
 atexit.register(shutil.rmtree, tmp, True)
 failures = 0
@@ -102,6 +102,29 @@ def serve(c):
         c.close()
 
 
+def echo_backend():
+    srv = socket.socket()
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", ECHO))
+    srv.listen(64)
+    while True:
+        c, _ = srv.accept()
+        threading.Thread(target=echo_serve, args=(c,), daemon=True).start()
+
+
+def echo_serve(c):
+    try:
+        while True:
+            data = c.recv(1 << 16)
+            if not data:
+                break
+            c.sendall(data)
+    except OSError:
+        pass
+    finally:
+        c.close()
+
+
 def read_response(t):
     f = t.makefile("rb")
     start = f.readline()
@@ -138,14 +161,17 @@ def main():
         print("skip https with kTLS: the tls module is not loaded (sudo modprobe tls)")
         return 0
     threading.Thread(target=backend, daemon=True).start()
+    threading.Thread(target=echo_backend, daemon=True).start()
+    tls = f"tls {{ cert {tmp / 'chain.pem'}; key {tmp / 'leaf.key'} }}"
+    tcp = f"tcp 127.0.0.1:{TLST} {{\n    {tls}\n    to 127.0.0.1:{ECHO}\n}}\n"
     conf = tmp / "okena.conf"
     conf.write_text(f"""okena {{ workers 2; io_engine {ENGINE} }}
 http 127.0.0.1:{LST} {{
-    tls {{ cert {tmp / 'chain.pem'}; key {tmp / 'leaf.key'} }}
+    {tls}
     timeout {{ header 1s }}
     route /* {{ to 127.0.0.1:{BACK} }}
 }}
-""")
+""" + ("" if USER else tcp))
     log = open(tmp / "okena.log", "w+")
     env = dict(os.environ, OKENA_KTLS="off") if USER else None
     p = subprocess.Popen([str(BIN), "-c", str(conf)], stderr=log, env=env)
@@ -263,6 +289,80 @@ http 127.0.0.1:{LST} {{
     check("plain HTTP on the HTTPS port: an alert, not a page", reply == b"\x15\x03\x03\x00\x02\x02\x0a", reply.hex())
     with connect() as t:
         check("still serving after all that", request(t, "GET", "/last")[0].startswith(b"HTTP/1.1 200"))
+
+    if USER:
+        # tcp listeners: kTLS or nothing
+        bad = tmp / "tcp.conf"
+        bad.write_text(tcp)
+        r = subprocess.run([str(BIN), "-c", str(bad)], capture_output=True, text=True, timeout=10,
+                           env=dict(os.environ, OKENA_KTLS="off"))
+        check("tls on a tcp listener without kTLS: refused at the start",
+              r.returncode != 0 and "needs kernel TLS" in r.stderr, r.stderr[-200:])
+    else:
+        def tls_tcp():
+            s = socket.create_connection(("127.0.0.1", TLST), timeout=10)
+            return context(alpn=None).wrap_socket(s, server_hostname="okena.test")
+
+        def echo(t, data):
+            t.sendall(data)
+            got = b""
+            while len(got) < len(data):
+                chunk = t.recv(1 << 16)
+                if not chunk:
+                    break
+                got += chunk
+            return got == data
+        with tls_tcp() as t:
+            check("tcp listener: TLS 1.3 to okena, bytes to the backend and back",
+                  t.version() == "TLSv1.3" and echo(t, b"tcp over tls"))
+            check("tcp listener: 4 MiB each way", echo(t, os.urandom(4 << 20)))
+        inc, outg = ssl.MemoryBIO(), ssl.MemoryBIO()
+        obj = context(alpn=None).wrap_bio(inc, outg, server_hostname="okena.test")
+        s = socket.create_connection(("127.0.0.1", TLST), timeout=5)
+        try:
+            obj.do_handshake()
+        except ssl.SSLWantReadError:
+            pass
+        s.sendall(outg.read())
+        while True:
+            inc.write(s.recv(1 << 16))
+            try:
+                obj.do_handshake()
+                break
+            except ssl.SSLWantReadError:
+                pass
+        obj.write(b"first words")
+        s.sendall(outg.read())              # the Finished and the first bytes together
+        got = b""
+        try:
+            while b"first words" not in got:
+                data = s.recv(1 << 16)
+                if not data:
+                    break
+                inc.write(data)
+                try:
+                    while True:
+                        got += obj.read(1 << 16)
+                except ssl.SSLWantReadError:
+                    pass
+        except TimeoutError:
+            pass
+        s.close()
+        check("tcp listener: bytes sent with the Finished reach the backend", b"first words" in got, got)
+        res = []
+
+        def one(i):
+            try:
+                with tls_tcp() as t:
+                    res.append(echo(t, b"n%d" % i))
+            except Exception:
+                res.append(False)
+        ths = [threading.Thread(target=one, args=(i,)) for i in range(32)]
+        for th in ths:
+            th.start()
+        for th in ths:
+            th.join()
+        check("tcp listener: 32 clients at once", sum(res) == 32, f"{sum(res)}/32")
 
     p.terminate()
     p.wait(10)

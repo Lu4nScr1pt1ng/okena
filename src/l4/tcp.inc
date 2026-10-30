@@ -61,6 +61,7 @@ SF_RAW		:= 64		; the client is a normal descriptor, not a direct one
 SF_PEER		:= 128		; has a side record (client address features)
 SF_FDS_CLOSING	:= 256		; closing: the descriptors' closes are submitted
 SF_TUNNEL	:= 512		; an http session switched to a byte tunnel
+SF_TLS_HS	:= 1024		; a tcp session in its TLS handshake (src/http/tls.inc)
 
 ; Jump to target when session ebx belongs to an http listener.
 ; Clobbers rax.
@@ -597,6 +598,9 @@ on_accept_a:
 	call	peer_admit			; per_source, PROXY header
 	jc	.over
 	if_http http_start
+	call	http_tls_cred
+	test	rax,rax
+	jnz	tcp_tls_start			; TLS first, then the upstream
 	mov	edi,ebx
 	jmp	session_connect
 .over:
@@ -705,8 +709,13 @@ on_accept:
 	mov	[rax+S_POOL],ecx
 	mov	edi,ebx
 	call	idle_append
+	call	http_tls_cred
+	test	rax,rax
+	jnz	.tls
 	mov	edi,ebx
 	jmp	session_connect
+.tls:
+	jmp	tcp_tls_start			; TLS first, then the upstream
 .refuse:
 	; no slot: close the new connection at once
 	inc	qword [g_st_l_full+rbx*8]

@@ -253,6 +253,8 @@ ep_dispatch:
 	je	.connecting
 	cmp	dword [rax+S_STATE],ST_OPEN
 	jne	.stale
+	test	dword [rax+S_FLAGS],SF_TLS_HS
+	jnz	hep_event			; a tcp session in its TLS handshake
 	mov	ecx,[rax+S_LST]
 	imul	rcx,rcx,LS_SIZE
 	cmp	dword [g_listeners+rcx+LS_KIND],LK_HTTP
@@ -396,6 +398,20 @@ ep_accept:
 	call	ep_close
 	jmp	.next
 .connect:
+	call	http_tls_cred
+	test	rax,rax
+	jz	.plain
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	call	tcp_tls_start			; TLS first, then the upstream
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	jmp	.next
+.plain:
 	mov	edi,ebx
 	call	ep_connect
 	jmp	.next
