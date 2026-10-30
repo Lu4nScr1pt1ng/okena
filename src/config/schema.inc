@@ -125,6 +125,7 @@ enumdef e_pp_version, 'v1', 'v2'
 enumdef e_tls_mode, 'passthrough'
 
 keysdef k_drain, 'delay', T_DURATION, 'timeout', T_DURATION
+keysdef k_hs_budget, 'wait', T_DURATION
 keysdef k_server, 'weight', T_WEIGHT
 keysdef k_cert, 'key', T_ANY
 keysdef k_health, 'every', T_DURATION, 'timeout', T_DURATION, 'rise', T_COUNT, 'fall', T_COUNT, \
@@ -158,6 +159,7 @@ dirdef DIR_METRICS, 'metrics',     M_OKENA,   0,           F_UNIQUE, 1, 1, T_LIS
 dirdef DIR_BUSY_POLL, 'busy_poll',   M_OKENA,   0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
 dirdef DIR_TICKET_KEYS, 'ticket_keys', M_OKENA, 0,       F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
 dirdef DIR_DRAIN, 'drain',       M_OKENA,   0,           F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_drain
+dirdef DIR_HS_BUDGET, 'handshake_budget', M_OKENA, 0,    F_UNIQUE or F_KEYS_BLOCK, 1, 1, T_DURATION, T_NONE, k_hs_budget
 dirdef DIR_TCP, 'tcp',         M_TOP,     CTX_TCP,     F_BLOCK_REQ, 1, 16, T_LISTEN, T_LISTEN, 0
 dirdef DIR_HTTP, 'http',        M_TOP,     CTX_HTTP,    F_BLOCK_REQ, 1, 16, T_LISTEN, T_LISTEN, 0
 dirdef DIR_HOST, 'host',        M_HTTP,    CTX_HOST,    F_BLOCK_REQ, 1, 64, T_HOSTNAME, T_HOSTNAME, 0

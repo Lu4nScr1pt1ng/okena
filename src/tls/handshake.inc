@@ -1750,6 +1750,40 @@ cstring env_okena_ticket_rotate, 'OKENA_TICKET_ROTATE='
 ; or TH_DONE with rsi = the name (in scratch) and ecx = its length (0 when
 ; it sent none).
 tls_sni_peek:
+	xor	r8d,r8d				; server_name
+	call	tls_ext_peek
+	cmp	eax,TH_DONE
+	jne	.out
+	test	rsi,rsi
+	jz	.none
+	cmp	ecx,5
+	jb	.fail
+	cmp	byte [rsi+2],0			; host_name
+	jne	.none
+	lea	rdx,[rsi+rcx]
+	movzx	ecx,word [rsi+3]
+	rol	cx,8
+	lea	rax,[rsi+5+rcx]
+	cmp	rax,rdx
+	ja	.fail
+	add	rsi,5
+	mov	eax,TH_DONE
+	ret
+.none:
+	xor	ecx,ecx
+	mov	eax,TH_DONE
+	ret
+.fail:
+	mov	eax,TH_FAIL
+.out:
+	ret
+
+; rdi = what the client sent, esi = its length, rdx = scratch (CH_MAX),
+; r8d = an extension type: find it in the ClientHello without taking part
+; in the handshake. eax = TH_MORE (incomplete), TH_FAIL (not a TLS
+; ClientHello), or TH_DONE with rsi = the extension's data (in scratch)
+; and ecx = its length, or rsi = 0 when the client did not send it.
+tls_ext_peek:
 	push	rbx
 	push	r12
 	push	r13
@@ -1811,8 +1845,9 @@ tls_sni_peek:
 	lea	rsi,[rsi+rax+1]
 	lea	rax,[rsi+2]
 	cmp	rax,r13
-	ja	.none				; no extensions: no name
+	ja	.none				; no extensions
 	add	rsi,2
+	rol	r8w,8				; the type as it is on the wire
 .ext:
 	lea	rax,[rsi+4]
 	cmp	rax,r13
@@ -1824,24 +1859,15 @@ tls_sni_peek:
 	lea	rdx,[rsi+rcx]
 	cmp	rdx,r13
 	ja	.fail
-	test	eax,eax
-	jz	.server_name
+	cmp	ax,r8w
+	je	.found
 	mov	rsi,rdx
 	jmp	.ext
-.server_name:
-	cmp	ecx,5
-	jb	.fail
-	cmp	byte [rsi+2],0			; host_name
-	jne	.none
-	movzx	ecx,word [rsi+3]
-	rol	cx,8
-	lea	rax,[rsi+5+rcx]
-	cmp	rax,rdx
-	ja	.fail
-	add	rsi,5
+.found:
 	mov	eax,TH_DONE
 	jmp	.out
 .none:
+	xor	esi,esi
 	xor	ecx,ecx
 	mov	eax,TH_DONE
 	jmp	.out

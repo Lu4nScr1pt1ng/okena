@@ -2973,6 +2973,8 @@ http_phase_expired:
 	cmp	esi,PH_HEAD
 	jne	.response
 	mov	eax,[r15+H_STATE]
+	cmp	eax,HS_TLS_QUEUED
+	je	.silent				; waited for the handshake budget
 	cmp	eax,HS_TLS_HELLO
 	jb	@f
 	cmp	eax,HS_TLS_LAST

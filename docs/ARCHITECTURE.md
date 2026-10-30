@@ -279,7 +279,15 @@ A spike has to be absorbed or refused in microseconds, without a cascade.
   worker spends at most a configured share of each loop iteration on
   asymmetric crypto; the rest wait in a bounded queue with deadlines.
   Resumed sessions skip the queue. A handshake flood degrades new-client
-  latency, never existing connections.
+  latency, never existing connections. **Today** the budget is TSC time
+  per loop iteration (`handshake_budget`, 100 us by default) for server
+  hellos (TLS 1.3 and 1.2); a ClientHello with `pre_shared_key` skips the
+  queue up to twice the budget, so fake tickets stay bounded; the queue
+  holds 1024 per worker and closes what waited longer than `wait` (1 s).
+  With 6000 handshakes arriving at once on one worker, an open keep-alive
+  connection's p99 went from 1.6 ms to 0.47 ms. Upstream (client)
+  handshakes are not budgeted: okena starts them itself, one per pool
+  connection.
 
 ## Upstream connections
 

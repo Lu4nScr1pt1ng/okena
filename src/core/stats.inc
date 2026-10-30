@@ -20,6 +20,8 @@ bss
 	g_st_src_open	dq ?			; let in uncounted: per_source table full
 	g_st_alog_dropped dq ?			; access log lines lost to a full pipe
 	g_st_http_trimmed dq ?			; idle http records given back to the kernel
+	g_st_tls_deferred dq ?			; ClientHellos queued by the handshake budget
+	g_st_tls_shed	dq ?			; ... closed: queue full, or waited too long
 	g_st_end:
 	g_stats_tbl	dq ?			; shared: one page set per worker
 end bss

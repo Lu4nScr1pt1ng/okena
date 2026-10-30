@@ -81,6 +81,10 @@ ep_main:
 	je	.drained
 @@:
 	call	ep_wait_timeout			; edx = ms
+	cmp	dword [g_hs_count],0
+	je	@f
+	xor	edx,edx				; hellos waiting: do not sleep
+@@:
 	mov	edi,[g_epfd]
 	lea	rsi,[g_ep_events]
 	mov	r10d,edx
@@ -108,6 +112,7 @@ ep_main:
 	jmp	.event
 .timers:
 	call	ep_http_ready
+	call	hs_drain			; hellos that waited for the budget
 	call	ep_wake_waiters
 	call	ep_connect_deadlines
 	mov	rax,[g_now_ms]

@@ -156,6 +156,8 @@ DEFAULT_RESPONSE_SECS	:= 30		; slow backends get 504
 DEFAULT_BODY_SECS	:= 30		; a request body that stops coming gets 408
 DEFAULT_CONNECT_US	:= 2000000
 DEFAULT_DRAIN_US	:= 8000000
+DEFAULT_HS_BUDGET_US	:= 100		; handshake_budget: asymmetric crypto per loop iteration
+DEFAULT_HS_WAIT_US	:= 1000000	; and how long a queued ClientHello may wait
 
 bss
 	align 8
@@ -168,6 +170,8 @@ bss
 	g_plan_drain_timeout	dq ?
 	g_plan_watchdog		dq ?
 	g_plan_busy_poll	dq ?		; microseconds, 0 = off
+	g_plan_hs_budget	dq ?		; microseconds per loop iteration, 0 = off
+	g_plan_hs_wait		dq ?		; microseconds a queued hello may wait
 	g_plan_health		dd ?		; pools with active checks
 	g_plan_metrics		dd ?		; 1 when an admin address is set
 	g_plan_metrics_salen	dd ?
@@ -217,6 +221,8 @@ plan_compile:
 	push	r12
 	mov	qword [g_plan_drain_timeout],DEFAULT_DRAIN_US
 	mov	qword [g_plan_watchdog],2000000
+	mov	qword [g_plan_hs_budget],DEFAULT_HS_BUDGET_US
+	mov	qword [g_plan_hs_wait],DEFAULT_HS_WAIT_US
 	; pools first, so listeners can refer to them
 	mov	rax,[g_cfg_root]
 	mov	rbx,[rax+N_CHILD]
@@ -330,6 +336,7 @@ node_option:
 	ret
 
 cstring str_key_delay, 'delay',0
+cstring str_key_wait, 'wait',0
 cstring str_key_timeout, 'timeout',0
 cstring str_key_weight, 'weight',0
 cstring str_key_every, 'every',0
@@ -368,6 +375,9 @@ compile_settings:
 	lea	rcx,[dir_table + D_SIZE*DIR_METRICS]
 	cmp	rax,rcx
 	je	.metrics
+	lea	rcx,[dir_table + D_SIZE*DIR_HS_BUDGET]
+	cmp	rax,rcx
+	je	.hs_budget
 	lea	rcx,[dir_table + D_SIZE*DIR_TICKET_KEYS]
 	cmp	rax,rcx
 	jne	.advance
@@ -393,6 +403,20 @@ compile_settings:
 	mov	rdi,rbx
 	call	node_duration
 	mov	[g_plan_busy_poll],rax
+	jmp	.advance
+.hs_budget:
+	mov	rdi,rbx
+	call	node_duration
+	mov	[g_plan_hs_budget],rax
+	mov	rdi,rbx
+	lea	rsi,[str_key_wait]
+	call	node_option
+	test	rax,rax
+	jz	.advance
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_duration
+	mov	[g_plan_hs_wait],rax
 	jmp	.advance
 .workers:
 	mov	rdi,rbx

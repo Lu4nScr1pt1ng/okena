@@ -176,6 +176,14 @@ and the certificate chain, over kTLS. A tlsfuzzer harness (tests/tls/tlsfuzz.py)
 TLS stack against a live okena -- TLS 1.3 and 1.2 handshakes with an HTTP
 response, and negative probes -- skipped unless tlsfuzzer is installed; a
 broad conformance run over its script suite is the remaining QA work.
+The handshake budget is in (`okena { handshake_budget 100us wait=1s }`,
+src/http/hsbudget.inc): server hellos spend at most that much TSC time per
+loop iteration, the rest wait in a bounded FIFO the loop drains first on
+the next iterations (never sleeping while it holds any), resumptions skip
+it up to twice the budget, and hellos that waited past `wait` are closed
+(okena_tls_handshakes_deferred_total, okena_tls_handshakes_shed_total;
+tests/tls/budget.py on both engines). With 6000 handshakes at once on one
+worker, an open connection's p99 went from 1.6 ms to 0.47 ms.
 
 * SHA-2, HMAC, HKDF (from fasm2crud), AES-GCM (AES-NI, VAES/VPCLMULQDQ),
   ChaCha20-Poly1305, X25519, ML-KEM-768, P-256 ECDH/ECDSA, Ed25519.

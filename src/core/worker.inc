@@ -73,6 +73,7 @@ worker_main:
 	test	eax,eax
 	js	.no_memory
 	call	groups_refresh
+	call	hs_init
 	cmp	dword [g_plan_engine],2
 	je	ep_main
 	; io_uring, with epoll as the fallback unless io_engine says io_uring
@@ -131,6 +132,7 @@ worker_main:
 	call	ring_enter
 	call	ring_reap
 	call	ep_http_ready			; user-space TLS deliveries
+	call	hs_drain			; hellos that waited for the budget
 	mov	eax,[g_reaped]
 	cmp	eax,[g_reaped_mark]
 	jne	.loop				; progress: restart the window
@@ -141,10 +143,15 @@ worker_main:
 	cmp	rax,[g_spin_until]
 	jb	.spin
 .block:
+	xor	edi,edi				; hellos waiting: do not sleep
+	cmp	dword [g_hs_count],0
+	jne	@f
 	mov	edi,1
+@@:
 	call	ring_enter
 	call	ring_reap
 	call	ep_http_ready			; user-space TLS deliveries
+	call	hs_drain			; hellos that waited for the budget
 	jmp	.loop
 .drained:
 	call	alog_flush

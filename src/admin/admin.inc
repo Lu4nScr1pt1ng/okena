@@ -410,6 +410,8 @@ OFF_SRC_OPEN	:= g_st_src_open - g_st_begin
 OFF_L_HTTP	:= g_st_l_http - g_st_begin
 OFF_ALOG_DROPPED := g_st_alog_dropped - g_st_begin
 OFF_HTTP_TRIMMED := g_st_http_trimmed - g_st_begin
+OFF_TLS_DEFERRED := g_st_tls_deferred - g_st_begin
+OFF_TLS_SHED	:= g_st_tls_shed - g_st_begin
 OFF_L_RETRIES	:= g_st_l_retries - g_st_begin
 
 ; rdi = output, ebx = listener: {listener="..."
@@ -463,6 +465,16 @@ metrics_render:
 	memit 10,'# HELP okena_http_idle_trimmed_total Idle keep-alive connections whose buffers went back to the kernel.',10
 	memit '# TYPE okena_http_idle_trimmed_total counter',10,'okena_http_idle_trimmed_total '
 	mov	ecx,OFF_HTTP_TRIMMED
+	call	stats_sum_q
+	call	fmt_u64
+	memit 10,'# HELP okena_tls_handshakes_deferred_total ClientHellos that waited for the handshake budget.',10
+	memit '# TYPE okena_tls_handshakes_deferred_total counter',10,'okena_tls_handshakes_deferred_total '
+	mov	ecx,OFF_TLS_DEFERRED
+	call	stats_sum_q
+	call	fmt_u64
+	memit 10,'# HELP okena_tls_handshakes_shed_total ClientHellos closed by the handshake budget (queue full, or waited too long).',10
+	memit '# TYPE okena_tls_handshakes_shed_total counter',10,'okena_tls_handshakes_shed_total '
+	mov	ecx,OFF_TLS_SHED
 	call	stats_sum_q
 	call	fmt_u64
 	memit 10

@@ -8,7 +8,7 @@ not built yet. A directive that is not built is refused by `okena check`
 
 | Block | Directives |
 |---|---|
-| `okena` | `workers`, `io_engine`, `busy_poll`, `watchdog`, `drain delay= timeout=`, `metrics`, `ticket_keys` |
+| `okena` | `workers`, `io_engine`, `busy_poll`, `watchdog`, `drain delay= timeout=`, `metrics`, `ticket_keys`, `handshake_budget wait=` |
 | `tcp ADDR...` | `to`, `limits { connections; per_source }`, `timeout { idle }`, `proxy_protocol send v1\|v2`, `tls { cert; key }`, `tls passthrough { sni NAME... to pool P; default reject\|to pool P }` |
 | `http ADDR...` | `host`, `route`, `limits`, `timeout { idle; header; body_idle; response }`, `trusted_proxies`, `access_log`, `tls { cert; key }` |
 | `route PATH... [METHOD...]` | `to`, `redirect`, `rewrite path`, `header set\|add\|drop`, `response header set\|add\|drop` |
@@ -177,6 +177,8 @@ okena {
     watchdog 2s               # a worker stuck this long is replaced
     drain delay=2s timeout=7s # fits inside docker stop's 10 s
     metrics :9464             # /metrics, /live, /ready
+    handshake_budget 100us wait=1s  # TLS hello crypto per loop iteration (0us: off);
+                              # past it hellos queue, and those older than wait close
     # planned:
     profile balanced          # balanced | latency | throughput | memory-lean
     reload on-change          # watch the config directory (today: SIGHUP)

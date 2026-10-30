@@ -156,6 +156,10 @@ http_tls_hello_in:
 	mov	edi,ebx
 	call	idle_touch
 	h_rec
+	jmp	http_tls_hello_budget		; now, or queued (hsbudget.inc)
+
+; ebx = session, r15 = its record: the handshake on what IN holds
+http_tls_hello_go:
 	call	http_tls_cred
 	mov	rsi,rax
 	mov	rdi,[r15+H_BUF]
