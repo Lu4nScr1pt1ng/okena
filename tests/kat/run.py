@@ -3,7 +3,8 @@
 
 Published vectors first (FIPS 180-4, RFC 4231, RFC 5869, RFC 8448's
 TLS 1.3 key schedule, RFC 7748), then random inputs against reference
-implementations: hashlib/hmac for SHA-256 (both block paths, every
+implementations (hashlib for SHA-3 and SHAKE, a FIPS 203 reference and
+OpenSSL for ML-KEM-768): hashlib/hmac for SHA-256 (both block paths, every
 length around the block boundaries), HMAC and HKDF, and `cryptography`
 for X25519."""
 import hashlib
@@ -655,6 +656,66 @@ try:
         check("p256 RFC 6979 signature, byte for byte", run(b"E", dd + hashlib.sha256(msg).digest()), want.hex())
 except (ImportError, TypeError):
     print("note: deterministic ECDSA not in this cryptography; P-256 checked on RFC 6979 only")
+
+# --- Keccak (FIPS 202): SHA3-256, SHA3-512, SHAKE128/256 against hashlib,
+# every length around the block boundaries (rates 72, 136, 168)
+for n in list(range(0, 180)) + [271, 272, 273, 335, 336, 337, 1184, 1216]:
+    m = rng.randbytes(n)
+    check(f"sha3-256 len {n}", run(b"3", m), hashlib.sha3_256(m).hexdigest())
+    check(f"sha3-512 len {n}", run(b"5", m), hashlib.sha3_512(m).hexdigest())
+    out = rng.choice([1, 32, 64, 128, 135, 136, 137, 167, 168, 169, 504, 1000])
+    check(f"shake128 len {n} out {out}", run(b"6", le16(out) + m), hashlib.shake_128(m).hexdigest(out))
+    check(f"shake256 len {n} out {out}", run(b"7", le16(out) + m), hashlib.shake_256(m).hexdigest(out))
+
+# --- ML-KEM-768 (FIPS 203) encapsulation: against tests/kat/mlkem_ref.py
+# (written from the standard) byte for byte, the modulus check, and against
+# OpenSSL's decapsulation where it has ML-KEM
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import mlkem_ref  # noqa: E402
+
+for i in range(40):
+    ek, dk = mlkem_ref.keygen(rng.randbytes(32), rng.randbytes(32))
+    m = rng.randbytes(32)
+    k, c = mlkem_ref.encaps(ek, m)
+    got = run(b"q", ek + m)
+    check("ml-kem-768 encaps = reference (ciphertext | secret)", got, (c + k).hex())
+    if i < 5:
+        check("ml-kem-768 reference decaps closes the loop", mlkem_ref.decaps(dk, bytes.fromhex(got[:2 * 1088])).hex(), k.hex())
+# an encapsulation key with a coefficient not below q is refused
+ek, _ = mlkem_ref.keygen(rng.randbytes(32), rng.randbytes(32))
+for pos in (0, 1, 383, 384 * 2 + 190):
+    bad = bytearray(ek)
+    if pos % 3 == 1:                    # the high nibble of this byte and the next byte
+        bad[pos] |= 0xF0
+        bad[pos + 1] = 0xFF
+    else:
+        bad[pos] = 0xFF
+        bad[pos + 1] |= 0x0F
+    want_valid = mlkem_ref.ek_valid(bytes(bad))
+    check(f"ml-kem-768 modulus check (byte {pos})", run(b"q", bytes(bad) + bytes(32)) == "exit 2",
+          not want_valid)
+try:
+    import shutil
+    import tempfile
+    if shutil.which("openssl") and b"ML-KEM-768" in subprocess.run(
+            ["openssl", "list", "-kem-algorithms"], capture_output=True).stdout:
+        with tempfile.TemporaryDirectory() as d:
+            dp = pathlib.Path(d)
+            for i in range(5):
+                subprocess.run(["openssl", "genpkey", "-algorithm", "ML-KEM-768", "-out", dp / "dk.pem"],
+                               check=True, capture_output=True)
+                der = subprocess.run(["openssl", "pkey", "-in", dp / "dk.pem", "-pubout", "-outform", "DER"],
+                                     check=True, capture_output=True).stdout
+                got = bytes.fromhex(run(b"q", der[-1184:] + rng.randbytes(32)))
+                (dp / "ct").write_bytes(got[:1088])
+                subprocess.run(["openssl", "pkeyutl", "-decap", "-inkey", dp / "dk.pem", "-in", dp / "ct",
+                                "-secret", dp / "ss"], check=True, capture_output=True)
+                check("ml-kem-768 encaps to an OpenSSL key, OpenSSL decapsulates the same secret",
+                      (dp / "ss").read_bytes().hex(), got[1088:].hex())
+    else:
+        print("note: no ML-KEM in this openssl; ML-KEM checked against the reference only")
+except (OSError, subprocess.CalledProcessError, ValueError) as e:
+    check("ml-kem-768 against openssl", repr(e), "")
 
 print(f"kat: {'all passed' if not failures else f'{failures} failed'} ({checks} checks)")
 sys.exit(1 if failures else 0)

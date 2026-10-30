@@ -2,6 +2,8 @@
 ; the first byte selects the function, the rest is its input; prints the
 ; result in hex on stdout.
 ;   's' SHA-256 of the rest              'S' the same on the scalar path
+;   '3' SHA3-256, '5' SHA3-512 of the rest; '6' SHAKE128, '7' SHAKE256: out len (2, LE), message
+;   'q' ML-KEM-768 encapsulation: ek (1184), m (32) -> ciphertext | shared secret
 ;   'h' HMAC: key length (2, LE), key, message
 ;   'k' HKDF: salt len (2), salt, ikm len (2), ikm, info len (2), info, out len (2)
 ;   'l' Expand-Label: secret (32), label len (1), label, ctx len (1), ctx, out len (2)
@@ -27,6 +29,8 @@ segment readable executable
 include '../../src/core/util.inc'
 include '../../src/crypto/ct.inc'
 include '../../src/crypto/sha256.inc'
+include '../../src/crypto/keccak.inc'
+include '../../src/crypto/mlkem.inc'
 include '../../src/crypto/hmac.inc'
 include '../../src/crypto/hkdf.inc'
 include '../../src/crypto/x25519.inc'
@@ -86,6 +90,16 @@ start:
 @@:
 	cmp	al,'s'
 	je	.sha
+	cmp	al,'3'
+	je	.sha3_256
+	cmp	al,'5'
+	je	.sha3_512
+	cmp	al,'6'
+	je	.shake128
+	cmp	al,'7'
+	je	.shake256
+	cmp	al,'q'
+	je	.mlkem_encaps
 	cmp	al,'S'
 	je	.sha_scalar
 	cmp	al,'h'
@@ -166,6 +180,40 @@ start:
 	lea	rdi,[g_out]
 	call	sha256
 	mov	esi,32
+	jmp	.print
+.sha3_256:
+	lea	rdi,[g_out]
+	call	sha3_256
+	mov	esi,32
+	jmp	.print
+.sha3_512:
+	lea	rdi,[g_out]
+	call	sha3_512
+	mov	esi,64
+	jmp	.print
+.mlkem_encaps:					; ek (1184), m (32) -> ct | shared secret
+	lea	rcx,[rsi+MLKEM_EK]
+	mov	rdx,rsi
+	lea	rdi,[g_out]
+	lea	rsi,[g_out+MLKEM_CT]
+	call	mlkem768_encaps
+	test	eax,eax
+	jz	.fail
+	mov	esi,MLKEM_CT + MLKEM_SS
+	jmp	.print
+.shake128:					; out length (2, LE), message
+	mov	r8d,SHAKE128_RATE
+	jmp	.shake
+.shake256:
+	mov	r8d,SHAKE256_RATE
+.shake:
+	movzx	ebx,word [rsi]
+	lea	rcx,[rdx-2]
+	lea	rdx,[rsi+2]
+	lea	rdi,[g_out]
+	mov	esi,ebx
+	call	shake
+	mov	esi,ebx
 	jmp	.print
 .hmac:
 	movzx	ecx,word [rsi]			; key length
@@ -341,6 +389,21 @@ start:
 	call	mont_mul
 	jmp	.counted
 .not_w:
+	cmp	r12b,'K'
+	jne	.not_K
+	lea	rdi,[g_out]			; ML-KEM-768 encapsulation: ek, m
+	lea	rsi,[g_out+MLKEM_CT]
+	mov	rdx,r14
+	lea	rcx,[r14+MLKEM_EK]
+	call	mlkem768_encaps
+	jmp	.counted
+.not_K:
+	cmp	r12b,'F'
+	jne	.not_F
+	mov	rdi,r14				; Keccak-f[1600], in place
+	call	keccak_f1600
+	jmp	.counted
+.not_F:
 	cmp	r12b,'i'
 	jne	.not_i
 	lea	rdi,[g_out]			; inversion mod p
