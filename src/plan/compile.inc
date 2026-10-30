@@ -127,8 +127,8 @@ PL_TLS		:= 108		; d: 1 when this pool's upstreams speak TLS
 PL_TLS_SNI	:= 112		; q: SNI / hostname to verify, 0 = the server as written
 PL_TLS_SNILEN	:= 120		; d
 PL_TLS_HASANCHOR := 124		; d: 1 when an anchor key was loaded
-PL_TLS_ANCHOR	:= 128		; the trust anchor's P-256 public key (65), 04|X|Y
-PL_SIZE		:= 256
+PL_TLS_ANCHOR	:= 128		; the trust anchor's public key, a PK blob (EC or RSA)
+PL_SIZE		:= 704		; room for PL_TLS_ANCHOR + a PK blob (16 + 528)
 
 ; Server
 SV_SA		:= 0		; sockaddr (sockaddr_un is 110 bytes)
@@ -178,7 +178,7 @@ bss
 	g_pools:	rb PL_SIZE * MAX_POOLS
 	g_trust_path:	rb 4096			; a trust file's path, NUL-terminated
 	g_trust_der:	rb 1 shl 14		; the first certificate's DER
-	g_trust_pub:	rb 65			; a scratch anchor key (config check)
+	g_trust_pub:	rb 544			; a scratch anchor key blob (config check)
 	g_servers:	rb SV_SIZE * MAX_SERVERS
 	g_cmp_addr:	rb AD_SIZE
 	g_cmp_flags	dd ?
@@ -1037,10 +1037,10 @@ compile_pool:
 	call	pem_first_cert
 	test	eax,eax
 	jz	.advance
-	lea	rsi,[g_trust_der]		; -> the anchor's public key
+	lea	rsi,[g_trust_der]		; -> the anchor's public key (EC or RSA)
 	mov	edx,eax
 	lea	rdi,[r13+PL_TLS_ANCHOR]
-	call	cert_extract_pubkey
+	call	cert_pubkey
 	test	eax,eax
 	jz	.advance
 	mov	dword [r13+PL_TLS_HASANCHOR],1

@@ -2252,7 +2252,7 @@ check_uptls:
 	lea	rsi,[g_trust_der]
 	mov	edx,eax
 	lea	rdi,[g_trust_pub]
-	call	cert_extract_pubkey
+	call	cert_pubkey
 	test	eax,eax
 	jz	.cannot
 	pop	rbx
