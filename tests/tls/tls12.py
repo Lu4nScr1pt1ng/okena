@@ -88,6 +88,39 @@ def get12(port, path="/hello", cipher="ECDHE-ECDSA-AES128-GCM-SHA256"):
         return None, repr(e).encode()
 
 
+def early_close12(port):
+    """A TLS 1.2 handshake whose last flight leaves together with a FIN."""
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ctx.maximum_version = ssl.TLSVersion.TLSv1_2
+    ctx.set_ciphers("ECDHE-ECDSA-AES128-GCM-SHA256")
+    inc, out = ssl.MemoryBIO(), ssl.MemoryBIO()
+    obj = ctx.wrap_bio(inc, out, server_hostname="okena.test")
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=5) as s:
+            while True:
+                try:
+                    obj.do_handshake()
+                    done = True
+                except ssl.SSLWantReadError:
+                    done = False
+                data = out.read()
+                if done or b"\x14\x03\x03" in data:     # our ChangeCipherSpec: the last flight
+                    s.sendall(data)
+                    s.shutdown(socket.SHUT_WR)
+                    s.recv(4096)
+                    return
+                s.sendall(data)
+                chunk = s.recv(65536)
+                if not chunk:
+                    return
+                inc.write(chunk)
+    except (OSError, ssl.SSLError):
+        pass
+
+
 def main():
     if not shutil.which("openssl"):
         print("skip tls12: openssl not found")
@@ -209,6 +242,15 @@ http 127.0.0.1:{DLST} {{
     # a few more requests (fresh connections), to shake out the handshake
     oks = sum(get12(LST, f"/n{i}")[1].startswith(b"HTTP/1.1 200") for i in range(8))
     check("8 TLS 1.2 connections", oks == 8, f"{oks}/8")
+
+    # clients that send their Finished with a FIN: the socket is in
+    # CLOSE_WAIT when the keys go to the kernel, so the ULP fails with
+    # ENOTCONN. That closes those connections only; the worker keeps kTLS
+    # (it once took it for "no tls module" and refused every 1.2 client).
+    for _ in range(12):
+        early_close12(LST)
+    oks = sum(get12(LST, f"/e{i}")[1].startswith(b"HTTP/1.1 200") for i in range(8))
+    check("TLS 1.2 clients leaving at their Finished do not cost the worker kTLS", oks == 8, f"{oks}/8")
 
     p.terminate()
     p.wait(10)

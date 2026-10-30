@@ -239,7 +239,12 @@ on_h_ktls12:
 	h_rec
 	test	r14,r14
 	jns	http_tls_established
-	mov	dword [g_no_ktls],1
+	cmp	r14,-ECANCELED			; an earlier link failed: which one?
+	jne	.close
+	cmp	dword [r15+H_ULPERR],-ENOENT	; the ULP: no tls module on this host
+	jne	.close				; else this connection only (ENOTCONN: the
+	mov	dword [g_no_ktls],1		; client left before the keys went in)
+.close:
 	mov	edi,ebx
 	jmp	session_close
 .closing:
