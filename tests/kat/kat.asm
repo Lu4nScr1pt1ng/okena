@@ -91,6 +91,8 @@ start:
 	je	.x25519_base
 	cmp	al,'D'
 	je	.ecdh
+	cmp	al,'V'
+	je	.ecdsa_verify
 	cmp	al,'g'
 	je	.gcm
 	cmp	al,'G'
@@ -413,6 +415,19 @@ start:
 	lea	rdi,[g_out]
 	call	x25519_base
 	mov	esi,32
+	jmp	.print
+.ecdsa_verify:				; pubkey(65) digest(32) r(32) s(32)
+	mov	rdi,rsi
+	lea	r8,[rsi+65]
+	lea	r9,[rsi+65+32]
+	lea	r10,[rsi+65+64]
+	mov	rsi,r8
+	mov	rdx,r9
+	mov	rcx,r10
+	call	p256_verify
+	mov	[g_out],al			; 01 valid, 00 invalid
+	lea	rdi,[g_out]
+	mov	esi,1
 	jmp	.print
 .ecdh:
 	lea	rdi,[g_out]			; scalar (32) then peer point (65)

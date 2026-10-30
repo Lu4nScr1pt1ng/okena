@@ -158,6 +158,33 @@ try:
     check("p256 ecdh: off-curve peer rejected", run(b"D", k + bytes(bad_pt)), "FAIL")
     check("p256 ecdh: compressed peer rejected", run(b"D", k + b"\x02" + rng.randbytes(32) + bytes(32)), "FAIL")
 
+    # ECDSA P-256 verification: library signatures accepted, tampered and
+    # wrong-key rejected, an off-curve public key rejected
+    import hashlib as _hl
+    from cryptography.hazmat.primitives import hashes as _hashes
+    for _ in range(100):
+        sk = _ec.generate_private_key(_ec.SECP256R1())
+        pub = sk.public_key().public_bytes(_Enc.X962, _PF.UncompressedPoint)
+        msg = rng.randbytes(40)
+        dg = _hl.sha256(msg).digest()
+        from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
+        rr, ss = decode_dss_signature(sk.sign(msg, _ec.ECDSA(_hashes.SHA256())))
+        sig = rr.to_bytes(32, "big") + ss.to_bytes(32, "big")
+        check("p256 verify: valid signature", run(b"V", pub + dg + sig), "01")
+        bd = bytearray(dg)
+        bd[9] ^= 1
+        check("p256 verify: tampered digest rejected", run(b"V", pub + bytes(bd) + sig), "00")
+        other = _ec.generate_private_key(_ec.SECP256R1()).public_key().public_bytes(_Enc.X962, _PF.UncompressedPoint)
+        check("p256 verify: wrong key rejected", run(b"V", other + dg + sig), "00")
+    sk = _ec.generate_private_key(_ec.SECP256R1())
+    dg = _hl.sha256(b"m").digest()
+    from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
+    rr, ss = decode_dss_signature(sk.sign(b"m", _ec.ECDSA(_hashes.SHA256())))
+    offp = bytearray(sk.public_key().public_bytes(_Enc.X962, _PF.UncompressedPoint))
+    offp[40] ^= 1
+    check("p256 verify: off-curve public key rejected",
+          run(b"V", bytes(offp) + dg + rr.to_bytes(32, "big") + ss.to_bytes(32, "big")), "00")
+
     # edge inputs: u with the top bit set (ignored), u = 0, u >= p
     for u in (bytes(31) + b"\x80", bytes(32), (2**255 - 19 + 5).to_bytes(32, "little"), b"\xff" * 32):
         a = X25519PrivateKey.generate()

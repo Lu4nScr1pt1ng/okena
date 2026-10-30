@@ -1765,6 +1765,256 @@ p256_ecdh:
 	cmc					; borrow (value<p) -> CF clear
 	ret
 
+; rdi = out projective (96, Montgomery), rsi = scalar limbs, rdx = base
+; projective (96, Montgomery): scalar * base by the Montgomery ladder,
+; reusing p256_add and pt_cswap.
+VL_R0		:= 0
+VL_R1		:= PT_SIZE
+VL_SIZE		:= 2 * PT_SIZE
+p256_ladder:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	sub	rsp,VL_SIZE
+	mov	r12,rdi
+	mov	r13,rsi
+	lea	rdi,[rsp+VL_R1]			; R1 = base
+	mov	rsi,rdx
+	mov	ecx,12
+	rep	movsq
+	xor	eax,eax				; R0 = infinity (0 : 1 : 0)
+	repeat 12, i:0
+		mov	[rsp+VL_R0+i*8],rax
+	end repeat
+	lea	rsi,[p256_p+MOD_ONE]
+	lea	rdi,[rsp+VL_R0+PT_Y]
+	mov	ecx,4
+	rep	movsq
+	mov	ebx,255
+.bit:
+	mov	eax,ebx
+	shr	eax,6
+	mov	rax,[r13+rax*8]
+	mov	ecx,ebx
+	shr	rax,cl
+	and	eax,1
+	neg	rax
+	mov	r14,rax
+	lea	rdi,[rsp+VL_R0]
+	lea	rsi,[rsp+VL_R1]
+	mov	rdx,r14
+	call	pt_cswap
+	lea	rdi,[rsp+VL_R1]
+	lea	rsi,[rsp+VL_R0]
+	lea	rdx,[rsp+VL_R1]
+	call	p256_add
+	lea	rdi,[rsp+VL_R0]
+	lea	rsi,[rsp+VL_R0]
+	lea	rdx,[rsp+VL_R0]
+	call	p256_add
+	lea	rdi,[rsp+VL_R0]
+	lea	rsi,[rsp+VL_R1]
+	mov	rdx,r14
+	call	pt_cswap
+	dec	ebx
+	jns	.bit
+	mov	rdi,r12
+	lea	rsi,[rsp+VL_R0]
+	mov	ecx,12
+	rep	movsq
+	add	rsp,VL_SIZE
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; ECDSA P-256 / SHA-256 verification (FIPS 186-5). rdi = public key
+; 04|X|Y (65 bytes), rsi = digest[32] big endian, rdx = r[32] big endian,
+; rcx = s[32] big endian. eax = 1 when the signature is valid, else 0.
+; w = s^-1 mod n; u1 = e w, u2 = r w; R = u1 G + u2 Q; valid iff
+; x(R) mod n == r. Public data: variable-time inversion is fine.
+VF_QP		:= 0				; Q projective Montgomery
+VF_P1		:= PT_SIZE			; u1 * G
+VF_P2		:= 2 * PT_SIZE			; u2 * Q
+VF_SUM		:= 3 * PT_SIZE			; their sum
+VF_R		:= 4 * PT_SIZE			; r limbs
+VF_S		:= VF_R + 32
+VF_E		:= VF_R + 64			; e (digest mod n)
+VF_W		:= VF_R + 96			; s^-1
+VF_U		:= VF_R + 128			; a scalar (u1, then u2)
+VF_ZI		:= VF_R + 160
+VF_X		:= VF_R + 192			; x(R) limbs
+VF_T		:= VF_R + 224
+VF_SIZE		:= ((VF_R + 256 + 15) and not 15) + 8
+p256_verify:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	sub	rsp,VF_SIZE
+	mov	rbx,rdi				; Q
+	mov	r14,rdx				; r be
+	mov	r15,rcx				; s be
+	mov	r13,rsi				; digest be
+	lea	rdi,[rsp+VF_R]
+	mov	rsi,r14
+	call	be_to_limbs
+	lea	rdi,[rsp+VF_R]
+	call	scalar_in_range
+	test	eax,eax
+	jz	.bad
+	lea	rdi,[rsp+VF_S]
+	mov	rsi,r15
+	call	be_to_limbs
+	lea	rdi,[rsp+VF_S]
+	call	scalar_in_range
+	test	eax,eax
+	jz	.bad
+	lea	rdi,[rsp+VF_E]			; e = digest mod n
+	mov	rsi,r13
+	call	be_to_limbs
+	lea	rdi,[rsp+VF_E]
+	lea	rsi,[p256_n]
+	call	mod_reduce_once
+	lea	rdi,[rsp+VF_W]			; w = s^-1 mod n (rdi out, rsi in)
+	lea	rsi,[rsp+VF_S]
+	call	mod_inv_n_vartime
+	cmp	byte [rbx],4			; load and validate Q
+	jne	.bad
+	lea	rdi,[rsp+VF_QP+PT_X]
+	lea	rsi,[rbx+1]
+	call	be_to_limbs
+	lea	rdi,[rsp+VF_QP+PT_X]
+	call	vf_below_p
+	jc	.bad
+	lea	rdi,[rsp+VF_QP+PT_Y]
+	lea	rsi,[rbx+33]
+	call	be_to_limbs
+	lea	rdi,[rsp+VF_QP+PT_Y]
+	call	vf_below_p
+	jc	.bad
+	lea	rdi,[rsp+VF_QP+PT_X]
+	mov	rsi,rdi
+	lea	rdx,[p256_p+40]
+	lea	rcx,[p256_p]
+	call	mont_mul
+	lea	rdi,[rsp+VF_QP+PT_Y]
+	mov	rsi,rdi
+	lea	rdx,[p256_p+40]
+	lea	rcx,[p256_p]
+	call	mont_mul
+	lea	rsi,[p256_p+MOD_ONE]
+	lea	rdi,[rsp+VF_QP+PT_Z]
+	mov	ecx,4
+	rep	movsq
+	E mont_mul, VF_T, VF_QP+PT_X, VF_QP+PT_X		; on the curve?
+	E mont_mul, VF_T, VF_T, VF_QP+PT_X
+	E mod_add, VF_ZI, VF_QP+PT_X, VF_QP+PT_X
+	E mod_add, VF_ZI, VF_ZI, VF_QP+PT_X
+	E mod_sub, VF_T, VF_T, VF_ZI
+	F mod_add, rsp+VF_T, rsp+VF_T, p256_b_m
+	E mont_mul, VF_ZI, VF_QP+PT_Y, VF_QP+PT_Y
+	lea	rsi,[rsp+VF_T]
+	lea	rdi,[rsp+VF_ZI]
+	xor	eax,eax
+	repeat 4, i:0
+		mov	r8,[rsi+i*8]
+		xor	r8,[rdi+i*8]
+		or	rax,r8
+	end repeat
+	test	rax,rax
+	jnz	.bad
+	lea	r12,[p256_n]			; u1 = e w mod n, then u1 G
+	lea	rdi,[rsp+VF_U]
+	lea	rsi,[rsp+VF_E]
+	lea	rdx,[r12+MOD_RR]
+	mov	rcx,r12
+	call	mont_mul
+	lea	rdi,[rsp+VF_U]
+	lea	rsi,[rsp+VF_U]
+	lea	rdx,[rsp+VF_W]
+	mov	rcx,r12
+	call	mont_mul
+	lea	rdi,[rsp+VF_P1]
+	lea	rsi,[rsp+VF_U]
+	lea	rdx,[p256_g_m]
+	call	p256_ladder
+	lea	r12,[p256_n]			; u2 = r w mod n, then u2 Q
+	lea	rdi,[rsp+VF_U]
+	lea	rsi,[rsp+VF_R]
+	lea	rdx,[r12+MOD_RR]
+	mov	rcx,r12
+	call	mont_mul
+	lea	rdi,[rsp+VF_U]
+	lea	rsi,[rsp+VF_U]
+	lea	rdx,[rsp+VF_W]
+	mov	rcx,r12
+	call	mont_mul
+	lea	rdi,[rsp+VF_P2]
+	lea	rsi,[rsp+VF_U]
+	lea	rdx,[rsp+VF_QP]
+	call	p256_ladder
+	lea	rdi,[rsp+VF_SUM]		; R = u1 G + u2 Q
+	lea	rsi,[rsp+VF_P1]
+	lea	rdx,[rsp+VF_P2]
+	call	p256_add
+	mov	rax,[rsp+VF_SUM+PT_Z]		; infinity -> invalid
+	or	rax,[rsp+VF_SUM+PT_Z+8]
+	or	rax,[rsp+VF_SUM+PT_Z+16]
+	or	rax,[rsp+VF_SUM+PT_Z+24]
+	jz	.bad
+	lea	rdi,[rsp+VF_ZI]			; x(R) affine, out of Montgomery
+	lea	rsi,[rsp+VF_SUM+PT_Z]
+	lea	rcx,[p256_p]
+	call	mod_inv
+	E mont_mul, VF_SUM+PT_X, VF_SUM+PT_X, VF_ZI
+	lea	rdi,[rsp+VF_X]
+	lea	rsi,[rsp+VF_SUM+PT_X]
+	lea	rdx,[p256_one]
+	lea	rcx,[p256_p]
+	call	mont_mul
+	lea	rdi,[rsp+VF_X]
+	lea	rsi,[p256_n]
+	call	mod_reduce_once			; x mod n
+	lea	rsi,[rsp+VF_X]			; valid iff x == r
+	lea	rdi,[rsp+VF_R]
+	xor	eax,eax
+	repeat 4, i:0
+		mov	r8,[rsi+i*8]
+		xor	r8,[rdi+i*8]
+		or	rax,r8
+	end repeat
+	test	rax,rax
+	jnz	.bad
+	mov	eax,1
+	jmp	.out
+.bad:
+	xor	eax,eax
+.out:
+	add	rsp,VF_SIZE
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; rdi = 4 limbs: CF set when the value is >= p.
+vf_below_p:
+	mov	r8,[rdi]
+	sub	r8,[p256_p]
+	mov	r8,[rdi+8]
+	sbb	r8,[p256_p+8]
+	mov	r8,[rdi+16]
+	sbb	r8,[p256_p+16]
+	mov	r8,[rdi+24]
+	sbb	r8,[p256_p+24]
+	cmc
+	ret
+
 ; RFC 6979 for P-256 / SHA-256. rdi = k (4 limbs), rsi = x = d[32] (big
 ; endian), rdx = h = (z mod n)[32] (big endian).
 NC_K		:= 0				; HMAC key K
