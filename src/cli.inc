@@ -465,4 +465,5 @@ cli_run:
 	call	cli_load_config
 	call	plan_compile
 	call	tls_serve_check
+	call	tls_tickets_apply		; a ticket_keys file, if any
 	jmp	supervisor_main

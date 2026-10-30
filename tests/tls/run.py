@@ -91,5 +91,28 @@ r = subprocess.run([str(BIN), "-c", str(conf)], capture_output=True, text=True, 
 check("without kTLS, tls on a tcp listener is refused at the start", r.returncode != 0
       and "needs kernel TLS" in r.stderr, r.stderr.strip()[:160])
 
+# okena { ticket_keys FILE }: one key a line, 32 bytes of base64, at most two
+import base64, os
+good = tmp / "tickets.key"
+good.write_text(base64.b64encode(os.urandom(32)).decode() + "\n" + base64.b64encode(os.urandom(32)).decode() + "\n")
+for name, text, want in [
+    ("two keys", good.read_text(), None),
+    ("not base64", "!!!!\n", "not 32 bytes of base64"),
+    ("16 bytes, not 32", base64.b64encode(os.urandom(16)).decode() + "\n", "not 32 bytes of base64"),
+    ("three keys", good.read_text() + base64.b64encode(os.urandom(32)).decode() + "\n", "at most two keys"),
+    ("an empty file", "\n\n", "no key in this file"),
+]:
+    f = tmp / "tk.key"
+    f.write_text(text)
+    c = tmp / "tk.conf"
+    c.write_text(f"okena {{ ticket_keys {f} }}\nhttp 127.0.0.1:18443 {{\n    tls {{ cert {tmp / 'ec.pem'}; key {tmp / 'ec.key'} }}\n"
+                 "    route /* { to 127.0.0.1:1 }\n}\n")
+    r = subprocess.run([str(BIN), "check", str(c)], capture_output=True, text=True)
+    out = (r.stdout + r.stderr).strip()
+    if want is None:
+        check(f"ticket_keys: {name}", r.returncode == 0, out)
+    else:
+        check(f"ticket_keys refused: {name}", r.returncode != 0 and want in out, out.splitlines()[0] if out else "")
+
 print(f"tls: {'all passed' if not failures else f'{failures} failed'}")
 sys.exit(1 if failures else 0)

@@ -10,6 +10,7 @@ import json
 import os
 import pathlib
 import shutil
+import signal
 import socket
 import ssl
 import subprocess
@@ -425,6 +426,66 @@ http 127.0.0.1:{RL} {{
         check("ticket keys rotate: the new key's tickets resume", rget(fresh)[0])
         rp.terminate()
         rp.wait(10)
+
+        # a fleet: two instances, one ticket_keys file; an operator's rotation
+        import base64
+        keyfile = tmp / "tickets.key"
+        k1, k2, k3 = (base64.b64encode(os.urandom(32)).decode() for _ in range(3))
+        keyfile.write_text(k1 + "\n")
+        fleet = []
+        for i, port in enumerate((BASE + 6, BASE + 7)):
+            fc = tmp / f"fleet{i}.conf"
+            fc.write_text(f"""okena {{ workers 1; io_engine {ENGINE}; ticket_keys {keyfile} }}
+http 127.0.0.1:{port} {{
+    {tls}
+    route /* {{ to 127.0.0.1:{BACK} }}
+}}
+""")
+            flog = open(tmp / f"fleet{i}.log", "w+")
+            fp = subprocess.Popen([str(BIN), "-c", str(fc)], stderr=flog,
+                                  env=dict(os.environ, OKENA_TICKET_ROTATE="1"))
+            atexit.register(fp.kill)
+            fleet.append((fp, flog, port))
+        for fp, flog, _ in fleet:
+            for _ in range(100):
+                flog.seek(0)
+                if "started with" in flog.read():
+                    break
+                time.sleep(0.05)
+
+        def fget(port, sess=None):
+            s = socket.create_connection(("127.0.0.1", port), timeout=10)
+            with rctx.wrap_socket(s, server_hostname="okena.test", session=sess) as t:
+                request(t, "GET", "/fleet")
+                return t.session_reused, t.session
+
+        def reload_all():
+            for fp, flog, _ in fleet:
+                flog.seek(0)
+                n = flog.read().count("configuration reloaded")
+                fp.send_signal(signal.SIGHUP)
+                for _ in range(100):
+                    flog.seek(0)
+                    if flog.read().count("configuration reloaded") > n:
+                        break
+                    time.sleep(0.05)
+        (pa, _, porta), (pb, _, portb) = fleet
+        _, t1 = fget(porta)
+        check("ticket_keys: a ticket from one instance resumes on the other", fget(portb, t1)[0])
+        time.sleep(2.5)
+        check("ticket_keys: no rotation of its own (with OKENA_TICKET_ROTATE=1)", fget(portb, t1)[0])
+        keyfile.write_text(k2 + "\n" + k1 + "\n")
+        reload_all()
+        reused, t2 = fget(porta, t1)
+        check("ticket_keys: after a rotation and a reload, the previous key still opens it", reused)
+        _, t2 = fget(porta)
+        keyfile.write_text(k3 + "\n" + k2 + "\n")
+        reload_all()
+        check("ticket_keys: two rotations later it does not", not fget(portb, t1)[0])
+        check("ticket_keys: the newer one does, on either instance", fget(portb, t2)[0] and fget(porta, t2)[0])
+        for fp, _, _ in fleet:
+            fp.terminate()
+            fp.wait(10)
 
     p.terminate()
     p.wait(10)

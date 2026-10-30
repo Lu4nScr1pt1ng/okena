@@ -676,3 +676,158 @@ end macro
 ; Until the TLS handshake is built, a listener with a tls block must not
 ; serve its port in plaintext: refuse to start (or to reload) with it.
 ; okena check loads and checks the files already.
+
+; ------------------------------------------------------- ticket keys
+;
+; okena { ticket_keys FILE }: session ticket keys shared by a fleet. One
+; key a line, 32 bytes of base64 (openssl rand -base64 32): the first seals
+; new tickets, a second (the previous one) still opens them. The AES key
+; and its id come from SHA-256 of the line, so every instance reading the
+; file has the same. Rotating is the operator's: a new first line, then a
+; reload; without the file, okena rotates its own keys every hour.
+TKF_KEYS	:= 4				; 2 x (key 16, id 4)
+TKF_KEY		:= 20
+TKF_SIZE	:= TKF_KEYS + 2 * TKF_KEY
+
+bss
+	align 8
+	g_plan_tkeys:	rb TKF_SIZE		; d: how many, then the keys
+end bss
+
+; rdi = the ticket_keys directive.
+compile_ticket_keys:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	sub	rsp,40
+	mov	rbx,rdi
+	call	tls_read_arg			; rax = text, rdx = its end
+	mov	r12,rax
+	mov	r13,rdx
+.line:
+	cmp	r12,r13
+	jae	.done
+	movzx	eax,byte [r12]
+	cmp	al,' '
+	jbe	.skip				; blank lines, spaces, CR, LF
+	mov	rsi,r12				; a line: up to LF or a space
+.scan:
+	cmp	r12,r13
+	jae	.got
+	cmp	byte [r12],' '
+	jbe	.got
+	inc	r12
+	jmp	.scan
+.got:
+	cmp	dword [g_plan_tkeys],2
+	jae	.too_many
+	mov	edx,r12d
+	sub	edx,esi
+	cmp	edx,64
+	ja	.bad
+	lea	rdi,[g_tls_kder]
+	call	base64_decode
+	cmp	rax,32
+	jne	.bad
+	mov	rdi,rsp
+	lea	rsi,[g_tls_kder]
+	mov	edx,32
+	call	sha256
+	mov	eax,[g_plan_tkeys]
+	imul	eax,eax,TKF_KEY
+	lea	rdi,[g_plan_tkeys+TKF_KEYS+rax]
+	mov	rsi,rsp
+	mov	ecx,TKF_KEY			; key = H[0..16], id = H[16..20]
+	rep	movsb
+	inc	dword [g_plan_tkeys]
+	mov	rdi,rsp
+	mov	ecx,32
+	call	secure_zero
+	lea	rdi,[g_tls_kder]
+	mov	ecx,32
+	call	secure_zero
+	jmp	.line
+.skip:
+	inc	r12
+	jmp	.line
+.done:
+	cmp	dword [g_plan_tkeys],0
+	je	.empty
+	add	rsp,40
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+.bad:
+	mov	rdi,rbx
+	call	tls_error_at
+	out_lit 'a line of this file is not 32 bytes of base64 (make one with: openssl rand -base64 32)'
+	jmp	tls_error_end
+.too_many:
+	mov	rdi,rbx
+	call	tls_error_at
+	out_lit 'at most two keys: the one that seals new tickets, then the previous one'
+	jmp	tls_error_end
+.empty:
+	mov	rdi,rbx
+	call	tls_error_at
+	out_lit 'no key in this file (one a line: openssl rand -base64 32)'
+	jmp	tls_error_end
+
+; Supervisor, with the plan in place (the start, each reload): the file's
+; keys into the shared slots, the current and the previous; without a
+; file, back to keys of okena's own when the last plan had one.
+tls_tickets_apply:
+	cmp	qword [g_tks],0
+	je	.done
+	push	rbx
+	mov	rbx,[g_tks]
+	cmp	dword [g_plan_tkeys],0
+	je	.own
+	mov	dword [g_tk_fixed],1
+	mov	dword [g_tk_life],TICKET_ROTATE	; the operator rotates: an hour, then the previous key's
+	mov	edi,[rbx+TKS_CUR]
+	lea	rsi,[g_plan_tkeys+TKF_KEYS]
+	call	tls_ticket_set
+	mov	edi,[rbx+TKS_CUR]		; the previous slot: (cur + 2) mod 3
+	add	edi,2
+	cmp	edi,3
+	jb	@f
+	sub	edi,3
+@@:
+	cmp	dword [g_plan_tkeys],2
+	jb	.no_previous
+	lea	rsi,[g_plan_tkeys+TKF_KEYS+TKF_KEY]
+	call	tls_ticket_set
+	pop	rbx
+	ret
+.no_previous:
+	imul	eax,edi,TKS_SLOT
+	mov	dword [rbx+TKS_SLOTS+rax+TKS_ID],0
+	pop	rbx
+	ret
+.own:
+	cmp	dword [g_tk_fixed],0
+	je	.kept
+	mov	dword [g_tk_fixed],0		; the file is gone: fresh keys, rotated again
+	mov	eax,[g_tk_period]
+	mov	[g_tk_life],eax
+	mov	edi,[rbx+TKS_CUR]
+	call	tls_ticket_fill
+	mov	edi,[rbx+TKS_CUR]
+	add	edi,2
+	cmp	edi,3
+	jb	@f
+	sub	edi,3
+@@:
+	imul	eax,edi,TKS_SLOT
+	mov	dword [rbx+TKS_SLOTS+rax+TKS_ID],0
+	call	tls_now_s
+	add	eax,[g_tk_period]
+	mov	[g_tk_next],eax
+.kept:
+	pop	rbx
+.done:
+	ret

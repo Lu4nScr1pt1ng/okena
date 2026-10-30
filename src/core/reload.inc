@@ -66,6 +66,7 @@ macro plan_regions action
 	action g_hhash, 8 * HHASH_SIZE
 	action g_rhash, 8 * RHASH_SIZE
 	action g_plan_tls, 4
+	action g_plan_tkeys, TKF_SIZE
 	action g_tls_used, 4
 	action g_tls, TL_SIZE * MAX_TLS
 	action g_tls_store, TLS_STORE
@@ -248,6 +249,7 @@ supervisor_reload:
 	test	eax,eax
 	jnz	.sockets_failed
 	; commit
+	call	tls_tickets_apply		; the ticket_keys file again (an operator's rotation)
 	call	retire_workers
 	mov	[g_workers],r15d
 	mov	edi,[g_control_pid]

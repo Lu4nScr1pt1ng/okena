@@ -135,6 +135,8 @@ bss
 	g_tks		dq ?			; the shared keys, 0 = no tickets
 	g_tk_period	dd ?			; seconds between rotations
 	g_tk_next	dd ?			; the next one (supervisor)
+	g_tk_fixed	dd ?			; 1: keys from a ticket_keys file, no rotation here
+	g_tk_life	dd ?			; a ticket's lifetime: the period, an hour with a file
 end bss
 
 rodata
@@ -666,7 +668,7 @@ tls_hello:
 	jne	.full
 	mov	eax,[rbp+HL_NOW]
 	sub	eax,[rbp+HL_TICKET+TK_SEALED+TKP_ISSUED]
-	mov	ecx,[g_tk_period]
+	mov	ecx,[g_tk_life]
 	add	ecx,ecx
 	cmp	eax,ecx
 	ja	.full				; expired
@@ -1065,7 +1067,7 @@ tls_hello:
 	mov	dword [rdi],0x00030317
 	mov	word [rdi+3],0x7A00		; 105 + type + tag = 122
 	mov	dword [rdi+5],0x65000004	; new_session_ticket, 101 bytes
-	mov	eax,[g_tk_period]		; lifetime: at least this long
+	mov	eax,[g_tk_life]			; lifetime: at least this long
 	bswap	eax
 	mov	[rdi+9],eax
 	mov	eax,[rbp+HL_RAND+76]
@@ -1520,6 +1522,8 @@ tls_tickets_init:
 	cmp	rax,-4096
 	ja	.done				; no page: no tickets
 	mov	[g_tks],rax
+	mov	eax,[g_tk_period]
+	mov	[g_tk_life],eax
 	xor	edi,edi
 	call	tls_ticket_fill
 	call	tls_now_s
@@ -1532,6 +1536,8 @@ tls_tickets_init:
 tls_tickets_tick:
 	cmp	qword [g_tks],0
 	je	.done
+	cmp	dword [g_tk_fixed],0
+	jne	.done				; the file's keys: rotated by whoever writes it
 	call	tls_now_s
 	cmp	eax,[g_tk_next]
 	jb	.done
@@ -1557,28 +1563,48 @@ tls_tickets_tick:
 tls_ticket_fill:
 	push	rbx
 	sub	rsp,32
-	imul	eax,edi,TKS_SLOT
-	mov	rbx,[g_tks]
-	lea	rbx,[rbx+TKS_SLOTS+rax]
-	mov	dword [rbx+TKS_ID],0
-	mov	rdi,rsp
+	push	rdi
+	lea	rdi,[rsp+8]
 	mov	esi,20
 	xor	edx,edx
 	mov	eax,SYS_getrandom
 	syscall
+	pop	rdi
 	cmp	rax,20
-	jne	.out				; left empty: its tickets just do not resume
-	lea	rdi,[rbx+TKS_GCM]
+	jne	.empty				; left empty: its tickets just do not resume
 	mov	rsi,rsp
-	call	gcm_init
-	mov	eax,[rsp+16]
-	or	eax,1				; never 0
-	mov	[rbx+TKS_ID],eax
+	call	tls_ticket_set
+	jmp	.out
+.empty:
+	imul	eax,edi,TKS_SLOT
+	mov	rbx,[g_tks]
+	mov	dword [rbx+TKS_SLOTS+rax+TKS_ID],0
 .out:
 	mov	rdi,rsp
 	mov	ecx,32
 	call	secure_zero
 	add	rsp,32
+	pop	rbx
+	ret
+
+; edi = slot, rsi = key (16) then id (4): the slot holds that key; its id
+; is written last (0 means empty, so 1 is or-ed in).
+tls_ticket_set:
+	push	rbx
+	push	r12
+	sub	rsp,8
+	imul	eax,edi,TKS_SLOT
+	mov	rbx,[g_tks]
+	lea	rbx,[rbx+TKS_SLOTS+rax]
+	mov	r12,rsi
+	mov	dword [rbx+TKS_ID],0
+	lea	rdi,[rbx+TKS_GCM]
+	call	gcm_init
+	mov	eax,[r12+16]
+	or	eax,1
+	mov	[rbx+TKS_ID],eax
+	add	rsp,8
+	pop	r12
 	pop	rbx
 	ret
 

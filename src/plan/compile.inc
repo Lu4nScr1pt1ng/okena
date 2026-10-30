@@ -356,6 +356,11 @@ compile_settings:
 	lea	rcx,[dir_table + D_SIZE*DIR_METRICS]
 	cmp	rax,rcx
 	je	.metrics
+	lea	rcx,[dir_table + D_SIZE*DIR_TICKET_KEYS]
+	cmp	rax,rcx
+	jne	.advance
+	mov	rdi,rbx
+	call	compile_ticket_keys
 	jmp	.advance
 .metrics:
 	mov	rax,[rbx+N_ARGS]

@@ -8,7 +8,7 @@ not built yet. A directive that is not built is refused by `okena check`
 
 | Block | Directives |
 |---|---|
-| `okena` | `workers`, `io_engine`, `busy_poll`, `watchdog`, `drain delay= timeout=`, `metrics` |
+| `okena` | `workers`, `io_engine`, `busy_poll`, `watchdog`, `drain delay= timeout=`, `metrics`, `ticket_keys` |
 | `tcp ADDR...` | `to`, `limits { connections; per_source }`, `timeout { idle }`, `proxy_protocol send v1\|v2`, `tls { cert; key }` |
 | `http ADDR...` | `host`, `route`, `limits`, `timeout { idle; header; body_idle; response }`, `trusted_proxies`, `access_log`, `tls { cert; key }` |
 | `route PATH... [METHOD...]` | `to`, `redirect`, `rewrite path`, `header set\|add\|drop`, `response header set\|add\|drop` |
@@ -22,7 +22,12 @@ itself when it does not (said once at the start; `OKENA_KTLS=off` forces
 it). Session tickets are on: a returning client resumes
 without the certificate and the signature. The ticket key rotates every
 hour and the previous one is still accepted, so a ticket lasts one to two
-hours; keys live in memory only (a restart starts afresh). The header timeout covers
+hours; keys live in memory only (a restart starts afresh). For a fleet,
+`okena { ticket_keys FILE }` takes the keys from a file every instance
+reads: one a line, 32 bytes of base64 (`openssl rand -base64 32`), the
+first sealing new tickets, an optional second (the previous) still
+opening them. Rotating is then a new first line and a reload (SIGHUP) on
+each instance; okena does not rotate them itself. The header timeout covers
 the handshake. Backends get `X-Forwarded-Proto: https`. On a `tcp`
 listener `tls` terminates TLS and moves plaintext to the backend; there
 it needs kTLS (okena refuses to start without the module), and the

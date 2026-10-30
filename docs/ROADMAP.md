@@ -144,8 +144,12 @@ kTLS. Ticket keys rotate hourly in the supervisor: three slots on a page
 shared with the workers, the new key written into the slot not in use,
 then made current; tickets open under the current or the previous key.
 Where the CPU has VAES and VPCLMULQDQ the eight blocks go two to an
-instruction on ymm: 6.9 GB/s on 16 KiB records (OpenSSL 3.5: 5.8). Next:
-a ticket key file shared by a fleet, then phase 4.
+instruction on ymm: 6.9 GB/s on 16 KiB records (OpenSSL 3.5: 5.8). `okena {
+ticket_keys FILE }` shares the keys across a fleet (tickets resume on any
+instance; the operator rotates with a new first line and a reload). The
+TLS phase is functional; still open from its list: TLS to upstreams,
+SNI routing, passthrough, TLS 1.2 for older clients, conformance runs
+(tlsfuzzer). Next: phase 4.
 
 * SHA-2, HMAC, HKDF (from fasm2crud), AES-GCM (AES-NI, VAES/VPCLMULQDQ),
   ChaCha20-Poly1305, X25519, ML-KEM-768, P-256 ECDH/ECDSA, Ed25519.
