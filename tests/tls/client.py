@@ -40,7 +40,7 @@ sh("openssl", "req", "-new", "-x509", "-key", "s.key", "-subj", "/CN=localhost",
 def run_against(groups, port):
     sp = subprocess.Popen(["openssl", "s_server", "-accept", str(port), "-cert", str(tmp / "s.pem"),
                            "-key", str(tmp / "s.key"), "-tls1_3", "-ciphersuites", "TLS_AES_128_GCM_SHA256",
-                           "-groups", groups, "-naccept", "1", "-quiet"],
+                           "-groups", groups, "-naccept", "1", "-www"],
                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         time.sleep(0.7)                 # let s_server bind (its one accept is for the client)
@@ -54,12 +54,14 @@ def main():
     if not shutil.which("openssl"):
         print("skip tls client: openssl not found")
         return 0
-    # the handshake decrypts the server flight, then verifies the
-    # CertificateVerify signature and the server Finished ("1" on success)
-    check("x25519: handshake verifies (CertificateVerify + server Finished)",
+    # the full exchange: verify the server's flight, send the client
+    # Finished, then a GET whose HTTP response is decrypted ("1" on success)
+    check("x25519: encrypted channel, HTTP response decrypted",
           run_against("X25519", 34480) == "1")
-    check("secp256r1: handshake verifies", run_against("P-256", 34481) == "1")
-    check("x25519 preferred when the server offers both", run_against("X25519:P-256", 34482) == "1")
+    check("secp256r1: encrypted channel, HTTP response decrypted",
+          run_against("P-256", 34481) == "1")
+    check("x25519 preferred when the server offers both",
+          run_against("X25519:P-256", 34482) == "1")
     print(f"tls client: {'all passed' if not failures else f'{failures} failed'}")
     return 1 if failures else 0
 

@@ -184,8 +184,19 @@ TC_CV		:= TC_LEAFPUB + 72		; the CertificateVerify signed content (130)
 TC_DIG		:= TC_CV + 136			; its SHA-256
 TC_FIN		:= TC_DIG + 32			; a computed Finished / HMAC
 TC_THX		:= TC_FIN + 32			; a transcript-hash snapshot
-TC_GCM		:= TC_THX + 32
-TC_FULL		:= TC_GCM + GCM_SIZE
+TC_GCM		:= TC_THX + 32			; a SHA scratch; then the client-hs seal context
+TC_TMP		:= TC_GCM + GCM_SIZE		; key-schedule scratch
+TC_MS		:= TC_TMP + 32			; master secret
+TC_CAPK		:= TC_MS + 32			; client application key (16), IV (12)
+TC_CAPIV	:= TC_CAPK + 16
+TC_SAPK		:= TC_CAPIV + 12		; server application key (16), IV (12)
+TC_SAPIV	:= TC_SAPK + 16
+TC_NONCE2	:= TC_SAPIV + 12		; a nonce scratch (12)
+TC_TXSEQ	:= TC_NONCE2 + 16		; q: client app records sent
+TC_RXSEQ	:= TC_TXSEQ + 8			; q: server app records opened
+TC_TXGCM	:= TC_RXSEQ + 8			; client / server application contexts
+TC_RXGCM	:= TC_TXGCM + GCM_SIZE
+TC_FULL		:= TC_RXGCM + GCM_SIZE
 
 ; rdi = tc, rsi = in (the server's bytes), edx = in length, rcx = out:
 ; parses the ServerHello, computes the ECDH secret, derives the server
@@ -561,6 +572,174 @@ tlsc_verify:
 .out:
 	pop	r15
 	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; rdi = tc, rsi = out: completes the handshake. Writes the client
+; Finished as one encrypted record to out (eax = its length), and derives
+; the application traffic keys, leaving the client (TX) and server (RX)
+; application GCM contexts in tc, sequence numbers zero. Must be called
+; right after tlsc_verify (the transcript is through the server Finished).
+tlsc_finish:
+	push	rbx
+	push	r12
+	push	r13
+	sub	rsp,8
+	mov	rbx,rdi
+	mov	r13,rsi				; out
+	; TH through the server Finished
+	tc_snapshot				; -> TC_THX
+	; client Finished = HMAC(client finished key, TH)
+	lea	rdi,[rbx+TC_FIN]
+	lea	rsi,[rbx+TC_CFK]
+	mov	edx,32
+	lea	rcx,[rbx+TC_THX]
+	mov	r8d,32
+	call	hmac_sha256
+	; the inner plaintext: 20 00 00 14 | HMAC(32) | content type 22
+	mov	dword [r13+5],0x20000014		; handshake 0x14, u24 length 32
+	lea	rdi,[r13+5+4]
+	lea	rsi,[rbx+TC_FIN]
+	mov	ecx,32
+	rep	movsb
+	mov	byte [r13+5+36],22		; inner content type
+	; client handshake key/IV from the client handshake traffic secret
+	tls_label [rbx+TC_CAPK], 16, [rbx+TC_CHT], lbl_key
+	tls_label [rbx+TC_CAPIV], 12, [rbx+TC_CHT], lbl_iv
+	lea	rdi,[rbx+TC_GCM]
+	lea	rsi,[rbx+TC_CAPK]
+	call	gcm_init
+	; record header: application_data, length = 37 + 16 tag
+	mov	dword [r13],0x00030317
+	mov	word [r13+3],0x3500		; length 0x0035 = 53
+	lea	rdi,[rbx+TC_NONCE2]		; nonce (seq 0)
+	lea	rsi,[rbx+TC_CAPIV]
+	xor	edx,edx
+	call	tls_nonce
+	lea	rdi,[rbx+TC_GCM]
+	lea	rsi,[rbx+TC_NONCE2]
+	mov	rdx,r13
+	mov	ecx,5
+	lea	r8,[r13+5]
+	mov	r9d,37
+	call	gcm_seal
+	mov	r12d,58				; 5 header + 37 plaintext + 16 tag
+	; application keys: master secret, then c/s ap traffic
+	tls_label [rbx+TC_TMP], 32, [rbx+TC_HS], lbl_derived, [sha256_empty], 32
+	lea	rdi,[rbx+TC_MS]
+	lea	rsi,[rbx+TC_TMP]
+	mov	edx,32
+	lea	rcx,[tls13_zero32]
+	mov	r8d,32
+	call	hkdf_extract
+	tls_label [rbx+TC_TMP], 32, [rbx+TC_MS], lbl_c_ap, [rbx+TC_THX], 32
+	tls_label [rbx+TC_CAPK], 16, [rbx+TC_TMP], lbl_key
+	tls_label [rbx+TC_CAPIV], 12, [rbx+TC_TMP], lbl_iv
+	tls_label [rbx+TC_TMP], 32, [rbx+TC_MS], lbl_s_ap, [rbx+TC_THX], 32
+	tls_label [rbx+TC_SAPK], 16, [rbx+TC_TMP], lbl_key
+	tls_label [rbx+TC_SAPIV], 12, [rbx+TC_TMP], lbl_iv
+	lea	rdi,[rbx+TC_TXGCM]
+	lea	rsi,[rbx+TC_CAPK]
+	call	gcm_init
+	lea	rdi,[rbx+TC_RXGCM]
+	lea	rsi,[rbx+TC_SAPK]
+	call	gcm_init
+	mov	qword [rbx+TC_TXSEQ],0
+	mov	qword [rbx+TC_RXSEQ],0
+	mov	eax,r12d
+	add	rsp,8
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; rdi = tc, rsi = out, rdx = data, ecx = data length: seals the data as one
+; application_data record (content type 23) in out. eax = record length.
+tlsc_seal:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	mov	rbx,rdi
+	mov	r13,rsi				; out
+	mov	r14,rdx				; data
+	mov	r12d,ecx			; length
+	lea	rdi,[r13+5]			; plaintext = data | content type 23
+	mov	rsi,r14
+	mov	ecx,r12d
+	rep	movsb
+	mov	byte [r13+5+r12],23
+	lea	eax,[r12+17]			; + type + tag
+	mov	dword [r13],0x00030317
+	rol	ax,8
+	mov	[r13+3],ax
+	lea	rdi,[rbx+TC_NONCE2]
+	lea	rsi,[rbx+TC_CAPIV]
+	mov	rdx,[rbx+TC_TXSEQ]
+	call	tls_nonce
+	inc	qword [rbx+TC_TXSEQ]
+	lea	rdi,[rbx+TC_TXGCM]
+	lea	rsi,[rbx+TC_NONCE2]
+	mov	rdx,r13
+	mov	ecx,5
+	lea	r8,[r13+5]
+	lea	r9d,[r12+1]
+	call	gcm_seal
+	lea	eax,[r12+22]			; 5 + data + 1 + 16
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; rdi = tc, rsi = record (a full TLS record): opens it in place with the
+; server application key. eax = 1 and rsi = plaintext, ecx = its length,
+; r8d = content type on success; eax = 0 on a bad tag or short record.
+tlsc_open:
+	push	rbx
+	push	r12
+	push	r13
+	mov	rbx,rdi
+	mov	r12,rsi				; record
+	movzx	r13d,word [r12+3]
+	rol	r13w,8
+	cmp	r13d,17
+	jb	.bad
+	lea	rdi,[rbx+TC_NONCE2]
+	lea	rsi,[rbx+TC_SAPIV]
+	mov	rdx,[rbx+TC_RXSEQ]
+	call	tls_nonce
+	inc	qword [rbx+TC_RXSEQ]
+	lea	rdi,[rbx+TC_RXGCM]
+	lea	rsi,[rbx+TC_NONCE2]
+	mov	rdx,r12
+	mov	ecx,5
+	lea	r8,[r12+5]
+	lea	r9d,[r13-16]
+	call	gcm_open
+	test	eax,eax
+	jz	.bad
+	; strip padding and the content type
+	lea	rsi,[r12+5]
+	lea	rdi,[rsi+r13-16-1]
+.unpad:
+	cmp	rdi,rsi
+	jb	.bad
+	movzx	r8d,byte [rdi]
+	test	r8d,r8d
+	jnz	@f
+	dec	rdi
+	jmp	.unpad
+@@:
+	mov	rcx,rdi
+	sub	rcx,rsi
+	mov	eax,1
+	jmp	.out
+.bad:
+	xor	eax,eax
+.out:
 	pop	r13
 	pop	r12
 	pop	rbx

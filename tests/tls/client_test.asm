@@ -33,8 +33,9 @@ bss
 	g_fd		dd ?
 	g_addr:		rb 16
 	g_ch:		rb SBUF			; the ClientHello
-	g_in:		rb SBUF			; the server's flight
+	g_in:		rb SBUF			; the server's flight / responses
 	g_out:		rb SBUF			; the decrypted handshake
+	g_send:		rb SBUF			; the client Finished + the GET
 	g_pair:		rb 2
 end bss
 
@@ -130,8 +131,71 @@ start:
 	lea	rsi,[g_out]
 	mov	edx,eax
 	call	tlsc_verify
-	mov	[g_pair],al			; 1 = verified, 0 = not
-	add	byte [g_pair],'0'
+	test	eax,eax
+	jz	.no
+	; complete the handshake: the client Finished + application keys
+	lea	rdi,[g_tc]
+	lea	rsi,[g_send]
+	call	tlsc_finish
+	mov	r12d,eax			; the Finished record length
+	; seal the request as an application_data record right after it
+	lea	rdi,[g_tc]
+	lea	rsi,[g_send+r12]
+	lea	rdx,[.get]
+	mov	ecx,.get.len
+	call	tlsc_seal
+	add	r12d,eax
+	mov	edi,[g_fd]
+	lea	rsi,[g_send]
+	mov	edx,r12d
+	sys	SYS_write
+	; read the server's response (session tickets, then the HTTP page)
+	xor	ebx,ebx
+.read2:
+	mov	edi,[g_fd]
+	lea	rsi,[g_in+rbx]
+	mov	edx,SBUF
+	sub	edx,ebx
+	jz	.scan
+	xor	eax,eax
+	syscall
+	test	rax,rax
+	jle	.scan
+	add	rbx,rax
+	cmp	rbx,16384
+	jb	.read2
+.scan:
+	; walk the records; open each with the server application key and look
+	; for an application_data record whose plaintext is an HTTP response
+	xor	r13d,r13d			; offset into g_in
+.next:
+	lea	rax,[r13+5]
+	cmp	rax,rbx
+	ja	.no				; no full record left
+	movzx	ecx,word [g_in+r13+3]
+	rol	cx,8
+	lea	rax,[r13+rcx+5]			; end of this record
+	cmp	rax,rbx
+	ja	.no
+	lea	rdi,[g_tc]
+	lea	rsi,[g_in+r13]
+	push	rax				; next offset
+	call	tlsc_open
+	pop	r13				; advance past this record
+	test	eax,eax
+	jz	.no				; a bad tag ends it
+	cmp	r8d,23				; application_data?
+	jne	.next
+	cmp	ecx,4
+	jb	.next
+	cmp	dword [rsi],'HTTP'
+	jne	.next
+	; success: the encrypted channel carried an HTTP response
+	mov	byte [g_pair],'1'
+	jmp	.print
+.no:
+	mov	byte [g_pair],'0'
+.print:
 	mov	edi,[g_out_fd]
 	lea	rsi,[g_pair]
 	mov	edx,1
@@ -139,6 +203,8 @@ start:
 	call	out_flush
 	xor	edi,edi
 	sys	SYS_exit
+.get		db 'GET / HTTP/1.0',13,10,13,10
+.get.len	:= $ - .get
 .sni		db 'localhost'
 .sni.len	:= $ - .sni
 
