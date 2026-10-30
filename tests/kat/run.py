@@ -337,6 +337,19 @@ try:
         check(f"tls1.2 prf secret {len(secret)} seed {len(seed)} out {n}",
               _prf(secret, seed, n), p_sha256_ref(secret, seed, n).hex())
 
+    # TLS 1.2 key schedule: master_secret, key_block and the Finished
+    # verify_data, with the RFC 5246 seed orders
+    pm, cr, sr, th = _os.urandom(32), _os.urandom(32), _os.urandom(32), _os.urandom(32)
+    master = p_sha256_ref(pm, b"master secret" + cr + sr, 48)
+    kb = p_sha256_ref(master, b"key expansion" + sr + cr, 40)
+    cfin = p_sha256_ref(master, b"client finished" + th, 12)
+    sfin = p_sha256_ref(master, b"server finished" + th, 12)
+    got = run(b"r", pm + cr + sr + th)
+    check("tls1.2 master_secret", got[:96], master.hex())
+    check("tls1.2 key_block (order server|client random)", got[96:176], kb.hex())
+    check("tls1.2 client Finished verify_data", got[176:200], cfin.hex())
+    check("tls1.2 server Finished verify_data", got[200:224], sfin.hex())
+
     # TLS client: a well-formed ClientHello (offering x25519 + secp256r1,
     # TLS_AES_128_GCM_SHA256, ecdsa_secp256r1_sha256, ALPN, SNI)
     def _parse_ch(sni):

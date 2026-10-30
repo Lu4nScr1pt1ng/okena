@@ -114,6 +114,8 @@ start:
 	je	.cert_pem
 	cmp	al,'R'
 	je	.tls_prf
+	cmp	al,'r'
+	je	.tls12_ks
 	cmp	al,'g'
 	je	.gcm
 	cmp	al,'G'
@@ -521,6 +523,35 @@ start:
 	call	p_sha256
 	lea	rdi,[g_out]
 	mov	esi,r13d
+	jmp	.print
+.tls12_ks:				; premaster(32) cr(32) sr(32) hash(32)
+	mov	r15,rsi				; input
+	lea	rdi,[g_out]			; master_secret -> g_out[0..48]
+	lea	rsi,[r15]
+	mov	edx,32
+	lea	rcx,[r15+32]			; client random
+	lea	r8,[r15+64]			; server random
+	call	tls12_master
+	lea	rdi,[g_out+48]			; key_block(40) -> g_out[48..88]
+	mov	esi,40
+	lea	rdx,[g_out]			; master
+	lea	rcx,[r15+64]			; server random
+	lea	r8,[r15+32]			; client random
+	call	tls12_key_block
+	lea	rdi,[g_out+88]			; client finished verify_data
+	lea	rsi,[g_out]
+	lea	rdx,[tls12_lbl_cfin]
+	mov	ecx,15
+	lea	r8,[r15+96]			; transcript hash
+	call	tls12_finished
+	lea	rdi,[g_out+100]			; server finished verify_data
+	lea	rsi,[g_out]
+	lea	rdx,[tls12_lbl_sfin]
+	mov	ecx,15
+	lea	r8,[r15+96]
+	call	tls12_finished
+	lea	rdi,[g_out]
+	mov	esi,112
 	jmp	.print
 .pem_fail:
 	mov	byte [g_out],0
