@@ -91,6 +91,23 @@ r = subprocess.run([str(BIN), "-c", str(conf)], capture_output=True, text=True, 
 check("without kTLS, tls on a tcp listener is refused at the start", r.returncode != 0
       and "needs kernel TLS" in r.stderr, r.stderr.strip()[:160])
 
+# several certificates: each names its key
+for name, block, want in [
+    ("two certs with key=", f"cert {tmp / 'ec.pem'} key={tmp / 'ec.key'}; cert {tmp / 'p8.pem'} key={tmp / 'p8.key'}", None),
+    ("two certs, one without key=", f"cert {tmp / 'ec.pem'} key={tmp / 'ec.key'}; cert {tmp / 'p8.pem'}; key {tmp / 'p8.key'}",
+     "each names its key"),
+    ("a key line no cert uses", f"cert {tmp / 'ec.pem'} key={tmp / 'ec.key'}; key {tmp / 'p8.key'}", "belongs to none"),
+    ("a key= that does not match its cert", f"cert {tmp / 'ec.pem'} key={tmp / 'p8.key'}", "does not belong to the certificate"),
+]:
+    c = tmp / "multi.conf"
+    c.write_text(f"http 127.0.0.1:18443 {{\n    tls {{ {block} }}\n    route /* {{ to 127.0.0.1:1 }}\n}}\n")
+    r = subprocess.run([str(BIN), "check", str(c)], capture_output=True, text=True)
+    out = (r.stdout + r.stderr).strip()
+    if want is None:
+        check(f"tls: {name}", r.returncode == 0, out)
+    else:
+        check(f"tls refused: {name}", r.returncode != 0 and want in out, out.splitlines()[0] if out else "")
+
 # okena { ticket_keys FILE }: one key a line, 32 bytes of base64, at most two
 import base64, os
 good = tmp / "tickets.key"

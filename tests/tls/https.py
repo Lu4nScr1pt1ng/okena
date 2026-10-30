@@ -13,6 +13,7 @@ import shutil
 import signal
 import socket
 import ssl
+import struct
 import subprocess
 import sys
 import tempfile
@@ -25,6 +26,7 @@ ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
 USER = len(sys.argv) > 2 and sys.argv[2] == "user"   # records sealed in user space, not kTLS
 BASE = 27000 + os.getpid() % 99 * 20 + (5 if ENGINE == "epoll" else 0) + (10 if USER else 0)
 BACK, LST, ECHO, TLST = BASE, BASE + 1, BASE + 2, BASE + 3
+SNIL = BASE + 8
 tmp = pathlib.Path(tempfile.mkdtemp())
 atexit.register(shutil.rmtree, tmp, True)
 failures = 0
@@ -165,8 +167,15 @@ def main():
     threading.Thread(target=echo_backend, daemon=True).start()
     tls = f"tls {{ cert {tmp / 'chain.pem'}; key {tmp / 'leaf.key'} }}"
     tcp = f"tcp 127.0.0.1:{TLST} {{\n    {tls}\n    to 127.0.0.1:{ECHO}\n}}\n"
+    for n, cn, san in (("a", "cert-a", "DNS:a.test,DNS:A2.Test"), ("b", "cert-b", "DNS:*.b.test")):
+        sh("openssl", "ecparam", "-genkey", "-name", "prime256v1", "-noout", "-out", f"{n}.key")
+        sh("openssl", "req", "-new", "-x509", "-key", f"{n}.key", "-subj", f"/CN={cn}", "-addext",
+           f"subjectAltName={san}", "-days", "2", "-out", f"{n}.pem")
+    sni = (f"http 127.0.0.1:{SNIL} {{\n    tls {{\n        cert {tmp / 'a.pem'} key={tmp / 'a.key'}\n"
+           f"        cert {tmp / 'b.pem'} key={tmp / 'b.key'}\n        cert {tmp / 'chain.pem'} key={tmp / 'leaf.key'}\n"
+           f"    }}\n    route /* {{ to 127.0.0.1:{BACK} }}\n}}\n")
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 2; io_engine {ENGINE} }}
+    conf.write_text(sni + f"""okena {{ workers 2; io_engine {ENGINE} }}
 http 127.0.0.1:{LST} {{
     {tls}
     timeout {{ header 1s }}
@@ -205,6 +214,42 @@ http 127.0.0.1:{LST} {{
         n = 8 << 20
         start, got = request(t, "GET", f"/big/{n}")
         check("an 8 MiB response arrives intact", got == (b"0123456789abcdef" * (n // 16 + 1))[:n], f"{len(got)}")
+
+    # SNI: the certificate that names the host (exactly, or *.parent), else the first
+    def subject(port, name):
+        c = ssl.create_default_context()
+        c.check_hostname = False
+        c.verify_mode = ssl.CERT_NONE
+        s = socket.create_connection(("127.0.0.1", port), timeout=5)
+        with c.wrap_socket(s, server_hostname=name) as t:
+            der = t.getpeercert(binary_form=True)
+        from cryptography import x509 as x
+        return x.load_der_x509_certificate(der).subject.rfc4514_string()
+    got = {n: subject(SNIL, n) for n in ("a.test", "A2.TEST", "x.b.test", "y.x.b.test", "other.test", None)}
+    want = {"a.test": "CN=cert-a", "A2.TEST": "CN=cert-a", "x.b.test": "CN=cert-b", "y.x.b.test": "CN=cert-a",
+            "other.test": "CN=cert-a", None: "CN=cert-a"}
+    check("SNI picks the certificate: exact (any case), *.parent one label deep, else the first", got == want, str(got))
+    try:
+        s = socket.create_connection(("127.0.0.1", SNIL), timeout=5)
+        with context().wrap_socket(s, server_hostname="okena.test") as t:
+            verified = t.version() == "TLSv1.3"
+    except ssl.SSLError as e:
+        verified = False
+    check("SNI: okena.test, named by the third certificate only, verifies", verified)
+
+    # Host must be named by the certificate SNI chose (domain fronting: 421)
+    def host_status(sni, host):
+        c = ssl.create_default_context()
+        c.check_hostname = False
+        c.verify_mode = ssl.CERT_NONE
+        s = socket.create_connection(("127.0.0.1", SNIL), timeout=5)
+        with c.wrap_socket(s, server_hostname=sni) as t:
+            t.sendall(f"GET /h HTTP/1.1\r\nHost: {host}\r\n\r\n".encode())
+            return int(read_response(t)[0].split()[1])
+    got = [host_status(*p) for p in (("a.test", "a2.test:443"), ("x.b.test", "y.b.test"), ("a.test", "x.b.test"),
+                                    ("x.b.test", "a.test"), (None, "x.b.test"))]
+    check("SNI and Host: the same certificate 200, another's 421, no SNI unchecked",
+          got == [200, 200, 421, 421, 200], str(got))
 
     # session tickets: resumed, on whichever worker takes the connection
     def resumed_get(sess, target):
@@ -387,6 +432,36 @@ http 127.0.0.1:{LST} {{
         for th in ths:
             th.join()
         check("tcp listener: 32 clients at once", sum(res) == 32, f"{sum(res)}/32")
+        # clients that leave right after their Finished: the kernel refuses the
+        # TLS ULP on a socket no longer established (ENOTCONN); that closes
+        # the connection, it must not make the worker give up kTLS
+        for _ in range(6):
+            inc, outg = ssl.MemoryBIO(), ssl.MemoryBIO()
+            obj = context(alpn=None).wrap_bio(inc, outg, server_hostname="okena.test")
+            s = socket.create_connection(("127.0.0.1", TLST), timeout=5)
+            try:
+                obj.do_handshake()
+            except ssl.SSLWantReadError:
+                pass
+            s.sendall(outg.read())
+            while True:
+                inc.write(s.recv(1 << 16))
+                try:
+                    obj.do_handshake()
+                    break
+                except ssl.SSLWantReadError:
+                    pass
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+            s.sendall(outg.read())
+            s.close()                       # a reset, right behind the Finished
+        res.clear()
+        ths = [threading.Thread(target=one, args=(i,)) for i in range(20)]
+        for th in ths:
+            th.start()
+        for th in ths:
+            th.join()
+        check("tcp listener: clients leaving at their Finished do not cost the worker kTLS",
+              sum(res) == 20, f"{sum(res)}/20")
 
     if ENGINE == "io_uring" and not USER:
         # ticket keys rotate (here every second): a ticket resumes within a

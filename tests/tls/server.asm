@@ -208,6 +208,11 @@ profile:
 	add	rsp,16
 	ret
 
+; The handshake asks for the certificate of a name: one certificate here.
+tls_cert_for_sni:
+	mov	rax,rdi
+	ret
+
 ; edx = bytes from g_out: written, or CF.
 send_out:
 	lea	rsi,[g_out]

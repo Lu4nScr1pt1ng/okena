@@ -1303,21 +1303,72 @@ check_semantics:
 check_tls:
 	push	rbx
 	push	r12
+	push	r13
+	push	r14
+	push	r15
 	mov	ecx,DIR_TLS
 	call	find_child
 	test	rax,rax
 	jz	.done
 	mov	rbx,rax
 	mov	rdi,rbx
-	mov	ecx,DIR_CERT
-	call	find_child
-	test	rax,rax
-	jz	.missing
-	mov	rdi,rbx
 	mov	ecx,DIR_KEY
 	call	find_child
+	mov	r15,rax				; the block's key line, or 0
+	; the certs: how many, how many without key=, the first of those
+	xor	r12d,r12d
+	xor	r13d,r13d
+	xor	r14d,r14d
+	lea	rdx,[dir_table + D_SIZE*DIR_CERT]
+	mov	rax,[rbx+N_CHILD]
+.cert:
 	test	rax,rax
-	jnz	.done
+	jz	.counted
+	cmp	[rax+N_DEF],rdx
+	jne	.next
+	inc	r12d
+	cmp	dword [rax+N_ARGC],1
+	ja	.next				; key=FILE on the line
+	inc	r13d
+	test	r14,r14
+	jnz	.next
+	mov	r14,rax
+.next:
+	mov	rax,[rax+N_NEXT]
+	jmp	.cert
+.counted:
+	test	r12d,r12d
+	jz	.missing
+	test	r13d,r13d
+	jz	.all_keyed
+	cmp	r12d,1
+	ja	.unkeyed
+	test	r15,r15
+	jz	.missing
+	jmp	.done
+.all_keyed:
+	test	r15,r15
+	jz	.done
+	mov	rdi,[r15+N_NAME]
+	mov	esi,[r15+N_NLEN]
+	mov	edx,[r15+N_LINE]
+	call	cfg_error
+	out_lit 'every cert here names its key (key=): this key line belongs to none'
+	call	cfg_diag_end
+	call	cfg_error_limit
+	jmp	.done
+.unkeyed:
+	mov	rdi,[r14+N_NAME]
+	mov	esi,[r14+N_NLEN]
+	mov	edx,[r14+N_LINE]
+	call	cfg_error
+	out_lit 'with several certificates, each names its key'
+	call	cfg_diag_end
+	call	cfg_note
+	out_lit 'help: `cert /etc/okena/example.pem key=/etc/okena/example.key`'
+	call	cfg_note_end
+	call	cfg_error_limit
+	jmp	.done
 .missing:
 	mov	rdi,[rbx+N_NAME]
 	mov	esi,[rbx+N_NLEN]
@@ -1330,6 +1381,9 @@ check_tls:
 	call	cfg_note_end
 	call	cfg_error_limit
 .done:
+	pop	r15
+	pop	r14
+	pop	r13
 	pop	r12
 	pop	rbx
 	ret

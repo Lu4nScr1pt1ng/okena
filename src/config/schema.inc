@@ -125,6 +125,7 @@ enumdef e_pp_version, 'v1', 'v2'
 
 keysdef k_drain, 'delay', T_DURATION, 'timeout', T_DURATION
 keysdef k_server, 'weight', T_WEIGHT
+keysdef k_cert, 'key', T_ANY
 keysdef k_health, 'every', T_DURATION, 'timeout', T_DURATION, 'rise', T_COUNT, 'fall', T_COUNT, \
 	'expect', T_STATUSES, 'host', T_HOSTNAME
 keysdef k_connect, 'timeout', T_DURATION, 'max', T_FUTURE, 'idle', T_FUTURE, \
@@ -173,7 +174,7 @@ dirdef DIR_REWRITE, 'rewrite',    M_ROUTE,   0,           F_UNIQUE, 4, 4, e_rewr
 dirdef DIR_RHEADER, 'header',      M_ROUTE,   0,           0, 2, 3, e_header_ops, T_ANY, 0
 dirdef DIR_RRESPONSE, 'response',  M_ROUTE,   0,           0, 3, 4, e_response_what, T_ANY, 0
 dirdef DIR_TLS, 'tls',          M_TCP or M_HTTP, CTX_TLS,   F_BLOCK_REQ or F_UNIQUE, 0, 0, T_NONE, T_NONE, 0
-dirdef DIR_CERT, 'cert',        M_TLS,     0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
+dirdef DIR_CERT, 'cert',        M_TLS,     0,           0, 1, 1, T_ANY, T_NONE, k_cert
 dirdef DIR_KEY, 'key',          M_TLS,     0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
 dirdef DIR_ACCESS_LOG, 'access_log', M_HTTP,   0,           F_UNIQUE, 1, 1, T_LOGDEST, T_NONE, 0
 dirdef DIR_HEADER, 'header',      M_TIMEOUT, 0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0

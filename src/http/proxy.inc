@@ -69,7 +69,9 @@ H_UDST		:= 416		; q: where the waiting receive goes
 H_UROOM		:= 424		; d: its room
 H_TXLEN		:= 428		; d: plaintext still to seal
 H_TXP		:= 432		; q: and where it is
-assert H_TXP + 8 <= 1 shl H_SHIFT
+H_SNICERT	:= 440		; q: the certificate the client's SNI chose, 0 = no SNI
+H_ULPERR	:= 448		; d: io_uring: what setting the TLS ULP returned
+assert H_ULPERR + 4 <= 1 shl H_SHIFT
 assert H_BUF + 8 <= 1 shl H_SHIFT
 HB_LTEXT_M	:= HB_UP + H_UP_CAP	; access log: method
 H_LTEXT_M_CAP	:= 16
@@ -202,6 +204,7 @@ http_start:
 	mov	[r15+H_INOFF],eax
 	mov	[r15+H_FLAGS],eax
 	mov	[r15+H_UTLS],eax
+	mov	[r15+H_SNICERT],rax
 	mov	edi,ebx
 	mov	esi,PH_HEAD
 	call	ph_arm
@@ -370,6 +373,8 @@ http_request:
 	je	@f
 	or	dword [r15+H_FLAGS],HX_CONTINUE
 @@:
+	call	http_sni_host_check
+	jc	.misdirected
 	call	http_route			; eax = route entry, -1 none, -2 unsafe path
 	cmp	eax,-1
 	je	.no_route
@@ -417,6 +422,9 @@ http_request:
 	jmp	http_error
 .no_route:
 	mov	edi,404
+	jmp	http_error
+.misdirected:
+	mov	edi,421				; this connection's certificate is another host's
 	jmp	http_error
 .parse_error_400:
 	mov	edi,400
@@ -3134,6 +3142,7 @@ macro reasons pairs&
 end macro
 reasons 301,'Moved Permanently', 302,'Found', 303,'See Other', 307,'Temporary Redirect', \
 	308,'Permanent Redirect', 400,'Bad Request', 404,'Not Found', 405,'Method Not Allowed', 408,'Request Timeout', \
+	421,'Misdirected Request', \
 	431,'Request Header Fields Too Large', 501,'Not Implemented', 502,'Bad Gateway', \
 	503,'Service Unavailable', 504,'Gateway Timeout', 505,'HTTP Version Not Supported'
 

@@ -248,6 +248,9 @@ http_tls_fin_in:
 	jne	http_tls_close			; forged, or an alert
 	cmp	edx,[r15+H_INLEN]
 	jne	http_tls_close
+	mov	rax,[r15+H_BUF]
+	mov	rax,[rax+HB_TS+TS_CERT]		; what SNI chose: Host is checked against it
+	mov	[r15+H_SNICERT],rax
 
 	; The keys for the kernel: struct tls12_crypto_info_aes_gcm_128
 	; { version, cipher, iv[8] (the IV's last 8), key[16], salt[4] (its
@@ -269,7 +272,8 @@ http_tls_fin_in:
 	; io_uring: three socket commands, linked: the ULP, TX, then RX,
 	; whose completion goes on
 	mov	dword [r15+H_STATE],HS_TLS_KTLS
-	mov	edi,OP_S_OPT
+	mov	dword [r15+H_ULPERR],0
+	mov	edi,OP_H_ULP
 	mov	r9d,IPPROTO_TCP
 	mov	r10d,TCP_ULP
 	lea	r11,[ktls_ulp]
@@ -343,8 +347,10 @@ http_tls_fin_in:
 	mov	eax,SYS_setsockopt
 	syscall
 	pop	rdi
+	cmp	eax,-ENOENT
+	je	.refused			; no tls module: records here from now on
 	test	eax,eax
-	jnz	.refused
+	jnz	http_tls_close			; this connection is gone (ENOTCONN...)
 	push	rdi
 	mov	esi,SOL_TLS
 	mov	edx,TLS_TX
@@ -382,8 +388,31 @@ on_h_ktls:
 	jns	http_tls_established
 	cmp	r14,-ECANCELED
 	jne	http_tls_close			; RX alone failed: TX is the kernel's
-	mov	dword [g_no_ktls],1		; the ULP or TX was refused
+	mov	eax,[r15+H_ULPERR]
+	cmp	eax,-ENOENT
+	je	.no_module
+	test	eax,eax
+	jnz	http_tls_close			; the ULP failed for this connection only
+.no_module:					; (ENOTCONN: the client left); else TX refused
+	mov	dword [g_no_ktls],1
 	jmp	http_utls_start
+.closing:
+	mov	edi,ebx
+	jmp	session_maybe_free
+.out:
+	ret
+
+; completion of the TLS ULP (io_uring): its result, for on_h_ktls (the
+; chain's last completion) to tell a kernel without kTLS (ENOENT) from a
+; connection already gone (ENOTCONN).
+on_h_ulp:
+	call	sess_complete
+	jc	.out
+	cmp	dword [rax+S_STATE],ST_CLOSING
+	je	.closing
+	h_rec
+	mov	[r15+H_ULPERR],r14d
+	ret
 .closing:
 	mov	edi,ebx
 	jmp	session_maybe_free
@@ -679,3 +708,48 @@ utls_tx_done:
 	test	rax,rax
 	jns	utls_tx_step
 	utls_deliver 4
+
+; ebx = session, r15 = record, g_hm = a request: CF when the client sent
+; SNI and the certificate it got does not name the request's Host
+; (domain fronting, or a connection reused for another host): 421.
+; Keeps rbx and r12-r15.
+http_sni_host_check:
+	mov	rax,[r15+H_SNICERT]
+	test	rax,rax
+	jz	.ok
+	lea	rcx,[g_hm]
+	mov	edx,[rcx+HM_HOST]
+	cmp	edx,-1
+	je	.ok
+	imul	rdx,rdx,HF_SIZE
+	lea	rdx,[rcx+HM_HDRS+rdx]
+	mov	rsi,[rdx+HF_VALUE]
+	mov	edx,[rdx+HF_VLEN]
+	mov	ecx,edx				; without the port
+@@:
+	test	ecx,ecx
+	jz	.portless
+	dec	ecx
+	cmp	byte [rsi+rcx],']'
+	je	.portless
+	cmp	byte [rsi+rcx],':'
+	jne	@b
+	mov	edx,ecx
+.portless:
+	test	edx,edx
+	jz	.ok
+	cmp	byte [rsi+rdx-1],'.'
+	jne	@f
+	dec	edx
+@@:
+	push	rax
+	mov	rdi,rax
+	call	tls_cert_named
+	pop	rcx
+	cmp	rax,rcx
+	je	.ok
+	stc
+	ret
+.ok:
+	clc
+	ret

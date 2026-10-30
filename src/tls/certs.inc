@@ -432,9 +432,11 @@ key_pkcs8:
 ; rdi = a directive node with one path argument: read its file. rax =
 ; contents, rdx = end; exits with a diagnostic when it cannot be read.
 tls_read_arg:
+	mov	rdi,[rdi+N_ARGS]
+; rdi = an argument (a path): the same.
+tls_read_val:
 	push	rbx
-	mov	rbx,rdi
-	mov	rax,[rbx+N_ARGS]
+	mov	rax,rdi
 	mov	rsi,[rax+A_VAL]
 	mov	ecx,[rax+A_VLEN]
 	cmp	ecx,1000
@@ -468,7 +470,10 @@ tls_read_arg:
 
 ; rdi = node: begin a diagnostic at its first argument.
 tls_error_at:
-	mov	rax,[rdi+N_ARGS]
+	mov	rdi,[rdi+N_ARGS]
+; rdi = an argument: the error points at it.
+tls_error_arg:
+	mov	rax,rdi
 	push	rax
 	mov	rdi,rax
 	call	arg_value_span
@@ -481,29 +486,85 @@ tls_error_end:
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process
 
-; rdi = listener node. eax = its tls entry + 1, or 0 without a tls block.
-TC_CERT		:= 0
-TC_KEY		:= 8
+; rdi = listener node. eax = its first tls entry + 1 (the default
+; certificate; the others follow it, one per cert line), or 0 without a
+; tls block.
 compile_tls:
 	push	rbx
 	push	r12
 	push	r13
 	push	r14
-	push	r15
-	sub	rsp,16
+	sub	rsp,8
 	mov	ecx,DIR_TLS
 	call	find_child
 	test	rax,rax
 	jz	.none
-	mov	r12,rax
-	mov	rdi,r12
-	mov	ecx,DIR_CERT
-	call	find_child
-	mov	[rsp+TC_CERT],rax
+	mov	r12,rax				; the tls block
+	mov	r13d,[g_plan_tls]		; the group: its first entry
 	mov	rdi,r12
 	mov	ecx,DIR_KEY
 	call	find_child
-	mov	[rsp+TC_KEY],rax
+	xor	r14d,r14d			; the block's key line, for a lone cert
+	test	rax,rax
+	jz	@f
+	mov	r14,[rax+N_ARGS]
+@@:
+	lea	rdx,[dir_table + D_SIZE*DIR_CERT]
+	mov	rbx,[r12+N_CHILD]
+.cert:
+	test	rbx,rbx
+	jz	.done
+	cmp	[rbx+N_DEF],rdx
+	jne	.next
+	; key=FILE on the line, else the block's key
+	mov	rsi,r14
+	mov	rax,[rbx+N_ARGS]
+	mov	ecx,[rbx+N_ARGC]
+@@:
+	dec	ecx
+	jz	.key_found
+	add	rax,A_SIZE
+	cmp	dword [rax+A_KIND],ARG_KV
+	jne	@b
+	mov	rsi,rax
+.key_found:
+	mov	rdi,[rbx+N_ARGS]
+	mov	edx,r13d
+	push	rdx
+	call	compile_cert
+	pop	rdx
+	lea	rdx,[dir_table + D_SIZE*DIR_CERT]
+.next:
+	mov	rbx,[rbx+N_NEXT]
+	jmp	.cert
+.done:
+	lea	eax,[r13+1]
+	jmp	.out
+.none:
+	xor	eax,eax
+.out:
+	add	rsp,8
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; rdi = the cert line's path, rsi = its key's path (arguments), edx = the
+; group (its listener's first entry): one tls entry, its names indexed.
+TC_CERT		:= 0
+TC_KEY		:= 8
+TC_GROUP	:= 16
+compile_cert:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	sub	rsp,32
+	mov	[rsp+TC_CERT],rdi
+	mov	[rsp+TC_KEY],rsi
+	mov	[rsp+TC_GROUP],edx
 	mov	ecx,[g_plan_tls]
 	cmp	ecx,MAX_TLS
 	jae	plan_too_many
@@ -512,8 +573,10 @@ compile_tls:
 	lea	r13,[g_tls+r13]
 	push	rcx
 	; the chain
+	mov	eax,[rsp+8+TC_GROUP]
+	mov	[r13+TL_GROUP],eax
 	mov	rdi,[rsp+8+TC_CERT]
-	call	tls_read_arg
+	call	tls_read_val
 	mov	r14,rax				; text
 	mov	r15,rdx				; its end
 	mov	eax,[g_tls_used]
@@ -540,6 +603,17 @@ compile_tls:
 	pop	rax
 	test	ecx,ecx
 	jnz	.cert_kind
+	; its names (subjectAltName dNSName), for SNI
+	push	rax				; the DER's length
+	mov	eax,[rsp+8]			; this entry's index
+	mov	[g_tls_cur_tl],eax
+	mov	eax,[rsp+16+TC_GROUP]
+	mov	[g_tls_cur_group],eax
+	lea	rsi,[g_tls_der]
+	mov	edx,[rsp]
+	call	cert_names
+	pop	rax
+	jc	.names_full
 .append:
 	; uint24 length | DER | uint16 0 (no extensions)
 	mov	ecx,[g_tls_used]
@@ -577,7 +651,7 @@ compile_tls:
 	rep	movsb
 	; the key
 	mov	rdi,[rsp+8+TC_KEY]
-	call	tls_read_arg
+	call	tls_read_val
 	mov	r14,rax
 	mov	r15,rdx
 	mov	rsi,r14
@@ -621,12 +695,7 @@ compile_tls:
 	mov	ecx,32
 	call	secure_zero
 	pop	rax
-	inc	eax
-	jmp	.out
-.none:
-	xor	eax,eax
-.out:
-	add	rsp,16
+	add	rsp,32
 	pop	r15
 	pop	r14
 	pop	r13
@@ -636,7 +705,7 @@ compile_tls:
 ; diagnostics: at the cert line or the key line
 macro tls_fail which*, text&
 	mov	rdi,[rsp+8+which]
-	call	tls_error_at
+	call	tls_error_arg
 	out_lit text
 	jmp	tls_error_end
 end macro
@@ -646,6 +715,8 @@ end macro
 	tls_fail TC_CERT, 'no CERTIFICATE block in this file (PEM expected)'
 .too_big:
 	tls_fail TC_CERT, 'the certificate chains of this configuration pass 1 MiB'
+.names_full:
+	tls_fail TC_CERT, 'the certificates of this configuration name more than 4096 hosts'
 .chain_big:
 	tls_fail TC_CERT, 'this certificate chain passes 20 KiB (send the server certificate and its intermediates, not the root)'
 .cert_kind:
@@ -830,4 +901,336 @@ tls_tickets_apply:
 .kept:
 	pop	rbx
 .done:
+	ret
+
+; ---------------------------------------------------------------- SNI
+
+oid_subject_alt_name	:= 0x111D55		; 2.5.29.17, its three content bytes
+
+bss
+	align 8
+	g_tls_ntab:	rb TN_CAP * TN_SIZE
+	g_tls_nstore:	rb TN_STORE
+	g_tls_nused	dd ?			; bytes in g_tls_nstore
+	g_tls_ncount	dd ?			; names
+	g_tls_cur_tl	dd ?			; while compiling: the entry being read
+	g_tls_cur_group	dd ?
+end bss
+
+; rsi = name (lowercase), ecx = length, edx = group: eax = its hash
+; (FNV-1a mixed with the group, never 0). Keeps rsi, rcx, rdx.
+tls_name_hash:
+	push	rcx
+	push	rsi
+	mov	eax,0x811C9DC5
+.byte:
+	test	ecx,ecx
+	jz	.mixed
+	movzx	r8d,byte [rsi]
+	xor	eax,r8d
+	imul	eax,eax,0x01000193
+	inc	rsi
+	dec	ecx
+	jmp	.byte
+.mixed:
+	imul	r8d,edx,0x9E3779B1
+	xor	eax,r8d
+	or	eax,eax
+	jnz	@f
+	inc	eax
+@@:
+	pop	rsi
+	pop	rcx
+	ret
+
+; rsi = name (lowercase), ecx = length, edx = group: eax = its entry, or
+; -1. Keeps rsi, rcx, rdx.
+tls_name_find:
+	push	rbx
+	push	r12
+	call	tls_name_hash
+	mov	r12d,eax
+	mov	ebx,eax
+.probe:
+	and	ebx,TN_CAP - 1
+	imul	r9d,ebx,TN_SIZE
+	lea	r9,[g_tls_ntab+r9]
+	mov	eax,[r9+TN_HASH]
+	test	eax,eax
+	jz	.none
+	cmp	eax,r12d
+	jne	.next
+	cmp	[r9+TN_LEN],ecx
+	jne	.next
+	movzx	eax,word [r9+TN_GROUP]
+	cmp	eax,edx
+	jne	.next
+	push	rsi
+	push	rcx
+	push	rdi
+	mov	edi,[r9+TN_OFF]
+	lea	rdi,[g_tls_nstore+rdi]
+	repe	cmpsb
+	pop	rdi
+	pop	rcx
+	pop	rsi
+	jne	.next
+	movzx	eax,word [r9+TN_TL]
+	jmp	.out
+.next:
+	inc	ebx
+	jmp	.probe
+.none:
+	mov	eax,-1
+.out:
+	pop	r12
+	pop	rbx
+	ret
+
+; rsi = a dNSName, ecx = its length: indexed for g_tls_cur_group, naming
+; g_tls_cur_tl. A name the group has already keeps its first certificate.
+; CF when the table is full.
+tls_name_add:
+	test	ecx,ecx
+	jz	.ok
+	cmp	ecx,253
+	ja	.ok				; not a host name
+	cmp	dword [g_tls_ncount],TN_CAP / 2
+	jae	.full
+	mov	eax,[g_tls_nused]
+	lea	edx,[rax+rcx]
+	cmp	edx,TN_STORE
+	ja	.full
+	; lowercase into the store
+	lea	rdi,[g_tls_nstore+rax]
+	push	rdi
+	push	rcx
+@@:
+	mov	al,[rsi]
+	lea	edx,[rax-'A']
+	cmp	dl,25
+	ja	.lower
+	or	al,0x20
+.lower:
+	mov	[rdi],al
+	inc	rsi
+	inc	rdi
+	dec	ecx
+	jnz	@b
+	pop	rcx
+	pop	rsi				; the stored copy
+	mov	edx,[g_tls_cur_group]
+	call	tls_name_find
+	cmp	eax,-1
+	jne	.ok				; named already: the first certificate keeps it
+	call	tls_name_hash
+	mov	r8d,eax
+.probe:
+	and	eax,TN_CAP - 1
+	imul	r9d,eax,TN_SIZE
+	lea	r9,[g_tls_ntab+r9]
+	cmp	dword [r9+TN_HASH],0
+	je	.slot
+	inc	eax
+	jmp	.probe
+.slot:
+	mov	[r9+TN_HASH],r8d
+	mov	[r9+TN_GROUP],dx
+	mov	eax,[g_tls_cur_tl]
+	mov	[r9+TN_TL],ax
+	mov	eax,[g_tls_nused]
+	mov	[r9+TN_OFF],eax
+	mov	[r9+TN_LEN],ecx
+	add	[g_tls_nused],ecx
+	inc	dword [g_tls_ncount]
+.ok:
+	clc
+	ret
+.full:
+	stc
+	ret
+
+; rsi = a certificate (DER), edx = its length: its subjectAltName
+; dNSNames into the table. CF when the table is full; a certificate whose
+; extensions cannot be read simply names nothing.
+cert_names:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	lea	rdx,[rsi+rdx]
+	call	der_read			; Certificate
+	jc	.done
+	mov	rdx,r8
+	call	der_read			; tbsCertificate
+	jc	.done
+	mov	r12,r8				; its end
+	mov	rdx,r8
+	call	der_read			; [0] version, or the serial
+	jc	.done
+	mov	ebx,6				; serial .. subjectPublicKeyInfo
+	cmp	al,0xA0
+	jne	@f
+	inc	ebx
+@@:
+	mov	rsi,r8
+	dec	ebx
+	jz	.fields
+@@:
+	mov	rdx,r12
+	call	der_read
+	jc	.done
+	mov	rsi,r8
+	dec	ebx
+	jnz	@b
+.fields:					; [1], [2], then [3] extensions
+	cmp	rsi,r12
+	jae	.done
+	mov	rdx,r12
+	call	der_read
+	jc	.done
+	cmp	al,0xA3
+	je	.extensions
+	mov	rsi,r8
+	jmp	.fields
+.extensions:
+	mov	rdx,r8
+	call	der_read			; SEQUENCE OF Extension
+	jc	.done
+	mov	r13,r8				; their end
+.extension:
+	cmp	rsi,r13
+	jae	.done
+	mov	rdx,r13
+	call	der_read			; Extension
+	jc	.done
+	mov	r14,r8				; the next one
+	mov	rdx,r8
+	call	der_read			; extnID
+	jc	.done
+	cmp	al,6
+	jne	.skip
+	cmp	ecx,3
+	jne	.skip
+	mov	eax,[rsi]
+	and	eax,0xFFFFFF
+	cmp	eax,oid_subject_alt_name
+	jne	.skip
+	mov	rsi,r8
+	call	der_read			; critical, or the value
+	jc	.done
+	cmp	al,1
+	jne	@f
+	mov	rsi,r8
+	call	der_read
+	jc	.done
+@@:
+	cmp	al,4				; OCTET STRING
+	jne	.skip
+	mov	rdx,r8
+	call	der_read			; GeneralNames
+	jc	.done
+	mov	r15,r8
+.name:
+	cmp	rsi,r15
+	jae	.skip
+	mov	rdx,r15
+	call	der_read
+	jc	.done
+	push	r8
+	cmp	al,0x82				; [2] dNSName
+	jne	@f
+	call	tls_name_add
+	jc	.full
+@@:
+	pop	rsi
+	jmp	.name
+.skip:
+	mov	rsi,r14
+	jmp	.extension
+.full:
+	pop	rsi
+	stc
+	jmp	.out
+.done:
+	clc
+.out:
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; Workers, in the handshake: rdi = the listener's default entry, rsi = the
+; client's server_name, edx = its length: rax = the entry whose
+; certificate names it (exactly, then as *.parent), or the default.
+tls_cert_for_sni:
+	push	rdi
+	call	tls_cert_named
+	pop	rdi
+	test	rax,rax
+	cmovz	rax,rdi
+	ret
+
+; rdi = an entry of the listener, rsi = a host name, edx = its length:
+; rax = the entry whose certificate names it, or 0.
+tls_cert_named:
+	push	rbx
+	sub	rsp,272
+	mov	rbx,rdi
+	test	edx,edx
+	jz	.default
+	cmp	edx,253
+	ja	.default
+	mov	ecx,edx
+	lea	rdi,[rsp+8]			; lowercase, one byte of room before it
+	push	rcx
+@@:
+	mov	al,[rsi]
+	lea	r8d,[rax-'A']
+	cmp	r8b,25
+	ja	.lower
+	or	al,0x20
+.lower:
+	mov	[rdi],al
+	inc	rsi
+	inc	rdi
+	dec	ecx
+	jnz	@b
+	pop	rcx
+	mov	edx,[rbx+TL_GROUP]
+	lea	rsi,[rsp+8]
+	call	tls_name_find
+	cmp	eax,-1
+	jne	.found
+	; *.parent: the first label replaced
+	xor	eax,eax
+@@:
+	cmp	eax,ecx
+	jae	.default
+	cmp	byte [rsp+8+rax],'.'
+	je	@f
+	inc	eax
+	jmp	@b
+@@:
+	test	eax,eax
+	jz	.default
+	lea	rsi,[rsp+8+rax-1]
+	mov	byte [rsi],'*'
+	sub	ecx,eax
+	inc	ecx
+	call	tls_name_find
+	cmp	eax,-1
+	je	.default
+.found:
+	imul	rax,rax,TL_SIZE
+	lea	rax,[g_tls+rax]
+	jmp	.out
+.default:
+	xor	eax,eax
+.out:
+	add	rsp,272
+	pop	rbx
 	ret

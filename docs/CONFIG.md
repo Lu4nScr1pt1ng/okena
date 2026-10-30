@@ -15,7 +15,11 @@ not built yet. A directive that is not built is refused by `okena check`
 | `pool NAME` | `server ADDR [weight=N] [backup]`, `balance least-request\|peak-ewma\|round-robin\|least-conn\|random`, `connect timeout=`, `health tcp\|http ...`, `slow_start` |
 
 `tls { cert FILE; key FILE }` on an `http` listener makes it HTTPS: TLS
-1.3 with an EC P-256 certificate chain (leaf first) and its key, ALPN
+1.3 with an EC P-256 certificate chain (leaf first) and its key. With
+several certificates each line names its key, `cert FILE key=FILE`; the
+client's SNI picks the one whose subjectAltName names the host (exactly,
+then `*.parent`), the first being the default. A request whose `Host`
+the chosen certificate does not name gets 421 (domain fronting). ALPN
 http/1.1, then the connection handed to the kernel's TLS (kTLS) when the
 host has the `tls` module (`modprobe tls`), or records sealed by okena
 itself when it does not (said once at the start; `OKENA_KTLS=off` forces

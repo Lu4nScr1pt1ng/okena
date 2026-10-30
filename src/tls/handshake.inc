@@ -50,7 +50,8 @@ TS_FLAGS	:= 144				; d: TF_*
 TS_RX_GCM	:= 160				; user-space records only (tls_records)
 TS_TX_GCM	:= TS_RX_GCM + GCM_SIZE
 TS_HRR_SHA	:= TS_TX_GCM + GCM_SIZE		; after a HelloRetryRequest: the transcript so far
-TS_SIZE		:= TS_HRR_SHA + SHA256_CTX_SIZE
+TS_CERT		:= TS_HRR_SHA + SHA256_CTX_SIZE	; q: the entry SNI chose, 0 = the default
+TS_SIZE		:= TS_CERT + 8
 
 TF_ALPN_H1	:= 1				; set by the caller: answer ALPN with http/1.1
 TF_GOT_H1	:= 2				; the client asked for http/1.1
@@ -211,7 +212,9 @@ HL_IDLEN	:= HL_BINP + 8
 HL_BINOFF	:= HL_IDLEN + 4			; the ClientHello up to its binders
 HL_SHLEN	:= HL_BINOFF + 4		; the ServerHello's record length
 HL_NOW		:= HL_SHLEN + 4			; seconds (CLOCK_MONOTONIC)
-HL_SIZE		:= ((HL_NOW + 4 + 15) and not 15) + 8	; rsp 16-aligned at calls
+HL_SNIP		:= HL_NOW + 4			; q: the client's server_name
+HL_SNILEN	:= HL_SNIP + 8
+HL_SIZE		:= ((HL_SNILEN + 4 + 15) and not 15) + 8	; rsp 16-aligned at calls
 
 G_TLS13		:= 1
 G_SUITE		:= 2
@@ -420,6 +423,8 @@ tls_hello:
 	je	.groups
 	cmp	eax,45
 	je	.modes
+	test	eax,eax
+	je	.server_name
 	cmp	eax,41
 	je	.psk
 .ext_next:
@@ -500,6 +505,27 @@ tls_hello:
 .share_next:
 	mov	rsi,r8
 	jmp	.share
+
+.server_name:					; u16 length, { u8 type, u16 length, name }
+	cmp	ecx,5
+	jb	.decode
+	movzx	edx,word [rsi]
+	rol	dx,8
+	add	rsi,2
+	lea	rax,[rsi+rdx]
+	cmp	rax,r14
+	jne	.decode
+	cmp	byte [rsi],0			; host_name (the only type there is)
+	jne	.ext_next
+	movzx	ecx,word [rsi+1]
+	rol	cx,8
+	lea	rax,[rsi+3+rcx]
+	cmp	rax,r14
+	ja	.decode
+	add	rsi,3
+	mov	[rbp+HL_SNIP],rsi
+	mov	[rbp+HL_SNILEN],ecx
+	jmp	.ext_next
 
 .modes:						; psk_key_exchange_modes: u8 length, modes
 	test	ecx,ecx
@@ -620,6 +646,16 @@ tls_hello:
 	jmp	.protocol
 
 .ext_done:
+	; the certificate for the name asked (SNI), before anything uses it
+	cmp	dword [rbp+HL_SNILEN],0
+	je	@f
+	mov	rdi,[rbp+HL_TL]
+	mov	rsi,[rbp+HL_SNIP]
+	mov	edx,[rbp+HL_SNILEN]
+	call	tls_cert_for_sni
+	mov	[rbp+HL_TL],rax
+	mov	[rbx+TS_CERT],rax
+@@:
 	mov	eax,[rbp+HL_GOT]
 	test	eax,G_TLS13
 	jz	.version
