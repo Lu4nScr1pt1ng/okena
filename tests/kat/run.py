@@ -141,6 +141,23 @@ try:
         check("x25519_base = the public key", got, pub.hex())
         if i % 20 == 0:
             check("x25519_base = x25519(k, 9)", got, run(b"x", k + (9).to_bytes(32, "little")))
+    # P-256 ECDH (secp256r1): the shared X against the library, and invalid
+    # peer points rejected
+    from cryptography.hazmat.primitives.asymmetric import ec as _ec
+    from cryptography.hazmat.primitives.serialization import Encoding as _Enc, PublicFormat as _PF
+    for _ in range(200):
+        a = _ec.generate_private_key(_ec.SECP256R1())
+        b = _ec.generate_private_key(_ec.SECP256R1())
+        k = a.private_numbers().private_value.to_bytes(32, "big")
+        peer = b.public_key().public_bytes(_Enc.X962, _PF.UncompressedPoint)
+        check("p256 ecdh shared x", run(b"D", k + peer), a.exchange(_ec.ECDH(), b.public_key()).hex())
+    good = _ec.generate_private_key(_ec.SECP256R1()).public_key().public_bytes(_Enc.X962, _PF.UncompressedPoint)
+    bad_pt = bytearray(good)
+    bad_pt[40] ^= 1                                     # a Y bit flipped: off the curve
+    k = rng.randbytes(32)
+    check("p256 ecdh: off-curve peer rejected", run(b"D", k + bytes(bad_pt)), "FAIL")
+    check("p256 ecdh: compressed peer rejected", run(b"D", k + b"\x02" + rng.randbytes(32) + bytes(32)), "FAIL")
+
     # edge inputs: u with the top bit set (ignored), u = 0, u >= p
     for u in (bytes(31) + b"\x80", bytes(32), (2**255 - 19 + 5).to_bytes(32, "little"), b"\xff" * 32):
         a = X25519PrivateKey.generate()

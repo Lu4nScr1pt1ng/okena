@@ -1605,6 +1605,166 @@ p256_public:
 	pop	rbx
 	ret
 
+; rdi = out x[32] big endian (the shared secret), rsi = scalar[32] big
+; endian (in [1, n-1]), rdx = peer point 04|X|Y (65 bytes, big endian): the
+; x coordinate of scalar * peer, for TLS secp256r1 ECDHE. eax = 1, or 0
+; when the point is invalid (not uncompressed, a coordinate >= p, or off
+; the curve). The ladder uses the complete addition formula, so no branch
+; depends on the scalar. Everything on the stack is wiped.
+EC_R1		:= 0				; peer, Montgomery projective (X : Y : Z)
+EC_R0		:= PT_SIZE			; accumulator: infinity, then the result
+EC_ZI		:= 2 * PT_SIZE
+EC_K		:= 2 * PT_SIZE + 32		; the scalar, limbs
+EC_T0		:= 2 * PT_SIZE + 64
+EC_T1		:= 2 * PT_SIZE + 96
+EC_OUT		:= 2 * PT_SIZE + 128		; q
+EC_SCA		:= 2 * PT_SIZE + 136		; q
+EC_SIZE		:= 2 * PT_SIZE + 160
+macro E op*, d*, a*, b
+	F op, rsp+d, rsp+a, rsp+b
+end macro
+p256_ecdh:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	sub	rsp,EC_SIZE
+	mov	[rsp+EC_OUT],rdi
+	mov	[rsp+EC_SCA],rsi
+	mov	r13,rdx
+	cmp	byte [r13],4			; uncompressed only
+	jne	.bad
+	lea	rdi,[rsp+EC_R1+PT_X]
+	lea	rsi,[r13+1]
+	call	be_to_limbs
+	lea	rdi,[rsp+EC_R1+PT_X]
+	call	.below_p
+	jc	.bad
+	lea	rdi,[rsp+EC_R1+PT_Y]
+	lea	rsi,[r13+33]
+	call	be_to_limbs
+	lea	rdi,[rsp+EC_R1+PT_Y]
+	call	.below_p
+	jc	.bad
+	; to Montgomery, Z = Montgomery one
+	lea	rdi,[rsp+EC_R1+PT_X]
+	mov	rsi,rdi
+	lea	rdx,[p256_p+40]
+	lea	rcx,[p256_p]
+	call	mont_mul
+	lea	rdi,[rsp+EC_R1+PT_Y]
+	mov	rsi,rdi
+	lea	rdx,[p256_p+40]
+	lea	rcx,[p256_p]
+	call	mont_mul
+	lea	rsi,[p256_p+MOD_ONE]
+	lea	rdi,[rsp+EC_R1+PT_Z]
+	mov	ecx,4
+	rep	movsq
+	; on the curve: Y^2 == X^3 - 3X + b (Montgomery)
+	E mont_mul, EC_T0, EC_R1+PT_X, EC_R1+PT_X
+	E mont_mul, EC_T0, EC_T0, EC_R1+PT_X		; X^3
+	E mod_add, EC_T1, EC_R1+PT_X, EC_R1+PT_X
+	E mod_add, EC_T1, EC_T1, EC_R1+PT_X		; 3X
+	E mod_sub, EC_T0, EC_T0, EC_T1
+	F mod_add, rsp+EC_T0, rsp+EC_T0, p256_b_m	; rhs = X^3 - 3X + b
+	E mont_mul, EC_T1, EC_R1+PT_Y, EC_R1+PT_Y	; lhs = Y^2
+	lea	rsi,[rsp+EC_T0]
+	lea	rdi,[rsp+EC_T1]
+	xor	eax,eax
+	repeat 4, i:0
+		mov	r8,[rsi+i*8]
+		xor	r8,[rdi+i*8]
+		or	rax,r8
+	end repeat
+	test	rax,rax
+	jnz	.bad				; off the curve
+	; R0 = infinity (0 : 1 : 0); the scalar to limbs
+	xor	eax,eax
+	repeat 12, i:0
+		mov	[rsp+EC_R0+i*8],rax
+	end repeat
+	lea	rsi,[p256_p+MOD_ONE]
+	lea	rdi,[rsp+EC_R0+PT_Y]
+	mov	ecx,4
+	rep	movsq
+	lea	rdi,[rsp+EC_K]
+	mov	rsi,[rsp+EC_SCA]
+	call	be_to_limbs
+	; the Montgomery ladder over R1 = the peer point
+	mov	ebx,255
+.bit:
+	mov	eax,ebx
+	shr	eax,6
+	mov	rax,[rsp+EC_K+rax*8]
+	mov	ecx,ebx
+	shr	rax,cl
+	and	eax,1
+	neg	rax				; this bit, as a mask
+	mov	r14,rax
+	lea	rdi,[rsp+EC_R0]
+	lea	rsi,[rsp+EC_R1]
+	mov	rdx,r14
+	call	pt_cswap
+	lea	rdi,[rsp+EC_R1]
+	lea	rsi,[rsp+EC_R0]
+	lea	rdx,[rsp+EC_R1]
+	call	p256_add			; R1 = R0 + R1
+	lea	rdi,[rsp+EC_R0]
+	lea	rsi,[rsp+EC_R0]
+	lea	rdx,[rsp+EC_R0]
+	call	p256_add			; R0 = 2 R0
+	lea	rdi,[rsp+EC_R0]
+	lea	rsi,[rsp+EC_R1]
+	mov	rdx,r14
+	call	pt_cswap
+	dec	ebx
+	jns	.bit
+	; x = X / Z, out of Montgomery form, big endian
+	lea	rdi,[rsp+EC_ZI]
+	lea	rsi,[rsp+EC_R0+PT_Z]
+	lea	rcx,[p256_p]
+	call	mod_inv
+	E mont_mul, EC_R0+PT_X, EC_R0+PT_X, EC_ZI
+	lea	rdi,[rsp+EC_R0+PT_X]
+	mov	rsi,rdi
+	lea	rdx,[p256_one]
+	lea	rcx,[p256_p]
+	call	mont_mul
+	mov	rdi,[rsp+EC_OUT]
+	lea	rsi,[rsp+EC_R0+PT_X]
+	call	limbs_to_be
+	mov	eax,1
+	jmp	.out
+.bad:
+	xor	eax,eax
+.out:
+	push	rax
+	mov	rdi,rsp
+	mov	ecx,EC_SIZE
+	add	rdi,8				; keep the pushed rax
+	call	secure_zero
+	pop	rax
+	add	rsp,EC_SIZE
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; rdi = 4 limbs: CF set when the value is >= p (invalid coordinate).
+.below_p:
+	mov	r8,[rdi]
+	sub	r8,[p256_p]
+	mov	r8,[rdi+8]
+	sbb	r8,[p256_p+8]
+	mov	r8,[rdi+16]
+	sbb	r8,[p256_p+16]
+	mov	r8,[rdi+24]
+	sbb	r8,[p256_p+24]
+	cmc					; borrow (value<p) -> CF clear
+	ret
+
 ; RFC 6979 for P-256 / SHA-256. rdi = k (4 limbs), rsi = x = d[32] (big
 ; endian), rdx = h = (z mod n)[32] (big endian).
 NC_K		:= 0				; HMAC key K

@@ -89,6 +89,8 @@ start:
 	je	.x25519
 	cmp	al,'u'
 	je	.x25519_base
+	cmp	al,'D'
+	je	.ecdh
 	cmp	al,'g'
 	je	.gcm
 	cmp	al,'G'
@@ -410,6 +412,15 @@ start:
 .x25519_base:
 	lea	rdi,[g_out]
 	call	x25519_base
+	mov	esi,32
+	jmp	.print
+.ecdh:
+	lea	rdi,[g_out]			; scalar (32) then peer point (65)
+	lea	rdx,[rsi+32]
+	call	p256_ecdh
+	test	eax,eax
+	jz	.wrong
+	lea	rdi,[g_out]
 	mov	esi,32
 .print:
 	; g_out, esi bytes, as hex
