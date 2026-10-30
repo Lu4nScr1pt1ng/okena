@@ -5,6 +5,7 @@ BIN       := build/okena
 HTTPH     := build/httpharness
 KAT       := build/kat
 TLSH      := build/tlsserver
+TLSC      := build/tlsclient
 
 .PHONY: all toolchain test test-serial fuzz bench image docker-test clean
 
@@ -40,7 +41,13 @@ $(TLSH): tests/tls/server.asm $(SOURCES) | $(FASMG)
 	@chmod +x $@.tmp
 	@mv -f $@.tmp $@
 
-test: $(BIN) $(HTTPH) $(KAT) $(TLSH)
+$(TLSC): tests/tls/client_test.asm $(SOURCES) | $(FASMG)
+	@mkdir -p build
+	INCLUDE="$(TOOLCHAIN)/include" $(FASMG) -e100 -i "Include 'fasm2.inc'" tests/tls/client_test.asm $@.tmp
+	@chmod +x $@.tmp
+	@mv -f $@.tmp $@
+
+test: $(BIN) $(HTTPH) $(KAT) $(TLSH) $(TLSC)
 	python3 -I tests/run_all.py
 
 # one after the other, all output shown (slower; for reading a suite's log)
@@ -57,6 +64,7 @@ test-serial: $(BIN) $(HTTPH) $(KAT) $(TLSH)
 	python3 -I tests/tls/https.py epoll user
 	python3 -I tests/tls/passthrough.py io_uring
 	python3 -I tests/tls/passthrough.py epoll
+	python3 -I tests/tls/client.py
 	python3 -I tests/l4/run.py io_uring
 	python3 -I tests/l4/run.py epoll
 	python3 -I tests/dns/run.py

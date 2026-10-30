@@ -33,6 +33,7 @@ include '../../src/crypto/x25519.inc'
 include '../../src/crypto/aesgcm.inc'
 include '../../src/crypto/p256.inc'
 include '../../src/tls/x509.inc'
+include '../../src/tls/keyschedule.inc'
 include '../../src/tls/client.inc'
 
 INPUT_MAX := 1 shl 22
