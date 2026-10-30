@@ -222,6 +222,46 @@ try:
     _bad[len(_bad) // 2] ^= 1
     check("x509: tampered certificate rejected", _cv(capub, bytes(_bad)), "00")
 
+    # TLS client: a well-formed ClientHello (offering x25519 + secp256r1,
+    # TLS_AES_128_GCM_SHA256, ecdsa_secp256r1_sha256, ALPN, SNI)
+    def _parse_ch(sni):
+        out = subprocess.run([str(KAT)], input=b"H" + sni, capture_output=True)
+        rec = out.stdout.decode().strip()
+        rec = bytes.fromhex(rec)
+        d = {}
+        d["rec"] = (rec[0], int.from_bytes(rec[1:3], "big"))   # type, version
+        b = rec[5:][4:]                                        # handshake body
+        d["ver"] = int.from_bytes(b[0:2], "big")
+        off = 2 + 32
+        d["sidlen"] = b[off]; off += 1 + b[off]
+        cl = int.from_bytes(b[off:off+2], "big"); d["cipher"] = b[off+2:off+4].hex(); off += 2 + cl
+        off += 2                                              # compression
+        off += 2                                              # ext total len
+        exts = {}
+        while off < len(b):
+            et = int.from_bytes(b[off:off+2], "big"); el = int.from_bytes(b[off+2:off+4], "big")
+            exts[et] = b[off+4:off+4+el]; off += 4 + el
+        d["exts"] = exts
+        return d
+    d = _parse_ch(b"okena.test")
+    check("client hello: TLS record (handshake, version 0x0301)", d["rec"], (22, 0x0301))
+    check("client hello: legacy_version 0x0303", d["ver"], 0x0303)
+    check("client hello: session id 32 bytes (middlebox compat)", d["sidlen"], 32)
+    check("client hello: cipher TLS_AES_128_GCM_SHA256", d["cipher"], "1301")
+    check("client hello: supported_versions = TLS 1.3",
+          d["exts"].get(43), bytes([2, 3, 4]))
+    check("client hello: supported_groups x25519, secp256r1",
+          d["exts"].get(10), bytes([0, 4, 0, 0x1D, 0, 0x17]))
+    check("client hello: sig_algs ecdsa_secp256r1_sha256",
+          d["exts"].get(13), bytes([0, 2, 4, 3]))
+    ks = d["exts"].get(51, b"")
+    check("client hello: key_shares x25519 (32) + secp256r1 (65)",
+          ks[:2] == bytes([0, 0x69]) and ks[2:6] == bytes([0, 0x1D, 0, 0x20]) and ks[38:42] == bytes([0, 0x17, 0, 0x41]),
+          True)
+    check("client hello: ALPN http/1.1", d["exts"].get(16), bytes([0, 9, 8]) + b"http/1.1")
+    sni = d["exts"].get(0, b"")
+    check("client hello: SNI okena.test", sni[5:] if len(sni) >= 5 else b"", b"okena.test")
+
     # edge inputs: u with the top bit set (ignored), u = 0, u >= p
     for u in (bytes(31) + b"\x80", bytes(32), (2**255 - 19 + 5).to_bytes(32, "little"), b"\xff" * 32):
         a = X25519PrivateKey.generate()

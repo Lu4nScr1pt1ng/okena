@@ -33,6 +33,7 @@ include '../../src/crypto/x25519.inc'
 include '../../src/crypto/aesgcm.inc'
 include '../../src/crypto/p256.inc'
 include '../../src/tls/x509.inc'
+include '../../src/tls/client.inc'
 
 INPUT_MAX := 1 shl 22
 
@@ -44,6 +45,7 @@ bss
 	align 16
 	g_gcm:		rb GCM_SIZE
 	g_gmode		db ?
+	g_tc:		rb TC_SIZE
 	g_in:		rb INPUT_MAX + 64
 end bss
 
@@ -96,6 +98,8 @@ start:
 	je	.ecdsa_verify
 	cmp	al,'C'
 	je	.cert_verify
+	cmp	al,'H'
+	je	.client_hello
 	cmp	al,'g'
 	je	.gcm
 	cmp	al,'G'
@@ -418,6 +422,16 @@ start:
 	lea	rdi,[g_out]
 	call	x25519_base
 	mov	esi,32
+	jmp	.print
+.client_hello:				; the rest of the input is the SNI
+	mov	rdx,rsi				; sni (g_in+1)
+	mov	ecx,dword [g_in_len]
+	dec	ecx				; sni length = input - mode byte
+	lea	rdi,[g_tc]
+	lea	rsi,[g_out]
+	call	tlsc_client_hello
+	lea	rdi,[g_out]
+	mov	esi,eax
 	jmp	.print
 .cert_verify:				; issuer_pub(65) cert_len(u16 le) cert_der
 	movzx	edx,word [rsi+65]
