@@ -79,6 +79,14 @@ def main():
     check("RSA server leaf: handshake verifies (rsa_pss_rsae_sha256)",
           run_against("X25519", 34485, cert="rsa.pem", key="rsa.key") == "1")
     check("RSA server leaf over kTLS", run_against("P-256", 34486, ktls=True, cert="rsa.pem", key="rsa.key") == "1")
+    # the post-quantum hybrid: a server that takes nothing else proves the
+    # share is right (ML-KEM-768 key, decapsulation, the 64-byte secret)
+    if b"X25519MLKEM768" in subprocess.run(["openssl", "list", "-kem-algorithms"], capture_output=True).stdout:
+        check("X25519MLKEM768: encrypted channel, HTTP response decrypted",
+              run_against("X25519MLKEM768", 34487) == "1")
+        check("X25519MLKEM768 over kTLS", run_against("X25519MLKEM768", 34488, ktls=True) == "1")
+        check("X25519MLKEM768 chosen when the server prefers it",
+              run_against("X25519MLKEM768:X25519:P-256", 34489) == "1")
     print(f"tls client: {'all passed' if not failures else f'{failures} failed'}")
     return 1 if failures else 0
 

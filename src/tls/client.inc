@@ -1,5 +1,6 @@
 ; TLS 1.3 client handshake, for TLS towards upstreams (RFC 8446 as the
-; client): TLS_AES_128_GCM_SHA256, x25519 and secp256r1 key shares,
+; client): TLS_AES_128_GCM_SHA256, X25519MLKEM768, x25519 and secp256r1
+; key shares,
 ; ecdsa_secp256r1_sha256 signatures. The crypto is the same as the server
 ; side (src/tls/handshake.inc); here okena opens the connection.
 ;
@@ -9,9 +10,9 @@
 ;
 ;   tlsc_client_hello(rdi ts, rsi out, rdx sni, ecx sni length): the
 ;       ClientHello record is written to out (eax = its length), its
-;       handshake bytes added to the transcript, the ephemeral x25519 and
-;       P-256 private keys and the client random kept in ts. out needs
-;       room for ~400 bytes plus the SNI.
+;       handshake bytes added to the transcript, the ephemeral x25519,
+;       P-256 and ML-KEM-768 private keys and the client random kept in ts
+;       (a TC_FULL block). out needs room for ~1650 bytes plus the SNI.
 
 TC_X25519_SK	:= 0				; ephemeral private keys
 TC_P256_SK	:= 32
@@ -65,6 +66,14 @@ tlsc_client_hello:
 	lea	rdi,[rbx+TC_P256_PK]		; P-256 public (04|X|Y)
 	lea	rsi,[rbx+TC_P256_SK]
 	call	p256_public
+	lea	rdi,[rbx+TC_MLSEED]		; the ML-KEM-768 key pair's seed
+	mov	esi,64
+	xor	edx,edx
+	mov	eax,SYS_getrandom
+	syscall
+	cmp	rax,64
+	jne	.fail
+	mov	dword [rbx+TC_KXLEN],0
 
 	; the handshake message, after the 5-byte record header
 	lea	rdi,[r12+5]
@@ -90,13 +99,26 @@ tlsc_client_hello:
 	add	rdi,2
 	; supported_versions (43): TLS 1.3, then TLS 1.2
 	ch_lit 0x00,0x2B,0x00,0x05,0x04,0x03,0x04,0x03,0x03
-	; supported_groups (10): x25519, secp256r1
-	ch_lit 0x00,0x0A,0x00,0x06,0x00,0x04,0x00,0x1D,0x00,0x17
+	; supported_groups (10): X25519MLKEM768, x25519, secp256r1
+	ch_lit 0x00,0x0A,0x00,0x08,0x00,0x06,0x11,0xEC,0x00,0x1D,0x00,0x17
 	; signature_algorithms (13): ecdsa_secp256r1_sha256, rsa_pss_rsae_sha256,
 	; rsa_pkcs1_sha256 (the last for a legacy 1.2 backend)
 	ch_lit 0x00,0x0D,0x00,0x08,0x00,0x06,0x04,0x03,0x08,0x04,0x04,0x01
-	; key_share (51): x25519 (32) and secp256r1 (65)
-	ch_lit 0x00,0x33,0x00,0x6B,0x00,0x69
+	; key_share (51): X25519MLKEM768 (1216), x25519 (32) and secp256r1 (65):
+	; 1220 + 36 + 69 = 1325 bytes of shares
+	ch_lit 0x00,0x33,0x05,0x2F,0x05,0x2D
+	ch_lit 0x11,0xEC,0x04,0xC0		; X25519MLKEM768, 1216 bytes:
+	push	r8
+	lea	rsi,[rbx+TC_MLDK]		; the ML-KEM-768 key written in place
+	lea	rdx,[rbx+TC_MLSEED]
+	push	rdi
+	call	mlkem768_keygen
+	pop	rdi
+	pop	r8
+	add	rdi,MLKEM_EK
+	lea	rsi,[rbx+TC_X25519_PK]		; then the same x25519 key as below
+	mov	ecx,32
+	rep	movsb
 	ch_lit 0x00,0x1D,0x00,0x20		; x25519 group, 32 bytes
 	lea	rsi,[rbx+TC_X25519_PK]
 	mov	ecx,32
@@ -214,7 +236,15 @@ TC12_CIV	:= TC12_KB + 32
 TC12_SIV	:= TC12_KB + 36
 TC12_TX		:= TC12_KB + 40			; client-write GCM context
 TC12_RX		:= TC12_TX + GCM_SIZE		; server-write GCM context
-TC_FULL		:= TC12_RX + GCM_SIZE
+; the post-quantum hybrid (X25519MLKEM768)
+TC_MLDK		:= TC12_RX + GCM_SIZE		; the ML-KEM-768 decapsulation key (2400)
+TC_MLSEED	:= TC_MLDK + MLKEM_DK		; d | z (64)
+TC_SH64		:= TC_MLSEED + 64		; the hybrid secret: ML-KEM's | x25519's
+TC_KXLEN	:= TC_SH64 + 64			; d: the key exchange is done (the flight
+						; is processed again as it arrives): the
+						; secret's length (32 at TC_SHARED, 64 at
+						; TC_SH64), 0 before
+TC_FULL		:= TC_KXLEN + 8
 
 ; rdi = tc, rsi = in (the server's bytes), edx = in length, rcx = out:
 ; parses the ServerHello, computes the ECDH secret, derives the server
@@ -301,6 +331,10 @@ tlsc_server_flight:
 	movzx	ecx,word [rsi+2]		; key length
 	rol	cx,8
 	add	rsi,4				; rsi = the server's public key
+	cmp	dword [rbx+TC_KXLEN],0		; the key exchange ran on an earlier pass
+	jne	.secret_done
+	cmp	eax,0x11EC
+	je	.hybrid
 	cmp	eax,0x001D
 	je	.x25519
 	cmp	eax,0x0017
@@ -314,6 +348,33 @@ tlsc_server_flight:
 	call	p256_ecdh
 	test	eax,eax
 	jz	.bad
+	mov	dword [rbx+TC_KXLEN],32
+	jmp	.secret_done
+.hybrid:
+	; X25519MLKEM768: the ML-KEM-768 ciphertext (1088), then the server's
+	; x25519 key; the secret is ML-KEM's | x25519's
+	cmp	ecx,MLKEM_CT + 32
+	jne	.bad
+	push	rsi
+	lea	rdi,[rbx+TC_SH64]
+	mov	rdx,rsi
+	lea	rsi,[rbx+TC_MLDK]
+	call	mlkem768_decaps
+	pop	rdx
+	add	rdx,MLKEM_CT
+	lea	rdi,[rbx+TC_SH64+32]
+	lea	rsi,[rbx+TC_X25519_SK]
+	call	x25519
+	lea	rdi,[rbx+TC_MLDK]		; the key pair has done its work
+	xor	eax,eax
+	mov	ecx,(MLKEM_DK + 64) / 8
+	rep	stosq
+	mov	rax,[rbx+TC_SH64+32]		; an all-zero x25519 secret: a small-order point
+	or	rax,[rbx+TC_SH64+40]
+	or	rax,[rbx+TC_SH64+48]
+	or	rax,[rbx+TC_SH64+56]
+	jz	.bad
+	mov	dword [rbx+TC_KXLEN],64
 	jmp	.secret_done
 .x25519:
 	cmp	ecx,32
@@ -322,6 +383,7 @@ tlsc_server_flight:
 	mov	rdx,rsi
 	lea	rsi,[rbx+TC_X25519_SK]
 	call	x25519
+	mov	dword [rbx+TC_KXLEN],32
 .secret_done:
 	; handshake_secret = HKDF-Extract(derived_early, shared)
 	lea	rdi,[rbx+TC_HS]
@@ -329,6 +391,11 @@ tlsc_server_flight:
 	mov	edx,32
 	lea	rcx,[rbx+TC_SHARED]
 	mov	r8d,32
+	cmp	dword [rbx+TC_KXLEN],64
+	jne	@f
+	lea	rcx,[rbx+TC_SH64]
+	mov	r8d,64
+@@:
 	call	hkdf_extract
 	; server and client handshake traffic secrets, the server key/IV
 	tls_label [rbx+TC_SHT], 32, [rbx+TC_HS], lbl_s_hs, [rbx+TC_TH], 32

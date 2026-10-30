@@ -626,8 +626,8 @@ ECN. 0-RTT off by default and, when on, only for routes marked idempotent.
 * Key exchange: **X25519MLKEM768** (post-quantum hybrid, default),
   X25519, P-256. **Today** the hybrid is served (preferred when the
   client sends its share) with a scalar ML-KEM-768 encapsulation, about
-  twice x25519's cost; okena's own client side (upstreams) offers X25519
-  and P-256 only.
+  twice x25519's cost. okena's own client side (upstreams) offers it too,
+  first, with x25519 and P-256 shares beside it for backends without it.
 * AEAD: AES-128/256-GCM (AES-NI, VAES + VPCLMULQDQ), ChaCha20-Poly1305
   (AVX2), chosen by client preference and hardware.
 * Certificates: ECDSA P-256 and Ed25519 signing first; RSA-PSS signing

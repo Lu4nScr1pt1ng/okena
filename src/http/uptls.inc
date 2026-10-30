@@ -30,8 +30,8 @@ HS_UTLS12_RX	:= 31				; 1.2: the server's CCS + Finished are in
 
 HB_UTC		:= HB_TLS			; the upstream handshake TC block
 HB_USNAP	:= HB_UTC + TC_FULL		; the post-ClientHello transcript snapshot
-HB_UWORK	:= HB_USNAP + SHA256_CTX_SIZE	; ClientHello / Finished / crypto_info / time
-HB_UDEC		:= HB_UWORK + 1024		; the decrypted server handshake
+HB_UWORK	:= HB_USNAP + SHA256_CTX_SIZE	; ClientHello (~1.7 KB) / Finished / crypto_info / time
+HB_UDEC		:= HB_UWORK + 2048		; the decrypted server handshake
 assert HB_UDEC + 16384 <= 1 shl HB_SHIFT
 ; after the handshake the area is free; the control-record drain reuses it
 HB_UMSG		:= HB_UTC			; struct msghdr (56)

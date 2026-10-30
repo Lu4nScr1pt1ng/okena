@@ -18,6 +18,8 @@ segment readable executable
 include '../../src/core/util.inc'
 include '../../src/crypto/ct.inc'
 include '../../src/crypto/sha256.inc'
+include '../../src/crypto/keccak.inc'
+include '../../src/crypto/mlkem.inc'
 include '../../src/crypto/hmac.inc'
 include '../../src/crypto/hkdf.inc'
 include '../../src/crypto/x25519.inc'

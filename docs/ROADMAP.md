@@ -194,9 +194,13 @@ a FIPS 203 reference in tests/kat and against OpenSSL's decapsulation;
 s_client and curl negotiate it. The encapsulation is scalar for now (36 us,
 Keccak-f 368 ns; OpenSSL 3.5 with AVX2: 25 us), so a hybrid handshake
 costs about 1.7 times an x25519 one; the AVX2 NTT and a four-way Keccak
-are next. Still open:
-ChaCha20-Poly1305, Ed25519, the hybrid towards upstreams (key generation
-and decapsulation), Wycheproof.
+are next. Towards
+upstreams too: ML-KEM-768 key generation and decapsulation (implicit
+rejection in constant time), the client's ClientHello offering the hybrid
+first beside x25519 and P-256, the decapsulation run once however the
+server's flight arrives; checked against the reference and, both ways,
+against OpenSSL (tests/kat, tests/tls/client.py against an s_server that
+takes nothing else). Still open: ChaCha20-Poly1305, Ed25519, Wycheproof.
 
 * SHA-2, HMAC, HKDF (from fasm2crud), AES-GCM (AES-NI, VAES/VPCLMULQDQ),
   ChaCha20-Poly1305, X25519, ML-KEM-768, P-256 ECDH/ECDSA, Ed25519.
