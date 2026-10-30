@@ -81,17 +81,20 @@ tlsc_client_hello:
 	lea	rsi,[rbx+TC_SID]
 	mov	ecx,32
 	rep	movsb
-	ch_lit 0x00,0x02,0x13,0x01		; cipher_suites: TLS_AES_128_GCM_SHA256
+	; cipher_suites: TLS_AES_128_GCM_SHA256 (1.3), then ECDHE_ECDSA and
+	; ECDHE_RSA with AES-128-GCM (1.2, for a backend that has no 1.3)
+	ch_lit 0x00,0x06,0x13,0x01,0xC0,0x2B,0xC0,0x2F
 	ch_lit 0x01,0x00			; compression: null
 	; extensions: a u16 length, filled at the end
 	mov	r8,rdi				; extensions length slot
 	add	rdi,2
-	; supported_versions (43): TLS 1.3
-	ch_lit 0x00,0x2B,0x00,0x03,0x02,0x03,0x04
+	; supported_versions (43): TLS 1.3, then TLS 1.2
+	ch_lit 0x00,0x2B,0x00,0x05,0x04,0x03,0x04,0x03,0x03
 	; supported_groups (10): x25519, secp256r1
 	ch_lit 0x00,0x0A,0x00,0x06,0x00,0x04,0x00,0x1D,0x00,0x17
-	; signature_algorithms (13): ecdsa_secp256r1_sha256, rsa_pss_rsae_sha256
-	ch_lit 0x00,0x0D,0x00,0x06,0x00,0x04,0x04,0x03,0x08,0x04
+	; signature_algorithms (13): ecdsa_secp256r1_sha256, rsa_pss_rsae_sha256,
+	; rsa_pkcs1_sha256 (the last for a legacy 1.2 backend)
+	ch_lit 0x00,0x0D,0x00,0x08,0x00,0x06,0x04,0x03,0x08,0x04,0x04,0x01
 	; key_share (51): x25519 (32) and secp256r1 (65)
 	ch_lit 0x00,0x33,0x00,0x6B,0x00,0x69
 	ch_lit 0x00,0x1D,0x00,0x20		; x25519 group, 32 bytes
@@ -201,7 +204,17 @@ TC_LEAFLEN	:= TC_LEAF + 8
 TC_CLIST	:= TC_LEAFLEN + 8		; the CertificateEntry list (ptr, len)
 TC_CLISTLEN	:= TC_CLIST + 8
 TC_LEAFKEY	:= TC_CLISTLEN + 8		; the leaf public key (EC or RSA), a PK blob
-TC_FULL		:= TC_LEAFKEY + PK_SIZE
+; TLS 1.2 client state (a 1.2 backend; the fields above are the 1.3 path)
+TC12_SRAND	:= TC_LEAFKEY + PK_SIZE		; server random (32)
+TC12_MASTER	:= TC12_SRAND + 32		; master secret (48)
+TC12_KB		:= TC12_MASTER + 48		; key_block: cwk(16) swk(16) civ(4) siv(4)
+TC12_CWK	:= TC12_KB
+TC12_SWK	:= TC12_KB + 16
+TC12_CIV	:= TC12_KB + 32
+TC12_SIV	:= TC12_KB + 36
+TC12_TX		:= TC12_KB + 40			; client-write GCM context
+TC12_RX		:= TC12_TX + GCM_SIZE		; server-write GCM context
+TC_FULL		:= TC12_RX + GCM_SIZE
 
 ; rdi = tc, rsi = in (the server's bytes), edx = in length, rcx = out:
 ; parses the ServerHello, computes the ECDH secret, derives the server
