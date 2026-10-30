@@ -83,6 +83,9 @@ fail:
 	sys	SYS_exit
 
 start:
+	mov	rax,[rsp]			; argc, argv..., 0, then the environment
+	lea	rax,[rsp+rax*8+16]
+	mov	[g_envp],rax
 	mov	dword [g_out_fd],1
 	call	crypto_init
 	call	tls_tickets_init

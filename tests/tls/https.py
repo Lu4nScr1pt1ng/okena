@@ -387,6 +387,45 @@ http 127.0.0.1:{LST} {{
             th.join()
         check("tcp listener: 32 clients at once", sum(res) == 32, f"{sum(res)}/32")
 
+    if ENGINE == "io_uring" and not USER:
+        # ticket keys rotate (here every second): a ticket resumes within a
+        # period (at most one rotation: the previous key still opens it),
+        # not after two
+        rconf = tmp / "rotate.conf"
+        RL = BASE + 4
+        rconf.write_text(f"""okena {{ workers 2; io_engine {ENGINE} }}
+http 127.0.0.1:{RL} {{
+    {tls}
+    route /* {{ to 127.0.0.1:{BACK} }}
+}}
+""")
+        rlog = open(tmp / "rotate.log", "w+")
+        rp = subprocess.Popen([str(BIN), "-c", str(rconf)], stderr=rlog,
+                              env=dict(os.environ, OKENA_TICKET_ROTATE="1"))
+        atexit.register(rp.kill)
+        for _ in range(100):
+            rlog.seek(0)
+            if "started with" in rlog.read():
+                break
+            time.sleep(0.05)
+
+        rctx = context()
+
+        def rget(sess=None):
+            s = socket.create_connection(("127.0.0.1", RL), timeout=10)
+            with rctx.wrap_socket(s, server_hostname="okena.test", session=sess) as t:
+                request(t, "GET", "/rot")
+                return t.session_reused, t.session
+        _, sess = rget()
+        time.sleep(0.9)
+        check("ticket keys rotate: a ticket resumes within its period", rget(sess)[0])
+        time.sleep(2.3)
+        reused, fresh = rget(sess)
+        check("ticket keys rotate: two rotations later it does not (a full handshake)", not reused)
+        check("ticket keys rotate: the new key's tickets resume", rget(fresh)[0])
+        rp.terminate()
+        rp.wait(10)
+
     p.terminate()
     p.wait(10)
     log.seek(0)

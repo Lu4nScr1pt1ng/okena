@@ -205,6 +205,7 @@ supervisor_main:
 .watchdog:
 	call	watchdog_check
 	call	old_workers_check
+	call	tls_tickets_tick		; the ticket key, once a period
 	jmp	.wait_signal
 .reload:
 	call	supervisor_reload

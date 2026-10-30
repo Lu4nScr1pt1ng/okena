@@ -80,7 +80,18 @@ TKP_CERT	:= 16				; 8 bytes of the certificate's key: tickets of
 TKP_PSK		:= 24				; 32
 TK_PT		:= 56
 TK_SIZE		:= TK_SEALED + TK_PT + 16	; 88
-TICKET_LIFETIME	:= 7200				; seconds
+TICKET_ROTATE	:= 3600				; seconds a key issues tickets (OKENA_TICKET_ROTATE)
+; The keys: a page shared by the supervisor and the workers (mapped before
+; they fork), three slots. Tickets come from the current key and are
+; taken under it or the previous one: valid one to two periods. The
+; supervisor rotates into the third slot, then moves TKS_CUR, so the two
+; slots in use are never the one being written.
+TKS_CUR		:= 0				; d: the current slot, 0..2
+TKS_SLOTS	:= 64
+TKS_ID		:= 0				; d: the key id (never 0), 0 = empty slot
+TKS_GCM		:= 16
+TKS_SLOT	:= (TKS_GCM + GCM_SIZE + 63) and not 63
+assert TKS_SLOTS + 3 * TKS_SLOT <= 4096
 CH_MAX		:= 16384			; a ClientHello (a post-quantum one is ~1.8 KiB)
 
 ; alert descriptions
@@ -121,9 +132,9 @@ end rodata
 
 bss
 	align 16
-	g_tk_gcm	rb GCM_SIZE		; the ticket key
-	g_tk_id		dd ?
-	g_tk_ready	dd ?
+	g_tks		dq ?			; the shared keys, 0 = no tickets
+	g_tk_period	dd ?			; seconds between rotations
+	g_tk_next	dd ?			; the next one (supervisor)
 end bss
 
 rodata
@@ -631,7 +642,7 @@ tls_hello:
 	and	eax,G_PSK or G_PSKDHE
 	cmp	eax,G_PSK or G_PSKDHE
 	jne	.full
-	cmp	dword [g_tk_ready],0
+	cmp	qword [g_tks],0
 	je	.full
 	cmp	dword [rbp+HL_IDLEN],TK_SIZE
 	jne	.full
@@ -641,9 +652,8 @@ tls_hello:
 	mov	ecx,TK_SIZE
 	rep	movsb
 	mov	eax,[rbp+HL_TICKET+TK_ID]
-	cmp	eax,[g_tk_id]
-	jne	.full				; another key: a full handshake
-	lea	rdi,[g_tk_gcm]
+	call	tls_ticket_key			; rdi = its key, or CF
+	jc	.full				; another key, or retired: a full handshake
 	lea	rsi,[rbp+HL_TICKET+TK_NONCE]
 	lea	rdx,[rbp+HL_TICKET+TK_ID]
 	mov	ecx,4
@@ -656,8 +666,10 @@ tls_hello:
 	jne	.full
 	mov	eax,[rbp+HL_NOW]
 	sub	eax,[rbp+HL_TICKET+TK_SEALED+TKP_ISSUED]
-	cmp	eax,TICKET_LIFETIME
-	ja	.full				; expired (or from before a restart)
+	mov	ecx,[g_tk_period]
+	add	ecx,ecx
+	cmp	eax,ecx
+	ja	.full				; expired
 	mov	r15,[rbp+HL_TL]
 	mov	rax,[r15+TL_PUB+1]
 	cmp	rax,[rbp+HL_TICKET+TK_SEALED+TKP_CERT]
@@ -958,7 +970,7 @@ tls_hello:
 	xor	eax,eax
 	mov	[rbx+TS_RX_SEQ],rax
 	mov	[rbx+TS_TX_SEQ],rax
-	cmp	dword [g_tk_ready],0
+	cmp	qword [g_tks],0
 	je	.no_ticket
 	; the ticket: resumption_master_secret over the transcript through the
 	; client Finished we expect, the PSK from it, sealed with the key
@@ -985,13 +997,17 @@ tls_hello:
 	mov	rax,[rbp+HL_TL]
 	mov	rax,[rax+TL_PUB+1]
 	mov	[rbp+HL_TICKET+TK_SEALED+TKP_CERT],rax
-	mov	eax,[g_tk_id]
-	mov	[rbp+HL_TICKET+TK_ID],eax
 	lea	rsi,[rbp+HL_RAND+64]
 	lea	rdi,[rbp+HL_TICKET+TK_NONCE]
 	mov	ecx,12
 	rep	movsb
-	lea	rdi,[g_tk_gcm]
+	mov	rdi,[g_tks]			; the current key
+	mov	eax,[rdi+TKS_CUR]
+	imul	eax,eax,TKS_SLOT
+	lea	rdi,[rdi+TKS_SLOTS+rax]
+	mov	eax,[rdi+TKS_ID]
+	mov	[rbp+HL_TICKET+TK_ID],eax
+	add	rdi,TKS_GCM
 	lea	rsi,[rbp+HL_TICKET+TK_NONCE]
 	lea	rdx,[rbp+HL_TICKET+TK_ID]
 	mov	ecx,4
@@ -1049,7 +1065,9 @@ tls_hello:
 	mov	dword [rdi],0x00030317
 	mov	word [rdi+3],0x7A00		; 105 + type + tag = 122
 	mov	dword [rdi+5],0x65000004	; new_session_ticket, 101 bytes
-	mov	dword [rdi+9],0x201C0000	; lifetime 7200 s
+	mov	eax,[g_tk_period]		; lifetime: at least this long
+	bswap	eax
+	mov	[rdi+9],eax
 	mov	eax,[rbp+HL_RAND+76]
 	mov	[rdi+13],eax			; ticket_age_add
 	mov	byte [rdi+17],0			; no ticket_nonce
@@ -1464,30 +1482,132 @@ tls_now_s:
 	add	rsp,24
 	ret
 
-; The ticket key, once (in the supervisor, before the workers fork, so
-; they all open each other's tickets; kept across reloads). Without it no
-; ticket is issued or taken.
+; The ticket keys, once (in the supervisor, before the workers fork, so
+; they all share the page; kept across reloads). Without them no ticket is
+; issued or taken.
 tls_tickets_init:
-	cmp	dword [g_tk_ready],0
+	cmp	qword [g_tks],0
 	jne	.done
-	sub	rsp,40
+	mov	dword [g_tk_period],TICKET_ROTATE
+	lea	rdi,[env_okena_ticket_rotate]
+	mov	esi,env_okena_ticket_rotate.len
+	call	getenv
+	test	rax,rax
+	jz	.mapped_period
+	xor	ecx,ecx				; seconds, for tests
+.digit:
+	movzx	edx,byte [rax]
+	sub	edx,'0'
+	cmp	edx,9
+	ja	.digits
+	imul	ecx,ecx,10
+	add	ecx,edx
+	inc	rax
+	jmp	.digit
+.digits:
+	test	ecx,ecx
+	jz	.mapped_period
+	mov	[g_tk_period],ecx
+.mapped_period:
+	xor	edi,edi
+	mov	esi,4096
+	mov	edx,PROT_READ or PROT_WRITE
+	mov	r10d,MAP_SHARED or MAP_ANONYMOUS
+	mov	r8,-1
+	xor	r9d,r9d
+	mov	eax,SYS_mmap
+	syscall
+	cmp	rax,-4096
+	ja	.done				; no page: no tickets
+	mov	[g_tks],rax
+	xor	edi,edi
+	call	tls_ticket_fill
+	call	tls_now_s
+	add	eax,[g_tk_period]
+	mov	[g_tk_next],eax
+.done:
+	ret
+
+; Supervisor, once a second: a new key when the period is over.
+tls_tickets_tick:
+	cmp	qword [g_tks],0
+	je	.done
+	call	tls_now_s
+	cmp	eax,[g_tk_next]
+	jb	.done
+	add	eax,[g_tk_period]
+	mov	[g_tk_next],eax
+	mov	rax,[g_tks]
+	mov	edi,[rax+TKS_CUR]
+	inc	edi
+	cmp	edi,3
+	jb	@f
+	xor	edi,edi
+@@:
+	push	rdi
+	call	tls_ticket_fill
+	pop	rdi
+	mov	rax,[g_tks]
+	mov	[rax+TKS_CUR],edi		; after the slot is whole (x86 keeps the order)
+.done:
+	ret
+
+; edi = slot: a new key in it (its id last, so a half-written slot never
+; matches a ticket).
+tls_ticket_fill:
+	push	rbx
+	sub	rsp,32
+	imul	eax,edi,TKS_SLOT
+	mov	rbx,[g_tks]
+	lea	rbx,[rbx+TKS_SLOTS+rax]
+	mov	dword [rbx+TKS_ID],0
 	mov	rdi,rsp
 	mov	esi,20
 	xor	edx,edx
 	mov	eax,SYS_getrandom
 	syscall
 	cmp	rax,20
-	jne	.no
-	mov	eax,[rsp+16]
-	mov	[g_tk_id],eax
-	lea	rdi,[g_tk_gcm]
+	jne	.out				; left empty: its tickets just do not resume
+	lea	rdi,[rbx+TKS_GCM]
 	mov	rsi,rsp
 	call	gcm_init
-	mov	dword [g_tk_ready],1
-.no:
+	mov	eax,[rsp+16]
+	or	eax,1				; never 0
+	mov	[rbx+TKS_ID],eax
+.out:
 	mov	rdi,rsp
 	mov	ecx,32
 	call	secure_zero
-	add	rsp,40
-.done:
+	add	rsp,32
+	pop	rbx
 	ret
+
+; eax = a ticket's key id: rdi = the current or previous key's context
+; with that id, or CF.
+tls_ticket_key:
+	mov	rdi,[g_tks]
+	mov	ecx,[rdi+TKS_CUR]
+	mov	edx,2				; the current, then the one before
+.slot:
+	imul	r8d,ecx,TKS_SLOT
+	lea	r8,[rdi+TKS_SLOTS+r8]
+	cmp	dword [r8+TKS_ID],0
+	je	.next
+	cmp	[r8+TKS_ID],eax
+	je	.found
+.next:
+	add	ecx,2				; (slot + 2) mod 3 = the previous
+	cmp	ecx,3
+	jb	@f
+	sub	ecx,3
+@@:
+	dec	edx
+	jnz	.slot
+	stc
+	ret
+.found:
+	lea	rdi,[r8+TKS_GCM]
+	clc
+	ret
+
+cstring env_okena_ticket_rotate, 'OKENA_TICKET_ROTATE='
