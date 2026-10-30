@@ -94,9 +94,62 @@ in handshakes per second is not measured here.
 The maximum stayed at 1.5-3 ms in every mode, budget or not; its cause is
 not isolated yet.
 
-## Against HAProxy and nginx
+## Against HAProxy, in front of a real API (2026-10-30)
 
-Not measured yet. The phase exits need: added latency p50/p99/p99.9 for
-`tcp` (HAProxy `mode tcp`), HTTP/1.1 keep-alive (HAProxy, nginx), and full
-handshakes per second per core with ECDSA certificates (HAProxy on
-OpenSSL), all on the same machine with cores pinned and open-loop load.
+The backend is [fasm2crud](https://github.com/Lu4nScr1pt1ng/fasm2Crud): an
+HTTP/1.1 JSON API in assembly with PostgreSQL 18 behind it (auth tokens,
+notes stored as rows). Every scenario runs straight to it too, so what a
+proxy adds shows. Rerun with `tests/bench/api.sh` (its header says how to
+start the backend).
+
+| | |
+|---|---|
+| okena | this commit, io_uring, native, `taskset -c 1,2` (2 workers) |
+| HAProxy | 3.2.26 (OpenSSL 3.5.7), official image, `--network host`, `--cpuset-cpus 1,2`, `nbthread 2`, `http-reuse always`, TLS 1.3 suite AES-128-GCM |
+| backend | fasm2crud native, 2 workers on cores 3-4, `API_RATE=0`; PostgreSQL 18.1 in its compose (unpinned) |
+| load | wrk 4.x, 6 threads on cores 5-7 and 13-15, 64 connections, 10 s a scenario; closed loop (no coordinated-omission correction) |
+| TLS | ECDSA P-256 certificate on both; "x25519" runs force the client's groups through `OPENSSL_CONF`, the others take its default (X25519MLKEM768); wrk does not resume sessions, so every new connection is a full handshake |
+
+| Scenario | Server | req/s | p50 / p99 (us) | non-2xx |
+|---|---|---|---|---|
+| GET /healthz, keep-alive | fasm2crud direct | 348847 | 180 / 260 | 0 |
+| GET a note (token + PostgreSQL), keep-alive | fasm2crud direct | 51592 | 1050 / 3880 | 0 |
+| POST a note (PostgreSQL write), keep-alive | fasm2crud direct | 8528 | 7110 / 10320 | 0 |
+| GET /healthz, keep-alive | okena, 2 cores | 162605 | 369 / 448 | 0 |
+| GET a note (token + PostgreSQL), keep-alive | okena, 2 cores | 52743 | 1040 / 4390 | 0 |
+| POST a note (PostgreSQL write), keep-alive | okena, 2 cores | 8219 | 7050 / 280930 | 0 |
+| GET /healthz through TCP (L4) | okena, 2 cores | 172569 | 344 / 411 | 0 |
+| HTTPS GET /healthz, keep-alive | okena, 2 cores | 125525 | 462 / 890 | 0 |
+| HTTPS GET a note, keep-alive | okena, 2 cores | 52098 | 1040 / 4320 | 0 |
+| HTTPS, a new connection per request (x25519, ECDSA) | okena, 2 cores | 15052 | 870 / 2160 | 0 |
+| HTTPS, a new connection per request (X25519MLKEM768) | okena, 2 cores | 10107 | 1380 / 2010 | 0 |
+| GET /healthz, keep-alive | HAProxy 3.2, 2 threads | 106739 | 544 / 813 | 0 |
+| GET a note (token + PostgreSQL), keep-alive | HAProxy 3.2, 2 threads | 50784 | 1020 / 4820 | 0 |
+| POST a note (PostgreSQL write), keep-alive | HAProxy 3.2, 2 threads | 8185 | 7050 / 269140 | 0 |
+| GET /healthz through TCP (L4) | HAProxy 3.2, 2 threads | 138119 | 431 / 508 | 0 |
+| HTTPS GET /healthz, keep-alive | HAProxy 3.2, 2 threads | 83069 | 710 / 1010 | 0 |
+| HTTPS GET a note, keep-alive | HAProxy 3.2, 2 threads | 42756 | 990 / 4840 | 0 |
+| HTTPS, a new connection per request (x25519, ECDSA) | HAProxy 3.2, 2 threads | 5889 | 5050 / 6200 | 0 |
+| HTTPS, a new connection per request (X25519MLKEM768) | HAProxy 3.2, 2 threads | 5025 | 5900 / 6860 | 0 |
+
+Read with care:
+
+* A proxy on 2 cores in front of a backend on 2 cores is the proxy's
+  ceiling for `/healthz` (the backend alone does 349k/s): okena forwards
+  163k/s at a p99 of 448 us, HAProxy 107k/s at 813 us; through L4, 173k/s
+  against 138k/s.
+* Where PostgreSQL is the limit (reading a note, ~52k/s), both proxies add
+  close to nothing; okena's p99 stays a little under HAProxy's.
+* Writing notes is PostgreSQL's limit (8.5k/s). Its p99 swings between
+  runs and between servers (a first run had 334 ms for okena and 12 ms for
+  HAProxy, this one 281 ms and 269 ms); the same load through okena alone
+  at 8 and 64 connections gave p99s of 1.1 ms and 9.5 ms. That tail is the
+  database's (checkpoints and autovacuum under a stream of inserts), not
+  the proxies'.
+* New HTTPS connections: 15.1k/s for okena against 5.9k/s for HAProxy with
+  x25519 (2.6 times), 10.1k/s against 5.0k/s with the post-quantum hybrid.
+* HTTPS keep-alive: 126k/s against 83k/s (okena hands the keys to kTLS;
+  HAProxy 3.2 seals in user space).
+
+Not measured yet: the open-loop latency the phase exits ask for (wrk2 or
+`okena bench`), the two-host topology, and nginx.
