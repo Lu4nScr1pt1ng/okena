@@ -51,7 +51,7 @@ bss
 	g_tc:		rb TC_SIZE
 	g_gcm12:	rb 512
 	g_der:		rb 8192
-	g_anchor:	rb 65
+	g_anchor:	rb PK_SIZE
 	g_in:		rb INPUT_MAX + 64
 end bss
 
@@ -457,12 +457,25 @@ start:
 	lea	rdi,[g_out]
 	mov	esi,eax
 	jmp	.print
-.cert_verify:				; issuer_pub(65) cert_len(u16 le) cert_der
-	movzx	edx,word [rsi+65]
-	lea	rdi,[rsi]			; issuer pub
-	lea	rsi,[rsi+67]			; cert der
+.cert_verify:				; issuer_cert_len(u16) issuer_cert cert_len(u16) cert
+	movzx	edx,word [rsi]			; issuer cert length
+	lea	r12,[rsi+2]			; issuer cert
+	lea	r13,[r12+rdx]			; the certificate to verify follows
+	lea	rdi,[g_anchor]
+	mov	rsi,r12
+	call	cert_pubkey
+	test	eax,eax
+	jz	.cv_no
+	movzx	edx,word [r13]			; cert length
+	lea	rsi,[r13+2]
+	lea	rdi,[g_anchor]
 	call	cert_verify
 	mov	[g_out],al
+	lea	rdi,[g_out]
+	mov	esi,1
+	jmp	.print
+.cv_no:
+	mov	byte [g_out],0
 	lea	rdi,[g_out]
 	mov	esi,1
 	jmp	.print
@@ -485,10 +498,18 @@ start:
 	lea	rdi,[g_out]
 	mov	esi,1
 	jmp	.print
-.cert_chain:				; anchor_pub(65) list_len(u16 le) list
-	movzx	edx,word [rsi+65]		; list length
-	mov	rdi,rsi				; anchor pub
-	lea	rsi,[rsi+67]			; the CertificateEntry list
+.cert_chain:				; anchor_cert_len(u16) anchor_cert list_len(u16) list
+	movzx	edx,word [rsi]			; anchor cert length
+	lea	r12,[rsi+2]			; anchor cert
+	lea	r13,[r12+rdx]			; the CertificateEntry list follows
+	lea	rdi,[g_anchor]
+	mov	rsi,r12
+	call	cert_pubkey
+	test	eax,eax
+	jz	.cv_no
+	movzx	edx,word [r13]			; list length
+	lea	rsi,[r13+2]
+	lea	rdi,[g_anchor]
 	call	cert_chain_verify
 	mov	[g_out],al
 	lea	rdi,[g_out]
@@ -503,10 +524,10 @@ start:
 	call	pem_first_cert			; -> DER in g_der, eax = its length
 	test	eax,eax
 	jz	.pem_fail
-	lea	rsi,[g_der]			; extract the anchor public key
+	lea	rsi,[g_der]			; extract the anchor public key (EC or RSA)
 	mov	edx,eax
 	lea	rdi,[g_anchor]
-	call	cert_extract_pubkey
+	call	cert_pubkey
 	test	eax,eax
 	jz	.pem_fail
 	movzx	edx,word [r13]			; the chain length

@@ -8,6 +8,7 @@ rodata
 	oid_prime256v1		db 0x2A,0x86,0x48,0xCE,0x3D,0x03,0x01,0x07	; 1.2.840.10045.3.1.7
 	oid_rsa_encryption	db 0x2A,0x86,0x48,0x86,0xF7,0x0D,0x01,0x01,0x01	; 1.2.840.113549.1.1.1
 	oid_ecdsa_sha256	db 0x2A,0x86,0x48,0xCE,0x3D,0x04,0x03,0x02	; 1.2.840.10045.4.3.2
+	oid_sha256_rsa		db 0x2A,0x86,0x48,0x86,0xF7,0x0D,0x01,0x01,0x0B	; 1.2.840.113549.1.1.11
 	oid_san			db 0x55,0x1D,0x11				; 2.5.29.17 subjectAltName
 	oid_cn			db 0x55,0x04,0x03				; 2.5.4.3 commonName
 	pem_begin		db '-----BEGIN CERTIFICATE-----'
@@ -15,6 +16,13 @@ rodata
 	pem_end			db '-----END CERTIFICATE-----'
 	PEM_END_LEN		:= $ - pem_end
 end rodata
+
+; A public key a certificate carries: EC P-256 or RSA, in one blob.
+PK_TYPE		:= 0		; d: 1 = EC P-256, 2 = RSA
+PK_NLEN		:= 4		; d: RSA modulus length in bytes
+PK_E		:= 8		; d: RSA public exponent
+PK_DATA		:= 16		; EC point (04|X|Y, 65) or RSA modulus (big-endian)
+PK_SIZE		:= PK_DATA + 528
 
 ; rsi = element, rdx = end of the enclosing content. al = tag, rsi = its
 ; content, ecx = content length, r8 = the next element. CF when it does
@@ -118,7 +126,8 @@ bss
 	g_x509_extend	dq ?
 	g_time_a	rb 14			; normalised YYYYMMDDHHMMSS scratch
 	g_time_b	rb 14
-	g_x509_issuer	rb 65			; an issuer key pulled from the chain
+	g_x509_issuer	rb PK_SIZE		; an issuer key pulled from the chain
+	g_x509_anchor	rb PK_SIZE		; a trust anchor's key (for tests/loading)
 end bss
 
 ; rsi = certificate DER, edx = its length, rdi = the issuer's public key
@@ -171,7 +180,15 @@ cert_verify:
 	lea	rdi,[oid_ecdsa_sha256]
 	mov	edx,8
 	call	der_oid_is
-	jne	.bad				; not ECDSA-SHA256 (maybe RSA): not checked
+	je	.is_ecdsa
+	lea	rdi,[oid_sha256_rsa]
+	mov	edx,9
+	call	der_oid_is
+	je	.is_rsa
+	jmp	.bad
+.is_ecdsa:
+	cmp	dword [r14+PK_TYPE],1		; the issuer key must be EC
+	jne	.bad
 	; signatureValue: BIT STRING of 00 | SEQUENCE { INTEGER r, INTEGER s }
 	mov	rsi,r12
 	mov	rdx,r13
@@ -208,11 +225,32 @@ cert_verify:
 	call	der_int_32
 	jc	.bad
 	; verify
-	mov	rdi,r14
+	lea	rdi,[r14+PK_DATA]
 	lea	rsi,[g_x509_dig]
 	lea	rdx,[g_x509_r]
 	lea	rcx,[g_x509_s]
 	call	p256_verify
+	jmp	.out
+.is_rsa:
+	cmp	dword [r14+PK_TYPE],2		; the issuer key must be RSA
+	jne	.bad
+	mov	rsi,r12				; signatureValue: BIT STRING of 00 | signature
+	mov	rdx,r13
+	call	der_read
+	jc	.bad
+	cmp	al,3
+	jne	.bad
+	cmp	ecx,1
+	jb	.bad
+	cmp	byte [rsi],0
+	jne	.bad
+	inc	rsi				; rsi = the raw RSA signature
+	mov	rdx,rsi				; sig
+	lea	rdi,[r14+PK_DATA]		; modulus
+	mov	esi,[r14+PK_NLEN]		; nbytes
+	mov	ecx,[r14+PK_E]			; exponent
+	lea	r8,[g_x509_dig]			; the TBS hash
+	call	rsa_pkcs1_verify
 	jmp	.out
 .bad:
 	xor	eax,eax
@@ -749,7 +787,7 @@ cert_chain_verify:
 	lea	rdi,[g_x509_issuer]
 	mov	rsi,rax
 	mov	edx,ecx
-	call	cert_extract_pubkey
+	call	cert_pubkey
 	test	eax,eax
 	jz	.no
 	lea	rdi,[g_x509_issuer]
@@ -924,6 +962,145 @@ pem_first_cert:
 	xor	eax,eax
 .out:
 	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; rsi = certificate DER, edx = its length, rdi = out (a PK_SIZE blob): the
+; subject public key, EC P-256 or RSA. eax = 1, or 0 when unparsable or an
+; unsupported key type. Used to build the issuer keys for a chain.
+cert_pubkey:
+	push	rbx
+	push	r12
+	push	r13
+	mov	r12,rdi				; blob
+	lea	rdx,[rsi+rdx]
+	call	der_read			; Certificate SEQUENCE
+	jc	.no
+	cmp	al,0x30
+	jne	.no
+	mov	rdx,r8
+	call	der_read			; tbsCertificate
+	jc	.no
+	cmp	al,0x30
+	jne	.no
+	mov	rdx,r8
+	call	der_read			; [0] version, or the serial
+	jc	.no
+	mov	ebx,5
+	cmp	al,0xA0
+	jne	@f
+	inc	ebx
+@@:
+	mov	rsi,r8
+	dec	ebx
+	jz	.spki
+@@:
+	call	der_read
+	jc	.no
+	mov	rsi,r8
+	dec	ebx
+	jnz	@b
+.spki:
+	call	der_read			; SubjectPublicKeyInfo
+	jc	.no
+	cmp	al,0x30
+	jne	.no
+	mov	r13,r8				; SPKI end
+	mov	rdx,r8
+	call	der_read			; AlgorithmIdentifier
+	jc	.no
+	cmp	al,0x30
+	jne	.no
+	mov	rbx,r8				; the subjectPublicKey BIT STRING
+	mov	rdx,r8
+	call	der_read			; algorithm OID
+	jc	.no
+	cmp	al,6
+	jne	.no
+	lea	rdi,[oid_ec_public_key]
+	mov	edx,7
+	call	der_oid_is
+	je	.ec
+	lea	rdi,[oid_rsa_encryption]
+	mov	edx,9
+	call	der_oid_is
+	je	.rsa
+	jmp	.no
+.ec:
+	mov	rsi,rbx				; BIT STRING: 00 04 X Y
+	mov	rdx,r13
+	call	der_read
+	jc	.no
+	cmp	al,3
+	jne	.no
+	cmp	ecx,66
+	jne	.no
+	cmp	word [rsi],0x0400
+	jne	.no
+	inc	rsi
+	lea	rdi,[r12+PK_DATA]
+	mov	ecx,65
+	rep	movsb
+	mov	dword [r12+PK_TYPE],1
+	mov	eax,1
+	jmp	.out
+.rsa:
+	mov	rsi,rbx				; BIT STRING: 00 | SEQUENCE { n, e }
+	mov	rdx,r13
+	call	der_read
+	jc	.no
+	cmp	al,3
+	jne	.no
+	cmp	ecx,1
+	jb	.no
+	cmp	byte [rsi],0
+	jne	.no
+	inc	rsi				; past the unused-bits octet
+	mov	rdx,r8
+	call	der_read			; SEQUENCE { INTEGER n, INTEGER e }
+	jc	.no
+	cmp	al,0x30
+	jne	.no
+	mov	rdx,r8
+	call	der_read			; INTEGER n
+	jc	.no
+	cmp	al,2
+	jne	.no
+	cmp	byte [rsi],0			; strip a leading sign byte
+	jne	@f
+	inc	rsi
+	dec	ecx
+@@:
+	cmp	ecx,528				; modulus too big for the blob
+	ja	.no
+	mov	[r12+PK_NLEN],ecx
+	push	r8
+	lea	rdi,[r12+PK_DATA]
+	rep	movsb				; copy the modulus (big-endian)
+	pop	r8
+	mov	rsi,r8
+	mov	rdx,r13
+	call	der_read			; INTEGER e
+	jc	.no
+	cmp	al,2
+	jne	.no
+	xor	eax,eax
+.erd:
+	shl	eax,8
+	movzx	edx,byte [rsi]
+	or	eax,edx
+	inc	rsi
+	dec	ecx
+	jnz	.erd
+	mov	[r12+PK_E],eax
+	mov	dword [r12+PK_TYPE],2
+	mov	eax,1
+	jmp	.out
+.no:
+	xor	eax,eax
+.out:
 	pop	r13
 	pop	r12
 	pop	rbx

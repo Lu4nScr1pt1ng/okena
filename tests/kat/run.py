@@ -213,14 +213,38 @@ try:
     capub = _ca.public_key().public_bytes(_Enc.X962, _PF.UncompressedPoint)
     leafpub = _leaf.public_key().public_bytes(_Enc.X962, _PF.UncompressedPoint)
     leaf_der = leaf_cert.public_bytes(_Enc.DER)
-    def _cv(pub, der):
-        return run(b"C", pub + _struct.pack("<H", len(der)) + der)
-    check("x509: leaf verified under the issuer key", _cv(capub, leaf_der), "01")
-    check("x509: wrong issuer key rejected", _cv(leafpub, leaf_der), "00")
-    check("x509: self-signed CA verifies under its own key", _cv(capub, ca_cert.public_bytes(_Enc.DER)), "01")
+    ca_der = ca_cert.public_bytes(_Enc.DER)
+    def _cv(issuer_cert, der):
+        return run(b"C", _struct.pack("<H", len(issuer_cert)) + issuer_cert + _struct.pack("<H", len(der)) + der)
+    check("x509: leaf verified under the issuer certificate", _cv(ca_der, leaf_der), "01")
+    check("x509: wrong issuer rejected", _cv(leaf_der, leaf_der), "00")
+    check("x509: self-signed CA verifies under itself", _cv(ca_der, ca_der), "01")
     _bad = bytearray(leaf_der)
     _bad[len(_bad) // 2] ^= 1
-    check("x509: tampered certificate rejected", _cv(capub, bytes(_bad)), "00")
+    check("x509: tampered certificate rejected", _cv(ca_der, bytes(_bad)), "00")
+    # an RSA-signed certificate (an RSA CA, as real chains have)
+    from cryptography.hazmat.primitives.asymmetric import rsa as _rsa
+    _rsa_ca = _rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    _rsa_ca_cert = (_x509.CertificateBuilder()
+                    .subject_name(_x509.Name([_x509.NameAttribute(_x509.NameOID.COMMON_NAME, "rsa-ca")]))
+                    .issuer_name(_x509.Name([_x509.NameAttribute(_x509.NameOID.COMMON_NAME, "rsa-ca")]))
+                    .public_key(_rsa_ca.public_key()).serial_number(_x509.random_serial_number())
+                    .not_valid_before(_dt.datetime(2020, 1, 1)).not_valid_after(_dt.datetime(2030, 1, 1))
+                    .add_extension(_x509.BasicConstraints(ca=True, path_length=None), True)
+                    .sign(_rsa_ca, _hashes.SHA256()))
+    _rsa_leaf = (_x509.CertificateBuilder()
+                 .subject_name(_x509.Name([_x509.NameAttribute(_x509.NameOID.COMMON_NAME, "leaf")]))
+                 .issuer_name(_x509.Name([_x509.NameAttribute(_x509.NameOID.COMMON_NAME, "rsa-ca")]))
+                 .public_key(_leaf.public_key()).serial_number(_x509.random_serial_number())
+                 .not_valid_before(_dt.datetime(2020, 1, 1)).not_valid_after(_dt.datetime(2030, 1, 1))
+                 .sign(_rsa_ca, _hashes.SHA256()))
+    _rsa_ca_der = _rsa_ca_cert.public_bytes(_Enc.DER)
+    _rsa_leaf_der = _rsa_leaf.public_bytes(_Enc.DER)
+    check("x509: EC leaf under an RSA CA (sha256WithRSA)", _cv(_rsa_ca_der, _rsa_leaf_der), "01")
+    check("x509: self-signed RSA CA verifies under itself", _cv(_rsa_ca_der, _rsa_ca_der), "01")
+    check("x509: RSA CA, wrong issuer rejected", _cv(ca_der, _rsa_leaf_der), "00")
+    _rbad = bytearray(_rsa_leaf_der); _rbad[len(_rbad) // 2] ^= 1
+    check("x509: tampered RSA-signed certificate rejected", _cv(_rsa_ca_der, bytes(_rbad)), "00")
 
     # X.509 validity window: notBefore <= now <= notAfter (ASCII compare of
     # the normalised UTCTime/GeneralizedTime, the check a TLS client makes)
@@ -289,16 +313,35 @@ try:
     def _entry(cert):
         der = cert.public_bytes(_Enc.DER)
         return len(der).to_bytes(3, "big") + der + b"\x00\x00"       # cert, empty extensions
-    def _chain(anchor, certs):
+    root_der = root_c.public_bytes(_Enc.DER)
+    inter_der = inter_c.public_bytes(_Enc.DER)
+    def _chain(anchor_cert, certs):
         lst = b"".join(_entry(c) for c in certs)
-        return run(b"K", anchor + _struct.pack("<H", len(lst)) + lst)
-    check("x509 chain: leaf + intermediate to the root", _chain(rootpub, [ee_c, inter_c]), "01")
-    check("x509 chain: single leaf directly under the anchor", _chain(interpub, [ee_c]), "01")
-    check("x509 chain: wrong anchor rejected", _chain(rootpub, [ee_c]), "00")
-    check("x509 chain: broken link rejected", _chain(rootpub, [ee_c, root_c]), "00")
+        return run(b"K", _struct.pack("<H", len(anchor_cert)) + anchor_cert + _struct.pack("<H", len(lst)) + lst)
+    check("x509 chain: leaf + intermediate to the root", _chain(root_der, [ee_c, inter_c]), "01")
+    check("x509 chain: single leaf directly under the anchor", _chain(inter_der, [ee_c]), "01")
+    check("x509 chain: wrong anchor rejected", _chain(root_der, [ee_c]), "00")
+    check("x509 chain: broken link rejected", _chain(root_der, [ee_c, root_c]), "00")
     _tamp = bytearray(ee_c.public_bytes(_Enc.DER)); _tamp[len(_tamp)//2] ^= 1
     _tchain = len(_tamp).to_bytes(3, "big") + bytes(_tamp) + b"\x00\x00" + _entry(inter_c)
-    check("x509 chain: tampered leaf rejected", run(b"K", rootpub + _struct.pack("<H", len(_tchain)) + _tchain), "00")
+    check("x509 chain: tampered leaf rejected",
+          run(b"K", _struct.pack("<H", len(root_der)) + root_der + _struct.pack("<H", len(_tchain)) + _tchain), "00")
+    # a mixed chain: an EC leaf under an RSA intermediate under an RSA root
+    _rr = _rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    _ri = _rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    def _rc(subj_key, subj, iss_key, iss, ca):
+        b = (_x509.CertificateBuilder()
+             .subject_name(_x509.Name([_x509.NameAttribute(_x509.NameOID.COMMON_NAME, subj)]))
+             .issuer_name(_x509.Name([_x509.NameAttribute(_x509.NameOID.COMMON_NAME, iss)]))
+             .public_key(subj_key.public_key()).serial_number(_x509.random_serial_number())
+             .not_valid_before(_dt.datetime(2020, 1, 1)).not_valid_after(_dt.datetime(2030, 1, 1))
+             .add_extension(_x509.BasicConstraints(ca=ca, path_length=None), True))
+        return b.sign(iss_key, _hashes.SHA256())
+    _rroot = _rc(_rr, "rr", _rr, "rr", True)
+    _rint = _rc(_ri, "ri", _rr, "rr", True)
+    _ree = _rc(_ee, "ee", _ri, "ri", False)
+    check("x509 chain: EC leaf, RSA intermediate, RSA root", _chain(_rroot.public_bytes(_Enc.DER), [_ree, _rint]), "01")
+    check("x509 chain: RSA chain, wrong anchor rejected", _chain(root_der, [_ree, _rint]), "00")
 
     # Trust anchors from a PEM file: decode the first CERTIFICATE block,
     # take its key, and verify a chain under it (how a TLS client loads a
