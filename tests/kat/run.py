@@ -16,6 +16,8 @@ import subprocess
 import sys
 
 KAT = pathlib.Path(__file__).resolve().parents[2] / "build" / "kat"
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import mlkem_ref  # noqa: E402
 failures = 0
 checks = 0
 
@@ -538,14 +540,18 @@ try:
     check("client hello: cipher TLS_AES_128_GCM_SHA256", d["cipher"], "1301")
     check("client hello: supported_versions = TLS 1.3 + TLS 1.2",
           d["exts"].get(43), bytes([4, 3, 4, 3, 3]))
-    check("client hello: supported_groups x25519, secp256r1",
-          d["exts"].get(10), bytes([0, 4, 0, 0x1D, 0, 0x17]))
+    check("client hello: supported_groups X25519MLKEM768, x25519, secp256r1",
+          d["exts"].get(10), bytes([0, 6, 0x11, 0xEC, 0, 0x1D, 0, 0x17]))
     check("client hello: sig_algs ecdsa_secp256r1_sha256 + rsa_pss_rsae_sha256 + rsa_pkcs1_sha256",
           d["exts"].get(13), bytes([0, 6, 4, 3, 8, 4, 4, 1]))
     ks = d["exts"].get(51, b"")
-    check("client hello: key_shares x25519 (32) + secp256r1 (65)",
-          ks[:2] == bytes([0, 0x69]) and ks[2:6] == bytes([0, 0x1D, 0, 0x20]) and ks[38:42] == bytes([0, 0x17, 0, 0x41]),
+    check("client hello: key_shares X25519MLKEM768 (1216) + x25519 (32) + secp256r1 (65)",
+          ks[:2] == bytes([5, 0x2D]) and ks[2:6] == bytes([0x11, 0xEC, 4, 0xC0])
+          and ks[1222:1226] == bytes([0, 0x1D, 0, 0x20]) and ks[1258:1262] == bytes([0, 0x17, 0, 0x41])
+          and ks[1190:1222] == ks[1226:1258],          # the hybrid's x25519 half is the x25519 share
           True)
+    check("client hello: the hybrid's ML-KEM key passes the modulus check",
+          mlkem_ref.ek_valid(ks[6:6 + 1184]), True)
     check("client hello: ALPN http/1.1", d["exts"].get(16), bytes([0, 9, 8]) + b"http/1.1")
     sni = d["exts"].get(0, b"")
     check("client hello: SNI okena.test", sni[5:] if len(sni) >= 5 else b"", b"okena.test")
@@ -670,8 +676,6 @@ for n in list(range(0, 180)) + [271, 272, 273, 335, 336, 337, 1184, 1216]:
 # --- ML-KEM-768 (FIPS 203) encapsulation: against tests/kat/mlkem_ref.py
 # (written from the standard) byte for byte, the modulus check, and against
 # OpenSSL's decapsulation where it has ML-KEM
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-import mlkem_ref  # noqa: E402
 
 for i in range(40):
     ek, dk = mlkem_ref.keygen(rng.randbytes(32), rng.randbytes(32))
@@ -681,6 +685,17 @@ for i in range(40):
     check("ml-kem-768 encaps = reference (ciphertext | secret)", got, (c + k).hex())
     if i < 5:
         check("ml-kem-768 reference decaps closes the loop", mlkem_ref.decaps(dk, bytes.fromhex(got[:2 * 1088])).hex(), k.hex())
+# key generation and decapsulation (okena's client side), and implicit
+# rejection: a ciphertext changed by one bit decapsulates to J(z | c)
+for i in range(20):
+    d, z = rng.randbytes(32), rng.randbytes(32)
+    ek, dk = mlkem_ref.keygen(d, z)
+    check("ml-kem-768 keygen = reference (ek | dk)", run(b"L", d + z), (ek + dk).hex())
+    k, c = mlkem_ref.encaps(ek, rng.randbytes(32))
+    check("ml-kem-768 decaps = reference", run(b"O", dk + c), k.hex())
+    bad = bytearray(c)
+    bad[rng.randrange(1088)] ^= 1 << rng.randrange(8)
+    check("ml-kem-768 implicit rejection: J(z | c)", run(b"O", dk + bytes(bad)), mlkem_ref.J(z + bytes(bad)).hex())
 # an encapsulation key with a coefficient not below q is refused
 ek, _ = mlkem_ref.keygen(rng.randbytes(32), rng.randbytes(32))
 for pos in (0, 1, 383, 384 * 2 + 190):
@@ -712,6 +727,20 @@ try:
                                 "-secret", dp / "ss"], check=True, capture_output=True)
                 check("ml-kem-768 encaps to an OpenSSL key, OpenSSL decapsulates the same secret",
                       (dp / "ss").read_bytes().hex(), got[1088:].hex())
+            # the other way: OpenSSL encapsulates to a key okena generated
+            # (its seed form, d | z, is what OpenSSL imports)
+            for i in range(3):
+                seed = rng.randbytes(64)
+                ek = bytes.fromhex(run(b"L", seed))[:1184]
+                (dp / "ek.raw").write_bytes(ek)
+                # SubjectPublicKeyInfo for ML-KEM-768: the 22-byte prefix, then ek
+                spki = bytes.fromhex("308204b2300b0609608648016503040402038204a100") + ek
+                (dp / "ek.der").write_bytes(spki)
+                subprocess.run(["openssl", "pkeyutl", "-encap", "-pubin", "-inkey", dp / "ek.der", "-keyform", "DER",
+                                "-out", dp / "ct2", "-secret", dp / "ss2"], check=True, capture_output=True)
+                dk = bytes.fromhex(run(b"L", seed))[1184:]
+                check("ml-kem-768: OpenSSL encapsulates to okena's key, okena decapsulates the same secret",
+                      run(b"O", dk + (dp / "ct2").read_bytes()), (dp / "ss2").read_bytes().hex())
     else:
         print("note: no ML-KEM in this openssl; ML-KEM checked against the reference only")
 except (OSError, subprocess.CalledProcessError, ValueError) as e:

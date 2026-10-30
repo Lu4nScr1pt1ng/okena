@@ -1,4 +1,4 @@
-; ML-KEM-768 (FIPS 203), the encapsulation side: what a TLS server needs
+; ML-KEM-768 (FIPS 203): encapsulation, what a TLS server needs
 ; for X25519MLKEM768. The client sends an encapsulation key (1184 bytes);
 ; the server checks it, encapsulates to it and answers the ciphertext
 ; (1088 bytes); both sides then hold the same 32-byte secret.
@@ -19,11 +19,18 @@
 ;   mlkem768_encaps(rdi ct (1088), rsi shared secret (32), rdx ek (1184),
 ;                   rcx m (32, random))
 ;       eax = 1, or 0 when ek fails the modulus check (nothing written).
+;   mlkem768_keygen(rdi ek (1184), rsi dk (2400), rdx d | z (64, random))
+;       the key pair (FIPS 203 algorithm 16); for okena's own client side.
+;   mlkem768_decaps(rdi shared secret (32), rsi dk (2400), rdx ct (1088))
+;       algorithm 18: decrypt, encrypt again and compare in constant time;
+;       a ciphertext that does not match yields the implicit-rejection
+;       secret J(z | c) instead, never an error.
 
 MLKEM_Q		:= 3329
 MLKEM_EK	:= 1184
 MLKEM_CT	:= 1088
 MLKEM_SS	:= 32
+MLKEM_DK	:= 2400
 
 ; the encapsulation's workspace, on the stack
 MK_Y		:= 0			; NTT(y), three polynomials
@@ -38,7 +45,11 @@ MK_EK		:= MK_KR + 64		; q: ek
 MK_CT		:= MK_EK + 8		; q: ct
 MK_M		:= MK_CT + 8		; q: m
 MK_SS		:= MK_M + 8		; q: the shared secret's destination
-MK_SIZE		:= (MK_SS + 8 + 15) and not 15
+MK_DK		:= MK_SS + 8		; q: dk (decapsulation)
+MK_M2		:= MK_DK + 8		; m' (decapsulation)
+MK_KBAR		:= MK_M2 + 32		; J(z | c)
+MK_CT2		:= MK_KBAR + 32		; c' (1088), then z | c for J (1120)
+MK_SIZE		:= (MK_CT2 + 32 + MLKEM_CT + 15) and not 15
 
 rodata
 	align 2
@@ -270,9 +281,12 @@ mlkem_cbd2:
 	ret
 
 ; rdi = polynomial, rsi = 384 bytes: ByteDecode12. eax = 1, or 0 when a
-; coefficient is not below q (the modulus check). Public data.
+; coefficient is not below q (the modulus check). No branch on the values:
+; it decodes the secret key too.
 mlkem_decode12:
+	push	rbx
 	xor	ecx,ecx				; coefficient pair
+	xor	r8d,r8d				; any out of range
 .pair:
 	movzx	eax,word [rsi]
 	movzx	edx,byte [rsi+2]
@@ -282,19 +296,110 @@ mlkem_decode12:
 	and	eax,0xFFF
 	shr	edx,12
 	cmp	eax,MLKEM_Q
-	jae	.bad
+	setae	bl
+	or	r8b,bl
 	cmp	edx,MLKEM_Q
-	jae	.bad
+	setae	bl
+	or	r8b,bl
 	mov	[rdi+rcx*8],eax
 	mov	[rdi+rcx*8+4],edx
 	add	rsi,3
 	inc	ecx
 	cmp	ecx,128
 	jb	.pair
-	mov	eax,1
-	ret
-.bad:
 	xor	eax,eax
+	test	r8b,r8b
+	sete	al
+	pop	rbx
+	ret
+
+; rdi = out (384), rsi = polynomial (coefficients below q): ByteEncode12.
+mlkem_encode12:
+	xor	ecx,ecx
+.pair:
+	mov	eax,[rsi+rcx*8]
+	mov	edx,[rsi+rcx*8+4]
+	shl	edx,12
+	or	eax,edx
+	mov	[rdi],ax
+	shr	eax,16
+	mov	[rdi+2],al
+	add	rdi,3
+	inc	ecx
+	cmp	ecx,128
+	jb	.pair
+	ret
+
+; rdi = polynomial, rsi = 320 bytes: Decompress10(ByteDecode10).
+mlkem_decompress10:
+	xor	ecx,ecx
+.four:
+	mov	r8d,[rsi]
+	movzx	eax,byte [rsi+4]
+	shl	rax,32
+	or	r8,rax				; 40 bits
+	repeat 4, k:0
+		mov	rax,r8
+		if k > 0
+			shr	rax,k*10
+		end if
+		and	eax,1023
+		imul	eax,MLKEM_Q
+		add	eax,512
+		shr	eax,10
+		mov	[rdi+rcx*4+k*4],eax
+	end repeat
+	add	rsi,5
+	add	ecx,4
+	cmp	ecx,256
+	jb	.four
+	ret
+
+; rdi = polynomial, rsi = 128 bytes: Decompress4(ByteDecode4).
+mlkem_decompress4:
+	xor	ecx,ecx
+.two:
+	movzx	eax,byte [rsi]
+	mov	edx,eax
+	and	eax,15
+	shr	edx,4
+	imul	eax,MLKEM_Q
+	add	eax,8
+	shr	eax,4
+	imul	edx,MLKEM_Q
+	add	edx,8
+	shr	edx,4
+	mov	[rdi+rcx*4],eax
+	mov	[rdi+rcx*4+4],edx
+	inc	rsi
+	add	ecx,2
+	cmp	ecx,256
+	jb	.two
+	ret
+
+; rdi = out (32), rsi = polynomial: ByteEncode1(Compress1), the message.
+; Secret data: a multiply-shift, no branch.
+mlkem_compress1:
+	xor	ecx,ecx
+.byte:
+	xor	r8d,r8d
+	repeat 8, k:0
+		mov	eax,[rsi+rcx*4+k*4]
+		shl	eax,2
+		add	eax,MLKEM_Q
+		imul	eax,315
+		shr	eax,21
+		and	eax,1
+		if k > 0
+			shl	eax,k
+		end if
+		or	r8d,eax
+	end repeat
+	mov	[rdi],r8b
+	inc	rdi
+	add	ecx,8
+	cmp	ecx,256
+	jb	.byte
 	ret
 
 ; rdi = out (320), rsi = polynomial: ByteEncode10(Compress10).
@@ -458,7 +563,7 @@ mlkem768_encaps:
 	add	rsi,[rbp+MK_EK]
 	call	mlkem_decode12
 	test	eax,eax
-	jz	.out
+	jz	mlkem_leave
 	inc	r12d
 	cmp	r12d,3
 	jb	.check
@@ -475,6 +580,20 @@ mlkem768_encaps:
 	lea	rsi,[rbp+MK_IN]
 	mov	edx,64
 	call	sha3_512
+	call	mlkem_encrypt
+	; the shared secret is K
+	mov	rdi,[rbp+MK_SS]
+	lea	rsi,[rbp+MK_KR]
+	mov	ecx,32
+	rep	movsb
+	mov	eax,1
+	jmp	mlkem_leave
+
+; rbp = workspace with MK_EK, MK_M, MK_CT and r (MK_KR + 32): K-PKE.Encrypt
+; (algorithm 14), the ciphertext to MK_CT.
+mlkem_encrypt:
+	push	r12
+	push	r13
 	; y = NTT(CBD(PRF(r, i))), i = 0..2
 	xor	r12d,r12d
 .y:
@@ -579,17 +698,16 @@ mlkem768_encaps:
 	add	rdi,3 * 320
 	lea	rsi,[rbp+MK_ACC]
 	call	mlkem_compress4
-	; the shared secret is K
-	mov	rdi,[rbp+MK_SS]
-	lea	rsi,[rbp+MK_KR]
-	mov	ecx,32
-	rep	movsb
-	mov	eax,1
-.out:
+	pop	r13
+	pop	r12
+	ret
+
+; the end of every entry point: eax = the result, the workspace wiped
+mlkem_leave:
 	mov	r12d,eax
-	mov	rdi,rbp				; wipe: y, the noise, m, K and r
+	mov	rdi,rbp				; wipe: y, the noise, m, K, r, m', J
 	xor	eax,eax
-	mov	ecx,MK_EK / 8
+	mov	ecx,MK_SIZE / 8
 	rep	stosq
 	mov	eax,r12d
 	add	rsp,MK_SIZE
@@ -600,3 +718,231 @@ mlkem768_encaps:
 	pop	rbp
 	pop	rbx
 	ret
+
+; the prologue of every entry point: rbp = a fresh workspace
+macro mlkem_enter
+	push	rbx
+	push	rbp
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	sub	rsp,MK_SIZE
+	mov	rbp,rsp
+end macro
+
+mlkem768_keygen:
+	mlkem_enter
+	mov	[rbp+MK_CT],rdi			; ek
+	mov	[rbp+MK_DK],rsi
+	mov	[rbp+MK_M],rdx			; d | z
+	; (rho, sigma) = G(d | k)
+	mov	rsi,rdx
+	lea	rdi,[rbp+MK_IN]
+	mov	ecx,32
+	rep	movsb
+	mov	byte [rdi],3
+	lea	rdi,[rbp+MK_KR]
+	lea	rsi,[rbp+MK_IN]
+	mov	edx,33
+	call	sha3_512
+	; s = NTT(CBD(PRF(sigma, i))) into MK_Y (sigma is at MK_KR + 32, where
+	; mlkem_noise takes its seed)
+	xor	r12d,r12d
+.s:
+	mov	edx,r12d
+	call	mlkem_noise
+	imul	rdi,r12,1024
+	add	rdi,rbp
+	lea	rsi,[rbp+MK_TMP]
+	mov	ecx,256
+	push	rdi
+	rep	movsd
+	pop	rdi
+	call	mlkem_ntt
+	inc	r12d
+	cmp	r12d,3
+	jb	.s
+	; t[i] = sum_j A[i][j] s[j] + NTT(e[i]), A[i][j] = SampleNTT(rho | j | i)
+	xor	r12d,r12d
+.t:
+	lea	edx,[r12+3]
+	call	mlkem_noise
+	lea	rdi,[rbp+MK_TMP]
+	call	mlkem_ntt
+	lea	rsi,[rbp+MK_TMP]
+	lea	rdi,[rbp+MK_ACC]
+	mov	ecx,256
+	rep	movsd
+	xor	r13d,r13d
+.tj:
+	lea	rsi,[rbp+MK_KR]			; rho, then j, i
+	lea	rdi,[rbp+MK_IN]
+	mov	ecx,32
+	rep	movsb
+	mov	[rdi],r13b
+	mov	[rdi+1],r12b
+	lea	rdi,[rbp+MK_TMP]
+	lea	rsi,[rbp+MK_IN]
+	mov	rdx,rbp
+	call	mlkem_sample_ntt
+	lea	rdi,[rbp+MK_ACC]
+	lea	rsi,[rbp+MK_TMP]
+	imul	rdx,r13,1024
+	add	rdx,rbp
+	call	mlkem_basemul_acc
+	inc	r13d
+	cmp	r13d,3
+	jb	.tj
+	imul	rdi,r12,384
+	add	rdi,[rbp+MK_CT]
+	lea	rsi,[rbp+MK_ACC]
+	call	mlkem_encode12
+	inc	r12d
+	cmp	r12d,3
+	jb	.t
+	mov	rdi,[rbp+MK_CT]			; ek = t | rho
+	add	rdi,3 * 384
+	lea	rsi,[rbp+MK_KR]
+	mov	ecx,32
+	rep	movsb
+	; dk = s | ek | H(ek) | z
+	xor	r12d,r12d
+.dks:
+	imul	rdi,r12,384
+	add	rdi,[rbp+MK_DK]
+	imul	rsi,r12,1024
+	add	rsi,rbp
+	call	mlkem_encode12
+	inc	r12d
+	cmp	r12d,3
+	jb	.dks
+	mov	rdi,[rbp+MK_DK]
+	add	rdi,3 * 384
+	mov	rsi,[rbp+MK_CT]
+	mov	ecx,MLKEM_EK
+	rep	movsb
+	mov	rdi,[rbp+MK_DK]
+	add	rdi,3 * 384 + MLKEM_EK
+	mov	rsi,[rbp+MK_CT]
+	mov	edx,MLKEM_EK
+	call	sha3_256
+	mov	rdi,[rbp+MK_DK]
+	add	rdi,3 * 384 + MLKEM_EK + 32
+	mov	rsi,[rbp+MK_M]
+	add	rsi,32
+	mov	ecx,32
+	rep	movsb
+	mov	eax,1
+	jmp	mlkem_leave
+
+mlkem768_decaps:
+	mlkem_enter
+	mov	[rbp+MK_SS],rdi
+	mov	[rbp+MK_DK],rsi
+	mov	[rbp+MK_CT],rdx			; c, for now
+	; K-PKE.Decrypt (algorithm 15): w = v - NTT^-1(sum s[i] NTT(u[i]))
+	lea	rdi,[rbp+MK_ACC]
+	call	mlkem_zero
+	xor	r12d,r12d
+.u:
+	lea	rdi,[rbp+MK_TMP]
+	imul	rsi,r12,320
+	add	rsi,[rbp+MK_CT]
+	call	mlkem_decompress10
+	lea	rdi,[rbp+MK_TMP]
+	call	mlkem_ntt
+	mov	rdi,rbp				; s[i] into MK_Y
+	imul	rsi,r12,384
+	add	rsi,[rbp+MK_DK]
+	call	mlkem_decode12
+	lea	rdi,[rbp+MK_ACC]
+	mov	rsi,rbp
+	lea	rdx,[rbp+MK_TMP]
+	call	mlkem_basemul_acc
+	inc	r12d
+	cmp	r12d,3
+	jb	.u
+	lea	rdi,[rbp+MK_ACC]
+	call	mlkem_invntt
+	lea	rdi,[rbp+MK_TMP]		; v
+	mov	rsi,[rbp+MK_CT]
+	add	rsi,3 * 320
+	call	mlkem_decompress4
+	xor	ecx,ecx
+.w:
+	mov	eax,[rbp+MK_TMP+rcx*4]		; v - that, mod q
+	add	eax,MLKEM_Q
+	sub	eax,[rbp+MK_ACC+rcx*4]
+	mk_csub	eax,edx
+	mov	[rbp+MK_ACC+rcx*4],eax
+	inc	ecx
+	cmp	ecx,256
+	jb	.w
+	lea	rdi,[rbp+MK_M2]
+	lea	rsi,[rbp+MK_ACC]
+	call	mlkem_compress1
+	; (K', r') = G(m' | h)
+	lea	rsi,[rbp+MK_M2]
+	lea	rdi,[rbp+MK_IN]
+	mov	ecx,32
+	rep	movsb
+	mov	rsi,[rbp+MK_DK]
+	add	rsi,3 * 384 + MLKEM_EK
+	mov	ecx,32
+	rep	movsb
+	lea	rdi,[rbp+MK_KR]
+	lea	rsi,[rbp+MK_IN]
+	mov	edx,64
+	call	sha3_512
+	; K-bar = J(z | c) = SHAKE256(z | c, 32)
+	mov	rsi,[rbp+MK_DK]
+	add	rsi,3 * 384 + MLKEM_EK + 32
+	lea	rdi,[rbp+MK_CT2]
+	mov	ecx,32
+	rep	movsb
+	mov	rsi,[rbp+MK_CT]
+	mov	ecx,MLKEM_CT
+	rep	movsb
+	lea	rdi,[rbp+MK_KBAR]
+	mov	esi,32
+	lea	rdx,[rbp+MK_CT2]
+	mov	ecx,32 + MLKEM_CT
+	mov	r8d,SHAKE256_RATE
+	call	shake
+	; c' = K-PKE.Encrypt(ek, m', r')
+	mov	r14,[rbp+MK_CT]			; c
+	lea	rax,[rbp+MK_CT2]
+	mov	[rbp+MK_CT],rax
+	lea	rax,[rbp+MK_M2]
+	mov	[rbp+MK_M],rax
+	mov	rax,[rbp+MK_DK]
+	add	rax,3 * 384
+	mov	[rbp+MK_EK],rax
+	call	mlkem_encrypt
+	; c == c'? in constant time; then K' or K-bar by mask
+	xor	eax,eax
+	xor	ecx,ecx
+.cmp:
+	mov	rdx,[r14+rcx]
+	xor	rdx,[rbp+MK_CT2+rcx]
+	or	rax,rdx
+	add	ecx,8
+	cmp	ecx,MLKEM_CT
+	jb	.cmp
+	neg	rax				; CF = 1 when they differ
+	sbb	rax,rax				; -1 differ, 0 same
+	mov	rdi,[rbp+MK_SS]
+	xor	ecx,ecx
+.sel:
+	mov	rdx,[rbp+MK_KR+rcx]		; K'
+	mov	r8,[rbp+MK_KBAR+rcx]
+	xor	r8,rdx
+	and	r8,rax
+	xor	rdx,r8				; K' ^ ((K' ^ K-bar) & mask)
+	mov	[rdi+rcx],rdx
+	add	ecx,8
+	cmp	ecx,32
+	jb	.sel
+	mov	eax,1
+	jmp	mlkem_leave

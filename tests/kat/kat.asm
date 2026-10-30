@@ -4,6 +4,7 @@
 ;   's' SHA-256 of the rest              'S' the same on the scalar path
 ;   '3' SHA3-256, '5' SHA3-512 of the rest; '6' SHAKE128, '7' SHAKE256: out len (2, LE), message
 ;   'q' ML-KEM-768 encapsulation: ek (1184), m (32) -> ciphertext | shared secret
+;   'L' ML-KEM-768 key generation: d | z (64) -> ek | dk; 'O' decapsulation: dk, ct -> secret
 ;   'h' HMAC: key length (2, LE), key, message
 ;   'k' HKDF: salt len (2), salt, ikm len (2), ikm, info len (2), info, out len (2)
 ;   'l' Expand-Label: secret (32), label len (1), label, ctx len (1), ctx, out len (2)
@@ -52,7 +53,7 @@ bss
 	align 16
 	g_gcm:		rb GCM_SIZE
 	g_gmode		db ?
-	g_tc:		rb TC_SIZE
+	g_tc:		rb TC_FULL
 	g_gcm12:	rb 512
 	g_der:		rb 8192
 	g_anchor:	rb PK_SIZE
@@ -100,6 +101,10 @@ start:
 	je	.shake256
 	cmp	al,'q'
 	je	.mlkem_encaps
+	cmp	al,'L'
+	je	.mlkem_keygen
+	cmp	al,'O'
+	je	.mlkem_decaps
 	cmp	al,'S'
 	je	.sha_scalar
 	cmp	al,'h'
@@ -200,6 +205,19 @@ start:
 	test	eax,eax
 	jz	.fail
 	mov	esi,MLKEM_CT + MLKEM_SS
+	jmp	.print
+.mlkem_keygen:					; d | z (64) -> ek | dk
+	mov	rdx,rsi
+	lea	rdi,[g_out]
+	lea	rsi,[g_out+MLKEM_EK]
+	call	mlkem768_keygen
+	mov	esi,MLKEM_EK + MLKEM_DK
+	jmp	.print
+.mlkem_decaps:					; dk (2400), ct (1088) -> shared secret
+	lea	rdx,[rsi+MLKEM_DK]
+	lea	rdi,[g_out]
+	call	mlkem768_decaps
+	mov	esi,MLKEM_SS
 	jmp	.print
 .shake128:					; out length (2, LE), message
 	mov	r8d,SHAKE128_RATE
