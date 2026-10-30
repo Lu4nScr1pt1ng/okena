@@ -171,7 +171,10 @@ exchange) and the keys go to kTLS 1.2; it is kTLS-only (no module, the
 connection is refused). TLS 1.2 to upstreams is in too: a pool's tls { }
 falls back to a 1.2 ECDHE handshake (ECDHE_ECDSA / ECDHE_RSA, AES-128-GCM)
 for a backend that has no 1.3, verifying the ServerKeyExchange signature
-and the certificate chain, over kTLS. Still open: the full tlsfuzzer run.
+and the certificate chain, over kTLS. A tlsfuzzer harness (tests/tls/tlsfuzz.py) drives tlsfuzzer's
+TLS stack against a live okena -- TLS 1.3 and 1.2 handshakes with an HTTP
+response, and negative probes -- skipped unless tlsfuzzer is installed; a
+broad conformance run over its script suite is the remaining QA work.
 
 * SHA-2, HMAC, HKDF (from fasm2crud), AES-GCM (AES-NI, VAES/VPCLMULQDQ),
   ChaCha20-Poly1305, X25519, ML-KEM-768, P-256 ECDH/ECDSA, Ed25519.

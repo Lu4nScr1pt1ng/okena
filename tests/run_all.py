@@ -51,6 +51,7 @@ SUITES = [
     ("passthrough epoll", ["tests/tls/passthrough.py", "epoll"]),
     ("tls client", ["tests/tls/client.py"]),
     ("tls 1.2 client", ["tests/tls/client12.py"]),
+    ("tlsfuzzer", ["tests/tls/tlsfuzz.py"]),
     ("tls12 server", ["tests/tls/server12.py"]),
     ("tls12 io_uring", ["tests/tls/tls12.py", "io_uring"]),
     ("tls12 epoll", ["tests/tls/tls12.py", "epoll"]),
