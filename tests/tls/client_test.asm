@@ -26,6 +26,10 @@ include '../../src/tls/keyschedule.inc'
 include '../../src/tls/client.inc'
 
 SBUF	:= 1 shl 16
+SOL_TLS	:= 282
+TLS_TX	:= 1
+TLS_RX	:= 2
+TCP_ULP	:= 31
 
 bss
 	align 16
@@ -36,6 +40,9 @@ bss
 	g_in:		rb SBUF			; the server's flight / responses
 	g_out:		rb SBUF			; the decrypted handshake
 	g_send:		rb SBUF			; the client Finished + the GET
+	g_mode		db ?			; 0 = user-space records, 1 = kTLS
+	g_txinfo:	rb 40			; the kernel's TLS crypto_info, TX then RX
+	g_rxinfo:	rb 40
 	g_pair:		rb 2
 end bss
 
@@ -59,6 +66,11 @@ start:
 	syscall
 	cmp	rax,2
 	jne	fail
+	xor	edi,edi				; one more byte: the data-path mode
+	lea	rsi,[g_mode]
+	mov	edx,1
+	xor	eax,eax
+	syscall
 	; socket + connect 127.0.0.1:port
 	mov	edi,AF_INET
 	mov	esi,SOCK_STREAM
@@ -138,18 +150,24 @@ start:
 	lea	rsi,[g_send]
 	call	tlsc_finish
 	mov	r12d,eax			; the Finished record length
-	; seal the request as an application_data record right after it
-	lea	rdi,[g_tc]
-	lea	rsi,[g_send+r12]
-	lea	rdx,[.get]
-	mov	ecx,.get.len
-	call	tlsc_seal
-	add	r12d,eax
-	mov	edi,[g_fd]
+	mov	edi,[g_fd]			; send the client Finished
 	lea	rsi,[g_send]
 	mov	edx,r12d
 	sys	SYS_write
-	; read the server's response (session tickets, then the HTTP page)
+	cmp	byte [g_mode],1
+	je	.ktls
+.userspace:
+	; seal the request as an application_data record, send it, and read
+	; the response, opening each record with the server application key
+	lea	rdi,[g_tc]
+	lea	rsi,[g_send]
+	lea	rdx,[.get]
+	mov	ecx,.get.len
+	call	tlsc_seal
+	mov	edi,[g_fd]
+	lea	rsi,[g_send]
+	mov	edx,eax
+	sys	SYS_write
 	xor	ebx,ebx
 .read2:
 	mov	edi,[g_fd]
@@ -191,6 +209,55 @@ start:
 	cmp	dword [rsi],'HTTP'
 	jne	.next
 	; success: the encrypted channel carried an HTTP response
+	jmp	.yes
+.ktls:
+	; hand the application keys to the kernel and exchange plaintext
+	lea	rdi,[g_tc]
+	lea	rsi,[g_txinfo]
+	lea	rdx,[g_rxinfo]
+	call	tlsc_ktls_info
+	mov	edi,[g_fd]			; TCP_ULP "tls"
+	mov	esi,IPPROTO_TCP
+	mov	edx,TCP_ULP
+	lea	r10,[.ulp]
+	mov	r8d,4
+	mov	eax,SYS_setsockopt
+	syscall
+	test	eax,eax
+	jnz	.userspace			; no tls module: prove it in user space
+	mov	edi,[g_fd]			; TLS_TX
+	mov	esi,SOL_TLS
+	mov	edx,TLS_TX
+	lea	r10,[g_txinfo]
+	mov	r8d,40
+	mov	eax,SYS_setsockopt
+	syscall
+	test	eax,eax
+	jnz	.no
+	mov	edi,[g_fd]			; TLS_RX
+	mov	esi,SOL_TLS
+	mov	edx,TLS_RX
+	lea	r10,[g_rxinfo]
+	mov	r8d,40
+	mov	eax,SYS_setsockopt
+	syscall
+	test	eax,eax
+	jnz	.no
+	mov	edi,[g_fd]			; plaintext request; the kernel seals it
+	lea	rsi,[.get]
+	mov	edx,.get.len
+	sys	SYS_write
+	mov	edi,[g_fd]			; plaintext response; the kernel opens it
+	lea	rsi,[g_in]
+	mov	edx,SBUF
+	xor	eax,eax
+	syscall
+	cmp	rax,4
+	jb	.no
+	cmp	dword [g_in],'HTTP'
+	jne	.no
+	jmp	.yes
+.yes:
 	mov	byte [g_pair],'1'
 	jmp	.print
 .no:
@@ -205,6 +272,7 @@ start:
 	sys	SYS_exit
 .get		db 'GET / HTTP/1.0',13,10,13,10
 .get.len	:= $ - .get
+.ulp		db 'tls',0
 .sni		db 'localhost'
 .sni.len	:= $ - .sni
 

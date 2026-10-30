@@ -744,3 +744,33 @@ tlsc_open:
 	pop	r12
 	pop	rbx
 	ret
+
+; rdi = tc, rsi = TX crypto_info out, rdx = RX crypto_info out: fills two
+; struct tls12_crypto_info_aes_gcm_128 (40 bytes each) from the application
+; keys for the kernel's TLS, both at record sequence 0. TX seals what the
+; client sends (the client application key); RX opens what the server sends
+; (the server application key). Layout matches the server side in tls.inc.
+tlsc_ktls_info:
+	mov	r9,rdi				; tc
+	lea	rax,[r9+TC_CAPK]		; client key(16) then IV(12)
+	mov	rcx,rsi
+	xor	r8d,r8d
+	call	.fill
+	lea	rax,[r9+TC_SAPK]		; server key(16) then IV(12)
+	mov	rcx,rdx
+	xor	r8d,r8d
+	call	.fill
+	ret
+; rax = key(16)+IV(12), rcx = out(40), r8 = the next record sequence.
+; Preserves r9, rsi, rdx for the caller.
+.fill:
+	mov	dword [rcx],0x00330304		; TLS 1.3, TLS_CIPHER_AES_GCM_128
+	mov	r10,[rax+16+4]			; iv: the IV's last 8 bytes
+	mov	[rcx+4],r10
+	movdqu	xmm0,[rax]			; key: 16 bytes
+	movdqu	[rcx+12],xmm0
+	mov	r10d,[rax+16]			; salt: the IV's first 4 bytes
+	mov	[rcx+28],r10d
+	bswap	r8
+	mov	[rcx+32],r8			; rec_seq, big endian
+	ret

@@ -37,14 +37,17 @@ sh("openssl", "ecparam", "-genkey", "-name", "prime256v1", "-noout", "-out", "s.
 sh("openssl", "req", "-new", "-x509", "-key", "s.key", "-subj", "/CN=localhost", "-days", "2", "-out", "s.pem")
 
 
-def run_against(groups, port):
-    sp = subprocess.Popen(["openssl", "s_server", "-accept", str(port), "-cert", str(tmp / "s.pem"),
-                           "-key", str(tmp / "s.key"), "-tls1_3", "-ciphersuites", "TLS_AES_128_GCM_SHA256",
-                           "-groups", groups, "-naccept", "1", "-www"],
-                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+def run_against(groups, port, ktls=False):
+    cmd = ["openssl", "s_server", "-accept", str(port), "-cert", str(tmp / "s.pem"),
+           "-key", str(tmp / "s.key"), "-tls1_3", "-ciphersuites", "TLS_AES_128_GCM_SHA256",
+           "-groups", groups, "-naccept", "1", "-www"]
+    if ktls:
+        cmd += ["-num_tickets", "0"]    # a plain read() can't drain post-handshake records
+    sp = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         time.sleep(0.7)                 # let s_server bind (its one accept is for the client)
-        r = subprocess.run([str(CLIENT)], input=struct.pack(">H", port), capture_output=True, timeout=10)
+        r = subprocess.run([str(CLIENT)], input=struct.pack(">H", port) + bytes([1 if ktls else 0]),
+                           capture_output=True, timeout=10)
     finally:
         sp.kill()
     return r.stdout.decode().strip()
@@ -62,6 +65,13 @@ def main():
           run_against("P-256", 34481) == "1")
     check("x25519 preferred when the server offers both",
           run_against("X25519:P-256", 34482) == "1")
+    # the same exchange, but the application keys go to the kernel (kTLS):
+    # the client writes/reads plaintext and the kernel seals/opens records.
+    # Falls back to user-space records (still "1") when the tls module is absent.
+    check("kTLS: application keys handed to the kernel, HTTP response read",
+          run_against("X25519", 34483, ktls=True) == "1")
+    check("kTLS: secp256r1 over the kernel's TLS",
+          run_against("P-256", 34484, ktls=True) == "1")
     print(f"tls client: {'all passed' if not failures else f'{failures} failed'}")
     return 1 if failures else 0
 
