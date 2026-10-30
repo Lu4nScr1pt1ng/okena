@@ -320,6 +320,20 @@ start:
 	call	x25519
 	jmp	.counted
 @@:
+	cmp	r12b,'c'
+	jne	.not_c
+	lea	rdi,[g_gcm]			; AES-128-GCM: key (16), IV (12), 16 KiB sealed in place
+	mov	rsi,r14
+	call	gcm_init
+	lea	rdi,[g_gcm]
+	lea	rsi,[r14+16]
+	xor	edx,edx
+	xor	ecx,ecx
+	lea	r8,[r14+28]
+	mov	r9d,16384
+	call	gcm_seal
+	jmp	.counted
+.not_c:
 	cmp	r12b,'u'
 	jne	@f
 	lea	rdi,[g_out]

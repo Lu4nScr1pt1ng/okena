@@ -3,8 +3,11 @@
 ; of Intel's "Carry-Less Multiplication and Its Usage for Computing the
 ; GCM Mode" white paper). No table lookups, no secret-dependent branches.
 ;
-; One block at a time: records of established connections are meant for
-; kTLS; this serves the handshake and the user-space fallback.
+; Eight blocks at a time where there are eight: counter mode runs eight
+; AES pipelines side by side, and GHASH multiplies eight blocks by H^8..H^1
+; (powers made by gcm_init) and reduces once (aggregated reduction). The
+; rest one block at a time. Serves the handshake and the user-space
+; records (established connections are meant for kTLS).
 ;
 ;   gcm_init(rdi ctx, rsi key[16])
 ;   gcm_seal(rdi ctx, rsi iv[12], rdx aad, ecx aad length, r8 buffer,
@@ -15,7 +18,8 @@
 
 GCM_RK		:= 0				; 11 round keys
 GCM_H		:= 176				; H = E(K, 0), byte-reflected
-GCM_SIZE	:= 192
+GCM_HP		:= GCM_H			; H^1..H^8, 16 bytes each
+GCM_SIZE	:= GCM_HP + 8 * 16
 
 rodata
 	align 16
@@ -49,6 +53,13 @@ gcm_init:
 	call	gcm_encrypt_block
 	pshufb	xmm0,xword [gcm_bswap]
 	movdqu	[rdi+GCM_H],xmm0
+	; H^2..H^8 for the eight-block GHASH
+	repeat 7, k:1
+		movdqu	xmm0,[rdi+GCM_HP+(k-1)*16]
+		movdqu	xmm1,[rdi+GCM_H]
+		call	gcm_gfmul
+		movdqu	[rdi+GCM_HP+k*16],xmm0
+	end repeat
 	ret
 
 ; rdi = ctx, xmm0 = block: E(K, block) in xmm0. Clobbers xmm1.
@@ -80,6 +91,9 @@ gcm_gfmul:
 	pslldq	xmm5,8
 	pxor	xmm3,xmm5
 	pxor	xmm6,xmm4			; xmm6:xmm3 = X * H, bit-reflected
+; xmm6:xmm3 = a product (or a sum of them), unreduced: reduced into xmm0.
+; Clobbers xmm2-xmm9.
+gcm_reduce:
 	; one bit left (the reflection's off-by-one)
 	movdqa	xmm7,xmm3
 	movdqa	xmm8,xmm6
@@ -122,10 +136,48 @@ gcm_gfmul:
 	ret
 
 ; rdi = ctx, rsi = data, rdx = length, xmm10 = X (byte-reflected): X after
-; GHASH over the data, zero-padded to a block. Clobbers xmm0-xmm9, rax,
-; rcx, rsi, rdx.
+; GHASH over the data, zero-padded to a block. Clobbers xmm0-xmm9,
+; xmm12-xmm14, rax, rcx, rsi, rdx.
 gcm_ghash:
 	sub	rsp,16
+.eight:
+	cmp	rdx,128
+	jb	.block
+	; X' = (X + C1) H^8 + C2 H^7 + ... + C8 H: products summed unreduced
+	; (xmm12 low, xmm13 high, xmm14 middle), one reduction
+	pxor	xmm12,xmm12
+	pxor	xmm13,xmm13
+	pxor	xmm14,xmm14
+	repeat 8, i:0
+		movdqu	xmm0,[rsi+i*16]
+		pshufb	xmm0,xword [gcm_bswap]
+		if i = 0
+			pxor	xmm0,xmm10
+		end if
+		movdqu	xmm1,[rdi+GCM_HP+(7-i)*16]
+		movdqa	xmm2,xmm0
+		pclmulqdq xmm2,xmm1,0x00
+		pxor	xmm12,xmm2
+		movdqa	xmm2,xmm0
+		pclmulqdq xmm2,xmm1,0x11
+		pxor	xmm13,xmm2
+		movdqa	xmm2,xmm0
+		pclmulqdq xmm2,xmm1,0x10
+		pxor	xmm14,xmm2
+		pclmulqdq xmm0,xmm1,0x01
+		pxor	xmm14,xmm0
+	end repeat
+	movdqa	xmm3,xmm14
+	pslldq	xmm3,8
+	pxor	xmm3,xmm12
+	movdqa	xmm6,xmm14
+	psrldq	xmm6,8
+	pxor	xmm6,xmm13
+	call	gcm_reduce
+	movdqa	xmm10,xmm0
+	add	rsi,128
+	sub	rdx,128
+	jmp	.eight
 .block:
 	test	rdx,rdx
 	jz	.done
@@ -159,9 +211,40 @@ gcm_ghash:
 
 ; rdi = ctx, r8 = buffer, r9 = length, r10d = first counter (big-endian
 ; counter value), xmm11 = the IV in the first 12 bytes: the buffer XORed
-; with E(K, IV | counter++) in place. Clobbers xmm0-xmm2, rax, rcx, r8, r9.
+; with E(K, IV | counter++) in place. Clobbers xmm0-xmm9, rax, rcx, r8,
+; r9.
 gcm_ctr:
 	sub	rsp,16
+.eight:
+	cmp	r9,128
+	jb	.block
+	repeat 8, i:0
+		movdqa	xmm#i,xmm11
+		lea	eax,[r10+i]
+		bswap	eax
+		pinsrd	xmm#i,eax,3
+	end repeat
+	add	r10d,8
+	movdqu	xmm8,[rdi+GCM_RK]
+	repeat 8, i:0
+		pxor	xmm#i,xmm8
+	end repeat
+	repeat 9, r:1
+		movdqu	xmm8,[rdi+GCM_RK+r*16]
+		repeat 8, i:0
+			aesenc	xmm#i,xmm8
+		end repeat
+	end repeat
+	movdqu	xmm8,[rdi+GCM_RK+160]
+	repeat 8, i:0
+		aesenclast xmm#i,xmm8
+		movdqu	xmm9,[r8+i*16]
+		pxor	xmm9,xmm#i
+		movdqu	[r8+i*16],xmm9
+	end repeat
+	add	r8,128
+	sub	r9,128
+	jmp	.eight
 .block:
 	test	r9,r9
 	jz	.done
@@ -191,6 +274,9 @@ gcm_ctr:
 .done:
 	pxor	xmm0,xmm0
 	movdqu	[rsp],xmm0			; no keystream left behind
+	repeat 8, i:1
+		pxor	xmm#i,xmm#i
+	end repeat
 	add	rsp,16
 	ret
 
