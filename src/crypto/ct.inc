@@ -58,5 +58,8 @@ crypto_init:
 	shr	ebx,29				; SHA extensions
 	and	bl,1
 	mov	[g_cpu_shani],bl
+	and	ecx,(1 shl 9) or (1 shl 10)	; VAES and VPCLMULQDQ, on ymm
+	cmp	ecx,(1 shl 9) or (1 shl 10)
+	sete	[g_cpu_vaes]
 	pop	rbx
 	ret

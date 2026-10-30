@@ -143,6 +143,8 @@ gcm_ghash:
 .eight:
 	cmp	rdx,128
 	jb	.block
+	cmp	byte [g_cpu_vaes],0
+	jne	.eight_wide
 	; X' = (X + C1) H^8 + C2 H^7 + ... + C8 H: products summed unreduced
 	; (xmm12 low, xmm13 high, xmm14 middle), one reduction
 	pxor	xmm12,xmm12
@@ -178,6 +180,50 @@ gcm_ghash:
 	add	rsi,128
 	sub	rdx,128
 	jmp	.eight
+.eight_wide:
+	; the same with VPCLMULQDQ on ymm: blocks 2j and 2j + 1 side by side,
+	; times H^(8-2j) and H^(7-2j), the two lanes folded at the end
+	vbroadcasti128 ymm9,xword [gcm_bswap]
+	vpxor	ymm12,ymm12,ymm12
+	vpxor	ymm13,ymm13,ymm13
+	vpxor	ymm14,ymm14,ymm14
+	repeat 4, j:0
+		vmovdqu	ymm0,[rsi+j*32]
+		vpshufb	ymm0,ymm0,ymm9
+		if j = 0
+			vmovdqa	xmm8,xmm10		; X, the upper lane zero
+			vpxor	ymm0,ymm0,ymm8
+		end if
+		vmovdqu	xmm1,[rdi+GCM_HP+(7-2*j)*16]
+		vinserti128 ymm1,ymm1,xword [rdi+GCM_HP+(6-2*j)*16],1
+		vpclmulqdq ymm2,ymm0,ymm1,0x00
+		vpxor	ymm12,ymm12,ymm2
+		vpclmulqdq ymm2,ymm0,ymm1,0x11
+		vpxor	ymm13,ymm13,ymm2
+		vpclmulqdq ymm2,ymm0,ymm1,0x10
+		vpxor	ymm14,ymm14,ymm2
+		vpclmulqdq ymm2,ymm0,ymm1,0x01
+		vpxor	ymm14,ymm14,ymm2
+	end repeat
+	vextracti128 xmm2,ymm12,1
+	vpxor	xmm12,xmm12,xmm2
+	vextracti128 xmm2,ymm13,1
+	vpxor	xmm13,xmm13,xmm2
+	vextracti128 xmm2,ymm14,1
+	vpxor	xmm14,xmm14,xmm2
+	vzeroupper
+	movdqa	xmm3,xmm14
+	pslldq	xmm3,8
+	pxor	xmm3,xmm12
+	movdqa	xmm6,xmm14
+	psrldq	xmm6,8
+	pxor	xmm6,xmm13
+	call	gcm_reduce
+	movdqa	xmm10,xmm0
+	add	rsi,128
+	sub	rdx,128
+	cmp	rdx,128
+	jae	.eight_wide
 .block:
 	test	rdx,rdx
 	jz	.done
@@ -215,6 +261,8 @@ gcm_ghash:
 ; r9.
 gcm_ctr:
 	sub	rsp,16
+	cmp	byte [g_cpu_vaes],0
+	jne	.eight_wide
 .eight:
 	cmp	r9,128
 	jb	.block
@@ -245,6 +293,45 @@ gcm_ctr:
 	add	r8,128
 	sub	r9,128
 	jmp	.eight
+.eight_wide:
+	; VAES: the eight blocks as four pairs, one ymm each
+	cmp	r9,128
+	jb	.wide_done
+	repeat 4, j:2
+		lea	eax,[r10+2*(j-2)]
+		bswap	eax
+		vpinsrd	xmm0,xmm11,eax,3
+		lea	eax,[r10+2*(j-2)+1]
+		bswap	eax
+		vpinsrd	xmm1,xmm11,eax,3
+		vinserti128 ymm#j,ymm0,xmm1,1
+	end repeat
+	add	r10d,8
+	vbroadcasti128 ymm8,xword [rdi+GCM_RK]
+	repeat 4, j:2
+		vpxor	ymm#j,ymm#j,ymm8
+	end repeat
+	repeat 9, r:1
+		vbroadcasti128 ymm8,xword [rdi+GCM_RK+r*16]
+		repeat 4, j:2
+			vaesenc	ymm#j,ymm#j,ymm8
+		end repeat
+	end repeat
+	vbroadcasti128 ymm8,xword [rdi+GCM_RK+160]
+	repeat 4, j:2
+		vaesenclast ymm#j,ymm#j,ymm8
+		vpxor	ymm#j,ymm#j,[r8+(j-2)*32]
+		vmovdqu	[r8+(j-2)*32],ymm#j
+	end repeat
+	add	r8,128
+	sub	r9,128
+	jmp	.eight_wide
+.wide_done:
+	vpxor	ymm2,ymm2,ymm2			; no keystream left behind
+	vpxor	ymm3,ymm3,ymm3
+	vpxor	ymm4,ymm4,ymm4
+	vpxor	ymm5,ymm5,ymm5
+	vzeroupper
 .block:
 	test	r9,r9
 	jz	.done

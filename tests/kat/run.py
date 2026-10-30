@@ -178,6 +178,9 @@ try:
         check(f"gcm seal {n} aad {len(aad)}", seal(key, iv, aad, pt), want.hex())
         if n % 7 == 0:
             check(f"gcm open {n}", gopen(key, iv, aad, want), pt.hex())
+        if n % 3 == 0 or n > 299:            # the SSE paths too, where the CPU has VAES
+            check(f"gcm seal {n} without VAES", run(b"vg", key + iv + le16(len(aad)) + aad + pt), want.hex())
+            check(f"gcm open {n} without VAES", run(b"vG", key + iv + le16(len(aad)) + aad + want), pt.hex())
     key, iv, aad, pt = rng.randbytes(16), rng.randbytes(12), b"header", rng.randbytes(100)
     ct = bytearray(AESGCM(key).encrypt(iv, pt, aad))
     for name, k2, aad2, ct2 in [

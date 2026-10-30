@@ -68,6 +68,13 @@ start:
 	movzx	eax,byte [g_in]
 	lea	rsi,[g_in+1]			; the input
 	lea	rdx,[rbx-1]			; its length
+	cmp	al,'v'				; 'v' first: without VAES (the SSE paths)
+	jne	@f
+	mov	byte [g_cpu_vaes],0
+	movzx	eax,byte [rsi]
+	inc	rsi
+	dec	rdx
+@@:
 	cmp	al,'s'
 	je	.sha
 	cmp	al,'S'

@@ -138,13 +138,14 @@ Finished, known then), resumed with psk_dhe_ke (ECDHE still: forward
 secrecy), binders checked, no certificate or signature, about 27 us of
 worker CPU saved. AES-128-GCM runs eight blocks at a time (eight AES
 pipelines side by side; GHASH by H^8..H^1 with one reduction): 4.3 GB/s
-on 16 KiB records, from 1.84 (OpenSSL 3.5, VAES: 5.8); a 50 MB download
+on 16 KiB records, from 1.84; a 50 MB download
 with user-space records went from 755 MB/s to 1.05 GB/s, level with
 kTLS. Ticket keys rotate hourly in the supervisor: three slots on a page
 shared with the workers, the new key written into the slot not in use,
 then made current; tickets open under the current or the previous key.
-Next: a ticket key file shared by a fleet, a VAES/VPCLMULQDQ path, then
-phase 4.
+Where the CPU has VAES and VPCLMULQDQ the eight blocks go two to an
+instruction on ymm: 6.9 GB/s on 16 KiB records (OpenSSL 3.5: 5.8). Next:
+a ticket key file shared by a fleet, then phase 4.
 
 * SHA-2, HMAC, HKDF (from fasm2crud), AES-GCM (AES-NI, VAES/VPCLMULQDQ),
   ChaCha20-Poly1305, X25519, ML-KEM-768, P-256 ECDH/ECDSA, Ed25519.
