@@ -101,6 +101,10 @@ start:
 	je	.cert_verify
 	cmp	al,'H'
 	je	.client_hello
+	cmp	al,'T'
+	je	.cert_time
+	cmp	al,'N'
+	je	.cert_host
 	cmp	al,'g'
 	je	.gcm
 	cmp	al,'G'
@@ -439,6 +443,25 @@ start:
 	lea	rdi,[rsi]			; issuer pub
 	lea	rsi,[rsi+67]			; cert der
 	call	cert_verify
+	mov	[g_out],al
+	lea	rdi,[g_out]
+	mov	esi,1
+	jmp	.print
+.cert_time:				; now(14 ascii) cert_len(u16 le) cert_der
+	movzx	edx,word [rsi+14]
+	mov	rdi,rsi				; now
+	lea	rsi,[rsi+16]			; cert der
+	call	cert_time_valid
+	mov	[g_out],al
+	lea	rdi,[g_out]
+	mov	esi,1
+	jmp	.print
+.cert_host:				; hostlen(1) host cert_len(u16 le) cert_der
+	movzx	ecx,byte [rsi]			; host length
+	lea	rdi,[rsi+1]			; host
+	movzx	edx,word [rsi+rcx+1]		; cert length
+	lea	rsi,[rsi+rcx+3]			; cert der
+	call	cert_match_host
 	mov	[g_out],al
 	lea	rdi,[g_out]
 	mov	esi,1

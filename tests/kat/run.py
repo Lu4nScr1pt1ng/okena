@@ -222,6 +222,51 @@ try:
     _bad[len(_bad) // 2] ^= 1
     check("x509: tampered certificate rejected", _cv(capub, bytes(_bad)), "00")
 
+    # X.509 validity window: notBefore <= now <= notAfter (ASCII compare of
+    # the normalised UTCTime/GeneralizedTime, the check a TLS client makes)
+    def _tv(now, der):
+        return run(b"T", now.encode() + _struct.pack("<H", len(der)) + der)
+    check("x509 time: within the window", _tv("20250101000000", leaf_der), "01")
+    check("x509 time: before notBefore rejected", _tv("20190101000000", leaf_der), "00")
+    check("x509 time: after notAfter rejected", _tv("20310101000000", leaf_der), "00")
+    check("x509 time: on the notBefore boundary", _tv("20200101000000", leaf_der), "01")
+    # a cert whose dates land past 2050 exercise GeneralizedTime encoding
+    _future = (_x509.CertificateBuilder()
+               .subject_name(_x509.Name([_x509.NameAttribute(_x509.NameOID.COMMON_NAME, "leaf")]))
+               .issuer_name(_x509.Name([_x509.NameAttribute(_x509.NameOID.COMMON_NAME, "ca")]))
+               .public_key(_leaf.public_key()).serial_number(_x509.random_serial_number())
+               .not_valid_before(_dt.datetime(2049, 1, 1))
+               .not_valid_after(_dt.datetime(2060, 1, 1))
+               .sign(_ca, _hashes.SHA256())).public_bytes(_Enc.DER)
+    check("x509 time: GeneralizedTime window", _tv("20550101000000", _future), "01")
+    check("x509 time: before a GeneralizedTime window", _tv("20250101000000", _future), "00")
+
+    # X.509 hostname matching: subjectAltName dNSName (with a leftmost
+    # wildcard) is authoritative, else the subject commonName
+    def _host(host, der):
+        h = host.encode()
+        return run(b"N", bytes([len(h)]) + h + _struct.pack("<H", len(der)) + der)
+    def _san_cert(cn, names):
+        b = (_x509.CertificateBuilder()
+             .subject_name(_x509.Name([_x509.NameAttribute(_x509.NameOID.COMMON_NAME, cn)]))
+             .issuer_name(_x509.Name([_x509.NameAttribute(_x509.NameOID.COMMON_NAME, "ca")]))
+             .public_key(_leaf.public_key()).serial_number(_x509.random_serial_number())
+             .not_valid_before(_dt.datetime(2020, 1, 1)).not_valid_after(_dt.datetime(2030, 1, 1)))
+        if names is not None:
+            b = b.add_extension(_x509.SubjectAlternativeName([_x509.DNSName(n) for n in names]), False)
+        return b.sign(_ca, _hashes.SHA256()).public_bytes(_Enc.DER)
+    _san = _san_cert("ignored", ["a.example.com", "*.wild.example.com"])
+    check("x509 host: exact SAN match", _host("a.example.com", _san), "01")
+    check("x509 host: SAN match is case-insensitive", _host("A.Example.COM", _san), "01")
+    check("x509 host: wildcard matches one label", _host("x.wild.example.com", _san), "01")
+    check("x509 host: wildcard does not match two labels", _host("x.y.wild.example.com", _san), "00")
+    check("x509 host: wildcard does not match the bare domain", _host("wild.example.com", _san), "00")
+    check("x509 host: unlisted name rejected", _host("evil.example.com", _san), "00")
+    check("x509 host: CN ignored when a SAN is present", _host("ignored", _san), "00")
+    _cnonly = _san_cert("host.example.com", None)
+    check("x509 host: CN used when no SAN", _host("host.example.com", _cnonly), "01")
+    check("x509 host: CN mismatch rejected", _host("other.example.com", _cnonly), "00")
+
     # TLS client: a well-formed ClientHello (offering x25519 + secp256r1,
     # TLS_AES_128_GCM_SHA256, ecdsa_secp256r1_sha256, ALPN, SNI)
     def _parse_ch(sni):
