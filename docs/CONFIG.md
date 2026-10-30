@@ -384,7 +384,7 @@ pool api {
     balance least-request          # the default; or peak-ewma | round-robin | least-conn | random
                                    # (planned: maglev key=... | ring-hash key=...)
     protocol h2                    # http1 (default) | h2 | h2c | grpc
-    tls {                          # TLS to the backends (needs io_engine io_uring)
+    tls {                          # TLS to the backends (needs the kernel tls module)
         trust /etc/okena/internal-ca.pem   # PEM of trust anchors; the chain is verified
         sni api.internal                   # SNI + the name checked against the certificate
     }

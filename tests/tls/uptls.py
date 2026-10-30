@@ -131,7 +131,7 @@ def get(port, path="/", host="t"):
         head, _, body = data.partition(b"\r\n\r\n")
         status = int(head.split()[1])
         return status, body
-    except (OSError, ValueError) as e:
+    except (OSError, ValueError, IndexError) as e:
         return None, repr(e)
 
 
@@ -226,7 +226,9 @@ pool plain {{
                 if line.lower().startswith(b"content-length:"):
                     clen = int(line.split(b":")[1])
             body = f.read(clen)
-            ok = ok and status.split()[1] == b"200" and body == b"backend-ok:/p%d" % i
+            ok = ok and status.split()[1:2] == [b"200"] and body == b"backend-ok:/p%d" % i
+            if not ok:
+                break
     check("kTLS upstream reused across a keep-alive client's 30 requests",
           ok and backend_conns <= 2, f"ok={ok} backend_conns={backend_conns}")
 
@@ -238,6 +240,9 @@ pool plain {{
     log.seek(0)
     text = log.read()
     check("no worker died", "exited with status" not in text, text[-300:])
+    if failures:
+        log.seek(0)
+        print(log.read()[-2000:])
     print(f"uptls {ENGINE}: {'all passed' if not failures else f'{failures} failed'}")
     return 1 if failures else 0
 

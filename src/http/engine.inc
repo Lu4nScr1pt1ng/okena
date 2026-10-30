@@ -381,12 +381,50 @@ hep_try_recv:
 	je	.wait
 	cmp	rax,-EINTR
 	je	hep_try_recv
+	cmp	rax,-5				; -EIO: a kTLS control record is next
+	je	.control
+.result:
 	mov	dword [r15+H_EPOP],0
 	mov	edx,1
 	mov	ecx,[r15+H_EPSIDE]
 	jmp	hep_queue
 .wait:
 	ret
+; on a kTLS upstream, a NewSessionTicket: consume it with recvmsg (a
+; control buffer makes the kernel hand the record over), discard it and
+; read again (as http_updrain on io_uring)
+.control:
+	cmp	dword [r15+H_EPSIDE],0
+	je	.result
+	cmp	dword [r15+H_UPKTLS],0
+	je	.result
+	call	session_ptr
+	mov	edi,[rax+S_UPFD]
+	mov	r8,[r15+H_BUF]
+	lea	rax,[r8+HB_UDISC]		; iovec -> the discard buffer
+	mov	[r8+HB_UIOV],rax
+	mov	qword [r8+HB_UIOV+8],4096
+	mov	qword [r8+HB_UMSG],0		; msg_name
+	mov	qword [r8+HB_UMSG+8],0		; msg_namelen
+	lea	rax,[r8+HB_UIOV]
+	mov	[r8+HB_UMSG+16],rax		; msg_iov
+	mov	qword [r8+HB_UMSG+24],1		; msg_iovlen
+	lea	rax,[r8+HB_UCTL]
+	mov	[r8+HB_UMSG+32],rax		; msg_control
+	mov	qword [r8+HB_UMSG+40],64	; msg_controllen
+	mov	dword [r8+HB_UMSG+48],0		; msg_flags
+	lea	rsi,[r8+HB_UMSG]
+	mov	edx,MSG_DONTWAIT
+	mov	eax,SYS_recvmsg
+	syscall
+	cmp	rax,-EAGAIN
+	je	.wait
+	cmp	rax,-EINTR
+	je	.control
+	test	rax,rax
+	jns	hep_try_recv			; consumed: the read the proxy wanted
+	mov	rax,-5
+	jmp	.result
 
 hep_send:
 	h_rec

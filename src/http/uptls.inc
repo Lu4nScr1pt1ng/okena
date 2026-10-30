@@ -1,4 +1,4 @@
-; TLS towards the backends (the client side), io_uring. When a request's
+; TLS towards the backends (the client side), on both engines. When a request's
 ; pool has a `tls { }` block, the upstream connection runs a TLS 1.3 client
 ; handshake (src/tls/client.inc) before the request goes out, and the
 ; application keys are handed to the kernel's TLS (kTLS) so the proxy data
@@ -302,6 +302,8 @@ http_uptls_fin_sent:
 .ktls_chain:					; TLS 1.2 joins here, crypto_info already filled
 	h_rec
 	mov	dword [r15+H_STATE],HS_UTLS_KTLS
+	cmp	dword [g_engine],ENGINE_EPOLL
+	je	.epoll
 	mov	dword [r15+H_ULPERR],0
 	mov	edi,OP_H_ULP			; the TLS ULP (its errno kept)
 	mov	r9d,IPPROTO_TCP
@@ -325,6 +327,52 @@ http_uptls_fin_sent:
 	call	.sqe
 	and	byte [rax+SQE_FLAGS],not IOSQE_IO_LINK
 	ret
+
+; epoll: the same three options, set at once on the upstream socket
+.epoll:
+	call	session_ptr
+	mov	edi,[rax+S_UPFD]
+	push	rdi
+	mov	esi,IPPROTO_TCP
+	mov	edx,TCP_ULP
+	lea	r10,[ktls_ulp]
+	mov	r8d,4
+	mov	eax,SYS_setsockopt
+	syscall
+	pop	rdi
+	cmp	eax,-ENOENT
+	jne	@f
+	mov	dword [g_no_ktls],1		; no tls module on this host
+@@:
+	test	eax,eax
+	jnz	.efail
+	push	rdi
+	mov	esi,SOL_TLS
+	mov	edx,TLS_TX
+	mov	r10,[r15+H_BUF]
+	add	r10,HB_UWORK
+	mov	r8d,KTLS_INFO
+	mov	eax,SYS_setsockopt
+	syscall
+	pop	rdi
+	test	eax,eax
+	jnz	.efail
+	mov	esi,SOL_TLS
+	mov	edx,TLS_RX
+	mov	r10,[r15+H_BUF]
+	add	r10,HB_UWORK + KTLS_INFO
+	mov	r8d,KTLS_INFO
+	mov	eax,SYS_setsockopt
+	syscall
+	test	eax,eax
+	jnz	.efail
+	mov	dword [r15+H_UPKTLS],1		; the upstream is a kTLS socket now
+	mov	dword [r15+H_UPLEN],0
+	jmp	http_connected
+.efail:
+	mov	edi,ebx
+	call	uptls_log_fail
+	jmp	http_connect_failed
 
 ; edi = op, r9d = level, r10d = option, r11 = value, r8d = length: one
 ; linked setsockopt on the upstream socket. rax = the SQE.

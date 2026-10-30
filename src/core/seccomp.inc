@@ -176,6 +176,7 @@ rodata
 	sc_allow filter_supervisor, SYS_shutdown
 	sc_allow filter_supervisor, SYS_getsockname
 	sc_allow filter_supervisor, SYS_recvfrom
+	sc_allow filter_supervisor, SYS_recvmsg	; epoll workers: kTLS control records
 	sc_end filter_supervisor
 
 	; io_uring worker: the ring does the I/O
@@ -206,6 +207,7 @@ rodata
 	sc_allow filter_worker_epoll, SYS_getsockname
 	sc_allow filter_worker_epoll, SYS_recvfrom	; peeks: pooled connections, TLS Finished
 	sc_allow filter_worker_epoll, SYS_getrandom	; TLS: server random, ephemeral keys
+	sc_allow filter_worker_epoll, SYS_recvmsg	; kTLS upstream: control records (tickets)
 	sc_end filter_worker_epoll
 
 	; control process: DNS over UDP, resolv.conf and hosts read-only

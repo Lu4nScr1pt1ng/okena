@@ -160,8 +160,9 @@ sni NAME }` runs a TLS 1.3 client handshake to the backend (the same
 crypto as the server), verifies the server certificate (the chain to the
 trust anchor, the validity window and the host name), and hands the keys
 to kTLS so the proxy data path stays plaintext; a backend's session
-tickets (kTLS control records) are drained with recvmsg. io_uring only
-for now, and it closes the connection rather than reusing it. Still open
+tickets (kTLS control records) are drained with recvmsg. Both engines
+(on epoll the kTLS options are set at once and the tickets drained with a
+non-blocking recvmsg), and verified connections go back to the pool. Still open
 from the list: TLS 1.2 for older clients, a full tlsfuzzer conformance
 run (needs an HTTP-responding harness); then phase 4. TLS 1.2 for older
 clients is in on the server side: a ClientHello without TLS 1.3 runs an

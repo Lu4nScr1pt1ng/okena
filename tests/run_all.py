@@ -56,6 +56,7 @@ SUITES = [
     ("tls12 io_uring", ["tests/tls/tls12.py", "io_uring"]),
     ("tls12 epoll", ["tests/tls/tls12.py", "epoll"]),
     ("uptls io_uring", ["tests/tls/uptls.py", "io_uring"]),
+    ("uptls epoll", ["tests/tls/uptls.py", "epoll"]),
     ("peer io_uring", ["tests/peer/run.py", "io_uring"]),
     ("peer epoll", ["tests/peer/run.py", "epoll"]),
     ("config fuzz", ["tests/config/fuzz.py", "2000"]),
