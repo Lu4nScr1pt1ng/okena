@@ -49,7 +49,7 @@ sh("openssl", "req", "-new", "-key", "leaf.key", "-subj", "/CN=leaf", "-out", "l
 sh("openssl", "x509", "-req", "-in", "leaf.csr", "-CA", "ca.pem", "-CAkey", "ca.key", "-CAcreateserial",
    "-days", "2", "-out", "leaf.pem")
 (tmp / "chain.pem").write_text((tmp / "leaf.pem").read_text() + (tmp / "ca.pem").read_text())
-# what okena refuses
+# an RSA certificate (served to clients that do not offer ECDSA)
 sh("openssl", "req", "-new", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", "rsa.key",
    "-subj", "/CN=rsa", "-days", "2", "-out", "rsa.pem")
 sh("openssl", "ecparam", "-genkey", "-name", "secp384r1", "-noout", "-out", "p384.key")
@@ -64,10 +64,11 @@ code, out = okena_check(tmp / "p8.pem", tmp / "p8.key")
 check("a PKCS #8 key", code == 0, out.strip())
 code, out = okena_check(tmp / "chain.pem", tmp / "leaf.key")
 check("a chain, the leaf first, with the leaf's key", code == 0, out.strip())
+code, out = okena_check(tmp / "rsa.pem", tmp / "rsa.key")
+check("an RSA certificate and its key (for legacy clients)", code == 0, out.strip())
 for name, cert, key, want in [
     ("a key that does not belong to the certificate", "ec.pem", "p8.key", "does not belong to the certificate"),
     ("the chain with the CA's key", "chain.pem", "ca.key", "does not belong to the certificate"),
-    ("an RSA certificate", "rsa.pem", "rsa.key", "RSA certificate"),
     ("a P-384 certificate", "p384.pem", "p384.key", "not on P-256"),
     ("an encrypted key", "ec.pem", "enc.key", "encrypted key is not supported"),
     ("broken base64", "broken.pem", "ec.key", "base64 is broken"),

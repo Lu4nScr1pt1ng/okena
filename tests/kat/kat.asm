@@ -130,6 +130,8 @@ start:
 	je	.rsa_sign
 	cmp	al,'j'
 	je	.rsa_key
+	cmp	al,'J'
+	je	.rsa_keysign
 	cmp	al,'g'
 	je	.gcm
 	cmp	al,'G'
@@ -705,6 +707,26 @@ start:
 	mov	byte [g_out],0
 	lea	rdi,[g_out]
 	mov	esi,1
+	jmp	.print
+.rsa_keysign:				; keylen(u16 le) key_der hash(32) -> sig
+	movzx	edx,word [rsi]			; key length
+	lea	r14,[rsi+2]			; key der
+	lea	r15,[r14+rdx]			; hash follows the key
+	mov	rsi,r14
+	lea	rdi,[g_der+2048]		; n out
+	lea	rcx,[g_der+4096]		; d out
+	call	rsa_key_parse
+	test	eax,eax
+	jz	.rsa_key_fail
+	mov	r13d,eax			; nbytes
+	lea	rdi,[g_out]			; sign
+	lea	rsi,[g_der+2048]		; n
+	mov	edx,r13d
+	lea	rcx,[g_der+4096]		; d
+	mov	r8,r15				; hash
+	call	rsa_pss_sign
+	lea	rdi,[g_out]
+	mov	esi,r13d
 	jmp	.print
 .rec_fail:
 	mov	byte [g_out],0xEE

@@ -187,6 +187,7 @@ G_H1		:= 32
 G_GROUP		:= 64				; x25519 in supported_groups
 G_KS256		:= 2048				; the client sent a secp256r1 key share
 G_GROUP256	:= 4096				; secp256r1 in supported_groups
+G_SIGALG_RSA	:= 128				; rsa_pss_rsae_sha256 offered
 G_PSK		:= 128				; pre_shared_key: a ticket-sized identity, a 32-byte binder
 G_PSKDHE	:= 256				; psk_key_exchange_modes has psk_dhe_ke
 G_RESUME	:= 512				; the ticket opened and the binder is right: resumption
@@ -433,6 +434,10 @@ tls_hello:
 	jne	@f
 	or	dword [rbp+HL_GOT],G_SIGALG
 @@:
+	cmp	word [rsi],0x0408		; rsa_pss_rsae_sha256
+	jne	@f
+	or	dword [rbp+HL_GOT],G_SIGALG_RSA
+@@:
 	add	rsi,2
 	jmp	.sigalg_item
 
@@ -640,8 +645,16 @@ tls_hello:
 	jz	.version
 	test	eax,G_SUITE
 	jz	.handshake
+	mov	rcx,[rbp+HL_TL]
+	cmp	dword [rcx+TL_KEYTYPE],1
+	je	.req_rsa
 	test	eax,G_SIGALG
 	jz	.handshake
+	jmp	.sig_ok
+.req_rsa:
+	test	eax,G_SIGALG_RSA
+	jz	.handshake
+.sig_ok:
 	mov	dword [rbp+HL_GROUP],0		; the key-exchange group
 	mov	dword [rbp+HL_KSEXT],40		; its key_share extension length
 	test	eax,G_KS
@@ -912,6 +925,10 @@ tls_hello:
 	mov	r15,[rbp+HL_TL]
 	mov	ecx,[r15+TL_CLEN]
 	lea	eax,[rcx+192]			; EE + Certificate + CV + Finished
+	cmp	dword [r15+TL_KEYTYPE],1		; an RSA CertificateVerify carries
+	jne	@f				; an nbytes signature, not ~72 for ECDSA
+	add	eax,[r15+TL_RSA_NLEN]
+@@:
 	mov	edx,[rbp+HL_ROOM]
 	sub	edx,eax
 	and	edx,not 15
@@ -975,6 +992,8 @@ tls_hello:
 	lea	rsi,[rbp+HL_CV]
 	mov	edx,TLS13_CV_PREFIX + 32
 	call	sha256
+	cmp	dword [r15+TL_KEYTYPE],1
+	je	.cv_rsa
 	lea	rdi,[rbp+HL_SIG]
 	lea	rsi,[r15+TL_KEY]
 	lea	rdx,[rbp+HL_DIG]
@@ -989,6 +1008,21 @@ tls_hello:
 	mov	edx,eax
 	put24	r14+1, ecx
 	mov	word [r14+4],0x0304		; ecdsa_secp256r1_sha256
+	jmp	.cv_len
+.cv_rsa:
+	lea	rdi,[r14+8]			; RSA-PSS signature, written in place
+	lea	rsi,[r15+TL_RSA_N]
+	mov	edx,[r15+TL_RSA_NLEN]
+	lea	rcx,[r15+TL_RSA_D]
+	lea	r8,[rbp+HL_DIG]
+	call	rsa_pss_sign
+	mov	byte [r14],15
+	mov	eax,[r15+TL_RSA_NLEN]
+	lea	ecx,[rax+4]
+	mov	edx,eax
+	put24	r14+1, ecx
+	mov	word [r14+4],0x0408		; rsa_pss_rsae_sha256
+.cv_len:
 	rol	dx,8
 	mov	[r14+6],dx
 	rol	dx,8

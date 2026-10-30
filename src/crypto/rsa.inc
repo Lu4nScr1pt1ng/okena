@@ -960,3 +960,47 @@ rsa_key_parse:
 	pop	r12
 	pop	rbx
 	ret
+
+; rsi = PKCS#8 PrivateKeyInfo DER, edx = length: unwraps rsaEncryption and
+; returns the inner RSAPrivateKey (rsi = pointer, edx = length). CF set on
+; a parse error or a non-RSA key. der_read / oid_rsa_encryption are x509's.
+pkcs8_rsa_inner:
+	lea	rdx,[rsi+rdx]
+	call	der_read			; PrivateKeyInfo SEQUENCE
+	jc	.bad
+	cmp	al,0x30
+	jne	.bad
+	mov	r9,r8				; its end
+	mov	rdx,r8
+	call	der_read			; version INTEGER
+	jc	.bad
+	cmp	al,2
+	jne	.bad
+	mov	rsi,r8
+	mov	rdx,r9
+	call	der_read			; privateKeyAlgorithm SEQUENCE
+	jc	.bad
+	cmp	al,0x30
+	jne	.bad
+	mov	r10,r8				; the privateKey OCTET STRING follows
+	mov	rdx,r8
+	call	der_read			; algorithm OID
+	jc	.bad
+	cmp	al,6
+	jne	.bad
+	lea	rdi,[oid_rsa_encryption]
+	mov	edx,9
+	call	der_oid_is
+	jne	.bad
+	mov	rsi,r10
+	mov	rdx,r9
+	call	der_read			; privateKey OCTET STRING { RSAPrivateKey }
+	jc	.bad
+	cmp	al,4
+	jne	.bad
+	mov	edx,ecx
+	clc
+	ret
+.bad:
+	stc
+	ret

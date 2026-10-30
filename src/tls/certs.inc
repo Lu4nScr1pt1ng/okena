@@ -542,8 +542,15 @@ compile_cert:
 	call	cert_public_key
 	mov	ecx,eax
 	pop	rax
+	cmp	ecx,TLS_E_RSA
+	je	.leaf_rsa
 	test	ecx,ecx
 	jnz	.cert_kind
+	mov	dword [r13+TL_KEYTYPE],0		; EC P-256
+	jmp	.leaf_names
+.leaf_rsa:
+	mov	dword [r13+TL_KEYTYPE],1		; RSA
+.leaf_names:
 	; its names (subjectAltName dNSName), for SNI
 	push	rax				; the DER's length
 	mov	eax,[rsp+8]			; this entry's index
@@ -586,6 +593,8 @@ compile_cert:
 	mov	[r13+TL_CLEN],eax
 	cmp	eax,TLS_CHAIN_MAX
 	ja	.chain_big
+	cmp	dword [r13+TL_KEYTYPE],1
+	je	.chain_done_rsa
 	lea	rsi,[g_tls_cpub]
 	lea	rdi,[r13+TL_PUB]
 	mov	ecx,65
@@ -635,6 +644,7 @@ compile_cert:
 	lea	rdi,[g_tls_d]
 	mov	ecx,32
 	call	secure_zero
+.ok_ret:
 	pop	rax
 	add	rsp,32
 	pop	r15
@@ -643,6 +653,40 @@ compile_cert:
 	pop	r12
 	pop	rbx
 	ret
+.chain_done_rsa:
+	; the RSA private key: PKCS#1 (RSA PRIVATE KEY) or PKCS#8 (PRIVATE KEY)
+	mov	rdi,[rsp+8+TC_KEY]
+	call	tls_read_val
+	mov	r14,rax
+	mov	r15,rdx
+	mov	rsi,r14
+	mov	rdx,r15
+	lea	rdi,[pem_rsa_key]
+	call	pem_next
+	cmp	eax,0
+	jge	.rsa_pkcs1
+	mov	rsi,r14				; PKCS#8 wrapping RSA
+	mov	rdx,r15
+	lea	rdi,[pem_pkcs8_key]
+	call	pem_next
+	cmp	eax,0
+	jl	.no_key
+	lea	rsi,[g_tls_der]
+	mov	edx,eax
+	call	pkcs8_rsa_inner			; -> rsi/edx = the RSAPrivateKey
+	jc	.key_bad
+	jmp	.rsa_parse
+.rsa_pkcs1:
+	lea	rsi,[g_tls_der]
+	mov	edx,eax
+.rsa_parse:
+	lea	rdi,[r13+TL_RSA_N]
+	lea	rcx,[r13+TL_RSA_D]
+	call	rsa_key_parse
+	test	eax,eax
+	jz	.key_bad
+	mov	[r13+TL_RSA_NLEN],eax
+	jmp	.ok_ret
 ; diagnostics: at the cert line or the key line
 macro tls_fail which*, text&
 	mov	rdi,[rsp+8+which]
@@ -654,6 +698,8 @@ end macro
 	tls_fail TC_CERT, 'a CERTIFICATE block whose base64 is broken (or one over 64 KiB)'
 .no_cert:
 	tls_fail TC_CERT, 'no CERTIFICATE block in this file (PEM expected)'
+.key_bad:
+	tls_fail TC_KEY, 'the RSA private key cannot be read (PKCS#1 RSA PRIVATE KEY expected)'
 .too_big:
 	tls_fail TC_CERT, 'the certificate chains of this configuration pass 1 MiB'
 .names_full:

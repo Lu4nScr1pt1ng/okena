@@ -8,7 +8,11 @@ TL_CLEN		:= 4				; d: certificate_list length
 TL_KEY		:= 8				; 32 bytes: d, big endian
 TL_PUB		:= 40				; 65 bytes: 04 | X | Y
 TL_GROUP	:= 108				; d: the first entry of its listener (the default)
-TL_SIZE		:= 112
+TL_KEYTYPE	:= 112				; d: 0 = EC P-256, 1 = RSA
+TL_RSA_NLEN	:= 116				; d: RSA modulus length in bytes
+TL_RSA_N	:= 128				; RSA modulus (big-endian, up to 512)
+TL_RSA_D	:= 640				; RSA private exponent (big-endian, up to 512)
+TL_SIZE		:= 1152
 TLS_DER_MAX	:= 1 shl 16			; one certificate
 TLS_CHAIN_MAX	:= 20480			; a certificate_list: the server's flight fits a session buffer
 

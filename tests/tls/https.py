@@ -27,6 +27,7 @@ USER = len(sys.argv) > 2 and sys.argv[2] == "user"   # records sealed in user sp
 BASE = 27000 + os.getpid() % 99 * 20 + (5 if ENGINE == "epoll" else 0) + (10 if USER else 0)
 BACK, LST, ECHO, TLST = BASE, BASE + 1, BASE + 2, BASE + 3
 SNIL = BASE + 8
+RLST = BASE + 9                                      # an RSA-certificate listener
 tmp = pathlib.Path(tempfile.mkdtemp())
 atexit.register(shutil.rmtree, tmp, True)
 failures = 0
@@ -171,6 +172,12 @@ def main():
         sh("openssl", "ecparam", "-genkey", "-name", "prime256v1", "-noout", "-out", f"{n}.key")
         sh("openssl", "req", "-new", "-x509", "-key", f"{n}.key", "-subj", f"/CN={cn}", "-addext",
            f"subjectAltName={san}", "-days", "2", "-out", f"{n}.pem")
+    # an RSA leaf signed by the CA, for legacy clients that do not offer ECDSA
+    sh("openssl", "genrsa", "-out", "rsa.key", "2048")
+    sh("openssl", "req", "-new", "-key", "rsa.key", "-subj", "/CN=okena.test", "-out", "rsa.csr")
+    sh("openssl", "x509", "-req", "-in", "rsa.csr", "-CA", "ca.pem", "-CAkey", "ca.key", "-CAcreateserial",
+       "-days", "2", "-extfile", "ext", "-out", "rsa.pem")
+    (tmp / "rsachain.pem").write_text((tmp / "rsa.pem").read_text() + (tmp / "ca.pem").read_text())
     sni = (f"http 127.0.0.1:{SNIL} {{\n    tls {{\n        cert {tmp / 'a.pem'} key={tmp / 'a.key'}\n"
            f"        cert {tmp / 'b.pem'} key={tmp / 'b.key'}\n        cert {tmp / 'chain.pem'} key={tmp / 'leaf.key'}\n"
            f"    }}\n    route /* {{ to 127.0.0.1:{BACK} }}\n}}\n")
@@ -179,6 +186,10 @@ def main():
 http 127.0.0.1:{LST} {{
     {tls}
     timeout {{ header 1s }}
+    route /* {{ to 127.0.0.1:{BACK} }}
+}}
+http 127.0.0.1:{RLST} {{
+    tls {{ cert {tmp / 'rsachain.pem'}; key {tmp / 'rsa.key'} }}
     route /* {{ to 127.0.0.1:{BACK} }}
 }}
 """ + ("" if USER else tcp))
@@ -258,6 +269,13 @@ http 127.0.0.1:{LST} {{
         n = 8 << 20
         start, got = request(t, "GET", f"/big/{n}")
         check("an 8 MiB response arrives intact", got == (b"0123456789abcdef" * (n // 16 + 1))[:n], f"{len(got)}")
+
+    # an RSA server certificate (RSA-PSS CertificateVerify) for legacy clients
+    rs = socket.create_connection(("127.0.0.1", RLST), timeout=10)
+    with context().wrap_socket(rs, server_hostname="okena.test") as t:
+        start, body = request(t, "GET", "/rsa")
+        check("GET over TLS 1.3 with an RSA certificate: 200 from the backend",
+              start.startswith(b"HTTP/1.1 200") and json.loads(body)["target"] == "/rsa", start)
 
     # SNI: the certificate that names the host (exactly, or *.parent), else the first
     def subject(port, name):
