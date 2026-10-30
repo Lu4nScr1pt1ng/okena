@@ -105,6 +105,8 @@ start:
 	je	.cert_time
 	cmp	al,'N'
 	je	.cert_host
+	cmp	al,'K'
+	je	.cert_chain
 	cmp	al,'g'
 	je	.gcm
 	cmp	al,'G'
@@ -462,6 +464,15 @@ start:
 	movzx	edx,word [rsi+rcx+1]		; cert length
 	lea	rsi,[rsi+rcx+3]			; cert der
 	call	cert_match_host
+	mov	[g_out],al
+	lea	rdi,[g_out]
+	mov	esi,1
+	jmp	.print
+.cert_chain:				; anchor_pub(65) list_len(u16 le) list
+	movzx	edx,word [rsi+65]		; list length
+	mov	rdi,rsi				; anchor pub
+	lea	rsi,[rsi+67]			; the CertificateEntry list
+	call	cert_chain_verify
 	mov	[g_out],al
 	lea	rdi,[g_out]
 	mov	esi,1

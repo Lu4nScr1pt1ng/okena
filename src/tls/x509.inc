@@ -114,6 +114,7 @@ bss
 	g_x509_extend	dq ?
 	g_time_a	rb 14			; normalised YYYYMMDDHHMMSS scratch
 	g_time_b	rb 14
+	g_x509_issuer	rb 65			; an issuer key pulled from the chain
 end bss
 
 ; rsi = certificate DER, edx = its length, rdi = the issuer's public key
@@ -665,6 +666,100 @@ cert_match_host:
 	mov	rsi,rbx
 	jmp	.rdn
 .yes:
+	mov	eax,1
+	jmp	.out
+.no:
+	xor	eax,eax
+.out:
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; rsi = ptr, r8 = end: reads one TLS CertificateEntry (opaque cert<1..2^24-1>
+; then an Extensions vector). rax = certificate DER, ecx = its length,
+; rdx = the next entry. CF when it runs past the end.
+chain_entry:
+	lea	r9,[rsi+3]
+	cmp	r9,r8
+	ja	.bad
+	movzx	ecx,byte [rsi]
+	shl	ecx,16
+	movzx	eax,byte [rsi+1]
+	shl	eax,8
+	or	ecx,eax
+	movzx	eax,byte [rsi+2]
+	or	ecx,eax				; the certificate length
+	mov	rax,r9				; the certificate DER
+	lea	r9,[rax+rcx]			; its end
+	cmp	r9,r8
+	ja	.bad
+	lea	r10,[r9+2]
+	cmp	r10,r8
+	ja	.bad
+	movzx	edx,word [r9]			; the Extensions length
+	rol	dx,8
+	movzx	edx,dx
+	lea	rdx,[r10+rdx]			; the next entry
+	cmp	rdx,r8
+	ja	.bad
+	clc
+	ret
+.bad:
+	stc
+	ret
+
+; rdi = trust-anchor public key (04|X|Y, 65), rsi = the CertificateEntry
+; list, edx = its length: eax = 1 when the chain verifies, that is the leaf
+; is signed by the next certificate's key, each in turn, and the last by
+; the anchor. 0 on any signature or parse failure. The list is leaf first,
+; as sent in the TLS Certificate message (the anchor itself is not in it).
+cert_chain_verify:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	mov	r14,rdi				; the anchor
+	lea	r13,[rsi+rdx]			; the list end
+	mov	r15,rsi				; the current entry
+	cmp	r15,r13
+	jae	.no				; an empty chain
+.loop:
+	mov	rsi,r15
+	mov	r8,r13
+	call	chain_entry
+	jc	.no
+	mov	rbx,rax				; the certificate to check
+	mov	r12d,ecx
+	mov	r15,rdx				; the next entry
+	cmp	r15,r13
+	jae	.anchor
+	; the issuer key comes from the next certificate in the chain
+	mov	rsi,r15
+	mov	r8,r13
+	call	chain_entry
+	jc	.no
+	lea	rdi,[g_x509_issuer]
+	mov	rsi,rax
+	mov	edx,ecx
+	call	cert_extract_pubkey
+	test	eax,eax
+	jz	.no
+	lea	rdi,[g_x509_issuer]
+	jmp	.check
+.anchor:
+	mov	rdi,r14
+.check:
+	mov	rsi,rbx
+	mov	edx,r12d
+	call	cert_verify
+	test	eax,eax
+	jz	.no
+	cmp	r15,r13
+	jb	.loop
 	mov	eax,1
 	jmp	.out
 .no:

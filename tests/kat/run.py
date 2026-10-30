@@ -267,6 +267,39 @@ try:
     check("x509 host: CN used when no SAN", _host("host.example.com", _cnonly), "01")
     check("x509 host: CN mismatch rejected", _host("other.example.com", _cnonly), "00")
 
+    # X.509 chain: the server sends leaf first (and any intermediates); the
+    # client verifies each link up to a trusted anchor key
+    from cryptography.x509.oid import ExtendedKeyUsageOID as _ekuoid  # noqa: F401 (import style parity)
+    def _issue(subject_key, subject_cn, issuer_key, issuer_cn, ca):
+        b = (_x509.CertificateBuilder()
+             .subject_name(_x509.Name([_x509.NameAttribute(_x509.NameOID.COMMON_NAME, subject_cn)]))
+             .issuer_name(_x509.Name([_x509.NameAttribute(_x509.NameOID.COMMON_NAME, issuer_cn)]))
+             .public_key(subject_key.public_key()).serial_number(_x509.random_serial_number())
+             .not_valid_before(_dt.datetime(2020, 1, 1)).not_valid_after(_dt.datetime(2030, 1, 1))
+             .add_extension(_x509.BasicConstraints(ca=ca, path_length=None), True))
+        return b.sign(issuer_key, _hashes.SHA256())
+    _root = _ec.generate_private_key(_ec.SECP256R1())
+    _inter = _ec.generate_private_key(_ec.SECP256R1())
+    _ee = _ec.generate_private_key(_ec.SECP256R1())
+    root_c = _issue(_root, "root", _root, "root", True)
+    inter_c = _issue(_inter, "inter", _root, "root", True)
+    ee_c = _issue(_ee, "ee", _inter, "inter", False)
+    rootpub = _root.public_key().public_bytes(_Enc.X962, _PF.UncompressedPoint)
+    interpub = _inter.public_key().public_bytes(_Enc.X962, _PF.UncompressedPoint)
+    def _entry(cert):
+        der = cert.public_bytes(_Enc.DER)
+        return len(der).to_bytes(3, "big") + der + b"\x00\x00"       # cert, empty extensions
+    def _chain(anchor, certs):
+        lst = b"".join(_entry(c) for c in certs)
+        return run(b"K", anchor + _struct.pack("<H", len(lst)) + lst)
+    check("x509 chain: leaf + intermediate to the root", _chain(rootpub, [ee_c, inter_c]), "01")
+    check("x509 chain: single leaf directly under the anchor", _chain(interpub, [ee_c]), "01")
+    check("x509 chain: wrong anchor rejected", _chain(rootpub, [ee_c]), "00")
+    check("x509 chain: broken link rejected", _chain(rootpub, [ee_c, root_c]), "00")
+    _tamp = bytearray(ee_c.public_bytes(_Enc.DER)); _tamp[len(_tamp)//2] ^= 1
+    _tchain = len(_tamp).to_bytes(3, "big") + bytes(_tamp) + b"\x00\x00" + _entry(inter_c)
+    check("x509 chain: tampered leaf rejected", run(b"K", rootpub + _struct.pack("<H", len(_tchain)) + _tchain), "00")
+
     # TLS client: a well-formed ClientHello (offering x25519 + secp256r1,
     # TLS_AES_128_GCM_SHA256, ecdsa_secp256r1_sha256, ALPN, SNI)
     def _parse_ch(sni):
