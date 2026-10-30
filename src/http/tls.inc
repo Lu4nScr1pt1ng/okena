@@ -11,6 +11,7 @@
 ;                  what follows (often the first request, sent with the
 ;                  Finished) stays in the socket for the kernel to open
 ;   HS_TLS_KTLS    the keys going to the kernel (io_uring)
+;   HS_TLS_RETRY   writing a HelloRetryRequest, then a second ClientHello
 ;   HS_TLS_ALERT   writing an alert, then closing
 ;
 ; Without kTLS (no tls module on the host, or the kernel refused the keys)
@@ -29,7 +30,8 @@ HS_TLS_FLIGHT	:= 16
 HS_TLS_FIN	:= 17
 HS_TLS_TAKE	:= 18
 HS_TLS_KTLS	:= 19
-HS_TLS_ALERT	:= 20
+HS_TLS_RETRY	:= 20
+HS_TLS_ALERT	:= 21				; the last of them (phase expiry)
 
 HB_TLS		:= 1 shl 16			; the TLS area, after the HTTP buffers
 HB_TS		:= HB_TLS			; the handshake, then the record keys
@@ -148,6 +150,9 @@ http_tls_hello_in:
 	mov	ecx,HS_TLS_FLIGHT
 	cmp	eax,TH_SEND
 	je	@f
+	mov	ecx,HS_TLS_RETRY
+	cmp	eax,TH_RETRY
+	je	@f
 	mov	ecx,HS_TLS_ALERT
 @@:
 	mov	[r15+H_STATE],ecx
@@ -158,6 +163,13 @@ http_tls_hello_in:
 	add	rdi,HB_OUT
 	mov	ecx,SIDE_CLIENT
 	jmp	h_send
+
+; a HelloRetryRequest is out (http_send_done in HS_TLS_RETRY): the client's
+; second ClientHello
+http_tls_retry_sent:
+	mov	dword [r15+H_INLEN],0
+	mov	dword [r15+H_STATE],HS_TLS_HELLO
+	jmp	http_tls_read
 
 ; the flight is out (http_send_done in HS_TLS_FLIGHT): the client's turn
 http_tls_flight_sent:

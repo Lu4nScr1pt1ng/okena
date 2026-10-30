@@ -268,6 +268,27 @@ def main():
         finally:
             sc.kill()
         check("openssl s_client -no_middlebox", line == b"s_client\n", sc.stderr.read().decode()[-200:])
+        for extra, name in [([], "with"), (["-no_middlebox"], "without")]:
+            # P-256 first: its share only, x25519 offered: a HelloRetryRequest
+            sc = subprocess.Popen(["openssl", "s_client", "-connect", f"127.0.0.1:{port}", "-CAfile",
+                                   str(tmp / "ca.pem"), "-servername", "okena.test", "-groups", "P-256:X25519",
+                                   "-verify_return_error", "-msg", *extra],
+                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            sc.stdin.write(b"retried\n")
+            sc.stdin.flush()
+            out = b""
+            deadline = time.time() + 5
+            while b"\nretried" not in out and time.time() < deadline:
+                if not select.select([sc.stdout], [], [], 0.5)[0]:
+                    continue
+                chunk = os.read(sc.stdout.fileno(), 65536)
+                if not chunk:
+                    break
+                out += chunk
+            sc.kill()
+            hellos = out.count(b"ServerHello")
+            check(f"HelloRetryRequest ({name} middlebox compatibility): two ClientHellos, then the echo",
+                  out.count(b"ClientHello") == 2 and hellos == 2 and b"\nretried" in out, out[-300:].decode(errors="replace"))
     if shutil.which("curl"):
         r = subprocess.run(["curl", "-sv", "--cacert", str(tmp / "ca.pem"), "--resolve", f"okena.test:{port}:127.0.0.1",
                             f"https://okena.test:{port}/", "--max-time", "3"], capture_output=True, timeout=10)

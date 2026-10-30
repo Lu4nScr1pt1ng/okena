@@ -13,6 +13,10 @@
 ;             when the client sent a session id, then EncryptedExtensions,
 ;             Certificate, CertificateVerify and Finished under the
 ;             server's handshake key.
+;       eax = TH_RETRY: out holds a HelloRetryRequest (edx bytes): the
+;             client offered x25519 but sent another group's share; read
+;             its second ClientHello and call again, with in holding
+;             only that (a ChangeCipherSpec before it is skipped).
 ;       eax = TH_FAIL: edx bytes of a plaintext alert in out; close.
 ;   tls_finished(rdi ts, rsi in, ecx in length)
 ;       in: the client's records after the flight (an optional
@@ -27,8 +31,9 @@
 ; chain the configuration accepts (TLS_CHAIN_MAX). The ClientHello is
 ; copied out of its records into out first, so in is left as it was.
 ;
-; No HelloRetryRequest yet: a client without an x25519 share gets a
-; handshake_failure alert (browsers, curl, OpenSSL and Go all send one).
+; A client offering x25519 without a share for it gets a HelloRetryRequest
+; (RFC 8446 4.1.4) naming x25519; one that does not offer it at all, a
+; handshake_failure alert.
 ; No resumption and no 0-RTT: no tickets are issued, so no client sends
 ; early data.
 
@@ -44,15 +49,18 @@ TS_TX_SEQ	:= 136				; q: records sealed
 TS_FLAGS	:= 144				; d: TF_*
 TS_RX_GCM	:= 160				; user-space records only (tls_records)
 TS_TX_GCM	:= TS_RX_GCM + GCM_SIZE
-TS_SIZE		:= TS_TX_GCM + GCM_SIZE
+TS_HRR_SHA	:= TS_TX_GCM + GCM_SIZE		; after a HelloRetryRequest: the transcript so far
+TS_SIZE		:= TS_HRR_SHA + SHA256_CTX_SIZE
 
 TF_ALPN_H1	:= 1				; set by the caller: answer ALPN with http/1.1
 TF_GOT_H1	:= 2				; the client asked for http/1.1
+TF_HRR		:= 4				; a HelloRetryRequest went out: this is the second hello
 
 TH_MORE		:= 0
 TH_SEND		:= 1
 TH_DONE		:= 1
 TH_FAIL		:= 2
+TH_RETRY	:= 3				; tls_hello: send out, then read a second ClientHello
 
 TLS_RECORD_MAX	:= 16384			; plaintext of one record
 CH_MAX		:= 16384			; a ClientHello (a post-quantum one is ~1.8 KiB)
@@ -72,6 +80,8 @@ rodata
 	; PSK they never change
 	tls13_derived_early	db 0x6f,0x26,0x15,0xa1,0x08,0xc7,0x02,0xc5,0x67,0x8f,0x54,0xfc,0x9d,0xba,0xb6,0x97
 				db 0x16,0xc0,0x76,0x18,0x9c,0x48,0x25,0x0c,0xeb,0xea,0xc3,0x57,0x6c,0x36,0x11,0xba
+	tls13_hrr_random	db 0xcf,0x21,0xad,0x74,0xe5,0x9a,0x61,0x11,0xbe,0x1d,0x8c,0x02,0x1e,0x65,0xb8,0x91
+				db 0xc2,0xa2,0x11,0x16,0x7a,0xbb,0x8c,0x5e,0x07,0x9e,0x09,0xe2,0xc8,0xa8,0x33,0x9c
 	sha256_empty		db 0xe3,0xb0,0xc4,0x42,0x98,0xfc,0x1c,0x14,0x9a,0xfb,0xf4,0xc8,0x99,0x6f,0xb9,0x24
 				db 0x27,0xae,0x41,0xe4,0x64,0x9b,0x93,0x4c,0xa4,0x95,0x99,0x1b,0x78,0x52,0xb8,0x55
 	tls13_zero32		db 32 dup 0
@@ -156,6 +166,7 @@ G_SIGALG	:= 4
 G_KS		:= 8
 G_ALPN		:= 16
 G_H1		:= 32
+G_GROUP		:= 64				; x25519 in supported_groups
 
 ; the transcript: rsi = bytes, rdx = length
 macro th_add
@@ -214,7 +225,22 @@ tls_hello:
 	movzx	ecx,word [rsi+3]
 	rol	cx,8
 	cmp	byte [rsi],22			; handshake
+	je	@f
+	cmp	byte [rsi],20			; ChangeCipherSpec, after a retry only
 	jne	.not_handshake
+	test	dword [rbx+TS_FLAGS],TF_HRR
+	jz	.unexpected
+	test	r14d,r14d
+	jnz	.unexpected
+	cmp	ecx,1
+	jne	.unexpected
+	cmp	rax,6
+	jb	.more
+	cmp	byte [rsi+5],1
+	jne	.unexpected
+	add	rsi,6
+	jmp	.record
+@@:
 	test	ecx,ecx
 	jz	.unexpected
 	cmp	ecx,TLS_RECORD_MAX
@@ -333,6 +359,8 @@ tls_hello:
 	je	.sigalgs
 	cmp	eax,16
 	je	.alpn
+	cmp	eax,10
+	je	.groups
 .ext_next:
 	mov	rsi,r14
 	jmp	.ext
@@ -412,6 +440,27 @@ tls_hello:
 	mov	rsi,r8
 	jmp	.share
 
+.groups:					; supported_groups: u16 length, u16s
+	cmp	ecx,2
+	jb	.decode
+	movzx	edx,word [rsi]
+	rol	dx,8
+	add	rsi,2
+	lea	rax,[rsi+rdx]
+	cmp	rax,r14
+	jne	.decode
+	test	edx,1
+	jnz	.decode
+.group_item:
+	cmp	rsi,r14
+	jae	.ext_next
+	cmp	word [rsi],0x1D00		; x25519
+	jne	@f
+	or	dword [rbp+HL_GOT],G_GROUP
+@@:
+	add	rsi,2
+	jmp	.group_item
+
 .alpn:						; u16 length, { u8 length, name }
 	cmp	ecx,2
 	jb	.decode
@@ -451,7 +500,7 @@ tls_hello:
 	test	eax,G_SIGALG
 	jz	.handshake
 	test	eax,G_KS
-	jz	.handshake
+	jz	.no_share
 	and	dword [rbx+TS_FLAGS],not TF_GOT_H1
 	test	dword [rbx+TS_FLAGS],TF_ALPN_H1
 	jz	.alpn_done
@@ -462,9 +511,19 @@ tls_hello:
 	or	dword [rbx+TS_FLAGS],TF_GOT_H1
 .alpn_done:
 
-	; the transcript starts with the ClientHello
+	; the transcript starts with the ClientHello, or after a retry with
+	; what the first one left
+	test	dword [rbx+TS_FLAGS],TF_HRR
+	jnz	.second_hello
 	lea	rdi,[rbp+HL_SHA]
 	call	sha256_init
+	jmp	.hello_hashed
+.second_hello:
+	lea	rsi,[rbx+TS_HRR_SHA]
+	lea	rdi,[rbp+HL_SHA]
+	mov	ecx,SHA256_CTX_SIZE
+	rep	movsb
+.hello_hashed:
 	lea	rdi,[rbp+HL_SHA]
 	mov	rsi,r12
 	mov	edx,[rbp+HL_MLEN]
@@ -558,6 +617,8 @@ tls_hello:
 	mov	rdi,[rbp+HL_W]
 	cmp	dword [rbp+HL_SIDLEN],0
 	je	@f
+	test	dword [rbx+TS_FLAGS],TF_HRR
+	jnz	@f				; it went after the HelloRetryRequest
 	mov	dword [rdi],0x00030314
 	mov	word [rdi+4],0x0101
 	add	rdi,6
@@ -722,6 +783,78 @@ tls_hello:
 	mov	eax,TH_SEND
 	jmp	.out
 
+.no_share:
+	; x25519 offered without a share: a HelloRetryRequest, once
+	test	eax,G_GROUP
+	jz	.handshake
+	test	dword [rbx+TS_FLAGS],TF_HRR
+	jnz	.illegal			; asked already, and still no share
+	; transcript: message_hash(Hash(ClientHello1)), then the retry request
+	lea	rdi,[rbp+HL_TH]
+	mov	rsi,r12
+	mov	edx,[rbp+HL_MLEN]
+	call	sha256
+	lea	rdi,[rbp+HL_SHA]
+	call	sha256_init
+	mov	dword [rbp+HL_CV],0x200000FE	; message_hash, 32 bytes
+	lea	rsi,[rbp+HL_TH]
+	lea	rdi,[rbp+HL_CV+4]
+	mov	ecx,32
+	rep	movsb
+	lea	rsi,[rbp+HL_CV]
+	mov	edx,36
+	th_add
+	; the HelloRetryRequest: a ServerHello with the special random
+	mov	rdi,r12
+	mov	edx,[rbp+HL_SIDLEN]
+	add	edx,56
+	mov	byte [rdi],22
+	mov	word [rdi+1],0x0303
+	mov	[rdi+3],dh
+	mov	[rdi+4],dl
+	mov	byte [rdi+5],2
+	lea	ecx,[rdx-4]
+	put24	rdi+6, ecx
+	mov	word [rdi+9],0x0303
+	add	rdi,11
+	lea	rsi,[tls13_hrr_random]
+	mov	ecx,32
+	rep	movsb
+	mov	ecx,[rbp+HL_SIDLEN]
+	mov	[rdi],cl
+	inc	rdi
+	lea	rsi,[rbp+HL_SID]
+	rep	movsb
+	mov	dword [rdi],0x00000113		; the suite, null compression, ...
+	mov	byte [rdi+4],12			; ... 12 bytes of extensions
+	mov	dword [rdi+5],0x02002B00	; supported_versions: TLS 1.3
+	mov	word [rdi+9],0x0403
+	mov	dword [rdi+11],0x02003300	; key_share: x25519, please
+	mov	word [rdi+15],0x1D00
+	add	rdi,17
+	push	rdi
+	lea	rsi,[r12+5]
+	mov	edx,[rbp+HL_SIDLEN]
+	add	edx,56
+	th_add
+	pop	rdi
+	cmp	dword [rbp+HL_SIDLEN],0
+	je	@f
+	mov	dword [rdi],0x00030314		; middlebox compatibility: its CCS
+	mov	word [rdi+4],0x0101
+	add	rdi,6
+@@:
+	push	rdi
+	lea	rsi,[rbp+HL_SHA]
+	lea	rdi,[rbx+TS_HRR_SHA]
+	mov	ecx,SHA256_CTX_SIZE
+	rep	movsb
+	pop	rdi
+	or	dword [rbx+TS_FLAGS],TF_HRR
+	mov	rdx,rdi
+	sub	rdx,r12
+	mov	eax,TH_RETRY
+	jmp	.out
 .more:
 	xor	edx,edx
 	mov	eax,TH_MORE

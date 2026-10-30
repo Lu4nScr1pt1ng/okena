@@ -216,6 +216,11 @@ connection:
 	jc	.done
 	cmp	eax,TH_FAIL
 	je	.done
+	cmp	eax,TH_RETRY
+	jne	@f
+	mov	dword [g_have],0		; the second ClientHello
+	jmp	.hello
+@@:
 	; The client's Finished, read a record at a time so nothing after it
 	; is taken from the socket (kTLS reads that).
 	mov	dword [g_have],0

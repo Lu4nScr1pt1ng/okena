@@ -260,6 +260,10 @@ http 127.0.0.1:{LST} {{
                             f"okena.test:{LST}:127.0.0.1", f"https://okena.test:{LST}/curl", f"https://okena.test:{LST}/curl2",
                             "--max-time", "5"], capture_output=True, timeout=10)
         check("curl, two requests on one connection", b'"/curl"' in r.stdout and b'"/curl2"' in r.stdout, r.stdout[:200])
+        r = subprocess.run(["curl", "-s", "--curves", "P-256:X25519", "--cacert", str(tmp / "ca.pem"), "--resolve",
+                            f"okena.test:{LST}:127.0.0.1", f"https://okena.test:{LST}/retry", "--max-time", "5"],
+                           capture_output=True, timeout=10)
+        check("curl sharing P-256 first: HelloRetryRequest, then 200", b'"/retry"' in r.stdout, r.stdout[:200])
 
     # a handshake that stalls is closed by the header timeout
     s = socket.create_connection(("127.0.0.1", LST), timeout=5)

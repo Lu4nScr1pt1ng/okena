@@ -1368,6 +1368,8 @@ http_send_plain:
 	je	.self_sent
 	cmp	edx,HS_TLS_FLIGHT
 	je	http_tls_flight_sent
+	cmp	edx,HS_TLS_RETRY
+	je	http_tls_retry_sent
 	cmp	edx,HS_TLS_ALERT
 	je	.close
 	ret
