@@ -4,6 +4,9 @@
 ;   's' SHA-256 of the rest              'S' the same on the scalar path
 ;   '3' SHA3-256, '5' SHA3-512 of the rest; '6' SHAKE128, '7' SHAKE256: out len (2, LE), message
 ;   'q' ML-KEM-768 encapsulation: ek (1184), m (32) -> ciphertext | shared secret
+;   'c' ChaCha20: key, nonce, counter (4, LE), data; 'y' ChaCha20-Poly1305 seal: key (32),
+;       iv (12), aad len (2), aad, plaintext; 'Z' its open (ciphertext | tag, 'FAIL' if wrong)
+;   'e' Poly1305: key (32), message (a multiple of 16) -> tag
 ;   '4' four-way Keccak: rate, prefix (32), four lane-4 qwords -> two SHAKE blocks of each
 ;   'L' ML-KEM-768 key generation: d | z (64) -> ek | dk; 'O' decapsulation: dk, ct -> secret
 ;   'h' HMAC: key length (2, LE), key, message
@@ -37,6 +40,7 @@ include '../../src/crypto/hmac.inc'
 include '../../src/crypto/hkdf.inc'
 include '../../src/crypto/x25519.inc'
 include '../../src/crypto/aesgcm.inc'
+include '../../src/crypto/chacha.inc'
 include '../../src/crypto/p256.inc'
 include '../../src/crypto/rsa.inc'
 include '../../src/tls/x509.inc'
@@ -57,6 +61,7 @@ bss
 	g_tc:		rb TC_FULL
 	align 32
 	g_x4:		rb KECCAK_X4
+	g_cp:		rb CP_SIZE + 64 + PY_SIZE
 	g_gcm12:	rb 512
 	g_der:		rb 8192
 	g_anchor:	rb PK_SIZE
@@ -110,6 +115,14 @@ start:
 	je	.mlkem_decaps
 	cmp	al,'4'
 	je	.keccak_x4
+	cmp	al,'c'
+	je	.chacha
+	cmp	al,'e'
+	je	.poly1305
+	cmp	al,'y'
+	je	.cp_seal
+	cmp	al,'Z'
+	je	.cp_open
 	cmp	al,'S'
 	je	.sha_scalar
 	cmp	al,'h'
@@ -224,6 +237,89 @@ start:
 	call	mlkem768_decaps
 	mov	esi,MLKEM_SS
 	jmp	.print
+.chacha:					; key (32), nonce (12), counter (4), data
+	lea	r12,[rdx-48]			; -> the data XORed with the key stream
+	mov	r13,rsi
+	lea	rdi,[g_out]
+	lea	rsi,[r13+48]
+	mov	rcx,r12
+	rep	movsb
+	mov	rdi,r13
+	lea	rsi,[r13+32]
+	mov	edx,[r13+44]
+	lea	rcx,[g_out]
+	mov	r8,r12
+	call	chacha20_xor
+	mov	esi,r12d
+	jmp	.print
+.poly1305:					; key (32), message (a multiple of 16) -> tag
+	lea	r12,[rdx-32]
+	mov	r13,rsi
+	lea	rdi,[g_cp+64]
+	call	poly_init
+	lea	rdi,[g_cp+64]
+	lea	rsi,[r13+32]
+	mov	rdx,r12
+	call	poly_padded
+	lea	rdi,[g_cp+64]
+	lea	rsi,[g_out]
+	call	poly_final
+	mov	esi,16
+	jmp	.print
+.cp_seal:					; key (32), iv (12), aad len (2), aad, plaintext
+	mov	byte [g_gmode],0
+	jmp	.cp
+.cp_open:					; the same, ciphertext | tag; 'FAIL' when wrong
+	mov	byte [g_gmode],1
+.cp:
+	push	rsi
+	push	rdx
+	lea	rdi,[g_cp]
+	call	cp_init
+	pop	rdx
+	pop	rsi
+	movzx	ecx,word [rsi+44]		; aad length
+	lea	rbx,[rsi+46]			; aad
+	lea	r9,[rdx-46]
+	sub	r9,rcx				; the text's length
+	lea	r12,[rbx+rcx]
+	push	rcx
+	push	rsi
+	lea	rdi,[g_out]
+	mov	rsi,r12
+	mov	rcx,r9
+	rep	movsb
+	pop	rsi
+	pop	rcx
+	lea	rsi,[rsi+32]			; iv
+	mov	rdx,rbx
+	lea	r8,[g_out]
+	lea	rdi,[g_cp]
+	cmp	byte [g_gmode],0
+	jne	.cp_o
+	push	r9
+	call	cp_seal
+	pop	rsi
+	add	esi,16
+	jmp	.print
+.cp_o:
+	sub	r9,16
+	push	r9
+	call	cp_open
+	pop	rsi
+	test	eax,eax
+	jz	.cp_fail
+	jmp	.print
+.cp_fail:
+	mov	dword [g_out],'FAIL'
+	mov	edi,1
+	lea	rsi,[g_out]
+	mov	edx,4
+	mov	eax,1
+	syscall
+	xor	edi,edi
+	mov	eax,SYS_exit_group
+	syscall
 .keccak_x4:					; rate (1 byte), prefix (32), lanes 4 (4 x 8)
 	movzx	r12d,byte [rsi]			; -> two blocks of each of the four
 	lea	rdx,[rsi+33]
@@ -456,6 +552,20 @@ start:
 	call	mlkem768_encaps
 	jmp	.counted
 .not_K:
+	cmp	r12b,'p'
+	jne	.not_p
+	lea	rdi,[g_cp]			; ChaCha20-Poly1305 seal of 16 KiB in place
+	mov	rsi,r14				; key (32) then iv (12) in the input
+	call	cp_init
+	lea	rdi,[g_cp]
+	lea	rsi,[r14+32]
+	xor	edx,edx
+	xor	ecx,ecx
+	lea	r8,[g_out]
+	mov	r9d,16384
+	call	cp_seal
+	jmp	.counted
+.not_p:
 	cmp	r12b,'F'
 	jne	.not_F
 	mov	rdi,r14				; Keccak-f[1600], in place

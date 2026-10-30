@@ -663,6 +663,40 @@ try:
 except (ImportError, TypeError):
     print("note: deterministic ECDSA not in this cryptography; P-256 checked on RFC 6979 only")
 
+# --- ChaCha20-Poly1305 (RFC 8439): the published key stream, then the
+# cryptography package for ChaCha20 at every length around its two-block
+# step, Poly1305 on extreme keys and messages (h near p, all carries), and
+# the AEAD sealing, opening, and refusing a forged tag
+try:
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms
+    from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+    from cryptography.hazmat.primitives.poly1305 import Poly1305
+    sun = (b"Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, "
+           b"sunscreen would be it.")
+    check("chacha20 RFC 8439 2.4.2", run(b"c", bytes(range(32)) + bytes.fromhex("000000000000004a00000000")
+                                         + le16(1) + b"\0\0" + sun)[:32], "6e2e359a2568f98041ba0728dd0d6981")
+    for n in list(range(0, 260, 7)) + [16384, 16391]:
+        k, nc, ctr, d = rng.randbytes(32), rng.randbytes(12), rng.randrange(1 << 28), rng.randbytes(n)
+        want = Cipher(algorithms.ChaCha20(k, ctr.to_bytes(4, "little") + nc), mode=None).encryptor().update(d)
+        check(f"chacha20 len {n}", run(b"c", k + nc + ctr.to_bytes(4, "little") + d), want.hex())
+    edge_keys = [b"\xff" * 32, bytes(16) + b"\xff" * 16, b"\xff" * 16 + bytes(16), bytes(32)]
+    edge_msgs = [b"\xff" * 16 * k for k in (1, 2, 3, 16, 64)] + [bytes(64), (b"\xfb" + b"\xff" * 15) * 3]
+    for k in edge_keys + [rng.randbytes(32) for _ in range(10)]:
+        for m in edge_msgs + [rng.randbytes(16 * rng.randrange(1, 40)) for _ in range(3)]:
+            check("poly1305", run(b"e", k + m), Poly1305.generate_tag(k, m).hex())
+    for n in (0, 1, 15, 16, 17, 64, 129, 1000, 16384):
+        for al in (0, 5, 13, 16):
+            k, iv, aad, pt = rng.randbytes(32), rng.randbytes(12), rng.randbytes(al), rng.randbytes(n)
+            ct = ChaCha20Poly1305(k).encrypt(iv, pt, aad)
+            head = k + iv + le16(al) + aad
+            check(f"chacha20-poly1305 seal {n}/{al}", run(b"y", head + pt), ct.hex())
+            check(f"chacha20-poly1305 open {n}/{al}", run(b"Z", head + ct), pt.hex())
+            forged = bytearray(ct)
+            forged[rng.randrange(len(ct))] ^= 1 << rng.randrange(8)
+            check(f"chacha20-poly1305 forged {n}/{al}", run(b"Z", head + bytes(forged)), "FAIL")
+except ImportError:
+    print("note: no cryptography package; ChaCha20-Poly1305 checked on RFC 8439 only")
+
 # --- Keccak (FIPS 202): SHA3-256, SHA3-512, SHAKE128/256 against hashlib,
 # every length around the block boundaries (rates 72, 136, 168)
 for n in list(range(0, 180)) + [271, 272, 273, 335, 336, 337, 1184, 1216]:
