@@ -1298,7 +1298,7 @@ tls_cert_select:
 	mov	rax,rsi				; the EC sibling
 	ret
 .want_rsa:
-	test	edx,G_SIGALG_RSA		; rsa_pss_rsae_sha256 offered?
+	test	edx,G_SIGALG_RSA or G_SIGALG_RSA1	; any RSA signature offered?
 	jz	.out				; neither usable: the handshake fails
 	cmp	dword [rax+TL_KEYTYPE],1
 	je	.out				; the primary is RSA

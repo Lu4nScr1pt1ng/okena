@@ -20,7 +20,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 BIN = ROOT / "build" / "okena"
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
 BASE = 33000 + os.getpid() % 40 * 10 + (5 if ENGINE == "epoll" else 0)
-BACK, LST, SNIL, RLST = BASE, BASE + 1, BASE + 2, BASE + 3
+BACK, LST, SNIL, RLST, DLST = BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4
 tmp = pathlib.Path(tempfile.mkdtemp())
 atexit.register(shutil.rmtree, tmp, True)
 failures = 0
@@ -124,6 +124,13 @@ http 127.0.0.1:{RLST} {{
     tls {{ cert {tmp / 'rsa.pem'}; key {tmp / 'rsa.key'} }}
     route /* {{ to 127.0.0.1:{BACK} }}
 }}
+http 127.0.0.1:{DLST} {{
+    tls {{
+        cert {tmp / 'leaf.pem'} key={tmp / 'leaf.key'}
+        cert {tmp / 'rsa.pem'} key={tmp / 'rsa.key'}
+    }}
+    route /* {{ to 127.0.0.1:{BACK} }}
+}}
 """)
     r = subprocess.run([str(BIN), "check", str(conf)], capture_output=True, text=True)
     check("okena check", r.returncode == 0, r.stderr[-200:])
@@ -149,6 +156,25 @@ http 127.0.0.1:{RLST} {{
     check("TLS 1.2 with an RSA certificate: 200 proxied from the backend",
           ver == "TLSv1.2" and data.startswith(b"HTTP/1.1 200") and b"backend:/rsa12" in data,
           f"{ver} {data[:80]}")
+
+    # dual certificate on one host over TLS 1.2: a legacy client that offers
+    # only rsa_pkcs1_sha256 (ECDHE-RSA) gets the RSA leaf; an ECDSA client the
+    # EC leaf. openssl -sigalgs sets what the ClientHello offers.
+    if shutil.which("openssl"):
+        def served12(sigalgs, cipher):
+            r = subprocess.run(["openssl", "s_client", "-connect", f"127.0.0.1:{DLST}",
+                                "-servername", "okena.test", "-tls1_2", "-cipher", cipher,
+                                "-sigalgs", sigalgs], input=b"", capture_output=True, timeout=10)
+            import re
+            m = re.search(rb"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----", r.stdout, re.S)
+            if not m:
+                return (r.stdout + r.stderr)[-120:]
+            x = subprocess.run(["openssl", "x509", "-noout", "-text"], input=m.group(0), capture_output=True)
+            return "EC" if b"id-ecPublicKey" in x.stdout else "RSA" if b"rsaEncryption" in x.stdout else x.stdout[:80]
+        kt = served12("rsa_pkcs1_sha256", "ECDHE-RSA-AES128-GCM-SHA256")
+        check("TLS 1.2 dual cert: an RSA-only client (rsa_pkcs1) gets the RSA certificate", kt == "RSA", kt)
+        kt = served12("ecdsa_secp256r1_sha256", "ECDHE-ECDSA-AES128-GCM-SHA256")
+        check("TLS 1.2 dual cert: an ECDSA client gets the ECDSA certificate", kt == "EC", kt)
     # SNI picks the certificate on a 1.2 connection
     def peer_cn(port, sni, host=None):
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)

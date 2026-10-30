@@ -187,11 +187,12 @@ G_H1		:= 32
 G_GROUP		:= 64				; x25519 in supported_groups
 G_KS256		:= 2048				; the client sent a secp256r1 key share
 G_GROUP256	:= 4096				; secp256r1 in supported_groups
-G_SIGALG_RSA	:= 128				; rsa_pss_rsae_sha256 offered
 G_PSK		:= 128				; pre_shared_key: a ticket-sized identity, a 32-byte binder
 G_PSKDHE	:= 256				; psk_key_exchange_modes has psk_dhe_ke
 G_RESUME	:= 512				; the ticket opened and the binder is right: resumption
 G_TICKET	:= 1024				; a ticket to send after the flight
+G_SIGALG_RSA	:= 8192				; rsa_pss_rsae_sha256 offered (TLS 1.3 CertificateVerify)
+G_SIGALG_RSA1	:= 16384			; rsa_pkcs1_sha256 offered (a legacy 1.2 client)
 
 ; the transcript: rsi = bytes, rdx = length
 macro th_add
@@ -438,6 +439,10 @@ tls_hello:
 	jne	@f
 	or	dword [rbp+HL_GOT],G_SIGALG_RSA
 @@:
+	cmp	word [rsi],0x0104		; rsa_pkcs1_sha256 (a legacy 1.2 client)
+	jne	@f
+	or	dword [rbp+HL_GOT],G_SIGALG_RSA1
+@@:
 	add	rsi,2
 	jmp	.sigalg_item
 
@@ -640,18 +645,21 @@ tls_hello:
 	call	tls_cert_named			; rax = entry (or 0), rdx = its sibling
 	test	rax,rax
 	jz	.cert_default
-	mov	[rbx+TS_CERT],rax		; the name chose it; Host is checked against it
 	mov	rdi,rax
 	mov	rsi,rdx
-	jmp	.cert_select
+	mov	edx,[rbp+HL_GOT]
+	call	tls_cert_select			; prefer ECDSA, else RSA
+	mov	[rbp+HL_TL],rax
+	mov	[rbx+TS_CERT],rax		; the chosen cert (TLS 1.2 reads it too);
+	jmp	.cert_done			; both siblings name the host for the 421 check
 .cert_default:
 	mov	rdi,[rbp+HL_TL]			; reload: tls_cert_named clobbers scratch
 	call	tls_cert_sibling		; rdi preserved, rax = sibling or 0
 	mov	rsi,rax
-.cert_select:
 	mov	edx,[rbp+HL_GOT]
 	call	tls_cert_select
 	mov	[rbp+HL_TL],rax
+.cert_done:
 	mov	eax,[rbp+HL_GOT]
 	test	eax,G_TLS13
 	jz	.version
