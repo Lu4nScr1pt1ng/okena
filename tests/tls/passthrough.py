@@ -127,6 +127,11 @@ pool pc {{ server 127.0.0.1:{C} }}
         if "started with" in log.read():
             break
         time.sleep(0.05)
+    # wait for okena and the TLS backends to be serving before asserting
+    for _ in range(100):
+        if client(LST, "a.test") == ("CN=backend-a", b"a:ping"):
+            break
+        time.sleep(0.05)
 
     check("a.test: to pool pa, its backend's certificate, bytes both ways",
           client(LST, "a.test") == ("CN=backend-a", b"a:ping"), str(client(LST, "a.test")))
