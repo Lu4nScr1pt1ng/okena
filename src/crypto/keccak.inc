@@ -289,3 +289,129 @@ shake:
 	pop	r12
 	pop	rbx
 	ret
+
+; ---------------------------------------------------------------- four-way
+;
+; Four Keccak states side by side on AVX2: lane i of the four at
+; [state + 32 i] (one ymm), 800 bytes. One permutation of the four costs
+; about 1.25 of a single one (AVX2 has no 64-bit rotate: a rotation is
+; two shifts and an or), so independent sponges of one block of input
+; (ML-KEM's matrix entries and PRF calls) go four at a time.
+
+KECCAK_X4	:= 800
+
+; v = rol(v, n). Uses t.
+macro kx4_rol v, t, n
+	vpsllq	t,v,n
+	vpsrlq	v,v,64-n
+	vpor	v,v,t
+end macro
+
+; rdi = the four states: Keccak-f[1600] on each. Keeps every general
+; register but rax, rcx; ymm0..ymm11 are scratch.
+keccak_f1600_x4:
+	push	rbp
+	mov	rbp,rsp
+	sub	rsp,KECCAK_X4
+	and	rsp,-32
+	xor	ecx,ecx
+.round:
+	; theta
+	repeat 5, x:0
+		vmovdqu	ymm#x,[rdi+x*32]
+		repeat 4, y:1
+			vpxor	ymm#x,ymm#x,[rdi+(x+5*y)*32]
+		end repeat
+	end repeat
+	; D[x] = C[x-1] ^ rol(C[x+1], 1), in ymm5..ymm9
+	irp <d,cm,cp>, 5,4,1, 6,0,2, 7,1,3, 8,2,4, 9,3,0
+		vpsrlq	ymm10,ymm#cp,63
+		vpaddq	ymm#d,ymm#cp,ymm#cp
+		vpor	ymm#d,ymm#d,ymm10
+		vpxor	ymm#d,ymm#d,ymm#cm
+	end irp
+	; rho and pi, with D
+	repeat 25, i:0
+		vmovdqu	ymm10,[rdi+i*32]
+		if i mod 5 = 0
+			vpxor	ymm10,ymm10,ymm5
+		else if i mod 5 = 1
+			vpxor	ymm10,ymm10,ymm6
+		else if i mod 5 = 2
+			vpxor	ymm10,ymm10,ymm7
+		else if i mod 5 = 3
+			vpxor	ymm10,ymm10,ymm8
+		else
+			vpxor	ymm10,ymm10,ymm9
+		end if
+		if KECCAK_ROT#i <> 0
+			kx4_rol	ymm10, ymm11, KECCAK_ROT#i
+		end if
+		vmovdqa	[rsp+((i / 5) + 5*((2*(i mod 5) + 3*(i / 5)) mod 5))*32],ymm10
+	end repeat
+	; chi
+	repeat 5, y:0
+		repeat 5, x:0
+			vmovdqa	ymm#x,[rsp+(x+5*y)*32]
+		end repeat
+		irp <x,x1,x2>, 0,1,2, 1,2,3, 2,3,4, 3,4,0, 4,0,1
+			vpandn	ymm10,ymm#x1,ymm#x2
+			vpxor	ymm10,ymm10,ymm#x
+			vmovdqu	[rdi+(x+5*y)*32],ymm10
+		end irp
+	end repeat
+	; iota
+	lea	rax,[keccak_rc]
+	vpbroadcastq ymm10,[rax+rcx*8]
+	vpxor	ymm10,ymm10,[rdi]
+	vmovdqu	[rdi],ymm10
+	inc	ecx
+	cmp	ecx,24
+	jb	.round
+	mov	rsp,rbp
+	pop	rbp
+	vzeroupper
+	ret
+
+; rdi = the four states, rsi = a 32-byte prefix common to the four, rdx =
+; four qwords: each one's lane 4 (its own last input bytes with the SHAKE
+; domain bits right after them), ecx = rate: four one-block absorptions,
+; padded and permuted, the first output blocks ready. Keeps rdi.
+keccak_x4_init:
+	push	rdi
+	push	rcx
+	xor	eax,eax
+	mov	ecx,KECCAK_X4 / 8
+	rep	stosq
+	pop	rcx
+	pop	rdi
+	repeat 4, i:0
+		vpbroadcastq ymm0,[rsi+i*8]
+		vmovdqu	[rdi+i*32],ymm0
+	end repeat
+	vmovdqu	ymm0,[rdx]
+	vmovdqu	[rdi+4*32],ymm0
+	shr	ecx,3				; the rate's last lane: its top byte 0x80
+	dec	ecx
+	shl	ecx,5
+	mov	rax,0x8000000000000000
+	mov	[rdi+rcx],rax
+	mov	[rdi+rcx+8],rax
+	mov	[rdi+rcx+16],rax
+	mov	[rdi+rcx+24],rax
+	vzeroupper
+	jmp	keccak_f1600_x4
+
+; rdi = the four states, esi = which (0..3), rdx = out, ecx = rate: that
+; state's output block. Keeps rdi.
+keccak_x4_extract:
+	shr	ecx,3
+	lea	rax,[rdi+rsi*8]
+@@:
+	mov	r8,[rax]
+	mov	[rdx],r8
+	add	rax,32
+	add	rdx,8
+	dec	ecx
+	jnz	@b
+	ret

@@ -7,6 +7,7 @@ L4/L7 load balancer, reverse proxy and API gateway in x86-64 assembly
 * [Configuration](docs/CONFIG.md): the `okena.conf` language.
 * [Edge cases](docs/EDGE_CASES.md): what okena does where proxies break.
 * [Roadmap](docs/ROADMAP.md): phases and exit criteria.
+* [Benchmarks](docs/BENCHMARK.md): measurements and comparisons, with how to rerun them.
 
 ```
 tcp :5432 {

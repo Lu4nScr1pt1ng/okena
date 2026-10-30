@@ -191,10 +191,11 @@ client's key checked (FIPS 203's modulus check, illegal_parameter
 otherwise), the 64-byte hybrid secret (ML-KEM's, then x25519's) into the
 key schedule, resumption on top (psk_dhe_ke). Checked byte for byte against
 a FIPS 203 reference in tests/kat and against OpenSSL's decapsulation;
-s_client and curl negotiate it. The encapsulation is scalar for now (36 us,
-Keccak-f 368 ns; OpenSSL 3.5 with AVX2: 25 us), so a hybrid handshake
-costs about 1.7 times an x25519 one; the AVX2 NTT and a four-way Keccak
-are next. Towards
+s_client and curl negotiate it. The polynomial arithmetic runs on AVX2
+(eight dword coefficients a ymm, a 32-bit Barrett) and the matrix rows and
+the noise on a four-way Keccak: key generation 12.9 us, encapsulation
+15.5 us, decapsulation 16.6 us, against OpenSSL 3.5's 36, 25 and 37 us on
+the same core (docs/BENCHMARK.md). Towards
 upstreams too: ML-KEM-768 key generation and decapsulation (implicit
 rejection in constant time), the client's ClientHello offering the hybrid
 first beside x25519 and P-256, the decapsulation run once however the

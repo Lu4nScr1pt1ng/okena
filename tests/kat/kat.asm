@@ -4,6 +4,7 @@
 ;   's' SHA-256 of the rest              'S' the same on the scalar path
 ;   '3' SHA3-256, '5' SHA3-512 of the rest; '6' SHAKE128, '7' SHAKE256: out len (2, LE), message
 ;   'q' ML-KEM-768 encapsulation: ek (1184), m (32) -> ciphertext | shared secret
+;   '4' four-way Keccak: rate, prefix (32), four lane-4 qwords -> two SHAKE blocks of each
 ;   'L' ML-KEM-768 key generation: d | z (64) -> ek | dk; 'O' decapsulation: dk, ct -> secret
 ;   'h' HMAC: key length (2, LE), key, message
 ;   'k' HKDF: salt len (2), salt, ikm len (2), ikm, info len (2), info, out len (2)
@@ -54,6 +55,8 @@ bss
 	g_gcm:		rb GCM_SIZE
 	g_gmode		db ?
 	g_tc:		rb TC_FULL
+	align 32
+	g_x4:		rb KECCAK_X4
 	g_gcm12:	rb 512
 	g_der:		rb 8192
 	g_anchor:	rb PK_SIZE
@@ -105,6 +108,8 @@ start:
 	je	.mlkem_keygen
 	cmp	al,'O'
 	je	.mlkem_decaps
+	cmp	al,'4'
+	je	.keccak_x4
 	cmp	al,'S'
 	je	.sha_scalar
 	cmp	al,'h'
@@ -218,6 +223,41 @@ start:
 	lea	rdi,[g_out]
 	call	mlkem768_decaps
 	mov	esi,MLKEM_SS
+	jmp	.print
+.keccak_x4:					; rate (1 byte), prefix (32), lanes 4 (4 x 8)
+	movzx	r12d,byte [rsi]			; -> two blocks of each of the four
+	lea	rdx,[rsi+33]
+	inc	rsi
+	lea	rdi,[g_x4]
+	mov	ecx,r12d
+	call	keccak_x4_init
+	lea	r13,[g_out]
+	xor	ebx,ebx
+.x4a:
+	mov	esi,ebx
+	mov	rdx,r13
+	mov	ecx,r12d
+	call	keccak_x4_extract
+	add	r13,r12
+	add	r13,r12				; leave room for the second block
+	inc	ebx
+	cmp	ebx,4
+	jb	.x4a
+	call	keccak_f1600_x4
+	lea	r13,[g_out]
+	add	r13,r12
+	xor	ebx,ebx
+.x4b:
+	mov	esi,ebx
+	mov	rdx,r13
+	mov	ecx,r12d
+	call	keccak_x4_extract
+	add	r13,r12
+	add	r13,r12
+	inc	ebx
+	cmp	ebx,4
+	jb	.x4b
+	lea	esi,[r12*8]
 	jmp	.print
 .shake128:					; out length (2, LE), message
 	mov	r8d,SHAKE128_RATE
@@ -422,6 +462,22 @@ start:
 	call	keccak_f1600
 	jmp	.counted
 .not_F:
+	cmp	r12b,'L'
+	jne	.not_L
+	lea	rdi,[g_out]			; ML-KEM-768 key generation: d | z
+	lea	rsi,[g_out+MLKEM_EK]
+	mov	rdx,r14
+	call	mlkem768_keygen
+	jmp	.counted
+.not_L:
+	cmp	r12b,'O'
+	jne	.not_O
+	lea	rdi,[g_out]			; ML-KEM-768 decapsulation: dk, ct
+	mov	rsi,r14
+	lea	rdx,[r14+MLKEM_DK]
+	call	mlkem768_decaps
+	jmp	.counted
+.not_O:
 	cmp	r12b,'i'
 	jne	.not_i
 	lea	rdi,[g_out]			; inversion mod p

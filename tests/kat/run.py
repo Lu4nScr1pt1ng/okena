@@ -673,6 +673,19 @@ for n in list(range(0, 180)) + [271, 272, 273, 335, 336, 337, 1184, 1216]:
     check(f"shake128 len {n} out {out}", run(b"6", le16(out) + m), hashlib.shake_128(m).hexdigest(out))
     check(f"shake256 len {n} out {out}", run(b"7", le16(out) + m), hashlib.shake_256(m).hexdigest(out))
 
+# four-way Keccak (AVX2): four one-block sponges side by side, two output
+# blocks of each, against hashlib (SHAKE128 with two bytes after the
+# prefix, as SampleNTT; SHAKE256 with one, as ML-KEM's PRF)
+import struct  # noqa: E402
+for rate, f, n in ((168, hashlib.shake_128, 2), (136, hashlib.shake_256, 1)):
+    for t in range(25):
+        pre, lanes, want = rng.randbytes(32), b"", b""
+        for k in range(4):
+            sfx = rng.randbytes(n)
+            lanes += struct.pack("<Q", int.from_bytes(sfx, "little") | (0x1F << (8 * n)))
+            want += f(pre + sfx).digest(2 * rate)
+        check(f"keccak x4 rate {rate}", run(b"4", bytes([rate]) + pre + lanes), want.hex())
+
 # --- ML-KEM-768 (FIPS 203) encapsulation: against tests/kat/mlkem_ref.py
 # (written from the standard) byte for byte, the modulus check, and against
 # OpenSSL's decapsulation where it has ML-KEM
