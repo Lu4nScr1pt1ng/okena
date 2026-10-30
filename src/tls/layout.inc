@@ -9,4 +9,4 @@ TL_KEY		:= 8				; 32 bytes: d, big endian
 TL_PUB		:= 40				; 65 bytes: 04 | X | Y
 TL_SIZE		:= 112
 TLS_DER_MAX	:= 1 shl 16			; one certificate
-TLS_CHAIN_MAX	:= 24576			; a certificate_list: the server's flight fits a session buffer
+TLS_CHAIN_MAX	:= 20480			; a certificate_list: the server's flight fits a session buffer

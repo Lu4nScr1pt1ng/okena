@@ -110,9 +110,15 @@ server handshake (`src/tls/handshake.inc`: x25519, AES-128-GCM, ECDSA
 P-256, ALPN, middlebox compatibility) and user-space records pass
 `tests/tls/handshake.py` through an echo harness, against OpenSSL,
 `s_client` and curl: records split and dribbled, a forged Finished, and the
-refusals with their alerts. Next: the handshake in the listeners (both
-engines), the kTLS handoff with the user-space records as the fallback,
-then HelloRetryRequest and session tickets.
+refusals with their alerts. `http` listeners serve HTTPS on both engines
+(`src/http/tls.inc`, `tests/tls/https.py`): the handshake before the first
+request, the client Finished taken with a peek so a request sent with it
+stays in the socket, then kTLS (TCP_ULP, TLS_TX, TLS_RX; linked socket
+commands on io_uring). On this machine, 4 workers, a route okena answers
+itself: 284k requests/s over keep-alive HTTPS (406k plain), and ~75 us of
+worker CPU per new HTTPS connection (wrk was the limit at 16k/s). Next:
+user-space records when the kernel lacks kTLS, `tls` on `tcp` listeners,
+HelloRetryRequest, session tickets, a fixed-base X25519 key generation.
 
 * SHA-2, HMAC, HKDF (from fasm2crud), AES-GCM (AES-NI, VAES/VPCLMULQDQ),
   ChaCha20-Poly1305, X25519, ML-KEM-768, P-256 ECDH/ECDSA, Ed25519.

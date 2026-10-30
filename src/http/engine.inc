@@ -2,6 +2,10 @@
 
 ; ---------------------------------------------------------------- io_uring
 
+; h_recv, but the bytes stay in the socket (MSG_PEEK).
+h_recv_peek:
+	mov	dword [g_h_peek],MSG_PEEK
+
 ; ebx = session, ecx = side, rdi = buffer, esi = room.
 h_recv:
 	cmp	dword [g_engine],ENGINE_EPOLL
@@ -22,6 +26,9 @@ h_recv:
 	mov	byte [rax+SQE_OPCODE],IORING_OP_RECV
 	mov	[rax+SQE_ADDR],rdi
 	mov	[rax+SQE_LEN],esi
+	mov	r8d,[g_h_peek]
+	mov	[rax+SQE_OP_FLAGS],r8d
+	mov	dword [g_h_peek],0
 	jmp	h_sqe_fd
 
 ; ebx = session, ecx = side, rdi = bytes, esi = length.
@@ -273,12 +280,14 @@ H_READY		:= 156		; d: queued result's kind (1 recv, 2 send), 0 none
 H_RSIDE		:= 160
 H_RESULT	:= 168		; q
 H_RNEXT		:= 176		; d: ready queue link
+H_EPPEEK	:= 392		; d: MSG_PEEK for the waiting receive, or 0
 H_RGEN		:= 180		; d: generation when queued
 
 bss
 	g_hready_head	dd ?
 	g_hready_tail	dd ?
 	g_force_server	dd ?		; NIL, or the server the next connect uses
+	g_h_peek	dd ?		; MSG_PEEK for the next h_recv, once
 end bss
 
 ; edi = fd, esi = events, rdx = data: change a registration.
@@ -308,6 +317,9 @@ hep_fd:
 
 hep_recv:
 	h_rec
+	mov	eax,[g_h_peek]
+	mov	[r15+H_EPPEEK],eax
+	mov	dword [g_h_peek],0
 	mov	dword [r15+H_EPOP],1
 	mov	[r15+H_EPSIDE],ecx
 	mov	[r15+H_EPBUF],rdi
@@ -323,7 +335,10 @@ hep_try_recv:
 	mov	edi,eax
 	mov	rsi,[r15+H_EPBUF]
 	mov	edx,[r15+H_EPLEN]
-	xor	eax,eax				; SYS_read
+	mov	r10d,[r15+H_EPPEEK]
+	xor	r8d,r8d
+	xor	r9d,r9d
+	mov	eax,SYS_recvfrom		; a read, or a peek
 	syscall
 	cmp	rax,-EAGAIN
 	je	.wait

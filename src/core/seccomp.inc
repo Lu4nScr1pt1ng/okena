@@ -185,6 +185,7 @@ rodata
 	sc_allow filter_worker_uring, SYS_madvise
 	sc_allow filter_worker_uring, SYS_getsockname	; PROXY protocol, wildcard listeners
 	sc_allow filter_worker_uring, SYS_clock_gettime	; once a tick: access log time
+	sc_allow filter_worker_uring, SYS_getrandom	; TLS: server random, ephemeral keys
 	sc_end filter_worker_uring
 
 	; epoll worker
@@ -203,7 +204,8 @@ rodata
 	sc_allow filter_worker_epoll, SYS_clock_gettime
 	sc_allow filter_worker_epoll, SYS_madvise
 	sc_allow filter_worker_epoll, SYS_getsockname
-	sc_allow filter_worker_epoll, SYS_recvfrom	; liveness peek of pooled connections
+	sc_allow filter_worker_epoll, SYS_recvfrom	; peeks: pooled connections, TLS Finished
+	sc_allow filter_worker_epoll, SYS_getrandom	; TLS: server random, ephemeral keys
 	sc_end filter_worker_epoll
 
 	; control process: DNS over UDP, resolv.conf and hosts read-only
@@ -260,6 +262,8 @@ rodata
 	sc_allow filter_compiler, SYS_read
 	sc_allow filter_compiler, SYS_fstat
 	sc_allow filter_compiler, SYS_close
+	sc_check filter_compiler, SYS_socket, socket		; the kTLS probe
+	sc_allow filter_compiler, SYS_setsockopt
 	sc_end filter_compiler
 
 	align 8

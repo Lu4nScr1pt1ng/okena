@@ -149,7 +149,8 @@ class Wire:
                 break
             self.inc.write(raw)
             try:
-                got += self.obj.read(1 << 16)
+                while True:             # one record per read
+                    got += self.obj.read(1 << 16)
             except ssl.SSLWantReadError:
                 pass
         return got

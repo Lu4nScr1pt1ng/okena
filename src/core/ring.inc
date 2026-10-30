@@ -340,7 +340,8 @@ OP_H_RECV_U	:= 18
 OP_H_SEND_C	:= 19
 OP_H_SEND_U	:= 20
 OP_POOL_WATCH	:= 21		; an idle pooled connection changed
-OP_COUNT	:= 22
+OP_H_KTLS	:= 22		; https: the keys are in the kernel
+OP_COUNT	:= 23
 
 rodata
 	align 8
@@ -349,7 +350,7 @@ rodata
 			dq on_s_send_c, on_s_send_u, on_s_done, on_s_done, on_s_done, on_s_done
 			dq on_accept_a, on_s_send_pp
 			dq on_h_recv_c, on_h_recv_u, on_h_send_c, on_h_send_u
-			dq on_pool_watch
+			dq on_pool_watch, on_h_ktls
 end rodata
 
 ring_reap:

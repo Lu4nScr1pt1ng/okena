@@ -647,7 +647,7 @@ end macro
 .too_big:
 	tls_fail TC_CERT, 'the certificate chains of this configuration pass 1 MiB'
 .chain_big:
-	tls_fail TC_CERT, 'this certificate chain passes 24 KiB (send the server certificate and its intermediates, not the root)'
+	tls_fail TC_CERT, 'this certificate chain passes 20 KiB (send the server certificate and its intermediates, not the root)'
 .cert_kind:
 	cmp	ecx,TLS_E_RSA
 	je	.cert_rsa
@@ -676,13 +676,3 @@ end macro
 ; Until the TLS handshake is built, a listener with a tls block must not
 ; serve its port in plaintext: refuse to start (or to reload) with it.
 ; okena check loads and checks the files already.
-tls_refuse_serving:
-	cmp	dword [g_plan_tls],0
-	je	.ok
-	call	log_begin
-	out_lit 'tls { } is read and checked (okena check), but the TLS handshake is not built yet: refusing to serve these ports in plaintext'
-	call	log_end
-	mov	edi,EXIT_CONFIG
-	jmp	exit_process
-.ok:
-	ret

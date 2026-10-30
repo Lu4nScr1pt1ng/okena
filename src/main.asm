@@ -51,6 +51,7 @@ include 'l4/peer.inc'
 include 'l4/upstream.inc'
 include 'http/proxy.inc'
 include 'http/engine.inc'
+include 'http/tls.inc'
 include 'core/accesslog.inc'
 include 'cli.inc'
 

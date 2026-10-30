@@ -309,7 +309,7 @@ supervisor_reload:
 	call	cfg_parse_checked
 	call	plan_reset
 	call	plan_compile
-	call	tls_refuse_serving		; (until the handshake exists)
+	call	tls_serve_check		; kTLS there, nothing served in plaintext
 	xor	edi,edi
 	jmp	exit_process
 .read_failed:

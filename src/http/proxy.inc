@@ -191,6 +191,10 @@ http_start:
 	mov	edi,ebx
 	mov	esi,PH_HEAD
 	call	ph_arm
+	call	http_tls_cred
+	h_rec
+	test	rax,rax
+	jnz	http_tls_start			; HTTPS: the handshake first
 	jmp	http_next_request
 
 ; ----------------------------------------------------------- requests
@@ -1096,7 +1100,14 @@ http_write_request_head:
 	h_rec
 	test	dword [r15+H_FLAGS],HX_XFPROTO
 	jnz	@f
-	memit_x 'X-Forwarded-Proto: http',13,10
+	memit_x 'X-Forwarded-Proto: http'
+	call	http_tls_cred
+	test	rax,rax
+	jz	.xfp_end
+	mov	byte [rdi],'s'
+	inc	rdi
+.xfp_end:
+	memit_x 13,10
 @@:
 	mov	eax,[r15+H_BODY]
 	cmp	eax,BK_LENGTH
@@ -1236,6 +1247,12 @@ http_recv_done:
 	je	.resp_head
 	cmp	edx,HS_RESP_READ
 	je	.resp_body
+	cmp	edx,HS_TLS_HELLO
+	je	http_tls_hello_in
+	cmp	edx,HS_TLS_FIN
+	je	http_tls_fin_peeked
+	cmp	edx,HS_TLS_TAKE
+	je	http_tls_fin_in
 	ret
 .head:
 	test	rax,rax
@@ -1322,6 +1339,10 @@ http_send_done:
 	je	.interim_sent
 	cmp	edx,HS_SELF_SEND
 	je	.self_sent
+	cmp	edx,HS_TLS_FLIGHT
+	je	http_tls_flight_sent
+	cmp	edx,HS_TLS_ALERT
+	je	.close
 	ret
 .self_sent:
 	test	dword [r15+H_FLAGS],HX_CLOSE
@@ -2860,7 +2881,13 @@ http_phase_expired:
 	je	.body
 	cmp	esi,PH_HEAD
 	jne	.response
-	cmp	dword [r15+H_STATE],HS_HEAD
+	mov	eax,[r15+H_STATE]
+	cmp	eax,HS_TLS_HELLO
+	jb	@f
+	cmp	eax,HS_TLS_ALERT
+	jbe	.silent				; the handshake never finished
+@@:
+	cmp	eax,HS_HEAD
 	jne	.out
 	cmp	dword [r15+H_INLEN],0
 	je	.silent				; connected, never asked anything

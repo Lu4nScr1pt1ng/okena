@@ -81,12 +81,14 @@ conf.write_text(f"http 127.0.0.1:18443 {{\n    tls {{ cert {tmp / 'ec.pem'} }}\n
 r = subprocess.run([str(BIN), "check", str(conf)], capture_output=True, text=True)
 check("refused: a tls block without its key", r.returncode != 0 and "needs its certificate and its key" in r.stderr,
       r.stderr.strip().splitlines()[0] if r.stderr else "")
-# until the handshake exists, a tls listener is not served in plaintext
-conf = tmp / "okena.conf"
-okena_check(tmp / "ec.pem", tmp / "ec.key")
+# tls on a tcp listener is checked but not served yet: refused at the start
+conf = tmp / "tcp.conf"
+conf.write_text(f"tcp 127.0.0.1:18444 {{\n    tls {{ cert {tmp / 'ec.pem'}; key {tmp / 'ec.key'} }}\n    to 127.0.0.1:1\n}}\n")
+r = subprocess.run([str(BIN), "check", str(conf)], capture_output=True, text=True)
+check("okena check accepts tls on a tcp listener", r.returncode == 0, (r.stdout + r.stderr).strip())
 r = subprocess.run([str(BIN), "-c", str(conf)], capture_output=True, text=True, timeout=10)
-check("okena refuses to serve a tls listener without the handshake", r.returncode != 0
-      and "refusing to serve these ports in plaintext" in r.stderr, r.stderr.strip()[:120])
+check("okena refuses to serve tls on a tcp listener in plaintext", r.returncode != 0
+      and "on a tcp listener" in r.stderr, r.stderr.strip()[:160])
 
 print(f"tls: {'all passed' if not failures else f'{failures} failed'}")
 sys.exit(1 if failures else 0)
