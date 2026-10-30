@@ -168,8 +168,10 @@ clients is in on the server side: a ClientHello without TLS 1.3 runs an
 ECDHE_ECDSA / AES-128-GCM 1.2 handshake (ServerHello, Certificate, a signed
 ServerKeyExchange, ServerHelloDone, then ClientKeyExchange and the Finished
 exchange) and the keys go to kTLS 1.2; it is kTLS-only (no module, the
-connection is refused). Still open: TLS 1.2 to upstreams and the full
-tlsfuzzer run.
+connection is refused). TLS 1.2 to upstreams is in too: a pool's tls { }
+falls back to a 1.2 ECDHE handshake (ECDHE_ECDSA / ECDHE_RSA, AES-128-GCM)
+for a backend that has no 1.3, verifying the ServerKeyExchange signature
+and the certificate chain, over kTLS. Still open: the full tlsfuzzer run.
 
 * SHA-2, HMAC, HKDF (from fasm2crud), AES-GCM (AES-NI, VAES/VPCLMULQDQ),
   ChaCha20-Poly1305, X25519, ML-KEM-768, P-256 ECDH/ECDSA, Ed25519.
