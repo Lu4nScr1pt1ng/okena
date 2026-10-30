@@ -522,8 +522,8 @@ try:
           d["exts"].get(43), bytes([2, 3, 4]))
     check("client hello: supported_groups x25519, secp256r1",
           d["exts"].get(10), bytes([0, 4, 0, 0x1D, 0, 0x17]))
-    check("client hello: sig_algs ecdsa_secp256r1_sha256",
-          d["exts"].get(13), bytes([0, 2, 4, 3]))
+    check("client hello: sig_algs ecdsa_secp256r1_sha256 + rsa_pss_rsae_sha256",
+          d["exts"].get(13), bytes([0, 4, 4, 3, 8, 4]))
     ks = d["exts"].get(51, b"")
     check("client hello: key_shares x25519 (32) + secp256r1 (65)",
           ks[:2] == bytes([0, 0x69]) and ks[2:6] == bytes([0, 0x1D, 0, 0x20]) and ks[38:42] == bytes([0, 0x17, 0, 0x41]),
