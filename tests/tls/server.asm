@@ -26,6 +26,7 @@ include '../../src/crypto/hmac.inc'
 include '../../src/crypto/hkdf.inc'
 include '../../src/crypto/x25519.inc'
 include '../../src/crypto/aesgcm.inc'
+include '../../src/crypto/chacha.inc'
 include '../../src/crypto/p256.inc'
 include '../../src/crypto/rsa.inc'
 include '../../src/tls/layout.inc'
@@ -427,17 +428,17 @@ connection:
 	jc	.done
 	jmp	.ktls_echo
 
-; rsi = key (16) then IV (12) at +16, edx = TLS_TX or TLS_RX, rcx = the
+; rsi = key (16) then IV (12) at +TS_IVOFF, edx = TLS_TX or TLS_RX, rcx = the
 ; next record's sequence number: installed, ZF on success.
 ktls_key:
 	lea	rdi,[g_crypto_info]
 	mov	word [rdi],0x0304		; TLS 1.3
 	mov	word [rdi+2],51			; TLS_CIPHER_AES_GCM_128
-	mov	rax,[rsi+16+4]			; iv: the last 8 bytes of the IV
+	mov	rax,[rsi+TS_IVOFF+4]		; iv: the last 8 bytes of the IV
 	mov	[rdi+4],rax
 	movdqu	xmm0,[rsi]			; key
 	movdqu	[rdi+12],xmm0
-	mov	eax,[rsi+16]			; salt: its first 4
+	mov	eax,[rsi+TS_IVOFF]		; salt: its first 4
 	mov	[rdi+28],eax
 	bswap	rcx
 	mov	[rdi+32],rcx			; rec_seq

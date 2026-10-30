@@ -367,6 +367,27 @@ def main():
                            capture_output=True, timeout=10)
         check("s_client: a saved session resumed through a HelloRetryRequest",
               b"Reused, TLSv1.3" in r.stdout, r.stdout.decode(errors="replace")[-300:])
+        # ChaCha20-Poly1305: the flight, the ticket and the echo under it, and a
+        # session resumed over it
+        cp = ["-ciphersuites", "TLS_CHACHA20_POLY1305_SHA256"]
+        r = subprocess.run(common + cp + ["-sess_out", str(sess)], input=b"", capture_output=True, timeout=10)
+        check("s_client TLS_CHACHA20_POLY1305_SHA256: negotiated, the chain verified",
+              b"Cipher is TLS_CHACHA20_POLY1305_SHA256" in r.stdout and b"Verify return code: 0" in r.stdout,
+              r.stdout.decode(errors="replace")[-300:])
+        r = subprocess.run(common + cp + ["-sess_in", str(sess)], input=b"", capture_output=True, timeout=10)
+        check("s_client: a session resumed over ChaCha20-Poly1305", b"Reused, TLSv1.3" in r.stdout,
+              r.stdout.decode(errors="replace")[-300:])
+        sc = subprocess.Popen(common + cp + ["-quiet"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE)
+        sc.stdin.write(b"chacha echo\n")
+        sc.stdin.flush()
+        line = b""
+        try:
+            if select.select([sc.stdout], [], [], 5)[0]:
+                line = sc.stdout.readline()
+        finally:
+            sc.kill()
+        check("ChaCha20-Poly1305 records: the echo comes back", line == b"chacha echo\n", line)
         # the post-quantum hybrid, asked for alone and as OpenSSL 3.5 sends it
         # by default (X25519MLKEM768 and X25519 shares)
         if b"X25519MLKEM768" in subprocess.run(["openssl", "list", "-kem-algorithms"],

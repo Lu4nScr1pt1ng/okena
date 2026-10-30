@@ -418,6 +418,35 @@ http 127.0.0.1:{DLST} {{
                             f"okena.test:{LST}:127.0.0.1", f"https://okena.test:{LST}/retry", "--max-time", "5"],
                            capture_output=True, timeout=10)
         check("curl sharing P-256 first: HelloRetryRequest, then 200", b'"/retry"' in r.stdout, r.stdout[:200])
+        # ChaCha20-Poly1305: chosen when the client lists it first (no AES in
+        # its hardware), AES-128-GCM otherwise; a 3 MB download over it, in
+        # the kernel's TLS or in user-space records
+        def tls_stat(name):
+            try:
+                for line in open("/proc/net/tls_stat"):
+                    if line.split()[0] == name:
+                        return int(line.split()[1])
+            except OSError:
+                pass
+            return 0
+        before = tls_stat("TlsTxSw")
+        r = subprocess.run(["curl", "-q", "-sv", "--tls13-ciphers", "TLS_CHACHA20_POLY1305_SHA256", "--cacert",
+                            str(tmp / "ca.pem"), "--resolve", f"okena.test:{LST}:127.0.0.1",
+                            f"https://okena.test:{LST}/cp", f"https://okena.test:{LST}/big/3000000", "--max-time", "10"],
+                           capture_output=True, timeout=20)
+        want = (b"0123456789abcdef" * (3000000 // 16 + 1))[:3000000]
+        check("curl with ChaCha20-Poly1305 only: two requests and a 3 MB download",
+              b"TLS_CHACHA20_POLY1305_SHA256" in r.stderr and b'"/cp"' in r.stdout and r.stdout.endswith(want),
+              r.stderr.decode(errors="replace")[-300:])
+        if not USER:
+            check("ChaCha20-Poly1305 keys in the kernel (kTLS)", tls_stat("TlsTxSw") > before)
+        for order, want_suite in (("TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256", b"TLS_CHACHA20_POLY1305_SHA256"),
+                                  ("TLS_AES_128_GCM_SHA256:TLS_CHACHA20_POLY1305_SHA256", b"TLS_AES_128_GCM_SHA256")):
+            r = subprocess.run(["curl", "-q", "-sv", "--tls13-ciphers", order, "--cacert", str(tmp / "ca.pem"),
+                                "--resolve", f"okena.test:{LST}:127.0.0.1", f"https://okena.test:{LST}/order",
+                                "--max-time", "5"], capture_output=True, timeout=10)
+            check(f"client order {order.split(':')[0]} first: {want_suite.decode()}",
+                  want_suite in r.stderr and b'"/order"' in r.stdout, r.stderr.decode(errors="replace")[-200:])
 
     # a handshake that stalls is closed by the header timeout
     s = socket.create_connection(("127.0.0.1", LST), timeout=5)

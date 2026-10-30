@@ -36,6 +36,7 @@ ek, dk = M.keygen(os.urandom(32), os.urandom(32)); k, c = M.encaps(ek, os.urando
 print("encaps us", run(b"K" + n.to_bytes(4, "little") + ek + os.urandom(32)) / n / 1000)
 EOF
 taskset -c 3 openssl speed -seconds 2 ML-KEM-768
+taskset -c 3 openssl speed -seconds 2 -bytes 16384 -evp chacha20-poly1305
 ```
 
 | Operation | okena | OpenSSL 3.5.3 | Date | Notes |
@@ -44,6 +45,7 @@ taskset -c 3 openssl speed -seconds 2 ML-KEM-768
 | X25519 (fixed base, key generation) | 8.0 us | | 2026-10 | Edwards-form table |
 | ECDSA P-256 sign (RFC 6979) | 15.6 us | ~15.6 us | 2026-10 | fixed-base table, blinded inversion |
 | AES-128-GCM, 16 KiB records | 6.9 GB/s | 5.8 GB/s | 2026-10 | VAES + VPCLMULQDQ on ymm (4.3 GB/s on the SSE path) |
+| ChaCha20-Poly1305 seal, 16 KiB records | 1.34 GB/s | 3.1 GB/s | 2026-10-30 | two blocks a ymm, scalar Poly1305; OpenSSL runs eight blocks and a vector Poly1305. Only without kTLS (the kernel seals otherwise) |
 | Keccak-f[1600] | 368 ns | | 2026-10-30 | scalar; 490 ns before theta was fused into rho/pi |
 | Keccak-f[1600], four at once | ~1.25 of one | | 2026-10-30 | AVX2 |
 | ML-KEM-768 key generation | 12.9 us | 36 us | 2026-10-30 | AVX2 NTT, four-way Keccak |

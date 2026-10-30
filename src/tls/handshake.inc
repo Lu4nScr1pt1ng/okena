@@ -41,19 +41,24 @@
 ; No resumption and no 0-RTT: no tickets are issued, so no client sends
 ; early data.
 
+; a traffic key is 16 bytes (AES-128-GCM) or 32 (ChaCha20-Poly1305), its
+; IV (12) TS_IVOFF after it
+TS_IVOFF	:= 32
 TS_CHS_KEY	:= 0				; client handshake traffic: key
-TS_CHS_IV	:= 16				; and IV (12)
-TS_CFIN		:= 32				; the client Finished expected (32)
-TS_RX_KEY	:= 64				; client application traffic
-TS_RX_IV	:= 80
-TS_TX_KEY	:= 96				; server application traffic
-TS_TX_IV	:= 112
-TS_RX_SEQ	:= 128				; q: records opened
-TS_TX_SEQ	:= 136				; q: records sealed
-TS_FLAGS	:= 144				; d: TF_*
-TS_RX_GCM	:= 160				; user-space records only (tls_records)
-TS_TX_GCM	:= TS_RX_GCM + GCM_SIZE
-TS_HRR_SHA	:= TS_TX_GCM + GCM_SIZE		; after a HelloRetryRequest: the transcript so far
+TS_CHS_IV	:= TS_CHS_KEY + TS_IVOFF	; and IV (12)
+TS_CFIN		:= 48				; the client Finished expected (32)
+TS_RX_KEY	:= 80				; client application traffic
+TS_RX_IV	:= TS_RX_KEY + TS_IVOFF
+TS_TX_KEY	:= 128				; server application traffic
+TS_TX_IV	:= TS_TX_KEY + TS_IVOFF
+TS_RX_SEQ	:= 176				; q: records opened
+TS_TX_SEQ	:= 184				; q: records sealed
+TS_FLAGS	:= 192				; d: TF_*
+TS_SUITE	:= 196				; d: 0 TLS_AES_128_GCM_SHA256, 1 TLS_CHACHA20_POLY1305_SHA256
+TS_KEYLEN	:= 200				; d: its key length
+TS_RX_GCM	:= 208				; user-space records only (tls_records)
+TS_TX_GCM	:= TS_RX_GCM + AEAD_SIZE
+TS_HRR_SHA	:= TS_TX_GCM + AEAD_SIZE	; after a HelloRetryRequest: the transcript so far
 TS_CERT		:= TS_HRR_SHA + SHA256_CTX_SIZE	; q: the entry SNI chose, 0 = the default
 TS_SIZE		:= TS_CERT + 8
 
@@ -154,15 +159,13 @@ HL_TMP		:= 400
 HL_SFK		:= 432				; finished keys
 HL_CFK		:= 464
 HL_TH		:= 496				; a transcript hash
-HL_SKEY		:= 528				; server handshake key (16), IV (12)
-HL_SIV		:= 544
 HL_NONCE	:= 560
 HL_SIG		:= 576				; r | s
 HL_DIG		:= 640
 HL_SHA		:= 672				; the transcript
 HL_SHA2		:= HL_SHA + SHA256_CTX_SIZE
 HL_GCM		:= HL_SHA2 + SHA256_CTX_SIZE
-HL_CV		:= HL_GCM + GCM_SIZE		; the content CertificateVerify signs (130)
+HL_CV		:= HL_GCM + AEAD_SIZE		; the content CertificateVerify signs (130)
 HL_TICKET	:= HL_CV + 136			; a ticket (TK_SIZE): the client's, opened; then ours
 HL_PSK		:= HL_TICKET + 96
 HL_EARLY	:= HL_PSK + 32			; early secret, from the PSK
@@ -183,7 +186,9 @@ HL_MLX		:= HL_MLEK + 8			; the client's x25519 half of the hybrid share (32)
 HL_MLM		:= HL_MLX + 32			; the encapsulation's randomness (32)
 HL_SH64		:= HL_MLM + 32			; hybrid secret: ML-KEM's (32) | x25519's (32)
 HL_MLCT		:= HL_SH64 + 64			; the ML-KEM ciphertext (1088)
-HL_SIZE		:= ((HL_MLCT + MLKEM_CT + 15) and not 15) + 8	; rsp 16-aligned at calls
+HL_SKEY		:= HL_MLCT + MLKEM_CT		; server handshake key (16 or 32)
+HL_SIV		:= HL_SKEY + 32			; and IV (12)
+HL_SIZE		:= ((HL_SIV + 16 + 15) and not 15) + 8	; rsp 16-aligned at calls
 
 G_TLS13		:= 1
 G_SUITE		:= 2
@@ -195,6 +200,9 @@ G_GROUP		:= 64				; x25519 in supported_groups
 G_KS256		:= 2048				; the client sent a secp256r1 key share
 G_GROUP256	:= 4096				; secp256r1 in supported_groups
 G_KSMLKEM	:= 32768			; the client sent an X25519MLKEM768 key share
+G_CHACHA	:= 65536			; TLS_CHACHA20_POLY1305_SHA256 offered
+G_CHACHA1	:= 131072			; ... as the client's first suite: it has no
+						; AES in hardware (OpenSSL's PRIORITIZE_CHACHA)
 G_PSK		:= 128				; pre_shared_key: a ticket-sized identity, a 32-byte binder
 G_PSKDHE	:= 256				; psk_key_exchange_modes has psk_dhe_ke
 G_RESUME	:= 512				; the ticket opened and the binder is right: resumption
@@ -344,6 +352,14 @@ tls_hello:
 	cmp	word [rsi],0x0113		; TLS_AES_128_GCM_SHA256
 	jne	@f
 	or	dword [rbp+HL_GOT],G_SUITE
+@@:
+	cmp	word [rsi],0x0313		; TLS_CHACHA20_POLY1305_SHA256
+	jne	@f
+	or	dword [rbp+HL_GOT],G_CHACHA
+	lea	rax,[rsi+rcx]
+	cmp	rax,rdx
+	jne	@f
+	or	dword [rbp+HL_GOT],G_CHACHA1	; the client's first suite
 @@:
 	add	rsi,2
 	cmp	rsi,rdx
@@ -683,8 +699,20 @@ tls_hello:
 	mov	eax,[rbp+HL_GOT]
 	test	eax,G_TLS13
 	jz	.version
+	; the suite: AES-128-GCM (AES-NI here), unless ChaCha20-Poly1305 is
+	; the client's first choice or the only one it shares
+	mov	dword [rbx+TS_SUITE],0
+	mov	dword [rbx+TS_KEYLEN],16
+	test	eax,G_CHACHA1
+	jnz	.chacha
 	test	eax,G_SUITE
+	jnz	.suite_done
+	test	eax,G_CHACHA
 	jz	.handshake
+.chacha:
+	mov	dword [rbx+TS_SUITE],1
+	mov	dword [rbx+TS_KEYLEN],32
+.suite_done:
 	mov	rcx,[rbp+HL_TL]
 	cmp	dword [rcx+TL_KEYTYPE],1
 	je	.req_rsa
@@ -911,6 +939,10 @@ tls_hello:
 	lea	rsi,[rbp+HL_SID]
 	rep	movsb
 	mov	dword [rdi],0x00000113		; the suite, null compression, ...
+	cmp	dword [rbx+TS_SUITE],0
+	je	@f
+	mov	byte [rdi+1],0x03		; TLS_CHACHA20_POLY1305_SHA256
+@@:
 	mov	eax,[rbp+HL_SHLEN]
 	sub	eax,[rbp+HL_SIDLEN]
 	sub	eax,44
@@ -989,9 +1021,9 @@ tls_hello:
 	lea	rcx,[tls13_zero32]
 	mov	r8d,32
 	call	hkdf_extract
-	tls_label [rbp+HL_SKEY], 16, [rbp+HL_SHT], lbl_key
+	tls_label [rbp+HL_SKEY], [rbx+TS_KEYLEN], [rbp+HL_SHT], lbl_key
 	tls_label [rbp+HL_SIV], 12, [rbp+HL_SHT], lbl_iv
-	tls_label [rbx+TS_CHS_KEY], 16, [rbp+HL_CHT], lbl_key
+	tls_label [rbx+TS_CHS_KEY], [rbx+TS_KEYLEN], [rbp+HL_CHT], lbl_key
 	tls_label [rbx+TS_CHS_IV], 12, [rbp+HL_CHT], lbl_iv
 	tls_label [rbp+HL_SFK], 32, [rbp+HL_SHT], lbl_finished
 	tls_label [rbp+HL_CFK], 32, [rbp+HL_CHT], lbl_finished
@@ -1136,10 +1168,10 @@ tls_hello:
 
 	; the application secrets and the client Finished to expect
 	tls_label [rbp+HL_TMP], 32, [rbp+HL_MS], lbl_c_ap, [rbp+HL_TH], 32
-	tls_label [rbx+TS_RX_KEY], 16, [rbp+HL_TMP], lbl_key
+	tls_label [rbx+TS_RX_KEY], [rbx+TS_KEYLEN], [rbp+HL_TMP], lbl_key
 	tls_label [rbx+TS_RX_IV], 12, [rbp+HL_TMP], lbl_iv
 	tls_label [rbp+HL_TMP], 32, [rbp+HL_MS], lbl_s_ap, [rbp+HL_TH], 32
-	tls_label [rbx+TS_TX_KEY], 16, [rbp+HL_TMP], lbl_key
+	tls_label [rbx+TS_TX_KEY], [rbx+TS_KEYLEN], [rbp+HL_TMP], lbl_key
 	tls_label [rbx+TS_TX_IV], 12, [rbp+HL_TMP], lbl_iv
 	lea	rdi,[rbx+TS_CFIN]
 	lea	rsi,[rbp+HL_CFK]
@@ -1201,7 +1233,8 @@ tls_hello:
 	; r15 = the record being written.
 	lea	rdi,[rbp+HL_GCM]
 	lea	rsi,[rbp+HL_SKEY]
-	call	gcm_init
+	mov	edx,[rbx+TS_SUITE]
+	call	aead_init
 	mov	r15,[rbp+HL_W]
 .seal:
 	mov	rcx,r14
@@ -1232,7 +1265,7 @@ tls_hello:
 	lea	r8,[r15+5]
 	mov	r9d,[rbp+HL_MLEN]
 	inc	r9d
-	call	gcm_seal
+	call	aead_seal
 	mov	eax,[rbp+HL_MLEN]
 	lea	r15,[r15+rax+22]
 	inc	qword [rbp+HL_SEQ]
@@ -1260,14 +1293,15 @@ tls_hello:
 	mov	byte [rdi+2],22			; inner content type: handshake
 	lea	rdi,[rbp+HL_GCM]
 	lea	rsi,[rbx+TS_TX_KEY]
-	call	gcm_init
+	mov	edx,[rbx+TS_SUITE]
+	call	aead_init
 	lea	rdi,[rbp+HL_GCM]
 	lea	rsi,[rbx+TS_TX_IV]		; sequence 0
 	mov	rdx,r15
 	mov	ecx,5
 	lea	r8,[r15+5]
 	mov	r9d,106
-	call	gcm_seal
+	call	aead_seal
 	add	r15,127
 	mov	qword [rbx+TS_TX_SEQ],1		; the application records follow it
 .flight_done:
@@ -1322,6 +1356,10 @@ tls_hello:
 	lea	rsi,[rbp+HL_SID]
 	rep	movsb
 	mov	dword [rdi],0x00000113		; the suite, null compression, ...
+	cmp	dword [rbx+TS_SUITE],0
+	je	@f
+	mov	byte [rdi+1],0x03		; TLS_CHACHA20_POLY1305_SHA256
+@@:
 	mov	byte [rdi+4],12			; ... 12 bytes of extensions
 	mov	dword [rdi+5],0x02002B00	; supported_versions: TLS 1.3
 	mov	word [rdi+9],0x0403
@@ -1417,8 +1455,8 @@ tls_hello:
 ; ------------------------------------------------------------- finished
 
 FN_GCM		:= 0
-FN_NONCE	:= GCM_SIZE
-FN_SIZE		:= GCM_SIZE + 16 + 8		; rsp 16-aligned at calls
+FN_NONCE	:= AEAD_SIZE
+FN_SIZE		:= AEAD_SIZE + 16 + 8		; rsp 16-aligned at calls
 
 tls_finished:
 	push	rbx
@@ -1451,7 +1489,8 @@ tls_finished:
 	jb	.fail
 	lea	rdi,[rsp+FN_GCM]
 	lea	rsi,[rbx+TS_CHS_KEY]
-	call	gcm_init
+	mov	edx,[rbx+TS_SUITE]
+	call	aead_init
 	lea	rdi,[rsp+FN_GCM]
 	lea	rsi,[rbx+TS_CHS_IV]		; the first record: sequence 0
 	mov	rdx,r14
@@ -1459,7 +1498,7 @@ tls_finished:
 	lea	r8,[r14+5]
 	lea	r9,[r15-16]
 	sub	r9,r8
-	call	gcm_open
+	call	aead_open
 	test	eax,eax
 	jz	.fail
 	; the inner plaintext: content, its type, zero padding
@@ -1517,7 +1556,7 @@ tls_finished:
 	push	rax
 	push	rdx
 	lea	rdi,[rsp+16+FN_GCM]
-	mov	ecx,GCM_SIZE
+	mov	ecx,AEAD_SIZE
 	call	secure_zero
 	pop	rdx
 	pop	rax
@@ -1538,10 +1577,12 @@ tls_records:
 	mov	rbx,rdi
 	lea	rdi,[rbx+TS_RX_GCM]
 	lea	rsi,[rbx+TS_RX_KEY]
-	call	gcm_init
+	mov	edx,[rbx+TS_SUITE]
+	call	aead_init
 	lea	rdi,[rbx+TS_TX_GCM]
 	lea	rsi,[rbx+TS_TX_KEY]
-	call	gcm_init
+	mov	edx,[rbx+TS_SUITE]
+	call	aead_init
 	pop	rbx
 	ret
 
@@ -1572,7 +1613,7 @@ tls_seal:
 	mov	ecx,5
 	lea	r8,[r12+5]
 	lea	r9d,[r13+1]
-	call	gcm_seal
+	call	aead_seal
 	lea	eax,[r13+22]
 	add	rsp,16
 	pop	r13
@@ -1614,7 +1655,7 @@ tls_open:
 	mov	ecx,5
 	lea	r8,[r12+5]
 	lea	r9d,[r13-21]
-	call	gcm_open
+	call	aead_open
 	test	eax,eax
 	jz	.fail
 	inc	qword [rbx+TS_RX_SEQ]

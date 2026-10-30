@@ -629,7 +629,9 @@ ECN. 0-RTT off by default and, when on, only for routes marked idempotent.
   encapsulation, under OpenSSL's 25). okena's own client side (upstreams) offers it too,
   first, with x25519 and P-256 shares beside it for backends without it.
 * AEAD: AES-128/256-GCM (AES-NI, VAES + VPCLMULQDQ), ChaCha20-Poly1305
-  (AVX2), chosen by client preference and hardware.
+  (AVX2), chosen by client preference and hardware. **Today** AES-128-GCM and
+  ChaCha20-Poly1305 (TLS 1.3; ChaCha20 when it is the client's first
+  suite); AES-256-GCM is not offered.
 * Certificates: ECDSA P-256 and Ed25519 signing first; RSA-PSS signing
   later. Verification of RSA, ECDSA and Ed25519 for upstream TLS and
   client certificates, with an X.509 path validator restricted to what

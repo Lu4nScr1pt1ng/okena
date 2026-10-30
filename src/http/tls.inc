@@ -37,15 +37,17 @@ HS_TLS_LAST	:= 22				; the last of them (phase expiry)
 
 HB_TLS		:= 1 shl 16			; the TLS area, after the HTTP buffers
 HB_TS		:= HB_TLS			; the handshake, then the record keys
-HB_KTLS		:= HB_TS + TS_SIZE		; tls12_crypto_info_aes_gcm_128: TX, then RX
-KTLS_INFO	:= 40
-HB_RXC		:= HB_TLS + 1024		; user-space records: ciphertext in
+HB_KTLS		:= HB_TS + TS_SIZE		; the kernel's crypto_info: TX, then RX
+KTLS_INFO	:= 40				; tls12_crypto_info_aes_gcm_128
+KTLS_INFO_CP	:= 56				; tls12_crypto_info_chacha20_poly1305
+KTLS_SLOT	:= KTLS_INFO_CP			; TX and RX slots of a TLS 1.3 connection
+HB_RXC		:= HB_TLS + 1536		; user-space records: ciphertext in
 UTLS_RX_CAP	:= TLS_RECORD_MAX + 256 + 5 + 251	; one whole record (17 KiB)
 HB_TXC		:= HB_RXC + UTLS_RX_CAP	; and out, two records at a time
 UTLS_TX_RECS	:= 2
 UTLS_TX_CAP	:= UTLS_TX_RECS * (TLS_RECORD_MAX + 22)
 H_TLS_ROOM	:= HB_TLS - HB_OUT		; the flight is built in OUT and after it
-assert HB_KTLS + 2 * KTLS_INFO <= HB_RXC
+assert HB_KTLS + 2 * KTLS_SLOT <= HB_RXC
 assert HB_TXC + UTLS_TX_CAP <= 1 shl HB_SHIFT
 assert H_TLS_ROOM >= 2 * (TLS_CHAIN_MAX + 192) + 512
 
@@ -58,6 +60,7 @@ ENOTCONN	:= 107
 bss
 	align 4
 	g_no_ktls	dd ?			; this worker saw the kernel refuse kTLS
+	g_no_ktls_cp	dd ?			; ... refuse ChaCha20-Poly1305 keys only
 end bss
 
 rodata
@@ -280,18 +283,24 @@ http_tls_fin_in:
 
 	; The keys for the kernel: struct tls12_crypto_info_aes_gcm_128
 	; { version, cipher, iv[8] (the IV's last 8), key[16], salt[4] (its
-	; first 4), rec_seq[8] }.
+	; first 4), rec_seq[8] }, or tls12_crypto_info_chacha20_poly1305
+	; { version, cipher, iv[12], key[32], rec_seq[8] }.
 	mov	r8,[r15+H_BUF]
 	lea	rsi,[r8+HB_TS+TS_TX_KEY]
 	lea	rdi,[r8+HB_KTLS]
 	mov	rdx,[r8+HB_TS+TS_TX_SEQ]	; 1 after a ticket
 	call	.info
 	lea	rsi,[r8+HB_TS+TS_RX_KEY]
-	lea	rdi,[r8+HB_KTLS+KTLS_INFO]
+	lea	rdi,[r8+HB_KTLS+KTLS_SLOT]
 	mov	rdx,[r8+HB_TS+TS_RX_SEQ]
 	call	.info
 	cmp	dword [g_no_ktls],0
 	jne	http_utls_start
+	cmp	dword [r8+HB_TS+TS_SUITE],0
+	je	@f
+	cmp	dword [g_no_ktls_cp],0		; the kernel has no ChaCha20-Poly1305
+	jne	http_utls_start
+@@:
 	cmp	dword [g_engine],ENGINE_EPOLL
 	je	.epoll
 
@@ -310,16 +319,26 @@ http_tls_fin_in:
 	mov	edi,OP_S_OPT
 	mov	r9d,SOL_TLS
 	mov	r10d,TLS_TX
-	mov	r8d,KTLS_INFO
+	call	.len
 	call	.sqe
 	mov	r11,[r15+H_BUF]
-	add	r11,HB_KTLS + KTLS_INFO
+	add	r11,HB_KTLS + KTLS_SLOT
 	mov	edi,OP_H_KTLS
 	mov	r9d,SOL_TLS
 	mov	r10d,TLS_RX
-	mov	r8d,KTLS_INFO
+	call	.len
 	call	.sqe
 	and	byte [rax+SQE_FLAGS],not IOSQE_IO_LINK	; the chain ends here
+	ret
+
+; r8d = the length of this connection's crypto_info. Keeps the rest.
+.len:
+	mov	r8,[r15+H_BUF]
+	cmp	dword [r8+HB_TS+TS_SUITE],0
+	mov	r8d,KTLS_INFO
+	je	@f
+	mov	r8d,KTLS_INFO_CP
+@@:
 	ret
 
 ; edi = op, r9d = level, r10d = option, r11 = value, r8d = its length:
@@ -348,18 +367,33 @@ http_tls_fin_in:
 	mov	[rax+SQE_OPTVAL],r11
 	ret
 
-; rsi = key (16), IV (12) at +16; rdx = the next record's sequence
-; number; rdi = the crypto info to fill.
+; rsi = key (16 or 32), IV (12) at +TS_IVOFF; rdx = the next record's
+; sequence number; rdi = the crypto info to fill; r8 = the session's
+; buffers (the suite). Keeps r8.
 .info:
+	bswap	rdx				; rec_seq, big endian
+	cmp	dword [r8+HB_TS+TS_SUITE],0
+	jne	.info_cp
 	mov	dword [rdi],0x00330304		; TLS 1.3, TLS_CIPHER_AES_GCM_128
-	mov	rax,[rsi+16+4]
+	mov	rax,[rsi+TS_IVOFF+4]
 	mov	[rdi+4],rax
 	movdqu	xmm0,[rsi]
 	movdqu	[rdi+12],xmm0
-	mov	eax,[rsi+16]
+	mov	eax,[rsi+TS_IVOFF]
 	mov	[rdi+28],eax
-	bswap	rdx
-	mov	[rdi+32],rdx			; rec_seq, big endian
+	mov	[rdi+32],rdx
+	ret
+.info_cp:
+	mov	dword [rdi],0x00360304		; TLS 1.3, TLS_CIPHER_CHACHA20_POLY1305
+	mov	rax,[rsi+TS_IVOFF]		; iv[12]
+	mov	[rdi+4],rax
+	mov	eax,[rsi+TS_IVOFF+8]
+	mov	[rdi+12],eax
+	movdqu	xmm0,[rsi]			; key[32]
+	movdqu	[rdi+16],xmm0
+	movdqu	xmm0,[rsi+16]
+	movdqu	[rdi+32],xmm0
+	mov	[rdi+48],rdx
 	ret
 
 .epoll:
@@ -382,17 +416,17 @@ http_tls_fin_in:
 	mov	edx,TLS_TX
 	mov	r10,[r15+H_BUF]
 	add	r10,HB_KTLS
-	mov	r8d,KTLS_INFO
+	call	.len
 	mov	eax,SYS_setsockopt
 	syscall
 	pop	rdi
 	test	eax,eax
-	jnz	.refused			; no TX: the socket is still plain TCP
+	jnz	.tx_refused			; no TX: the socket is still plain TCP
 	mov	esi,SOL_TLS
 	mov	edx,TLS_RX
 	mov	r10,[r15+H_BUF]
-	add	r10,HB_KTLS + KTLS_INFO
-	mov	r8d,KTLS_INFO
+	add	r10,HB_KTLS + KTLS_SLOT
+	call	.len
 	mov	eax,SYS_setsockopt
 	syscall
 	test	eax,eax
@@ -400,6 +434,13 @@ http_tls_fin_in:
 	jmp	http_tls_established
 .refused:
 	mov	dword [g_no_ktls],1
+	jmp	http_utls_start
+; the kernel took the ULP but not the keys: no kTLS for this suite, then
+.tx_refused:
+	mov	rax,[r15+H_BUF]
+	cmp	dword [rax+HB_TS+TS_SUITE],0
+	je	.refused
+	mov	dword [g_no_ktls_cp],1		; ChaCha20-Poly1305 only: AES still goes
 	jmp	http_utls_start
 
 ; completion of the RX key (io_uring): ebx = session, r12d = generation,
@@ -419,7 +460,12 @@ on_h_ktls:
 	je	.no_module
 	test	eax,eax
 	jnz	http_tls_close			; the ULP failed for this connection only
-.no_module:					; (ENOTCONN: the client left); else TX refused
+	mov	rax,[r15+H_BUF]			; (ENOTCONN: the client left); else TX
+	cmp	dword [rax+HB_TS+TS_SUITE],0	; refused: for every suite, or for
+	je	.no_module			; ChaCha20-Poly1305 only
+	mov	dword [g_no_ktls_cp],1
+	jmp	http_utls_start
+.no_module:
 	mov	dword [g_no_ktls],1
 	jmp	http_utls_start
 .closing:
@@ -450,7 +496,7 @@ http_tls_established:
 	h_rec
 	mov	rdi,[r15+H_BUF]
 	add	rdi,HB_TS			; the kernel has the keys: none kept here
-	mov	ecx,TS_SIZE + 2 * KTLS_INFO
+	mov	ecx,TS_SIZE + 2 * KTLS_SLOT
 	call	secure_zero
 	call	session_ptr
 	test	dword [rax+S_FLAGS],SF_TLS_HS
@@ -561,7 +607,7 @@ http_utls_start:
 	jnz	http_tls_close			; tcp: kTLS or nothing (refused at the start)
 	mov	rdi,[r15+H_BUF]
 	add	rdi,HB_KTLS			; the keys meant for the kernel
-	mov	ecx,2 * KTLS_INFO
+	mov	ecx,2 * KTLS_SLOT
 	call	secure_zero
 	mov	rdi,[r15+H_BUF]
 	add	rdi,HB_TS

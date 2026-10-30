@@ -201,7 +201,13 @@ rejection in constant time), the client's ClientHello offering the hybrid
 first beside x25519 and P-256, the decapsulation run once however the
 server's flight arrives; checked against the reference and, both ways,
 against OpenSSL (tests/kat, tests/tls/client.py against an s_server that
-takes nothing else). Still open: ChaCha20-Poly1305, Ed25519, Wycheproof.
+takes nothing else). TLS_CHACHA20_POLY1305_SHA256 is in: ChaCha20 on
+AVX2 two blocks at a time, Poly1305 on mulx, the RFC 8439 AEAD (tag checked
+before decrypting), picked when it is the client's first suite (no AES in
+its hardware, OpenSSL's PRIORITIZE_CHACHA) or the only one shared; the
+flight, tickets, user-space records and kTLS (its 56-byte crypto_info; a
+kernel without it falls back to user-space records for that suite only)
+all take it. Still open: Ed25519, Wycheproof.
 
 * SHA-2, HMAC, HKDF (from fasm2crud), AES-GCM (AES-NI, VAES/VPCLMULQDQ),
   ChaCha20-Poly1305, X25519, ML-KEM-768, P-256 ECDH/ECDSA, Ed25519.
