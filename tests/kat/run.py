@@ -350,6 +350,22 @@ try:
     check("tls1.2 client Finished verify_data", got[176:200], cfin.hex())
     check("tls1.2 server Finished verify_data", got[200:224], sfin.hex())
 
+    # TLS 1.2 AEAD record layer (RFC 5288): explicit nonce | ciphertext |
+    # tag, GCM nonce salt|seq, aad seq|type|version|length
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM as _AESGCM
+    def tls12_rec_ref(key, salt, seq, ctype, pt):
+        nonce = salt + seq.to_bytes(8, "big")
+        aad = seq.to_bytes(8, "big") + bytes([ctype]) + b"\x03\x03" + len(pt).to_bytes(2, "big")
+        ct = _AESGCM(key).encrypt(nonce, pt, aad)
+        return seq.to_bytes(8, "big") + ct
+    for ctype, pt in [(22, b"\x14\x00\x00\x0c" + b"\x11" * 12),  # a Finished
+                      (23, b"GET / HTTP/1.1\r\n\r\n"), (23, b"")]:
+        key, salt, seq = _os.urandom(16), _os.urandom(4), 7
+        got = run(b"2", key + salt + seq.to_bytes(8, "little") + bytes([ctype])
+                  + _struct.pack("<H", len(pt)) + pt)
+        check(f"tls1.2 record type {ctype} len {len(pt)} (seal + open round-trip)",
+              got, tls12_rec_ref(key, salt, seq, ctype, pt).hex())
+
     # TLS client: a well-formed ClientHello (offering x25519 + secp256r1,
     # TLS_AES_128_GCM_SHA256, ecdsa_secp256r1_sha256, ALPN, SNI)
     def _parse_ch(sni):

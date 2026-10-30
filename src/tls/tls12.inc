@@ -195,3 +195,110 @@ tls12_finished:
 	pop	r12
 	pop	rbx
 	ret
+
+; The TLS 1.2 AEAD record layer (RFC 5288, AES-128-GCM): the record on the
+; wire is explicit_nonce(8) | ciphertext | tag(16); the GCM nonce is
+; write_IV(4 salt) | explicit_nonce(8), and the additional data is
+; seq(8) | type(1) | version(2) | length(2), length being the plaintext
+; length. The explicit nonce is the record sequence number.
+
+; rdi = out, rsi = gcm ctx, rdx = write_IV (4-byte salt), rcx = sequence
+; number, r8d = content type, r9 = plaintext, r10d = plaintext length:
+; writes explicit_nonce | ciphertext | tag to out. eax = the record length.
+tls12_seal:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	mov	r12,rdi				; out
+	mov	r13,rsi				; gcm
+	mov	r14,r8				; content type (in r14b)
+	mov	r15,r9				; plaintext
+	mov	ebx,r10d			; plaintext length
+	sub	rsp,48				; [rsp]=nonce(12), [rsp+16]=aad(13)
+	mov	rax,rcx
+	bswap	rax
+	mov	[r12],rax			; explicit nonce = seq, big endian
+	mov	[rsp+16],rax			; aad seq
+	mov	eax,[rdx]			; nonce = salt | seq
+	mov	[rsp],eax
+	mov	rax,rcx
+	bswap	rax
+	mov	[rsp+4],rax
+	mov	byte [rsp+16+8],r14b		; aad type
+	mov	word [rsp+16+9],0x0303		; aad version
+	mov	eax,ebx				; aad length, big endian u16
+	rol	ax,8
+	mov	[rsp+16+11],ax
+	lea	rdi,[r12+8]			; copy the plaintext in place
+	mov	rsi,r15
+	mov	ecx,ebx
+	rep	movsb
+	mov	rdi,r13				; gcm_seal(ctx, nonce, aad, 13, out+8, ptlen)
+	lea	rsi,[rsp]
+	lea	rdx,[rsp+16]
+	mov	ecx,13
+	lea	r8,[r12+8]
+	mov	r9d,ebx
+	call	gcm_seal
+	lea	eax,[rbx+24]			; 8 + ptlen + 16
+	add	rsp,48
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; rdi = record (explicit_nonce | ciphertext | tag), esi = its length,
+; rdx = gcm ctx, rcx = write_IV (salt), r8 = sequence number, r9d = content
+; type: opens the record in place. eax = plaintext length (at record+8) on
+; success, or -1 on a bad tag or a short record.
+tls12_open:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	mov	r12,rdi				; record
+	mov	r13,rdx				; gcm
+	mov	r14,r8				; sequence
+	mov	r15d,r9d			; type
+	mov	ebx,esi
+	sub	ebx,24				; plaintext length = total - 8 - 16
+	js	.bad
+	sub	rsp,48
+	mov	eax,[rcx]			; nonce = salt | explicit (= record[0..8])
+	mov	[rsp],eax
+	mov	rax,[r12]
+	mov	[rsp+4],rax
+	mov	rax,r14				; aad seq
+	bswap	rax
+	mov	[rsp+16],rax
+	mov	byte [rsp+16+8],r15b		; aad type
+	mov	word [rsp+16+9],0x0303
+	mov	eax,ebx
+	rol	ax,8
+	mov	[rsp+16+11],ax
+	mov	rdi,r13				; gcm_open(ctx, nonce, aad, 13, record+8, ptlen)
+	lea	rsi,[rsp]
+	lea	rdx,[rsp+16]
+	mov	ecx,13
+	lea	r8,[r12+8]
+	mov	r9d,ebx
+	call	gcm_open
+	add	rsp,48
+	test	eax,eax
+	jz	.bad
+	mov	eax,ebx
+	jmp	.out
+.bad:
+	mov	eax,-1
+.out:
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret

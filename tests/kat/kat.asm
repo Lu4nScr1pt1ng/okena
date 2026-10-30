@@ -48,6 +48,7 @@ bss
 	g_gcm:		rb GCM_SIZE
 	g_gmode		db ?
 	g_tc:		rb TC_SIZE
+	g_gcm12:	rb 512
 	g_der:		rb 8192
 	g_anchor:	rb 65
 	g_in:		rb INPUT_MAX + 64
@@ -116,6 +117,8 @@ start:
 	je	.tls_prf
 	cmp	al,'r'
 	je	.tls12_ks
+	cmp	al,'2'
+	je	.tls12_rec
 	cmp	al,'g'
 	je	.gcm
 	cmp	al,'G'
@@ -552,6 +555,48 @@ start:
 	call	tls12_finished
 	lea	rdi,[g_out]
 	mov	esi,112
+	jmp	.print
+.tls12_rec:				; key(16) salt(4) seq(8) type(1) ptlen(u16 le) pt
+	mov	r15,rsi				; input
+	lea	rdi,[g_gcm12]
+	lea	rsi,[r15]			; key
+	call	gcm_init
+	movzx	ebx,word [r15+29]		; plaintext length
+	lea	rdi,[g_out]			; seal -> g_out
+	lea	rsi,[g_gcm12]
+	lea	rdx,[r15+16]			; salt
+	mov	rcx,[r15+20]			; seq
+	movzx	r8d,byte [r15+28]		; type
+	lea	r9,[r15+31]			; plaintext
+	mov	r10d,ebx
+	call	tls12_seal
+	mov	r13d,eax			; record length
+	; round-trip: open it back in place, must succeed and match
+	lea	rdi,[g_out]
+	mov	esi,r13d
+	lea	rdx,[g_gcm12]
+	lea	rcx,[r15+16]
+	mov	r8,[r15+20]
+	movzx	r9d,byte [r15+28]
+	call	tls12_open
+	cmp	eax,ebx
+	jne	.rec_fail
+	; output = the sealed record (so the host checks the exact bytes)
+	lea	rdi,[g_out]			; re-seal for a clean ciphertext to print
+	lea	rsi,[g_gcm12]
+	lea	rdx,[r15+16]
+	mov	rcx,[r15+20]
+	movzx	r8d,byte [r15+28]
+	lea	r9,[r15+31]
+	mov	r10d,ebx
+	call	tls12_seal
+	lea	rdi,[g_out]
+	mov	esi,eax
+	jmp	.print
+.rec_fail:
+	mov	byte [g_out],0xEE
+	lea	rdi,[g_out]
+	mov	esi,1
 	jmp	.print
 .pem_fail:
 	mov	byte [g_out],0
