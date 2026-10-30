@@ -128,6 +128,8 @@ start:
 	je	.rsa_pss
 	cmp	al,'z'
 	je	.rsa_sign
+	cmp	al,'j'
+	je	.rsa_key
 	cmp	al,'g'
 	je	.gcm
 	cmp	al,'G'
@@ -681,6 +683,28 @@ start:
 	call	rsa_pss_sign
 	lea	rdi,[g_out]
 	mov	esi,r13d
+	jmp	.print
+.rsa_key:				; keylen(u16 le) key_der -> n(nbytes)|d(nbytes)
+	movzx	edx,word [rsi]			; key length
+	lea	rsi,[rsi+2]			; key der
+	lea	rdi,[g_out]			; n
+	lea	rcx,[g_out+1024]		; d
+	call	rsa_key_parse
+	test	eax,eax
+	jz	.rsa_key_fail
+	mov	r13d,eax			; nbytes
+	; pack n (g_out) then d (g_out+1024) into g_out contiguously
+	lea	rdi,[g_out+r13]
+	lea	rsi,[g_out+1024]
+	mov	ecx,r13d
+	rep	movsb
+	lea	rdi,[g_out]
+	lea	esi,[r13*2]
+	jmp	.print
+.rsa_key_fail:
+	mov	byte [g_out],0
+	lea	rdi,[g_out]
+	mov	esi,1
 	jmp	.print
 .rec_fail:
 	mov	byte [g_out],0xEE

@@ -480,6 +480,18 @@ try:
             ok = False
         check(f"rsa pss sign {bits}: verifies with a reference", ok, True)
 
+    # RSA private key parsing (PKCS#1 RSAPrivateKey): modulus and private exponent
+    from cryptography.hazmat.primitives import serialization as _ser2
+    for bits in (2048, 3072):
+        k = _rsa.generate_private_key(public_exponent=65537, key_size=bits)
+        pn = k.private_numbers()
+        der = k.private_bytes(_ser2.Encoding.DER, _ser2.PrivateFormat.TraditionalOpenSSL,
+                              _ser2.NoEncryption())  # PKCS#1 RSAPrivateKey
+        nb = bits // 8
+        got = run(b"j", _struct.pack("<H", len(der)) + der)
+        want = (pn.public_numbers.n.to_bytes(nb, "big") + pn.d.to_bytes(nb, "big")).hex()
+        check(f"rsa key parse {bits}: n and d", got, want)
+
     # TLS client: a well-formed ClientHello (offering x25519 + secp256r1,
     # TLS_AES_128_GCM_SHA256, ecdsa_secp256r1_sha256, ALPN, SNI)
     def _parse_ch(sni):

@@ -877,3 +877,86 @@ rsa_pss_sign:
 	pop	rbp
 	pop	rbx
 	ret
+
+; rsi = RSAPrivateKey DER (PKCS#1: SEQUENCE { version, n, e, d, p, q, ... }),
+; edx = length, rdi = n out (big-endian), rcx = d out (big-endian): the
+; modulus and private exponent, each right-aligned in nbytes. eax = nbytes
+; (a multiple of 8), or 0 on a parse error. CRT parameters are ignored
+; (a full-width modexp signs). der_read is from x509.inc.
+rsa_key_parse:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	mov	r12,rdi				; n out
+	mov	r13,rcx				; d out
+	lea	rdx,[rsi+rdx]
+	call	der_read			; SEQUENCE
+	jc	.no
+	cmp	al,0x30
+	jne	.no
+	mov	r14,r8				; its end
+	mov	rdx,r8
+	call	der_read			; version INTEGER
+	jc	.no
+	cmp	al,2
+	jne	.no
+	mov	rsi,r8
+	mov	rdx,r14
+	call	der_read			; modulus n
+	jc	.no
+	cmp	al,2
+	jne	.no
+	cmp	byte [rsi],0			; strip a leading sign byte
+	jne	@f
+	inc	rsi
+	dec	ecx
+@@:
+	cmp	ecx,528
+	ja	.no
+	mov	ebx,ecx				; nbytes
+	mov	rdi,r12				; copy n (big-endian)
+	push	rsi
+	rep	movsb
+	pop	rsi
+	add	rsi,rbx				; past n (rsi was advanced? no, saved) -> use r8
+	mov	rsi,r8				; after the modulus INTEGER
+	mov	rdx,r14
+	call	der_read			; publicExponent e (skip)
+	jc	.no
+	cmp	al,2
+	jne	.no
+	mov	rsi,r8
+	mov	rdx,r14
+	call	der_read			; privateExponent d
+	jc	.no
+	cmp	al,2
+	jne	.no
+	cmp	byte [rsi],0			; strip a leading sign byte
+	jne	@f
+	inc	rsi
+	dec	ecx
+@@:
+	cmp	ecx,ebx				; d must fit in nbytes
+	ja	.no
+	; d right-aligned in nbytes
+	mov	rdi,r13
+	push	rcx
+	mov	ecx,ebx
+	xor	eax,eax
+	rep	stosb				; zero d out
+	pop	rcx
+	mov	rdi,r13
+	add	rdi,rbx
+	sub	rdi,rcx				; right-aligned
+	rep	movsb
+	mov	eax,ebx				; nbytes
+	jmp	.out
+.no:
+	xor	eax,eax
+.out:
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
