@@ -90,8 +90,8 @@ tlsc_client_hello:
 	ch_lit 0x00,0x2B,0x00,0x03,0x02,0x03,0x04
 	; supported_groups (10): x25519, secp256r1
 	ch_lit 0x00,0x0A,0x00,0x06,0x00,0x04,0x00,0x1D,0x00,0x17
-	; signature_algorithms (13): ecdsa_secp256r1_sha256
-	ch_lit 0x00,0x0D,0x00,0x04,0x00,0x02,0x04,0x03
+	; signature_algorithms (13): ecdsa_secp256r1_sha256, rsa_pss_rsae_sha256
+	ch_lit 0x00,0x0D,0x00,0x06,0x00,0x04,0x04,0x03,0x08,0x04
 	; key_share (51): x25519 (32) and secp256r1 (65)
 	ch_lit 0x00,0x33,0x00,0x6B,0x00,0x69
 	ch_lit 0x00,0x1D,0x00,0x20		; x25519 group, 32 bytes
@@ -200,7 +200,8 @@ TC_LEAF		:= TC_RXGCM + GCM_SIZE		; the leaf certificate DER (ptr, len)
 TC_LEAFLEN	:= TC_LEAF + 8
 TC_CLIST	:= TC_LEAFLEN + 8		; the CertificateEntry list (ptr, len)
 TC_CLISTLEN	:= TC_CLIST + 8
-TC_FULL		:= TC_CLISTLEN + 8
+TC_LEAFKEY	:= TC_CLISTLEN + 8		; the leaf public key (EC or RSA), a PK blob
+TC_FULL		:= TC_LEAFKEY + PK_SIZE
 
 ; rdi = tc, rsi = in (the server's bytes), edx = in length, rcx = out:
 ; parses the ServerHello, computes the ECDH secret, derives the server
@@ -484,9 +485,9 @@ tlsc_verify:
 	mov	ecx,eax
 	push	rsi
 	push	rcx
-	lea	rdi,[rbx+TC_LEAFPUB]
+	lea	rdi,[rbx+TC_LEAFKEY]
 	mov	edx,ecx
-	call	cert_extract_pubkey
+	call	cert_pubkey
 	pop	rcx
 	pop	rsi
 	test	eax,eax
@@ -515,9 +516,15 @@ tlsc_verify:
 	lea	rsi,[rbx+TC_CV]
 	mov	edx,TLS13_CV_PREFIX + 32
 	call	sha256
-	; CV body: SignatureScheme(2), signature length(2), signature DER
+	; CV body: SignatureScheme(2), signature length(2), signature
 	lea	rsi,[r12+4]
-	cmp	word [rsi],0x0304		; ecdsa_secp256r1_sha256 (0x0403, byte-swapped)
+	cmp	word [rsi],0x0304		; ecdsa_secp256r1_sha256 (0x0403)
+	je	.cv_ecdsa
+	cmp	word [rsi],0x0408		; rsa_pss_rsae_sha256 (0x0804)
+	je	.cv_rsa
+	jmp	.bad
+.cv_ecdsa:
+	cmp	dword [rbx+TC_LEAFKEY+PK_TYPE],1
 	jne	.bad
 	add	rsi,4				; past scheme + length
 	mov	rdx,r14
@@ -539,13 +546,26 @@ tlsc_verify:
 	lea	rdi,[rbx+TC_CV+32]
 	call	der_int_32
 	jc	.bad
-	lea	rdi,[rbx+TC_LEAFPUB]		; verify
+	lea	rdi,[rbx+TC_LEAFKEY+PK_DATA]	; the leaf EC point
 	lea	rsi,[rbx+TC_DIG]
 	lea	rdx,[rbx+TC_CV]
 	lea	rcx,[rbx+TC_CV+32]
 	call	p256_verify
 	test	eax,eax
 	jz	.bad
+	jmp	.cv_ok
+.cv_rsa:
+	cmp	dword [rbx+TC_LEAFKEY+PK_TYPE],2
+	jne	.bad
+	lea	rdx,[rsi+4]			; the raw RSA-PSS signature
+	lea	rdi,[rbx+TC_LEAFKEY+PK_DATA]	; modulus
+	mov	esi,[rbx+TC_LEAFKEY+PK_NLEN]
+	mov	ecx,[rbx+TC_LEAFKEY+PK_E]
+	lea	r8,[rbx+TC_DIG]
+	call	rsa_pss_verify
+	test	eax,eax
+	jz	.bad
+.cv_ok:
 	; transcript the CertificateVerify message
 	mov	rsi,r12
 	mov	edx,r14d

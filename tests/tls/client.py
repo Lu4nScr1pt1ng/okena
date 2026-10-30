@@ -35,11 +35,13 @@ def sh(*args):
 
 sh("openssl", "ecparam", "-genkey", "-name", "prime256v1", "-noout", "-out", "s.key")
 sh("openssl", "req", "-new", "-x509", "-key", "s.key", "-subj", "/CN=localhost", "-days", "2", "-out", "s.pem")
+sh("openssl", "genrsa", "-out", "rsa.key", "2048")
+sh("openssl", "req", "-new", "-x509", "-key", "rsa.key", "-sha256", "-subj", "/CN=localhost", "-days", "2", "-out", "rsa.pem")
 
 
-def run_against(groups, port, ktls=False):
-    cmd = ["openssl", "s_server", "-accept", str(port), "-cert", str(tmp / "s.pem"),
-           "-key", str(tmp / "s.key"), "-tls1_3", "-ciphersuites", "TLS_AES_128_GCM_SHA256",
+def run_against(groups, port, ktls=False, cert="s.pem", key="s.key"):
+    cmd = ["openssl", "s_server", "-accept", str(port), "-cert", str(tmp / cert),
+           "-key", str(tmp / key), "-tls1_3", "-ciphersuites", "TLS_AES_128_GCM_SHA256",
            "-groups", groups, "-naccept", "1", "-www"]
     if ktls:
         cmd += ["-num_tickets", "0"]    # a plain read() can't drain post-handshake records
@@ -72,6 +74,11 @@ def main():
           run_against("X25519", 34483, ktls=True) == "1")
     check("kTLS: secp256r1 over the kernel's TLS",
           run_against("P-256", 34484, ktls=True) == "1")
+    # an RSA server certificate: the CertificateVerify is rsa_pss_rsae_sha256,
+    # which the client verifies with rsa_pss_verify over the leaf's RSA key
+    check("RSA server leaf: handshake verifies (rsa_pss_rsae_sha256)",
+          run_against("X25519", 34485, cert="rsa.pem", key="rsa.key") == "1")
+    check("RSA server leaf over kTLS", run_against("P-256", 34486, ktls=True, cert="rsa.pem", key="rsa.key") == "1")
     print(f"tls client: {'all passed' if not failures else f'{failures} failed'}")
     return 1 if failures else 0
 
