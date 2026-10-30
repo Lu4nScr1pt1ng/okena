@@ -1234,3 +1234,163 @@ tls_cert_named:
 	add	rsp,272
 	pop	rbx
 	ret
+
+; ------------------------------------------------------- passthrough
+;
+; tcp { tls passthrough { sni NAME... to pool P; default ... } }: the
+; names go into the SNI table under a group of the listener's own
+; (0x8000 | its first entry), each naming its pool.
+
+; rdi = tcp listener node: eax = a pool (the default, else the first
+; sni line's); g_cmp_pt = its group | (default pool + 1) << 16.
+compile_passthrough:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	call	listener_passthrough
+	mov	rbx,rax
+	mov	r13d,[g_plan_listeners]
+	or	r13d,0x8000
+	mov	[g_tls_cur_group],r13d
+	mov	r14d,-1				; the first sni line's pool
+	xor	r15d,r15d			; the default's + 1
+	mov	r12,[rbx+N_CHILD]
+.line:
+	test	r12,r12
+	jz	.done
+	lea	rax,[dir_table + D_SIZE*DIR_SNI]
+	cmp	[r12+N_DEF],rax
+	je	.sni
+	lea	rax,[dir_table + D_SIZE*DIR_DEFAULT]
+	cmp	[r12+N_DEF],rax
+	jne	.next
+	cmp	dword [r12+N_ARGC],3
+	jne	.next				; reject
+	mov	rax,[r12+N_ARGS]
+	mov	rdi,[rax+2*A_SIZE+A_VAL]
+	mov	esi,[rax+2*A_SIZE+A_VLEN]
+	call	plan_pool_index
+	lea	r15d,[rax+1]
+	jmp	.next
+.sni:
+	mov	ecx,[r12+N_ARGC]
+	dec	ecx
+	imul	rcx,rcx,A_SIZE
+	add	rcx,[r12+N_ARGS]
+	mov	rdi,[rcx+A_VAL]
+	mov	esi,[rcx+A_VLEN]
+	call	plan_pool_index
+	cmp	r14d,-1
+	jne	@f
+	mov	r14d,eax
+@@:
+	mov	[g_tls_cur_tl],eax
+	mov	rbx,[r12+N_ARGS]		; (rbx is free now: the block's lines are in r12)
+	mov	ecx,[r12+N_ARGC]
+	sub	ecx,3
+.name:
+	push	rcx
+	mov	rsi,[rbx+A_VAL]
+	mov	ecx,[rbx+A_VLEN]
+	call	tls_name_add
+	pop	rcx
+	jc	.full
+	add	rbx,A_SIZE
+	dec	ecx
+	jnz	.name
+.next:
+	mov	r12,[r12+N_NEXT]
+	jmp	.line
+.done:
+	mov	eax,r15d
+	shl	eax,16
+	or	eax,r13d
+	mov	[g_cmp_pt],eax
+	mov	eax,r14d
+	test	r15d,r15d
+	jz	@f
+	lea	eax,[r15-1]
+@@:
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+.full:
+	mov	rdi,r12
+	call	tls_error_at
+	out_lit 'the names of this configuration (certificates and sni lines) pass 4096'
+	jmp	tls_error_end
+
+; rsi = a host name, ecx = its length, edx = a group: eax = what the
+; group's table says for it (exactly, then as *.parent), or -1.
+tls_name_lookup:
+	push	rbx
+	sub	rsp,264
+	test	ecx,ecx
+	jz	.none
+	cmp	ecx,253
+	ja	.none
+	mov	ebx,edx
+	lea	rdi,[rsp+8]			; lowercase, one byte of room before it
+	push	rcx
+@@:
+	mov	al,[rsi]
+	lea	r8d,[rax-'A']
+	cmp	r8b,25
+	ja	.lower
+	or	al,0x20
+.lower:
+	mov	[rdi],al
+	inc	rsi
+	inc	rdi
+	dec	ecx
+	jnz	@b
+	pop	rcx
+	mov	edx,ebx
+	lea	rsi,[rsp+8]
+	call	tls_name_find
+	cmp	eax,-1
+	jne	.out
+	xor	eax,eax				; *.parent: the first label replaced
+@@:
+	cmp	eax,ecx
+	jae	.none
+	cmp	byte [rsp+8+rax],'.'
+	je	@f
+	inc	eax
+	jmp	@b
+@@:
+	test	eax,eax
+	jz	.none
+	lea	rsi,[rsp+8+rax-1]
+	mov	byte [rsi],'*'
+	sub	ecx,eax
+	inc	ecx
+	call	tls_name_find
+	jmp	.out
+.none:
+	mov	eax,-1
+.out:
+	add	rsp,264
+	pop	rbx
+	ret
+
+; edi = a listener's LS_PT, rsi = the client's server_name, ecx = its
+; length (0 = none): eax = the pool, or -1 to refuse the connection.
+tls_passthrough_pool:
+	push	rbx
+	mov	ebx,edi
+	movzx	edx,bx
+	call	tls_name_lookup
+	cmp	eax,-1
+	jne	.out
+	mov	eax,ebx
+	shr	eax,16
+	dec	eax				; the default, or -1 (reject)
+.out:
+	pop	rbx
+	ret

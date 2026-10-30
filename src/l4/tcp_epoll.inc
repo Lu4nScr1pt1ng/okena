@@ -398,7 +398,7 @@ ep_accept:
 	call	ep_close
 	jmp	.next
 .connect:
-	call	http_tls_cred
+	call	tcp_tls_wanted
 	test	rax,rax
 	jz	.plain
 	push	r12
@@ -705,6 +705,29 @@ ep_connected:
 	pop	rbx
 	ret
 .relay:
+	; tls passthrough: the ClientHello read before connecting goes first
+	; (a fresh connection's buffer takes it whole, as the PROXY header)
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_PREFIX
+	jz	.pump
+	and	dword [rax+S_FLAGS],not SF_PREFIX
+	mov	edi,[rax+S_UPFD]
+	mov	r8d,ebx
+	shl	r8,H_SHIFT
+	add	r8,[g_http_base]
+	mov	rsi,[r8+H_BUF]
+	mov	edx,[r8+H_INLEN]
+	push	rdx
+	mov	eax,SYS_write
+	syscall
+	pop	rdx
+	cmp	eax,edx
+	je	.pump
+	mov	edi,ebx
+	call	ep_close
+	pop	rbx
+	ret
+.pump:
 	mov	edi,ebx
 	mov	esi,EK_CLIENT
 	call	ep_pump

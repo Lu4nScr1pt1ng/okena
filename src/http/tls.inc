@@ -31,7 +31,9 @@ HS_TLS_FIN	:= 17
 HS_TLS_TAKE	:= 18
 HS_TLS_KTLS	:= 19
 HS_TLS_RETRY	:= 20
-HS_TLS_ALERT	:= 21				; the last of them (phase expiry)
+HS_TLS_ALERT	:= 21
+HS_PT_HELLO	:= 22				; tls passthrough: reading the ClientHello
+HS_TLS_LAST	:= 22				; the last of them (phase expiry)
 
 HB_TLS		:= 1 shl 16			; the TLS area, after the HTTP buffers
 HB_TS		:= HB_TLS			; the handshake, then the record keys
@@ -78,6 +80,17 @@ http_tls_cred:
 .none:
 	ret
 
+; ebx = session: rax = nonzero when its tcp listener has tls (termination
+; or passthrough). Keeps everything but rax and rcx.
+tcp_tls_wanted:
+	call	session_ptr
+	mov	eax,[rax+S_LST]
+	imul	rax,rax,LS_SIZE
+	mov	ecx,[g_listeners+rax+LS_PT]
+	mov	eax,[g_listeners+rax+LS_TLS]
+	or	eax,ecx
+	ret
+
 ; ebx = session: a new connection on a tcp listener with tls. The
 ; handshake runs on the http machinery (this file), then the session goes
 ; on as an L4 one over kTLS. The header timeout bounds the handshake.
@@ -98,7 +111,14 @@ tcp_tls_start:
 	mov	edi,ebx
 	mov	esi,PH_HEAD
 	call	ph_arm
+	call	session_ptr
+	mov	eax,[rax+S_LST]
+	imul	rax,rax,LS_SIZE
 	h_rec
+	cmp	dword [g_listeners+rax+LS_PT],0
+	je	http_tls_start
+	mov	dword [r15+H_STATE],HS_PT_HELLO	; passthrough: just its ClientHello
+	jmp	http_tls_read
 
 ; ebx = session, r15 = its record, a new connection on a tls listener.
 http_tls_start:
@@ -440,7 +460,9 @@ http_tls_established:
 	mov	dword [r15+H_STATE],0
 	mov	edi,ebx
 	call	ph_disarm
-	mov	edi,ebx
+	call	session_ptr
+	mov	dword [rax+S_STATE],ST_CONNECTING	; as accept leaves it: the connect's
+	mov	edi,ebx					; completion is told apart by it
 	cmp	dword [g_engine],ENGINE_EPOLL
 	je	ep_connect
 	jmp	session_connect
@@ -753,3 +775,50 @@ http_sni_host_check:
 .ok:
 	clc
 	ret
+
+; ebx = session, rax = bytes read (http_recv_done in HS_PT_HELLO): once the
+; ClientHello is whole, the pool its server_name names, a connection
+; there, and what was read goes first (SF_PREFIX).
+http_pt_in:
+	test	rax,rax
+	jle	http_tls_close
+	add	[r15+H_INLEN],eax
+	mov	edi,ebx
+	call	idle_touch
+	h_rec
+	mov	rdi,[r15+H_BUF]
+	mov	esi,[r15+H_INLEN]
+	lea	rdx,[rdi+HB_OUT]
+	call	tls_sni_peek
+	h_rec
+	cmp	eax,TH_MORE
+	je	http_tls_read
+	cmp	eax,TH_DONE
+	jne	http_tls_close			; not TLS
+	push	rsi
+	push	rcx
+	call	session_ptr
+	mov	edx,[rax+S_LST]
+	imul	rdx,rdx,LS_SIZE
+	mov	edi,[g_listeners+rdx+LS_PT]
+	pop	rcx
+	pop	rsi
+	call	tls_passthrough_pool
+	cmp	eax,-1
+	je	http_tls_close			; no line for that name: default reject
+	mov	r8d,eax
+	call	session_ptr
+	mov	[rax+S_POOL],r8d
+	and	dword [rax+S_FLAGS],not SF_TLS_HS
+	or	dword [rax+S_FLAGS],SF_PREFIX
+	h_rec
+	mov	dword [r15+H_STATE],0
+	mov	dword [r15+H_INOFF],0
+	mov	edi,ebx
+	call	ph_disarm
+	call	session_ptr
+	mov	dword [rax+S_STATE],ST_CONNECTING	; as accept leaves it: the connect's
+	mov	edi,ebx					; completion is told apart by it
+	cmp	dword [g_engine],ENGINE_EPOLL
+	je	ep_connect
+	jmp	session_connect

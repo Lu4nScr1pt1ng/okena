@@ -62,6 +62,7 @@ SF_PEER		:= 128		; has a side record (client address features)
 SF_FDS_CLOSING	:= 256		; closing: the descriptors' closes are submitted
 SF_TUNNEL	:= 512		; an http session switched to a byte tunnel
 SF_TLS_HS	:= 1024		; a tcp session in its TLS handshake (src/http/tls.inc)
+SF_PREFIX	:= 2048		; tls passthrough: the ClientHello read goes upstream first
 
 ; Jump to target when session ebx belongs to an http listener.
 ; Clobbers rax.
@@ -598,7 +599,7 @@ on_accept_a:
 	call	peer_admit			; per_source, PROXY header
 	jc	.over
 	if_http http_start
-	call	http_tls_cred
+	call	tcp_tls_wanted
 	test	rax,rax
 	jnz	tcp_tls_start			; TLS first, then the upstream
 	mov	edi,ebx
@@ -709,7 +710,7 @@ on_accept:
 	mov	[rax+S_POOL],ecx
 	mov	edi,ebx
 	call	idle_append
-	call	http_tls_cred
+	call	tcp_tls_wanted
 	test	rax,rax
 	jnz	.tls
 	mov	edi,ebx
@@ -1737,6 +1738,67 @@ start_relay:
 	mov	edi,ebx
 	jmp	post_recv_u
 
+; ebx = session, its PROXY header (if any) sent: tls passthrough's
+; ClientHello next, then bytes both ways.
+relay_after_pp:
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_PREFIX
+	jz	start_relay
+	mov	edi,ebx
+
+; edi = session: send (the rest of) the bytes read before connecting.
+post_send_pfx:
+	push	rbx
+	mov	ebx,edi
+	mov	esi,edi
+	mov	edi,OP_S_SEND_PFX
+	call	sess_sqe
+	mov	byte [rax+SQE_OPCODE],IORING_OP_SEND
+	mov	byte [rax+SQE_FLAGS],IOSQE_FIXED_FILE
+	mov	ecx,[g_upslot+rbx*4]
+	mov	[rax+SQE_FD],ecx
+	mov	r8d,ebx
+	shl	r8,H_SHIFT
+	add	r8,[g_http_base]
+	mov	ecx,[r8+H_INOFF]
+	mov	rsi,[r8+H_BUF]
+	add	rsi,rcx
+	mov	[rax+SQE_ADDR],rsi
+	mov	esi,[r8+H_INLEN]
+	sub	esi,ecx
+	mov	[rax+SQE_LEN],esi
+	mov	dword [rax+SQE_OP_FLAGS],MSG_NOSIGNAL
+	pop	rbx
+	ret
+
+on_s_send_pfx:
+	call	sess_complete
+	jc	.out
+	cmp	dword [rax+S_STATE],ST_OPEN
+	jne	.not_open
+	test	r14,r14
+	jle	.failed
+	mov	r8d,ebx
+	shl	r8,H_SHIFT
+	add	r8,[g_http_base]
+	add	[r8+H_INOFF],r14d
+	mov	ecx,[r8+H_INOFF]
+	cmp	ecx,[r8+H_INLEN]
+	jb	.more
+	and	dword [rax+S_FLAGS],not SF_PREFIX
+	jmp	start_relay
+.more:
+	mov	edi,ebx
+	jmp	post_send_pfx
+.failed:
+	mov	edi,ebx
+	jmp	session_close
+.not_open:
+	mov	edi,ebx
+	jmp	session_maybe_free
+.out:
+	ret
+
 ; edi = session: send (the rest of) its PROXY header upstream.
 post_send_pp:
 	push	rbx
@@ -1772,7 +1834,7 @@ on_s_send_pp:
 	mov	ecx,[rax+P_HOFF]
 	cmp	ecx,[rax+P_HLEN]
 	jb	.more
-	jmp	start_relay
+	jmp	relay_after_pp
 .more:
 	mov	edi,ebx
 	jmp	post_send_pp
@@ -1837,7 +1899,7 @@ on_s_connect:
 	mov	eax,[r13+S_LST]
 	imul	rax,rax,LS_SIZE
 	test	dword [g_listeners+rax+LS_FLAGS],LSF_PP_V1 or LSF_PP_V2
-	jz	start_relay
+	jz	relay_after_pp
 	mov	edi,ebx
 	jmp	post_send_pp
 .failed:

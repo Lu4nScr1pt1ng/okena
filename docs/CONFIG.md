@@ -9,7 +9,7 @@ not built yet. A directive that is not built is refused by `okena check`
 | Block | Directives |
 |---|---|
 | `okena` | `workers`, `io_engine`, `busy_poll`, `watchdog`, `drain delay= timeout=`, `metrics`, `ticket_keys` |
-| `tcp ADDR...` | `to`, `limits { connections; per_source }`, `timeout { idle }`, `proxy_protocol send v1\|v2`, `tls { cert; key }` |
+| `tcp ADDR...` | `to`, `limits { connections; per_source }`, `timeout { idle }`, `proxy_protocol send v1\|v2`, `tls { cert; key }`, `tls passthrough { sni NAME... to pool P; default reject\|to pool P }` |
 | `http ADDR...` | `host`, `route`, `limits`, `timeout { idle; header; body_idle; response }`, `trusted_proxies`, `access_log`, `tls { cert; key }` |
 | `route PATH... [METHOD...]` | `to`, `redirect`, `rewrite path`, `header set\|add\|drop`, `response header set\|add\|drop` |
 | `pool NAME` | `server ADDR [weight=N] [backup]`, `balance least-request\|peak-ewma\|round-robin\|least-conn\|random`, `connect timeout=`, `health tcp\|http ...`, `slow_start` |
@@ -35,7 +35,11 @@ each instance; okena does not rotate them itself. The header timeout covers
 the handshake. Backends get `X-Forwarded-Proto: https`. On a `tcp`
 listener `tls` terminates TLS and moves plaintext to the backend; there
 it needs kTLS (okena refuses to start without the module), and the
-handshake has the default header timeout (10 s).
+handshake has the default header timeout (10 s). `tls passthrough` on a
+`tcp` listener does not decrypt: okena reads the ClientHello's
+server_name, picks the pool from the `sni` lines (exact names, `*.parent`
+wildcards), else `default` (`reject` when absent), and moves the bytes
+untouched, the ClientHello first (after a PROXY header when configured).
 
 Everything else below (the rest of TLS, `udp`, policies, auth, limits on requests,
 caching, files, addons, discovery, the admin API and most tooling) is the

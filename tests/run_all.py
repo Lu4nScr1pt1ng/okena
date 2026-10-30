@@ -47,6 +47,8 @@ SUITES = [
     ("https epoll", ["tests/tls/https.py", "epoll"]),
     ("https io_uring user", ["tests/tls/https.py", "io_uring", "user"]),
     ("https epoll user", ["tests/tls/https.py", "epoll", "user"]),
+    ("passthrough io_uring", ["tests/tls/passthrough.py", "io_uring"]),
+    ("passthrough epoll", ["tests/tls/passthrough.py", "epoll"]),
     ("peer io_uring", ["tests/peer/run.py", "io_uring"]),
     ("peer epoll", ["tests/peer/run.py", "epoll"]),
     ("config fuzz", ["tests/config/fuzz.py", "2000"]),

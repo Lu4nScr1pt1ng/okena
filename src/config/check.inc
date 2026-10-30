@@ -1306,11 +1306,24 @@ check_tls:
 	push	r13
 	push	r14
 	push	r15
+	mov	[g_chk_tls_listener],rdi
 	mov	ecx,DIR_TLS
 	call	find_child
 	test	rax,rax
 	jz	.done
 	mov	rbx,rax
+	cmp	dword [rbx+N_ARGC],0
+	jne	.passthrough
+	mov	rdi,rbx				; sni and default belong to passthrough
+	mov	ecx,DIR_SNI
+	call	find_child
+	test	rax,rax
+	jnz	.pt_only
+	mov	rdi,rbx
+	mov	ecx,DIR_DEFAULT
+	call	find_child
+	test	rax,rax
+	jnz	.pt_only
 	mov	rdi,rbx
 	mov	ecx,DIR_KEY
 	call	find_child
@@ -1367,6 +1380,20 @@ check_tls:
 	call	cfg_note
 	out_lit 'help: `cert /etc/okena/example.pem key=/etc/okena/example.key`'
 	call	cfg_note_end
+	call	cfg_error_limit
+	jmp	.done
+.passthrough:
+	mov	rdi,[g_chk_tls_listener]
+	mov	rsi,rbx
+	call	check_passthrough
+	jmp	.done
+.pt_only:
+	mov	rdi,[rax+N_NAME]
+	mov	esi,[rax+N_NLEN]
+	mov	edx,[rax+N_LINE]
+	call	cfg_error
+	out_lit 'routing on SNI is for `tls passthrough`; this tls block decrypts'
+	call	cfg_diag_end
 	call	cfg_error_limit
 	jmp	.done
 .missing:
@@ -1451,7 +1478,13 @@ check_listener:
 	mov	ecx,DIR_TO
 	call	find_child
 	test	rax,rax
-	jz	.no_target
+	jnz	@f
+	mov	rdi,r12
+	call	listener_passthrough
+	test	rax,rax
+	jnz	.addresses			; its sni lines name the pools
+	jmp	.no_target
+@@:
 	mov	rbx,rax
 	mov	r13,[rbx+N_ARGS]
 	mov	rdi,[r13+A_VAL]
@@ -2889,6 +2922,9 @@ pool_used:
 	mov	rdi,rbx
 	call	.uses
 	jc	.yes
+	mov	rdi,rbx
+	call	.uses_pt
+	jc	.yes
 	jmp	.skip
 .http:
 	mov	r13,[rbx+N_CHILD]
@@ -2926,6 +2962,33 @@ pool_used:
 .host_done:
 	pop	r13
 	jmp	.route_next
+; rdi = tcp listener: CF when its tls passthrough sends to this pool (r12)
+.uses_pt:
+	call	listener_passthrough
+	test	rax,rax
+	jz	.not
+	mov	r13,[rax+N_CHILD]
+.pt_line:
+	test	r13,r13
+	jz	.not
+	cmp	dword [r13+N_ARGC],3
+	jb	.pt_next			; default reject
+	mov	ecx,[r13+N_ARGC]		; ... to pool POOL: the last
+	dec	ecx
+	imul	rcx,rcx,A_SIZE
+	mov	rdi,[r13+N_ARGS]
+	add	rdi,rcx
+	mov	rsi,r12
+	push	r13
+	call	same_arg_value
+	pop	r13
+	jc	.pt_yes
+.pt_next:
+	mov	r13,[r13+N_NEXT]
+	jmp	.pt_line
+.pt_yes:
+	stc
+	ret
 ; rdi = node with a `to`: CF when it is `to pool` + this pool (r12)
 .uses:
 	mov	ecx,DIR_TO
@@ -2960,3 +3023,178 @@ pool_used:
 	pop	r12
 	pop	rbx
 	ret
+
+bss
+	g_chk_tls_listener	dq ?
+end bss
+
+; rdi = listener node: rax = its `tls passthrough` block, or 0.
+listener_passthrough:
+	mov	ecx,DIR_TLS
+	call	find_child
+	test	rax,rax
+	jz	.no
+	cmp	dword [rax+N_ARGC],0
+	jne	.yes
+.no:
+	xor	eax,eax
+.yes:
+	ret
+
+cstring str_to_word, 'to',0
+cstring str_reject_word, 'reject',0
+
+; rdi = listener node, rsi = its `tls passthrough` block.
+check_passthrough:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	mov	r12,rdi
+	mov	rbx,rsi
+	lea	rax,[dir_table + D_SIZE*DIR_TCP]
+	cmp	[r12+N_DEF],rax
+	je	@f
+	mov	rdi,rbx
+	lea	rsi,[str_pt_http]
+	call	.at_node
+	jmp	.done
+@@:
+	mov	rdi,r12				; the pools come from sni: no `to`
+	mov	ecx,DIR_TO
+	call	find_child
+	test	rax,rax
+	jz	@f
+	mov	rdi,rax
+	lea	rsi,[str_pt_to]
+	call	.at_node
+@@:
+	mov	rdi,rbx
+	mov	ecx,DIR_CERT
+	call	find_child
+	test	rax,rax
+	jnz	.has_cert
+	mov	rdi,rbx
+	mov	ecx,DIR_KEY
+	call	find_child
+	test	rax,rax
+	jz	.lines
+.has_cert:
+	mov	rdi,rax
+	lea	rsi,[str_pt_cert]
+	call	.at_node
+.lines:
+	xor	r15d,r15d			; sni lines
+	mov	r13,[rbx+N_CHILD]
+.line:
+	test	r13,r13
+	jz	.lines_done
+	lea	rax,[dir_table + D_SIZE*DIR_SNI]
+	cmp	[r13+N_DEF],rax
+	jne	.default_line
+	inc	r15d
+	mov	ecx,[r13+N_ARGC]		; NAME... to pool POOL
+	sub	ecx,3
+	imul	rcx,rcx,A_SIZE
+	add	rcx,[r13+N_ARGS]
+	mov	r14,rcx
+	call	.to_pool
+	jmp	.next_line
+.default_line:
+	lea	rax,[dir_table + D_SIZE*DIR_DEFAULT]
+	cmp	[r13+N_DEF],rax
+	jne	.next_line
+	mov	r14,[r13+N_ARGS]
+	cmp	dword [r13+N_ARGC],1
+	jne	.default_to
+	mov	rdi,[r14+A_VAL]
+	mov	esi,[r14+A_VLEN]
+	lea	rdx,[str_reject_word]
+	call	mem_eq_cstr
+	test	eax,eax
+	jnz	.next_line
+	mov	rdi,r13
+	lea	rsi,[str_pt_default]
+	call	.at_node
+	jmp	.next_line
+.default_to:
+	cmp	dword [r13+N_ARGC],3
+	jne	.bad_default
+	call	.to_pool
+	jmp	.next_line
+.bad_default:
+	mov	rdi,r13
+	lea	rsi,[str_pt_default]
+	call	.at_node
+.next_line:
+	mov	r13,[r13+N_NEXT]
+	jmp	.line
+.lines_done:
+	test	r15d,r15d
+	jnz	.done
+	mov	rdi,rbx
+	lea	rsi,[str_pt_none]
+	call	.at_node
+.done:
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; r13 = the line, r14 = its "to": "to pool POOL", the pool defined.
+.to_pool:
+	mov	rdi,[r14+A_VAL]
+	mov	esi,[r14+A_VLEN]
+	lea	rdx,[str_to_word]
+	call	mem_eq_cstr
+	test	eax,eax
+	jz	.form
+	mov	rdi,[r14+A_SIZE+A_VAL]
+	mov	esi,[r14+A_SIZE+A_VLEN]
+	lea	rdx,[str_pool_word]
+	call	mem_eq_cstr
+	test	eax,eax
+	jz	.form
+	mov	rdi,[r14+2*A_SIZE+A_VAL]
+	mov	esi,[r14+2*A_SIZE+A_VLEN]
+	call	pool_find
+	test	rax,rax
+	jnz	.pool_ok
+	lea	rdi,[r14+2*A_SIZE]
+	call	arg_value_span
+	mov	edx,[r14+2*A_SIZE+A_LINE]
+	call	cfg_error
+	out_lit 'there is no pool named '
+	mov	rsi,[r14+2*A_SIZE+A_VAL]
+	mov	edx,[r14+2*A_SIZE+A_VLEN]
+	call	cfg_quote
+	call	cfg_diag_end
+	call	cfg_error_limit
+.pool_ok:
+	ret
+.form:
+	mov	rdi,r13
+	lea	rsi,[str_pt_form]
+; rdi = node, rsi = message (C string): an error there.
+.at_node:
+	push	rsi
+	mov	rax,rdi
+	mov	rdi,[rax+N_NAME]
+	mov	esi,[rax+N_NLEN]
+	mov	edx,[rax+N_LINE]
+	call	cfg_error
+	pop	rsi
+	call	out_cstr
+	call	cfg_diag_end
+	call	cfg_error_limit
+	ret
+
+cstring str_pt_http, 'tls passthrough routes TCP connections: it belongs in a tcp listener',0
+cstring str_pt_to, 'a tls passthrough listener sends each connection where its sni lines say: no `to` here',0
+cstring str_pt_cert, 'tls passthrough does not decrypt: no certificate or key here',0
+cstring str_pt_form, 'write it as: sni NAME... to pool POOL',0
+cstring str_pt_default, 'write it as: default reject, or default to pool POOL',0
+cstring str_pt_none, 'tls passthrough needs at least one `sni NAME... to pool POOL` line',0

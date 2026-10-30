@@ -1673,3 +1673,117 @@ tls_ticket_key:
 	ret
 
 cstring env_okena_ticket_rotate, 'OKENA_TICKET_ROTATE='
+
+; ------------------------------------------------------- passthrough
+;
+; rdi = what the client sent, esi = its length, rdx = scratch (CH_MAX):
+; the server_name of its ClientHello, without taking part in the
+; handshake. eax = TH_MORE (incomplete), TH_FAIL (not a TLS ClientHello),
+; or TH_DONE with rsi = the name (in scratch) and ecx = its length (0 when
+; it sent none).
+tls_sni_peek:
+	push	rbx
+	push	r12
+	push	r13
+	mov	r12,rdx				; the message, gathered
+	lea	r13,[rdi+rsi]			; the end of input
+	mov	rsi,rdi
+	mov	rdi,rdx
+	xor	ebx,ebx				; bytes gathered
+.record:
+	mov	rax,r13
+	sub	rax,rsi
+	cmp	rax,5
+	jb	.more
+	cmp	byte [rsi],22
+	jne	.fail
+	movzx	ecx,word [rsi+3]
+	rol	cx,8
+	test	ecx,ecx
+	jz	.fail
+	cmp	ecx,TLS_RECORD_MAX
+	ja	.fail
+	sub	rax,5
+	cmp	rax,rcx
+	jb	.more
+	lea	eax,[rbx+rcx]
+	cmp	eax,CH_MAX
+	ja	.fail
+	add	rsi,5
+	mov	ebx,eax
+	rep	movsb
+	cmp	ebx,4
+	jb	.record
+	cmp	byte [r12],1			; client_hello
+	jne	.fail
+	mov	eax,[r12]
+	bswap	eax
+	and	eax,0xFFFFFF
+	add	eax,4
+	cmp	eax,CH_MAX
+	ja	.fail
+	cmp	ebx,eax
+	jb	.record
+	; parse just far enough: r13 = the message's end
+	lea	r13,[r12+rax]
+	lea	rsi,[r12+4+34]
+	cmp	rsi,r13
+	jae	.fail
+	movzx	eax,byte [rsi]			; session id
+	lea	rsi,[rsi+rax+1]
+	lea	rax,[rsi+2]
+	cmp	rax,r13
+	ja	.fail
+	movzx	eax,word [rsi]			; cipher suites
+	rol	ax,8
+	lea	rsi,[rsi+rax+2]
+	cmp	rsi,r13
+	jae	.fail
+	movzx	eax,byte [rsi]			; compression
+	lea	rsi,[rsi+rax+1]
+	lea	rax,[rsi+2]
+	cmp	rax,r13
+	ja	.none				; no extensions: no name
+	add	rsi,2
+.ext:
+	lea	rax,[rsi+4]
+	cmp	rax,r13
+	ja	.none
+	movzx	eax,word [rsi]
+	movzx	ecx,word [rsi+2]
+	rol	cx,8
+	add	rsi,4
+	lea	rdx,[rsi+rcx]
+	cmp	rdx,r13
+	ja	.fail
+	test	eax,eax
+	jz	.server_name
+	mov	rsi,rdx
+	jmp	.ext
+.server_name:
+	cmp	ecx,5
+	jb	.fail
+	cmp	byte [rsi+2],0			; host_name
+	jne	.none
+	movzx	ecx,word [rsi+3]
+	rol	cx,8
+	lea	rax,[rsi+5+rcx]
+	cmp	rax,rdx
+	ja	.fail
+	add	rsi,5
+	mov	eax,TH_DONE
+	jmp	.out
+.none:
+	xor	ecx,ecx
+	mov	eax,TH_DONE
+	jmp	.out
+.more:
+	mov	eax,TH_MORE
+	jmp	.out
+.fail:
+	mov	eax,TH_FAIL
+.out:
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret

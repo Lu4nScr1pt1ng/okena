@@ -29,6 +29,7 @@ LS_ALOG		:= 100		; d: http: access log destination + 1, 0 = none
 LS_TFIRST	:= 104		; d: http: first trusted_proxies range
 LS_TCOUNT	:= 108		; d
 LS_T_BODY	:= 112		; d: http: seconds between bytes of a request body
+LS_PT		:= 116		; d: tls passthrough: names group | (default pool + 1) << 16, 0 = none
 LS_TLS		:= 120		; d: its tls entry + 1 (certificate, key), 0 = none
 LS_SIZE		:= 128
 
@@ -175,6 +176,7 @@ bss
 	g_cmp_flags	dd ?
 	g_cmp_per_source dd ?
 	g_cmp_t_header	dd ?
+	g_cmp_pt	dd ?
 	g_cmp_alog	dd ?
 	g_cmp_tlsi	dd ?
 	g_cmp_tfirst	dd ?
@@ -1203,9 +1205,19 @@ compile_listener:
 	push	r15
 	mov	r12,rdi
 	mov	r14d,-1				; http: routes choose the pool
+	mov	dword [g_cmp_pt],0
 	lea	rax,[dir_table + D_SIZE*DIR_HTTP]
 	cmp	[r12+N_DEF],rax
 	je	.http
+	mov	rdi,r12
+	call	listener_passthrough
+	test	rax,rax
+	jz	@f
+	mov	rdi,r12
+	call	compile_passthrough		; the pools from its sni lines
+	mov	r14d,eax
+	jmp	.settings
+@@:
 	mov	rdi,r12
 	call	compile_target
 	mov	r14d,eax
@@ -1379,6 +1391,8 @@ compile_listener:
 	mov	[rcx+LS_ALOG],eax
 	mov	eax,[g_cmp_tlsi]
 	mov	[rcx+LS_TLS],eax
+	mov	eax,[g_cmp_pt]
+	mov	[rcx+LS_PT],eax
 	mov	eax,[g_cmp_tfirst]
 	mov	[rcx+LS_TFIRST],eax
 	mov	eax,[g_cmp_tcount]

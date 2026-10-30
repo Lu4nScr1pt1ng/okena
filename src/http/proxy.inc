@@ -1282,6 +1282,8 @@ http_recv_plain:
 	je	http_tls_fin_peeked
 	cmp	edx,HS_TLS_TAKE
 	je	http_tls_fin_in
+	cmp	edx,HS_PT_HELLO
+	je	http_pt_in
 	ret
 .head:
 	test	rax,rax
@@ -2924,7 +2926,7 @@ http_phase_expired:
 	mov	eax,[r15+H_STATE]
 	cmp	eax,HS_TLS_HELLO
 	jb	@f
-	cmp	eax,HS_TLS_ALERT
+	cmp	eax,HS_TLS_LAST
 	jbe	.silent				; the handshake never finished
 @@:
 	cmp	eax,HS_HEAD

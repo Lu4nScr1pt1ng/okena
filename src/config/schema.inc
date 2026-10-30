@@ -122,6 +122,7 @@ enumdef e_header_ops, 'set', 'add', 'drop'
 enumdef e_response_what, 'header'
 enumdef e_rewrite_what, 'path'
 enumdef e_pp_version, 'v1', 'v2'
+enumdef e_tls_mode, 'passthrough'
 
 keysdef k_drain, 'delay', T_DURATION, 'timeout', T_DURATION
 keysdef k_server, 'weight', T_WEIGHT
@@ -141,7 +142,7 @@ enumdef future_names, 'udp', 'xdp', 'policy', 'use', \
 	'cors', 'limit', 'auth', 'match', 'source', \
 	'concurrency', 'retry_budget', 'retry', 'outlier', 'protocol', \
 	'fault', 'files', 'compress', 'canonical', 'idempotency', 'hold', \
-	'body', 'early_hints', 'signed_urls', 'sni', 'default', 'priority', 'hedge', \
+	'body', 'early_hints', 'signed_urls', 'priority', 'hedge', \
 	'response', 'alpn', 'cert', 'warm'
 
 rodata
@@ -173,7 +174,9 @@ dirdef DIR_REDIRECT, 'redirect',  M_ROUTE,   0,           F_UNIQUE, 2, 2, e_redi
 dirdef DIR_REWRITE, 'rewrite',    M_ROUTE,   0,           F_UNIQUE, 4, 4, e_rewrite_what, T_ANY, 0
 dirdef DIR_RHEADER, 'header',      M_ROUTE,   0,           0, 2, 3, e_header_ops, T_ANY, 0
 dirdef DIR_RRESPONSE, 'response',  M_ROUTE,   0,           0, 3, 4, e_response_what, T_ANY, 0
-dirdef DIR_TLS, 'tls',          M_TCP or M_HTTP, CTX_TLS,   F_BLOCK_REQ or F_UNIQUE, 0, 0, T_NONE, T_NONE, 0
+dirdef DIR_TLS, 'tls',          M_TCP or M_HTTP, CTX_TLS,   F_BLOCK_REQ or F_UNIQUE, 0, 1, e_tls_mode, T_NONE, 0
+dirdef DIR_SNI, 'sni',          M_TLS,     0,           0, 4, 64, T_ANY, T_ANY, 0
+dirdef DIR_DEFAULT, 'default',  M_TLS,     0,           F_UNIQUE, 1, 3, T_ANY, T_ANY, 0
 dirdef DIR_CERT, 'cert',        M_TLS,     0,           0, 1, 1, T_ANY, T_NONE, k_cert
 dirdef DIR_KEY, 'key',          M_TLS,     0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
 dirdef DIR_ACCESS_LOG, 'access_log', M_HTTP,   0,           F_UNIQUE, 1, 1, T_LOGDEST, T_NONE, 0

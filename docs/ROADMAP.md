@@ -149,9 +149,11 @@ ticket_keys FILE }` shares the keys across a fleet (tickets resume on any
 instance; the operator rotates with a new first line and a reload). SNI picks
 among several certificates of a listener by their subjectAltName names
 (exact, then one wildcard label, else the first), and a Host the chosen
-certificate does not name gets 421. Still open from the list: SNI
-passthrough, TLS 1.2 for older clients, TLS to upstreams, conformance
-runs (tlsfuzzer); then phase 4.
+certificate does not name gets 421. `tls passthrough` routes tcp
+connections on the ClientHello's server_name without decrypting (both
+engines, `tests/tls/passthrough.py`). Still open from the list: TLS 1.2
+for older clients, TLS to upstreams, conformance runs (tlsfuzzer); then
+phase 4.
 
 * SHA-2, HMAC, HKDF (from fasm2crud), AES-GCM (AES-NI, VAES/VPCLMULQDQ),
   ChaCha20-Poly1305, X25519, ML-KEM-768, P-256 ECDH/ECDSA, Ed25519.
