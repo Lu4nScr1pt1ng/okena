@@ -80,6 +80,12 @@ def context(alpn=("h2", "http/1.1"), **kw):
     return ctx
 
 
+def ecdh_ctx(curve):
+    c = context()
+    c.set_ecdh_curve(curve)
+    return c
+
+
 def roundtrip(port, ctx, payloads=(b"hello",)):
     with socket.create_connection(("127.0.0.1", port), timeout=5) as s:
         with ctx.wrap_socket(s, server_hostname="okena.test") as t:
@@ -270,9 +276,12 @@ def main():
     err = refused(port, context(alpn=("h2",)))
     check("ALPN h2 only: no_application_protocol", err is not None and "NO_APPLICATION_PROTOCOL" in err.upper(), err)
     ctx = context()
-    ctx.set_ecdh_curve("prime256v1")
+    ctx.set_ecdh_curve("secp384r1")                 # a group okena offers neither of
     err = refused(port, ctx)
-    check("no x25519 share: handshake_failure", err is not None and "HANDSHAKE_FAILURE" in err.upper(), err)
+    check("no group in common (P-384 only): handshake_failure",
+          err is not None and "HANDSHAKE_FAILURE" in err.upper(), err)
+    check("x25519 and P-256 both work (ECDHE)",
+          roundtrip(port, context())[1] and roundtrip(port, ecdh_ctx("prime256v1"))[1])
     with socket.create_connection(("127.0.0.1", port), timeout=3) as s:
         s.sendall(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
         reply = s.recv(100)
@@ -306,7 +315,7 @@ def main():
         for extra, name in [([], "with"), (["-no_middlebox"], "without")]:
             # P-256 first: its share only, x25519 offered: a HelloRetryRequest
             sc = subprocess.Popen(["openssl", "s_client", "-connect", f"127.0.0.1:{port}", "-CAfile",
-                                   str(tmp / "ca.pem"), "-servername", "okena.test", "-groups", "P-256:X25519",
+                                   str(tmp / "ca.pem"), "-servername", "okena.test", "-groups", "P-384:X25519",
                                    "-verify_return_error", "-msg", *extra],
                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
             sc.stdin.write(b"retried\n")
@@ -329,7 +338,7 @@ def main():
         common = ["openssl", "s_client", "-connect", f"127.0.0.1:{port}", "-CAfile", str(tmp / "ca.pem"),
                   "-servername", "okena.test"]
         subprocess.run(common + ["-sess_out", str(sess)], input=b"", capture_output=True, timeout=10)
-        r = subprocess.run(common + ["-sess_in", str(sess), "-groups", "P-256:X25519"], input=b"",
+        r = subprocess.run(common + ["-sess_in", str(sess), "-groups", "P-384:X25519"], input=b"",
                            capture_output=True, timeout=10)
         check("s_client: a saved session resumed through a HelloRetryRequest",
               b"Reused, TLSv1.3" in r.stdout, r.stdout.decode(errors="replace")[-300:])

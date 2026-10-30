@@ -1,5 +1,5 @@
 ; TLS 1.3 server handshake (RFC 8446): TLS_AES_128_GCM_SHA256, the x25519
-; group and ecdsa_secp256r1_sha256 signatures, the set every TLS 1.3
+; and secp256r1 groups and ecdsa_secp256r1_sha256 signatures, the set every TLS 1.3
 ; client offers. One round trip, no state between the two calls but the
 ; TS block: everything the client Finished needs is computed with the
 ; server's flight.
@@ -31,9 +31,11 @@
 ; chain the configuration accepts (TLS_CHAIN_MAX). The ClientHello is
 ; copied out of its records into out first, so in is left as it was.
 ;
-; A client offering x25519 without a share for it gets a HelloRetryRequest
-; (RFC 8446 4.1.4) naming x25519; one that does not offer it at all, a
-; handshake_failure alert.
+; Key exchange is x25519 or secp256r1 (whichever the client sends a share
+; for, x25519 preferred). A client offering a supported group without a
+; share for it gets a HelloRetryRequest (RFC 8446 4.1.4) naming x25519, or
+; secp256r1 when that is the only one it offered; one that offers neither,
+; a handshake_failure alert.
 ; No resumption and no 0-RTT: no tickets are issued, so no client sends
 ; early data.
 
@@ -214,7 +216,11 @@ HL_SHLEN	:= HL_BINOFF + 4		; the ServerHello's record length
 HL_NOW		:= HL_SHLEN + 4			; seconds (CLOCK_MONOTONIC)
 HL_SNIP		:= HL_NOW + 4			; q: the client's server_name
 HL_SNILEN	:= HL_SNIP + 8
-HL_SIZE		:= ((HL_SNILEN + 4 + 15) and not 15) + 8	; rsp 16-aligned at calls
+HL_PEER256	:= HL_SNILEN + 4		; the client's secp256r1 point (65)
+HL_PUB256	:= HL_PEER256 + 72		; the server's (65)
+HL_GROUP	:= HL_PUB256 + 72		; d: 0 = x25519, 1 = secp256r1
+HL_KSEXT	:= HL_GROUP + 4			; d: the key_share extension's wire length
+HL_SIZE		:= ((HL_KSEXT + 4 + 15) and not 15) + 8	; rsp 16-aligned at calls
 
 G_TLS13		:= 1
 G_SUITE		:= 2
@@ -223,6 +229,8 @@ G_KS		:= 8
 G_ALPN		:= 16
 G_H1		:= 32
 G_GROUP		:= 64				; x25519 in supported_groups
+G_KS256		:= 2048				; the client sent a secp256r1 key share
+G_GROUP256	:= 4096				; secp256r1 in supported_groups
 G_PSK		:= 128				; pre_shared_key: a ticket-sized identity, a 32-byte binder
 G_PSKDHE	:= 256				; psk_key_exchange_modes has psk_dhe_ke
 G_RESUME	:= 512				; the ticket opened and the binder is right: resumption
@@ -495,13 +503,23 @@ tls_hello:
 	cmp	r8,r14
 	ja	.decode
 	cmp	ax,0x1D00			; x25519
-	jne	.share_next
+	jne	.ks_p256
 	cmp	edx,32
 	jne	.illegal
 	lea	rdi,[rbp+HL_KS]
 	mov	ecx,32
 	rep	movsb
 	or	dword [rbp+HL_GOT],G_KS
+	jmp	.share_next
+.ks_p256:
+	cmp	ax,0x1700			; secp256r1
+	jne	.share_next
+	cmp	edx,65
+	jne	.share_next			; not uncompressed: ignore this share
+	lea	rdi,[rbp+HL_PEER256]
+	mov	ecx,65
+	rep	movsb
+	or	dword [rbp+HL_GOT],G_KS256
 .share_next:
 	mov	rsi,r8
 	jmp	.share
@@ -609,9 +627,14 @@ tls_hello:
 	cmp	rsi,r14
 	jae	.ext_next
 	cmp	word [rsi],0x1D00		; x25519
-	jne	@f
+	jne	.grp_p256
 	or	dword [rbp+HL_GOT],G_GROUP
-@@:
+	jmp	.grp_adv
+.grp_p256:
+	cmp	word [rsi],0x1700		; secp256r1
+	jne	.grp_adv
+	or	dword [rbp+HL_GOT],G_GROUP256
+.grp_adv:
 	add	rsi,2
 	jmp	.group_item
 
@@ -663,8 +686,15 @@ tls_hello:
 	jz	.handshake
 	test	eax,G_SIGALG
 	jz	.handshake
+	mov	dword [rbp+HL_GROUP],0		; the key-exchange group
+	mov	dword [rbp+HL_KSEXT],40		; its key_share extension length
 	test	eax,G_KS
+	jnz	.have_share			; x25519 preferred
+	test	eax,G_KS256
 	jz	.no_share
+	mov	dword [rbp+HL_GROUP],1		; secp256r1
+	mov	dword [rbp+HL_KSEXT],73
+.have_share:
 	and	dword [rbx+TS_FLAGS],not TF_GOT_H1
 	test	dword [rbx+TS_FLAGS],TF_ALPN_H1
 	jz	.alpn_done
@@ -783,6 +813,9 @@ tls_hello:
 	syscall
 	cmp	rax,80
 	jne	.internal
+	cmp	dword [rbp+HL_GROUP],0
+	jne	.eph_p256
+	; x25519: the ephemeral public and the shared secret
 	lea	rdi,[rbp+HL_PUB]
 	lea	rsi,[rbp+HL_RAND+32]
 	call	x25519_base			; the fixed-base table: a third of the ladder
@@ -795,10 +828,24 @@ tls_hello:
 	or	rax,[rbp+HL_SHARED+16]
 	or	rax,[rbp+HL_SHARED+24]
 	jz	.illegal
+	jmp	.eph_done
+.eph_p256:
+	; secp256r1: scalar * G for the public key, scalar * peer for the secret
+	lea	rdi,[rbp+HL_PUB256]
+	lea	rsi,[rbp+HL_RAND+32]
+	call	p256_public
+	lea	rdi,[rbp+HL_SHARED]
+	lea	rsi,[rbp+HL_RAND+32]
+	lea	rdx,[rbp+HL_PEER256]
+	call	p256_ecdh
+	test	eax,eax
+	jz	.illegal			; the peer point was invalid
+.eph_done:
 
 	; ServerHello, its record header first
 	mov	edx,[rbp+HL_SIDLEN]
-	add	edx,90				; the record's length (one message)
+	add	edx,50
+	add	edx,[rbp+HL_KSEXT]		; the record's length (one message)
 	test	dword [rbp+HL_GOT],G_RESUME
 	jz	@f
 	add	edx,6				; + pre_shared_key
@@ -826,15 +873,31 @@ tls_hello:
 	mov	eax,[rbp+HL_SHLEN]
 	sub	eax,[rbp+HL_SIDLEN]
 	sub	eax,44
-	mov	[rdi+4],al			; ... the extensions' length (46, or 52 resumed)
+	mov	[rdi+4],al			; ... the extensions' length
 	mov	dword [rdi+5],0x02002B00	; supported_versions: TLS 1.3
 	mov	word [rdi+9],0x0403
-	mov	rax,0x20001D0024003300		; key_share: x25519, 32 bytes
-	mov	[rdi+11],rax
-	add	rdi,19
+	add	rdi,11
+	; key_share: the negotiated group and the server's public key
+	mov	word [rdi],0x3300		; extension type key_share (0x0033)
+	mov	eax,[rbp+HL_KSEXT]
+	sub	eax,4				; the extension body length
+	rol	ax,8
+	mov	[rdi+2],ax
+	cmp	dword [rbp+HL_GROUP],0
+	jne	.sh_p256
+	mov	dword [rdi+4],0x2000_1D00	; x25519, 32 bytes
+	add	rdi,8
 	lea	rsi,[rbp+HL_PUB]
 	mov	ecx,32
 	rep	movsb
+	jmp	.sh_ks_done
+.sh_p256:
+	mov	dword [rdi+4],0x4100_1700	; secp256r1, 65 bytes
+	add	rdi,8
+	lea	rsi,[rbp+HL_PUB256]
+	mov	ecx,65
+	rep	movsb
+.sh_ks_done:
 	test	dword [rbp+HL_GOT],G_RESUME
 	jz	@f
 	mov	dword [rdi],0x02002900		; pre_shared_key: identity 0
@@ -1138,9 +1201,9 @@ tls_hello:
 	jmp	.alert
 
 .no_share:
-	; x25519 offered without a share: a HelloRetryRequest, once
-	test	eax,G_GROUP
-	jz	.handshake
+	; a group offered without its share: a HelloRetryRequest, once
+	test	eax,G_GROUP or G_GROUP256
+	jz	.handshake			; no group in common
 	test	dword [rbx+TS_FLAGS],TF_HRR
 	jnz	.illegal			; asked already, and still no share
 	; transcript: message_hash(Hash(ClientHello1)), then the retry request
@@ -1183,8 +1246,12 @@ tls_hello:
 	mov	byte [rdi+4],12			; ... 12 bytes of extensions
 	mov	dword [rdi+5],0x02002B00	; supported_versions: TLS 1.3
 	mov	word [rdi+9],0x0403
-	mov	dword [rdi+11],0x02003300	; key_share: x25519, please
-	mov	word [rdi+15],0x1D00
+	mov	dword [rdi+11],0x02003300	; key_share: a group, please
+	mov	word [rdi+15],0x1D00		; x25519 by default
+	test	dword [rbp+HL_GOT],G_GROUP
+	jnz	@f
+	mov	word [rdi+15],0x1700		; only secp256r1 offered
+@@:
 	add	rdi,17
 	push	rdi
 	lea	rsi,[r12+5]
