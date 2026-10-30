@@ -346,3 +346,169 @@ bn_modexp:
 	pop	rbp
 	pop	rbx
 	ret
+
+rodata
+	; the SHA-256 DigestInfo prefix for PKCS#1 v1.5 (RFC 8017 9.2)
+	rsa_sha256_di	db 0x30,0x31,0x30,0x0d,0x06,0x09,0x60,0x86,0x48,0x01,0x65,0x03,0x04,0x02,0x01,0x05,0x00,0x04,0x20
+	RSA_DI_LEN	:= $ - rsa_sha256_di
+end rodata
+
+; big-endian bytes -> little-endian limbs. rdi = limbs out, rsi = bytes,
+; edx = byte length (a multiple of 8). Fills edx/8 limbs.
+bn_from_be:
+	mov	ecx,edx				; byte length
+	xor	r8d,r8d				; limb index
+.l:
+	mov	rax,[rsi+rcx-8]			; the next 8 bytes (toward the LSB end)
+	bswap	rax
+	mov	[rdi+r8*8],rax
+	inc	r8d
+	sub	ecx,8
+	jnz	.l
+	ret
+
+; little-endian limbs -> big-endian bytes. rdi = bytes out, rsi = limbs,
+; edx = byte length (a multiple of 8).
+bn_to_be:
+	mov	ecx,edx
+	xor	r8d,r8d
+.l:
+	mov	rax,[rsi+r8*8]
+	bswap	rax
+	mov	[rdi+rcx-8],rax
+	inc	r8d
+	sub	ecx,8
+	jnz	.l
+	ret
+
+; rdi = modulus n (big-endian, nbytes), esi = nbytes (multiple of 8),
+; rdx = signature (big-endian, nbytes), ecx = public exponent e (a small
+; integer), r8 = message hash (32 bytes, SHA-256): eax = 1 when the PKCS#1
+; v1.5 signature verifies, else 0. For verifying RSA certificate chains.
+rsa_pkcs1_verify:
+	push	rbx
+	push	rbp
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	mov	r12,rdi				; n be
+	mov	r13d,esi			; nbytes
+	mov	r14,rdx				; sig be
+	mov	r15,r8				; hash
+	mov	ebp,ecx				; e
+	; frame: n_le | sig_le | m_le | em_be (nbytes each) + exp(8)
+	mov	eax,r13d
+	shl	eax,2				; 4*nbytes
+	add	eax,32
+	and	eax,-16
+	mov	ebx,eax
+	sub	rsp,rax
+	; convert n and sig to little-endian limbs
+	mov	rdi,rsp				; n_le at 0
+	mov	rsi,r12
+	mov	edx,r13d
+	call	bn_from_be
+	lea	rdi,[rsp+r13]			; sig_le at nbytes
+	mov	rsi,r14
+	mov	edx,r13d
+	call	bn_from_be
+	; exp (big-endian minimal) at [rsp+4*nbytes]
+	lea	r8,[rsp+r13*4]
+	mov	rax,rbp
+	bswap	rax				; e big-endian in a qword
+	mov	[r8],rax
+	; find the first non-zero byte of the 8-byte big-endian e
+	xor	ecx,ecx
+.elen:
+	cmp	byte [r8+rcx],0
+	jne	.egot
+	inc	ecx
+	cmp	ecx,8
+	jb	.elen
+.egot:
+	lea	rdx,[r8+rcx]			; exp bytes start
+	mov	eax,8
+	sub	eax,ecx				; exp length
+	; m_le = sig^e mod n  (m_le at [rsp+2*nbytes])
+	push	rax
+	push	rdx
+	lea	rdi,[rsp+16+r13*2]		; m_le
+	lea	rsi,[rsp+16+r13]		; sig_le
+	mov	rdx,[rsp]			; exp ptr
+	mov	ecx,[rsp+8]			; exp len
+	mov	r8,rsp
+	add	r8,16				; n_le
+	mov	r9d,r13d
+	shr	r9d,3				; nlimbs
+	call	bn_modexp
+	add	rsp,16
+	; m_be = m_le converted back, at [rsp+3*nbytes]
+	lea	rdi,[rsp+r13*2]
+	add	rdi,r13				; 3*nbytes (em_be)
+	lea	rsi,[rsp+r13*2]			; m_le
+	mov	edx,r13d
+	call	bn_to_be
+	; check EM = 00 01 FF..FF 00 | DigestInfo | hash
+	lea	rbx,[rsp+r13*2]
+	add	rbx,r13				; em_be
+	cmp	byte [rbx],0x00
+	jne	.no
+	cmp	byte [rbx+1],0x01
+	jne	.no
+	; DigestInfo starts at nbytes - (RSA_DI_LEN + 32)
+	mov	ecx,r13d
+	sub	ecx,RSA_DI_LEN + 32		; offset of DigestInfo
+	; the separator byte just before it must be 0x00
+	cmp	byte [rbx+rcx-1],0x00
+	jne	.no
+	; bytes [2, ecx-1) must all be 0xFF (and at least 8 of them)
+	mov	edx,ecx
+	sub	edx,1				; end of padding (exclusive)
+	mov	eax,edx
+	sub	eax,2
+	cmp	eax,8
+	jb	.no
+	mov	esi,2
+.pad:
+	cmp	esi,edx
+	jae	.padok
+	cmp	byte [rbx+rsi],0xFF
+	jne	.no
+	inc	esi
+	jmp	.pad
+.padok:
+	; addresses first (ct_equal clobbers rcx)
+	lea	r12,[rbx+rcx]			; DigestInfo prefix
+	lea	rbp,[rbx+rcx+RSA_DI_LEN]		; the hash
+	mov	rdi,r12
+	lea	rsi,[rsa_sha256_di]
+	mov	edx,RSA_DI_LEN
+	call	ct_equal
+	test	eax,eax
+	jz	.no
+	mov	rdi,rbp
+	mov	rsi,r15
+	mov	edx,32
+	call	ct_equal
+	test	eax,eax
+	jz	.no
+	mov	eax,1
+	jmp	.out
+.no:
+	xor	eax,eax
+.out:
+	mov	r9d,eax				; keep the verdict across the stack restore
+	mov	eax,r13d				; frame = 4*nbytes + 32, aligned
+	shl	eax,2
+	add	eax,32
+	and	eax,-16
+	add	rsp,rax
+	mov	eax,r9d
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbp
+	pop	rbx
+	ret

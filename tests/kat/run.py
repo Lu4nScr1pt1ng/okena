@@ -387,6 +387,24 @@ try:
     check("rsa modexp: base one", modexp(16, 1, 65537, (1 << 1024) - 159),
           pow(1, 65537, (1 << 1024) - 159).to_bytes(128, "little").hex())
 
+    # RSA PKCS#1 v1.5 signature verification (for RSA certificate chains)
+    from cryptography.hazmat.primitives.asymmetric import padding as _pad
+    import hashlib as _hl
+    def rsa_verify_in(n, e, sig, h):
+        nb = (n.bit_length() + 7) // 8
+        return _struct.pack("<H", nb) + n.to_bytes(nb, "big") + sig + _struct.pack("<I", e) + h
+    for bits in (1024, 2048, 3072):
+        k = _rsa.generate_private_key(public_exponent=65537, key_size=bits)
+        n = k.public_key().public_numbers().n
+        msg = b"okena rsa conformance " + bytes([bits & 0xff])
+        h = _hl.sha256(msg).digest()
+        sig = k.sign(msg, _pad.PKCS1v15(), _hashes.SHA256())
+        check(f"rsa pkcs1 verify {bits}: valid", run(b"Y", rsa_verify_in(n, 65537, sig, h)), "01")
+        bad = bytearray(h); bad[0] ^= 1
+        check(f"rsa pkcs1 verify {bits}: tampered hash", run(b"Y", rsa_verify_in(n, 65537, sig, bytes(bad))), "00")
+        bsig = bytearray(sig); bsig[len(bsig) // 2] ^= 1
+        check(f"rsa pkcs1 verify {bits}: tampered signature", run(b"Y", rsa_verify_in(n, 65537, bytes(bsig), h)), "00")
+
     # TLS client: a well-formed ClientHello (offering x25519 + secp256r1,
     # TLS_AES_128_GCM_SHA256, ecdsa_secp256r1_sha256, ALPN, SNI)
     def _parse_ch(sni):

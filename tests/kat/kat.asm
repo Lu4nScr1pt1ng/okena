@@ -122,6 +122,8 @@ start:
 	je	.tls12_rec
 	cmp	al,'X'
 	je	.bn_modexp
+	cmp	al,'Y'
+	je	.rsa_verify
 	cmp	al,'g'
 	je	.gcm
 	cmp	al,'G'
@@ -613,6 +615,20 @@ start:
 	call	bn_modexp
 	lea	rdi,[g_out]
 	lea	esi,[r13*8]
+	jmp	.print
+.rsa_verify:				; nbytes(u16 le) n_be sig_be e(u32 le) hash(32)
+	movzx	r13d,word [rsi]			; nbytes
+	lea	r14,[rsi+2]			; n (be)
+	lea	r15,[r14+r13]			; sig (be)
+	mov	rdi,r14
+	mov	esi,r13d
+	mov	rdx,r15
+	mov	ecx,[r15+r13]			; e
+	lea	r8,[r15+r13+4]			; hash
+	call	rsa_pkcs1_verify
+	mov	[g_out],al
+	lea	rdi,[g_out]
+	mov	esi,1
 	jmp	.print
 .rec_fail:
 	mov	byte [g_out],0xEE

@@ -268,11 +268,7 @@ def main():
         closed = True
     check("a forged client Finished: the connection is closed", closed)
 
-    # refusals, each with its alert
-    ctx = context()
-    ctx.maximum_version = ssl.TLSVersion.TLSv1_2
-    err = refused(port, ctx)
-    check("a TLS 1.2-only client: protocol_version", err is not None and "PROTOCOL_VERSION" in err.upper(), err)
+    # refusals, each with its alert (TLS 1.2 is now accepted; see tests/tls/tls12.py)
     err = refused(port, context(alpn=("h2",)))
     check("ALPN h2 only: no_application_protocol", err is not None and "NO_APPLICATION_PROTOCOL" in err.upper(), err)
     ctx = context()
