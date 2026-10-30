@@ -123,7 +123,12 @@ PL_H_HOST	:= 88		; q: Host of the check, 0 = the server as written
 PL_H_HLEN	:= 96		; d
 PL_H_HEAD	:= 100		; d: 1 for HEAD
 PL_SLOW		:= 104		; d: slow start window in seconds, 0 = none
-PL_SIZE		:= 128
+PL_TLS		:= 108		; d: 1 when this pool's upstreams speak TLS
+PL_TLS_SNI	:= 112		; q: SNI / hostname to verify, 0 = the server as written
+PL_TLS_SNILEN	:= 120		; d
+PL_TLS_HASANCHOR := 124		; d: 1 when an anchor key was loaded
+PL_TLS_ANCHOR	:= 128		; the trust anchor's P-256 public key (65), 04|X|Y
+PL_SIZE		:= 256
 
 ; Server
 SV_SA		:= 0		; sockaddr (sockaddr_un is 110 bytes)
@@ -171,6 +176,9 @@ bss
 	g_plan_metrics_sa:	rb 28
 	g_listeners:	rb LS_SIZE * MAX_LISTENERS
 	g_pools:	rb PL_SIZE * MAX_POOLS
+	g_trust_path:	rb 4096			; a trust file's path, NUL-terminated
+	g_trust_der:	rb 1 shl 14		; the first certificate's DER
+	g_trust_pub:	rb 65			; a scratch anchor key (config check)
 	g_servers:	rb SV_SIZE * MAX_SERVERS
 	g_cmp_addr:	rb AD_SIZE
 	g_cmp_flags	dd ?
@@ -328,6 +336,8 @@ cstring str_key_every, 'every',0
 cstring str_key_rise, 'rise',0
 cstring str_key_expect, 'expect',0
 cstring str_key_host, 'host',0
+cstring str_key_trust, 'trust',0
+cstring str_key_sni, 'sni',0
 cstring str_key_fall, 'fall',0
 
 ; rdi = `okena` node.
@@ -839,6 +849,9 @@ compile_pool:
 	lea	rcx,[dir_table + D_SIZE*DIR_HEALTH]
 	cmp	rax,rcx
 	je	.health
+	lea	rcx,[dir_table + D_SIZE*DIR_UPTLS]
+	cmp	rax,rcx
+	je	.uptls
 	jmp	.advance
 .health:
 	mov	dword [r13+PL_HEALTH],1
@@ -986,6 +999,51 @@ compile_pool:
 	mov	[r13+PL_TIMEOUT],rax
 	imul	rdx,rdx,1000
 	mov	[r13+PL_TIMEOUT+8],rdx
+	jmp	.advance
+.uptls:
+	mov	dword [r13+PL_TLS],1
+	mov	rdi,rbx				; sni = SNI + the name verified (optional)
+	lea	rsi,[str_key_sni]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	mov	rdx,[rax+A_VAL]
+	mov	[r13+PL_TLS_SNI],rdx
+	mov	edx,[rax+A_VLEN]
+	mov	[r13+PL_TLS_SNILEN],edx
+@@:
+	mov	rdi,rbx				; trust = a PEM file of trust anchors
+	lea	rsi,[str_key_trust]
+	call	node_option
+	test	rax,rax
+	jz	.advance			; (check requires it; absence is handled there)
+	mov	ecx,[rax+A_VLEN]
+	cmp	ecx,4095
+	ja	.advance
+	mov	rsi,[rax+A_VAL]			; copy the path, NUL-terminated
+	lea	rdi,[g_trust_path]
+	push	rcx
+	rep	movsb
+	pop	rcx
+	mov	byte [g_trust_path+rcx],0
+	lea	rdi,[g_trust_path]
+	lea	rsi,[g_ar_text]			; read_file allocates from this arena
+	call	read_file			; rax = contents, rdx = length, or rax < 0
+	test	rax,rax
+	js	.advance
+	mov	rsi,rax				; the first CERTIFICATE -> DER
+	mov	edx,edx
+	lea	rdi,[g_trust_der]
+	call	pem_first_cert
+	test	eax,eax
+	jz	.advance
+	lea	rsi,[g_trust_der]		; -> the anchor's public key
+	mov	edx,eax
+	lea	rdi,[r13+PL_TLS_ANCHOR]
+	call	cert_extract_pubkey
+	test	eax,eax
+	jz	.advance
+	mov	dword [r13+PL_TLS_HASANCHOR],1
 .advance:
 	mov	rbx,[rbx+N_NEXT]
 	jmp	.next

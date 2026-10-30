@@ -12,7 +12,7 @@ not built yet. A directive that is not built is refused by `okena check`
 | `tcp ADDR...` | `to`, `limits { connections; per_source }`, `timeout { idle }`, `proxy_protocol send v1\|v2`, `tls { cert; key }`, `tls passthrough { sni NAME... to pool P; default reject\|to pool P }` |
 | `http ADDR...` | `host`, `route`, `limits`, `timeout { idle; header; body_idle; response }`, `trusted_proxies`, `access_log`, `tls { cert; key }` |
 | `route PATH... [METHOD...]` | `to`, `redirect`, `rewrite path`, `header set\|add\|drop`, `response header set\|add\|drop` |
-| `pool NAME` | `server ADDR [weight=N] [backup]`, `balance least-request\|peak-ewma\|round-robin\|least-conn\|random`, `connect timeout=`, `health tcp\|http ...`, `slow_start` |
+| `pool NAME` | `server ADDR [weight=N] [backup]`, `balance least-request\|peak-ewma\|round-robin\|least-conn\|random`, `connect timeout=`, `health tcp\|http ...`, `slow_start`, `tls { trust FILE; sni NAME }` (TLS to the backends) |
 
 `tls { cert FILE; key FILE }` on an `http` listener makes it HTTPS: TLS
 1.3 with an EC P-256 certificate chain (leaf first) and its key. With
@@ -384,7 +384,10 @@ pool api {
     balance least-request          # the default; or peak-ewma | round-robin | least-conn | random
                                    # (planned: maglev key=... | ring-hash key=...)
     protocol h2                    # http1 (default) | h2 | h2c | grpc
-    tls sni=api.internal ca=/etc/okena/internal-ca.pem
+    tls {                          # TLS to the backends (needs io_engine io_uring)
+        trust /etc/okena/internal-ca.pem   # PEM of trust anchors; the chain is verified
+        sni api.internal                   # SNI + the name checked against the certificate
+    }
 
     connect timeout=1s warm=4 max=512 idle=55s rate=200/s
     source 10.0.0.2 10.0.0.3       # more source addresses, more ports

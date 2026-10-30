@@ -71,6 +71,10 @@ H_TXLEN		:= 428		; d: plaintext still to seal
 H_TXP		:= 432		; q: and where it is
 H_SNICERT	:= 440		; q: the certificate the client's SNI chose, 0 = no SNI
 H_ULPERR	:= 448		; d: io_uring: what setting the TLS ULP returned
+H_UHLEN		:= 452		; d: upstream TLS handshake message length to send
+H_UPKTLS	:= 456		; d: 1 when the upstream is a kTLS TLS socket
+H_URBUF		:= 460		; q: last upstream recv buffer (to retry after a drain)
+H_URROOM	:= 468		; d: its room
 assert H_ULPERR + 4 <= 1 shl H_SHIFT
 assert H_BUF + 8 <= 1 shl H_SHIFT
 HB_LTEXT_M	:= HB_UP + H_UP_CAP	; access log: method
@@ -1284,6 +1288,8 @@ http_recv_plain:
 	je	http_tls_fin_in
 	cmp	edx,HS_PT_HELLO
 	je	http_pt_in
+	cmp	edx,HS_UTLS_FLIGHT
+	je	http_uptls_flight_in
 	ret
 .head:
 	test	rax,rax
@@ -1382,6 +1388,10 @@ http_send_plain:
 	je	http_tls_retry_sent
 	cmp	edx,HS_TLS_ALERT
 	je	.close
+	cmp	edx,HS_UTLS_HELLO
+	je	http_uptls_hello_sent
+	cmp	edx,HS_UTLS_FIN
+	je	http_uptls_fin_sent
 	ret
 .self_sent:
 	test	dword [r15+H_FLAGS],HX_CLOSE

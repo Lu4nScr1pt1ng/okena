@@ -779,7 +779,7 @@ cert_chain_verify:
 ; rsi = input, ecx = length, rdi = output: decodes base64, skipping any
 ; whitespace and stopping at '=' padding or the end. eax = the number of
 ; bytes written. Lenient: a stray character that is not base64 is skipped.
-b64_decode:
+pem_b64:
 	push	rbx
 	push	r12
 	push	r13
@@ -918,7 +918,7 @@ pem_first_cert:
 	mov	rcx,rax
 	sub	rcx,rbx
 	mov	rdi,r14
-	call	b64_decode
+	call	pem_b64
 	jmp	.out
 .none:
 	xor	eax,eax

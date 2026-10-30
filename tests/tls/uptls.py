@@ -1,0 +1,169 @@
+#!/usr/bin/env python3
+"""TLS towards the backends: an http listener whose pool has `tls { }`
+runs a TLS 1.3 client handshake to the backend, verifies its certificate
+(chain to the configured trust anchor, validity, host name), hands the
+keys to the kernel (kTLS) and proxies plaintext over the encrypted link.
+
+A Python TLS/HTTP backend presents an EC P-256 certificate signed by a
+local CA. The happy path proxies a request and its response; the rest
+check that a wrong anchor, a name mismatch and a plaintext backend each
+answer 502 rather than trusting an unverified connection."""
+import atexit
+import http.server
+import os
+import pathlib
+import shutil
+import socket
+import ssl
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+
+ROOT = pathlib.Path(__file__).resolve().parents[2]
+BIN = ROOT / "build" / "okena"
+ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
+BASE = 31000 + os.getpid() % 50 * 10
+BACK, PLAIN, LST, LST_BAD, LST_HOST = BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4
+tmp = pathlib.Path(tempfile.mkdtemp())
+atexit.register(shutil.rmtree, tmp, True)
+failures = 0
+
+
+def check(name, ok, detail=""):
+    global failures
+    print(("ok   " if ok else "FAIL ") + name + (f": {detail}" if detail and not ok else ""))
+    failures += not ok
+
+
+def sh(*args):
+    subprocess.run(args, check=True, capture_output=True, cwd=tmp)
+
+
+# a local CA and an EC P-256 leaf for backend.test, signed by it
+sh("openssl", "ecparam", "-genkey", "-name", "prime256v1", "-noout", "-out", "ca.key")
+sh("openssl", "req", "-new", "-x509", "-key", "ca.key", "-sha256", "-subj", "/CN=test-ca", "-days", "2", "-out", "ca.pem")
+sh("openssl", "ecparam", "-genkey", "-name", "prime256v1", "-noout", "-out", "leaf.key")
+sh("openssl", "req", "-new", "-key", "leaf.key", "-subj", "/CN=backend.test", "-out", "leaf.csr")
+(tmp / "ext.cnf").write_text("subjectAltName=DNS:backend.test\n")
+sh("openssl", "x509", "-req", "-in", "leaf.csr", "-CA", "ca.pem", "-CAkey", "ca.key", "-CAcreateserial",
+   "-days", "2", "-sha256", "-extfile", "ext.cnf", "-out", "leaf.pem")
+# a second CA that signs nothing the backend serves (the "wrong anchor")
+sh("openssl", "ecparam", "-genkey", "-name", "prime256v1", "-noout", "-out", "other.key")
+sh("openssl", "req", "-new", "-x509", "-key", "other.key", "-sha256", "-subj", "/CN=other-ca", "-days", "2", "-out", "other.pem")
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = b"backend-ok:" + self.path.encode()
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *a):
+        pass
+
+    def handle_one_request(self):
+        try:
+            super().handle_one_request()
+        except OSError:
+            self.close_connection = True
+
+
+def tls_backend(port):
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_3
+    ctx.maximum_version = ssl.TLSVersion.TLSv1_3
+    ctx.load_cert_chain(tmp / "leaf.pem", tmp / "leaf.key")
+    # the default backend sends NewSessionTickets after its Finished; okena
+    # drains those kTLS control records (recvmsg) and proxies over the link
+    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+    httpd.serve_forever()
+
+
+def plain_backend(port):
+    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    httpd.serve_forever()
+
+
+def get(port, path="/", host="t"):
+    """(status, body) or (None, error) over plain HTTP to okena."""
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=5) as s:
+            s.sendall(f"GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n".encode())
+            data = b""
+            while True:
+                chunk = s.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+        head, _, body = data.partition(b"\r\n\r\n")
+        status = int(head.split()[1])
+        return status, body
+    except (OSError, ValueError) as e:
+        return None, repr(e)
+
+
+def main():
+    if not shutil.which("openssl"):
+        print("skip uptls: openssl not found")
+        return 0
+    threading.Thread(target=tls_backend, args=(BACK,), daemon=True).start()
+    threading.Thread(target=plain_backend, args=(PLAIN,), daemon=True).start()
+    conf = tmp / "okena.conf"
+    conf.write_text(f"""okena {{ workers 2; io_engine {ENGINE} }}
+http 127.0.0.1:{LST}    {{ route /* {{ to pool good }} }}
+http 127.0.0.1:{LST_BAD}  {{ route /* {{ to pool badanchor }} }}
+http 127.0.0.1:{LST_HOST} {{ route /* {{ to pool plain }} }}
+pool good      {{
+    tls {{ trust {tmp}/ca.pem; sni backend.test }}
+    server 127.0.0.1:{BACK}
+}}
+pool badanchor {{
+    tls {{ trust {tmp}/other.pem; sni backend.test }}
+    server 127.0.0.1:{BACK}
+}}
+pool plain {{
+    tls {{ trust {tmp}/ca.pem; sni backend.test }}
+    server 127.0.0.1:{PLAIN}
+}}
+""")
+    r = subprocess.run([str(BIN), "check", str(conf)], capture_output=True, text=True)
+    check("okena check: tls upstream config", r.returncode == 0, r.stderr[-300:])
+
+    log = open(tmp / "okena.log", "w+")
+    p = subprocess.Popen([str(BIN), "-c", str(conf)], stderr=log)
+    atexit.register(p.kill)
+    for _ in range(100):
+        log.seek(0)
+        if "started with" in log.read():
+            break
+        time.sleep(0.05)
+    for _ in range(100):                        # wait for the backend + okena to serve
+        if get(LST)[0] == 200:
+            break
+        time.sleep(0.05)
+
+    st, body = get(LST, "/hello")
+    check("verified TLS upstream: request and response proxied",
+          st == 200 and body == b"backend-ok:/hello", f"{st} {body!r}")
+    # the link really is encrypted end to end: many requests keep working
+    oks = sum(get(LST, f"/n{i}")[1] == b"backend-ok:/n%d" % i for i in range(20))
+    check("20 requests over the kTLS upstream", oks == 20, f"{oks}/20")
+
+    check("wrong trust anchor: 502, not proxied", get(LST_BAD)[0] == 502, str(get(LST_BAD)))
+    check("plaintext backend on a tls pool: 502", get(LST_HOST)[0] == 502, str(get(LST_HOST)))
+
+    p.terminate()
+    p.wait(10)
+    log.seek(0)
+    text = log.read()
+    check("no worker died", "exited with status" not in text, text[-300:])
+    print(f"uptls {ENGINE}: {'all passed' if not failures else f'{failures} failed'}")
+    return 1 if failures else 0
+
+
+sys.exit(main())

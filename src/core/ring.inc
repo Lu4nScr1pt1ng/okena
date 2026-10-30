@@ -223,7 +223,7 @@ rodata
 	irp op, IORING_OP_NOP, IORING_OP_TIMEOUT, IORING_OP_ACCEPT, IORING_OP_ASYNC_CANCEL, \
 		IORING_OP_LINK_TIMEOUT, IORING_OP_CONNECT, IORING_OP_CLOSE, IORING_OP_READ, \
 		IORING_OP_SEND, IORING_OP_RECV, IORING_OP_SHUTDOWN, IORING_OP_SOCKET, \
-		IORING_OP_URING_CMD, IORING_OP_POLL_ADD
+		IORING_OP_URING_CMD, IORING_OP_POLL_ADD, IORING_OP_RECVMSG
 		dw IORING_RESTRICTION_SQE_OP
 		db op, 0
 		dd 0, 0, 0
@@ -343,7 +343,9 @@ OP_POOL_WATCH	:= 21		; an idle pooled connection changed
 OP_H_KTLS	:= 22		; https: the keys are in the kernel
 OP_H_ULP	:= 23		; https: the TLS ULP on the socket (its errno kept)
 OP_S_SEND_PFX	:= 24		; tls passthrough: the ClientHello, upstream
-OP_COUNT	:= 25
+OP_H_UKTLS	:= 25		; upstream TLS: the keys are in the kernel
+OP_H_UDRAIN	:= 26		; upstream TLS: drain a kTLS control record (a ticket)
+OP_COUNT	:= 27
 
 rodata
 	align 8
@@ -353,6 +355,7 @@ rodata
 			dq on_accept_a, on_s_send_pp
 			dq on_h_recv_c, on_h_recv_u, on_h_send_c, on_h_send_u
 			dq on_pool_watch, on_h_ktls, on_h_ulp, on_s_send_pfx
+			dq on_h_uktls, on_h_udrain
 end rodata
 
 ring_reap:

@@ -155,9 +155,15 @@ engines, `tests/tls/passthrough.py`). Key exchange is x25519 or secp256r1 (`p256
 already present for ECDSA; the client's share decides, x25519 preferred,
 HelloRetryRequest for a supported group sent without its share), so the
 default clients of the ecosystem and tlsfuzzer negotiate (its TLS 1.3
-sanity passes). Still open from the list: TLS 1.2 for older clients, TLS
-to upstreams, a full tlsfuzzer conformance run (needs an HTTP-responding
-harness); then phase 4.
+sanity passes). TLS to the upstreams is in: a pool's `tls { trust FILE;
+sni NAME }` runs a TLS 1.3 client handshake to the backend (the same
+crypto as the server), verifies the server certificate (the chain to the
+trust anchor, the validity window and the host name), and hands the keys
+to kTLS so the proxy data path stays plaintext; a backend's session
+tickets (kTLS control records) are drained with recvmsg. io_uring only
+for now, and it closes the connection rather than reusing it. Still open
+from the list: TLS 1.2 for older clients, a full tlsfuzzer conformance
+run (needs an HTTP-responding harness); then phase 4.
 
 * SHA-2, HMAC, HKDF (from fasm2crud), AES-GCM (AES-NI, VAES/VPCLMULQDQ),
   ChaCha20-Poly1305, X25519, ML-KEM-768, P-256 ECDH/ECDSA, Ed25519.

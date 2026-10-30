@@ -196,7 +196,11 @@ TC_TXSEQ	:= TC_NONCE2 + 16		; q: client app records sent
 TC_RXSEQ	:= TC_TXSEQ + 8			; q: server app records opened
 TC_TXGCM	:= TC_RXSEQ + 8			; client / server application contexts
 TC_RXGCM	:= TC_TXGCM + GCM_SIZE
-TC_FULL		:= TC_RXGCM + GCM_SIZE
+TC_LEAF		:= TC_RXGCM + GCM_SIZE		; the leaf certificate DER (ptr, len)
+TC_LEAFLEN	:= TC_LEAF + 8
+TC_CLIST	:= TC_LEAFLEN + 8		; the CertificateEntry list (ptr, len)
+TC_CLISTLEN	:= TC_CLIST + 8
+TC_FULL		:= TC_CLISTLEN + 8
 
 ; rdi = tc, rsi = in (the server's bytes), edx = in length, rcx = out:
 ; parses the ServerHello, computes the ECDH secret, derives the server
@@ -464,13 +468,20 @@ tlsc_verify:
 	; Certificate: context(u8=0), certificate_list(u24){ cert(u24)+ext(u16) }
 	lea	rsi,[r12+4]			; after handshake header
 	movzx	eax,byte [rsi]			; certificate_request_context length
-	lea	rsi,[rsi+rax+1]
-	add	rsi,3				; skip certificate_list length (u24)
-	mov	eax,[rsi-3]			; first cert length (u24, big endian in low 3)
+	lea	rsi,[rsi+rax+1]			; rsi = certificate_list length (u24)
+	mov	eax,[rsi]
 	bswap	eax
-	shr	eax,8
-	mov	ecx,eax				; leaf cert DER length
-	add	rsi,3				; past the cert's own u24 length
+	shr	eax,8				; certificate_list length
+	mov	[rbx+TC_CLISTLEN],eax
+	lea	rcx,[rsi+3]
+	mov	[rbx+TC_CLIST],rcx		; the CertificateEntry list
+	mov	eax,[rsi+3]			; the first cert's u24 length
+	bswap	eax
+	shr	eax,8				; leaf cert DER length
+	lea	rsi,[rsi+6]			; the leaf DER
+	mov	[rbx+TC_LEAF],rsi
+	mov	[rbx+TC_LEAFLEN],eax
+	mov	ecx,eax
 	push	rsi
 	push	rcx
 	lea	rdi,[rbx+TC_LEAFPUB]
@@ -773,4 +784,41 @@ tlsc_ktls_info:
 	mov	[rcx+28],r10d
 	bswap	r8
 	mov	[rcx+32],r8			; rec_seq, big endian
+	ret
+
+; rsi = decrypted handshake messages, edx = their length: eax = 1 when the
+; bytes end exactly on a complete Finished (handshake type 20) -- the whole
+; server flight is present -- and 0 when more is still needed. Lets the
+; engine drive tlsc_server_flight incrementally (restoring the post-
+; ClientHello transcript before each call makes that call idempotent).
+tlsc_flight_complete:
+	xor	ecx,ecx				; offset
+.msg:
+	lea	r10d,[rcx+4]
+	cmp	r10d,edx
+	ja	.no				; not even a message header
+	movzx	r8d,byte [rsi+rcx]		; handshake type
+	movzx	eax,byte [rsi+rcx+1]		; u24 body length
+	shl	eax,16
+	movzx	r9d,byte [rsi+rcx+2]
+	shl	r9d,8
+	or	eax,r9d
+	movzx	r9d,byte [rsi+rcx+3]
+	or	eax,r9d
+	lea	ecx,[rcx+4+rax]			; end of this message
+	cmp	ecx,edx
+	ja	.no				; its body is not all here yet
+	cmp	r8d,20				; Finished
+	jne	.next
+	cmp	ecx,edx
+	je	.yes				; the last, complete message
+.next:
+	cmp	ecx,edx
+	jb	.msg
+	jmp	.no
+.yes:
+	mov	eax,1
+	ret
+.no:
+	xor	eax,eax
 	ret

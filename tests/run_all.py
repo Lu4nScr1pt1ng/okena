@@ -50,6 +50,7 @@ SUITES = [
     ("passthrough io_uring", ["tests/tls/passthrough.py", "io_uring"]),
     ("passthrough epoll", ["tests/tls/passthrough.py", "epoll"]),
     ("tls client", ["tests/tls/client.py"]),
+    ("uptls io_uring", ["tests/tls/uptls.py", "io_uring"]),
     ("peer io_uring", ["tests/peer/run.py", "io_uring"]),
     ("peer epoll", ["tests/peer/run.py", "epoll"]),
     ("config fuzz", ["tests/config/fuzz.py", "2000"]),

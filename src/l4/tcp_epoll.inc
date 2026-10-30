@@ -679,9 +679,19 @@ ep_connected:
 	imul	rcx,rcx,LS_SIZE
 	cmp	dword [g_listeners+rcx+LS_KIND],LK_HTTP
 	jne	@f
+	call	session_ptr			; a TLS upstream needs io_uring (v1): refuse on epoll
+	mov	eax,[rax+S_POOL]
+	imul	rax,rax,PL_SIZE
+	lea	rdx,[g_pools]
+	cmp	dword [rdx+rax+PL_TLS],0
+	jne	.tls_epoll
 	call	http_connected
 	pop	rbx
 	ret
+.tls_epoll:
+	pop	rbx
+	mov	edi,ebx
+	jmp	session_close
 @@:
 	; a PROXY protocol header goes first; on a fresh connection it fits
 	; the send buffer, so one write sends it all or the session ends

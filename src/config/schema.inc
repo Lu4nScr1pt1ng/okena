@@ -129,6 +129,7 @@ keysdef k_server, 'weight', T_WEIGHT
 keysdef k_cert, 'key', T_ANY
 keysdef k_health, 'every', T_DURATION, 'timeout', T_DURATION, 'rise', T_COUNT, 'fall', T_COUNT, \
 	'expect', T_STATUSES, 'host', T_HOSTNAME
+keysdef k_uptls, 'trust', T_ANY, 'sni', T_HOSTNAME
 keysdef k_connect, 'timeout', T_DURATION, 'max', T_FUTURE, 'idle', T_FUTURE, \
 	'warm', T_FUTURE, 'rate', T_FUTURE
 
@@ -188,6 +189,7 @@ dirdef DIR_SLOW_START, 'slow_start', M_POOL,   0,           F_UNIQUE, 1, 1, T_DU
 dirdef DIR_BALANCE, 'balance',     M_POOL,    0,           F_UNIQUE, 1, 1, e_balance, T_NONE, 0
 dirdef DIR_CONNECT, 'connect',     M_POOL,    0,           F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_connect
 dirdef DIR_HEALTH, 'health',      M_POOL,    0,           F_UNIQUE or F_KEYS_BLOCK, 1, 3, e_health, T_ANY, k_health
+dirdef DIR_UPTLS, 'tls',         M_POOL,    0,           F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_uptls
 rodata
 	dir_table_end:
 end rodata

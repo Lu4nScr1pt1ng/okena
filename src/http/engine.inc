@@ -19,6 +19,14 @@ h_recv:
 h_recv_raw:
 	cmp	dword [g_engine],ENGINE_EPOLL
 	je	hep_recv
+	test	ecx,ecx				; remember an upstream recv, for a kTLS drain retry
+	jz	@f
+	mov	eax,ebx
+	shl	rax,H_SHIFT
+	add	rax,[g_http_base]
+	mov	[rax+H_URBUF],rdi
+	mov	[rax+H_URROOM],esi
+@@:
 	push	rdi
 	push	rsi
 	push	rcx
@@ -110,6 +118,7 @@ h_connect:
 	mov	r12,rax
 	mov	dword [r12+S_STATE],ST_CONNECTING
 	h_rec
+	mov	dword [r15+H_UPKTLS],0
 	test	dword [r15+H_FLAGS],HX_NOPOOL
 	jnz	.connect
 	mov	edi,[r12+S_POOL]
@@ -242,6 +251,15 @@ on_h_recv:
 	jc	.out
 	cmp	dword [rax+S_STATE],ST_CLOSING
 	je	.closing
+	test	ecx,ecx
+	jz	.deliver
+	cmp	r14,-5				; -EIO: a kTLS control record is next
+	jne	.deliver
+	h_rec
+	cmp	dword [r15+H_UPKTLS],0
+	je	.deliver
+	jmp	http_updrain
+.deliver:
 	mov	rax,r14
 	jmp	http_recv_done
 .closing:

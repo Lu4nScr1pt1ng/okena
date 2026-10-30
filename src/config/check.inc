@@ -2197,6 +2197,14 @@ check_pool:
 	mov	rdi,rax
 	call	check_health
 @@:
+	mov	rdi,r12
+	mov	ecx,DIR_UPTLS
+	call	find_child
+	test	rax,rax
+	jz	@f
+	mov	rdi,rax
+	call	check_uptls
+@@:
 	add	[g_chk_servers],r13d
 	test	r13d,r13d
 	jnz	.out
@@ -2210,6 +2218,63 @@ check_pool:
 .out:
 	pop	r13
 	pop	r12
+	pop	rbx
+	ret
+
+; rdi = a pool's `tls` node: upstream TLS needs `trust <file>`, and that
+; file must hold a certificate okena can take an anchor key from.
+check_uptls:
+	push	rbx
+	mov	rbx,rdi
+	lea	rsi,[str_key_trust]
+	call	node_option
+	test	rax,rax
+	jz	.notrust
+	mov	ecx,[rax+A_VLEN]
+	cmp	ecx,4095
+	ja	.cannot
+	mov	rsi,[rax+A_VAL]
+	lea	rdi,[g_trust_path]
+	push	rcx
+	rep	movsb
+	pop	rcx
+	mov	byte [g_trust_path+rcx],0
+	lea	rdi,[g_trust_path]
+	lea	rsi,[g_ar_text]
+	call	read_file
+	test	rax,rax
+	js	.cannot
+	mov	rsi,rax
+	lea	rdi,[g_trust_der]
+	call	pem_first_cert
+	test	eax,eax
+	jz	.cannot
+	lea	rsi,[g_trust_der]
+	mov	edx,eax
+	lea	rdi,[g_trust_pub]
+	call	cert_extract_pubkey
+	test	eax,eax
+	jz	.cannot
+	pop	rbx
+	ret
+.notrust:
+	mov	rdi,[rbx+N_NAME]
+	mov	esi,[rbx+N_NLEN]
+	mov	edx,[rbx+N_LINE]
+	call	cfg_error
+	out_lit 'upstream `tls` needs `trust <file>` naming the trust anchors'
+	call	cfg_diag_end
+	call	cfg_error_limit
+	pop	rbx
+	ret
+.cannot:
+	mov	rdi,[rbx+N_NAME]
+	mov	esi,[rbx+N_NLEN]
+	mov	edx,[rbx+N_LINE]
+	call	cfg_error
+	out_lit 'cannot load a trust anchor from the `trust` file'
+	call	cfg_diag_end
+	call	cfg_error_limit
 	pop	rbx
 	ret
 

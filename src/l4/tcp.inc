@@ -1894,7 +1894,12 @@ on_s_connect:
 	mov	edi,[r13+S_SERVER]
 	call	server_ok
 	call	sv_connect_sample
-	if_http http_connected
+	if_http http_up_ready
+	; L4 (tcp) to a TLS pool is not supported: refuse rather than leak plaintext
+	mov	eax,[r13+S_POOL]
+	imul	rax,rax,PL_SIZE
+	cmp	dword [g_pools+rax+PL_TLS],0
+	jne	.tls_l4
 	; a PROXY protocol header goes before any byte of the client
 	mov	eax,[r13+S_LST]
 	imul	rax,rax,LS_SIZE
@@ -1902,6 +1907,9 @@ on_s_connect:
 	jz	relay_after_pp
 	mov	edi,ebx
 	jmp	post_send_pp
+.tls_l4:
+	mov	edi,ebx
+	jmp	session_close
 .failed:
 	mov	edi,[r13+S_SERVER]
 	mov	rsi,r14
