@@ -1279,3 +1279,85 @@ tlsc12_ktls_info:
 	mov	qword [rdx+32],0
 	mov	byte [rdx+39],1
 	ret
+
+; rsi = the server flight (its first record is the ServerHello), edx = its
+; length: eax = 1 when the server negotiated TLS 1.2 (no supported_versions
+; naming 0x0304 in the ServerHello), 0 when it chose TLS 1.3. A short or
+; malformed ServerHello reads as TLS 1.3 (the existing path rejects it).
+tlsc_is_tls12:
+	lea	r9,[rsi+rdx]			; flight end
+	lea	rax,[rsi+5]
+	cmp	rax,r9
+	ja	.v13
+	cmp	byte [rsi],22			; handshake record
+	jne	.v13
+	movzx	ecx,word [rsi+3]
+	rol	cx,8
+	lea	r8,[rsi+5+rcx]			; record end
+	cmp	r8,r9
+	ja	.v13
+	lea	rsi,[rsi+5]			; ServerHello message
+	cmp	byte [rsi],2
+	jne	.v13
+	lea	rsi,[rsi+4+2+32]		; past header, version, random
+	movzx	eax,byte [rsi]			; session id echo
+	lea	rsi,[rsi+rax+1]
+	add	rsi,3				; cipher (2), compression (1)
+	lea	rax,[rsi+2]
+	cmp	rax,r8
+	ja	.v12				; no extensions block: TLS 1.2
+	movzx	ecx,word [rsi]			; extensions length
+	rol	cx,8
+	add	rsi,2
+	lea	r8,[rsi+rcx]			; extensions end (bounded by the record)
+.ext:
+	lea	rax,[rsi+4]
+	cmp	rax,r8
+	ja	.v12
+	movzx	eax,word [rsi]			; ext type
+	rol	ax,8
+	movzx	ecx,word [rsi+2]		; ext length
+	rol	cx,8
+	add	rsi,4
+	cmp	eax,43				; supported_versions
+	jne	@f
+	cmp	word [rsi],0x0403		; 0x0304 on the wire -> TLS 1.3
+	je	.v13
+@@:
+	add	rsi,rcx
+	cmp	rsi,r8
+	jb	.ext
+.v12:
+	mov	eax,1
+	ret
+.v13:
+	xor	eax,eax
+	ret
+
+; rdi = out, rsi = a TLS 1.2 certificate_list (u24 cert | ... with no
+; extensions), edx = its length: rewrites it in the 1.3 framing that
+; cert_chain_verify parses (u24 cert | u16 0 extensions) into out. eax = the
+; rewritten length.
+tlsc12_reframe_chain:
+	mov	r10,rdi				; out start
+	lea	r9,[rsi+rdx]			; list end
+.e:
+	lea	rax,[rsi+3]
+	cmp	rax,r9
+	ja	.done
+	mov	eax,[rsi]
+	bswap	eax
+	shr	eax,8				; certificate length
+	lea	ecx,[rax+3]			; u24 length prefix + the DER
+	lea	rax,[rsi+rcx]
+	cmp	rax,r9
+	ja	.done
+	rep	movsb				; copy; rsi -> next entry, rdi -> after cert
+	mov	word [rdi],0			; u16 extensions = 0
+	add	rdi,2
+	cmp	rsi,r9
+	jb	.e
+.done:
+	mov	rax,rdi
+	sub	rax,r10
+	ret

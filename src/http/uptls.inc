@@ -25,6 +25,8 @@ HS_UTLS_HELLO	:= 23
 HS_UTLS_FLIGHT	:= 24
 HS_UTLS_FIN	:= 25
 HS_UTLS_KTLS	:= 26
+HS_UTLS12_FIN	:= 30				; 1.2: our flight sent, reading the server's
+HS_UTLS12_RX	:= 31				; 1.2: the server's CCS + Finished are in
 
 HB_UTC		:= HB_TLS			; the upstream handshake TC block
 HB_USNAP	:= HB_UTC + TC_FULL		; the post-ClientHello transcript snapshot
@@ -107,6 +109,11 @@ http_uptls_flight_in:
 	lea	rdi,[r14+HB_UTC+TC_SHA]
 	mov	ecx,SHA256_CTX_SIZE
 	rep	movsb
+	lea	rsi,[r14+HB_UP]			; a TLS 1.2 server takes a different path
+	mov	edx,[r15+H_UPLEN]
+	call	tlsc_is_tls12
+	test	eax,eax
+	jnz	.tls12
 	lea	rdi,[r14+HB_UTC]		; (re)process whatever is present
 	lea	rsi,[r14+HB_UP]
 	mov	edx,[r15+H_UPLEN]
@@ -187,6 +194,86 @@ http_uptls_flight_in:
 	lea	rdi,[r14+HB_UWORK]
 	mov	ecx,SIDE_UP
 	jmp	h_send
+.tls12:
+	; a TLS 1.2 backend: tlsc12_flight parses ServerHello..ServerHelloDone,
+	; verifies the ServerKeyExchange, derives the keys and writes our flight
+	; (ClientKeyExchange + CCS + Finished) to HB_UDEC
+	lea	rdi,[r14+HB_UTC]
+	lea	rsi,[r14+HB_UP]
+	mov	edx,[r15+H_UPLEN]
+	lea	rcx,[r14+HB_UDEC]
+	call	tlsc12_flight
+	test	eax,eax
+	jz	.more
+	mov	[r15+H_UHLEN],eax
+	; the chain to the pool's trust anchor (the 1.2 list reframed to 1.3)
+	call	session_ptr
+	mov	eax,[rax+S_POOL]
+	imul	rax,rax,PL_SIZE
+	lea	rcx,[g_pools]
+	add	rcx,rax
+	cmp	dword [rcx+PL_TLS_HASANCHOR],0
+	je	.badcert
+	mov	r14,[r15+H_BUF]
+	push	rcx
+	lea	rdi,[r14+HB_UDEC+4096]
+	mov	rsi,[r14+HB_UTC+TC_CLIST]
+	mov	edx,[r14+HB_UTC+TC_CLISTLEN]
+	call	tlsc12_reframe_chain
+	pop	rcx
+	lea	rdi,[rcx+PL_TLS_ANCHOR]
+	lea	rsi,[r14+HB_UDEC+4096]
+	mov	edx,eax
+	call	cert_chain_verify
+	test	eax,eax
+	jz	.badcert
+	lea	rdi,[r14+HB_UWORK]		; the validity window (HB_UWORK is free here)
+	call	alog_fmt_time
+	h_rec
+	mov	r14,[r15+H_BUF]
+	lea	rsi,[r14+HB_UWORK]
+	lea	rdi,[r14+HB_UWORK+32]
+	lea	r9,[uptls_tdig]
+	xor	ecx,ecx
+.compact12:
+	movzx	eax,byte [r9+rcx]
+	mov	al,[rsi+rax]
+	mov	[rdi+rcx],al
+	inc	ecx
+	cmp	ecx,14
+	jb	.compact12
+	mov	rsi,[r14+HB_UTC+TC_LEAF]
+	mov	edx,[r14+HB_UTC+TC_LEAFLEN]
+	lea	rdi,[r14+HB_UWORK+32]
+	call	cert_time_valid
+	test	eax,eax
+	jz	.badcert
+	call	session_ptr			; the host name, when an SNI is set
+	mov	eax,[rax+S_POOL]
+	imul	rax,rax,PL_SIZE
+	lea	rcx,[g_pools]
+	add	rcx,rax
+	mov	edx,[rcx+PL_TLS_SNILEN]
+	test	edx,edx
+	jz	.send12
+	mov	rdi,[rcx+PL_TLS_SNI]
+	mov	ecx,edx
+	mov	rsi,[r14+HB_UTC+TC_LEAF]
+	mov	edx,[r14+HB_UTC+TC_LEAFLEN]
+	call	cert_match_host
+	test	eax,eax
+	jz	.badcert
+.send12:
+	mov	r14,[r15+H_BUF]
+	lea	rsi,[r14+HB_UTC+TC_SHA]		; snapshot the transcript through the
+	lea	rdi,[r14+HB_USNAP]		; client Finished (for the server Finished)
+	mov	ecx,SHA256_CTX_SIZE
+	rep	movsb
+	mov	dword [r15+H_STATE],HS_UTLS12_FIN
+	mov	esi,[r15+H_UHLEN]
+	lea	rdi,[r14+HB_UDEC]		; ClientKeyExchange + CCS + Finished
+	mov	ecx,SIDE_UP
+	jmp	h_send
 .more:
 	mov	eax,[r15+H_UPLEN]
 	cmp	eax,H_UP_CAP
@@ -212,6 +299,7 @@ http_uptls_fin_sent:
 	lea	rsi,[r14+HB_UWORK]		; TX crypto_info
 	lea	rdx,[r14+HB_UWORK+KTLS_INFO]	; RX crypto_info
 	call	tlsc_ktls_info
+.ktls_chain:					; TLS 1.2 joins here, crypto_info already filled
 	h_rec
 	mov	dword [r15+H_STATE],HS_UTLS_KTLS
 	mov	dword [r15+H_ULPERR],0
@@ -263,6 +351,57 @@ http_uptls_fin_sent:
 	mov	[rax+SQE_OPTLEN],r8d
 	mov	[rax+SQE_OPTVAL],r11
 	ret
+
+; TLS 1.2 upstream: our ClientKeyExchange + CCS + Finished went out; read
+; the server's ChangeCipherSpec + Finished
+http_uptls12_fin_sent:
+	h_rec
+	mov	dword [r15+H_STATE],HS_UTLS12_RX
+	mov	dword [r15+H_UPLEN],0
+	mov	r14,[r15+H_BUF]
+	lea	rdi,[r14+HB_UP]
+	mov	esi,H_UP_CAP
+	mov	ecx,SIDE_UP
+	jmp	h_recv
+
+; the server's CCS + Finished arrived: verify it and hand the keys to kTLS
+http_uptls12_rx:
+	h_rec
+	test	rax,rax
+	jle	.gone12
+	add	[r15+H_UPLEN],eax
+	mov	r14,[r15+H_BUF]
+	lea	rsi,[r14+HB_USNAP]		; restore the transcript (idempotent re-runs)
+	lea	rdi,[r14+HB_UTC+TC_SHA]
+	mov	ecx,SHA256_CTX_SIZE
+	rep	movsb
+	lea	rdi,[r14+HB_UTC]
+	lea	rsi,[r14+HB_UP]
+	mov	edx,[r15+H_UPLEN]
+	call	tlsc12_server_finished
+	test	eax,eax
+	jnz	.ok12
+	mov	eax,[r15+H_UPLEN]		; incomplete (or bad): read more, up to a cap
+	cmp	eax,H_UP_CAP
+	jae	.gone12
+	mov	r14,[r15+H_BUF]
+	lea	rdi,[r14+HB_UP]
+	add	rdi,rax
+	mov	esi,H_UP_CAP
+	sub	esi,eax
+	mov	ecx,SIDE_UP
+	jmp	h_recv
+.ok12:
+	mov	r14,[r15+H_BUF]
+	lea	rdi,[r14+HB_UTC]
+	lea	rsi,[r14+HB_UWORK]		; TX crypto_info
+	lea	rdx,[r14+HB_UWORK+KTLS_INFO]	; RX crypto_info
+	call	tlsc12_ktls_info
+	jmp	http_uptls_fin_sent.ktls_chain
+.gone12:
+	mov	edi,ebx
+	call	uptls_log_fail
+	jmp	http_connect_failed
 
 ; completion of the RX key: the upstream is now a kTLS socket
 ; ebx = session, r12d = generation, r14 = res (-ECANCELED if a link failed)

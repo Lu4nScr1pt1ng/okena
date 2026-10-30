@@ -26,6 +26,7 @@ BIN = ROOT / "build" / "okena"
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
 BASE = 31000 + os.getpid() % 50 * 10
 BACK, PLAIN, LST, LST_BAD, LST_HOST = BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4
+BACK12, BACK12R, LST12, LST12R = BASE + 5, BASE + 6, BASE + 7, BASE + 8
 tmp = pathlib.Path(tempfile.mkdtemp())
 atexit.register(shutil.rmtree, tmp, True)
 failures = 0
@@ -54,6 +55,11 @@ sh("openssl", "x509", "-req", "-in", "leaf.csr", "-CA", "ca.pem", "-CAkey", "ca.
 # a second CA that signs nothing the backend serves (the "wrong anchor")
 sh("openssl", "ecparam", "-genkey", "-name", "prime256v1", "-noout", "-out", "other.key")
 sh("openssl", "req", "-new", "-x509", "-key", "other.key", "-sha256", "-subj", "/CN=other-ca", "-days", "2", "-out", "other.pem")
+# an RSA leaf for backend.test, signed by the CA (for a TLS 1.2 ECDHE-RSA backend)
+sh("openssl", "genrsa", "-out", "rsa.key", "2048")
+sh("openssl", "req", "-new", "-key", "rsa.key", "-subj", "/CN=backend.test", "-out", "rsa.csr")
+sh("openssl", "x509", "-req", "-in", "rsa.csr", "-CA", "ca.pem", "-CAkey", "ca.key", "-CAcreateserial",
+   "-days", "2", "-sha256", "-extfile", "ext.cnf", "-out", "rsa.pem")
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -96,6 +102,16 @@ def tls_backend(port):
     httpd.serve_forever()
 
 
+def tls12_backend(port, cert, key):
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ctx.maximum_version = ssl.TLSVersion.TLSv1_2
+    ctx.load_cert_chain(tmp / cert, tmp / key)
+    httpd = CountingHTTPServer(("127.0.0.1", port), Handler)
+    httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+    httpd.serve_forever()
+
+
 def plain_backend(port):
     httpd = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
     httpd.serve_forever()
@@ -125,14 +141,26 @@ def main():
         return 0
     threading.Thread(target=tls_backend, args=(BACK,), daemon=True).start()
     threading.Thread(target=plain_backend, args=(PLAIN,), daemon=True).start()
+    threading.Thread(target=tls12_backend, args=(BACK12, "leaf.pem", "leaf.key"), daemon=True).start()
+    threading.Thread(target=tls12_backend, args=(BACK12R, "rsa.pem", "rsa.key"), daemon=True).start()
     conf = tmp / "okena.conf"
     conf.write_text(f"""okena {{ workers 2; io_engine {ENGINE} }}
 http 127.0.0.1:{LST}    {{ route /* {{ to pool good }} }}
 http 127.0.0.1:{LST_BAD}  {{ route /* {{ to pool badanchor }} }}
 http 127.0.0.1:{LST_HOST} {{ route /* {{ to pool plain }} }}
+http 127.0.0.1:{LST12}  {{ route /* {{ to pool good12 }} }}
+http 127.0.0.1:{LST12R} {{ route /* {{ to pool good12rsa }} }}
 pool good      {{
     tls {{ trust {tmp}/ca.pem; sni backend.test }}
     server 127.0.0.1:{BACK}
+}}
+pool good12    {{
+    tls {{ trust {tmp}/ca.pem; sni backend.test }}
+    server 127.0.0.1:{BACK12}
+}}
+pool good12rsa {{
+    tls {{ trust {tmp}/ca.pem; sni backend.test }}
+    server 127.0.0.1:{BACK12R}
 }}
 pool badanchor {{
     tls {{ trust {tmp}/other.pem; sni backend.test }}
@@ -165,6 +193,21 @@ pool plain {{
     # the link really is encrypted end to end: many requests keep working
     oks = sum(get(LST, f"/n{i}")[1] == b"backend-ok:/n%d" % i for i in range(20))
     check("20 requests over the kTLS upstream", oks == 20, f"{oks}/20")
+
+    # a TLS 1.2 backend (no TLS 1.3): the client falls back and verifies the
+    # ServerKeyExchange signature (ECDHE-ECDSA for an EC leaf, ECDHE-RSA for RSA)
+    for _ in range(100):
+        if get(LST12)[0] == 200:
+            break
+        time.sleep(0.05)
+    st, body = get(LST12, "/v12")
+    check("TLS 1.2 upstream (ECDHE-ECDSA): request and response proxied",
+          st == 200 and body == b"backend-ok:/v12", f"{st} {body!r}")
+    st, body = get(LST12R, "/v12r")
+    check("TLS 1.2 upstream (ECDHE-RSA): request and response proxied",
+          st == 200 and body == b"backend-ok:/v12r", f"{st} {body!r}")
+    oks = sum(get(LST12, f"/m{i}")[1] == b"backend-ok:/m%d" % i for i in range(10))
+    check("10 requests over the TLS 1.2 kTLS upstream", oks == 10, f"{oks}/10")
 
     global backend_conns
     backend_conns = 0

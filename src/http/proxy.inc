@@ -1290,6 +1290,8 @@ http_recv_plain:
 	je	http_pt_in
 	cmp	edx,HS_UTLS_FLIGHT
 	je	http_uptls_flight_in
+	cmp	edx,HS_UTLS12_RX
+	je	http_uptls12_rx
 	cmp	edx,HS_TLS12_FIN
 	je	http_tls12_fin
 	ret
@@ -1394,6 +1396,8 @@ http_send_plain:
 	je	http_uptls_hello_sent
 	cmp	edx,HS_UTLS_FIN
 	je	http_uptls_fin_sent
+	cmp	edx,HS_UTLS12_FIN
+	je	http_uptls12_fin_sent
 	cmp	edx,HS_TLS12_FLIGHT
 	je	http_tls12_flight_sent
 	cmp	edx,HS_TLS12_FIN2
