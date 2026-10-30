@@ -19,7 +19,9 @@ not built yet. A directive that is not built is refused by `okena check`
 http/1.1, then the connection handed to the kernel's TLS (kTLS) when the
 host has the `tls` module (`modprobe tls`), or records sealed by okena
 itself when it does not (said once at the start; `OKENA_KTLS=off` forces
-it). The header timeout covers
+it). Session tickets are on: a returning client resumes
+without the certificate and the signature (2 h lifetime; the key lives
+as long as the okena process). The header timeout covers
 the handshake. Backends get `X-Forwarded-Proto: https`. On a `tcp`
 listener `tls` terminates TLS and moves plaintext to the backend; there
 it needs kTLS (okena refuses to start without the module), and the

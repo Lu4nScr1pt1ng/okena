@@ -85,6 +85,7 @@ fail:
 start:
 	mov	dword [g_out_fd],1
 	call	crypto_init
+	call	tls_tickets_init
 	lea	rdi,[g_mode]
 	mov	edx,2
 	call	read_stdin
@@ -384,10 +385,12 @@ connection:
 	jnz	.done
 	lea	rsi,[g_ts+TS_TX_KEY]
 	mov	edx,TLS_TX
+	mov	rcx,[g_ts+TS_TX_SEQ]
 	call	ktls_key
 	jnz	.done
 	lea	rsi,[g_ts+TS_RX_KEY]
 	mov	edx,TLS_RX
+	mov	rcx,[g_ts+TS_RX_SEQ]
 	call	ktls_key
 	jnz	.done
 .ktls_echo:
@@ -403,8 +406,8 @@ connection:
 	jc	.done
 	jmp	.ktls_echo
 
-; rsi = key (16) then IV (12) at +16, edx = TLS_TX or TLS_RX: installed,
-; ZF on success.
+; rsi = key (16) then IV (12) at +16, edx = TLS_TX or TLS_RX, rcx = the
+; next record's sequence number: installed, ZF on success.
 ktls_key:
 	lea	rdi,[g_crypto_info]
 	mov	word [rdi],0x0304		; TLS 1.3
@@ -415,7 +418,8 @@ ktls_key:
 	movdqu	[rdi+12],xmm0
 	mov	eax,[rsi+16]			; salt: its first 4
 	mov	[rdi+28],eax
-	mov	qword [rdi+32],0		; rec_seq
+	bswap	rcx
+	mov	[rdi+32],rcx			; rec_seq
 	mov	r10,rdi
 	mov	edi,[g_fd]
 	mov	esi,SOL_TLS

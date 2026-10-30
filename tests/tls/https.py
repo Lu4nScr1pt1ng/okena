@@ -205,6 +205,25 @@ http 127.0.0.1:{LST} {{
         start, got = request(t, "GET", f"/big/{n}")
         check("an 8 MiB response arrives intact", got == (b"0123456789abcdef" * (n // 16 + 1))[:n], f"{len(got)}")
 
+    # session tickets: resumed, on whichever worker takes the connection
+    def resumed_get(sess, target):
+        s = socket.create_connection(("127.0.0.1", LST), timeout=10)
+        with context().wrap_socket(s, server_hostname="okena.test", session=sess) as t:
+            start, body = request(t, "GET", target)
+            return t.session_reused, start.startswith(b"HTTP/1.1 200") and json.loads(body)["target"] == target, t.session
+    ctx = context()
+    s = socket.create_connection(("127.0.0.1", LST), timeout=10)
+    with ctx.wrap_socket(s, server_hostname="okena.test") as t:
+        request(t, "GET", "/first")
+        sess = t.session
+    results = []
+    for i in range(8):
+        s = socket.create_connection(("127.0.0.1", LST), timeout=10)
+        with ctx.wrap_socket(s, server_hostname="okena.test", session=sess) as t:
+            start, body = request(t, "GET", f"/r/{i}")
+            results.append(t.session_reused and json.loads(body)["target"] == f"/r/{i}")
+    check("resumed with a ticket, 8 connections (both workers open each other's tickets)", all(results), str(results))
+
     # the first request in the same segment as the client Finished
     inc, outg = ssl.MemoryBIO(), ssl.MemoryBIO()
     obj = context().wrap_bio(inc, outg, server_hostname="okena.test")

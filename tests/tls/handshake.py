@@ -108,6 +108,31 @@ def refused(port, ctx):
         return f"closed: {e}"
 
 
+def session_of(port):
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as s:
+        with TICKET_CTX.wrap_socket(s, server_hostname="okena.test") as t:
+            t.sendall(b"t")
+            t.recv(10)                      # the ticket arrives with the flight
+            return t.session
+
+
+def resume(port, sess):
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as s:
+        with TICKET_CTX.wrap_socket(s, server_hostname="okena.test", session=sess) as t:
+            t.sendall(b"again")
+            return t.session_reused, t.recv(10) == b"again"
+
+
+def check_resumption(port, how):
+    sess = session_of(port)
+    check(f"{how}: a ticket comes with the handshake", sess is not None and sess.has_ticket)
+    results = [resume(port, sess) for _ in range(5)]
+    check(f"{how}: resumed with it, 5 times", all(r and ok for r, ok in results), str(results))
+
+
+TICKET_CTX = None
+
+
 class Wire:
     """A client on memory BIOs: what goes on the wire, and how, is ours."""
 
@@ -166,6 +191,8 @@ def records(data):
 
 
 def main():
+    global TICKET_CTX
+    TICKET_CTX = context()
     proc, port = start()
 
     # interop: Python's ssl is OpenSSL 3.x
@@ -253,6 +280,14 @@ def main():
     good = roundtrip(port, context())[1]
     check("the server still serves after all that", good)
 
+    # session tickets: issued with the flight, taken back for resumption
+    check_resumption(port, "user-space records")
+    proc2, port2 = start()
+    sess = session_of(port)
+    reused, ok = resume(port2, sess)
+    check("a ticket from another server (another key): a full handshake instead", ok and not reused)
+    proc2.kill()
+
     # s_client without middlebox compatibility (no session id, no CCS),
     # and curl
     if shutil.which("openssl"):
@@ -289,6 +324,15 @@ def main():
             hellos = out.count(b"ServerHello")
             check(f"HelloRetryRequest ({name} middlebox compatibility): two ClientHellos, then the echo",
                   out.count(b"ClientHello") == 2 and hellos == 2 and b"\nretried" in out, out[-300:].decode(errors="replace"))
+        # a session saved, then resumed through a HelloRetryRequest
+        sess = tmp / "sess.pem"
+        common = ["openssl", "s_client", "-connect", f"127.0.0.1:{port}", "-CAfile", str(tmp / "ca.pem"),
+                  "-servername", "okena.test"]
+        subprocess.run(common + ["-sess_out", str(sess)], input=b"", capture_output=True, timeout=10)
+        r = subprocess.run(common + ["-sess_in", str(sess), "-groups", "P-256:X25519"], input=b"",
+                           capture_output=True, timeout=10)
+        check("s_client: a saved session resumed through a HelloRetryRequest",
+              b"Reused, TLSv1.3" in r.stdout, r.stdout.decode(errors="replace")[-300:])
     if shutil.which("curl"):
         r = subprocess.run(["curl", "-sv", "--cacert", str(tmp / "ca.pem"), "--resolve", f"okena.test:{port}:127.0.0.1",
                             f"https://okena.test:{port}/", "--max-time", "3"], capture_output=True, timeout=10)
@@ -320,6 +364,7 @@ def main():
         check("kTLS: the kernel seals and opens the records (300 KB echo)", ok, str(info))
         good = sum(roundtrip(port, context())[1] for _ in range(20))
         check("kTLS: 20 handshakes in a row", good == 20, f"{good}/20")
+        check_resumption(port, "kTLS (sending starts at record 1, after the ticket)")
         proc.kill()
 
     print(f"tls handshake: {'all passed' if not failures else f'{failures} failed'}")

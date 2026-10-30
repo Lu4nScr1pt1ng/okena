@@ -130,8 +130,14 @@ on the Edwards curve (`x25519_base`: 8.0 us against 26 us for the
 ladder), and secrets are wiped 16 bytes a store: `tls_hello` takes 57 us
 on a real ClientHello (`tests/tls/server.asm`, mode P). In the proxy, 4
 workers, a new HTTPS connection each request, client on other cores:
-77 us of user and 61 us of kernel CPU per connection. Next: session
-tickets, multi-block AES-GCM.
+77 us of user and 61 us of kernel CPU per connection. Session tickets
+(stateless, AES-GCM under a key the supervisor makes before the workers
+fork, so any worker resumes any ticket, and reloads keep it): issued in
+the server's flight (the resumption secret needs only the client
+Finished, known then), resumed with psk_dhe_ke (ECDHE still: forward
+secrecy), binders checked, no certificate or signature, about 27 us of
+worker CPU saved. Next: ticket key rotation (and a key file shared by a
+fleet), multi-block AES-GCM.
 
 * SHA-2, HMAC, HKDF (from fasm2crud), AES-GCM (AES-NI, VAES/VPCLMULQDQ),
   ChaCha20-Poly1305, X25519, ML-KEM-768, P-256 ECDH/ECDSA, Ed25519.

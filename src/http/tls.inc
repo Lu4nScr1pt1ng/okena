@@ -255,9 +255,11 @@ http_tls_fin_in:
 	mov	r8,[r15+H_BUF]
 	lea	rsi,[r8+HB_TS+TS_TX_KEY]
 	lea	rdi,[r8+HB_KTLS]
+	mov	rdx,[r8+HB_TS+TS_TX_SEQ]	; 1 after a ticket
 	call	.info
 	lea	rsi,[r8+HB_TS+TS_RX_KEY]
 	lea	rdi,[r8+HB_KTLS+KTLS_INFO]
+	mov	rdx,[r8+HB_TS+TS_RX_SEQ]
 	call	.info
 	cmp	dword [g_no_ktls],0
 	jne	http_utls_start
@@ -316,7 +318,8 @@ http_tls_fin_in:
 	mov	[rax+SQE_OPTVAL],r11
 	ret
 
-; rsi = key (16), IV (12) at +16; rdi = the crypto info to fill.
+; rsi = key (16), IV (12) at +16; rdx = the next record's sequence
+; number; rdi = the crypto info to fill.
 .info:
 	mov	dword [rdi],0x00330304		; TLS 1.3, TLS_CIPHER_AES_GCM_128
 	mov	rax,[rsi+16+4]
@@ -325,7 +328,8 @@ http_tls_fin_in:
 	movdqu	[rdi+12],xmm0
 	mov	eax,[rsi+16]
 	mov	[rdi+28],eax
-	mov	qword [rdi+32],0
+	bswap	rdx
+	mov	[rdi+32],rdx			; rec_seq, big endian
 	ret
 
 .epoll:
@@ -435,6 +439,9 @@ tls_serve_check:
 .scanned:
 	test	edx,edx
 	jz	.ok
+	push	rdx
+	call	tls_tickets_init		; before the workers fork: one key for all
+	pop	rdx
 	; OKENA_KTLS=off: records in user space even with the module (tests,
 	; comparisons)
 	lea	rdi,[env_okena_ktls]

@@ -63,6 +63,24 @@ TH_FAIL		:= 2
 TH_RETRY	:= 3				; tls_hello: send out, then read a second ClientHello
 
 TLS_RECORD_MAX	:= 16384			; plaintext of one record
+
+; Session tickets (RFC 8446 4.6.1), stateless: the state is sealed into
+; the ticket with a key made at the start and shared by the workers.
+; ticket = key id (4) | nonce (12) | sealed (TK_PT) | tag (16), the key
+; id as additional data. One per handshake, in the server's flight: the
+; resumption secret needs the client Finished, already known then.
+TK_ID		:= 0
+TK_NONCE	:= 4
+TK_SEALED	:= 16
+TKP_VERSION	:= 0				; in the sealed part: 1
+TKP_ISSUED	:= 4				; d: seconds (CLOCK_MONOTONIC)
+TKP_AGE_ADD	:= 8
+TKP_CERT	:= 16				; 8 bytes of the certificate's key: tickets of
+						; another certificate do not resume
+TKP_PSK		:= 24				; 32
+TK_PT		:= 56
+TK_SIZE		:= TK_SEALED + TK_PT + 16	; 88
+TICKET_LIFETIME	:= 7200				; seconds
 CH_MAX		:= 16384			; a ClientHello (a post-quantum one is ~1.8 KiB)
 
 ; alert descriptions
@@ -72,6 +90,7 @@ AL_HANDSHAKE	:= 40
 AL_ILLEGAL	:= 47
 AL_DECODE	:= 50
 AL_VERSION	:= 70
+AL_DECRYPT	:= 51
 AL_INTERNAL	:= 80
 AL_NO_ALPN	:= 120
 
@@ -95,6 +114,19 @@ rodata
 	lbl_key			db 'key',0
 	lbl_iv			db 'iv',0
 	lbl_finished		db 'finished',0
+	lbl_res_master		db 'res master',0
+	lbl_resumption		db 'resumption',0
+	lbl_res_binder		db 'res binder',0
+end rodata
+
+bss
+	align 16
+	g_tk_gcm	rb GCM_SIZE		; the ticket key
+	g_tk_id		dd ?
+	g_tk_ready	dd ?
+end bss
+
+rodata
 end rodata
 
 ; tls13_expand_label(out, n, secret, label, context, context length)
@@ -137,27 +169,36 @@ HL_W		:= 40				; where the encrypted records go
 HL_SEQ		:= 48
 HL_SID		:= 64				; 32
 HL_KS		:= 96				; the client's x25519 share (32)
-HL_RAND		:= 128				; server random (32) | x25519 secret (32)
-HL_PUB		:= 192
-HL_SHARED	:= 224
-HL_HS		:= 256				; handshake secret
-HL_MS		:= 288				; master secret
-HL_CHT		:= 320				; client / server handshake traffic
-HL_SHT		:= 352
-HL_TMP		:= 384
-HL_SFK		:= 416				; finished keys
-HL_CFK		:= 448
-HL_TH		:= 480				; a transcript hash
-HL_SKEY		:= 512				; server handshake key (16), IV (12)
-HL_SIV		:= 528
-HL_NONCE	:= 544
-HL_SIG		:= 560				; r | s
-HL_DIG		:= 624
-HL_SHA		:= 656				; the transcript
+HL_RAND		:= 128				; server random (32) | x25519 secret (32) | ticket nonce (12) | age_add (4)
+HL_PUB		:= 208
+HL_SHARED	:= 240
+HL_HS		:= 272				; handshake secret
+HL_MS		:= 304				; master secret
+HL_CHT		:= 336				; client / server handshake traffic
+HL_SHT		:= 368
+HL_TMP		:= 400
+HL_SFK		:= 432				; finished keys
+HL_CFK		:= 464
+HL_TH		:= 496				; a transcript hash
+HL_SKEY		:= 528				; server handshake key (16), IV (12)
+HL_SIV		:= 544
+HL_NONCE	:= 560
+HL_SIG		:= 576				; r | s
+HL_DIG		:= 640
+HL_SHA		:= 672				; the transcript
 HL_SHA2		:= HL_SHA + SHA256_CTX_SIZE
 HL_GCM		:= HL_SHA2 + SHA256_CTX_SIZE
 HL_CV		:= HL_GCM + GCM_SIZE		; the content CertificateVerify signs (130)
-HL_SIZE		:= ((HL_CV + 136 + 15) and not 15) + 8	; rsp 16-aligned at calls
+HL_TICKET	:= HL_CV + 136			; a ticket (TK_SIZE): the client's, opened; then ours
+HL_PSK		:= HL_TICKET + 96
+HL_EARLY	:= HL_PSK + 32			; early secret, from the PSK
+HL_IDP		:= HL_EARLY + 32		; q: the client's first PSK identity
+HL_BINP		:= HL_IDP + 8			; q: its binder
+HL_IDLEN	:= HL_BINP + 8
+HL_BINOFF	:= HL_IDLEN + 4			; the ClientHello up to its binders
+HL_SHLEN	:= HL_BINOFF + 4		; the ServerHello's record length
+HL_NOW		:= HL_SHLEN + 4			; seconds (CLOCK_MONOTONIC)
+HL_SIZE		:= ((HL_NOW + 4 + 15) and not 15) + 8	; rsp 16-aligned at calls
 
 G_TLS13		:= 1
 G_SUITE		:= 2
@@ -166,6 +207,10 @@ G_KS		:= 8
 G_ALPN		:= 16
 G_H1		:= 32
 G_GROUP		:= 64				; x25519 in supported_groups
+G_PSK		:= 128				; pre_shared_key: a ticket-sized identity, a 32-byte binder
+G_PSKDHE	:= 256				; psk_key_exchange_modes has psk_dhe_ke
+G_RESUME	:= 512				; the ticket opened and the binder is right: resumption
+G_TICKET	:= 1024				; a ticket to send after the flight
 
 ; the transcript: rsi = bytes, rdx = length
 macro th_add
@@ -360,6 +405,10 @@ tls_hello:
 	je	.alpn
 	cmp	eax,10
 	je	.groups
+	cmp	eax,45
+	je	.modes
+	cmp	eax,41
+	je	.psk
 .ext_next:
 	mov	rsi,r14
 	jmp	.ext
@@ -439,6 +488,73 @@ tls_hello:
 	mov	rsi,r8
 	jmp	.share
 
+.modes:						; psk_key_exchange_modes: u8 length, modes
+	test	ecx,ecx
+	jz	.decode
+	movzx	edx,byte [rsi]
+	inc	rsi
+	lea	rax,[rsi+rdx]
+	cmp	rax,r14
+	jne	.decode
+.mode_item:
+	cmp	rsi,r14
+	jae	.ext_next
+	cmp	byte [rsi],1			; psk_dhe_ke
+	jne	@f
+	or	dword [rbp+HL_GOT],G_PSKDHE
+@@:
+	inc	rsi
+	jmp	.mode_item
+
+.psk:						; pre_shared_key, the last extension:
+	cmp	r14,r13				; identities, then binders
+	jne	.illegal
+	cmp	ecx,2
+	jb	.decode
+	movzx	edx,word [rsi]
+	rol	dx,8
+	add	rsi,2
+	lea	r8,[rsi+rdx]			; the identities' end
+	cmp	r8,r14
+	ja	.decode
+	cmp	edx,7
+	jb	.decode
+	movzx	ecx,word [rsi]			; the first identity
+	rol	cx,8
+	add	rsi,2
+	test	ecx,ecx
+	jz	.decode
+	lea	rax,[rsi+rcx+4]			; and its age
+	cmp	rax,r8
+	ja	.decode
+	mov	[rbp+HL_IDP],rsi
+	mov	[rbp+HL_IDLEN],ecx
+	mov	rsi,r8
+	mov	rax,rsi				; the binders: the transcript stops here
+	sub	rax,r12
+	mov	[rbp+HL_BINOFF],eax
+	lea	rax,[rsi+2]
+	cmp	rax,r14
+	ja	.decode
+	movzx	edx,word [rsi]
+	rol	dx,8
+	add	rsi,2
+	lea	rax,[rsi+rdx]
+	cmp	rax,r14
+	jne	.decode
+	cmp	edx,33
+	jb	.decode
+	movzx	ecx,byte [rsi]			; the first binder
+	inc	rsi
+	lea	rax,[rsi+rcx]
+	cmp	rax,r14
+	ja	.decode
+	cmp	ecx,32
+	jne	.ext_next			; not ours (another hash)
+	mov	[rbp+HL_BINP],rsi
+	or	dword [rbp+HL_GOT],G_PSK
+	jmp	.ext_next
+
 .groups:					; supported_groups: u16 length, u16s
 	cmp	ecx,2
 	jb	.decode
@@ -509,6 +625,87 @@ tls_hello:
 	jz	.no_alpn			; RFC 7301: no protocol in common
 	or	dword [rbx+TS_FLAGS],TF_GOT_H1
 .alpn_done:
+	call	tls_now_s
+	mov	[rbp+HL_NOW],eax
+	mov	eax,[rbp+HL_GOT]
+	and	eax,G_PSK or G_PSKDHE
+	cmp	eax,G_PSK or G_PSKDHE
+	jne	.full
+	cmp	dword [g_tk_ready],0
+	je	.full
+	cmp	dword [rbp+HL_IDLEN],TK_SIZE
+	jne	.full
+	; open the ticket (a copy: the identity stays in the transcript)
+	mov	rsi,[rbp+HL_IDP]
+	lea	rdi,[rbp+HL_TICKET]
+	mov	ecx,TK_SIZE
+	rep	movsb
+	mov	eax,[rbp+HL_TICKET+TK_ID]
+	cmp	eax,[g_tk_id]
+	jne	.full				; another key: a full handshake
+	lea	rdi,[g_tk_gcm]
+	lea	rsi,[rbp+HL_TICKET+TK_NONCE]
+	lea	rdx,[rbp+HL_TICKET+TK_ID]
+	mov	ecx,4
+	lea	r8,[rbp+HL_TICKET+TK_SEALED]
+	mov	r9d,TK_PT
+	call	gcm_open
+	test	eax,eax
+	jz	.full
+	cmp	byte [rbp+HL_TICKET+TK_SEALED+TKP_VERSION],1
+	jne	.full
+	mov	eax,[rbp+HL_NOW]
+	sub	eax,[rbp+HL_TICKET+TK_SEALED+TKP_ISSUED]
+	cmp	eax,TICKET_LIFETIME
+	ja	.full				; expired (or from before a restart)
+	mov	r15,[rbp+HL_TL]
+	mov	rax,[r15+TL_PUB+1]
+	cmp	rax,[rbp+HL_TICKET+TK_SEALED+TKP_CERT]
+	jne	.full				; issued for another certificate
+	lea	rsi,[rbp+HL_TICKET+TK_SEALED+TKP_PSK]
+	lea	rdi,[rbp+HL_PSK]
+	mov	ecx,32
+	rep	movsb
+	; the binder: HMAC over the ClientHello up to the binders (after the
+	; retry's transcript, if there was one), with a key from the PSK
+	lea	rdi,[rbp+HL_EARLY]
+	lea	rsi,[tls13_zero32]
+	mov	edx,32
+	lea	rcx,[rbp+HL_PSK]
+	mov	r8d,32
+	call	hkdf_extract
+	tls_label [rbp+HL_TMP], 32, [rbp+HL_EARLY], lbl_res_binder, [sha256_empty], 32
+	tls_label [rbp+HL_SFK], 32, [rbp+HL_TMP], lbl_finished
+	lea	rdi,[rbp+HL_SHA2]
+	call	sha256_init
+	test	dword [rbx+TS_FLAGS],TF_HRR
+	jz	@f
+	lea	rsi,[rbx+TS_HRR_SHA]
+	lea	rdi,[rbp+HL_SHA2]
+	mov	ecx,SHA256_CTX_SIZE
+	rep	movsb
+@@:
+	lea	rdi,[rbp+HL_SHA2]
+	mov	rsi,r12
+	mov	edx,[rbp+HL_BINOFF]
+	call	sha256_update
+	lea	rdi,[rbp+HL_SHA2]
+	lea	rsi,[rbp+HL_TH]
+	call	sha256_final
+	lea	rdi,[rbp+HL_DIG]
+	lea	rsi,[rbp+HL_SFK]
+	mov	edx,32
+	lea	rcx,[rbp+HL_TH]
+	mov	r8d,32
+	call	hmac_sha256
+	lea	rdi,[rbp+HL_DIG]
+	mov	rsi,[rbp+HL_BINP]
+	mov	edx,32
+	call	ct_equal
+	test	eax,eax
+	jz	.bad_binder
+	or	dword [rbp+HL_GOT],G_RESUME
+.full:
 
 	; the transcript starts with the ClientHello, or after a retry with
 	; what the first one left
@@ -530,11 +727,11 @@ tls_hello:
 
 	; server random and the ephemeral x25519 key
 	lea	rdi,[rbp+HL_RAND]
-	mov	esi,64
+	mov	esi,80
 	xor	edx,edx
 	mov	eax,SYS_getrandom
 	syscall
-	cmp	rax,64
+	cmp	rax,80
 	jne	.internal
 	lea	rdi,[rbp+HL_PUB]
 	lea	rsi,[rbp+HL_RAND+32]
@@ -550,9 +747,14 @@ tls_hello:
 	jz	.illegal
 
 	; ServerHello, its record header first
-	mov	rdi,r12
 	mov	edx,[rbp+HL_SIDLEN]
 	add	edx,90				; the record's length (one message)
+	test	dword [rbp+HL_GOT],G_RESUME
+	jz	@f
+	add	edx,6				; + pre_shared_key
+@@:
+	mov	[rbp+HL_SHLEN],edx
+	mov	rdi,r12
 	mov	byte [rdi],22
 	mov	word [rdi+1],0x0303
 	mov	[rdi+3],dh
@@ -571,7 +773,10 @@ tls_hello:
 	lea	rsi,[rbp+HL_SID]
 	rep	movsb
 	mov	dword [rdi],0x00000113		; the suite, null compression, ...
-	mov	byte [rdi+4],0x2E		; ... 46 bytes of extensions
+	mov	eax,[rbp+HL_SHLEN]
+	sub	eax,[rbp+HL_SIDLEN]
+	sub	eax,44
+	mov	[rdi+4],al			; ... the extensions' length (46, or 52 resumed)
 	mov	dword [rdi+5],0x02002B00	; supported_versions: TLS 1.3
 	mov	word [rdi+9],0x0403
 	mov	rax,0x20001D0024003300		; key_share: x25519, 32 bytes
@@ -580,16 +785,26 @@ tls_hello:
 	lea	rsi,[rbp+HL_PUB]
 	mov	ecx,32
 	rep	movsb
+	test	dword [rbp+HL_GOT],G_RESUME
+	jz	@f
+	mov	dword [rdi],0x02002900		; pre_shared_key: identity 0
+	mov	word [rdi+4],0
+	add	rdi,6
+@@:
 	mov	[rbp+HL_W],rdi
 	lea	rsi,[r12+5]
-	mov	edx,[rbp+HL_SIDLEN]
-	add	edx,90
+	mov	edx,[rbp+HL_SHLEN]
 	th_add
 	th_snapshot				; H(ClientHello..ServerHello)
 
-	; the handshake secrets
-	lea	rdi,[rbp+HL_HS]
+	; the handshake secrets; resumed, the early secret is the PSK's
 	lea	rsi,[tls13_derived_early]
+	test	dword [rbp+HL_GOT],G_RESUME
+	jz	@f
+	tls_label [rbp+HL_TMP], 32, [rbp+HL_EARLY], lbl_derived, [sha256_empty], 32
+	lea	rsi,[rbp+HL_TMP]
+@@:
+	lea	rdi,[rbp+HL_HS]
 	mov	edx,32
 	lea	rcx,[rbp+HL_SHARED]
 	mov	r8d,32
@@ -632,7 +847,7 @@ tls_hello:
 	sub	edx,eax
 	and	edx,not 15
 	lea	r13,[r12+rdx]
-	lea	rdx,[rdi+rax+128]		; the records, at most two of them
+	lea	rdx,[rdi+rax+256]		; the records (at most two) and a ticket's
 	cmp	rdx,r13
 	ja	.internal
 	mov	r14,r13
@@ -646,11 +861,20 @@ tls_hello:
 	mov	rax,'http/1.1'
 	mov	[r14+13],rax
 	add	r14,21
-	jmp	.certificate
+	jmp	.ee_done
 .ee_empty:
 	mov	dword [r14],0x02000008
 	mov	word [r14+4],0
 	add	r14,6
+.ee_done:
+	test	dword [rbp+HL_GOT],G_RESUME
+	jz	.certificate
+	mov	rsi,r13				; resumed: no Certificate, no CertificateVerify
+	mov	rdx,r14
+	sub	rdx,r13
+	th_add
+	th_snapshot
+	jmp	.finished
 .certificate:
 	; Certificate: empty context, the certificate_list as loaded
 	mov	byte [r14],11
@@ -704,7 +928,7 @@ tls_hello:
 	add	r14,rdx
 	th_add
 	th_snapshot				; H(ClientHello..CertificateVerify)
-	; Finished
+.finished:
 	mov	dword [r14],0x20000014
 	lea	rdi,[r14+4]
 	lea	rsi,[rbp+HL_SFK]
@@ -734,6 +958,48 @@ tls_hello:
 	xor	eax,eax
 	mov	[rbx+TS_RX_SEQ],rax
 	mov	[rbx+TS_TX_SEQ],rax
+	cmp	dword [g_tk_ready],0
+	je	.no_ticket
+	; the ticket: resumption_master_secret over the transcript through the
+	; client Finished we expect, the PSK from it, sealed with the key
+	mov	dword [rbp+HL_CV],0x20000014
+	lea	rsi,[rbx+TS_CFIN]
+	lea	rdi,[rbp+HL_CV+4]
+	mov	ecx,32
+	rep	movsb
+	lea	rsi,[rbp+HL_CV]
+	mov	edx,36
+	th_add
+	th_snapshot
+	tls_label [rbp+HL_TMP], 32, [rbp+HL_MS], lbl_res_master, [rbp+HL_TH], 32
+	lea	rdi,[rbp+HL_TICKET]
+	mov	ecx,TK_SIZE
+	xor	eax,eax
+	rep	stosb
+	tls_label [rbp+HL_TICKET+TK_SEALED+TKP_PSK], 32, [rbp+HL_TMP], lbl_resumption
+	mov	byte [rbp+HL_TICKET+TK_SEALED+TKP_VERSION],1
+	mov	eax,[rbp+HL_NOW]
+	mov	[rbp+HL_TICKET+TK_SEALED+TKP_ISSUED],eax
+	mov	eax,[rbp+HL_RAND+76]
+	mov	[rbp+HL_TICKET+TK_SEALED+TKP_AGE_ADD],eax
+	mov	rax,[rbp+HL_TL]
+	mov	rax,[rax+TL_PUB+1]
+	mov	[rbp+HL_TICKET+TK_SEALED+TKP_CERT],rax
+	mov	eax,[g_tk_id]
+	mov	[rbp+HL_TICKET+TK_ID],eax
+	lea	rsi,[rbp+HL_RAND+64]
+	lea	rdi,[rbp+HL_TICKET+TK_NONCE]
+	mov	ecx,12
+	rep	movsb
+	lea	rdi,[g_tk_gcm]
+	lea	rsi,[rbp+HL_TICKET+TK_NONCE]
+	lea	rdx,[rbp+HL_TICKET+TK_ID]
+	mov	ecx,4
+	lea	r8,[rbp+HL_TICKET+TK_SEALED]
+	mov	r9d,TK_PT
+	call	gcm_seal
+	or	dword [rbp+HL_GOT],G_TICKET
+.no_ticket:
 
 	; Seal them into records: r13 = plaintext left, r14 = its end,
 	; r15 = the record being written.
@@ -776,10 +1042,44 @@ tls_hello:
 	inc	qword [rbp+HL_SEQ]
 	jmp	.seal
 .sealed:
+	test	dword [rbp+HL_GOT],G_TICKET
+	jz	.flight_done
+	; NewSessionTicket, under the server's application key (record 0)
+	mov	rdi,r15
+	mov	dword [rdi],0x00030317
+	mov	word [rdi+3],0x7A00		; 105 + type + tag = 122
+	mov	dword [rdi+5],0x65000004	; new_session_ticket, 101 bytes
+	mov	dword [rdi+9],0x201C0000	; lifetime 7200 s
+	mov	eax,[rbp+HL_RAND+76]
+	mov	[rdi+13],eax			; ticket_age_add
+	mov	byte [rdi+17],0			; no ticket_nonce
+	mov	word [rdi+18],0x5800		; the ticket, 88 bytes
+	lea	rsi,[rbp+HL_TICKET]
+	add	rdi,20
+	mov	ecx,TK_SIZE
+	rep	movsb
+	mov	word [rdi],0			; no extensions
+	mov	byte [rdi+2],22			; inner content type: handshake
+	lea	rdi,[rbp+HL_GCM]
+	lea	rsi,[rbx+TS_TX_KEY]
+	call	gcm_init
+	lea	rdi,[rbp+HL_GCM]
+	lea	rsi,[rbx+TS_TX_IV]		; sequence 0
+	mov	rdx,r15
+	mov	ecx,5
+	lea	r8,[r15+5]
+	mov	r9d,106
+	call	gcm_seal
+	add	r15,127
+	mov	qword [rbx+TS_TX_SEQ],1		; the application records follow it
+.flight_done:
 	mov	rdx,r15
 	sub	rdx,r12
 	mov	eax,TH_SEND
 	jmp	.out
+.bad_binder:
+	mov	ecx,AL_DECRYPT			; a ticket of ours, a binder that is not
+	jmp	.alert
 
 .no_share:
 	; x25519 offered without a share: a HelloRetryRequest, once
@@ -1151,4 +1451,43 @@ tls_open:
 	pop	r13
 	pop	r12
 	pop	rbx
+	ret
+
+; eax = seconds on CLOCK_MONOTONIC: ticket ages.
+tls_now_s:
+	sub	rsp,24
+	mov	edi,CLOCK_MONOTONIC
+	mov	rsi,rsp
+	mov	eax,SYS_clock_gettime
+	syscall
+	mov	eax,[rsp]
+	add	rsp,24
+	ret
+
+; The ticket key, once (in the supervisor, before the workers fork, so
+; they all open each other's tickets; kept across reloads). Without it no
+; ticket is issued or taken.
+tls_tickets_init:
+	cmp	dword [g_tk_ready],0
+	jne	.done
+	sub	rsp,40
+	mov	rdi,rsp
+	mov	esi,20
+	xor	edx,edx
+	mov	eax,SYS_getrandom
+	syscall
+	cmp	rax,20
+	jne	.no
+	mov	eax,[rsp+16]
+	mov	[g_tk_id],eax
+	lea	rdi,[g_tk_gcm]
+	mov	rsi,rsp
+	call	gcm_init
+	mov	dword [g_tk_ready],1
+.no:
+	mov	rdi,rsp
+	mov	ecx,32
+	call	secure_zero
+	add	rsp,40
+.done:
 	ret
