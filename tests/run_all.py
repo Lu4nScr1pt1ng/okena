@@ -41,6 +41,7 @@ SUITES = [
     ("admin epoll", ["tests/admin/run.py", "epoll"]),
     ("http parser", ["tests/http/run.py", "5000"]),
     ("crypto kat", ["tests/kat/run.py"]),
+    ("wycheproof", ["tests/wycheproof/run.py"]),
     ("tls certs", ["tests/tls/run.py"]),
     ("tls handshake", ["tests/tls/handshake.py"]),
     ("https io_uring", ["tests/tls/https.py", "io_uring"]),
@@ -91,7 +92,9 @@ def main():
 
     def run(name, cmd):
         argv = [sys.executable, "-I", *cmd]
-        if isolate and name != "dns":         # the DNS suite makes its own (with /etc mounts)
+        # the DNS suite makes its own namespace (with /etc mounts); Wycheproof
+        # fetches its vectors once and touches no network after that
+        if isolate and name not in ("dns", "wycheproof"):
             argv = NETNS + argv
         p = subprocess.Popen(argv, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         out, _ = p.communicate()              # read as it comes: a full pipe never stalls a suite

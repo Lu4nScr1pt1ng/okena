@@ -381,11 +381,45 @@ bn_to_be:
 	jnz	.l
 	ret
 
+; rdi = n, rdx = signature (both big-endian), esi = nbytes: CF clear when
+; the signature is below n. RFC 8017 RSAVP1 refuses s >= n; s + n would
+; otherwise verify like s (a malleable signature). Public data. Keeps
+; every register.
+rsa_sig_range:
+	push	rax
+	push	rcx
+	xor	ecx,ecx
+.byte:
+	cmp	ecx,esi
+	jae	.equal
+	mov	al,[rdx+rcx]
+	cmp	al,[rdi+rcx]
+	jb	.below				; CF set: below n
+	ja	.above
+	inc	ecx
+	jmp	.byte
+.below:
+	pop	rcx
+	pop	rax
+	clc
+	ret
+.equal:
+.above:
+	pop	rcx
+	pop	rax
+	stc
+	ret
+
 ; rdi = modulus n (big-endian, nbytes), esi = nbytes (multiple of 8),
 ; rdx = signature (big-endian, nbytes), ecx = public exponent e (a small
 ; integer), r8 = message hash (32 bytes, SHA-256): eax = 1 when the PKCS#1
 ; v1.5 signature verifies, else 0. For verifying RSA certificate chains.
 rsa_pkcs1_verify:
+	call	rsa_sig_range
+	jnc	rsa_pkcs1_verify_in_range
+	xor	eax,eax
+	ret
+rsa_pkcs1_verify_in_range:
 	push	rbx
 	push	rbp
 	push	r12
@@ -565,6 +599,11 @@ mgf1_sha256:
 ; message hash (32 bytes): eax = 1 when the RSA-PSS (rsa_pss_rsae_sha256,
 ; salt length 32) signature verifies, else 0. For RSA server certificates.
 rsa_pss_verify:
+	call	rsa_sig_range
+	jnc	rsa_pss_verify_in_range
+	xor	eax,eax
+	ret
+rsa_pss_verify_in_range:
 	push	rbx
 	push	rbp
 	push	r12

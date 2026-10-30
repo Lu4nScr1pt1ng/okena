@@ -211,7 +211,14 @@ all take it. Ed25519 is in (SHA-512 and RFC 8032 in src/crypto; signing
 9.7 us, verification 39 us, OpenSSL 3.5: 30 and 80): servers present
 Ed25519 certificates (PKCS #8 keys) to clients that offer ed25519, beside an
 EC sibling for the rest, and upstream chains and CertificateVerify verify
-with it. Still open: Wycheproof.
+with it. Wycheproof runs in make test (tests/wycheproof, vectors fetched once
+at a pinned commit into build/wycheproof, skipped without them): 2821
+cases over AES-128-GCM, ChaCha20-Poly1305, X25519, ECDSA and ECDH P-256,
+Ed25519, RSA PKCS #1 v1.5 and PSS, HMAC and HKDF, and ML-KEM-768
+encapsulation, key generation and decapsulation; it found RSA signatures
+not below n verifying (refused now). Left for later: Wycheproof's DER
+encodings of ECDSA signatures through the TLS and X.509 parsers, and the
+benchmark exits of this phase (docs/BENCHMARK.md).
 
 * SHA-2, HMAC, HKDF (from fasm2crud), AES-GCM (AES-NI, VAES/VPCLMULQDQ),
   ChaCha20-Poly1305, X25519, ML-KEM-768, P-256 ECDH/ECDSA, Ed25519.
