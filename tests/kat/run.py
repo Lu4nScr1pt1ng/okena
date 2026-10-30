@@ -480,6 +480,23 @@ try:
             ok = False
         check(f"rsa pss sign {bits}: verifies with a reference", ok, True)
 
+    # RSASSA-PKCS1-v1_5 signing (rsa_pkcs1_sha256, a TLS 1.2 ServerKeyExchange)
+    for bits in (2048, 3072):
+        k = _rsa.generate_private_key(public_exponent=65537, key_size=bits)
+        pn = k.private_numbers()
+        n = pn.public_numbers.n
+        nb = bits // 8
+        msg = b"okena pkcs1 sign " + bytes([bits & 0xff])
+        h = _hl.sha256(msg).digest()
+        sig = bytes.fromhex(run(b"U", _struct.pack("<H", nb) + n.to_bytes(nb, "big")
+                                 + pn.d.to_bytes(nb, "big") + h))
+        ok = True
+        try:
+            k.public_key().verify(sig, msg, _pad.PKCS1v15(), _hashes.SHA256())
+        except Exception:
+            ok = False
+        check(f"rsa pkcs1 sign {bits}: verifies with a reference", ok, True)
+
     # RSA private key parsing (PKCS#1 RSAPrivateKey): modulus and private exponent
     from cryptography.hazmat.primitives import serialization as _ser2
     for bits in (2048, 3072):

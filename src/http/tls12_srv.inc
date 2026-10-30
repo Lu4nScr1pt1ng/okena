@@ -16,8 +16,8 @@ HS_TLS12_FIN	:= 28
 HS_TLS12_FIN2	:= 29
 
 HB_T2		:= HB_TXC + UTLS_TX_CAP		; the 1.2 handshake state
-HB_C12		:= HB_T2 + T2_FULL		; the credentials block (24)
-assert HB_C12 + 24 <= 1 shl HB_SHIFT
+HB_C12		:= HB_T2 + T2_FULL		; the credentials block
+assert HB_C12 + C12_SIZE <= 1 shl HB_SHIFT
 
 ; from TH_TLS12 in http_tls_hello_in: build the credentials and the server
 ; flight (ServerHello..ServerHelloDone)
@@ -47,6 +47,17 @@ http_tls12_hello:
 	mov	[rcx+C12_LEN],edx
 	lea	rdx,[rax+TL_KEY]		; the private key
 	mov	[rcx+C12_KEY],rdx
+	mov	edx,[rax+TL_KEYTYPE]		; EC or RSA, with the RSA key material
+	mov	[rcx+C12_KEYTYPE],edx
+	cmp	edx,1
+	jne	@f
+	lea	rdx,[rax+TL_RSA_N]
+	mov	[rcx+C12_RSA_N],rdx
+	mov	edx,[rax+TL_RSA_NLEN]
+	mov	[rcx+C12_RSA_NLEN],edx
+	lea	rdx,[rax+TL_RSA_D]
+	mov	[rcx+C12_RSA_D],rdx
+@@:
 	lea	rdi,[r14+HB_T2]
 	mov	rsi,rcx
 	lea	rdx,[r14+HB_IN]

@@ -22,6 +22,8 @@ include '../../src/crypto/hkdf.inc'
 include '../../src/crypto/x25519.inc'
 include '../../src/crypto/aesgcm.inc'
 include '../../src/crypto/p256.inc'
+include '../../src/crypto/rsa.inc'
+include '../../src/tls/x509.inc'
 include '../../src/tls/keyschedule.inc'
 include '../../src/tls/tls12.inc'
 include '../../src/tls/tls12_server.inc'
@@ -35,7 +37,7 @@ TCP_ULP	:= 31
 bss
 	align 16
 	g_t2:		rb T2_FULL
-	g_c12:		rb 24
+	g_c12:		rb C12_SIZE
 	g_fd		dd ?
 	g_cli		dd ?
 	g_addr:		rb 16

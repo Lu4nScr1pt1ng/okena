@@ -13,7 +13,12 @@
 ; server certificate's P-256 private key.
 C12_LIST	:= 0				; q: pointer to the certificate_list (1.3 framing)
 C12_LEN		:= 8				; d: its length
-C12_KEY		:= 16				; q: pointer to the private key (32, big endian)
+C12_KEY		:= 16				; q: pointer to the EC private key (32, big endian)
+C12_KEYTYPE	:= 24				; d: 0 = EC P-256, 1 = RSA
+C12_RSA_N	:= 32				; q: pointer to the RSA modulus (big endian)
+C12_RSA_NLEN	:= 40				; d: its length in bytes
+C12_RSA_D	:= 48				; q: pointer to the RSA private exponent
+C12_SIZE	:= 56
 
 T2_ESK		:= 0				; ephemeral x25519 private key
 T2_CR		:= 32				; client random
@@ -104,6 +109,10 @@ tls12_hello:
 	mov	ecx,eax
 	rep	movsb
 	mov	word [rdi],0x2BC0		; cipher TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+	cmp	dword [r15+C12_KEYTYPE],1
+	jne	@f
+	mov	word [rdi],0x2FC0		; TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+@@:
 	mov	byte [rdi+2],0			; compression
 	mov	word [rdi+3],0x0500		; extensions length 5
 	mov	byte [rdi+5],0xff		; renegotiation_info (RFC 5746), empty
@@ -168,6 +177,8 @@ tls12_hello:
 	lea	rsi,[rsp]
 	mov	edx,133
 	call	sha256
+	cmp	dword [r15+C12_KEYTYPE],1
+	je	.ske_rsa
 	lea	rdi,[rsp+112]			; r||s
 	mov	rsi,[r15+C12_KEY]
 	lea	rdx,[rsp+136]
@@ -178,10 +189,23 @@ tls12_hello:
 	lea	rdi,[r13+4+69+2+2]		; the DER signature
 	lea	rsi,[rsp+112]
 	call	ecdsa_der			; eax = DER length
+	jmp	.ske_len
+.ske_rsa:
+	mov	word [r13+4+69],0x0104		; rsa_pkcs1_sha256 (0x0401)
+	lea	rdi,[r13+4+69+2+2]		; the signature, written in place
+	mov	rsi,[r15+C12_RSA_N]
+	mov	edx,[r15+C12_RSA_NLEN]
+	mov	rcx,[r15+C12_RSA_D]
+	lea	r8,[rsp+136]			; digest
+	call	rsa_pkcs1_sign
+	mov	eax,[r15+C12_RSA_NLEN]		; signature length = nbytes
+	lea	rdi,[r13+4+69+2+2]		; advance the cursor past the signature
+	add	rdi,rax				; (.record frames the record from it)
+.ske_len:
 	mov	edx,eax
 	rol	dx,8
 	mov	[r13+4+69+2],dx			; signature length (u16)
-	lea	eax,[rax+69+4]			; body = params(69) + sigalg(2) + len(2) + DER
+	lea	eax,[rax+69+4]			; body = params(69) + sigalg(2) + len(2) + sig
 	put24	r13+1, eax
 	call	.record
 	; ---- ServerHelloDone ----

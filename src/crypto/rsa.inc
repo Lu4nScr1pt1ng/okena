@@ -878,6 +878,80 @@ rsa_pss_sign:
 	pop	rbx
 	ret
 
+; rdi = out (signature, big-endian, nbytes), rsi = n (big-endian), edx =
+; nbytes, rcx = d (big-endian), r8 = mHash (SHA-256, 32): RSASSA-PKCS1-v1_5
+; over the SHA-256 digest (rsa_pkcs1_sha256, for a TLS 1.2 ServerKeyExchange).
+rsa_pkcs1_sign:
+	push	rbx
+	push	rbp
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	mov	rbx,rdi				; out (sig be)
+	mov	r12,rsi				; n be
+	mov	r13d,edx			; nbytes
+	mov	r14,rcx				; d be
+	mov	r15,r8				; mHash
+	; frame: em | em_le | n_le | sig_le, each nbytes
+	mov	eax,r13d
+	imul	eax,4
+	add	eax,16
+	and	eax,-16
+	mov	ebp,eax
+	sub	rsp,rbp
+	; EM = 00 | 01 | FF.. | 00 | DigestInfo | hash
+	mov	rdi,rsp
+	mov	byte [rdi],0x00
+	mov	byte [rdi+1],0x01
+	lea	rdi,[rsp+2]
+	mov	ecx,r13d
+	sub	ecx,3
+	sub	ecx,RSA_DI_LEN
+	sub	ecx,32				; PS length
+	mov	al,0xFF
+	rep	stosb
+	mov	byte [rdi],0x00
+	inc	rdi
+	lea	rsi,[rsa_sha256_di]
+	mov	ecx,RSA_DI_LEN
+	rep	movsb
+	mov	rsi,r15
+	mov	ecx,32
+	rep	movsb
+	; em_le = bn_from_be(em); n_le = bn_from_be(n)
+	lea	rdi,[rsp+r13]
+	mov	rsi,rsp
+	mov	edx,r13d
+	call	bn_from_be
+	lea	rdi,[rsp+r13*2]
+	mov	rsi,r12
+	mov	edx,r13d
+	call	bn_from_be
+	; sig_le = em_le ^ d mod n
+	lea	rdi,[rsp+r13*2]
+	add	rdi,r13				; sig_le = rsp+3n
+	lea	rsi,[rsp+r13]			; em_le
+	mov	rdx,r14				; d (be)
+	mov	ecx,r13d
+	lea	r8,[rsp+r13*2]			; n_le
+	mov	r9d,r13d
+	shr	r9d,3
+	call	bn_modexp
+	mov	rdi,rbx
+	lea	rsi,[rsp+r13*2]
+	add	rsi,r13				; sig_le
+	mov	edx,r13d
+	call	bn_to_be
+	add	rsp,rbp
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbp
+	pop	rbx
+	ret
+
 ; rsi = RSAPrivateKey DER (PKCS#1: SEQUENCE { version, n, e, d, p, q, ... }),
 ; edx = length, rdi = n out (big-endian), rcx = d out (big-endian): the
 ; modulus and private exponent, each right-aligned in nbytes. eax = nbytes

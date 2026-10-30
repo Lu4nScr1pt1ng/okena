@@ -128,6 +128,8 @@ start:
 	je	.rsa_pss
 	cmp	al,'z'
 	je	.rsa_sign
+	cmp	al,'U'
+	je	.rsa_pkcs1sign
 	cmp	al,'j'
 	je	.rsa_key
 	cmp	al,'J'
@@ -683,6 +685,19 @@ start:
 	mov	edx,r13d
 	mov	rcx,r15
 	call	rsa_pss_sign
+	lea	rdi,[g_out]
+	mov	esi,r13d
+	jmp	.print
+.rsa_pkcs1sign:				; nbytes(u16 le) n_be d_be hash(32) -> sig_be
+	movzx	r13d,word [rsi]			; nbytes
+	lea	r14,[rsi+2]			; n
+	lea	r15,[r14+r13]			; d
+	lea	r8,[r15+r13]			; hash
+	lea	rdi,[g_out]
+	mov	rsi,r14
+	mov	edx,r13d
+	mov	rcx,r15
+	call	rsa_pkcs1_sign
 	lea	rdi,[g_out]
 	mov	esi,r13d
 	jmp	.print

@@ -20,7 +20,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 BIN = ROOT / "build" / "okena"
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
 BASE = 33000 + os.getpid() % 40 * 10 + (5 if ENGINE == "epoll" else 0)
-BACK, LST, SNIL = BASE, BASE + 1, BASE + 2
+BACK, LST, SNIL, RLST = BASE, BASE + 1, BASE + 2, BASE + 3
 tmp = pathlib.Path(tempfile.mkdtemp())
 atexit.register(shutil.rmtree, tmp, True)
 failures = 0
@@ -65,13 +65,13 @@ def backend():
     http.server.ThreadingHTTPServer(("127.0.0.1", BACK), Handler).serve_forever()
 
 
-def get12(port, path="/hello"):
+def get12(port, path="/hello", cipher="ECDHE-ECDSA-AES128-GCM-SHA256"):
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
     ctx.maximum_version = ssl.TLSVersion.TLSv1_2
-    ctx.set_ciphers("ECDHE-ECDSA-AES128-GCM-SHA256")
+    ctx.set_ciphers(cipher)
     try:
         s = socket.create_connection(("127.0.0.1", port), timeout=5)
         with ctx.wrap_socket(s, server_hostname="okena.test") as t:
@@ -98,6 +98,10 @@ def main():
     sh("openssl", "ecparam", "-genkey", "-name", "prime256v1", "-noout", "-out", "leaf.key")
     sh("openssl", "req", "-new", "-x509", "-key", "leaf.key", "-subj", "/CN=okena.test",
        "-addext", "subjectAltName=DNS:okena.test", "-days", "2", "-out", "leaf.pem")
+    # an RSA certificate, for a legacy TLS 1.2 client (ECDHE-RSA, rsa_pkcs1_sha256)
+    sh("openssl", "genrsa", "-out", "rsa.key", "2048")
+    sh("openssl", "req", "-new", "-x509", "-key", "rsa.key", "-subj", "/CN=okena.test",
+       "-addext", "subjectAltName=DNS:okena.test", "-days", "2", "-out", "rsa.pem")
     for n, cn, san in (("a", "cert-a", "DNS:a.test"), ("b", "cert-b", "DNS:*.b.test")):
         sh("openssl", "ecparam", "-genkey", "-name", "prime256v1", "-noout", "-out", f"{n}.key")
         sh("openssl", "req", "-new", "-x509", "-key", f"{n}.key", "-subj", f"/CN={cn}",
@@ -114,6 +118,10 @@ http 127.0.0.1:{SNIL} {{
         cert {tmp / 'a.pem'} key={tmp / 'a.key'}
         cert {tmp / 'b.pem'} key={tmp / 'b.key'}
     }}
+    route /* {{ to 127.0.0.1:{BACK} }}
+}}
+http 127.0.0.1:{RLST} {{
+    tls {{ cert {tmp / 'rsa.pem'}; key {tmp / 'rsa.key'} }}
     route /* {{ to 127.0.0.1:{BACK} }}
 }}
 """)
@@ -136,6 +144,11 @@ http 127.0.0.1:{SNIL} {{
     check("TLS 1.2 negotiated", ver == "TLSv1.2", str(ver))
     check("GET over TLS 1.2: 200 proxied from the backend",
           data.startswith(b"HTTP/1.1 200") and b"backend:/hello" in data, data[:80])
+    # an RSA certificate on a TLS 1.2 connection: ECDHE-RSA, rsa_pkcs1_sha256
+    ver, data = get12(RLST, "/rsa12", cipher="ECDHE-RSA-AES128-GCM-SHA256")
+    check("TLS 1.2 with an RSA certificate: 200 proxied from the backend",
+          ver == "TLSv1.2" and data.startswith(b"HTTP/1.1 200") and b"backend:/rsa12" in data,
+          f"{ver} {data[:80]}")
     # SNI picks the certificate on a 1.2 connection
     def peer_cn(port, sni, host=None):
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
