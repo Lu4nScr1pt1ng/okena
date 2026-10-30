@@ -116,9 +116,14 @@ request, the client Finished taken with a peek so a request sent with it
 stays in the socket, then kTLS (TCP_ULP, TLS_TX, TLS_RX; linked socket
 commands on io_uring). On this machine, 4 workers, a route okena answers
 itself: 284k requests/s over keep-alive HTTPS (406k plain), and ~75 us of
-worker CPU per new HTTPS connection (wrk was the limit at 16k/s). Next:
-user-space records when the kernel lacks kTLS, `tls` on `tcp` listeners,
-HelloRetryRequest, session tickets, a fixed-base X25519 key generation.
+worker CPU per new HTTPS connection (wrk was the limit at 16k/s). Without
+kTLS (no module, the kernel refusing the keys, or `OKENA_KTLS=off`) the
+client side of the exchange goes through user-space records, sealed two
+at a time, invisible to proxy.inc: 302k requests/s keep-alive (ahead of
+kTLS for small answers), 755 MB/s on a 50 MB download against 933 with
+kTLS (one AES block at a time for now). Next: `tls` on `tcp` listeners,
+HelloRetryRequest, session tickets, a fixed-base X25519 key generation,
+multi-block AES-GCM.
 
 * SHA-2, HMAC, HKDF (from fasm2crud), AES-GCM (AES-NI, VAES/VPCLMULQDQ),
   ChaCha20-Poly1305, X25519, ML-KEM-768, P-256 ECDH/ECDSA, Ed25519.

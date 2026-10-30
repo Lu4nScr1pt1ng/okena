@@ -8,6 +8,15 @@ h_recv_peek:
 
 ; ebx = session, ecx = side, rdi = buffer, esi = room.
 h_recv:
+	test	ecx,ecx
+	jnz	h_recv_raw
+	mov	eax,ebx
+	shl	rax,H_SHIFT
+	add	rax,[g_http_base]
+	cmp	dword [rax+H_UTLS],0
+	jne	utls_recv
+; the socket itself, whatever TLS is above it
+h_recv_raw:
 	cmp	dword [g_engine],ENGINE_EPOLL
 	je	hep_recv
 	push	rdi
@@ -34,13 +43,16 @@ h_recv:
 ; ebx = session, ecx = side, rdi = bytes, esi = length.
 h_send:
 	test	ecx,ecx
-	jnz	@f
+	jnz	h_send_raw
 	mov	eax,ebx				; bytes towards the client (access log)
 	shl	rax,H_SHIFT
 	add	rax,[g_http_base]
 	mov	r8d,esi
 	add	[rax+H_XBYTES],r8
-@@:
+	cmp	dword [rax+H_UTLS],0
+	jne	utls_send
+; the socket itself
+h_send_raw:
 	cmp	dword [g_engine],ENGINE_EPOLL
 	je	hep_send
 	mov	eax,ebx
@@ -448,12 +460,22 @@ ep_http_ready:
 	je	.next
 	mov	ecx,[r15+H_RSIDE]
 	mov	rax,[r15+H_RESULT]
-	cmp	edx,1
-	jne	.send
+	cmp	edx,2
+	je	.send
+	cmp	edx,3
+	je	.plain_recv
+	cmp	edx,4
+	je	.plain_send
 	call	http_recv_done
 	jmp	.next
 .send:
 	call	http_send_done
+	jmp	.next
+.plain_recv:					; user-space TLS: plaintext
+	call	http_recv_plain
+	jmp	.next
+.plain_send:
+	call	http_send_plain
 	jmp	.next
 .done:
 	pop	r15

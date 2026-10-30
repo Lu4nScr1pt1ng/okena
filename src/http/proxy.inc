@@ -21,7 +21,7 @@
 ; space of their own, touched only as far as an exchange uses them, and
 ; given back whole when the connection is idle (PH_TRIM).
 H_SHIFT		:= 9		; state
-HB_SHIFT	:= 16		; buffers
+HB_SHIFT	:= 17		; buffers: 64 KiB for HTTP, then the TLS area
 H_STATE		:= 0
 H_INLEN		:= 4		; bytes in IN
 H_INOFF		:= 8		; first unconsumed byte of IN
@@ -59,6 +59,17 @@ RID_MAX		:= 128
 H_BUF		:= 368		; q: this session's buffers
 H_ACT		:= 376		; d: the route's action + 1 (redirect, header changes), 0 = none
 H_UPT0		:= 384		; q: peak-ewma: TSC when the request was sent, 0 = none
+; TLS records sealed and opened here, when the kernel cannot (src/http/tls.inc)
+H_UTLS		:= 396		; d: 1 = user-space records on the client side
+H_RXC		:= 400		; d: ciphertext bytes held at HB_RXC
+H_PTOFF		:= 404		; d: plaintext of an opened record not yet handed over
+H_PTLEN		:= 408		; d
+H_PTEND		:= 412		; d: that record's end in HB_RXC
+H_UDST		:= 416		; q: where the waiting receive goes
+H_UROOM		:= 424		; d: its room
+H_TXLEN		:= 428		; d: plaintext still to seal
+H_TXP		:= 432		; q: and where it is
+assert H_TXP + 8 <= 1 shl H_SHIFT
 assert H_BUF + 8 <= 1 shl H_SHIFT
 HB_LTEXT_M	:= HB_UP + H_UP_CAP	; access log: method
 H_LTEXT_M_CAP	:= 16
@@ -66,7 +77,7 @@ HB_LTEXT_H	:= HB_LTEXT_M + 16	; host
 H_LTEXT_H_CAP	:= 255
 HB_LTEXT_T	:= HB_LTEXT_H + 256	; target
 H_LTEXT_T_CAP	:= 1024
-assert HB_LTEXT_T + H_LTEXT_T_CAP <= 1 shl HB_SHIFT
+assert HB_LTEXT_T + H_LTEXT_T_CAP <= 1 shl 16
 
 HS_HEAD		:= 1		; reading a request head
 HS_CONTINUE	:= 2		; writing our 100 Continue
@@ -133,6 +144,8 @@ http_worker_init:
 	ja	.done
 	mov	[g_hbuf_base],rax
 	call	retry_budget_tick		; budgets start at their floor, not empty
+	mov	dword [g_hready_head],NIL	; deliveries (epoll, user-space TLS)
+	mov	dword [g_hready_tail],NIL
 	xor	eax,eax
 .done:
 	ret
@@ -188,6 +201,7 @@ http_start:
 	mov	[r15+H_INLEN],eax
 	mov	[r15+H_INOFF],eax
 	mov	[r15+H_FLAGS],eax
+	mov	[r15+H_UTLS],eax
 	mov	edi,ebx
 	mov	esi,PH_HEAD
 	call	ph_arm
@@ -1238,6 +1252,13 @@ http_connect_failed:
 ; ebx = session, ecx = side, rax = bytes read (0 = end, < 0 = error).
 http_recv_done:
 	h_rec
+	test	ecx,ecx
+	jnz	http_recv_plain
+	cmp	dword [r15+H_UTLS],0
+	jne	utls_rx_done			; ciphertext arrived
+; the same, with plaintext (or no TLS)
+http_recv_plain:
+	h_rec
 	mov	edx,[r15+H_STATE]
 	cmp	edx,HS_HEAD
 	je	.head
@@ -1317,6 +1338,12 @@ http_recv_done:
 
 ; ebx = session, ecx = side, rax = 0 or negative (the send failed).
 http_send_done:
+	h_rec
+	test	ecx,ecx
+	jnz	http_send_plain
+	cmp	dword [r15+H_UTLS],0
+	jne	utls_tx_done			; records went out
+http_send_plain:
 	h_rec
 	test	rax,rax
 	js	.failed
@@ -2912,6 +2939,10 @@ http_phase_expired:
 	jne	.out
 	mov	rdi,[r15+H_BUF]
 	mov	esi,1 shl HB_SHIFT
+	cmp	dword [r15+H_UTLS],0
+	je	@f
+	mov	esi,HB_TLS			; its keys and records stay
+@@:
 	mov	edx,MADV_DONTNEED
 	mov	eax,SYS_madvise
 	syscall

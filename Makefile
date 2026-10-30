@@ -53,6 +53,8 @@ test-serial: $(BIN) $(HTTPH) $(KAT) $(TLSH)
 	python3 -I tests/tls/handshake.py
 	python3 -I tests/tls/https.py io_uring
 	python3 -I tests/tls/https.py epoll
+	python3 -I tests/tls/https.py io_uring user
+	python3 -I tests/tls/https.py epoll user
 	python3 -I tests/l4/run.py io_uring
 	python3 -I tests/l4/run.py epoll
 	python3 -I tests/dns/run.py

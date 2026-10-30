@@ -16,9 +16,10 @@ not built yet. A directive that is not built is refused by `okena check`
 
 `tls { cert FILE; key FILE }` on an `http` listener makes it HTTPS: TLS
 1.3 with an EC P-256 certificate chain (leaf first) and its key, ALPN
-http/1.1, then the connection handed to the kernel's TLS (kTLS), so the
-host needs the `tls` module (`modprobe tls`; okena refuses to start
-without it rather than fail every connection). The header timeout covers
+http/1.1, then the connection handed to the kernel's TLS (kTLS) when the
+host has the `tls` module (`modprobe tls`), or records sealed by okena
+itself when it does not (said once at the start; `OKENA_KTLS=off` forces
+it). The header timeout covers
 the handshake. Backends get `X-Forwarded-Proto: https`. On a `tcp`
 listener `tls` is checked but not served yet.
 

@@ -21,7 +21,8 @@ import time
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BIN = ROOT / "build" / "okena"
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
-BASE = 27000 + os.getpid() % 99 * 10 + (5 if ENGINE == "epoll" else 0)
+USER = len(sys.argv) > 2 and sys.argv[2] == "user"   # records sealed in user space, not kTLS
+BASE = 27000 + os.getpid() % 99 * 20 + (5 if ENGINE == "epoll" else 0) + (10 if USER else 0)
 BACK, LST = BASE, BASE + 1
 tmp = pathlib.Path(tempfile.mkdtemp())
 atexit.register(shutil.rmtree, tmp, True)
@@ -133,8 +134,8 @@ def request(t, method, target, body=b""):
 
 
 def main():
-    if not have_ktls():
-        print("skip https: the tls module is not loaded (sudo modprobe tls)")
+    if not USER and not have_ktls():
+        print("skip https with kTLS: the tls module is not loaded (sudo modprobe tls)")
         return 0
     threading.Thread(target=backend, daemon=True).start()
     conf = tmp / "okena.conf"
@@ -146,7 +147,8 @@ http 127.0.0.1:{LST} {{
 }}
 """)
     log = open(tmp / "okena.log", "w+")
-    p = subprocess.Popen([str(BIN), "-c", str(conf)], stderr=log)
+    env = dict(os.environ, OKENA_KTLS="off") if USER else None
+    p = subprocess.Popen([str(BIN), "-c", str(conf)], stderr=log, env=env)
     atexit.register(p.kill)
     for _ in range(100):
         log.seek(0)
@@ -162,6 +164,11 @@ http 127.0.0.1:{LST} {{
         check("ALPN http/1.1, TLS_AES_128_GCM_SHA256", (t.selected_alpn_protocol(), t.cipher()[0])
               == ("http/1.1", "TLS_AES_128_GCM_SHA256"), str((t.selected_alpn_protocol(), t.cipher())))
         check("the backend is told X-Forwarded-Proto: https", info["xfp"] == "https", info["xfp"])
+        if shutil.which("ss"):
+            ss = subprocess.run(["ss", "-tni", f"( sport = :{LST} )"], capture_output=True, text=True).stdout
+            ulp = "tcp-ulp-tls" in ss
+            check("records sealed in user space (no kTLS on the socket)" if USER else
+                  "the kernel has the connection (kTLS on the socket)", ulp != USER, ss[-200:])
         ok = all(json.loads(request(t, "GET", f"/n/{i}")[1])["target"] == f"/n/{i}" for i in range(20))
         check("20 more requests on the same connection", ok)
         body = os.urandom(2 << 20)
@@ -262,7 +269,7 @@ http 127.0.0.1:{LST} {{
     log.seek(0)
     text = log.read()
     check("no worker died", "exited with status" not in text and "seccomp" not in text, text[-300:])
-    print(f"https {ENGINE}: {'all passed' if not failures else f'{failures} failed'}")
+    print(f"https {ENGINE}{' user-space records' if USER else ''}: {'all passed' if not failures else f'{failures} failed'}")
     return 1 if failures else 0
 
 

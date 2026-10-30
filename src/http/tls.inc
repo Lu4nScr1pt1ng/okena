@@ -13,6 +13,12 @@
 ;   HS_TLS_KTLS    the keys going to the kernel (io_uring)
 ;   HS_TLS_ALERT   writing an alert, then closing
 ;
+; Without kTLS (no tls module on the host, or the kernel refused the keys)
+; the records are sealed and opened here instead: h_recv and h_send on the
+; client side go through utls_recv / utls_send, which hand plaintext to
+; the exchange the way the socket would (results queued, delivered by the
+; main loop), so proxy.inc does not know the difference.
+;
 ; The handshake's state (TS_*) and the keys for the kernel live at the end
 ; of the session's buffers, unused before the first request; they are
 ; wiped once the kernel has the keys. The header timeout (PH_HEAD), armed
@@ -25,11 +31,18 @@ HS_TLS_TAKE	:= 18
 HS_TLS_KTLS	:= 19
 HS_TLS_ALERT	:= 20
 
-HB_TS		:= (1 shl HB_SHIFT) - 1024
+HB_TLS		:= 1 shl 16			; the TLS area, after the HTTP buffers
+HB_TS		:= HB_TLS			; the handshake, then the record keys
 HB_KTLS		:= HB_TS + TS_SIZE		; tls12_crypto_info_aes_gcm_128: TX, then RX
 KTLS_INFO	:= 40
-H_TLS_ROOM	:= HB_TS - HB_OUT		; the flight is built in OUT and after it
-assert HB_KTLS + 2 * KTLS_INFO <= 1 shl HB_SHIFT
+HB_RXC		:= HB_TLS + 1024		; user-space records: ciphertext in
+UTLS_RX_CAP	:= TLS_RECORD_MAX + 256 + 5 + 251	; one whole record (17 KiB)
+HB_TXC		:= HB_RXC + UTLS_RX_CAP	; and out, two records at a time
+UTLS_TX_RECS	:= 2
+UTLS_TX_CAP	:= UTLS_TX_RECS * (TLS_RECORD_MAX + 22)
+H_TLS_ROOM	:= HB_TLS - HB_OUT		; the flight is built in OUT and after it
+assert HB_KTLS + 2 * KTLS_INFO <= HB_RXC
+assert HB_TXC + UTLS_TX_CAP <= 1 shl HB_SHIFT
 assert H_TLS_ROOM >= 2 * (TLS_CHAIN_MAX + 192) + 512
 
 SOL_TLS		:= 282
@@ -38,9 +51,15 @@ TLS_RX		:= 2
 TCP_ULP		:= 31
 ENOTCONN	:= 107
 
+bss
+	align 4
+	g_no_ktls	dd ?			; this worker saw the kernel refuse kTLS
+end bss
+
 rodata
 	ktls_ulp	db 'tls',0
 end rodata
+cstring env_okena_ktls, 'OKENA_KTLS='
 
 ; ebx = session: rax = its listener's credentials (a TL entry), or 0 when
 ; the listener has no tls. Keeps everything but rax and rcx.
@@ -202,9 +221,8 @@ http_tls_fin_in:
 	lea	rsi,[r8+HB_TS+TS_RX_KEY]
 	lea	rdi,[r8+HB_KTLS+KTLS_INFO]
 	call	.info
-	lea	rdi,[r8+HB_TS]			; the handshake state is done with
-	mov	ecx,TS_SIZE
-	call	secure_zero
+	cmp	dword [g_no_ktls],0
+	jne	http_utls_start
 	cmp	dword [g_engine],ENGINE_EPOLL
 	je	.epoll
 
@@ -284,7 +302,7 @@ http_tls_fin_in:
 	syscall
 	pop	rdi
 	test	eax,eax
-	jnz	http_tls_close
+	jnz	.refused
 	push	rdi
 	mov	esi,SOL_TLS
 	mov	edx,TLS_TX
@@ -295,7 +313,7 @@ http_tls_fin_in:
 	syscall
 	pop	rdi
 	test	eax,eax
-	jnz	http_tls_close
+	jnz	.refused			; no TX: the socket is still plain TCP
 	mov	esi,SOL_TLS
 	mov	edx,TLS_RX
 	mov	r10,[r15+H_BUF]
@@ -304,8 +322,11 @@ http_tls_fin_in:
 	mov	eax,SYS_setsockopt
 	syscall
 	test	eax,eax
-	jnz	http_tls_close
+	jnz	http_tls_close			; TX is the kernel's already: no way back
 	jmp	http_tls_established
+.refused:
+	mov	dword [g_no_ktls],1
+	jmp	http_utls_start
 
 ; completion of the RX key (io_uring): ebx = session, r12d = generation,
 ; r14 = res (-ECANCELED when an earlier link failed)
@@ -316,8 +337,11 @@ on_h_ktls:
 	je	.closing
 	h_rec
 	test	r14,r14
-	js	http_tls_close
-	jmp	http_tls_established
+	jns	http_tls_established
+	cmp	r14,-ECANCELED
+	jne	http_tls_close			; RX alone failed: TX is the kernel's
+	mov	dword [g_no_ktls],1		; the ULP or TX was refused
+	jmp	http_utls_start
 .closing:
 	mov	edi,ebx
 	jmp	session_maybe_free
@@ -328,17 +352,17 @@ on_h_ktls:
 http_tls_established:
 	h_rec
 	mov	rdi,[r15+H_BUF]
-	add	rdi,HB_KTLS
-	mov	ecx,2 * KTLS_INFO
+	add	rdi,HB_TS			; the kernel has the keys: none kept here
+	mov	ecx,TS_SIZE + 2 * KTLS_INFO
 	call	secure_zero
 	xor	eax,eax
 	mov	[r15+H_INLEN],eax
 	mov	[r15+H_INOFF],eax
 	jmp	http_next_request
 
-; Before serving: tls on an http listener needs the kernel's TLS (the
-; module, "tls"), and tls on a tcp listener is not built yet. Exits with
-; EXIT_CONFIG and why.
+; Before serving: tls on a tcp listener is not built yet (exits with
+; EXIT_CONFIG and why); tls on an http listener without the kernel's TLS
+; (the module, "tls") works, slower: said once.
 tls_serve_check:
 	xor	ecx,ecx
 	xor	edx,edx				; edx = an http listener has tls
@@ -356,6 +380,16 @@ tls_serve_check:
 .scanned:
 	test	edx,edx
 	jz	.ok
+	; OKENA_KTLS=off: records in user space even with the module (tests,
+	; comparisons)
+	lea	rdi,[env_okena_ktls]
+	mov	esi,env_okena_ktls.len
+	call	getenv
+	test	rax,rax
+	jz	.probe
+	cmp	dword [rax],'off'
+	je	.no_ktls
+.probe:
 	; TCP_ULP "tls" on a socket not connected: ENOTCONN when the kernel
 	; has it, ENOENT when the module is not loaded
 	mov	edi,AF_INET
@@ -382,14 +416,198 @@ tls_serve_check:
 	je	.no_ktls
 .ok:
 	ret
+.no_ktls:
+	mov	dword [g_no_ktls],1		; the workers forked from here know
+	call	log_begin
+	out_lit 'no kernel TLS (modprobe tls): TLS records are sealed in user space, which costs more CPU'
+	jmp	log_end
 .tcp:
 	call	log_begin
 	out_lit 'tls { } on a tcp listener is read and checked, but not served yet (it is on http listeners): refusing to serve it in plaintext'
 	jmp	.refuse
-.no_ktls:
-	call	log_begin
-	out_lit 'HTTPS needs kernel TLS (kTLS) and its module is not loaded: modprobe tls (on the host, for a container)'
 .refuse:
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process
+
+; ------------------------------------------------- user-space records
+
+; ebx = session, r15 = record, the handshake done: records here from now on.
+http_utls_start:
+	mov	rdi,[r15+H_BUF]
+	add	rdi,HB_KTLS			; the keys meant for the kernel
+	mov	ecx,2 * KTLS_INFO
+	call	secure_zero
+	mov	rdi,[r15+H_BUF]
+	add	rdi,HB_TS
+	call	tls_records
+	h_rec
+	xor	eax,eax
+	mov	[r15+H_RXC],eax
+	mov	[r15+H_PTLEN],eax
+	mov	[r15+H_TXLEN],eax
+	mov	[r15+H_INLEN],eax
+	mov	[r15+H_INOFF],eax
+	mov	dword [r15+H_UTLS],1
+	jmp	http_next_request
+
+; ebx = session, rax = result: delivered to http_recv_plain (edx = 3) or
+; http_send_plain (edx = 4) by the main loop.
+macro utls_deliver kind
+	mov	edx,kind
+	xor	ecx,ecx
+	jmp	hep_queue
+end macro
+
+; h_recv on the client of a user-space TLS session: rdi = buffer, esi =
+; room. Plaintext goes there; the result comes like a socket's.
+utls_recv:
+	h_rec
+	mov	[r15+H_UDST],rdi
+	mov	[r15+H_UROOM],esi
+; hand over plaintext, open a record, or read ciphertext
+utls_rx_step:
+	h_rec
+	mov	ecx,[r15+H_PTLEN]
+	test	ecx,ecx
+	jnz	.hand_over
+	mov	rdi,[r15+H_BUF]
+	lea	rsi,[rdi+HB_RXC]
+	add	rdi,HB_TS
+	mov	edx,[r15+H_RXC]
+	call	tls_open
+	h_rec
+	cmp	eax,TH_MORE
+	je	.read
+	cmp	eax,TH_FAIL
+	je	.fail
+	cmp	r8d,23				; application_data
+	jne	.control
+	mov	rax,[r15+H_BUF]
+	lea	rax,[rax+HB_RXC]
+	sub	rsi,rax
+	mov	[r15+H_PTOFF],esi
+	mov	[r15+H_PTLEN],ecx
+	mov	[r15+H_PTEND],edx
+	test	ecx,ecx
+	jz	.drop				; an empty record
+.hand_over:
+	cmp	ecx,[r15+H_UROOM]
+	jbe	@f
+	mov	ecx,[r15+H_UROOM]
+@@:
+	mov	rdi,[r15+H_UDST]
+	mov	rsi,[r15+H_BUF]
+	mov	eax,[r15+H_PTOFF]
+	lea	rsi,[rsi+HB_RXC+rax]
+	add	[r15+H_PTOFF],ecx
+	sub	[r15+H_PTLEN],ecx
+	mov	eax,ecx
+	rep	movsb
+	push	rax
+	cmp	dword [r15+H_PTLEN],0
+	jne	@f
+	call	.drop_record
+@@:
+	pop	rax
+	utls_deliver 3
+.drop:
+	call	.drop_record
+	jmp	utls_rx_step
+.read:
+	mov	esi,UTLS_RX_CAP
+	sub	esi,[r15+H_RXC]
+	jz	.fail
+	mov	edi,[r15+H_RXC]
+	add	rdi,[r15+H_BUF]
+	add	rdi,HB_RXC
+	xor	ecx,ecx
+	jmp	h_recv_raw
+.control:
+	cmp	r8d,21				; an alert: close_notify, or worse
+	jne	.fail				; post-handshake messages: not taken
+	xor	eax,eax				; the end of the stream
+	utls_deliver 3
+.fail:
+	mov	rax,-1
+	utls_deliver 3
+; the record whose plaintext is handed over leaves the buffer
+.drop_record:
+	mov	edx,[r15+H_PTEND]
+	mov	ecx,[r15+H_RXC]
+	sub	ecx,edx
+	mov	[r15+H_RXC],ecx
+	mov	rdi,[r15+H_BUF]
+	add	rdi,HB_RXC
+	lea	rsi,[rdi+rdx]
+	rep	movsb
+	mov	dword [r15+H_PTLEN],0
+	ret
+
+; ciphertext arrived (http_recv_done on the client side): rax = bytes
+utls_rx_done:
+	test	rax,rax
+	jle	.end
+	add	[r15+H_RXC],eax
+	mov	edi,ebx
+	call	idle_touch
+	jmp	utls_rx_step
+.end:
+	utls_deliver 3				; the end of the stream, or an error
+
+; h_send on the client of a user-space TLS session: rdi = bytes, esi =
+; length. Sealed into records, two at a time, and sent.
+utls_send:
+	h_rec
+	mov	[r15+H_TXP],rdi
+	mov	[r15+H_TXLEN],esi
+utls_tx_step:
+	h_rec
+	cmp	dword [r15+H_TXLEN],0
+	je	.all_sent
+	push	r12
+	push	r13
+	mov	r12,[r15+H_BUF]
+	add	r12,HB_TXC			; r12 = the next record
+	mov	r13d,UTLS_TX_RECS
+.record:
+	mov	ecx,[r15+H_TXLEN]
+	cmp	ecx,TLS_RECORD_MAX
+	jbe	@f
+	mov	ecx,TLS_RECORD_MAX
+@@:
+	sub	[r15+H_TXLEN],ecx
+	mov	edx,ecx
+	lea	rdi,[r12+5]
+	mov	rsi,[r15+H_TXP]
+	add	[r15+H_TXP],rcx
+	rep	movsb
+	mov	rdi,[r15+H_BUF]
+	add	rdi,HB_TS
+	mov	rsi,r12
+	mov	ecx,23
+	call	tls_seal
+	h_rec
+	add	r12,rax
+	cmp	dword [r15+H_TXLEN],0
+	je	.send
+	dec	r13d
+	jnz	.record
+.send:
+	mov	rdi,[r15+H_BUF]
+	add	rdi,HB_TXC
+	mov	rsi,r12
+	sub	rsi,rdi
+	pop	r13
+	pop	r12
+	xor	ecx,ecx
+	jmp	h_send_raw
+.all_sent:
+	xor	eax,eax
+	utls_deliver 4
+
+; records went out (http_send_done on the client side): rax = 0 or < 0
+utls_tx_done:
+	test	rax,rax
+	jns	utls_tx_step
+	utls_deliver 4

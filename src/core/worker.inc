@@ -130,6 +130,7 @@ worker_main:
 	xor	edi,edi
 	call	ring_enter
 	call	ring_reap
+	call	ep_http_ready			; user-space TLS deliveries
 	mov	eax,[g_reaped]
 	cmp	eax,[g_reaped_mark]
 	jne	.loop				; progress: restart the window
@@ -143,6 +144,7 @@ worker_main:
 	mov	edi,1
 	call	ring_enter
 	call	ring_reap
+	call	ep_http_ready			; user-space TLS deliveries
 	jmp	.loop
 .drained:
 	call	alog_flush
