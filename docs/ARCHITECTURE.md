@@ -624,7 +624,10 @@ ECN. 0-RTT off by default and, when on, only for routes marked idempotent.
   TLS 1.2 with RSA certificates.
 * Certificate compression (RFC 8879) and Encrypted Client Hello later.
 * Key exchange: **X25519MLKEM768** (post-quantum hybrid, default),
-  X25519, P-256.
+  X25519, P-256. **Today** the hybrid is served (preferred when the
+  client sends its share) with a scalar ML-KEM-768 encapsulation, about
+  twice x25519's cost; okena's own client side (upstreams) offers X25519
+  and P-256 only.
 * AEAD: AES-128/256-GCM (AES-NI, VAES + VPCLMULQDQ), ChaCha20-Poly1305
   (AVX2), chosen by client preference and hardware.
 * Certificates: ECDSA P-256 and Ed25519 signing first; RSA-PSS signing

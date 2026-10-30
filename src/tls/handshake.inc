@@ -31,9 +31,11 @@
 ; chain the configuration accepts (TLS_CHAIN_MAX). The ClientHello is
 ; copied out of its records into out first, so in is left as it was.
 ;
-; Key exchange is x25519 or secp256r1 (whichever the client sends a share
-; for, x25519 preferred). A client offering a supported group without a
-; share for it gets a HelloRetryRequest (RFC 8446 4.1.4) naming x25519, or
+; Key exchange is X25519MLKEM768 (the post-quantum hybrid: ML-KEM-768
+; encapsulation to the client's key, plus x25519), x25519 or secp256r1,
+; in that order of preference among the shares the client sent. A client
+; offering a supported group without a share for it gets a
+; HelloRetryRequest (RFC 8446 4.1.4) naming x25519, or
 ; secp256r1 when that is the only one it offered; one that offers neither,
 ; a handshake_failure alert.
 ; No resumption and no 0-RTT: no tickets are issued, so no client sends
@@ -174,9 +176,14 @@ HL_SNIP		:= HL_NOW + 4			; q: the client's server_name
 HL_SNILEN	:= HL_SNIP + 8
 HL_PEER256	:= HL_SNILEN + 4		; the client's secp256r1 point (65)
 HL_PUB256	:= HL_PEER256 + 72		; the server's (65)
-HL_GROUP	:= HL_PUB256 + 72		; d: 0 = x25519, 1 = secp256r1
+HL_GROUP	:= HL_PUB256 + 72		; d: 0 = x25519, 1 = secp256r1, 2 = X25519MLKEM768
 HL_KSEXT	:= HL_GROUP + 4			; d: the key_share extension's wire length
-HL_SIZE		:= ((HL_KSEXT + 4 + 15) and not 15) + 8	; rsp 16-aligned at calls
+HL_MLEK		:= HL_KSEXT + 4			; q: the client's ML-KEM-768 key (in the ClientHello)
+HL_MLX		:= HL_MLEK + 8			; the client's x25519 half of the hybrid share (32)
+HL_MLM		:= HL_MLX + 32			; the encapsulation's randomness (32)
+HL_SH64		:= HL_MLM + 32			; hybrid secret: ML-KEM's (32) | x25519's (32)
+HL_MLCT		:= HL_SH64 + 64			; the ML-KEM ciphertext (1088)
+HL_SIZE		:= ((HL_MLCT + MLKEM_CT + 15) and not 15) + 8	; rsp 16-aligned at calls
 
 G_TLS13		:= 1
 G_SUITE		:= 2
@@ -187,6 +194,7 @@ G_H1		:= 32
 G_GROUP		:= 64				; x25519 in supported_groups
 G_KS256		:= 2048				; the client sent a secp256r1 key share
 G_GROUP256	:= 4096				; secp256r1 in supported_groups
+G_KSMLKEM	:= 32768			; the client sent an X25519MLKEM768 key share
 G_PSK		:= 128				; pre_shared_key: a ticket-sized identity, a 32-byte binder
 G_PSKDHE	:= 256				; psk_key_exchange_modes has psk_dhe_ke
 G_RESUME	:= 512				; the ticket opened and the binder is right: resumption
@@ -478,6 +486,8 @@ tls_hello:
 	or	dword [rbp+HL_GOT],G_KS
 	jmp	.share_next
 .ks_p256:
+	cmp	ax,0xEC11			; X25519MLKEM768 (0x11EC): ML-KEM-768 key | x25519
+	je	.ks_mlkem
 	cmp	ax,0x1700			; secp256r1
 	jne	.share_next
 	cmp	edx,65
@@ -489,6 +499,16 @@ tls_hello:
 .share_next:
 	mov	rsi,r8
 	jmp	.share
+.ks_mlkem:
+	cmp	edx,MLKEM_EK + 32
+	jne	.illegal
+	mov	[rbp+HL_MLEK],rsi		; checked when it is used
+	add	rsi,MLKEM_EK
+	lea	rdi,[rbp+HL_MLX]
+	mov	ecx,32
+	rep	movsb
+	or	dword [rbp+HL_GOT],G_KSMLKEM
+	jmp	.share_next
 
 .server_name:					; u16 length, { u8 type, u16 length, name }
 	cmp	ecx,5
@@ -675,10 +695,14 @@ tls_hello:
 	test	eax,G_SIGALG_RSA
 	jz	.handshake
 .sig_ok:
-	mov	dword [rbp+HL_GROUP],0		; the key-exchange group
-	mov	dword [rbp+HL_KSEXT],40		; its key_share extension length
+	mov	dword [rbp+HL_GROUP],2		; the key-exchange group: the hybrid first,
+	mov	dword [rbp+HL_KSEXT],8 + MLKEM_CT + 32	; its key_share extension length
+	test	eax,G_KSMLKEM
+	jnz	.have_share
+	mov	dword [rbp+HL_GROUP],0		; then x25519
+	mov	dword [rbp+HL_KSEXT],40
 	test	eax,G_KS
-	jnz	.have_share			; x25519 preferred
+	jnz	.have_share
 	test	eax,G_KS256
 	jz	.no_share
 	mov	dword [rbp+HL_GROUP],1		; secp256r1
@@ -802,8 +826,30 @@ tls_hello:
 	syscall
 	cmp	rax,80
 	jne	.internal
-	cmp	dword [rbp+HL_GROUP],0
-	jne	.eph_p256
+	cmp	dword [rbp+HL_GROUP],1
+	je	.eph_p256
+	jb	.eph_x25519
+	; X25519MLKEM768: encapsulate to the client's key (its modulus checked
+	; there), then x25519 with its half; the secret is ML-KEM's | x25519's
+	lea	rdi,[rbp+HL_MLM]
+	mov	esi,32
+	xor	edx,edx
+	mov	eax,SYS_getrandom
+	syscall
+	cmp	rax,32
+	jne	.internal
+	lea	rdi,[rbp+HL_MLCT]
+	lea	rsi,[rbp+HL_SH64]
+	mov	rdx,[rbp+HL_MLEK]
+	lea	rcx,[rbp+HL_MLM]
+	call	mlkem768_encaps
+	test	eax,eax
+	jz	.illegal			; not a valid encapsulation key
+	lea	rsi,[rbp+HL_MLX]		; the x25519 below uses the hybrid's half
+	lea	rdi,[rbp+HL_KS]
+	mov	ecx,32
+	rep	movsb
+.eph_x25519:
 	; x25519: the ephemeral public and the shared secret
 	lea	rdi,[rbp+HL_PUB]
 	lea	rsi,[rbp+HL_RAND+32]
@@ -817,6 +863,12 @@ tls_hello:
 	or	rax,[rbp+HL_SHARED+16]
 	or	rax,[rbp+HL_SHARED+24]
 	jz	.illegal
+	cmp	dword [rbp+HL_GROUP],2
+	jne	.eph_done
+	lea	rsi,[rbp+HL_SHARED]
+	lea	rdi,[rbp+HL_SH64+32]
+	mov	ecx,32
+	rep	movsb
 	jmp	.eph_done
 .eph_p256:
 	; secp256r1: scalar * G for the public key, scalar * peer for the secret
@@ -862,7 +914,8 @@ tls_hello:
 	mov	eax,[rbp+HL_SHLEN]
 	sub	eax,[rbp+HL_SIDLEN]
 	sub	eax,44
-	mov	[rdi+4],al			; ... the extensions' length
+	mov	[rdi+3],ah			; ... the extensions' length (a hybrid
+	mov	[rdi+4],al			; share takes it past 255)
 	mov	dword [rdi+5],0x02002B00	; supported_versions: TLS 1.3
 	mov	word [rdi+9],0x0403
 	add	rdi,11
@@ -872,8 +925,19 @@ tls_hello:
 	sub	eax,4				; the extension body length
 	rol	ax,8
 	mov	[rdi+2],ax
-	cmp	dword [rbp+HL_GROUP],0
-	jne	.sh_p256
+	cmp	dword [rbp+HL_GROUP],1
+	je	.sh_p256
+	jb	.sh_x25519
+	mov	dword [rdi+4],0x6004_EC11	; X25519MLKEM768, 1120 bytes:
+	add	rdi,8
+	lea	rsi,[rbp+HL_MLCT]		; the ciphertext, then our x25519 key
+	mov	ecx,MLKEM_CT
+	rep	movsb
+	lea	rsi,[rbp+HL_PUB]
+	mov	ecx,32
+	rep	movsb
+	jmp	.sh_ks_done
+.sh_x25519:
 	mov	dword [rdi+4],0x2000_1D00	; x25519, 32 bytes
 	add	rdi,8
 	lea	rsi,[rbp+HL_PUB]
@@ -910,6 +974,11 @@ tls_hello:
 	mov	edx,32
 	lea	rcx,[rbp+HL_SHARED]
 	mov	r8d,32
+	cmp	dword [rbp+HL_GROUP],2
+	jne	@f
+	lea	rcx,[rbp+HL_SH64]		; the hybrid: 64 bytes
+	mov	r8d,64
+@@:
 	call	hkdf_extract
 	tls_label [rbp+HL_CHT], 32, [rbp+HL_HS], lbl_c_hs, [rbp+HL_TH], 32
 	tls_label [rbp+HL_SHT], 32, [rbp+HL_HS], lbl_s_hs, [rbp+HL_TH], 32

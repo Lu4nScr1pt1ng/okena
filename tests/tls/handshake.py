@@ -187,6 +187,35 @@ class Wire:
         return got
 
 
+def raw_hello(port, hybrid_share):
+    """A minimal TLS 1.3 ClientHello whose only key share is X25519MLKEM768;
+    the first bytes okena answers."""
+    def ext(t, body):
+        return t.to_bytes(2, "big") + len(body).to_bytes(2, "big") + body
+    name = b"okena.test"
+    exts = ext(0, (len(name) + 3).to_bytes(2, "big") + b"\x00" + len(name).to_bytes(2, "big") + name)
+    exts += ext(43, b"\x02\x03\x04")                                  # supported_versions: 1.3
+    exts += ext(13, b"\x00\x02\x04\x03")                              # ecdsa_secp256r1_sha256
+    exts += ext(10, b"\x00\x04\x11\xec\x00\x1d")                      # X25519MLKEM768, x25519
+    share = b"\x11\xec" + len(hybrid_share).to_bytes(2, "big") + hybrid_share
+    exts += ext(51, len(share).to_bytes(2, "big") + share)
+    body = b"\x03\x03" + os.urandom(32) + b"\x20" + os.urandom(32) + b"\x00\x02\x13\x01\x01\x00"
+    body += len(exts).to_bytes(2, "big") + exts
+    msg = b"\x01" + len(body).to_bytes(3, "big") + body
+    data = b""
+    with socket.create_connection(("127.0.0.1", port), timeout=3) as s:
+        s.sendall(b"\x16\x03\x01" + len(msg).to_bytes(2, "big") + msg)
+        try:
+            while len(data) < 1300:
+                chunk = s.recv(65536)
+                if not chunk:
+                    break
+                data += chunk
+        except OSError:
+            pass
+    return data
+
+
 def records(data):
     out = []
     while data:
@@ -338,6 +367,37 @@ def main():
                            capture_output=True, timeout=10)
         check("s_client: a saved session resumed through a HelloRetryRequest",
               b"Reused, TLSv1.3" in r.stdout, r.stdout.decode(errors="replace")[-300:])
+        # the post-quantum hybrid, asked for alone and as OpenSSL 3.5 sends it
+        # by default (X25519MLKEM768 and X25519 shares)
+        if b"X25519MLKEM768" in subprocess.run(["openssl", "list", "-kem-algorithms"],
+                                               capture_output=True).stdout:
+            for groups in (["-groups", "X25519MLKEM768"], []):
+                r = subprocess.run(common + groups, input=b"", capture_output=True, timeout=10)
+                check(f"s_client {' '.join(groups) or '(default groups)'}: X25519MLKEM768 negotiated",
+                      b"Negotiated TLS1.3 group: X25519MLKEM768" in r.stdout and b"Verify return code: 0" in r.stdout,
+                      r.stdout.decode(errors="replace")[-300:])
+            subprocess.run(common + ["-groups", "X25519MLKEM768", "-sess_out", str(sess)], input=b"",
+                           capture_output=True, timeout=10)
+            r = subprocess.run(common + ["-groups", "X25519MLKEM768", "-sess_in", str(sess)], input=b"",
+                               capture_output=True, timeout=10)
+            check("s_client: a session resumed over X25519MLKEM768 (psk_dhe_ke)",
+                  b"Reused, TLSv1.3" in r.stdout and b"X25519MLKEM768" in r.stdout,
+                  r.stdout.decode(errors="replace")[-300:])
+    # hand-made ClientHellos with a hybrid share: a valid key gets a ServerHello
+    # naming the group with its 1120-byte share; a key with a coefficient not
+    # below q (FIPS 203's modulus check) an illegal_parameter alert
+    sys.path.insert(0, str(ROOT / "tests" / "kat"))
+    import mlkem_ref
+    ek, _ = mlkem_ref.keygen(os.urandom(32), os.urandom(32))
+    reply = raw_hello(port, ek + os.urandom(32))
+    check("a hybrid ClientHello: ServerHello with X25519MLKEM768, a 1120-byte share",
+          reply[:1] == b"\x16" and b"\x00\x33\x04\x64\x11\xec\x04\x60" in reply[:1300], reply[:16].hex())
+    bad = bytearray(ek)
+    bad[0], bad[1] = 0xFF, bad[1] | 0x0F            # the first coefficient: 4095
+    reply = raw_hello(port, bytes(bad) + os.urandom(32))
+    check("a hybrid share failing the modulus check: illegal_parameter",
+          reply == b"\x15\x03\x03\x00\x02\x02\x2f", reply.hex())
+    check("the server still serves after that", roundtrip(port, context())[1])
     if shutil.which("curl"):
         r = subprocess.run(["curl", "-sv", "--cacert", str(tmp / "ca.pem"), "--resolve", f"okena.test:{port}:127.0.0.1",
                             f"https://okena.test:{port}/", "--max-time", "3"], capture_output=True, timeout=10)

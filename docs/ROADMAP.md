@@ -184,6 +184,18 @@ it up to twice the budget, and hellos that waited past `wait` are closed
 (okena_tls_handshakes_deferred_total, okena_tls_handshakes_shed_total;
 tests/tls/budget.py on both engines). With 6000 handshakes at once on one
 worker, an open connection's p99 went from 1.6 ms to 0.47 ms.
+X25519MLKEM768 is in, preferred over x25519 and secp256r1 when the client
+sends its share (Chrome, Firefox, curl and OpenSSL 3.5 by default):
+Keccak (SHA-3, SHAKE) and ML-KEM-768 encapsulation in src/crypto, the
+client's key checked (FIPS 203's modulus check, illegal_parameter
+otherwise), the 64-byte hybrid secret (ML-KEM's, then x25519's) into the
+key schedule, resumption on top (psk_dhe_ke). Checked byte for byte against
+a FIPS 203 reference in tests/kat and against OpenSSL's decapsulation;
+s_client and curl negotiate it. The encapsulation is scalar for now (49.7
+us; OpenSSL 3.5 with AVX2: 25 us), so a hybrid handshake costs about twice
+an x25519 one; the AVX2 NTT and a four-way Keccak are next. Still open:
+ChaCha20-Poly1305, Ed25519, the hybrid towards upstreams (key generation
+and decapsulation), Wycheproof.
 
 * SHA-2, HMAC, HKDF (from fasm2crud), AES-GCM (AES-NI, VAES/VPCLMULQDQ),
   ChaCha20-Poly1305, X25519, ML-KEM-768, P-256 ECDH/ECDSA, Ed25519.
