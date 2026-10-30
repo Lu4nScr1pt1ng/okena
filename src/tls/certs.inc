@@ -138,6 +138,7 @@ TLS_E_DER	:= 1				; not a certificate / key in DER
 TLS_E_RSA	:= 2				; an RSA key: not yet
 TLS_E_CURVE	:= 3				; EC, but not P-256
 TLS_E_KEYVAL	:= 4				; a key out of range
+TLS_E_ED	:= 5				; an Ed25519 key (g_tls_cpub: its 32 bytes)
 
 ; rsi = certificate DER, edx = length: its subject public key into
 ; g_tls_cpub. eax = TLS_*.
@@ -192,6 +193,10 @@ cert_public_key:
 	mov	edx,9
 	call	der_oid_is
 	je	.rsa
+	lea	rdi,[oid_ed25519]
+	mov	edx,3
+	call	der_oid_is
+	je	.ed25519
 	lea	rdi,[oid_ec_public_key]
 	mov	edx,7
 	call	der_oid_is
@@ -225,6 +230,25 @@ cert_public_key:
 .rsa:
 	add	rsp,16
 	mov	eax,TLS_E_RSA
+	pop	rbx
+	ret
+.ed25519:
+	pop	rdx
+	mov	rsi,rbx
+	call	der_read			; BIT STRING: 00 | the key
+	pop	r9
+	jc	.der
+	cmp	al,3
+	jne	.der
+	cmp	ecx,33
+	jne	.der
+	cmp	byte [rsi],0
+	jne	.der
+	inc	rsi
+	lea	rdi,[g_tls_cpub]
+	mov	ecx,32
+	rep	movsb
+	mov	eax,TLS_E_ED
 	pop	rbx
 	ret
 .curve:
@@ -366,6 +390,59 @@ key_pkcs8:
 .der:
 	mov	eax,TLS_E_DER
 	pop	rbx
+	ret
+
+; rsi = PKCS #8 PrivateKeyInfo DER, edx = length: an Ed25519 key (RFC
+; 8410: OCTET STRING { OCTET STRING seed[32] }) into g_tls_d. eax = TLS_*.
+key_pkcs8_ed:
+	lea	rdx,[rsi+rdx]
+	call	der_read			; SEQUENCE
+	jc	.der
+	cmp	al,0x30
+	jne	.der
+	mov	rdx,r8
+	call	der_read			; version 0 (or 1, with a public key after)
+	jc	.der
+	cmp	al,2
+	jne	.der
+	mov	rsi,r8
+	call	der_read			; AlgorithmIdentifier
+	jc	.der
+	cmp	al,0x30
+	jne	.der
+	push	r8
+	push	rdx
+	mov	rdx,r8
+	call	der_read			; its OID: Ed25519, no parameters
+	pop	rdx
+	pop	r9
+	jc	.der
+	cmp	al,6
+	jne	.der
+	lea	rdi,[oid_ed25519]
+	push	rdx
+	mov	edx,3
+	call	der_oid_is
+	pop	rdx
+	jne	.der
+	mov	rsi,r9
+	call	der_read			; privateKey OCTET STRING
+	jc	.der
+	cmp	al,4
+	jne	.der
+	mov	rdx,r8
+	call	der_read			; CurvePrivateKey OCTET STRING
+	jc	.der
+	cmp	al,4
+	jne	.der
+	cmp	ecx,32
+	jne	.der
+	lea	rdi,[g_tls_d]
+	rep	movsb
+	mov	eax,TLS_OK
+	ret
+.der:
+	mov	eax,TLS_E_DER
 	ret
 
 ; ------------------------------------------------------------- compiling
@@ -545,9 +622,14 @@ compile_cert:
 	pop	rax
 	cmp	ecx,TLS_E_RSA
 	je	.leaf_rsa
+	cmp	ecx,TLS_E_ED
+	je	.leaf_ed
 	test	ecx,ecx
 	jnz	.cert_kind
 	mov	dword [r13+TL_KEYTYPE],0		; EC P-256
+	jmp	.leaf_names
+.leaf_ed:
+	mov	dword [r13+TL_KEYTYPE],2		; Ed25519
 	jmp	.leaf_names
 .leaf_rsa:
 	mov	dword [r13+TL_KEYTYPE],1		; RSA
@@ -622,6 +704,8 @@ compile_cert:
 	ja	.chain_big
 	cmp	dword [r13+TL_KEYTYPE],1
 	je	.chain_done_rsa
+	cmp	dword [r13+TL_KEYTYPE],2
+	je	.chain_done_ed
 	lea	rsi,[g_tls_cpub]
 	lea	rdi,[r13+TL_PUB]
 	mov	ecx,65
@@ -680,6 +764,42 @@ compile_cert:
 	pop	r12
 	pop	rbx
 	ret
+.chain_done_ed:
+	; the Ed25519 private key: PKCS#8 (PRIVATE KEY), its public key the
+	; certificate's
+	lea	rsi,[g_tls_cpub]
+	lea	rdi,[r13+TL_PUB]
+	mov	ecx,32
+	rep	movsb
+	mov	rdi,[rsp+8+TC_KEY]
+	call	tls_read_val
+	mov	rsi,rax
+	lea	rdi,[pem_pkcs8_key]
+	call	pem_next
+	cmp	eax,0
+	jl	.no_key
+	lea	rsi,[g_tls_der]
+	mov	edx,eax
+	call	key_pkcs8_ed
+	test	eax,eax
+	jnz	.ed_bad
+	lea	rdi,[g_tls_kpub]
+	lea	rsi,[g_tls_d]
+	call	ed25519_public
+	lea	rdi,[g_tls_kpub]
+	lea	rsi,[r13+TL_PUB]
+	mov	edx,32
+	call	ct_equal
+	test	eax,eax
+	jz	.mismatch
+	lea	rsi,[g_tls_d]
+	lea	rdi,[r13+TL_KEY]
+	mov	ecx,32
+	rep	movsb
+	lea	rdi,[g_tls_d]
+	mov	ecx,32
+	call	secure_zero
+	jmp	.ok_ret
 .chain_done_rsa:
 	; the RSA private key: PKCS#1 (RSA PRIVATE KEY) or PKCS#8 (PRIVATE KEY)
 	mov	rdi,[rsp+8+TC_KEY]
@@ -727,6 +847,8 @@ end macro
 	tls_fail TC_CERT, 'no CERTIFICATE block in this file (PEM expected)'
 .key_bad:
 	tls_fail TC_KEY, 'the RSA private key cannot be read (PKCS#1 RSA PRIVATE KEY expected)'
+.ed_bad:
+	tls_fail TC_KEY, 'the Ed25519 private key cannot be read (PKCS#8 PRIVATE KEY expected)'
 .too_big:
 	tls_fail TC_CERT, 'the certificate chains of this configuration pass 1 MiB'
 .names_full:
@@ -1285,8 +1407,20 @@ tls_cert_sibling:
 ; rdi = the SNI/default entry, rsi = a sibling of the other key type (or 0),
 ; edx = the ClientHello's G_ flags: rax = the entry to use. Prefer ECDSA
 ; (fast); fall back to RSA for a client that offers only rsa_pss_rsae_sha256.
+; An Ed25519 entry serves clients that offer ed25519; others get its
+; sibling when that one suits them.
 tls_cert_select:
 	mov	rax,rdi
+	cmp	dword [rdi+TL_KEYTYPE],2
+	jne	.not_ed
+	test	edx,G_SIGALG_ED
+	jnz	.out				; the client takes Ed25519
+	test	rsi,rsi
+	jz	.out
+	mov	rdi,rsi				; else the sibling, by the rules below
+	xor	esi,esi
+	mov	rax,rdi
+.not_ed:
 	test	edx,G_SIGALG			; ecdsa_secp256r1_sha256 offered?
 	jz	.want_rsa
 	cmp	dword [rdi+TL_KEYTYPE],0
@@ -1299,15 +1433,25 @@ tls_cert_select:
 	ret
 .want_rsa:
 	test	edx,G_SIGALG_RSA or G_SIGALG_RSA1	; any RSA signature offered?
-	jz	.out				; neither usable: the handshake fails
+	jz	.try_ed				; no: perhaps an Ed25519 sibling
 	cmp	dword [rax+TL_KEYTYPE],1
 	je	.out				; the primary is RSA
 	test	rsi,rsi
 	jz	.out
 	cmp	dword [rsi+TL_KEYTYPE],1
-	jne	.out
+	jne	.ed_sibling
 	mov	rax,rsi				; the RSA sibling
 .out:
+	ret
+.try_ed:
+	test	rsi,rsi
+	jz	.out				; nothing usable: the handshake fails
+.ed_sibling:
+	cmp	dword [rsi+TL_KEYTYPE],2	; the primary does not suit: an
+	jne	.out				; Ed25519 sibling, if the client takes it
+	test	edx,G_SIGALG_ED
+	jz	.out
+	mov	rax,rsi
 	ret
 
 ; ------------------------------------------------------- passthrough

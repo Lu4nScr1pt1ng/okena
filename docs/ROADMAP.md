@@ -207,7 +207,11 @@ before decrypting), picked when it is the client's first suite (no AES in
 its hardware, OpenSSL's PRIORITIZE_CHACHA) or the only one shared; the
 flight, tickets, user-space records and kTLS (its 56-byte crypto_info; a
 kernel without it falls back to user-space records for that suite only)
-all take it. Still open: Ed25519, Wycheproof.
+all take it. Ed25519 is in (SHA-512 and RFC 8032 in src/crypto; signing
+9.7 us, verification 39 us, OpenSSL 3.5: 30 and 80): servers present
+Ed25519 certificates (PKCS #8 keys) to clients that offer ed25519, beside an
+EC sibling for the rest, and upstream chains and CertificateVerify verify
+with it. Still open: Wycheproof.
 
 * SHA-2, HMAC, HKDF (from fasm2crud), AES-GCM (AES-NI, VAES/VPCLMULQDQ),
   ChaCha20-Poly1305, X25519, ML-KEM-768, P-256 ECDH/ECDSA, Ed25519.

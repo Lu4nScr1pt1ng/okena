@@ -38,6 +38,8 @@ http_tls12_hello:
 .havecert:
 	test	rax,rax
 	jz	http_tls_close
+	cmp	dword [rax+TL_KEYTYPE],2	; TLS 1.2 here signs with ECDSA or RSA
+	je	http_tls_close			; only: an Ed25519 certificate needs 1.3
 	mov	r14,[r15+H_BUF]
 	lea	rcx,[r14+HB_C12]
 	mov	edx,[rax+TL_CHAIN]		; certificate_list in the store

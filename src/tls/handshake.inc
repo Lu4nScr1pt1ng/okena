@@ -209,6 +209,7 @@ G_RESUME	:= 512				; the ticket opened and the binder is right: resumption
 G_TICKET	:= 1024				; a ticket to send after the flight
 G_SIGALG_RSA	:= 8192				; rsa_pss_rsae_sha256 offered (TLS 1.3 CertificateVerify)
 G_SIGALG_RSA1	:= 16384			; rsa_pkcs1_sha256 offered (a legacy 1.2 client)
+G_SIGALG_ED	:= 262144			; ed25519 offered
 
 ; the transcript: rsi = bytes, rdx = length
 macro th_add
@@ -463,6 +464,10 @@ tls_hello:
 	jne	@f
 	or	dword [rbp+HL_GOT],G_SIGALG_RSA
 @@:
+	cmp	word [rsi],0x0708		; ed25519 (0x0807)
+	jne	@f
+	or	dword [rbp+HL_GOT],G_SIGALG_ED
+@@:
 	cmp	word [rsi],0x0104		; rsa_pkcs1_sha256 (a legacy 1.2 client)
 	jne	@f
 	or	dword [rbp+HL_GOT],G_SIGALG_RSA1
@@ -716,7 +721,13 @@ tls_hello:
 	mov	rcx,[rbp+HL_TL]
 	cmp	dword [rcx+TL_KEYTYPE],1
 	je	.req_rsa
+	cmp	dword [rcx+TL_KEYTYPE],2
+	je	.req_ed
 	test	eax,G_SIGALG
+	jz	.handshake
+	jmp	.sig_ok
+.req_ed:
+	test	eax,G_SIGALG_ED
 	jz	.handshake
 	jmp	.sig_ok
 .req_rsa:
@@ -1115,6 +1126,8 @@ tls_hello:
 	call	sha256
 	cmp	dword [r15+TL_KEYTYPE],1
 	je	.cv_rsa
+	cmp	dword [r15+TL_KEYTYPE],2
+	je	.cv_ed25519
 	lea	rdi,[rbp+HL_SIG]
 	lea	rsi,[r15+TL_KEY]
 	lea	rdx,[rbp+HL_DIG]
@@ -1129,6 +1142,19 @@ tls_hello:
 	mov	edx,eax
 	put24	r14+1, ecx
 	mov	word [r14+4],0x0304		; ecdsa_secp256r1_sha256
+	jmp	.cv_len
+.cv_ed25519:
+	lea	rdi,[r14+8]			; Ed25519 over the content itself
+	lea	rsi,[r15+TL_KEY]
+	lea	rdx,[r15+TL_PUB]
+	lea	rcx,[rbp+HL_CV]
+	mov	r8d,TLS13_CV_PREFIX + 32
+	call	ed25519_sign
+	mov	byte [r14],15
+	mov	ecx,64 + 4
+	put24	r14+1, ecx
+	mov	word [r14+4],0x0708		; ed25519
+	mov	edx,64
 	jmp	.cv_len
 .cv_rsa:
 	lea	rdi,[r14+8]			; RSA-PSS signature, written in place

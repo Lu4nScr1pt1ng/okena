@@ -818,10 +818,15 @@ http_sni_host_check:
 @@:
 	push	rax
 	mov	rdi,rax
-	call	tls_cert_named
+	call	tls_cert_named			; rax = the name's entry, rdx = its sibling
 	pop	rcx
 	cmp	rax,rcx
 	je	.ok
+	test	rax,rax
+	jz	@f
+	cmp	rdx,rcx				; dual certificates: the client got the sibling
+	je	.ok
+@@:
 	stc
 	ret
 .ok:

@@ -635,7 +635,10 @@ ECN. 0-RTT off by default and, when on, only for routes marked idempotent.
 * Certificates: ECDSA P-256 and Ed25519 signing first; RSA-PSS signing
   later. Verification of RSA, ECDSA and Ed25519 for upstream TLS and
   client certificates, with an X.509 path validator restricted to what
-  WebPKI needs.
+  WebPKI needs. **Today** the server signs with ECDSA P-256, RSA-PSS
+  (and PKCS #1 v1.5 for TLS 1.2) and Ed25519 (TLS 1.3); upstream chains
+  and CertificateVerify verify with all three; client certificates are not
+  asked for yet.
 * SNI selects the certificate; ALPN picks h2/http/1.1; resumption with
   tickets encrypted under keys rotated every hour and shared across
   workers through the plan (read-only, so no lock).

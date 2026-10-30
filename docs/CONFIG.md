@@ -15,7 +15,9 @@ not built yet. A directive that is not built is refused by `okena check`
 | `pool NAME` | `server ADDR [weight=N] [backup]`, `balance least-request\|peak-ewma\|round-robin\|least-conn\|random`, `connect timeout=`, `health tcp\|http ...`, `slow_start`, `tls { trust FILE; sni NAME }` (TLS to the backends) |
 
 `tls { cert FILE; key FILE }` on an `http` listener makes it HTTPS: TLS
-1.3 with an EC P-256 certificate chain (leaf first) and its key. With
+1.3 with a certificate chain (leaf first) and its key: EC P-256 (SEC 1 or
+PKCS #8), RSA (PKCS #1 or #8) or Ed25519 (PKCS #8; served to clients that
+offer ed25519, which browsers do not: pair it with an EC certificate). With
 several certificates each line names its key, `cert FILE key=FILE`; the
 client's SNI picks the one whose subjectAltName names the host (exactly,
 then `*.parent`), the first being the default. A request whose `Host`
