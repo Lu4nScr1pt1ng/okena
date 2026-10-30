@@ -32,6 +32,7 @@ include '../../src/crypto/hkdf.inc'
 include '../../src/crypto/x25519.inc'
 include '../../src/crypto/aesgcm.inc'
 include '../../src/crypto/p256.inc'
+include '../../src/crypto/rsa.inc'
 include '../../src/tls/x509.inc'
 include '../../src/tls/keyschedule.inc'
 include '../../src/tls/client.inc'
@@ -119,6 +120,8 @@ start:
 	je	.tls12_ks
 	cmp	al,'2'
 	je	.tls12_rec
+	cmp	al,'X'
+	je	.bn_modexp
 	cmp	al,'g'
 	je	.gcm
 	cmp	al,'G'
@@ -592,6 +595,24 @@ start:
 	call	tls12_seal
 	lea	rdi,[g_out]
 	mov	esi,eax
+	jmp	.print
+.bn_modexp:				; n(1) base(n*8) explen(u16 le) exp(BE) mod(n*8)
+	movzx	r13d,byte [rsi]			; n limbs
+	lea	r14,[rsi+1]			; base
+	lea	rax,[r13*8]
+	movzx	r12d,word [r14+rax]		; explen
+	lea	r15,[r14+rax+2]			; exp (BE)
+	lea	rdi,[r15+r12]			; mod
+	push	rdi
+	lea	rdi,[g_out]
+	mov	rsi,r14
+	mov	rdx,r15
+	mov	ecx,r12d
+	pop	r8
+	mov	r9d,r13d
+	call	bn_modexp
+	lea	rdi,[g_out]
+	lea	esi,[r13*8]
 	jmp	.print
 .rec_fail:
 	mov	byte [g_out],0xEE

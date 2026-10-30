@@ -366,6 +366,27 @@ try:
         check(f"tls1.2 record type {ctype} len {len(pt)} (seal + open round-trip)",
               got, tls12_rec_ref(key, salt, seq, ctype, pt).hex())
 
+    # RSA big-integer modular exponentiation (the core of RSA sign/verify)
+    def modexp(n_limbs, base, exp, mod):
+        base_le = base.to_bytes(n_limbs * 8, "little")
+        mod_le = mod.to_bytes(n_limbs * 8, "little")
+        exp_be = exp.to_bytes(max(1, (exp.bit_length() + 7) // 8), "big")
+        inp = bytes([n_limbs]) + base_le + _struct.pack("<H", len(exp_be)) + exp_be + mod_le
+        return run(b"X", inp)
+    from cryptography.hazmat.primitives.asymmetric import rsa as _rsa
+    for bits in (1024, 2048):
+        k = _rsa.generate_private_key(public_exponent=65537, key_size=bits)
+        pn = k.private_numbers()
+        mod = pn.public_numbers.n
+        nl = bits // 64
+        base = int.from_bytes(_os.urandom(bits // 8), 'big') % mod
+        check(f"rsa modexp {bits} public (e=65537)",
+              modexp(nl, base, 65537, mod), pow(base, 65537, mod).to_bytes(nl * 8, "little").hex())
+        check(f"rsa modexp {bits} private (full d)",
+              modexp(nl, base, pn.d, mod), pow(base, pn.d, mod).to_bytes(nl * 8, "little").hex())
+    check("rsa modexp: base one", modexp(16, 1, 65537, (1 << 1024) - 159),
+          pow(1, 65537, (1 << 1024) - 159).to_bytes(128, "little").hex())
+
     # TLS client: a well-formed ClientHello (offering x25519 + secp256r1,
     # TLS_AES_128_GCM_SHA256, ecdsa_secp256r1_sha256, ALPN, SNI)
     def _parse_ch(sni):
