@@ -589,8 +589,9 @@ recv bundle ─▶ TLS (kTLS) ─▶ parse (SIMD) ─▶ route (compiled) ─▶
 * **Headers out** are written once into the upstream buffer: hop-by-hop
   headers dropped, `Forwarded`/`X-Forwarded-*` set from the trusted-proxy
   policy, request ID and `traceparent` added, rewrites applied.
-* **Responses** stream back with flow control; small ones are batched with
-  pipelined responses into one send.
+* **Responses** stream back with flow control; a small response's head and
+  the body already on hand go out in one send (one TLS record), and small
+  ones are batched with pipelined responses into one send.
 
 ### HTTP/2
 

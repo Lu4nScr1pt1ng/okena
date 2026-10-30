@@ -197,6 +197,50 @@ http 127.0.0.1:{LST} {{
         info = json.loads(body)
         check("GET over TLS 1.3: 200 from the backend", start.startswith(b"HTTP/1.1 200") and info["target"] == "/hello",
               start)
+
+        # coalescing: a small response (head + body) ships as one TLS record.
+        # Drive a GET over a memory BIO and count application_data records in
+        # okena's reply; a NewSessionTicket is one such record, the response
+        # another, so a coalesced small response is exactly two (three before).
+        if not USER:                        # kTLS frames the records
+            inc, outg = ssl.MemoryBIO(), ssl.MemoryBIO()
+            obj = context().wrap_bio(inc, outg, server_hostname="okena.test")
+            cs = socket.create_connection(("127.0.0.1", LST), timeout=5)
+            try:
+                obj.do_handshake()
+            except ssl.SSLWantReadError:
+                pass
+            cs.sendall(outg.read())
+            while True:
+                inc.write(cs.recv(1 << 16))
+                try:
+                    obj.do_handshake()
+                    break
+                except ssl.SSLWantReadError:
+                    pass
+            if outg.pending:
+                cs.sendall(outg.read())
+            obj.write(b"GET /small HTTP/1.1\r\nHost: okena.test\r\nConnection: close\r\n\r\n")
+            cs.sendall(outg.read())
+            raw = b""
+            cs.settimeout(3)
+            try:
+                while True:
+                    d = cs.recv(1 << 16)
+                    if not d:
+                        break
+                    raw += d
+            except (socket.timeout, ConnectionResetError):
+                pass
+            cs.close()
+            # count TLS records (type at byte 0, length at 3..5) of type 23
+            recs, off, appdata = 0, 0, 0
+            while off + 5 <= len(raw):
+                n = int.from_bytes(raw[off + 3:off + 5], "big")
+                if raw[off] == 23:
+                    appdata += 1
+                off += 5 + n
+            check("a small response is one TLS record (coalesced head+body)", appdata <= 2, f"{appdata} app-data records")
         check("ALPN http/1.1, TLS_AES_128_GCM_SHA256", (t.selected_alpn_protocol(), t.cipher()[0])
               == ("http/1.1", "TLS_AES_128_GCM_SHA256"), str((t.selected_alpn_protocol(), t.cipher())))
         check("the backend is told X-Forwarded-Proto: https", info["xfp"] == "https", info["xfp"])

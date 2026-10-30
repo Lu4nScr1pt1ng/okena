@@ -1699,6 +1699,35 @@ http_resp_head:
 	call	http_write_response_head
 	jc	.bad
 	or	dword [r15+H_FLAGS],HX_STARTED
+	cmp	dword [r15+H_RBODY],BK_LENGTH
+	jne	.send_head
+	mov	ecx,[r15+H_UPLEN]
+	sub	ecx,[r15+H_UPOFF]
+	jz	.send_head
+	mov	rax,[r15+H_RREMAIN]
+	cmp	rax,rcx
+	jae	@f
+	mov	ecx,eax
+@@:
+	mov	eax,H_OUT_CAP
+	sub	eax,[r15+H_OUTLEN]
+	cmp	ecx,eax
+	jbe	@f
+	mov	ecx,eax
+@@:
+	test	ecx,ecx
+	jz	.send_head
+	mov	rdi,[r15+H_BUF]
+	mov	eax,[r15+H_OUTLEN]		; a dword: a qword add would pull H_UPLEN in
+	lea	rdi,[rdi+rax+HB_OUT]
+	mov	eax,[r15+H_UPOFF]
+	mov	rsi,[r15+H_BUF]
+	lea	rsi,[rsi+rax+HB_UP]
+	add	[r15+H_UPOFF],ecx
+	sub	[r15+H_RREMAIN],rcx
+	add	[r15+H_OUTLEN],ecx
+	rep	movsb
+.send_head:
 	mov	dword [r15+H_STATE],HS_RESP_SEND
 	mov	ecx,SIDE_CLIENT
 	mov	rdi,[r15+H_BUF]
