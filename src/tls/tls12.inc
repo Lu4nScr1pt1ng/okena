@@ -162,7 +162,7 @@ tls12_key_block:
 ; rdi = out[12], rsi = master_secret[48], rdx = label, ecx = label length,
 ; r8 = Hash(handshake_messages)[32]: verify_data = PRF(master, label,
 ; hash)[0..12], for a 1.2 Finished.
-tls12_finished:
+tls12_verify_data:
 	push	rbx
 	push	r12
 	push	r13
@@ -302,3 +302,4 @@ tls12_open:
 	pop	r12
 	pop	rbx
 	ret
+

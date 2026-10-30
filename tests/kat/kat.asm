@@ -546,13 +546,13 @@ start:
 	lea	rdx,[tls12_lbl_cfin]
 	mov	ecx,15
 	lea	r8,[r15+96]			; transcript hash
-	call	tls12_finished
+	call	tls12_verify_data
 	lea	rdi,[g_out+100]			; server finished verify_data
 	lea	rsi,[g_out]
 	lea	rdx,[tls12_lbl_sfin]
 	mov	ecx,15
 	lea	r8,[r15+96]
-	call	tls12_finished
+	call	tls12_verify_data
 	lea	rdi,[g_out]
 	mov	esi,112
 	jmp	.print

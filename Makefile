@@ -6,6 +6,7 @@ HTTPH     := build/httpharness
 KAT       := build/kat
 TLSH      := build/tlsserver
 TLSC      := build/tlsclient
+TLS12S    := build/tlsserver12
 
 .PHONY: all toolchain test test-serial fuzz bench image docker-test clean
 
@@ -47,7 +48,13 @@ $(TLSC): tests/tls/client_test.asm $(SOURCES) | $(FASMG)
 	@chmod +x $@.tmp
 	@mv -f $@.tmp $@
 
-test: $(BIN) $(HTTPH) $(KAT) $(TLSH) $(TLSC)
+$(TLS12S): tests/tls/server12.asm $(SOURCES) | $(FASMG)
+	@mkdir -p build
+	INCLUDE="$(TOOLCHAIN)/include" $(FASMG) -e100 -i "Include 'fasm2.inc'" tests/tls/server12.asm $@.tmp
+	@chmod +x $@.tmp
+	@mv -f $@.tmp $@
+
+test: $(BIN) $(HTTPH) $(KAT) $(TLSH) $(TLSC) $(TLS12S)
 	python3 -I tests/run_all.py
 
 # one after the other, all output shown (slower; for reading a suite's log)
