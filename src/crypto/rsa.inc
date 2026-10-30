@@ -512,3 +512,368 @@ rsa_pkcs1_verify:
 	pop	rbp
 	pop	rbx
 	ret
+
+; MGF1 with SHA-256 (RFC 8017 B.2.1). rdi = out, esi = output length,
+; rdx = seed (32 bytes, a SHA-256 digest). out = T(0) | T(1) | ... where
+; T(i) = SHA256(seed | i as a 4-byte big-endian counter), truncated.
+mgf1_sha256:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	mov	r12,rdi				; out
+	mov	r13d,esi			; remaining
+	mov	r14,rdx				; seed
+	sub	rsp,80				; [rsp] seed(32)|counter(4), [rsp+40] block(32)
+	mov	rsi,r14
+	lea	rdi,[rsp]
+	mov	ecx,32
+	rep	movsb
+	xor	r15d,r15d			; counter
+.blk:
+	mov	eax,r15d
+	bswap	eax
+	mov	[rsp+32],eax			; counter, big-endian
+	lea	rdi,[rsp+40]
+	lea	rsi,[rsp]
+	mov	edx,36
+	call	sha256
+	mov	eax,32
+	cmp	r13d,32
+	cmovb	eax,r13d
+	lea	rsi,[rsp+40]
+	mov	rdi,r12
+	mov	ecx,eax
+	rep	movsb
+	mov	r12,rdi
+	sub	r13d,eax
+	jz	.done
+	inc	r15d
+	jmp	.blk
+.done:
+	add	rsp,80
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; rdi = modulus n (big-endian, nbytes), esi = nbytes (multiple of 8),
+; rdx = signature (big-endian, nbytes), ecx = public exponent e, r8 = the
+; message hash (32 bytes): eax = 1 when the RSA-PSS (rsa_pss_rsae_sha256,
+; salt length 32) signature verifies, else 0. For RSA server certificates.
+rsa_pss_verify:
+	push	rbx
+	push	rbp
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	mov	r12,rdi				; n be
+	mov	r13d,esi			; nbytes
+	mov	r14,rdx				; sig be
+	mov	r15,r8				; mHash
+	mov	ebp,ecx				; e
+	; frame: n_le | sig_le | m_le | em | dbmask (nbytes each) | mp(72) | hp(32) | exp(8)
+	mov	eax,r13d
+	imul	eax,5
+	add	eax,128
+	and	eax,-16
+	sub	rsp,rax
+	mov	rdi,rsp				; n_le
+	mov	rsi,r12
+	mov	edx,r13d
+	call	bn_from_be
+	lea	rdi,[rsp+r13]			; sig_le
+	mov	rsi,r14
+	mov	edx,r13d
+	call	bn_from_be
+	; exp big-endian at [rsp+5*nbytes]
+	lea	r8,[rsp+r13]
+	imul	r8,5				; (r8 = rsp + 5*nbytes? no) -- recompute
+	lea	r8,[r13*4]
+	add	r8,r13				; 5*nbytes
+	add	r8,rsp
+	mov	eax,ebp
+	bswap	eax
+	mov	[r8],eax
+	xor	ecx,ecx
+.elen:
+	cmp	byte [r8+rcx],0
+	jne	.egot
+	inc	ecx
+	cmp	ecx,4
+	jb	.elen
+.egot:
+	lea	rdx,[r8+rcx]
+	mov	eax,4
+	sub	eax,ecx				; exp length
+	; m_le = sig^e mod n at [rsp+2*nbytes]
+	push	rax
+	push	rdx
+	lea	rdi,[rsp+16]
+	lea	rax,[r13*2]
+	add	rdi,rax				; m_le = rsp+16+2*nbytes
+	lea	rsi,[rsp+16+r13]		; sig_le
+	mov	rdx,[rsp]			; exp ptr
+	mov	ecx,[rsp+8]			; exp len
+	mov	r8,rsp
+	add	r8,16				; n_le
+	mov	r9d,r13d
+	shr	r9d,3
+	call	bn_modexp
+	add	rsp,16
+	; EM = m_le -> big-endian at [rsp+3*nbytes]
+	lea	rdi,[r13*2]
+	add	rdi,r13
+	add	rdi,rsp				; em
+	lea	rsi,[rsp+r13*2]			; m_le
+	mov	edx,r13d
+	call	bn_to_be
+	; --- EMSA-PSS-VERIFY (hLen=sLen=32, emBits=8*nbytes-1) ---
+	lea	rbx,[r13*2]
+	add	rbx,r13
+	add	rbx,rsp				; rbx = EM
+	cmp	byte [rbx+r13-1],0xBC
+	jne	.no
+	test	byte [rbx],0x80			; the leftmost bit must be clear
+	jnz	.no
+	; H = EM[nbytes-33 .. nbytes-1); maskedDB = EM[0 .. nbytes-33)
+	; dbMask = MGF1(H, nbytes-33) at [rsp+4*nbytes]
+	lea	rdi,[r13*4]
+	add	rdi,rsp				; dbmask
+	lea	eax,[r13-33]
+	mov	esi,eax
+	lea	rdx,[rbx+r13-33]		; H
+	call	mgf1_sha256
+	; DB = maskedDB XOR dbMask, in place over maskedDB (EM[0..nbytes-33))
+	lea	rdi,[r13*4]
+	add	rdi,rsp				; dbmask
+	mov	ecx,r13d
+	sub	ecx,33				; DB length
+	xor	esi,esi
+.xor:
+	mov	al,[rbx+rsi]
+	xor	al,[rdi+rsi]
+	mov	[rbx+rsi],al
+	inc	esi
+	cmp	esi,ecx
+	jb	.xor
+	and	byte [rbx],0x7F			; clear the leftmost bit of DB
+	; DB must be 0x00 * (nbytes-66) | 0x01 | salt(32)
+	mov	ecx,r13d
+	sub	ecx,66				; PS length
+	xor	esi,esi
+.ps:
+	cmp	esi,ecx
+	jae	.psok
+	cmp	byte [rbx+rsi],0
+	jne	.no
+	inc	esi
+	jmp	.ps
+.psok:
+	cmp	byte [rbx+rcx],0x01
+	jne	.no
+	; salt = DB[nbytes-65 .. nbytes-33) -> build M' = 8*0 | mHash | salt
+	lea	rdi,[r13*4]
+	add	rdi,rsp
+	add	rdi,r13				; mp = rsp + 5*nbytes (after dbmask) -- but that holds exp(8); use after
+	; place M' at [rsp+5*nbytes+16]
+	lea	rdi,[r13*4]
+	add	rdi,r13
+	add	rdi,rsp
+	add	rdi,16				; mp
+	xor	eax,eax
+	mov	[rdi],rax			; 8 zero bytes
+	lea	rsi,[r15]			; mHash
+	lea	rdi,[rdi+8]
+	push	rdi
+	mov	ecx,32
+	rep	movsb
+	lea	rsi,[rbx+r13-65]		; salt (32)
+	mov	ecx,32
+	rep	movsb
+	pop	rsi				; mp+8 start? we need H' = SHA256(M'), M' at mp
+	; recompute mp and hash it
+	lea	rsi,[r13*4]
+	add	rsi,r13
+	add	rsi,rsp
+	add	rsi,16				; mp
+	lea	rdi,[r13*4]
+	add	rdi,r13
+	add	rdi,rsp
+	add	rdi,16+72			; hp (after M' which is 72 bytes)
+	mov	edx,72
+	call	sha256
+	; compare H' (hp) with H (EM[nbytes-33 .. ])
+	lea	rdi,[r13*4]
+	add	rdi,r13
+	add	rdi,rsp
+	add	rdi,16+72			; hp
+	lea	rsi,[rbx+r13-33]		; H
+	mov	edx,32
+	call	ct_equal
+	mov	r9d,eax
+	jmp	.out
+.no:
+	xor	r9d,r9d
+.out:
+	mov	eax,r13d			; restore rsp
+	imul	eax,5
+	add	eax,128
+	and	eax,-16
+	add	rsp,rax
+	mov	eax,r9d
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbp
+	pop	rbx
+	ret
+
+; rdi = out (signature, big-endian, nbytes), rsi = modulus n (big-endian),
+; edx = nbytes (multiple of 8), rcx = private exponent d (big-endian,
+; nbytes), r8 = message hash (32): produces an RSA-PSS (rsa_pss_rsae_sha256,
+; salt length 32) signature. Uses a full-width modexp (CRT is a later
+; optimization). For a server signing CertificateVerify with an RSA key.
+rsa_pss_sign:
+	push	rbx
+	push	rbp
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	mov	rbx,rdi				; out (sig be)
+	mov	r12,rsi				; n be
+	mov	r13d,edx			; nbytes
+	mov	r14,rcx				; d be
+	mov	r15,r8				; mHash
+	; frame: em | em_le | n_le | sig_le (nbytes) | salt(32) | H(32) | Mp(72) | dbmask(nbytes)
+	mov	eax,r13d
+	imul	eax,5
+	add	eax,160
+	and	eax,-16
+	mov	ebp,eax
+	sub	rsp,rbp
+	; offsets: em=0, em_le=n, n_le=2n, sig_le=3n, salt=5n, H=5n+32, Mp=5n+64, dbmask=4n
+	; salt = getrandom(32) at [rsp+5n]
+	lea	rdi,[r13*4]
+	add	rdi,r13
+	add	rdi,rsp				; rsp+5n
+	mov	esi,32
+	xor	edx,edx
+	mov	eax,SYS_getrandom
+	syscall
+	; M' = 00*8 | mHash | salt at [rsp+5n+64]
+	lea	rdi,[r13*4]
+	add	rdi,r13
+	add	rdi,rsp
+	add	rdi,64				; Mp
+	xor	rax,rax
+	mov	[rdi],rax
+	add	rdi,8
+	mov	rsi,r15				; mHash
+	mov	ecx,32
+	rep	movsb
+	lea	rsi,[r13*4]			; salt
+	add	rsi,r13
+	add	rsi,rsp
+	mov	ecx,32
+	rep	movsb
+	; H = SHA256(M') at [rsp+5n+32]
+	lea	rsi,[r13*4]
+	add	rsi,r13
+	add	rsi,rsp
+	add	rsi,64				; Mp
+	lea	rdi,[r13*4]
+	add	rdi,r13
+	add	rdi,rsp
+	add	rdi,32				; H
+	mov	edx,72
+	call	sha256
+	; build DB in em[0 .. nbytes-33): zeros | 0x01 | salt
+	mov	rdi,rsp				; em
+	mov	ecx,r13d
+	sub	ecx,33
+	xor	eax,eax
+	push	rdi
+	rep	stosb				; zero DB region
+	pop	rdi
+	mov	eax,r13d
+	sub	eax,66
+	mov	byte [rsp+rax],0x01		; 0x01 separator
+	lea	rdi,[rsp+rax+1]			; salt position
+	lea	rsi,[r13*4]
+	add	rsi,r13
+	add	rsi,rsp				; salt
+	mov	ecx,32
+	rep	movsb
+	; dbMask = MGF1(H, nbytes-33) at [rsp+4n]
+	lea	rdi,[r13*4]
+	add	rdi,rsp				; dbmask
+	lea	eax,[r13-33]
+	mov	esi,eax
+	lea	rdx,[r13*4]
+	add	rdx,r13
+	add	rdx,rsp
+	add	rdx,32				; H
+	call	mgf1_sha256
+	; em[0..nbytes-33) ^= dbMask
+	mov	ecx,r13d
+	sub	ecx,33
+	lea	rdi,[r13*4]
+	add	rdi,rsp				; dbmask
+	xor	esi,esi
+.xor:
+	mov	al,[rsp+rsi]
+	xor	al,[rdi+rsi]
+	mov	[rsp+rsi],al
+	inc	esi
+	cmp	esi,ecx
+	jb	.xor
+	and	byte [rsp],0x7F			; clear the leftmost bit
+	; em[nbytes-33 .. nbytes-1) = H ; em[nbytes-1] = 0xbc
+	lea	rdi,[rsp+r13-33]
+	lea	rsi,[r13*4]
+	add	rsi,r13
+	add	rsi,rsp
+	add	rsi,32				; H
+	mov	ecx,32
+	rep	movsb
+	mov	byte [rsp+r13-1],0xBC
+	; em_le = bn_from_be(em); n_le = bn_from_be(n)
+	lea	rdi,[rsp+r13]			; em_le
+	mov	rsi,rsp				; em
+	mov	edx,r13d
+	call	bn_from_be
+	lea	rdi,[rsp+r13*2]			; n_le
+	mov	rsi,r12
+	mov	edx,r13d
+	call	bn_from_be
+	; sig_le = em_le ^ d mod n  (d big-endian, nbytes)
+	lea	rdi,[rsp+r13*2]
+	add	rdi,r13				; sig_le = rsp+3n
+	lea	rsi,[rsp+r13]			; em_le
+	mov	rdx,r14				; d (be)
+	mov	ecx,r13d			; d length = nbytes
+	lea	r8,[rsp+r13*2]			; n_le
+	mov	r9d,r13d
+	shr	r9d,3
+	call	bn_modexp
+	; out = bn_to_be(sig_le)
+	mov	rdi,rbx
+	lea	rsi,[rsp+r13*2]
+	add	rsi,r13				; sig_le
+	mov	edx,r13d
+	call	bn_to_be
+	add	rsp,rbp
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbp
+	pop	rbx
+	ret

@@ -448,6 +448,38 @@ try:
         bsig = bytearray(sig); bsig[len(bsig) // 2] ^= 1
         check(f"rsa pkcs1 verify {bits}: tampered signature", run(b"Y", rsa_verify_in(n, 65537, bytes(bsig), h)), "00")
 
+    # RSA-PSS signature verification (rsa_pss_rsae_sha256, the TLS 1.3 scheme)
+    for bits in (2048, 3072):
+        k = _rsa.generate_private_key(public_exponent=65537, key_size=bits)
+        n = k.public_key().public_numbers().n
+        msg = b"okena pss " + bytes([bits & 0xff])
+        h = _hl.sha256(msg).digest()
+        sig = k.sign(msg, _pad.PSS(mgf=_pad.MGF1(_hashes.SHA256()), salt_length=32), _hashes.SHA256())
+        check(f"rsa pss verify {bits}: valid", run(b"W", rsa_verify_in(n, 65537, sig, h)), "01")
+        bad = bytearray(h); bad[5] ^= 1
+        check(f"rsa pss verify {bits}: tampered hash", run(b"W", rsa_verify_in(n, 65537, sig, bytes(bad))), "00")
+        bs = bytearray(sig); bs[len(bs) // 2] ^= 1
+        check(f"rsa pss verify {bits}: tampered signature", run(b"W", rsa_verify_in(n, 65537, bytes(bs), h)), "00")
+
+    # RSA-PSS signing: okena signs, a reference verifies with the public key
+    from cryptography.hazmat.primitives.asymmetric import utils as _rsautil  # noqa: F401
+    for bits in (2048, 3072):
+        k = _rsa.generate_private_key(public_exponent=65537, key_size=bits)
+        pn = k.private_numbers()
+        n = pn.public_numbers.n
+        nb = bits // 8
+        msg = b"okena pss sign " + bytes([bits & 0xff])
+        h = _hl.sha256(msg).digest()
+        sig = bytes.fromhex(run(b"z", _struct.pack("<H", nb) + n.to_bytes(nb, "big")
+                                 + pn.d.to_bytes(nb, "big") + h))
+        ok = True
+        try:
+            k.public_key().verify(sig, msg, _pad.PSS(mgf=_pad.MGF1(_hashes.SHA256()), salt_length=32),
+                                  _hashes.SHA256())
+        except Exception:
+            ok = False
+        check(f"rsa pss sign {bits}: verifies with a reference", ok, True)
+
     # TLS client: a well-formed ClientHello (offering x25519 + secp256r1,
     # TLS_AES_128_GCM_SHA256, ecdsa_secp256r1_sha256, ALPN, SNI)
     def _parse_ch(sni):

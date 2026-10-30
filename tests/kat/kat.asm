@@ -124,6 +124,10 @@ start:
 	je	.bn_modexp
 	cmp	al,'Y'
 	je	.rsa_verify
+	cmp	al,'W'
+	je	.rsa_pss
+	cmp	al,'z'
+	je	.rsa_sign
 	cmp	al,'g'
 	je	.gcm
 	cmp	al,'G'
@@ -650,6 +654,33 @@ start:
 	mov	[g_out],al
 	lea	rdi,[g_out]
 	mov	esi,1
+	jmp	.print
+.rsa_pss:				; nbytes(u16 le) n_be sig_be e(u32 le) hash(32)
+	movzx	r13d,word [rsi]
+	lea	r14,[rsi+2]			; n
+	lea	r15,[r14+r13]			; sig
+	mov	rdi,r14
+	mov	esi,r13d
+	mov	rdx,r15
+	mov	ecx,[r15+r13]			; e
+	lea	r8,[r15+r13+4]			; hash
+	call	rsa_pss_verify
+	mov	[g_out],al
+	lea	rdi,[g_out]
+	mov	esi,1
+	jmp	.print
+.rsa_sign:				; nbytes(u16 le) n_be d_be hash(32) -> sig_be
+	movzx	r13d,word [rsi]			; nbytes
+	lea	r14,[rsi+2]			; n
+	lea	r15,[r14+r13]			; d
+	lea	r8,[r15+r13]			; hash
+	lea	rdi,[g_out]
+	mov	rsi,r14
+	mov	edx,r13d
+	mov	rcx,r15
+	call	rsa_pss_sign
+	lea	rdi,[g_out]
+	mov	esi,r13d
 	jmp	.print
 .rec_fail:
 	mov	byte [g_out],0xEE
