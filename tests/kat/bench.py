@@ -33,8 +33,9 @@ ref = openssl()
 x = ns(b"x", os.urandom(32) + (9).to_bytes(32, "little"), 2000)
 d = (0xC9AFA9D845BA75166B5C215767B1D6934E50C3DB36E89B127B8A622B120F6721).to_bytes(32, "big")
 e = ns(b"E", d + os.urandom(32), 2000)
-for name, t, key in (("X25519", x, "x25519"), ("ECDSA P-256 sign", e, "sign")):
+u = ns(b"u", os.urandom(32), 2000)
+for name, t, key in (("X25519", x, "x25519"), ("X25519 key gen", u, None), ("ECDSA P-256 sign", e, "sign")):
     mine = 1e9 / t
-    other = ref.get(key)
+    other = ref.get(key) if key else None
     rel = f"   OpenSSL {other:,.0f}/s ({mine / other:.2f}x)" if other else ""
     print(f"{name:18} {t / 1000:7.1f} us  {mine:9,.0f}/s{rel}")

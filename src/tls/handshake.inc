@@ -85,7 +85,6 @@ rodata
 	sha256_empty		db 0xe3,0xb0,0xc4,0x42,0x98,0xfc,0x1c,0x14,0x9a,0xfb,0xf4,0xc8,0x99,0x6f,0xb9,0x24
 				db 0x27,0xae,0x41,0xe4,0x64,0x9b,0x93,0x4c,0xa4,0x95,0x99,0x1b,0x78,0x52,0xb8,0x55
 	tls13_zero32		db 32 dup 0
-	x25519_base		db 9, 31 dup 0
 	tls13_cv_prefix		db 64 dup 0x20, 'TLS 1.3, server CertificateVerify', 0
 	TLS13_CV_PREFIX	:= 98
 	lbl_c_hs		db 'c hs traffic',0
@@ -539,8 +538,7 @@ tls_hello:
 	jne	.internal
 	lea	rdi,[rbp+HL_PUB]
 	lea	rsi,[rbp+HL_RAND+32]
-	lea	rdx,[x25519_base]
-	call	x25519
+	call	x25519_base			; the fixed-base table: a third of the ladder
 	lea	rdi,[rbp+HL_SHARED]
 	lea	rsi,[rbp+HL_RAND+32]
 	lea	rdx,[rbp+HL_KS]

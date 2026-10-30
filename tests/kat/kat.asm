@@ -11,7 +11,8 @@
 ;   'E' P-256 ECDSA (RFC 6979): d (32), digest (32) -> the DER signature
 ;   'M' mont_mul mod p, 'a' mod_add, 'b' mod_sub: a, b (4 limbs each, little endian)
 ;   'I' mod_inv mod p: a (4 limbs, Montgomery form); 'D' G + G (projective, raw)
-;   'B' benchmark: op ('x' or 'E'), count (4, LE), the op's input -> ns per op
+;   'u' x25519_base: scalar (32) -> the public key, as x25519(scalar, 9)
+;   'B' benchmark: op ('x', 'u' or 'E'), count (4, LE), the op's input -> ns per op
 ;   'G' AES-128-GCM open: key, iv, aad len, aad, ciphertext | tag; 'FAIL' if wrong
 
 format ELF64 executable 3
@@ -79,6 +80,8 @@ start:
 	je	.label
 	cmp	al,'x'
 	je	.x25519
+	cmp	al,'u'
+	je	.x25519_base
 	cmp	al,'g'
 	je	.gcm
 	cmp	al,'G'
@@ -317,6 +320,13 @@ start:
 	call	x25519
 	jmp	.counted
 @@:
+	cmp	r12b,'u'
+	jne	@f
+	lea	rdi,[g_out]
+	mov	rsi,r14
+	call	x25519_base
+	jmp	.counted
+@@:
 	lea	rdi,[g_label]
 	mov	rsi,r14
 	lea	rdx,[r14+32]
@@ -374,6 +384,11 @@ start:
 	lea	rdi,[g_out]
 	lea	rdx,[rsi+32]
 	call	x25519
+	mov	esi,32
+	jmp	.print
+.x25519_base:
+	lea	rdi,[g_out]
+	call	x25519_base
 	mov	esi,32
 .print:
 	; g_out, esi bytes, as hex

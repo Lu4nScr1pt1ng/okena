@@ -100,6 +100,8 @@ start:
 	mov	dword [g_cred+TL_CHAIN],0
 	lea	rdi,[g_tls_store]
 	call	read_stdin
+	cmp	byte [g_mode],'P'
+	je	profile
 	; 127.0.0.1:0, then the port it got
 	mov	edi,AF_INET
 	mov	esi,SOCK_STREAM
@@ -145,6 +147,62 @@ serve:
 	mov	edi,[g_fd]
 	sys	SYS_close
 	jmp	serve
+
+profile:
+	lea	rdi,[g_rec]
+	mov	edx,4
+	call	read_stdin			; the count
+	mov	eax,[g_rec]
+	push	rax
+	lea	rdi,[g_have]
+	mov	edx,4
+	call	read_stdin			; the length
+	lea	rdi,[g_in]
+	mov	edx,[g_have]
+	call	read_stdin
+	call	.now
+	pop	rbx
+	push	rax
+	push	rbx
+.again:
+	lea	rdi,[g_ts]
+	mov	ecx,TS_SIZE
+	xor	eax,eax
+	rep	stosb
+	mov	dword [g_ts+TS_FLAGS],TF_ALPN_H1
+	lea	rdi,[g_ts]
+	lea	rsi,[g_cred]
+	lea	rdx,[g_in]
+	mov	ecx,[g_have]
+	lea	r8,[g_out]
+	mov	r9d,BUF
+	call	tls_hello
+	cmp	eax,TH_SEND
+	jne	fail
+	dec	ebx
+	jnz	.again
+	call	.now
+	pop	rbx
+	pop	rcx
+	sub	rax,rcx
+	xor	edx,edx
+	div	rbx
+	call	out_u64
+	mov	edi,10
+	call	out_char
+	call	out_flush
+	xor	edi,edi
+	sys	SYS_exit
+.now:
+	sub	rsp,16
+	mov	edi,CLOCK_MONOTONIC
+	mov	rsi,rsp
+	sys	SYS_clock_gettime
+	mov	rax,[rsp]
+	imul	rax,rax,1000000000
+	add	rax,[rsp+8]
+	add	rsp,16
+	ret
 
 ; edx = bytes from g_out: written, or CF.
 send_out:

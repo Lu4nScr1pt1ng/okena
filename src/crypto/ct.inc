@@ -22,9 +22,26 @@ ct_equal:
 	ret
 
 ; rdi = buffer, ecx = length. Wipes secrets from memory; in assembly there
-; is no optimizer that could drop the stores.
+; is no optimizer that could drop the stores. 16 bytes a store (rep stosb
+; costs more to start than these small frames take to clear); the last
+; store overlaps when the length is not a multiple. Uses xmm15 (no other
+; code does). eax = 0; rdi and rcx clobbered, as by rep stosb.
 secure_zero:
 	xor	eax,eax
+	cmp	ecx,16
+	jb	.bytes
+	push	rdx
+	pxor	xmm15,xmm15
+	lea	rdx,[rdi+rcx-16]		; the last 16
+.block:
+	movdqu	[rdi],xmm15
+	add	rdi,16
+	cmp	rdi,rdx
+	jb	.block
+	movdqu	[rdx],xmm15
+	pop	rdx
+	ret
+.bytes:
 	rep	stosb
 	ret
 

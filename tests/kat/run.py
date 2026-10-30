@@ -133,6 +133,14 @@ try:
         a_raw = a.private_bytes(raw, serialization.PrivateFormat.Raw, serialization.NoEncryption())
         b_pub = b.public_key().public_bytes(raw, serialization.PublicFormat.Raw)
         check("x25519 random pair", run(b"x", a_raw + b_pub), a.exchange(b.public_key()).hex())
+    # the fixed-base key generation: the library's public key, and the ladder's
+    for i in range(400):
+        k = rng.randbytes(32) if i > 3 else (bytes(32), b"\xff" * 32, bytes(range(32)), b"\x08" + bytes(31))[i]
+        pub = X25519PrivateKey.from_private_bytes(k).public_key().public_bytes(raw, serialization.PublicFormat.Raw)
+        got = run(b"u", k)
+        check("x25519_base = the public key", got, pub.hex())
+        if i % 20 == 0:
+            check("x25519_base = x25519(k, 9)", got, run(b"x", k + (9).to_bytes(32, "little")))
     # edge inputs: u with the top bit set (ignored), u = 0, u >= p
     for u in (bytes(31) + b"\x80", bytes(32), (2**255 - 19 + 5).to_bytes(32, "little"), b"\xff" * 32):
         a = X25519PrivateKey.generate()

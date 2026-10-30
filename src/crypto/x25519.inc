@@ -766,3 +766,244 @@ x25519:
 	pop	r12
 	pop	rbx
 	ret
+
+; ------------------------------------------- fixed-base key generation
+;
+; x25519_base(rdi out[32], rsi scalar[32]) = x25519(out, scalar, 9), about
+; four times fewer multiplications: u = 9 is the Ed25519 base point B
+; through u = (1 + y) / (1 - y) = (Z + Y) / (Z - Y), so k * B is computed
+; on the twisted Edwards curve (extended coordinates, ref10's formulas)
+; from a table of 32 rows of j * 256^i * B, j = 1..8 (tools/
+; gen_ed25519_table.py). k is the clamped scalar in signed radix-16 digits
+; e_0..e_63 in [-8, 8]: the odd digits are added (one row each), the sum
+; multiplied by 16, then the even digits added. Each addition reads a
+; whole row and keeps the entry with masks; a negative digit swaps y + x
+; and y - x and negates 2dxy, also with masks. One inversion at the end.
+
+XB_ROW		:= 8 * 96			; a row: 8 entries of (y + x, y - x, 2dxy)
+
+rodata
+	align 32
+	ed25519_table:
+	file 'ed25519_table.bin'
+	assert $ - ed25519_table = 32 * XB_ROW
+	align 32
+	fe_one		dq 1, 0, 0, 0
+	fe_zero		dq 0, 0, 0, 0
+end rodata
+
+XB_E		:= 0				; 64 signed digits
+XB_X		:= 64				; the sum: extended (X : Y : Z : T)
+XB_Y		:= 96
+XB_Z		:= 128
+XB_T		:= 160
+XB_RX		:= 192				; a completed point
+XB_RY		:= 224
+XB_RZ		:= 256
+XB_RT		:= 288
+XB_QP		:= 320				; the entry: y + x
+XB_QM		:= 352				; y - x
+XB_QD		:= 384				; 2dxy
+XB_T0		:= 416
+XB_K		:= 448				; the clamped scalar
+XB_OUT		:= 480
+XB_SIZE		:= 496
+
+; f out, a[, b] on frame offsets
+macro xb_op f*, o*, a*, b
+	lea	rdi,[rsp+8+o]
+	lea	rsi,[rsp+8+a]
+	match any, b
+		lea	rdx,[rsp+8+b]
+	end match
+	call	f
+end macro
+
+; [rsp+XB_X..] += the entry in XB_Q* (mixed addition, then to extended)
+xb_madd:
+	xb_op	fe_add, XB_RX, XB_Y, XB_X
+	xb_op	fe_sub, XB_RY, XB_Y, XB_X
+	xb_op	fe_mul, XB_RZ, XB_RX, XB_QP
+	xb_op	fe_mul, XB_RY, XB_RY, XB_QM
+	xb_op	fe_mul, XB_RT, XB_QD, XB_T
+	xb_op	fe_add, XB_T0, XB_Z, XB_Z
+	xb_op	fe_sub, XB_RX, XB_RZ, XB_RY
+	xb_op	fe_add, XB_RY, XB_RZ, XB_RY
+	xb_op	fe_add, XB_RZ, XB_T0, XB_RT
+	xb_op	fe_sub, XB_RT, XB_T0, XB_RT
+; completed R to the extended sum
+xb_to_p3:
+	xb_op	fe_mul, XB_T, XB_RX, XB_RY
+xb_to_p2:
+	xb_op	fe_mul, XB_X, XB_RX, XB_RT
+	xb_op	fe_mul, XB_Y, XB_RY, XB_RZ
+	xb_op	fe_mul, XB_Z, XB_RZ, XB_RT
+	ret
+
+; the sum (X : Y : Z) doubled into the completed R
+xb_dbl:
+	xb_op	fe_sq, XB_RX, XB_X
+	xb_op	fe_sq, XB_RZ, XB_Y
+	xb_op	fe_sq, XB_RT, XB_Z
+	xb_op	fe_add, XB_RT, XB_RT, XB_RT
+	xb_op	fe_add, XB_RY, XB_X, XB_Y
+	xb_op	fe_sq, XB_T0, XB_RY
+	xb_op	fe_add, XB_RY, XB_RZ, XB_RX
+	xb_op	fe_sub, XB_RZ, XB_RZ, XB_RX
+	xb_op	fe_sub, XB_RX, XB_T0, XB_RY
+	xb_op	fe_sub, XB_RT, XB_RT, XB_RZ
+	ret
+
+; r12d = digit index: XB_Q* = e * (row i/2's base), i = r12d. Reads the
+; whole row.
+xb_select:
+	movsx	ecx,byte [rsp+8+XB_E+r12]
+	mov	edx,ecx
+	sar	edx,31				; all ones when negative
+	xor	ecx,edx
+	sub	ecx,edx				; |e|
+	mov	eax,r12d
+	shr	eax,1
+	imul	rax,rax,XB_ROW
+	lea	rax,[ed25519_table+rax]
+	vmovq	xmm7,rcx
+	vpbroadcastq ymm7,xmm7			; |e|
+	mov	ecx,1
+	vmovq	xmm4,rcx
+	vpbroadcastq ymm4,xmm4			; 1
+	vmovdqa	ymm3,ymm4			; j
+	vmovdqa	ymm0,yword [fe_one]			; |e| = 0: the neutral entry (1, 1, 0)
+	vmovdqa	ymm1,ymm0
+	vpxor	ymm2,ymm2,ymm2
+	mov	ecx,8
+.entry:
+	vpcmpeqq ymm5,ymm3,ymm7
+	vpblendvb ymm0,ymm0,yword [rax],ymm5
+	vpblendvb ymm1,ymm1,yword [rax+32],ymm5
+	vpblendvb ymm2,ymm2,yword [rax+64],ymm5
+	vpaddq	ymm3,ymm3,ymm4
+	add	rax,96
+	dec	ecx
+	jnz	.entry
+	vmovdqu	[rsp+8+XB_QD],ymm2
+	; negative: swap y + x and y - x, negate 2dxy
+	movsxd	rdx,edx				; the mask on all 64 bits
+	vmovq	xmm6,rdx
+	vpbroadcastq ymm6,xmm6
+	vpblendvb ymm5,ymm0,ymm1,ymm6
+	vpblendvb ymm1,ymm1,ymm0,ymm6
+	vmovdqu	[rsp+8+XB_QP],ymm5
+	vmovdqu	[rsp+8+XB_QM],ymm1
+	vmovdqu	[rsp+8+XB_T0],ymm6		; the mask, past the call below
+	vzeroupper
+	lea	rdi,[rsp+8+XB_RX]
+	lea	rsi,[fe_zero]
+	lea	rdx,[rsp+8+XB_QD]
+	call	fe_sub				; -2dxy
+	vmovdqu	ymm6,[rsp+8+XB_T0]
+	vmovdqu	ymm2,[rsp+8+XB_QD]
+	vpblendvb ymm2,ymm2,yword [rsp+8+XB_RX],ymm6
+	vmovdqu	[rsp+8+XB_QD],ymm2
+	vpxor	ymm5,ymm5,ymm5
+	vpxor	ymm6,ymm6,ymm6
+	vzeroupper
+	ret
+
+x25519_base:
+	push	rbx
+	push	r12
+	push	r13
+	sub	rsp,XB_SIZE
+	mov	[rsp+XB_OUT],rdi
+	lea	rdi,[rsp+XB_K]
+	mov	ecx,32
+	rep	movsb
+	and	byte [rsp+XB_K],248		; clamped as X25519 does
+	and	byte [rsp+XB_K+31],127
+	or	byte [rsp+XB_K+31],64
+	; radix 16, then signed: each digit in [-8, 8)
+	xor	ecx,ecx
+@@:
+	movzx	eax,byte [rsp+XB_K+rcx]
+	mov	edx,eax
+	and	eax,15
+	shr	edx,4
+	mov	[rsp+XB_E+rcx*2],al
+	mov	[rsp+XB_E+rcx*2+1],dl
+	inc	ecx
+	cmp	ecx,32
+	jb	@b
+	xor	ecx,ecx				; ecx = the carry
+	xor	r8d,r8d
+@@:
+	movsx	eax,byte [rsp+XB_E+r8]
+	add	eax,ecx
+	lea	ecx,[rax+8]
+	sar	ecx,4
+	mov	edx,ecx
+	shl	edx,4
+	sub	eax,edx
+	mov	[rsp+XB_E+r8],al
+	inc	r8d
+	cmp	r8d,63
+	jb	@b
+	add	[rsp+XB_E+63],cl
+	; the neutral point (0 : 1 : 1 : 0)
+	lea	rdi,[rsp+XB_X]
+	xor	eax,eax
+	mov	ecx,16
+	rep	stosq
+	mov	qword [rsp+XB_Y],1
+	mov	qword [rsp+XB_Z],1
+	mov	r12d,1				; the odd digits
+.odd:
+	call	xb_select
+	call	xb_madd
+	add	r12d,2
+	cmp	r12d,64
+	jb	.odd
+	mov	r13d,3				; times 16
+.times16:
+	call	xb_dbl
+	call	xb_to_p2
+	dec	r13d
+	jnz	.times16
+	call	xb_dbl
+	call	xb_to_p3
+	xor	r12d,r12d			; the even digits
+.even:
+	call	xb_select
+	call	xb_madd
+	add	r12d,2
+	cmp	r12d,64
+	jb	.even
+	; u = (Z + Y) / (Z - Y)
+	lea	rdi,[rsp+XB_T0]
+	lea	rsi,[rsp+XB_Z]
+	lea	rdx,[rsp+XB_Y]
+	call	fe_add
+	lea	rdi,[rsp+XB_RX]
+	lea	rsi,[rsp+XB_Z]
+	lea	rdx,[rsp+XB_Y]
+	call	fe_sub
+	lea	rdi,[rsp+XB_RY]
+	lea	rsi,[rsp+XB_RX]
+	call	fe_inv
+	lea	rdi,[rsp+XB_RZ]
+	lea	rsi,[rsp+XB_T0]
+	lea	rdx,[rsp+XB_RY]
+	call	fe_mul
+	lea	rdi,[rsp+XB_RZ]
+	call	fe_canon
+	mov	rdi,[rsp+XB_OUT]
+	lea	rsi,[rsp+XB_RZ]
+	mov	ecx,32
+	rep	movsb
+	mov	rdi,rsp				; the scalar, its digits, the sum
+	mov	ecx,XB_OUT
+	call	secure_zero
+	add	rsp,XB_SIZE
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
