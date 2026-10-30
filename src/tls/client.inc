@@ -855,3 +855,427 @@ tlsc_flight_complete:
 .no:
 	xor	eax,eax
 	ret
+
+; ============================ TLS 1.2 client ============================
+; A backend that has no TLS 1.3 picks a 1.2 ECDHE suite. The ClientHello
+; (tlsc_client_hello) already offered it; these complete the handshake.
+
+; rdi = tc, rsi = the server flight (ServerHello, Certificate, ServerKey-
+; Exchange, ServerHelloDone, as plaintext records), edx = its length,
+; rcx = out: verifies the ServerKeyExchange signature under the leaf key,
+; derives the 1.2 keys, and writes the client flight (ClientKeyExchange,
+; ChangeCipherSpec, the encrypted Finished) to out. eax = the client flight
+; length, or 0. Sets TC_LEAF/TC_LEAFLEN and TC_CLIST/TC_CLISTLEN for the
+; caller's chain verification (as the 1.3 path does).
+tlsc12_flight:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	sub	rsp,128
+	mov	rbx,rdi				; tc
+	mov	[rsp+0],rcx			; out base
+	mov	r12,rsi				; record cursor
+	lea	r13,[rsi+rdx]			; flight end
+	xor	r15d,r15d			; flags: 1 SH, 2 cert, 4 SKE, 8 SHD
+.rec:
+	lea	rax,[r12+5]
+	cmp	rax,r13
+	ja	.parsed
+	cmp	byte [r12],22			; handshake record
+	jne	.bad
+	movzx	ecx,word [r12+3]
+	rol	cx,8
+	lea	r14,[r12+5]			; message cursor
+	lea	rax,[r14+rcx]			; payload end
+	cmp	rax,r13
+	ja	.bad
+	mov	r12,rax				; next record
+	mov	[rsp+16],rax			; payload end
+.msg:
+	mov	rax,[rsp+16]
+	lea	rcx,[r14+4]
+	cmp	rcx,rax
+	ja	.rec				; header spills: next record
+	movzx	ecx,byte [r14+1]		; u24 body length
+	shl	ecx,16
+	movzx	edx,byte [r14+2]
+	shl	edx,8
+	or	ecx,edx
+	movzx	edx,byte [r14+3]
+	or	ecx,edx
+	lea	rdx,[r14+4+rcx]			; message end
+	cmp	rdx,rax
+	ja	.bad
+	mov	[rsp+24],rdx			; message end
+	lea	edx,[rcx+4]			; transcript the whole message
+	mov	rsi,r14
+	tc_add
+	movzx	eax,byte [r14]
+	cmp	al,2
+	je	.sh
+	cmp	al,11
+	je	.cert
+	cmp	al,12
+	je	.ske
+	cmp	al,14
+	jne	.msg_next
+	or	r15d,8
+.msg_next:
+	mov	r14,[rsp+24]
+	cmp	r14,[rsp+16]
+	jb	.msg
+	jmp	.rec
+.sh:
+	lea	rsi,[r14+4+2]			; server random (after version)
+	lea	rdi,[rbx+TC12_SRAND]
+	mov	ecx,32
+	rep	movsb
+	or	r15d,1
+	jmp	.msg_next
+.cert:
+	lea	rsi,[r14+4]			; certificate_list length (u24)
+	mov	eax,[rsi]
+	bswap	eax
+	shr	eax,8
+	mov	[rbx+TC_CLISTLEN],eax
+	lea	rcx,[rsi+3]
+	mov	[rbx+TC_CLIST],rcx
+	mov	eax,[rsi+3]			; first cert length (u24)
+	bswap	eax
+	shr	eax,8
+	lea	rsi,[rsi+6]			; leaf DER
+	mov	[rbx+TC_LEAF],rsi
+	mov	[rbx+TC_LEAFLEN],eax
+	mov	edx,eax
+	lea	rdi,[rbx+TC_LEAFKEY]
+	call	cert_pubkey			; rsi = leaf DER, edx = length
+	test	eax,eax
+	jz	.bad
+	or	r15d,2
+	jmp	.msg_next
+.ske:
+	lea	rsi,[r14+4]
+	mov	[rsp+32],rsi			; params (ECDHParams) start
+	cmp	byte [rsi],3			; named_curve
+	jne	.bad
+	movzx	eax,word [rsi+1]		; named_curve
+	rol	ax,8
+	mov	[rsp+40],eax
+	movzx	ecx,byte [rsi+3]		; public key length
+	mov	[rsp+56],ecx
+	lea	rax,[rsi+4]
+	mov	[rsp+48],rax			; server public key
+	lea	edx,[rcx+4]
+	mov	[rsp+64],edx			; params length = 4 + key
+	lea	rsi,[rsi+4+rcx]			; SignatureAndHashAlgorithm
+	movzx	eax,word [rsi]
+	mov	[rsp+88],eax
+	movzx	ecx,word [rsi+2]		; signature length
+	rol	cx,8
+	mov	[rsp+80],ecx
+	lea	rax,[rsi+4]
+	mov	[rsp+72],rax			; signature
+	or	r15d,4
+	jmp	.msg_next
+.parsed:
+	cmp	r15d,15
+	jne	.bad
+	; signed content = client_random | server_random | ECDHParams -> TC_CV
+	lea	rdi,[rbx+TC_CV]
+	lea	rsi,[rbx+TC_RANDOM]
+	mov	ecx,32
+	rep	movsb
+	lea	rsi,[rbx+TC12_SRAND]
+	mov	ecx,32
+	rep	movsb
+	mov	rsi,[rsp+32]
+	mov	ecx,[rsp+64]
+	rep	movsb
+	lea	rdi,[rbx+TC_DIG]		; its SHA-256
+	lea	rsi,[rbx+TC_CV]
+	mov	edx,[rsp+64]
+	add	edx,64
+	call	sha256
+	mov	eax,[rsp+88]			; sigalg (stored little-endian word)
+	cmp	eax,0x0304			; ecdsa_secp256r1_sha256
+	je	.v_ecdsa
+	cmp	eax,0x0104			; rsa_pkcs1_sha256
+	je	.v_pkcs1
+	cmp	eax,0x0408			; rsa_pss_rsae_sha256
+	je	.v_pss
+	jmp	.bad
+.v_ecdsa:
+	cmp	dword [rbx+TC_LEAFKEY+PK_TYPE],1
+	jne	.bad
+	mov	rsi,[rsp+72]
+	mov	rdx,[rsp+72]
+	add	rdx,[rsp+80]			; signature end
+	call	der_read			; SEQUENCE
+	jc	.bad
+	cmp	al,0x30
+	jne	.bad
+	mov	rdx,r8
+	call	der_read			; INTEGER r
+	jc	.bad
+	lea	rdi,[rbx+TC_CV]			; r || s (TC_CV is free; digest is in TC_DIG)
+	push	r8
+	call	der_int_32
+	pop	r8
+	jc	.bad
+	mov	rsi,r8
+	call	der_read			; INTEGER s
+	jc	.bad
+	lea	rdi,[rbx+TC_CV+32]
+	call	der_int_32
+	jc	.bad
+	lea	rdi,[rbx+TC_LEAFKEY+PK_DATA]
+	lea	rsi,[rbx+TC_DIG]
+	lea	rdx,[rbx+TC_CV]
+	lea	rcx,[rbx+TC_CV+32]
+	call	p256_verify
+	test	eax,eax
+	jz	.bad
+	jmp	.ecdh
+.v_pkcs1:
+	cmp	dword [rbx+TC_LEAFKEY+PK_TYPE],2
+	jne	.bad
+	lea	rdi,[rbx+TC_LEAFKEY+PK_DATA]
+	mov	esi,[rbx+TC_LEAFKEY+PK_NLEN]
+	mov	rdx,[rsp+72]
+	mov	ecx,[rbx+TC_LEAFKEY+PK_E]
+	lea	r8,[rbx+TC_DIG]
+	call	rsa_pkcs1_verify
+	test	eax,eax
+	jz	.bad
+	jmp	.ecdh
+.v_pss:
+	cmp	dword [rbx+TC_LEAFKEY+PK_TYPE],2
+	jne	.bad
+	lea	rdi,[rbx+TC_LEAFKEY+PK_DATA]
+	mov	esi,[rbx+TC_LEAFKEY+PK_NLEN]
+	mov	rdx,[rsp+72]
+	mov	ecx,[rbx+TC_LEAFKEY+PK_E]
+	lea	r8,[rbx+TC_DIG]
+	call	rsa_pss_verify
+	test	eax,eax
+	jz	.bad
+.ecdh:
+	mov	eax,[rsp+40]			; named_curve
+	cmp	eax,0x0017			; secp256r1
+	je	.ecdh_p256
+	cmp	eax,0x001D			; x25519
+	jne	.bad
+	cmp	dword [rsp+56],32
+	jne	.bad
+	lea	rdi,[rbx+TC_SHARED]
+	lea	rsi,[rbx+TC_X25519_SK]
+	mov	rdx,[rsp+48]
+	call	x25519
+	jmp	.keys
+.ecdh_p256:
+	cmp	dword [rsp+56],65
+	jne	.bad
+	lea	rdi,[rbx+TC_SHARED]
+	lea	rsi,[rbx+TC_P256_SK]
+	mov	rdx,[rsp+48]
+	call	p256_ecdh
+	test	eax,eax
+	jz	.bad
+.keys:
+	lea	rdi,[rbx+TC12_MASTER]		; master secret
+	lea	rsi,[rbx+TC_SHARED]
+	mov	edx,32
+	lea	rcx,[rbx+TC_RANDOM]
+	lea	r8,[rbx+TC12_SRAND]
+	call	tls12_master
+	lea	rdi,[rbx+TC12_CWK]		; key block
+	mov	esi,40
+	lea	rdx,[rbx+TC12_MASTER]
+	lea	rcx,[rbx+TC12_SRAND]
+	lea	r8,[rbx+TC_RANDOM]
+	call	tls12_key_block
+	lea	rdi,[rbx+TC12_TX]		; client-write / server-write GCM
+	lea	rsi,[rbx+TC12_CWK]
+	call	gcm_init
+	lea	rdi,[rbx+TC12_RX]
+	lea	rsi,[rbx+TC12_SWK]
+	call	gcm_init
+	; ---- ClientKeyExchange ----
+	mov	r14,[rsp+0]			; out base
+	mov	byte [r14],22			; record: handshake
+	mov	word [r14+1],0x0303
+	mov	byte [r14+5],16			; client_key_exchange
+	mov	eax,[rsp+40]
+	cmp	eax,0x0017
+	je	.cke_p256
+	mov	byte [r14+9],32			; ECPoint: u8 length + point (x25519)
+	lea	rdi,[r14+10]
+	lea	rsi,[rbx+TC_X25519_PK]
+	mov	ecx,32
+	rep	movsb
+	mov	ecx,33
+	jmp	.cke_len
+.cke_p256:
+	mov	byte [r14+9],65
+	lea	rdi,[r14+10]
+	lea	rsi,[rbx+TC_P256_PK]
+	mov	ecx,65
+	rep	movsb
+	mov	ecx,66
+.cke_len:
+	mov	byte [r14+6],0			; message u24 length
+	mov	byte [r14+7],0
+	mov	[r14+8],cl
+	lea	eax,[rcx+4]			; CKE message length
+	mov	edx,eax
+	rol	dx,8
+	mov	[r14+3],dx			; record length
+	push	rax
+	lea	rsi,[r14+5]			; transcript the CKE message
+	mov	edx,eax
+	tc_add
+	pop	rax
+	lea	r14,[r14+5+rax]			; past the CKE record
+	; ---- Finished (client finished) ----
+	tc_snapshot				; TC_THX = Hash(ClientHello..CKE)
+	mov	dword [rbx+TC_FIN],0x0c000014	; Finished message header
+	lea	rdi,[rbx+TC_FIN+4]
+	lea	rsi,[rbx+TC12_MASTER]
+	lea	rdx,[tls12_lbl_cfin]
+	mov	ecx,15
+	lea	r8,[rbx+TC_THX]
+	call	tls12_verify_data
+	lea	rsi,[rbx+TC_FIN]		; add the Finished message to the transcript
+	mov	edx,16
+	tc_add
+	mov	byte [r14],20			; ChangeCipherSpec
+	mov	word [r14+1],0x0303
+	mov	word [r14+3],0x0100
+	mov	byte [r14+5],1
+	add	r14,6
+	mov	byte [r14],22			; the encrypted Finished record
+	mov	word [r14+1],0x0303
+	lea	rdi,[r14+5]
+	lea	rsi,[rbx+TC12_TX]
+	lea	rdx,[rbx+TC12_CIV]
+	xor	rcx,rcx				; client record sequence 0
+	mov	r8d,22
+	lea	r9,[rbx+TC_FIN]
+	mov	r10d,16
+	call	tls12_seal
+	mov	edx,eax
+	rol	dx,8
+	mov	[r14+3],dx
+	lea	r14,[r14+5+rax]
+	mov	rax,r14
+	sub	rax,[rsp+0]			; client flight length
+	jmp	.out
+.bad:
+	xor	eax,eax
+.out:
+	add	rsp,128
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; rdi = tc, rsi = the server's ChangeCipherSpec + encrypted Finished,
+; edx = length: opens and verifies the server Finished. eax = 1 / 0.
+tlsc12_server_finished:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	mov	rbx,rdi
+	mov	r12,rsi
+	lea	r13,[rsi+rdx]
+	xor	r14d,r14d			; ChangeCipherSpec seen
+.rec:
+	lea	rax,[r12+5]
+	cmp	rax,r13
+	ja	.bad
+	movzx	ecx,word [r12+3]		; record payload length
+	rol	cx,8
+	cmp	byte [r12],20			; ChangeCipherSpec
+	jne	@f
+	mov	r14d,1
+	lea	r12,[r12+5+rcx]
+	jmp	.rec
+@@:
+	cmp	byte [r12],22			; handshake
+	jne	.bad
+	test	r14d,r14d
+	jnz	.fin
+	; a plaintext handshake message before the CCS (a NewSessionTicket):
+	; fold it into the transcript (RFC 5077: the server Finished covers it)
+	lea	rsi,[r12+5]
+	mov	edx,ecx
+	lea	r14,[r12+5+rcx]			; keep across tc_add
+	tc_add
+	mov	r12,r14
+	xor	r14d,r14d
+	jmp	.rec
+.fin:
+	lea	rdi,[r12+5]			; the encrypted Finished, opened in place
+	mov	esi,ecx
+	lea	rdx,[rbx+TC12_RX]
+	lea	rcx,[rbx+TC12_SIV]
+	xor	r8,r8				; server record sequence 0
+	mov	r9d,22
+	call	tls12_open
+	cmp	eax,16
+	jne	.bad
+	cmp	dword [r12+5+8],0x0c000014	; Finished header (type 20, length 12)
+	jne	.bad
+	tc_snapshot				; TC_THX = Hash through the client Finished
+	lea	rdi,[rbx+TC_FIN]
+	lea	rsi,[rbx+TC12_MASTER]
+	lea	rdx,[tls12_lbl_sfin]
+	mov	ecx,15
+	lea	r8,[rbx+TC_THX]
+	call	tls12_verify_data
+	lea	rdi,[rbx+TC_FIN]
+	lea	rsi,[r12+5+8+4]			; the received verify_data
+	mov	edx,12
+	call	ct_equal
+	test	eax,eax
+	jz	.bad
+	mov	eax,1
+	jmp	.out
+.bad:
+	xor	eax,eax
+.out:
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; rdi = tc, rsi = TX crypto_info out (40), rdx = RX crypto_info out (40):
+; fills two struct tls12_crypto_info_aes_gcm_128 for kTLS 1.2, TX from the
+; client write key/IV and RX from the server write key/IV, both at record
+; sequence 1 (after the Finished exchange).
+tlsc12_ktls_info:
+	mov	dword [rsi],0x00330303
+	mov	qword [rsi+4],0
+	mov	byte [rsi+11],1
+	movdqu	xmm0,[rdi+TC12_CWK]
+	movdqu	[rsi+12],xmm0
+	mov	eax,[rdi+TC12_CIV]
+	mov	[rsi+28],eax
+	mov	qword [rsi+32],0
+	mov	byte [rsi+39],1
+	mov	dword [rdx],0x00330303
+	mov	qword [rdx+4],0
+	mov	byte [rdx+11],1
+	movdqu	xmm0,[rdi+TC12_SWK]
+	movdqu	[rdx+12],xmm0
+	mov	eax,[rdi+TC12_SIV]
+	mov	[rdx+28],eax
+	mov	qword [rdx+32],0
+	mov	byte [rdx+39],1
+	ret

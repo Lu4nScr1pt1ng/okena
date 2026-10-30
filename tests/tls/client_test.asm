@@ -24,6 +24,7 @@ include '../../src/crypto/p256.inc'
 include '../../src/crypto/rsa.inc'
 include '../../src/tls/x509.inc'
 include '../../src/tls/keyschedule.inc'
+include '../../src/tls/tls12.inc'
 include '../../src/tls/client.inc'
 
 SBUF	:= 1 shl 16
