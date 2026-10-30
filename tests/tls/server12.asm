@@ -27,6 +27,10 @@ include '../../src/tls/tls12.inc'
 include '../../src/tls/tls12_server.inc'
 
 SBUF	:= 1 shl 16
+SOL_TLS	:= 282
+TLS_TX	:= 1
+TLS_RX	:= 2
+TCP_ULP	:= 31
 
 bss
 	align 16
@@ -40,6 +44,8 @@ bss
 	g_clist:	rb 8192
 	g_in:		rb SBUF
 	g_out:		rb SBUF
+	g_txinfo:	rb 40
+	g_rxinfo:	rb 40
 end bss
 
 macro sys n
@@ -181,7 +187,56 @@ start:
 	lea	rsi,[g_out]
 	mov	edx,eax
 	sys	SYS_write
-	; one application record "okena12\n" (server record sequence 1)
+	; hand the TLS 1.2 keys to the kernel (kTLS) and write plaintext
+	; TX: server write key/IV, RX: client write key/IV, both at sequence 1
+	mov	dword [g_txinfo],0x00330303	; TLS 1.2, AES_GCM_128
+	mov	qword [g_txinfo+4],0		; iv = explicit nonce, big-endian 1
+	mov	byte [g_txinfo+11],1
+	movdqu	xmm0,[g_t2+T2_SWK]
+	movdqu	[g_txinfo+12],xmm0		; key
+	mov	eax,[g_t2+T2_SWIV]
+	mov	[g_txinfo+28],eax		; salt
+	mov	qword [g_txinfo+32],0		; rec_seq = 1, big-endian
+	mov	byte [g_txinfo+39],1
+	mov	dword [g_rxinfo],0x00330303
+	mov	qword [g_rxinfo+4],0
+	mov	byte [g_rxinfo+11],1
+	movdqu	xmm0,[g_t2+T2_CWK]
+	movdqu	[g_rxinfo+12],xmm0
+	mov	eax,[g_t2+T2_CWIV]
+	mov	[g_rxinfo+28],eax
+	mov	qword [g_rxinfo+32],0
+	mov	byte [g_rxinfo+39],1
+	mov	edi,[g_cli]			; TCP_ULP "tls"
+	mov	esi,IPPROTO_TCP
+	mov	edx,TCP_ULP
+	lea	r10,[.ulp]
+	mov	r8d,4
+	sys	SYS_setsockopt
+	test	eax,eax
+	jnz	.userspace
+	mov	edi,[g_cli]			; TLS_TX
+	mov	esi,SOL_TLS
+	mov	edx,TLS_TX
+	lea	r10,[g_txinfo]
+	mov	r8d,40
+	sys	SYS_setsockopt
+	test	eax,eax
+	jnz	.userspace
+	mov	edi,[g_cli]			; TLS_RX
+	mov	esi,SOL_TLS
+	mov	edx,TLS_RX
+	lea	r10,[g_rxinfo]
+	mov	r8d,40
+	sys	SYS_setsockopt
+	mov	edi,[g_cli]			; plaintext; the kernel seals it
+	lea	rsi,[.app]
+	mov	edx,.app.len
+	sys	SYS_write
+	xor	edi,edi
+	sys	SYS_exit
+.userspace:
+	; no tls module / 1.2 kTLS unavailable: seal in user space (sequence 1)
 	lea	rdi,[g_out+5]
 	lea	rsi,[g_t2+T2_TXGCM]
 	lea	rdx,[g_t2+T2_SWIV]
@@ -201,6 +256,7 @@ start:
 	sys	SYS_write
 	xor	edi,edi
 	sys	SYS_exit
+.ulp		db 'tls',0
 .app		db 'okena12',10
 .app.len	:= $ - .app
 
