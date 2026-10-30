@@ -121,9 +121,10 @@ kTLS (no module, the kernel refusing the keys, or `OKENA_KTLS=off`) the
 client side of the exchange goes through user-space records, sealed two
 at a time, invisible to proxy.inc: 302k requests/s keep-alive (ahead of
 kTLS for small answers), 755 MB/s on a 50 MB download against 933 with
-kTLS (one AES block at a time for now). Next: `tls` on `tcp` listeners,
-HelloRetryRequest, session tickets, a fixed-base X25519 key generation,
-multi-block AES-GCM.
+kTLS (one AES block at a time for now). `tcp` listeners terminate TLS
+too: the handshake on the same code, then the L4 session over kTLS
+(both engines, `tests/tls/https.py`). Next: HelloRetryRequest, session
+tickets, a fixed-base X25519 key generation, multi-block AES-GCM.
 
 * SHA-2, HMAC, HKDF (from fasm2crud), AES-GCM (AES-NI, VAES/VPCLMULQDQ),
   ChaCha20-Poly1305, X25519, ML-KEM-768, P-256 ECDH/ECDSA, Ed25519.
@@ -184,16 +185,7 @@ Exit: a week-long soak with reloads and upgrades every minute under load
 loses no request; `make chaos` passes with every dependency (DNS,
 discovery, JWKS, ACME, control process, logger, disk) failed in turn.
 
-## Phase 7 — Addons
-
-* Shared-memory addon protocol, supervision, deadlines, circuit breakers.
-* SDKs (C, Rust, Go, Python); a reference WAF addon on Coraza.
-* `ext_authz` / `ext_proc` adapter.
-
-Exit: an addon that answers immediately adds under 5 us at p99; a crashing
-or hanging addon never affects routes that do not use it.
-
-## Phase 8 — Edge and CDN
+## Phase 7 — Edge and CDN
 
 * Disk cache tier: append-only segments, lock-free shared index, S3-FIFO,
   sendfile to the socket.
@@ -205,7 +197,7 @@ or hanging addon never affects routes that do not use it.
 Exit: hit path serves from page cache at line rate with zero copies;
 origin load stays flat during a purge-and-refill storm.
 
-## Phase 9 — Kernel fast paths
+## Phase 8 — Kernel fast paths
 
 * `xdp` listener: Maglev in eBPF, IPIP/GUE encapsulation, DSR,
   connection tracking table, backend health from user space.
@@ -214,16 +206,25 @@ origin load stays flat during a purge-and-refill storm.
 
 Exit: packets/s per core comparable to Katran.
 
-## Phase 10 — HTTP/3 and QUIC
+## Phase 9 — HTTP/3 and QUIC
 
 * QUIC v1/v2, QUIC-LB connection IDs with eBPF steering, retry, recovery,
   CUBIC/BBR, pacing, GSO/GRO, ECN; QPACK; HTTP/3.
 * QUIC interop runner clean.
 
-## Phase 11 — Breadth
+## Phase 10 — Breadth
 
 * TLS 1.2, RSA certificates (signing), client-certificate auth at scale.
 * Brotli on the fly.
 * Consul discovery, Kubernetes Gateway API.
 * Certificate compression, Encrypted Client Hello.
 * AVX-512 paths where they pay.
+
+## Phase 11 — Addons
+
+* Shared-memory addon protocol, supervision, deadlines, circuit breakers.
+* SDKs (C, Rust, Go, Python); a reference WAF addon on Coraza.
+* `ext_authz` / `ext_proc` adapter.
+
+Exit: an addon that answers immediately adds under 5 us at p99; a crashing
+or hanging addon never affects routes that do not use it.
