@@ -29,7 +29,13 @@ http_tls12_hello:
 	mov	ecx,T2_FULL
 	xor	eax,eax
 	rep	stosb
-	call	http_tls_cred			; rax = the TL entry (default certificate)
+	mov	r14,[r15+H_BUF]			; the certificate SNI chose (0 = none)
+	mov	rax,[r14+HB_TS+TS_CERT]
+	mov	[r15+H_SNICERT],rax		; for the Host-vs-certificate 421 check
+	test	rax,rax
+	jnz	.havecert
+	call	http_tls_cred			; else the default certificate
+.havecert:
 	test	rax,rax
 	jz	http_tls_close
 	mov	r14,[r15+H_BUF]

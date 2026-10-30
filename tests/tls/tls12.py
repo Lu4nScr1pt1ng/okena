@@ -20,7 +20,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 BIN = ROOT / "build" / "okena"
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
 BASE = 33000 + os.getpid() % 40 * 10 + (5 if ENGINE == "epoll" else 0)
-BACK, LST = BASE, BASE + 1
+BACK, LST, SNIL = BASE, BASE + 1, BASE + 2
 tmp = pathlib.Path(tempfile.mkdtemp())
 atexit.register(shutil.rmtree, tmp, True)
 failures = 0
@@ -98,11 +98,22 @@ def main():
     sh("openssl", "ecparam", "-genkey", "-name", "prime256v1", "-noout", "-out", "leaf.key")
     sh("openssl", "req", "-new", "-x509", "-key", "leaf.key", "-subj", "/CN=okena.test",
        "-addext", "subjectAltName=DNS:okena.test", "-days", "2", "-out", "leaf.pem")
+    for n, cn, san in (("a", "cert-a", "DNS:a.test"), ("b", "cert-b", "DNS:*.b.test")):
+        sh("openssl", "ecparam", "-genkey", "-name", "prime256v1", "-noout", "-out", f"{n}.key")
+        sh("openssl", "req", "-new", "-x509", "-key", f"{n}.key", "-subj", f"/CN={cn}",
+           "-addext", f"subjectAltName={san}", "-days", "2", "-out", f"{n}.pem")
     threading.Thread(target=backend, daemon=True).start()
     conf = tmp / "okena.conf"
     conf.write_text(f"""okena {{ workers 2; io_engine {ENGINE} }}
 http 127.0.0.1:{LST} {{
     tls {{ cert {tmp / 'leaf.pem'}; key {tmp / 'leaf.key'} }}
+    route /* {{ to 127.0.0.1:{BACK} }}
+}}
+http 127.0.0.1:{SNIL} {{
+    tls {{
+        cert {tmp / 'a.pem'} key={tmp / 'a.key'}
+        cert {tmp / 'b.pem'} key={tmp / 'b.key'}
+    }}
     route /* {{ to 127.0.0.1:{BACK} }}
 }}
 """)
@@ -125,6 +136,37 @@ http 127.0.0.1:{LST} {{
     check("TLS 1.2 negotiated", ver == "TLSv1.2", str(ver))
     check("GET over TLS 1.2: 200 proxied from the backend",
           data.startswith(b"HTTP/1.1 200") and b"backend:/hello" in data, data[:80])
+    # SNI picks the certificate on a 1.2 connection
+    def peer_cn(port, sni, host=None):
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        ctx.maximum_version = ssl.TLSVersion.TLSv1_2
+        ctx.set_ciphers("ECDHE-ECDSA-AES128-GCM-SHA256")
+        try:
+            s = socket.create_connection(("127.0.0.1", port), timeout=5)
+            with ctx.wrap_socket(s, server_hostname=sni) as t:
+                from cryptography import x509
+                cn = x509.load_der_x509_certificate(t.getpeercert(binary_form=True)).subject.rfc4514_string()
+                t.sendall(f"GET / HTTP/1.1\r\nHost: {host or sni}\r\nConnection: close\r\n\r\n".encode())
+                data = b""
+                while True:
+                    b = t.recv(4096)
+                    if not b:
+                        break
+                    data += b
+                return cn, data
+        except (OSError, ssl.SSLError) as e:
+            return None, repr(e).encode()
+    check("TLS 1.2 SNI: a.test gets cert-a", peer_cn(SNIL, "a.test")[0] == "CN=cert-a",
+          str(peer_cn(SNIL, "a.test")[0]))
+    check("TLS 1.2 SNI: x.b.test gets cert-b (wildcard)", peer_cn(SNIL, "x.b.test")[0] == "CN=cert-b",
+          str(peer_cn(SNIL, "x.b.test")[0]))
+    cn, data = peer_cn(SNIL, "a.test", host="evil.test")
+    check("TLS 1.2 domain fronting: Host not named by the cert gets 421",
+          b"421" in data[:20], data[:40])
+
     # a few more requests (fresh connections), to shake out the handshake
     oks = sum(get12(LST, f"/n{i}")[1].startswith(b"HTTP/1.1 200") for i in range(8))
     check("8 TLS 1.2 connections", oks == 8, f"{oks}/8")
