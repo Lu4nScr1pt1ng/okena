@@ -101,9 +101,9 @@ tlsc_client_hello:
 	ch_lit 0x00,0x2B,0x00,0x05,0x04,0x03,0x04,0x03,0x03
 	; supported_groups (10): X25519MLKEM768, x25519, secp256r1
 	ch_lit 0x00,0x0A,0x00,0x08,0x00,0x06,0x11,0xEC,0x00,0x1D,0x00,0x17
-	; signature_algorithms (13): ecdsa_secp256r1_sha256, rsa_pss_rsae_sha256,
-	; rsa_pkcs1_sha256 (the last for a legacy 1.2 backend)
-	ch_lit 0x00,0x0D,0x00,0x08,0x00,0x06,0x04,0x03,0x08,0x04,0x04,0x01
+	; signature_algorithms (13): ecdsa_secp256r1_sha256, ed25519,
+	; rsa_pss_rsae_sha256, rsa_pkcs1_sha256 (the last for a legacy 1.2 backend)
+	ch_lit 0x00,0x0D,0x00,0x0A,0x00,0x08,0x04,0x03,0x08,0x07,0x08,0x04,0x04,0x01
 	; key_share (51): X25519MLKEM768 (1216), x25519 (32) and secp256r1 (65):
 	; 1220 + 36 + 69 = 1325 bytes of shares
 	ch_lit 0x00,0x33,0x05,0x2F,0x05,0x2D
@@ -602,7 +602,22 @@ tlsc_verify:
 	je	.cv_ecdsa
 	cmp	word [rsi],0x0408		; rsa_pss_rsae_sha256 (0x0804)
 	je	.cv_rsa
+	cmp	word [rsi],0x0708		; ed25519 (0x0807)
+	je	.cv_ed25519
 	jmp	.bad
+.cv_ed25519:
+	cmp	dword [rbx+TC_LEAFKEY+PK_TYPE],3
+	jne	.bad
+	cmp	word [rsi+2],0x4000		; 64 bytes
+	jne	.bad
+	lea	rcx,[rsi+4]			; Ed25519 signs the content itself
+	lea	rdi,[rbx+TC_LEAFKEY+PK_DATA]
+	lea	rsi,[rbx+TC_CV]
+	mov	edx,TLS13_CV_PREFIX + 32
+	call	ed25519_verify
+	test	eax,eax
+	jz	.bad
+	jmp	.cv_ok
 .cv_ecdsa:
 	cmp	dword [rbx+TC_LEAFKEY+PK_TYPE],1
 	jne	.bad

@@ -37,6 +37,8 @@ sh("openssl", "ecparam", "-genkey", "-name", "prime256v1", "-noout", "-out", "s.
 sh("openssl", "req", "-new", "-x509", "-key", "s.key", "-subj", "/CN=localhost", "-days", "2", "-out", "s.pem")
 sh("openssl", "genrsa", "-out", "rsa.key", "2048")
 sh("openssl", "req", "-new", "-x509", "-key", "rsa.key", "-sha256", "-subj", "/CN=localhost", "-days", "2", "-out", "rsa.pem")
+sh("openssl", "genpkey", "-algorithm", "ed25519", "-out", "ed.key")
+sh("openssl", "req", "-new", "-x509", "-key", "ed.key", "-subj", "/CN=localhost", "-days", "2", "-out", "ed.pem")
 
 
 def run_against(groups, port, ktls=False, cert="s.pem", key="s.key"):
@@ -79,6 +81,9 @@ def main():
     check("RSA server leaf: handshake verifies (rsa_pss_rsae_sha256)",
           run_against("X25519", 34485, cert="rsa.pem", key="rsa.key") == "1")
     check("RSA server leaf over kTLS", run_against("P-256", 34486, ktls=True, cert="rsa.pem", key="rsa.key") == "1")
+    # an Ed25519 server certificate: CertificateVerify with ed25519 (0x0807)
+    check("Ed25519 server leaf: CertificateVerify verified (ed25519)",
+          run_against("X25519", 34490, cert="ed.pem", key="ed.key") == "1")
     # the post-quantum hybrid: a server that takes nothing else proves the
     # share is right (ML-KEM-768 key, decapsulation, the 64-byte secret)
     if b"X25519MLKEM768" in subprocess.run(["openssl", "list", "-kem-algorithms"], capture_output=True).stdout:

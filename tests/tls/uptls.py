@@ -27,6 +27,7 @@ ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
 BASE = 31000 + os.getpid() % 50 * 10
 BACK, PLAIN, LST, LST_BAD, LST_HOST = BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4
 BACK12, BACK12R, LST12, LST12R = BASE + 5, BASE + 6, BASE + 7, BASE + 8
+BACKED, LSTED, LSTEDBAD = (33600 + os.getpid() % 50 * 3 + i for i in range(3))
 tmp = pathlib.Path(tempfile.mkdtemp())
 atexit.register(shutil.rmtree, tmp, True)
 failures = 0
@@ -60,6 +61,13 @@ sh("openssl", "genrsa", "-out", "rsa.key", "2048")
 sh("openssl", "req", "-new", "-key", "rsa.key", "-subj", "/CN=backend.test", "-out", "rsa.csr")
 sh("openssl", "x509", "-req", "-in", "rsa.csr", "-CA", "ca.pem", "-CAkey", "ca.key", "-CAcreateserial",
    "-days", "2", "-sha256", "-extfile", "ext.cnf", "-out", "rsa.pem")
+# an Ed25519 CA and an Ed25519 leaf it signs (the chain verified with Ed25519)
+sh("openssl", "genpkey", "-algorithm", "ed25519", "-out", "edca.key")
+sh("openssl", "req", "-new", "-x509", "-key", "edca.key", "-subj", "/CN=ed-ca", "-days", "2", "-out", "edca.pem")
+sh("openssl", "genpkey", "-algorithm", "ed25519", "-out", "ed.key")
+sh("openssl", "req", "-new", "-key", "ed.key", "-subj", "/CN=backend.test", "-out", "ed.csr")
+sh("openssl", "x509", "-req", "-in", "ed.csr", "-CA", "edca.pem", "-CAkey", "edca.key", "-CAcreateserial",
+   "-days", "2", "-extfile", "ext.cnf", "-out", "ed.pem")
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -97,6 +105,15 @@ def tls_backend(port):
     ctx.load_cert_chain(tmp / "leaf.pem", tmp / "leaf.key")
     # the default backend sends NewSessionTickets after its Finished; okena
     # drains those kTLS control records (recvmsg) and proxies over the link
+    httpd = CountingHTTPServer(("127.0.0.1", port), Handler)
+    httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+    httpd.serve_forever()
+
+
+def tls13_backend(port, cert, key):
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_3
+    ctx.load_cert_chain(tmp / cert, tmp / key)
     httpd = CountingHTTPServer(("127.0.0.1", port), Handler)
     httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
     httpd.serve_forever()
@@ -143,6 +160,7 @@ def main():
     threading.Thread(target=plain_backend, args=(PLAIN,), daemon=True).start()
     threading.Thread(target=tls12_backend, args=(BACK12, "leaf.pem", "leaf.key"), daemon=True).start()
     threading.Thread(target=tls12_backend, args=(BACK12R, "rsa.pem", "rsa.key"), daemon=True).start()
+    threading.Thread(target=tls13_backend, args=(BACKED, "ed.pem", "ed.key"), daemon=True).start()
     conf = tmp / "okena.conf"
     conf.write_text(f"""okena {{ workers 2; io_engine {ENGINE} }}
 http 127.0.0.1:{LST}    {{ route /* {{ to pool good }} }}
@@ -150,6 +168,16 @@ http 127.0.0.1:{LST_BAD}  {{ route /* {{ to pool badanchor }} }}
 http 127.0.0.1:{LST_HOST} {{ route /* {{ to pool plain }} }}
 http 127.0.0.1:{LST12}  {{ route /* {{ to pool good12 }} }}
 http 127.0.0.1:{LST12R} {{ route /* {{ to pool good12rsa }} }}
+http 127.0.0.1:{LSTED}  {{ route /* {{ to pool gooded }} }}
+http 127.0.0.1:{LSTEDBAD} {{ route /* {{ to pool badedanchor }} }}
+pool badedanchor {{
+    tls {{ trust {tmp}/ca.pem; sni backend.test }}
+    server 127.0.0.1:{BACKED}
+}}
+pool gooded    {{
+    tls {{ trust {tmp}/edca.pem; sni backend.test }}
+    server 127.0.0.1:{BACKED}
+}}
 pool good      {{
     tls {{ trust {tmp}/ca.pem; sni backend.test }}
     server 127.0.0.1:{BACK}
@@ -203,6 +231,14 @@ pool plain {{
     st, body = get(LST12, "/v12")
     check("TLS 1.2 upstream (ECDHE-ECDSA): request and response proxied",
           st == 200 and body == b"backend-ok:/v12", f"{st} {body!r}")
+    for _ in range(100):
+        if get(LSTED)[0] == 200:
+            break
+        time.sleep(0.05)
+    st, body = get(LSTED, "/ed")
+    check("Ed25519 backend: the chain (an Ed25519 CA) and CertificateVerify verified",
+          st == 200 and body == b"backend-ok:/ed", f"{st} {body!r}")
+    check("Ed25519 backend under an anchor that did not sign it: 502", get(LSTEDBAD)[0] == 502, str(get(LSTEDBAD)))
     st, body = get(LST12R, "/v12r")
     check("TLS 1.2 upstream (ECDHE-RSA): request and response proxied",
           st == 200 and body == b"backend-ok:/v12r", f"{st} {body!r}")

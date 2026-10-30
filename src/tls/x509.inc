@@ -9,6 +9,7 @@ rodata
 	oid_rsa_encryption	db 0x2A,0x86,0x48,0x86,0xF7,0x0D,0x01,0x01,0x01	; 1.2.840.113549.1.1.1
 	oid_ecdsa_sha256	db 0x2A,0x86,0x48,0xCE,0x3D,0x04,0x03,0x02	; 1.2.840.10045.4.3.2
 	oid_sha256_rsa		db 0x2A,0x86,0x48,0x86,0xF7,0x0D,0x01,0x01,0x0B	; 1.2.840.113549.1.1.11
+	oid_ed25519		db 0x2B,0x65,0x70				; 1.3.101.112 (key and signature)
 	oid_san			db 0x55,0x1D,0x11				; 2.5.29.17 subjectAltName
 	oid_cn			db 0x55,0x04,0x03				; 2.5.4.3 commonName
 	pem_begin		db '-----BEGIN CERTIFICATE-----'
@@ -18,10 +19,10 @@ rodata
 end rodata
 
 ; A public key a certificate carries: EC P-256 or RSA, in one blob.
-PK_TYPE		:= 0		; d: 1 = EC P-256, 2 = RSA
+PK_TYPE		:= 0		; d: 1 = EC P-256, 2 = RSA, 3 = Ed25519
 PK_NLEN		:= 4		; d: RSA modulus length in bytes
 PK_E		:= 8		; d: RSA public exponent
-PK_DATA		:= 16		; EC point (04|X|Y, 65) or RSA modulus (big-endian)
+PK_DATA		:= 16		; EC point (04|X|Y, 65), RSA modulus (big-endian) or Ed25519 key (32)
 PK_SIZE		:= PK_DATA + 528
 
 ; rsi = element, rdx = end of the enclosing content. al = tag, rsi = its
@@ -185,7 +186,30 @@ cert_verify:
 	mov	edx,9
 	call	der_oid_is
 	je	.is_rsa
+	lea	rdi,[oid_ed25519]
+	mov	edx,3
+	call	der_oid_is
+	je	.is_ed25519
 	jmp	.bad
+.is_ed25519:
+	cmp	dword [r14+PK_TYPE],3		; the issuer key must be Ed25519
+	jne	.bad
+	mov	rsi,r12				; signatureValue: BIT STRING of 00 | R | S
+	mov	rdx,r13
+	call	der_read
+	jc	.bad
+	cmp	al,3
+	jne	.bad
+	cmp	ecx,65
+	jne	.bad
+	cmp	byte [rsi],0
+	jne	.bad
+	lea	rcx,[rsi+1]			; the signature, over the TBSCertificate itself
+	lea	rdi,[r14+PK_DATA]
+	mov	rsi,[g_x509_tbs]
+	mov	edx,[g_x509_tbslen]
+	call	ed25519_verify
+	jmp	.out
 .is_ecdsa:
 	cmp	dword [r14+PK_TYPE],1		; the issuer key must be EC
 	jne	.bad
@@ -968,7 +992,7 @@ pem_first_cert:
 	ret
 
 ; rsi = certificate DER, edx = its length, rdi = out (a PK_SIZE blob): the
-; subject public key, EC P-256 or RSA. eax = 1, or 0 when unparsable or an
+; subject public key, EC P-256, RSA or Ed25519. eax = 1, or 0 when unparsable or an
 ; unsupported key type. Used to build the issuer keys for a chain.
 cert_pubkey:
 	push	rbx
@@ -1027,7 +1051,29 @@ cert_pubkey:
 	mov	edx,9
 	call	der_oid_is
 	je	.rsa
+	lea	rdi,[oid_ed25519]
+	mov	edx,3
+	call	der_oid_is
+	je	.ed25519
 	jmp	.no
+.ed25519:
+	mov	rsi,rbx				; BIT STRING: 00 | the 32-byte key
+	mov	rdx,r13
+	call	der_read
+	jc	.no
+	cmp	al,3
+	jne	.no
+	cmp	ecx,33
+	jne	.no
+	cmp	byte [rsi],0
+	jne	.no
+	inc	rsi
+	lea	rdi,[r12+PK_DATA]
+	mov	ecx,32
+	rep	movsb
+	mov	dword [r12+PK_TYPE],3
+	mov	eax,1
+	jmp	.out
 .ec:
 	mov	rsi,rbx				; BIT STRING: 00 04 X Y
 	mov	rdx,r13
