@@ -163,7 +163,13 @@ to kTLS so the proxy data path stays plaintext; a backend's session
 tickets (kTLS control records) are drained with recvmsg. io_uring only
 for now, and it closes the connection rather than reusing it. Still open
 from the list: TLS 1.2 for older clients, a full tlsfuzzer conformance
-run (needs an HTTP-responding harness); then phase 4.
+run (needs an HTTP-responding harness); then phase 4. TLS 1.2 for older
+clients is in on the server side: a ClientHello without TLS 1.3 runs an
+ECDHE_ECDSA / AES-128-GCM 1.2 handshake (ServerHello, Certificate, a signed
+ServerKeyExchange, ServerHelloDone, then ClientKeyExchange and the Finished
+exchange) and the keys go to kTLS 1.2; it is kTLS-only (no module, the
+connection is refused). Still open: TLS 1.2 to upstreams and the full
+tlsfuzzer run.
 
 * SHA-2, HMAC, HKDF (from fasm2crud), AES-GCM (AES-NI, VAES/VPCLMULQDQ),
   ChaCha20-Poly1305, X25519, ML-KEM-768, P-256 ECDH/ECDSA, Ed25519.
@@ -173,7 +179,7 @@ run (needs an HTTP-responding harness); then phase 4.
 * `tls` listener (SNI routing, passthrough).
 * TLS to upstreams: TLS 1.3 and 1.2 client, X.509 validation,
   RSA/ECDSA/Ed25519 verification, session resumption.
-* TLS 1.2 server (ECDHE + AEAD) for older clients.
+* TLS 1.2 server (ECDHE_ECDSA + AES-GCM) for older clients, over kTLS.
 * Known-answer, Wycheproof and differential tests; constant-time checks;
   tlsfuzzer.
 

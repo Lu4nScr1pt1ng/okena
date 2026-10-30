@@ -167,6 +167,8 @@ http_tls_hello_in:
 	call	tls_hello
 	cmp	eax,TH_MORE
 	je	http_tls_read
+	cmp	eax,TH_TLS12
+	je	http_tls12_hello
 	mov	ecx,HS_TLS_FLIGHT
 	cmp	eax,TH_SEND
 	je	@f

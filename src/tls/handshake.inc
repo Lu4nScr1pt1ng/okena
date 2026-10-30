@@ -63,6 +63,7 @@ TH_MORE		:= 0
 TH_SEND		:= 1
 TH_DONE		:= 1
 TH_FAIL		:= 2
+TH_TLS12	:= 3		; the client offered no TLS 1.3: try a 1.2 handshake
 TH_RETRY	:= 3				; tls_hello: send out, then read a second ClientHello
 
 TLS_RECORD_MAX	:= 16384			; plaintext of one record
@@ -1257,8 +1258,9 @@ tls_hello:
 	mov	ecx,AL_DECODE
 	jmp	.alert
 .version:
-	mov	ecx,AL_VERSION
-	jmp	.alert
+	mov	eax,TH_TLS12			; no TLS 1.3 offered: let the caller try 1.2
+	xor	edx,edx
+	jmp	.out
 .no_alpn:
 	mov	ecx,AL_NO_ALPN
 	jmp	.alert

@@ -51,6 +51,8 @@ SUITES = [
     ("passthrough epoll", ["tests/tls/passthrough.py", "epoll"]),
     ("tls client", ["tests/tls/client.py"]),
     ("tls12 server", ["tests/tls/server12.py"]),
+    ("tls12 io_uring", ["tests/tls/tls12.py", "io_uring"]),
+    ("tls12 epoll", ["tests/tls/tls12.py", "epoll"]),
     ("uptls io_uring", ["tests/tls/uptls.py", "io_uring"]),
     ("peer io_uring", ["tests/peer/run.py", "io_uring"]),
     ("peer epoll", ["tests/peer/run.py", "epoll"]),

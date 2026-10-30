@@ -1290,6 +1290,8 @@ http_recv_plain:
 	je	http_pt_in
 	cmp	edx,HS_UTLS_FLIGHT
 	je	http_uptls_flight_in
+	cmp	edx,HS_TLS12_FIN
+	je	http_tls12_fin
 	ret
 .head:
 	test	rax,rax
@@ -1392,6 +1394,10 @@ http_send_plain:
 	je	http_uptls_hello_sent
 	cmp	edx,HS_UTLS_FIN
 	je	http_uptls_fin_sent
+	cmp	edx,HS_TLS12_FLIGHT
+	je	http_tls12_flight_sent
+	cmp	edx,HS_TLS12_FIN2
+	je	http_tls12_fin2_sent
 	ret
 .self_sent:
 	test	dword [r15+H_FLAGS],HX_CLOSE

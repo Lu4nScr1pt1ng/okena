@@ -377,3 +377,29 @@ tls12_finished:
 	pop	r12
 	pop	rbx
 	ret
+
+; rdi = t2, rsi = TX crypto_info out (40), rdx = RX crypto_info out (40):
+; fills two struct tls12_crypto_info_aes_gcm_128 for the kernel's TLS 1.2
+; (version 0x0303), TX from the server write key/IV and RX from the client
+; write key/IV, both at record sequence 1 (after the Finished). The layout
+; is proven against the kernel in tests/tls/server12.asm.
+tls12_ktls_info:
+	mov	dword [rsi],0x00330303		; TLS 1.2, AES_GCM_128
+	mov	qword [rsi+4],0			; iv = explicit nonce, big-endian 1
+	mov	byte [rsi+11],1
+	movdqu	xmm0,[rdi+T2_SWK]
+	movdqu	[rsi+12],xmm0
+	mov	eax,[rdi+T2_SWIV]
+	mov	[rsi+28],eax			; salt = server write IV
+	mov	qword [rsi+32],0		; rec_seq = 1
+	mov	byte [rsi+39],1
+	mov	dword [rdx],0x00330303
+	mov	qword [rdx+4],0
+	mov	byte [rdx+11],1
+	movdqu	xmm0,[rdi+T2_CWK]
+	movdqu	[rdx+12],xmm0
+	mov	eax,[rdi+T2_CWIV]
+	mov	[rdx+28],eax			; salt = client write IV
+	mov	qword [rdx+32],0
+	mov	byte [rdx+39],1
+	ret
