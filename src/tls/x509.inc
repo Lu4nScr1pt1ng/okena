@@ -10,6 +10,10 @@ rodata
 	oid_ecdsa_sha256	db 0x2A,0x86,0x48,0xCE,0x3D,0x04,0x03,0x02	; 1.2.840.10045.4.3.2
 	oid_san			db 0x55,0x1D,0x11				; 2.5.29.17 subjectAltName
 	oid_cn			db 0x55,0x04,0x03				; 2.5.4.3 commonName
+	pem_begin		db '-----BEGIN CERTIFICATE-----'
+	PEM_BEGIN_LEN		:= $ - pem_begin
+	pem_end			db '-----END CERTIFICATE-----'
+	PEM_END_LEN		:= $ - pem_end
 end rodata
 
 ; rsi = element, rdx = end of the enclosing content. al = tag, rsi = its
@@ -766,6 +770,159 @@ cert_chain_verify:
 	xor	eax,eax
 .out:
 	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; rsi = input, ecx = length, rdi = output: decodes base64, skipping any
+; whitespace and stopping at '=' padding or the end. eax = the number of
+; bytes written. Lenient: a stray character that is not base64 is skipped.
+b64_decode:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	mov	r12,rsi
+	mov	r13d,ecx
+	mov	r14,rdi
+	xor	ebx,ebx				; input index
+	xor	r15d,r15d			; output index
+	xor	r8d,r8d				; bit accumulator
+	xor	r9d,r9d				; bits held
+.next:
+	cmp	ebx,r13d
+	jae	.done
+	movzx	eax,byte [r12+rbx]
+	inc	ebx
+	cmp	al,'A'
+	jb	.nu
+	cmp	al,'Z'
+	ja	.nu
+	sub	al,'A'
+	jmp	.have
+.nu:
+	cmp	al,'a'
+	jb	.nl
+	cmp	al,'z'
+	ja	.nl
+	sub	al,'a'-26
+	jmp	.have
+.nl:
+	cmp	al,'0'
+	jb	.nd
+	cmp	al,'9'
+	ja	.nd
+	sub	al,'0'-52
+	jmp	.have
+.nd:
+	cmp	al,'+'
+	je	.plus
+	cmp	al,'/'
+	je	.slash
+	cmp	al,'='
+	je	.done
+	jmp	.next				; whitespace or anything else
+.plus:
+	mov	al,62
+	jmp	.have
+.slash:
+	mov	al,63
+.have:
+	movzx	eax,al
+	shl	r8d,6
+	or	r8d,eax
+	add	r9d,6
+	cmp	r9d,8
+	jb	.next
+	sub	r9d,8
+	mov	eax,r8d
+	mov	cl,r9b
+	shr	eax,cl
+	mov	[r14+r15],al
+	inc	r15d
+	jmp	.next
+.done:
+	mov	eax,r15d
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; rsi = haystack, ecx = its length, rdi = needle, edx = its length:
+; rax = a pointer to the first occurrence, or 0. A plain scan (cold path).
+find_sub:
+	push	rbx
+	mov	r8d,ecx
+	sub	r8d,edx				; the last possible start
+	js	.no
+	xor	ecx,ecx
+.i:
+	cmp	ecx,r8d
+	jg	.no
+	lea	r9,[rsi+rcx]
+	xor	ebx,ebx
+.j:
+	cmp	ebx,edx
+	jae	.found
+	mov	al,[r9+rbx]
+	cmp	al,[rdi+rbx]
+	jne	.ni
+	inc	ebx
+	jmp	.j
+.found:
+	lea	rax,[rsi+rcx]
+	pop	rbx
+	ret
+.ni:
+	inc	ecx
+	jmp	.i
+.no:
+	xor	eax,eax
+	pop	rbx
+	ret
+
+; rsi = PEM text, edx = its length, rdi = output for the DER: decodes the
+; first CERTIFICATE block. eax = the DER length, or 0 when there is none.
+; Used to turn a trust file into anchors (with cert_extract_pubkey).
+pem_first_cert:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	mov	r12,rsi
+	mov	r13d,edx
+	mov	r14,rdi
+	mov	ecx,r13d
+	lea	rdi,[pem_begin]
+	mov	edx,PEM_BEGIN_LEN
+	call	find_sub
+	test	rax,rax
+	jz	.none
+	add	rax,PEM_BEGIN_LEN		; the base64 begins after the marker
+	mov	rbx,rax
+	mov	rsi,rbx
+	mov	rcx,r12
+	add	rcx,r13
+	sub	rcx,rbx				; the bytes that remain
+	lea	rdi,[pem_end]
+	mov	edx,PEM_END_LEN
+	call	find_sub
+	test	rax,rax
+	jz	.none
+	mov	rsi,rbx				; the base64 span [rbx, rax)
+	mov	rcx,rax
+	sub	rcx,rbx
+	mov	rdi,r14
+	call	b64_decode
+	jmp	.out
+.none:
+	xor	eax,eax
+.out:
 	pop	r14
 	pop	r13
 	pop	r12

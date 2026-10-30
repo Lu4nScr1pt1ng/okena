@@ -300,6 +300,22 @@ try:
     _tchain = len(_tamp).to_bytes(3, "big") + bytes(_tamp) + b"\x00\x00" + _entry(inter_c)
     check("x509 chain: tampered leaf rejected", run(b"K", rootpub + _struct.pack("<H", len(_tchain)) + _tchain), "00")
 
+    # Trust anchors from a PEM file: decode the first CERTIFICATE block,
+    # take its key, and verify a chain under it (how a TLS client loads a
+    # trust file for its upstreams)
+    from cryptography.hazmat.primitives import serialization as _ser
+    root_pem = root_c.public_bytes(_ser.Encoding.PEM)
+    inter_pem = inter_c.public_bytes(_ser.Encoding.PEM)
+    def _pem(pem, certs):
+        lst = b"".join(_entry(c) for c in certs)
+        return run(b"p", _struct.pack("<H", len(pem)) + pem + _struct.pack("<H", len(lst)) + lst)
+    check("x509 pem: chain verified under a PEM trust anchor", _pem(root_pem, [ee_c, inter_c]), "01")
+    check("x509 pem: single leaf under a PEM intermediate", _pem(inter_pem, [ee_c]), "01")
+    check("x509 pem: wrong PEM anchor rejected", _pem(inter_pem, [ee_c, inter_c]), "00")
+    # a PEM with surrounding comment text and CRLF line endings still parses
+    _wrapped = b"# okena trust store\r\n" + root_pem.replace(b"\n", b"\r\n") + b"\r\ntrailing\r\n"
+    check("x509 pem: tolerates comments and CRLF", _pem(_wrapped, [ee_c, inter_c]), "01")
+
     # TLS client: a well-formed ClientHello (offering x25519 + secp256r1,
     # TLS_AES_128_GCM_SHA256, ecdsa_secp256r1_sha256, ALPN, SNI)
     def _parse_ch(sni):

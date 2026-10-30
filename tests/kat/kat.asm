@@ -47,6 +47,8 @@ bss
 	g_gcm:		rb GCM_SIZE
 	g_gmode		db ?
 	g_tc:		rb TC_SIZE
+	g_der:		rb 8192
+	g_anchor:	rb 65
 	g_in:		rb INPUT_MAX + 64
 end bss
 
@@ -107,6 +109,8 @@ start:
 	je	.cert_host
 	cmp	al,'K'
 	je	.cert_chain
+	cmp	al,'p'
+	je	.cert_pem
 	cmp	al,'g'
 	je	.gcm
 	cmp	al,'G'
@@ -474,6 +478,34 @@ start:
 	lea	rsi,[rsi+67]			; the CertificateEntry list
 	call	cert_chain_verify
 	mov	[g_out],al
+	lea	rdi,[g_out]
+	mov	esi,1
+	jmp	.print
+.cert_pem:				; pem_len(u16 le) pem list_len(u16 le) list
+	movzx	edx,word [rsi]			; PEM length
+	lea	r12,[rsi+2]			; PEM text
+	lea	r13,[r12+rdx]			; the chain that follows
+	mov	rsi,r12
+	lea	rdi,[g_der]
+	call	pem_first_cert			; -> DER in g_der, eax = its length
+	test	eax,eax
+	jz	.pem_fail
+	lea	rsi,[g_der]			; extract the anchor public key
+	mov	edx,eax
+	lea	rdi,[g_anchor]
+	call	cert_extract_pubkey
+	test	eax,eax
+	jz	.pem_fail
+	movzx	edx,word [r13]			; the chain length
+	lea	rsi,[r13+2]			; the chain
+	lea	rdi,[g_anchor]
+	call	cert_chain_verify
+	mov	[g_out],al
+	lea	rdi,[g_out]
+	mov	esi,1
+	jmp	.print
+.pem_fail:
+	mov	byte [g_out],0
 	lea	rdi,[g_out]
 	mov	esi,1
 	jmp	.print
