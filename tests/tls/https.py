@@ -28,6 +28,7 @@ BASE = 27000 + os.getpid() % 99 * 20 + (5 if ENGINE == "epoll" else 0) + (10 if 
 BACK, LST, ECHO, TLST = BASE, BASE + 1, BASE + 2, BASE + 3
 SNIL = BASE + 8
 RLST = BASE + 9                                      # an RSA-certificate listener
+DLST = BASE + 10                                     # EC + RSA on one host (dual certificate)
 tmp = pathlib.Path(tempfile.mkdtemp())
 atexit.register(shutil.rmtree, tmp, True)
 failures = 0
@@ -192,6 +193,13 @@ http 127.0.0.1:{RLST} {{
     tls {{ cert {tmp / 'rsachain.pem'}; key {tmp / 'rsa.key'} }}
     route /* {{ to 127.0.0.1:{BACK} }}
 }}
+http 127.0.0.1:{DLST} {{
+    tls {{
+        cert {tmp / 'chain.pem'} key={tmp / 'leaf.key'}
+        cert {tmp / 'rsachain.pem'} key={tmp / 'rsa.key'}
+    }}
+    route /* {{ to 127.0.0.1:{BACK} }}
+}}
 """ + ("" if USER else tcp))
     log = open(tmp / "okena.log", "w+")
     env = dict(os.environ, OKENA_KTLS="off") if USER else None
@@ -276,6 +284,25 @@ http 127.0.0.1:{RLST} {{
         start, body = request(t, "GET", "/rsa")
         check("GET over TLS 1.3 with an RSA certificate: 200 from the backend",
               start.startswith(b"HTTP/1.1 200") and json.loads(body)["target"] == "/rsa", start)
+
+    # dual certificate on one host: prefer ECDSA (fast), fall back to RSA for a
+    # client that offers only rsa_pss_rsae_sha256. openssl -sigalgs sets what the
+    # ClientHello offers; the served leaf's key tells which certificate was chosen.
+    if shutil.which("openssl"):
+        def served_keytype(sigalgs):
+            r = subprocess.run(["openssl", "s_client", "-connect", f"127.0.0.1:{DLST}",
+                                "-servername", "okena.test", "-sigalgs", sigalgs, "-tls1_3"],
+                               input=b"", capture_output=True, timeout=10)
+            import re
+            m = re.search(rb"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----", r.stdout, re.S)
+            if not m:
+                return (r.stdout + r.stderr)[-120:]
+            x = subprocess.run(["openssl", "x509", "-noout", "-text"], input=m.group(0), capture_output=True)
+            return "EC" if b"id-ecPublicKey" in x.stdout else "RSA" if b"rsaEncryption" in x.stdout else x.stdout[:80]
+        kt = served_keytype("ecdsa_secp256r1_sha256:rsa_pss_rsae_sha256")
+        check("dual cert: an ECDSA-capable client gets the ECDSA certificate", kt == "EC", kt)
+        kt = served_keytype("rsa_pss_rsae_sha256")
+        check("dual cert: an RSA-only client gets the RSA certificate", kt == "RSA", kt)
 
     # SNI: the certificate that names the host (exactly, or *.parent), else the first
     def subject(port, name):

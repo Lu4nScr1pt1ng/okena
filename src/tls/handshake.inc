@@ -630,16 +630,28 @@ tls_hello:
 	jmp	.protocol
 
 .ext_done:
-	; the certificate for the name asked (SNI), before anything uses it
+	; the certificate for the name asked (SNI), before anything uses it; then
+	; prefer ECDSA and fall back to RSA by what the client's ClientHello offers
 	cmp	dword [rbp+HL_SNILEN],0
-	je	@f
-	mov	rdi,[rbp+HL_TL]
+	je	.cert_default
+	mov	rdi,[rbp+HL_TL]			; the listener's default entry
 	mov	rsi,[rbp+HL_SNIP]
 	mov	edx,[rbp+HL_SNILEN]
-	call	tls_cert_for_sni
+	call	tls_cert_named			; rax = entry (or 0), rdx = its sibling
+	test	rax,rax
+	jz	.cert_default
+	mov	[rbx+TS_CERT],rax		; the name chose it; Host is checked against it
+	mov	rdi,rax
+	mov	rsi,rdx
+	jmp	.cert_select
+.cert_default:
+	mov	rdi,[rbp+HL_TL]			; reload: tls_cert_named clobbers scratch
+	call	tls_cert_sibling		; rdi preserved, rax = sibling or 0
+	mov	rsi,rax
+.cert_select:
+	mov	edx,[rbp+HL_GOT]
+	call	tls_cert_select
 	mov	[rbp+HL_TL],rax
-	mov	[rbx+TS_CERT],rax
-@@:
 	mov	eax,[rbp+HL_GOT]
 	test	eax,G_TLS13
 	jz	.version

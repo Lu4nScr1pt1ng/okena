@@ -10,6 +10,8 @@ TL_PUB		:= 40				; 65 bytes: 04 | X | Y
 TL_GROUP	:= 108				; d: the first entry of its listener (the default)
 TL_KEYTYPE	:= 112				; d: 0 = EC P-256, 1 = RSA
 TL_RSA_NLEN	:= 116				; d: RSA modulus length in bytes
+TL_ALT		:= 120				; d: a sibling of the other key type in
+						; this listener (the default), or -1
 TL_RSA_N	:= 128				; RSA modulus (big-endian, up to 512)
 TL_RSA_D	:= 640				; RSA private exponent (big-endian, up to 512)
 TL_SIZE		:= 1152
@@ -24,5 +26,7 @@ TN_GROUP	:= 4				; w
 TN_TL		:= 6				; w: the entry
 TN_OFF		:= 8				; d: in g_tls_nstore
 TN_LEN		:= 12				; d
-TN_SIZE		:= 16
+TN_ALT		:= 16				; w: a same-name entry of the other key
+						; type + 1 (0 = none), for dual certs
+TN_SIZE		:= 20
 TN_STORE	:= 1 shl 18

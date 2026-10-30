@@ -211,8 +211,16 @@ profile:
 	add	rsp,16
 	ret
 
-; The handshake asks for the certificate of a name: one certificate here.
-tls_cert_for_sni:
+; The handshake asks for the certificate of a name: one certificate here,
+; with no sibling, and the selection just uses it.
+tls_cert_named:
+	mov	rax,rdi
+	xor	edx,edx
+	ret
+tls_cert_sibling:
+	xor	eax,eax
+	ret
+tls_cert_select:
 	mov	rax,rdi
 	ret
 

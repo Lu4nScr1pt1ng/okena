@@ -516,6 +516,7 @@ compile_cert:
 	; the chain
 	mov	eax,[rsp+8+TC_GROUP]
 	mov	[r13+TL_GROUP],eax
+	mov	dword [r13+TL_ALT],-1
 	mov	rdi,[rsp+8+TC_CERT]
 	call	tls_read_val
 	mov	r14,rax				; text
@@ -557,6 +558,32 @@ compile_cert:
 	mov	[g_tls_cur_tl],eax
 	mov	eax,[rsp+16+TC_GROUP]
 	mov	[g_tls_cur_group],eax
+	; pair this entry with the listener's first entry of the other key type,
+	; so a client that sends no SNI still gets its preferred signature
+	mov	r8d,[g_tls_cur_tl]
+	test	r8d,r8d
+	jz	.paired
+	xor	r9d,r9d
+.pairscan:
+	cmp	r9d,r8d
+	jae	.paired
+	imul	r10,r9,TL_SIZE
+	lea	r10,[g_tls+r10]
+	mov	ecx,[r13+TL_GROUP]
+	cmp	[r10+TL_GROUP],ecx
+	jne	.pairnext
+	mov	ecx,[r13+TL_KEYTYPE]
+	cmp	[r10+TL_KEYTYPE],ecx
+	je	.pairnext
+	cmp	dword [r10+TL_ALT],-1
+	jne	.pairnext
+	mov	[r10+TL_ALT],r8d
+	mov	[r13+TL_ALT],r9d
+	jmp	.paired
+.pairnext:
+	inc	r9d
+	jmp	.pairscan
+.paired:
 	lea	rsi,[g_tls_der]
 	mov	edx,[rsp]
 	call	cert_names
@@ -1007,9 +1034,26 @@ tls_name_add:
 	pop	rcx
 	pop	rsi				; the stored copy
 	mov	edx,[g_tls_cur_group]
-	call	tls_name_find
+	call	tls_name_find			; eax = owner (or -1), r9 = its slot
 	cmp	eax,-1
-	jne	.ok				; named already: the first certificate keeps it
+	je	.fresh
+	; named already: the first certificate keeps the name, but link a
+	; same-name entry of the other key type so dual certs serve this host
+	cmp	word [r9+TN_ALT],0
+	jne	.ok				; a sibling is linked already
+	movzx	r8,ax				; owner entry
+	imul	r8,r8,TL_SIZE
+	mov	r8d,[g_tls+r8+TL_KEYTYPE]
+	mov	r10d,[g_tls_cur_tl]
+	mov	r11,r10
+	imul	r11,r11,TL_SIZE
+	mov	r11d,[g_tls+r11+TL_KEYTYPE]
+	cmp	r11d,r8d
+	je	.ok				; same key type: not a complement
+	inc	r10d				; store this entry's index + 1
+	mov	[r9+TN_ALT],r10w
+	jmp	.ok
+.fresh:
 	call	tls_name_hash
 	mov	r8d,eax
 .probe:
@@ -1153,14 +1197,6 @@ cert_names:
 ; Workers, in the handshake: rdi = the listener's default entry, rsi = the
 ; client's server_name, edx = its length: rax = the entry whose
 ; certificate names it (exactly, then as *.parent), or the default.
-tls_cert_for_sni:
-	push	rdi
-	call	tls_cert_named
-	pop	rdi
-	test	rax,rax
-	cmovz	rax,rdi
-	ret
-
 ; rdi = an entry of the listener, rsi = a host name, edx = its length:
 ; rax = the entry whose certificate names it, or 0.
 tls_cert_named:
@@ -1212,14 +1248,66 @@ tls_cert_named:
 	cmp	eax,-1
 	je	.default
 .found:
+	movzx	edx,word [r9+TN_ALT]		; a sibling of the other key type?
+	test	edx,edx
+	jz	.noalt
+	dec	edx
+	imul	rdx,rdx,TL_SIZE
+	lea	rdx,[g_tls+rdx]
+	jmp	.prim
+.noalt:
+	xor	edx,edx
+.prim:
 	imul	rax,rax,TL_SIZE
 	lea	rax,[g_tls+rax]
 	jmp	.out
 .default:
 	xor	eax,eax
+	xor	edx,edx
 .out:
 	add	rsp,272
 	pop	rbx
+	ret
+
+; rdi = an entry: rax = its paired sibling of the other key type (the one set
+; for the listener's default), or 0.
+tls_cert_sibling:
+	mov	eax,[rdi+TL_ALT]
+	cmp	eax,-1
+	je	.none
+	imul	rax,rax,TL_SIZE
+	lea	rax,[g_tls+rax]
+	ret
+.none:
+	xor	eax,eax
+	ret
+
+; rdi = the SNI/default entry, rsi = a sibling of the other key type (or 0),
+; edx = the ClientHello's G_ flags: rax = the entry to use. Prefer ECDSA
+; (fast); fall back to RSA for a client that offers only rsa_pss_rsae_sha256.
+tls_cert_select:
+	mov	rax,rdi
+	test	edx,G_SIGALG			; ecdsa_secp256r1_sha256 offered?
+	jz	.want_rsa
+	cmp	dword [rdi+TL_KEYTYPE],0
+	je	.out				; the primary is EC: serve it
+	test	rsi,rsi
+	jz	.want_rsa			; no EC sibling; the primary is RSA
+	cmp	dword [rsi+TL_KEYTYPE],0
+	jne	.want_rsa
+	mov	rax,rsi				; the EC sibling
+	ret
+.want_rsa:
+	test	edx,G_SIGALG_RSA		; rsa_pss_rsae_sha256 offered?
+	jz	.out				; neither usable: the handshake fails
+	cmp	dword [rax+TL_KEYTYPE],1
+	je	.out				; the primary is RSA
+	test	rsi,rsi
+	jz	.out
+	cmp	dword [rsi+TL_KEYTYPE],1
+	jne	.out
+	mov	rax,rsi				; the RSA sibling
+.out:
 	ret
 
 ; ------------------------------------------------------- passthrough
