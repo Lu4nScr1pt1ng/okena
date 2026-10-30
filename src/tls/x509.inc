@@ -208,3 +208,89 @@ cert_verify:
 	pop	r12
 	pop	rbx
 	ret
+
+; rsi = certificate DER, edx = its length, rdi = out[65]: the subject EC
+; P-256 public key (04|X|Y) written to out. eax = 1, or 0 when the cert is
+; not an uncompressed P-256 key (RSA, another curve, or unparsable).
+cert_extract_pubkey:
+	push	rbx
+	push	r12
+	mov	r12,rdi				; out
+	lea	rdx,[rsi+rdx]
+	call	der_read			; Certificate SEQUENCE
+	jc	.no
+	cmp	al,0x30
+	jne	.no
+	mov	rdx,r8
+	call	der_read			; tbsCertificate
+	jc	.no
+	cmp	al,0x30
+	jne	.no
+	mov	rdx,r8
+	call	der_read			; [0] version, or the serial
+	jc	.no
+	mov	ebx,5
+	cmp	al,0xA0
+	jne	@f
+	inc	ebx
+@@:
+	mov	rsi,r8
+	dec	ebx
+	jz	.spki
+@@:
+	call	der_read
+	jc	.no
+	mov	rsi,r8
+	dec	ebx
+	jnz	@b
+.spki:
+	call	der_read			; SubjectPublicKeyInfo
+	jc	.no
+	cmp	al,0x30
+	jne	.no
+	mov	rdx,r8
+	call	der_read			; AlgorithmIdentifier
+	jc	.no
+	cmp	al,0x30
+	jne	.no
+	mov	rbx,r8				; the BIT STRING follows
+	mov	rdx,r8
+	call	der_read			; algorithm OID
+	jc	.no
+	cmp	al,6
+	jne	.no
+	lea	rdi,[oid_ec_public_key]
+	mov	edx,7
+	call	der_oid_is
+	jne	.no
+	mov	rsi,r8
+	mov	rdx,rbx
+	call	der_read			; the named curve
+	jc	.no
+	lea	rdi,[oid_prime256v1]
+	mov	edx,8
+	call	der_oid_is
+	jne	.no
+	mov	rsi,rbx
+	mov	rdx,rbx				; (bounded by the SPKI already read)
+	add	rdx,256
+	call	der_read			; BIT STRING: 00 04 X Y
+	jc	.no
+	cmp	al,3
+	jne	.no
+	cmp	ecx,66
+	jne	.no
+	cmp	word [rsi],0x0400
+	jne	.no
+	inc	rsi
+	mov	rdi,r12
+	mov	ecx,65
+	rep	movsb
+	mov	eax,1
+	jmp	.out
+.no:
+	xor	eax,eax
+.out:
+	pop	r12
+	pop	rbx
+	ret

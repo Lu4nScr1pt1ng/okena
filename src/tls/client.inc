@@ -176,7 +176,15 @@ TC_SIV		:= TC_SKEY + 16
 TC_NONCE	:= TC_SIV + 12
 TC_SSEQ		:= TC_NONCE + 12		; q: server record sequence
 TC_TH		:= TC_SSEQ + 8			; a transcript hash
-TC_GCM		:= TC_TH + 32
+TC_CHT		:= TC_TH + 32			; client handshake traffic secret
+TC_SFK		:= TC_CHT + 32			; server / client finished keys
+TC_CFK		:= TC_SFK + 32
+TC_LEAFPUB	:= TC_CFK + 32			; the leaf certificate's P-256 key (65)
+TC_CV		:= TC_LEAFPUB + 72		; the CertificateVerify signed content (130)
+TC_DIG		:= TC_CV + 136			; its SHA-256
+TC_FIN		:= TC_DIG + 32			; a computed Finished / HMAC
+TC_THX		:= TC_FIN + 32			; a transcript-hash snapshot
+TC_GCM		:= TC_THX + 32
 TC_FULL		:= TC_GCM + GCM_SIZE
 
 ; rdi = tc, rsi = in (the server's bytes), edx = in length, rcx = out:
@@ -293,8 +301,9 @@ tlsc_server_flight:
 	lea	rcx,[rbx+TC_SHARED]
 	mov	r8d,32
 	call	hkdf_extract
-	; server handshake traffic secret, key, IV
+	; server and client handshake traffic secrets, the server key/IV
 	tls_label [rbx+TC_SHT], 32, [rbx+TC_HS], lbl_s_hs, [rbx+TC_TH], 32
+	tls_label [rbx+TC_CHT], 32, [rbx+TC_HS], lbl_c_hs, [rbx+TC_TH], 32
 	tls_label [rbx+TC_SKEY], 16, [rbx+TC_SHT], lbl_key
 	tls_label [rbx+TC_SIV], 12, [rbx+TC_SHT], lbl_iv
 	lea	rdi,[rbx+TC_GCM]
@@ -371,6 +380,185 @@ tlsc_server_flight:
 	xor	eax,eax
 .out:
 	add	rsp,48
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; snapshot the running transcript (TC_SHA) hash into [rbx+TC_THX], using
+; TC_GCM as scratch; leaves TC_SHA able to continue
+macro tc_snapshot
+	lea	rsi,[rbx+TC_SHA]
+	lea	rdi,[rbx+TC_GCM]
+	mov	ecx,SHA256_CTX_SIZE
+	rep	movsb
+	lea	rdi,[rbx+TC_GCM]
+	lea	rsi,[rbx+TC_THX]
+	call	sha256_final
+end macro
+
+; add [rsi, edx) to the transcript
+macro tc_add
+	lea	rdi,[rbx+TC_SHA]
+	call	sha256_update
+end macro
+
+; rdi = tc, rsi = the decrypted server flight (handshake messages), edx =
+; its length: verifies the CertificateVerify signature (over the transcript
+; through Certificate, under the leaf key) and the server Finished (over
+; the transcript through CertificateVerify, under the server finished key).
+; eax = 1 when both verify, else 0. The transcript (TC_SHA, holding
+; ClientHello || ServerHello) is extended through the server Finished.
+tlsc_verify:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	mov	rbx,rdi
+	mov	r12,rsi				; cursor
+	lea	r13,[rsi+rdx]			; end
+	; finished keys
+	tls_label [rbx+TC_SFK], 32, [rbx+TC_SHT], lbl_finished
+	tls_label [rbx+TC_CFK], 32, [rbx+TC_CHT], lbl_finished
+	xor	r15d,r15d			; got-leaf flag
+.msg:
+	lea	rax,[r12+4]
+	cmp	rax,r13
+	ja	.bad
+	mov	eax,[r12]			; type | u24 length (big endian)
+	bswap	eax
+	movzx	ecx,al				; (al = low byte of length after bswap)
+	mov	edx,eax
+	and	edx,0x00FFFFFF			; length
+	shr	eax,24				; type
+	lea	r14,[r12+4+rdx]			; message end
+	cmp	r14,r13
+	ja	.bad
+	cmp	eax,11
+	je	.cert
+	cmp	eax,15
+	je	.certverify
+	cmp	eax,20
+	je	.finished
+	; EncryptedExtensions or anything else: just transcript it
+	mov	rsi,r12
+	mov	edx,r14d
+	sub	edx,r12d
+	tc_add
+	jmp	.next
+.cert:
+	; Certificate: context(u8=0), certificate_list(u24){ cert(u24)+ext(u16) }
+	lea	rsi,[r12+4]			; after handshake header
+	movzx	eax,byte [rsi]			; certificate_request_context length
+	lea	rsi,[rsi+rax+1]
+	add	rsi,3				; skip certificate_list length (u24)
+	mov	eax,[rsi-3]			; first cert length (u24, big endian in low 3)
+	bswap	eax
+	shr	eax,8
+	mov	ecx,eax				; leaf cert DER length
+	add	rsi,3				; past the cert's own u24 length
+	push	rsi
+	push	rcx
+	lea	rdi,[rbx+TC_LEAFPUB]
+	mov	edx,ecx
+	call	cert_extract_pubkey
+	pop	rcx
+	pop	rsi
+	test	eax,eax
+	jz	.bad
+	mov	r15d,1
+	; transcript the whole Certificate message
+	mov	rsi,r12
+	mov	edx,r14d
+	sub	edx,r12d
+	tc_add
+	jmp	.next
+.certverify:
+	test	r15d,r15d
+	jz	.bad				; no certificate seen
+	; TH through Certificate -> TC_THX
+	tc_snapshot
+	; signed content = 64*0x20 | "...CertificateVerify" | 0x00 | TH
+	lea	rdi,[rbx+TC_CV]
+	lea	rsi,[tls13_cv_prefix]
+	mov	ecx,TLS13_CV_PREFIX
+	rep	movsb
+	lea	rsi,[rbx+TC_THX]
+	mov	ecx,32
+	rep	movsb
+	lea	rdi,[rbx+TC_DIG]
+	lea	rsi,[rbx+TC_CV]
+	mov	edx,TLS13_CV_PREFIX + 32
+	call	sha256
+	; CV body: SignatureScheme(2), signature length(2), signature DER
+	lea	rsi,[r12+4]
+	cmp	word [rsi],0x0304		; ecdsa_secp256r1_sha256 (0x0403, byte-swapped)
+	jne	.bad
+	add	rsi,4				; past scheme + length
+	mov	rdx,r14
+	call	der_read			; SEQUENCE { r, s }
+	jc	.bad
+	cmp	al,0x30
+	jne	.bad
+	mov	rdx,r8
+	call	der_read			; INTEGER r
+	jc	.bad
+	lea	rdi,[rbx+TC_CV]			; r||s scratch (TC_CV is free now)
+	push	r8
+	call	der_int_32
+	pop	r8
+	jc	.bad
+	mov	rsi,r8
+	call	der_read			; INTEGER s
+	jc	.bad
+	lea	rdi,[rbx+TC_CV+32]
+	call	der_int_32
+	jc	.bad
+	lea	rdi,[rbx+TC_LEAFPUB]		; verify
+	lea	rsi,[rbx+TC_DIG]
+	lea	rdx,[rbx+TC_CV]
+	lea	rcx,[rbx+TC_CV+32]
+	call	p256_verify
+	test	eax,eax
+	jz	.bad
+	; transcript the CertificateVerify message
+	mov	rsi,r12
+	mov	edx,r14d
+	sub	edx,r12d
+	tc_add
+	jmp	.next
+.finished:
+	; server Finished = HMAC(SFK, TH through CertificateVerify)
+	tc_snapshot
+	lea	rdi,[rbx+TC_FIN]
+	lea	rsi,[rbx+TC_SFK]
+	mov	edx,32
+	lea	rcx,[rbx+TC_THX]
+	mov	r8d,32
+	call	hmac_sha256
+	lea	rdi,[rbx+TC_FIN]		; compare with the message body (32 bytes)
+	lea	rsi,[r12+4]
+	mov	edx,32
+	call	ct_equal
+	test	eax,eax
+	jz	.bad
+	mov	rsi,r12				; transcript the server Finished
+	mov	edx,r14d
+	sub	edx,r12d
+	tc_add
+	jmp	.done
+.next:
+	mov	r12,r14
+	jmp	.msg
+.done:
+	mov	eax,1
+	jmp	.out
+.bad:
+	xor	eax,eax
+.out:
 	pop	r15
 	pop	r14
 	pop	r13

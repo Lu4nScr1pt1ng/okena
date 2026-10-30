@@ -47,32 +47,19 @@ def run_against(groups, port):
         r = subprocess.run([str(CLIENT)], input=struct.pack(">H", port), capture_output=True, timeout=10)
     finally:
         sp.kill()
-    out = r.stdout.decode().strip()
-    if not out:
-        return None
-    b = bytes.fromhex(out)
-    msgs, off = [], 0
-    while off + 4 <= len(b):
-        t = b[off]
-        ln = int.from_bytes(b[off + 1:off + 4], "big")
-        msgs.append(t)
-        off += 4 + ln
-    return msgs
-
-
-EXPECTED = [8, 11, 15, 20]              # EncryptedExtensions, Certificate, CertificateVerify, Finished
+    return r.stdout.decode().strip()
 
 
 def main():
     if not shutil.which("openssl"):
         print("skip tls client: openssl not found")
         return 0
-    m = run_against("X25519", 34480)
-    check("x25519: the server's flight decrypts (EE, Certificate, CertVerify, Finished)", m == EXPECTED, str(m))
-    m = run_against("P-256", 34481)
-    check("secp256r1: the server's flight decrypts", m == EXPECTED, str(m))
-    m = run_against("X25519:P-256", 34482)
-    check("x25519 preferred when the server offers both", m == EXPECTED, str(m))
+    # the handshake decrypts the server flight, then verifies the
+    # CertificateVerify signature and the server Finished ("1" on success)
+    check("x25519: handshake verifies (CertificateVerify + server Finished)",
+          run_against("X25519", 34480) == "1")
+    check("secp256r1: handshake verifies", run_against("P-256", 34481) == "1")
+    check("x25519 preferred when the server offers both", run_against("X25519:P-256", 34482) == "1")
     print(f"tls client: {'all passed' if not failures else f'{failures} failed'}")
     return 1 if failures else 0
 

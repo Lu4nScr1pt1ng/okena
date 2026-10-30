@@ -125,40 +125,22 @@ start:
 	call	tlsc_server_flight
 	test	eax,eax
 	jz	fail
-	; print g_out as hex
-	mov	r12d,eax
-	lea	r8,[g_out]
-	xor	ecx,ecx
-.hex:
-	cmp	ecx,r12d
-	jae	.end
-	movzx	eax,byte [r8+rcx]
+	; verify the CertificateVerify and the server Finished
+	lea	rdi,[g_tc]
+	lea	rsi,[g_out]
 	mov	edx,eax
-	shr	eax,4
-	mov	dil,[.hexd+rax]
-	and	edx,15
-	mov	sil,[.hexd+rdx]
-	mov	[g_pair],dil
-	mov	[g_pair+1],sil
-	push	rcx
-	push	r8
-	push	r12
+	call	tlsc_verify
+	mov	[g_pair],al			; 1 = verified, 0 = not
+	add	byte [g_pair],'0'
 	mov	edi,[g_out_fd]
 	lea	rsi,[g_pair]
-	mov	edx,2
+	mov	edx,1
 	call	out_str
-	pop	r12
-	pop	r8
-	pop	rcx
-	inc	ecx
-	jmp	.hex
-.end:
 	call	out_flush
 	xor	edi,edi
 	sys	SYS_exit
 .sni		db 'localhost'
 .sni.len	:= $ - .sni
-.hexd		db '0123456789abcdef'
 
 segment readable
 	rodata_emit
