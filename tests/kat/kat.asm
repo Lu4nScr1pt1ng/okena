@@ -35,6 +35,7 @@ include '../../src/crypto/p256.inc'
 include '../../src/tls/x509.inc'
 include '../../src/tls/keyschedule.inc'
 include '../../src/tls/client.inc'
+include '../../src/tls/tls12.inc'
 
 INPUT_MAX := 1 shl 22
 
@@ -111,6 +112,8 @@ start:
 	je	.cert_chain
 	cmp	al,'p'
 	je	.cert_pem
+	cmp	al,'R'
+	je	.tls_prf
 	cmp	al,'g'
 	je	.gcm
 	cmp	al,'G'
@@ -503,6 +506,21 @@ start:
 	mov	[g_out],al
 	lea	rdi,[g_out]
 	mov	esi,1
+	jmp	.print
+.tls_prf:				; outlen(u16 le) seclen(u16 le) secret seedlen(u16 le) seed
+	movzx	r13d,word [rsi]			; output length
+	movzx	r14d,word [rsi+2]		; secret length
+	lea	r15,[rsi+4]			; secret
+	movzx	eax,word [rsi+r14+4]		; seed length
+	lea	r8,[rsi+r14+6]			; seed
+	mov	r9d,eax
+	lea	rdi,[g_out]
+	mov	esi,r13d
+	mov	rdx,r15
+	mov	ecx,r14d
+	call	p_sha256
+	lea	rdi,[g_out]
+	mov	esi,r13d
 	jmp	.print
 .pem_fail:
 	mov	byte [g_out],0

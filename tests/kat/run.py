@@ -316,6 +316,27 @@ try:
     _wrapped = b"# okena trust store\r\n" + root_pem.replace(b"\n", b"\r\n") + b"\r\ntrailing\r\n"
     check("x509 pem: tolerates comments and CRLF", _pem(_wrapped, [ee_c, inter_c]), "01")
 
+    # TLS 1.2 PRF (RFC 5246 5): P_SHA256(secret, seed), the basis of the
+    # 1.2 key material and Finished verify_data
+    import hmac as _hmac
+    def p_sha256_ref(secret, seed, n):
+        out = b""
+        a = seed
+        while len(out) < n:
+            a = _hmac.new(secret, a, "sha256").digest()
+            out += _hmac.new(secret, a + seed, "sha256").digest()
+        return out[:n]
+    def _prf(secret, seed, n):
+        return run(b"R", _struct.pack("<H", n) + _struct.pack("<H", len(secret)) + secret
+                   + _struct.pack("<H", len(seed)) + seed)
+    import os as _os
+    for secret, seed, n in [(b"\x9b" * 48, b"master secret" + b"\xaa" * 64, 48),
+                            (b"key", b"key expansion" + b"\x01" * 64, 40),
+                            (_os.urandom(32), b"client finished" + _os.urandom(32), 12),
+                            (_os.urandom(48), b"test label" + _os.urandom(30), 100)]:
+        check(f"tls1.2 prf secret {len(secret)} seed {len(seed)} out {n}",
+              _prf(secret, seed, n), p_sha256_ref(secret, seed, n).hex())
+
     # TLS client: a well-formed ClientHello (offering x25519 + secp256r1,
     # TLS_AES_128_GCM_SHA256, ecdsa_secp256r1_sha256, ALPN, SNI)
     def _parse_ch(sni):
