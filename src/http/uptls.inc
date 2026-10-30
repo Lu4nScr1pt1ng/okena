@@ -54,7 +54,6 @@ http_uptls_start:
 	jne	.unavail
 	cmp	dword [r15+H_UTLS],0		; downstream user-space records share the area
 	jne	.unavail
-	or	dword [r15+H_FLAGS],HX_NOPOOL	; no reuse/pooling of TLS upstreams (v1)
 	mov	r14,[r15+H_BUF]
 	call	session_ptr
 	mov	eax,[rax+S_POOL]

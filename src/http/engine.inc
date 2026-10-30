@@ -143,6 +143,13 @@ h_connect:
 	mov	dword [r12+S_STATE],ST_OPEN
 	h_rec
 	or	dword [r15+H_FLAGS],HX_REUSED
+	mov	r8d,[r12+S_POOL]		; a reused TLS upstream is already a kTLS socket
+	imul	r8,r8,PL_SIZE
+	lea	rcx,[g_pools]
+	cmp	dword [rcx+r8+PL_TLS],0
+	je	@f
+	mov	dword [r15+H_UPKTLS],1
+@@:
 	cmp	dword [g_engine],ENGINE_EPOLL
 	je	.epoll_reuse
 	mov	[g_upslot+rbx*4],eax

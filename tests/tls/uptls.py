@@ -29,6 +29,8 @@ BACK, PLAIN, LST, LST_BAD, LST_HOST = BASE, BASE + 1, BASE + 2, BASE + 3, BASE +
 tmp = pathlib.Path(tempfile.mkdtemp())
 atexit.register(shutil.rmtree, tmp, True)
 failures = 0
+backend_conns = 0
+backend_lock = threading.Lock()
 
 
 def check(name, ok, detail=""):
@@ -55,6 +57,8 @@ sh("openssl", "req", "-new", "-x509", "-key", "other.key", "-sha256", "-subj", "
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"               # keep-alive, so okena can pool the link
+
     def do_GET(self):
         body = b"backend-ok:" + self.path.encode()
         self.send_response(200)
@@ -72,6 +76,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.close_connection = True
 
 
+class CountingHTTPServer(http.server.ThreadingHTTPServer):
+    def get_request(self):
+        global backend_conns
+        with backend_lock:
+            backend_conns += 1
+        return super().get_request()
+
+
 def tls_backend(port):
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.minimum_version = ssl.TLSVersion.TLSv1_3
@@ -79,7 +91,7 @@ def tls_backend(port):
     ctx.load_cert_chain(tmp / "leaf.pem", tmp / "leaf.key")
     # the default backend sends NewSessionTickets after its Finished; okena
     # drains those kTLS control records (recvmsg) and proxies over the link
-    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    httpd = CountingHTTPServer(("127.0.0.1", port), Handler)
     httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
     httpd.serve_forever()
 
@@ -153,6 +165,27 @@ pool plain {{
     # the link really is encrypted end to end: many requests keep working
     oks = sum(get(LST, f"/n{i}")[1] == b"backend-ok:/n%d" % i for i in range(20))
     check("20 requests over the kTLS upstream", oks == 20, f"{oks}/20")
+
+    global backend_conns
+    backend_conns = 0
+    ok = True
+    with socket.create_connection(("127.0.0.1", LST), timeout=5) as s:
+        f = s.makefile("rwb")
+        for i in range(30):                     # keep-alive: one client, many requests
+            f.write(f"GET /p{i} HTTP/1.1\r\nHost: t\r\n\r\n".encode())
+            f.flush()
+            status = f.readline()
+            clen = 0
+            while True:
+                line = f.readline()
+                if line in (b"\r\n", b""):
+                    break
+                if line.lower().startswith(b"content-length:"):
+                    clen = int(line.split(b":")[1])
+            body = f.read(clen)
+            ok = ok and status.split()[1] == b"200" and body == b"backend-ok:/p%d" % i
+    check("kTLS upstream reused across a keep-alive client's 30 requests",
+          ok and backend_conns <= 2, f"ok={ok} backend_conns={backend_conns}")
 
     check("wrong trust anchor: 502, not proxied", get(LST_BAD)[0] == 502, str(get(LST_BAD)))
     check("plaintext backend on a tls pool: 502", get(LST_HOST)[0] == 502, str(get(LST_HOST)))
