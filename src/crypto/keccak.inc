@@ -11,7 +11,8 @@
 ; Sponge: keccak_absorb takes the whole message at once (every caller has
 ; it in memory), pads it with the domain bits and leaves the state with
 ; the first output block ready; keccak_squeeze copies out whole blocks,
-; permuting after each, so it can be called again for more (SampleNTT).
+; permuting before each but the first, so it can be called again for more
+; (SampleNTT) and never permutes for output nobody reads.
 
 KECCAK_STATE	:= 200
 SHA3_256_RATE	:= 136
@@ -39,45 +40,71 @@ rodata
 end rodata
 
 ; rdi = state: Keccak-f[1600], 24 rounds. Keeps every register but rax,
-; rcx, rdx, r8..r11.
+; rcx, rdx, r8..r11. Theta's D goes into rho and pi on the way (no
+; read-modify-write of the state), chi works from the shuffled copy.
 keccak_f1600:
-	push	rbx
-	sub	rsp,200 + 40			; B (25 lanes), then C (5)
+	sub	rsp,200 + 40			; B (25 lanes), then D (5)
 	xor	ecx,ecx				; the round
 .round:
-	; theta: C[x] = A[x, 0..4] combined; A[x, y] ^= C[x-1] ^ rol(C[x+1], 1)
-	repeat 5, x:0
-		mov	rax,[rdi+x*8]
-		xor	rax,[rdi+(x+5)*8]
-		xor	rax,[rdi+(x+10)*8]
-		xor	rax,[rdi+(x+15)*8]
-		xor	rax,[rdi+(x+20)*8]
-		mov	[rsp+200+x*8],rax
+	; theta: C[x] = A[x, 0..4] combined, D[x] = C[x-1] ^ rol(C[x+1], 1)
+	mov	r8,[rdi]
+	mov	r9,[rdi+8]
+	mov	r10,[rdi+16]
+	mov	r11,[rdi+24]
+	mov	rdx,[rdi+32]
+	repeat 4, y:1
+		xor	r8,[rdi+(5*y)*8]
+		xor	r9,[rdi+(5*y+1)*8]
+		xor	r10,[rdi+(5*y+2)*8]
+		xor	r11,[rdi+(5*y+3)*8]
+		xor	rdx,[rdi+(5*y+4)*8]
 	end repeat
-	repeat 5, x:0
-		mov	rax,[rsp+200+((x+1) mod 5)*8]
-		rol	rax,1
-		xor	rax,[rsp+200+((x+4) mod 5)*8]
-		repeat 5, y:0
-			xor	[rdi+(x+5*y)*8],rax
-		end repeat
-	end repeat
-	; rho and pi: B[y, 2x + 3y] = rol(A[x, y], r[x, y])
+	rorx	rax,r9,63			; D[0] = C[4] ^ rol(C[1], 1)
+	xor	rax,rdx
+	mov	[rsp+200],rax
+	rorx	rax,r10,63			; D[1] = C[0] ^ rol(C[2], 1)
+	xor	rax,r8
+	mov	[rsp+208],rax
+	rorx	rax,r11,63			; D[2] = C[1] ^ rol(C[3], 1)
+	xor	rax,r9
+	mov	[rsp+216],rax
+	rorx	rax,rdx,63			; D[3] = C[2] ^ rol(C[4], 1)
+	xor	rax,r10
+	mov	[rsp+224],rax
+	rorx	rax,r8,63			; D[4] = C[3] ^ rol(C[0], 1)
+	xor	rax,r11
+	mov	[rsp+232],rax
+	; rho and pi, with theta's D: B[y, 2x + 3y] = rol(A[x, y] ^ D[x], r[x, y])
 	repeat 25, i:0
 		mov	rax,[rdi+i*8]
+		xor	rax,[rsp+200+(i mod 5)*8]
 		if KECCAK_ROT#i <> 0
-			rol	rax,KECCAK_ROT#i
+			rorx	rax,rax,64-KECCAK_ROT#i
 		end if
 		mov	[rsp+((i / 5) + 5*((2*(i mod 5) + 3*(i / 5)) mod 5))*8],rax
 	end repeat
-	; chi: A[x, y] = B[x, y] ^ (~B[x+1, y] & B[x+2, y])
+	; chi: A[x, y] = B[x, y] ^ (~B[x+1, y] & B[x+2, y]), a row in registers
 	repeat 5, y:0
-		repeat 5, x:0
-			mov	rax,[rsp+(((x+1) mod 5) + 5*y)*8]
-			andn	rax,rax,[rsp+(((x+2) mod 5) + 5*y)*8]
-			xor	rax,[rsp+(x + 5*y)*8]
-			mov	[rdi+(x + 5*y)*8],rax
-		end repeat
+		mov	r8,[rsp+(5*y)*8]
+		mov	r9,[rsp+(5*y+1)*8]
+		mov	r10,[rsp+(5*y+2)*8]
+		mov	r11,[rsp+(5*y+3)*8]
+		mov	rdx,[rsp+(5*y+4)*8]
+		andn	rax,r9,r10
+		xor	rax,r8
+		mov	[rdi+(5*y)*8],rax
+		andn	rax,r10,r11
+		xor	rax,r9
+		mov	[rdi+(5*y+1)*8],rax
+		andn	rax,r11,rdx
+		xor	rax,r10
+		mov	[rdi+(5*y+2)*8],rax
+		andn	rax,rdx,r8
+		xor	rax,r11
+		mov	[rdi+(5*y+3)*8],rax
+		andn	rax,r8,r9
+		xor	rax,rdx
+		mov	[rdi+(5*y+4)*8],rax
 	end repeat
 	; iota
 	lea	rax,[keccak_rc]
@@ -87,7 +114,6 @@ keccak_f1600:
 	cmp	ecx,24
 	jb	.round
 	add	rsp,200 + 40
-	pop	rbx
 	ret
 
 ; rdi = state, rsi = message, rdx = its length, ecx = rate (bytes, a
@@ -142,18 +168,27 @@ keccak_absorb:
 	ret
 
 ; rdi = state (as keccak_absorb left it, or a previous squeeze), rsi =
-; out, edx = whole blocks, ecx = rate: edx blocks of output, the state
-; permuted after each so the next call goes on. Keeps rdi.
+; out, edx = whole blocks, ecx = rate, r8d = 1 when the state's block was
+; given out already (a later call), 0 right after keccak_absorb: edx blocks
+; of output, a permutation before each new one only (none wasted after the
+; last). Keeps rdi.
 keccak_squeeze:
 	push	rbx
 	push	r12
 	push	r13
+	push	r14
 	mov	r12,rsi
 	mov	r13d,edx
 	mov	ebx,ecx
+	mov	r14d,r8d
 .block:
 	test	r13d,r13d
 	jz	.done
+	test	r14d,r14d
+	jz	@f
+	call	keccak_f1600
+@@:
+	mov	r14d,1
 	xor	ecx,ecx
 @@:
 	mov	rax,[rdi+rcx]
@@ -163,9 +198,9 @@ keccak_squeeze:
 	jb	@b
 	add	r12,rbx
 	dec	r13d
-	call	keccak_f1600
 	jmp	.block
 .done:
+	pop	r14
 	pop	r13
 	pop	r12
 	pop	rbx
@@ -220,13 +255,16 @@ shake:
 	mov	ecx,ebx
 	mov	r8d,KECCAK_SHAKE
 	call	keccak_absorb
+	xor	r14d,r14d			; the first block is the state's own
 .more:
 	test	r13d,r13d
 	jz	.done
 	lea	rsi,[rsp+KECCAK_STATE]
 	mov	edx,1
 	mov	ecx,ebx
+	mov	r8d,r14d
 	call	keccak_squeeze
+	mov	r14d,1
 	mov	ecx,r13d
 	cmp	ecx,ebx
 	jbe	@f

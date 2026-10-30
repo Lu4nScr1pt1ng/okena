@@ -191,9 +191,10 @@ client's key checked (FIPS 203's modulus check, illegal_parameter
 otherwise), the 64-byte hybrid secret (ML-KEM's, then x25519's) into the
 key schedule, resumption on top (psk_dhe_ke). Checked byte for byte against
 a FIPS 203 reference in tests/kat and against OpenSSL's decapsulation;
-s_client and curl negotiate it. The encapsulation is scalar for now (49.7
-us; OpenSSL 3.5 with AVX2: 25 us), so a hybrid handshake costs about twice
-an x25519 one; the AVX2 NTT and a four-way Keccak are next. Still open:
+s_client and curl negotiate it. The encapsulation is scalar for now (36 us,
+Keccak-f 368 ns; OpenSSL 3.5 with AVX2: 25 us), so a hybrid handshake
+costs about 1.7 times an x25519 one; the AVX2 NTT and a four-way Keccak
+are next. Still open:
 ChaCha20-Poly1305, Ed25519, the hybrid towards upstreams (key generation
 and decapsulation), Wycheproof.
 

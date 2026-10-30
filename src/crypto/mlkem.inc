@@ -363,12 +363,14 @@ mlkem_sample_ntt:
 	mov	r8d,KECCAK_SHAKE
 	call	keccak_absorb
 	xor	ebx,ebx				; coefficients so far
+	xor	r8d,r8d				; the first block: the state's own
 .block:
 	lea	rdi,[r13+MK_KEC]
 	lea	rsi,[r13+MK_XOF]
 	mov	edx,1
 	mov	ecx,SHAKE128_RATE
 	call	keccak_squeeze
+	mov	r8d,1
 	lea	rsi,[r13+MK_XOF]
 	lea	r14,[rsi+SHAKE128_RATE]
 .triple:
