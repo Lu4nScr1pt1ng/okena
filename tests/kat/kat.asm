@@ -32,6 +32,7 @@ include '../../src/crypto/hkdf.inc'
 include '../../src/crypto/x25519.inc'
 include '../../src/crypto/aesgcm.inc'
 include '../../src/crypto/p256.inc'
+include '../../src/tls/x509.inc'
 
 INPUT_MAX := 1 shl 22
 
@@ -93,6 +94,8 @@ start:
 	je	.ecdh
 	cmp	al,'V'
 	je	.ecdsa_verify
+	cmp	al,'C'
+	je	.cert_verify
 	cmp	al,'g'
 	je	.gcm
 	cmp	al,'G'
@@ -415,6 +418,15 @@ start:
 	lea	rdi,[g_out]
 	call	x25519_base
 	mov	esi,32
+	jmp	.print
+.cert_verify:				; issuer_pub(65) cert_len(u16 le) cert_der
+	movzx	edx,word [rsi+65]
+	lea	rdi,[rsi]			; issuer pub
+	lea	rsi,[rsi+67]			; cert der
+	call	cert_verify
+	mov	[g_out],al
+	lea	rdi,[g_out]
+	mov	esi,1
 	jmp	.print
 .ecdsa_verify:				; pubkey(65) digest(32) r(32) s(32)
 	mov	rdi,rsi

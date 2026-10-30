@@ -185,6 +185,43 @@ try:
     check("p256 verify: off-curve public key rejected",
           run(b"V", bytes(offp) + dg + rr.to_bytes(32, "big") + ss.to_bytes(32, "big")), "00")
 
+    # X.509: a certificate's ECDSA P-256/SHA-256 signature, verified under
+    # its issuer's key (the basis of upstream TLS and mTLS chains)
+    import struct as _struct
+    from cryptography import x509 as _x509
+    _ca = _ec.generate_private_key(_ec.SECP256R1())
+    _leaf = _ec.generate_private_key(_ec.SECP256R1())
+    import datetime as _dt
+    def _cert(subject, signer_key, issuer):
+        b = (_x509.CertificateBuilder()
+             .subject_name(_x509.Name([_x509.NameAttribute(_x509.NameOID.COMMON_NAME, subject)]))
+             .issuer_name(_x509.Name([_x509.NameAttribute(_x509.NameOID.COMMON_NAME, issuer)]))
+             .public_key(signer_key.public_key() if subject == issuer else _leaf.public_key())
+             .serial_number(_x509.random_serial_number())
+             .not_valid_before(_dt.datetime(2020, 1, 1))
+             .not_valid_after(_dt.datetime(2030, 1, 1)))
+        return b.sign(signer_key, _hashes.SHA256())
+    ca_cert = _cert("ca", _ca, "ca")
+    leaf_cert = (_x509.CertificateBuilder()
+                 .subject_name(_x509.Name([_x509.NameAttribute(_x509.NameOID.COMMON_NAME, "leaf")]))
+                 .issuer_name(_x509.Name([_x509.NameAttribute(_x509.NameOID.COMMON_NAME, "ca")]))
+                 .public_key(_leaf.public_key())
+                 .serial_number(_x509.random_serial_number())
+                 .not_valid_before(_dt.datetime(2020, 1, 1))
+                 .not_valid_after(_dt.datetime(2030, 1, 1))
+                 .sign(_ca, _hashes.SHA256()))
+    capub = _ca.public_key().public_bytes(_Enc.X962, _PF.UncompressedPoint)
+    leafpub = _leaf.public_key().public_bytes(_Enc.X962, _PF.UncompressedPoint)
+    leaf_der = leaf_cert.public_bytes(_Enc.DER)
+    def _cv(pub, der):
+        return run(b"C", pub + _struct.pack("<H", len(der)) + der)
+    check("x509: leaf verified under the issuer key", _cv(capub, leaf_der), "01")
+    check("x509: wrong issuer key rejected", _cv(leafpub, leaf_der), "00")
+    check("x509: self-signed CA verifies under its own key", _cv(capub, ca_cert.public_bytes(_Enc.DER)), "01")
+    _bad = bytearray(leaf_der)
+    _bad[len(_bad) // 2] ^= 1
+    check("x509: tampered certificate rejected", _cv(capub, bytes(_bad)), "00")
+
     # edge inputs: u with the top bit set (ignored), u = 0, u >= p
     for u in (bytes(31) + b"\x80", bytes(32), (2**255 - 19 + 5).to_bytes(32, "little"), b"\xff" * 32):
         a = X25519PrivateKey.generate()

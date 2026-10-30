@@ -1,0 +1,210 @@
+; X.509 (DER): the generic parser, the OIDs okena knows, and the ECDSA
+; P-256 certificate-signature check (used by certificate loading in
+; src/tls/certs.inc and, later, by TLS towards upstreams). No dependency
+; on the configuration layer, so a test harness can include this alone.
+
+rodata
+	oid_ec_public_key	db 0x2A,0x86,0x48,0xCE,0x3D,0x02,0x01		; 1.2.840.10045.2.1
+	oid_prime256v1		db 0x2A,0x86,0x48,0xCE,0x3D,0x03,0x01,0x07	; 1.2.840.10045.3.1.7
+	oid_rsa_encryption	db 0x2A,0x86,0x48,0x86,0xF7,0x0D,0x01,0x01,0x01	; 1.2.840.113549.1.1.1
+	oid_ecdsa_sha256	db 0x2A,0x86,0x48,0xCE,0x3D,0x04,0x03,0x02	; 1.2.840.10045.4.3.2
+end rodata
+
+; rsi = element, rdx = end of the enclosing content. al = tag, rsi = its
+; content, ecx = content length, r8 = the next element. CF when it does
+; not fit or the length is not a definite one of at most 3 bytes.
+der_read:
+	lea	rax,[rsi+2]
+	cmp	rax,rdx
+	ja	.bad
+	movzx	eax,byte [rsi]
+	movzx	ecx,byte [rsi+1]
+	add	rsi,2
+	test	cl,0x80
+	jz	.content
+	and	ecx,0x7F
+	jz	.bad				; indefinite: not DER
+	cmp	ecx,3
+	ja	.bad
+	lea	r8,[rsi+rcx]
+	cmp	r8,rdx
+	ja	.bad
+	mov	r9d,ecx
+	xor	ecx,ecx
+@@:
+	shl	ecx,8
+	mov	cl,[rsi]
+	inc	rsi
+	dec	r9d
+	jnz	@b
+.content:
+	lea	r8,[rsi+rcx]
+	cmp	r8,rdx
+	ja	.bad
+	clc
+	ret
+.bad:
+	stc
+	ret
+
+; rsi/ecx = an OID's content, rdi/edx = the expected bytes: ZF when equal.
+der_oid_is:
+	cmp	ecx,edx
+	jne	.out
+	push	rsi
+	push	rdi
+	push	rcx
+	repe	cmpsb
+	pop	rcx
+	pop	rdi
+	pop	rsi
+.out:
+	ret
+
+; rsi = a DER INTEGER's content, ecx = its length, rdi = out[32]: the
+; integer right-aligned big-endian in 32 bytes (a leading sign zero
+; dropped, shorter values left-padded). CF when it does not fit in 32.
+der_int_32:
+	push	rdi
+	xor	eax,eax				; zero the 32 bytes
+	mov	r9,rdi
+	mov	r10d,ecx
+	repeat 4, i:0
+		mov	qword [r9+i*8],0
+	end repeat
+	mov	ecx,r10d
+	cmp	ecx,0
+	je	.ok				; zero-length integer: leaves 0
+	cmp	byte [rsi],0			; a leading 0x00 sign byte
+	jne	@f
+	inc	rsi
+	dec	ecx
+@@:
+	cmp	ecx,32
+	ja	.bad
+	pop	rdi
+	lea	rdi,[rdi+32]
+	sub	rdi,rcx				; right-aligned
+	rep	movsb
+	clc
+	ret
+.ok:
+	pop	rdi
+	clc
+	ret
+.bad:
+	pop	rdi
+	stc
+	ret
+
+bss
+	align 8
+	g_x509_tbs	dq ?			; the TBSCertificate's bytes
+	g_x509_tbslen	dd ?
+	g_x509_dig	rb 32			; its SHA-256
+	g_x509_r	rb 32
+	g_x509_s	rb 32
+end bss
+
+; rsi = certificate DER, edx = its length, rdi = the issuer's public key
+; (04|X|Y, 65 bytes): eax = 1 when the certificate's ECDSA P-256 / SHA-256
+; signature verifies under that key, else 0 (also for RSA or any shape
+; okena does not check). Hashes the TBSCertificate, decodes the signature
+; and calls p256_verify.
+cert_verify:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	sub	rsp,8
+	mov	r14,rdi				; issuer pub
+	lea	rdx,[rsi+rdx]			; end of the certificate
+	call	der_read			; Certificate SEQUENCE
+	jc	.bad
+	cmp	al,0x30
+	jne	.bad
+	mov	r13,r8				; the certificate's end
+	mov	rdx,r8
+	mov	rbx,rsi				; tbsCertificate starts here (with its header)
+	call	der_read			; tbsCertificate
+	jc	.bad
+	cmp	al,0x30
+	jne	.bad
+	mov	r12,r8				; and ends here (= signatureAlgorithm start)
+	; hash the TBSCertificate's raw DER [rbx, r12)
+	mov	[g_x509_tbs],rbx
+	mov	eax,r12d
+	sub	eax,ebx
+	mov	[g_x509_tbslen],eax
+	lea	rdi,[g_x509_dig]
+	mov	rsi,rbx
+	mov	edx,eax
+	call	sha256
+	; signatureAlgorithm must be ecdsa-with-SHA256
+	mov	rsi,r12
+	mov	rdx,r13
+	call	der_read			; AlgorithmIdentifier SEQUENCE
+	jc	.bad
+	cmp	al,0x30
+	jne	.bad
+	mov	r12,r8				; signatureValue starts here
+	mov	rdx,r8
+	call	der_read			; its OID
+	jc	.bad
+	cmp	al,6
+	jne	.bad
+	lea	rdi,[oid_ecdsa_sha256]
+	mov	edx,8
+	call	der_oid_is
+	jne	.bad				; not ECDSA-SHA256 (maybe RSA): not checked
+	; signatureValue: BIT STRING of 00 | SEQUENCE { INTEGER r, INTEGER s }
+	mov	rsi,r12
+	mov	rdx,r13
+	call	der_read
+	jc	.bad
+	cmp	al,3
+	jne	.bad
+	cmp	ecx,1
+	jb	.bad
+	cmp	byte [rsi],0			; no unused bits
+	jne	.bad
+	inc	rsi				; past the unused-bits octet
+	mov	rdx,r8				; the BIT STRING's end
+	call	der_read			; SEQUENCE { r, s }
+	jc	.bad
+	cmp	al,0x30
+	jne	.bad
+	mov	rdx,r8
+	call	der_read			; INTEGER r
+	jc	.bad
+	cmp	al,2
+	jne	.bad
+	lea	rdi,[g_x509_r]
+	push	r8
+	call	der_int_32
+	pop	r8
+	jc	.bad
+	mov	rsi,r8
+	call	der_read			; INTEGER s
+	jc	.bad
+	cmp	al,2
+	jne	.bad
+	lea	rdi,[g_x509_s]
+	call	der_int_32
+	jc	.bad
+	; verify
+	mov	rdi,r14
+	lea	rsi,[g_x509_dig]
+	lea	rdx,[g_x509_r]
+	lea	rcx,[g_x509_s]
+	call	p256_verify
+	jmp	.out
+.bad:
+	xor	eax,eax
+.out:
+	add	rsp,8
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret

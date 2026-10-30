@@ -27,65 +27,6 @@ bss
 	g_tls_d		rb 32
 end bss
 
-rodata
-	oid_ec_public_key	db 0x2A,0x86,0x48,0xCE,0x3D,0x02,0x01		; 1.2.840.10045.2.1
-	oid_prime256v1		db 0x2A,0x86,0x48,0xCE,0x3D,0x03,0x01,0x07	; 1.2.840.10045.3.1.7
-	oid_rsa_encryption	db 0x2A,0x86,0x48,0x86,0xF7,0x0D,0x01,0x01,0x01	; 1.2.840.113549.1.1.1
-end rodata
-
-; ------------------------------------------------------------------ DER
-
-; rsi = element, rdx = end of the enclosing content. al = tag, rsi = its
-; content, ecx = content length, r8 = the next element. CF when it does
-; not fit or the length is not a definite one of at most 3 bytes.
-der_read:
-	lea	rax,[rsi+2]
-	cmp	rax,rdx
-	ja	.bad
-	movzx	eax,byte [rsi]
-	movzx	ecx,byte [rsi+1]
-	add	rsi,2
-	test	cl,0x80
-	jz	.content
-	and	ecx,0x7F
-	jz	.bad				; indefinite: not DER
-	cmp	ecx,3
-	ja	.bad
-	lea	r8,[rsi+rcx]
-	cmp	r8,rdx
-	ja	.bad
-	mov	r9d,ecx
-	xor	ecx,ecx
-@@:
-	shl	ecx,8
-	mov	cl,[rsi]
-	inc	rsi
-	dec	r9d
-	jnz	@b
-.content:
-	lea	r8,[rsi+rcx]
-	cmp	r8,rdx
-	ja	.bad
-	clc
-	ret
-.bad:
-	stc
-	ret
-
-; rsi/ecx = an OID's content, rdi/edx = the expected bytes: ZF when equal.
-der_oid_is:
-	cmp	ecx,edx
-	jne	.out
-	push	rsi
-	push	rdi
-	push	rcx
-	repe	cmpsb
-	pop	rcx
-	pop	rdi
-	pop	rsi
-.out:
-	ret
-
 ; ------------------------------------------------------------------ PEM
 
 ; rsi = text, rdx = its end, rdi = "BEGIN " label wanted (NUL-terminated,
