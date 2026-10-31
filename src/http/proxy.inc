@@ -126,6 +126,7 @@ HX_RIDKEPT	:= 65536		; the request id is the one a trusted proxy sent
 HX_HTTP10	:= 131072	; the client speaks HTTP/1.0 (no 1xx for it)
 HX_INTERIM	:= 262144	; the head being written is an interim (1xx) one
 HX_SELF		:= 524288	; okena answers this request itself (a redirect)
+HX_GRPC		:= 1048576	; a gRPC request: okena's own errors answer as gRPC
 
 SIDE_CLIENT	:= 0
 SIDE_UP		:= 1
@@ -352,6 +353,10 @@ http_request:
 	jne	@f
 	or	dword [r15+H_FLAGS],HX_HEAD
 @@:
+	call	http_grpc_mark			; content-type: application/grpc...
+	h_rec
+	lea	r14,[g_hm]
+	mov	eax,[r14+HM_FLAGS]
 	test	eax,HMF_UPGRADE
 	jz	@f
 	or	dword [r15+H_FLAGS],HX_UPGRADE
@@ -3219,6 +3224,40 @@ http_exchange_done:
 	mov	edi,ebx
 	jmp	session_close
 
+; r15 = record, g_hm = the request: HX_GRPC when its content-type is
+; application/grpc (or application/grpc+proto, ...). Keeps rbx, r12-r15.
+cstring hn_content_type, 'content-type',0
+http_grpc_mark:
+	push	rbx
+	push	r12
+	lea	r12,[g_hm]
+	xor	ebx,ebx
+.field:
+	cmp	ebx,[r12+HM_NHDR]
+	jae	.out
+	imul	rdi,rbx,HF_SIZE
+	lea	rdi,[r12+HM_HDRS+rdi]
+	inc	ebx
+	push	rdi
+	lea	rsi,[hn_content_type]
+	call	hf_is
+	pop	rdi
+	jnz	.field
+	cmp	dword [rdi+HF_VLEN],16
+	jb	.out
+	mov	rdi,[rdi+HF_VALUE]
+	lea	rsi,[.grpc]
+	mov	edx,16
+	call	mem_eq_nocase
+	test	eax,eax
+	jz	.out
+	or	dword [r15+H_FLAGS],HX_GRPC
+.out:
+	pop	r12
+	pop	rbx
+	ret
+.grpc	db 'application/grpc'
+
 ; ------------------------------------------------------------- errors
 
 ; edi = status: answer it and close. Once the response has started there
@@ -3246,6 +3285,8 @@ http_error:
 	call	rid_new
 	pop	rax
 @@:
+	test	dword [r15+H_FLAGS],HX_GRPC
+	jnz	http_error_grpc
 	mov	rdi,[r15+H_BUF]
 	lea	rdi,[rdi+HB_OUT]
 	push	rax
@@ -3295,6 +3336,50 @@ http_error:
 .close:
 	mov	edi,ebx
 	jmp	session_close
+
+; http_error for a gRPC request, eax = the HTTP status: a "Trailers-Only"
+; answer (gRPC over HTTP/2: status 200, no body, grpc-status in the head),
+; the code from the HTTP status as gRPC maps it (502 and 503 UNAVAILABLE,
+; 504 and 408 DEADLINE_EXCEEDED, ...). The log and the counters keep the
+; HTTP status.
+http_error_grpc:
+	push	rax
+	mov	rdi,[r15+H_BUF]
+	lea	rdi,[rdi+HB_OUT]
+	memit_x 'HTTP/1.1 200 OK',13,10,'content-type: application/grpc',13,10,'grpc-status: '
+	mov	eax,[rsp]
+	lea	rsi,[.map]
+@@:
+	mov	ecx,[rsi]
+	test	ecx,ecx
+	jz	@f
+	cmp	ecx,eax
+	je	@f
+	add	rsi,8
+	jmp	@b
+@@:
+	mov	eax,[rsi+4]
+	call	fmt_u64
+	memit_x 13,10,'grpc-message: '
+	mov	eax,[rsp]
+	call	http_reason			; rsi = text
+	call	fmt_cstr
+	memit_x 13,10,'x-request-id: '
+	lea	rsi,[r15+H_RID]
+	mov	ecx,[r15+H_RIDLEN]
+	rep	movsb
+	memit_x 13,10,'content-length: 0',13,10,'connection: close',13,10,13,10
+	add	rsp,8
+	mov	rax,[r15+H_BUF]
+	lea	rax,[rax+HB_OUT]
+	sub	rdi,rax
+	mov	esi,edi
+	mov	ecx,SIDE_CLIENT
+	mov	rdi,[r15+H_BUF]
+	lea	rdi,[rdi+HB_OUT]
+	jmp	h_send
+.map	dd 400,13, 401,16, 403,7, 404,12, 408,4, 421,14, 429,14, 431,13
+	dd 501,12, 502,14, 503,14, 504,4, 505,12, 0,2
 
 ; eax = status. rsi = reason phrase.
 macro reasons pairs&

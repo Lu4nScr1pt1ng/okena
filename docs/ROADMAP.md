@@ -278,10 +278,13 @@ side (its HTTP/1.1 head into HEADERS with :authority and te: trailers,
 the body unframed into DATA, the response back as HTTP/1.1, chunk-framed
 with its trailers when it has no length); RST_STREAM, GOAWAY and a lost
 connection fail the requests they hold. tests/h2/upstream.py on both
-engines against an HTTP/2 server and okena itself. Open: ALPN h2 over the
-pool's TLS is in but untested here (upstream TLS needs the tls module),
-gRPC status for okena's own errors, h2spec, and the benchmark against
-Envoy. The design: an h2
+engines against an HTTP/2 server and okena itself. okena's own errors to a
+gRPC request (content-type application/grpc) are gRPC answers:
+Trailers-Only, grpc-status from the HTTP status (502/503 UNAVAILABLE,
+504/408 DEADLINE_EXCEEDED, ...); a head with content-length: 0 ends its
+HTTP/2 stream itself. Open: ALPN h2 over the pool's TLS is in but
+untested here (upstream TLS needs the tls module), h2spec, and the
+benchmark against Envoy. The design: an h2
 connection is a session whose streams are sessions of their own, each
 running the existing HTTP/1.1 exchange (routing, pools, retries, upstream
 TLS, logs, rewrites) with its client side redirected to the connection,

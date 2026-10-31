@@ -48,7 +48,11 @@ server (at most 4, each carrying as many streams as the server allows),
 whatever protocol the client spoke; a backend's trailers (gRPC's status)
 reach HTTP/2 clients as trailers and HTTP/1.1 clients after the last
 chunk. A stream the backend resets, or a connection that goes, is a 502
-(or another try, as for any failed request).
+(or another try, as for any failed request). When okena itself cannot serve a gRPC
+request (content-type application/grpc), it answers as gRPC: status 200
+with grpc-status (14 UNAVAILABLE for 502 and 503, 4 DEADLINE_EXCEEDED
+for 504 and 408, ...) and grpc-message; the access log keeps the HTTP
+status.
 
 `okena { ticket_keys FILE }` takes the keys from a file every instance
 reads: one a line, 32 bytes of base64 (`openssl rand -base64 32`), the

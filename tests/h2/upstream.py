@@ -205,7 +205,10 @@ http 127.0.0.1:{MID} {{
     http2 on
     route /* {{ to 127.0.0.1:{H1B} }}
 }}
-http 127.0.0.1:{DOWN} {{ route /* {{ to pool gone }} }}
+http 127.0.0.1:{DOWN} {{
+    http2 on
+    route /* {{ to pool gone }}
+}}
 pool gone {{
     protocol h2
     server 127.0.0.1:{BASE + 9}
@@ -311,6 +314,30 @@ def cases():
     d = h1(CHAIN, "/chain")
     check("okena -> okena over HTTP/2 -> an HTTP/1.1 backend", status(d) == 200 and h1_body(d)[0] == b"chain!",
           d[-120:])
+    # a gRPC request okena cannot serve: a gRPC answer (Trailers-Only)
+    s = socket.create_connection(("127.0.0.1", DOWN), timeout=5)
+    c = hc.H2Connection(h2.config.H2Configuration(client_side=True, header_encoding=None))
+    c.initiate_connection()
+    c.send_headers(1, [(":method", "POST"), (":scheme", "http"), (":authority", "x"), (":path", "/pkg.Svc/Call"),
+                       ("content-type", "application/grpc"), ("te", "trailers")])
+    c.send_data(1, b"\0\0\0\0\0", end_stream=True)
+    s.sendall(c.data_to_send())
+    evs, deadline = [], time.time() + 5
+    while time.time() < deadline and not any(isinstance(e, h2.events.StreamEnded) for e in evs):
+        d = s.recv(65536)
+        if not d:
+            break
+        evs += c.receive_data(d)
+        s.sendall(c.data_to_send())
+    s.close()
+    resp = [e for e in evs if isinstance(e, h2.events.ResponseReceived)]
+    hdrs = dict((k.decode(), v.decode()) for k, v in resp[0].headers) if resp else {}
+    check("a gRPC request okena cannot serve: 200, grpc-status 14 (UNAVAILABLE)",
+          hdrs.get(":status") == "200" and hdrs.get("grpc-status") == "14"
+          and hdrs.get("content-type") == "application/grpc", str(hdrs))
+    check("  as Trailers-Only: END_STREAM on the HEADERS, no DATA",
+          resp and resp[0].stream_ended is not None and not any(isinstance(e, h2.events.DataReceived) for e in evs),
+          str(evs))
     t0 = time.time()
     d = h1(DOWN, "/x")
     check("a backend down: 502, at once", status(d) == 502 and time.time() - t0 < 2, d[:80])

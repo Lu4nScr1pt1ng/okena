@@ -157,6 +157,7 @@ bss
 	g_h2tmp:	rb 20480		; a response head's HPACK block
 	g_h2fl_n	dd ?			; connections whose send waits for the iteration's end
 	g_h2fl:		rq H2_FLUSH_MAX		; (session, generation) each
+	g_h2tmp_es	dd ?			; h2_head_out: END_STREAM on the HEADERS
 end bss
 
 rodata
@@ -2682,8 +2683,8 @@ h2_stream_out:
 .finish:
 	test	dword [r15+H_H2F],S2F_FINISH
 	jz	.done
-	test	dword [r15+H_H2F],S2F_RST
-	jnz	.finished
+	test	dword [r15+H_H2F],S2F_RST or S2F_END
+	jnz	.finished			; reset, or ended with its head
 	cmp	dword [r15+H_RCK+CK_TLEN],0
 	je	.no_trailers
 	call	h2_trailers_out			; HEADERS with END_STREAM
@@ -2889,6 +2890,14 @@ h2_head_out:
 	lea	rax,[g_h2tmp]
 	sub	rdi,rax
 	mov	r12d,edi			; its length
+	; a final head that says content-length: 0 ends the stream itself (a
+	; gRPC Trailers-Only answer must)
+	xor	eax,eax
+	cmp	r9b,'1'
+	je	@f
+	call	h2_zero_length			; rsi = head, ebp = its length
+@@:
+	mov	[g_h2tmp_es],eax
 	mov	eax,r12d
 	xor	edx,edx
 	div	dword [r13+C2_PMAXF]
@@ -2913,6 +2922,10 @@ h2_head_out:
 	jne	@f
 	mov	cl,H2_END_HEADERS
 @@:
+	cmp	r10b,H2F_HEADERS
+	jne	@f
+	or	ecx,[g_h2tmp_es]
+@@:
 	push	rsi
 	push	r11
 	push	r10
@@ -2935,6 +2948,9 @@ h2_head_out:
 	cmp	r9b,'1'				; 1xx: another head follows
 	je	@f
 	or	dword [r15+H_H2F],S2F_HEAD
+	cmp	dword [g_h2tmp_es],0
+	je	@f
+	or	dword [r15+H_H2F],S2F_END	; the stream ended with it
 @@:
 	clc
 	jmp	.out
@@ -2954,6 +2970,53 @@ h2_head_out:
 	pop	r12
 	ret
 .status	db ':status'
+
+; rsi = an HTTP/1.1 head, ebp = its length: eax = H2_END_STREAM when it
+; has "content-length: 0" (any case), else 0. Keeps everything else.
+h2_zero_length:
+	push	rcx
+	push	rdx
+	push	rdi
+	xor	ecx,ecx
+.line:
+	lea	eax,[rcx+18]
+	cmp	eax,ebp
+	jae	.no
+	cmp	word [rsi+rcx],0x0A0D
+	jne	.next
+	lea	rdi,[rsi+rcx+2]
+	xor	edx,edx
+@@:
+	movzx	eax,byte [rdi+rdx]
+	or	al,0x20
+	cmp	al,[.cl+rdx]
+	jne	.next
+	inc	edx
+	cmp	edx,15
+	jb	@b
+@@:
+	cmp	byte [rdi+rdx],' '
+	jne	@f
+	inc	edx
+	jmp	@b
+@@:
+	cmp	byte [rdi+rdx],'0'
+	jne	.next
+	cmp	word [rdi+rdx+1],0x0A0D
+	jne	.next
+	mov	eax,H2_END_STREAM
+	jmp	.out
+.next:
+	inc	ecx
+	jmp	.line
+.no:
+	xor	eax,eax
+.out:
+	pop	rdi
+	pop	rdx
+	pop	rcx
+	ret
+.cl	db 'content-length:'
 
 ; r15 = stream record whose response had trailers (HB_TRAIL, CK_TLEN
 ; bytes of "name: value\r\n"): a HEADERS frame with END_STREAM from
