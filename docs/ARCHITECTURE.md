@@ -919,7 +919,7 @@ a read-only root filesystem, and binds ports below 1024 through
 
 Docker discovery (`discover docker label=okena.pool=api`, reading the
 Docker API on its Unix socket) and Kubernetes (EndpointSlices, later
-Gateway API) come in phase 6.
+Gateway API) come in phase 7.
 
 ## Host and kernel limits
 

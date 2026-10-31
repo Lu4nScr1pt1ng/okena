@@ -291,7 +291,37 @@ Upstream h2 and gRPC come after.
 
 Exit: beats Envoy on added p99 for gRPC unary and streaming.
 
-## Phase 5 — Gateway
+## Phase 5 — HTTP/3 and QUIC
+
+Next after phase 4. QUIC terminates on the same workers: one UDP socket
+per worker per listener (SO_REUSEPORT), the connection ID naming the
+worker so an eBPF reuseport program steers every packet of a connection
+to the worker that holds it; TLS 1.3 from src/tls (the handshake without
+records, QUIC's packet protection with the same AES-GCM, ChaCha20 and
+header protection); each HTTP/3 request stream a session running the
+HTTP/1.1 exchange, as HTTP/2 streams do (src/http/h2.inc), so routing,
+pools and everything after them stay one code path.
+
+* QUIC v1 (RFC 9000/9001/9002) and v2 (RFC 9369): packets, frames,
+  streams and their flow control, ACKs, loss recovery, CUBIC then BBR,
+  pacing, PMTU, connection migration; stateless retry and address
+  validation tokens under load; 0-RTT off by default, and when on only
+  for routes marked idempotent.
+* QUIC-LB connection IDs (worker, and instance for a fleet) with eBPF
+  steering; GSO/GRO and recvmmsg/sendmmsg batching, ECN.
+* QPACK (RFC 9204) with its encoder and decoder streams; HTTP/3 (RFC
+  9114) with SETTINGS, GOAWAY, server-initiated cancellation; Alt-Svc
+  on HTTP/1.1 and HTTP/2 answers, and HTTPS DNS records documented.
+* Abuse limits as in HTTP/2 (stream floods, resets, ACK and crypto
+  frame floods, amplification bounded by the 3x rule before validation).
+* `okena bench` speaks HTTP/3 too, so the exits are measured open loop.
+
+Exit: the QUIC interop runner clean against the main clients and servers;
+handshakes/s per core and added p99 for HTTP/3 at or better than HAProxy
+3.x's QUIC (and nginx's) on the same machine; loss and reordering (netem)
+do not stall a connection; under a flood of Initial packets retry keeps
+the accepted connections' latency flat.
+## Phase 6 — Gateway
 
 * JWT/JWKS (fetched by the control process), verified-token cache, API
   keys, Basic, mTLS identity, forward-auth with answer cache.
@@ -309,7 +339,7 @@ Exit: beats Envoy on added p99 for gRPC unary and streaming.
 Exit: each filter's added latency measured and documented; a route with
 auth + limit stays within the latency budget in ARCHITECTURE.md.
 
-## Phase 6 — Operations
+## Phase 7 — Operations
 
 * Binary upgrade with socket handoff; admin API and CLI.
 * SRV/file discovery, Docker discovery by labels, Kubernetes
@@ -324,7 +354,7 @@ Exit: a week-long soak with reloads and upgrades every minute under load
 loses no request; `make chaos` passes with every dependency (DNS,
 discovery, JWKS, ACME, control process, logger, disk) failed in turn.
 
-## Phase 7 — Edge and CDN
+## Phase 8 — Edge and CDN
 
 * Disk cache tier: append-only segments, lock-free shared index, S3-FIFO,
   sendfile to the socket.
@@ -336,7 +366,7 @@ discovery, JWKS, ACME, control process, logger, disk) failed in turn.
 Exit: hit path serves from page cache at line rate with zero copies;
 origin load stays flat during a purge-and-refill storm.
 
-## Phase 8 — Kernel fast paths
+## Phase 9 — Kernel fast paths
 
 * `xdp` listener: Maglev in eBPF, IPIP/GUE encapsulation, DSR,
   connection tracking table, backend health from user space.
@@ -344,12 +374,6 @@ origin load stays flat during a purge-and-refill storm.
 * zcrx zero-copy receive on supported NICs; NIC TLS offload.
 
 Exit: packets/s per core comparable to Katran.
-
-## Phase 9 — HTTP/3 and QUIC
-
-* QUIC v1/v2, QUIC-LB connection IDs with eBPF steering, retry, recovery,
-  CUBIC/BBR, pacing, GSO/GRO, ECN; QPACK; HTTP/3.
-* QUIC interop runner clean.
 
 ## Phase 10 — Breadth
 

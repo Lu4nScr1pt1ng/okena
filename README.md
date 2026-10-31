@@ -85,7 +85,8 @@ Early: L4, HTTP/1.1 and TLS (1.3 and 1.2, both ways). What works today:
 * a `FROM scratch` image of about 70 KB, non-root, aware of `--cpus`
   and `--cpuset-cpus`.
 
-Next: TLS (phase 3) and the rest of phase 2 in [ROADMAP.md](docs/ROADMAP.md).
+Next: the rest of phase 4 (HTTP/2 to backends, gRPC), then phase 5
+(HTTP/3 and QUIC), in [ROADMAP.md](docs/ROADMAP.md).
 
 ## Docker
 

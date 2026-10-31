@@ -150,5 +150,5 @@ Errors produced by okena are short, plain bodies with the request id
 
 ## What comes after
 
-TLS (the `tls { }` layer), HTTP/2 (phase 4), then the gateway
-filters of phase 5 on the same exchange structure.
+TLS (the `tls { }` layer), HTTP/2 (phase 4), HTTP/3 (phase 5), then the
+gateway filters of phase 6 on the same exchange structure.
