@@ -83,7 +83,8 @@ HB_LTEXT_H	:= HB_LTEXT_M + 16	; host
 H_LTEXT_H_CAP	:= 255
 HB_LTEXT_T	:= HB_LTEXT_H + 256	; target
 H_LTEXT_T_CAP	:= 1024
-assert HB_LTEXT_T + H_LTEXT_T_CAP <= 1 shl 16
+HB_TRAIL	:= HB_LTEXT_T + H_LTEXT_T_CAP	; a chunked response's trailer lines
+assert HB_TRAIL + CK_TRAIL_MAX <= 1 shl 16
 
 HS_HEAD		:= 1		; reading a request head
 HS_CONTINUE	:= 2		; writing our 100 Continue
@@ -1715,6 +1716,7 @@ http_resp_head:
 	or	dword [r15+H_FLAGS],HX_UPKEEP
 @@:
 	; the response body
+	mov	dword [r15+H_RCK+CK_TLEN],0	; (no trailers unless it is chunked)
 	mov	dword [r15+H_RBODY],BK_NONE
 	test	dword [r15+H_FLAGS],HX_HEAD
 	jnz	.write
@@ -1730,6 +1732,9 @@ http_resp_head:
 	xor	eax,eax
 	mov	ecx,CK_SIZE
 	rep	stosb
+	mov	rax,[r15+H_BUF]			; its trailers are kept, to pass on
+	add	rax,HB_TRAIL
+	mov	[r15+H_RCK+CK_TBUF],rax
 	jmp	.write
 @@:
 	mov	rax,[r14+HM_LENGTH]
@@ -2031,13 +2036,35 @@ h_chunkout:
 http_last_chunk:
 	call	session_ptr
 	test	dword [rax+S_FLAGS],SF_H2S
-	jnz	http_exchange_done		; a stream ends with END_STREAM instead
+	jnz	http_exchange_done		; a stream ends with END_STREAM (and its trailers)
 	h_rec
 	or	dword [r15+H_FLAGS],HX_LASTCHUNK
 	mov	dword [r15+H_STATE],HS_RESP_SEND
 	mov	ecx,SIDE_CLIENT
+	mov	edx,[r15+H_RCK+CK_TLEN]
+	test	edx,edx
+	jnz	.trailers
 	lea	rdi,[str_last_chunk]
 	mov	esi,str_last_chunk.len
+	jmp	h_send
+.trailers:
+	; "0\r\n", the backend's trailer lines, "\r\n"
+	mov	rdi,[r15+H_BUF]
+	lea	rdi,[rdi+HB_OUT]
+	mov	dword [rdi],0x000A0D30
+	add	rdi,3
+	mov	rsi,[r15+H_BUF]
+	add	rsi,HB_TRAIL
+	mov	ecx,edx
+	rep	movsb
+	mov	word [rdi],0x0A0D
+	add	rdi,2
+	mov	rax,[r15+H_BUF]
+	lea	rax,[rax+HB_OUT]
+	mov	esi,edi
+	sub	esi,eax
+	mov	rdi,rax
+	mov	ecx,SIDE_CLIENT
 	jmp	h_send
 
 ; ebx = session, r15 = state, its final response head just parsed: the

@@ -83,6 +83,13 @@ class Back(http.server.BaseHTTPRequestHandler):
                 self.wfile.write(b"%x\r\n%s\r\n" % (len(part), part))
             self.wfile.write(b"0\r\n\r\n")
             return
+        if self.path == "/trailers":
+            self.send_response(200)
+            self.send_header("Transfer-Encoding", "chunked")
+            self.send_header("Content-Type", "application/grpc")
+            self.end_headers()
+            self.wfile.write(b"5\r\nhello\r\n0\r\nGrpc-Status: 0\r\ngrpc-message: all good\r\nConnection: x\r\n\r\n")
+            return
         if self.path == "/slow":
             time.sleep(1)
         info = {"method": self.command, "path": self.path, "body": len(body),
@@ -299,10 +306,24 @@ def run_cases():
     sid = c.request("/chunked")
     hdrs, body, _ = c.response(sid)
     check("a chunked response arrives as DATA, unframed", body == b"hello, world", f"{hdrs} {body!r}")
+    sid = c.request("/trailers")
+    c.response(sid)
+    trailers = [dict((k.decode(), v.decode()) for k, v in e.headers) for e in c.events
+                if isinstance(e, h2.events.TrailersReceived) and e.stream_id == sid]
+    check("a backend's trailers arrive as HTTP/2 trailers (gRPC's status)",
+          trailers == [{"grpc-status": "0", "grpc-message": "all good"}], str(trailers))
     sid = c.request("/hello", "HEAD")
     hdrs, body, reset = c.response(sid)
     check("HEAD: headers, no body", hdrs.get(":status") == "200" and body == b"" and reset is None, f"{hdrs} {body!r}")
     c.close()
+
+    with socket.create_connection(("127.0.0.1", PLAIN), timeout=5) as t:
+        t.sendall(b"GET /trailers HTTP/1.1\r\nHost: x\r\nTE: trailers\r\nConnection: close\r\n\r\n")
+        data = b""
+        while (d := t.recv(65536)):
+            data += d
+    check("and to an HTTP/1.1 client after the last chunk",
+          data.endswith(b"0\r\nGrpc-Status: 0\r\ngrpc-message: all good\r\nConnection: x\r\n\r\n"), data[-120:])
 
     # a megabyte through a 16 KiB stream window, credited as it is read
     c = Client(PLAIN, window=16384)

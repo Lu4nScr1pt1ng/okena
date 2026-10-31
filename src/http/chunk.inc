@@ -2,15 +2,19 @@
 ;
 ; The decoder sees the body as it arrives, in pieces of any size, and
 ; hands out the data it carries; the proxy writes its own chunk framing,
-; so sizes, extensions and trailers never reach the next hop as they
-; came. Strict: hex sizes of at most 15 digits, CRLF only, bounded
+; so sizes and extensions never reach the next hop as they came. Trailer
+; lines are copied, when CK_TBUF names a buffer (CK_TRAIL_MAX bytes,
+; "name: value\r\n" each), for the proxy to pass on (gRPC's status is
+; one). Strict: hex sizes of at most 15 digits, CRLF only, bounded
 ; extensions and trailers.
 
 CK_STATE	:= 0		; d
 CK_EXTRA	:= 4		; d: bytes of extensions or trailers so far
 CK_REMAIN	:= 8		; q: data bytes left in the current chunk
 CK_DIGITS	:= 16		; d
-CK_SIZE		:= 24
+CK_TLEN		:= 20		; d: trailer bytes copied to CK_TBUF
+CK_TBUF		:= 24		; q: where trailer lines go, 0 = dropped
+CK_SIZE		:= 32
 
 CKS_SIZE	:= 0		; the first hex digit of a size
 CKS_SIZE_MORE	:= 1		; more digits, ';' or CR
@@ -170,6 +174,12 @@ chunk_step:
 	inc	dword [rdi+CK_EXTRA]
 	cmp	dword [rdi+CK_EXTRA],CK_TRAIL_MAX
 	ja	.error
+	mov	rax,[rdi+CK_TBUF]
+	test	rax,rax
+	jz	.next
+	mov	r11d,[rdi+CK_TLEN]
+	mov	[rax+r11],r10b
+	inc	dword [rdi+CK_TLEN]
 	jmp	.next
 .trail_cr:
 	mov	dword [rdi+CK_STATE],CKS_TRAIL_LF
@@ -178,6 +188,15 @@ chunk_step:
 	cmp	r10d,10
 	jne	.error
 	mov	dword [rdi+CK_STATE],CKS_TRAIL
+	add	dword [rdi+CK_EXTRA],2		; the copy's CRLF counts too
+	cmp	dword [rdi+CK_EXTRA],CK_TRAIL_MAX
+	ja	.error
+	mov	rax,[rdi+CK_TBUF]
+	test	rax,rax
+	jz	.next
+	mov	r11d,[rdi+CK_TLEN]
+	mov	word [rax+r11],0x0A0D
+	add	dword [rdi+CK_TLEN],2
 	jmp	.next
 .final_cr:
 	mov	dword [rdi+CK_STATE],CKS_END_LF

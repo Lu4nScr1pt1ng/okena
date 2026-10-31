@@ -327,6 +327,7 @@ H_RESULT	:= 168		; q
 H_RNEXT		:= 176		; d: ready queue link
 H_EPPEEK	:= 392		; d: MSG_PEEK for the waiting receive, or 0
 H_RGEN		:= 180		; d: generation when queued
+assert H_RCK + CK_SIZE <= H_EPOP
 
 bss
 	g_hready_head	dd ?

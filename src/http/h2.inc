@@ -2480,6 +2480,12 @@ h2_stream_out:
 	jz	.done
 	test	dword [r15+H_H2F],S2F_RST
 	jnz	.finished
+	cmp	dword [r15+H_RCK+CK_TLEN],0
+	je	.no_trailers
+	call	h2_trailers_out			; HEADERS with END_STREAM
+	jc	.wait
+	jmp	.finished
+.no_trailers:
 	call	h2_room
 	cmp	eax,9
 	jb	.wait
@@ -2744,6 +2750,109 @@ h2_head_out:
 	pop	r12
 	ret
 .status	db ':status'
+
+; r15 = stream record whose response had trailers (HB_TRAIL, CK_TLEN
+; bytes of "name: value\r\n"): a HEADERS frame with END_STREAM from
+; them, names lower case, connection-specific fields dropped. CF when OUT
+; has no room for it.
+h2_trailers_out:
+	push	rbx
+	push	r12
+	mov	rbx,[r15+H_BUF]
+	add	rbx,HB_TRAIL			; rbx = the lines
+	mov	r12d,[r15+H_RCK+CK_TLEN]	; r12d = their length
+	lea	rdi,[g_h2tmp]
+	xor	ecx,ecx				; a line's start
+.line:
+	cmp	ecx,r12d
+	jae	.block
+	mov	edx,ecx				; the name, to ':'
+@@:
+	cmp	edx,r12d
+	jae	.block
+	cmp	byte [rbx+rdx],':'
+	je	@f
+	movzx	eax,byte [rbx+rdx]
+	lea	r8d,[rax-'A']
+	cmp	r8d,25
+	ja	.lc
+	or	byte [rbx+rdx],0x20
+.lc:
+	inc	edx
+	jmp	@b
+@@:
+	mov	r8d,edx				; the name's end
+	inc	edx
+@@:
+	cmp	byte [rbx+rdx],' '
+	je	.sp
+	cmp	byte [rbx+rdx],9
+	jne	@f
+.sp:
+	inc	edx
+	jmp	@b
+@@:
+	mov	r9d,edx				; the value's start
+@@:
+	cmp	word [rbx+rdx],0x0A0D
+	je	@f
+	inc	edx
+	jmp	@b
+@@:
+	push	rdx
+	push	rcx
+	push	r8
+	push	r9
+	push	rdi
+	lea	rdi,[rbx+rcx]			; connection-specific: dropped
+	mov	esi,r8d
+	sub	esi,ecx
+	lea	rdx,[h2_stream_new.n_conn]
+	call	h2_name_in
+	pop	rdi
+	pop	r9
+	pop	r8
+	pop	rcx
+	pop	rdx
+	jnc	.next
+	push	rdx
+	lea	rsi,[rbx+rcx]			; name
+	mov	eax,edx
+	sub	eax,r9d				; value length
+	mov	edx,r8d
+	sub	edx,ecx				; name length
+	lea	rcx,[rbx+r9]			; value
+	mov	r8d,eax
+	call	hpack_encode
+	mov	rdi,rax
+	pop	rdx
+.next:
+	lea	ecx,[rdx+2]
+	jmp	.line
+.block:
+	lea	rax,[g_h2tmp]
+	sub	rdi,rax
+	mov	r12d,edi
+	call	h2_room
+	lea	edx,[r12+9+H2_RESERVE]
+	cmp	eax,edx
+	jb	.full
+	mov	esi,r12d
+	mov	dl,H2F_HEADERS
+	mov	cl,H2_END_HEADERS or H2_END_STREAM
+	mov	r8d,[r15+H_H2SID]
+	call	h2_frame
+	lea	rsi,[g_h2tmp]
+	mov	ecx,r12d
+	rep	movsb
+	clc
+	jmp	.out
+.full:
+	stc
+.out:
+	pop	r12
+	pop	rbx
+	ret
 
 ; ebx = stream: its exchange is over (proxy.inc, in place of the next
 ; request or of closing the client). END_STREAM, then the session goes.
