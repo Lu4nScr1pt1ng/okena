@@ -84,6 +84,26 @@ taskset -c 3 openssl speed -seconds 2 ed25519
 | Worker CPU per new HTTPS connection (x25519) | ~75 us (77 user + 61 kernel with the client on other cores) | 2026-10 | 4 workers, a route okena answers, new connection per request |
 | Worker CPU saved by a session ticket | ~27 us | 2026-10 | same, resumed |
 
+## HTTP/2 against HTTP/1.1 through okena (2026-10-31)
+
+One worker on core 1, the backend `l4bench http` on 4-5, `okena bench`
+with 4 workers on 6, 7, 14, 15, 32 connections (`proto=h2`: one stream at a
+time each, as h2load's default), 3 s after 0.5 s. Backends get HTTP/1.1
+either way.
+
+| | closed loop | p50 / p99 / p99.9 at 40k/s |
+|---|---|---|
+| plain, HTTP/1.1 | 86.8k/s | 31 / 48 / 69 us |
+| plain, HTTP/2 | 81.6k/s (-6%) | 32 / 51 / 77 us |
+| TLS, HTTP/1.1 | 85.8k/s | 31 / 53 / 72 us |
+| TLS, HTTP/2 | 80.0k/s (-7%) | 32 / 58 / 270 us |
+
+Per request, HTTP/2 costs about as much kernel time as HTTP/1.1 (11.0 us
+against 10.8) and 0.7 us more in user space (HPACK, frames, the stream's
+session and its HTTP/1.1 head). Before frames were sent once per loop
+iteration (h2_flush) a response's END_STREAM went in a send of its own:
+58.7k/s and 15.6 us of kernel time a request.
+
 ## HTTPS against HAProxy, open loop (2026-10-31)
 
 `tests/bench/tls.sh`: okena and HAProxy 3.2 (official image, host network,

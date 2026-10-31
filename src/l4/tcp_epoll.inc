@@ -112,6 +112,7 @@ ep_main:
 	jmp	.event
 .timers:
 	call	ep_http_ready
+	call	h2_flush			; HTTP/2: one send a connection an iteration
 	call	hs_drain			; hellos that waited for the budget
 	call	ep_wake_waiters
 	call	ep_connect_deadlines

@@ -20,7 +20,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 BIN = ROOT / "build" / "okena"
 # ports 23000-23999: this suite's own range
 BASE = 23000 + os.getpid() % 99 * 10
-HTTP, ECHO, HTTPS, BACK, OSSL = BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4
+HTTP, ECHO, HTTPS, BACK, OSSL, H2P = BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4, BASE + 5
 tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-bench-"))
 failures = 0
 stall = {"every": 0, "n": 0}
@@ -223,9 +223,10 @@ def main():
                     tmp / "k.pem"], check=True, capture_output=True)
     subprocess.run(["openssl", "req", "-new", "-x509", "-key", tmp / "k.pem", "-subj", "/CN=localhost",
                     "-days", "2", "-out", tmp / "c.pem"], check=True, capture_output=True)
-    conf = (f"okena {{ workers 1 }}\nhttp 127.0.0.1:{HTTPS} {{\n"
+    conf = (f"okena {{ workers 1 }}\nhttp 127.0.0.1:{HTTPS} {{\n    http2 on\n"
             f"    tls {{ cert {tmp / 'c.pem'}; key {tmp / 'k.pem'} }}\n"
-            f"    route /* {{ to 127.0.0.1:{BACK} }}\n}}\n")
+            f"    route /* {{ to 127.0.0.1:{BACK} }}\n}}\n"
+            f"http 127.0.0.1:{H2P} {{\n    http2 on\n    route /* {{ to 127.0.0.1:{BACK} }}\n}}\n")
     (tmp / "okena.conf").write_text(conf)
     ok = subprocess.Popen([str(BIN), "-c", str(tmp / "okena.conf")], stderr=subprocess.DEVNULL)
     try:
@@ -240,6 +241,18 @@ def main():
         rc, kv, err = bench(f"https://127.0.0.1:{HTTPS}/", "rate=500", "duration=1s", "warmup=200ms",
                             "conns=16", "new=on")
         check("https new=on at a rate", rc == 0 and kv["requests"] == 500 and kv["errors"] == 0, str(kv))
+        rc, kv, err = bench(f"http://127.0.0.1:{H2P}/", *short, "proto=h2")
+        clean("proto=h2 by prior knowledge through okena", kv, rc, err)
+        rc, kv, err = bench(f"http://127.0.0.1:{H2P}/chunked", "rate=1000", "duration=500ms", "warmup=100ms",
+                            "conns=4", "proto=h2")
+        check("proto=h2 at a rate", rc == 0 and kv["requests"] == 500 and kv["errors"] == 0, str(kv))
+        rc, kv, err = bench(f"https://localhost:{HTTPS}/big", *short, "proto=h2")
+        clean("proto=h2 over TLS (ALPN h2), a 200 KB answer", kv, rc, err)
+        rc, kv, err = bench(f"http://127.0.0.1:{H2P}/", *short, "proto=h2", "method=POST", "body=0123456789")
+        clean("proto=h2 POST with a body", kv, rc, err)
+        rc, kv, err = bench(f"http://127.0.0.1:{H2P}/unavailable", *short, "proto=h2")
+        check("proto=h2: 503s counted as other", rc == 0 and kv["errors"] == 0 and kv["other"] == kv["requests"] > 0,
+              str(kv))
         threading.Thread(target=openssl_backend, args=(tmp / "c.pem", tmp / "k.pem"), daemon=True).start()
         time.sleep(0.3)
         rc, kv, err = bench(f"https://127.0.0.1:{OSSL}/", *short)
@@ -254,6 +267,8 @@ def main():
     check("an unknown option is refused", r.returncode == 1 and "unknown option `speed`" in r.stderr, r.stderr)
     r = subprocess.run([str(BIN), "bench", "ftp://127.0.0.1:1/"], capture_output=True, text=True)
     check("an unknown scheme is refused", r.returncode == 1 and "URL" in r.stderr, r.stderr)
+    r = subprocess.run([str(BIN), "bench", f"{url}/", "proto=h2", "new=on"], capture_output=True, text=True)
+    check("proto=h2 with new=on is refused", r.returncode == 1 and "proto=h2" in r.stderr, r.stderr)
     r = subprocess.run([str(BIN), "bench", f"{url}/", "workers=8", "conns=2"], capture_output=True, text=True)
     check("more workers than connections is refused", r.returncode == 1, r.stderr)
     r = subprocess.run([str(BIN), "bench", f"http://127.0.0.1:{BASE + 9}/", "duration=1s"],

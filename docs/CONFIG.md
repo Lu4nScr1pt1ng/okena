@@ -521,7 +521,9 @@ https:// over TLS 1.3 and kTLS, tcp:// for echo). Options: `rate=N`
 loop), `conns=64`, `duration=10s`, `warmup=1s`, `workers=1` (processes),
 `method=GET`, `header='Name: value'` (repeatable), `body=TEXT`,
 `size=64` (tcp), `sni=NAME`, `new=on` (a new connection, and TLS
-handshake, for every request), `format=text|kv`. It reports p50 to p99.99
+handshake, for every request), `proto=h1|h2` (HTTP/2: prior knowledge on
+http://, ALPN h2 on https://, one stream at a time a connection),
+`format=text|kv`. It reports p50 to p99.99
 and the maximum three ways: `latency` from the time the schedule asked
 for each request (corrected for coordinated omission), `service` from the
 actual send, and `sender`, how late the generator itself was. Requests the

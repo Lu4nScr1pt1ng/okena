@@ -14,6 +14,10 @@
 ;       P-256 and ML-KEM-768 private keys and the client random kept in ts
 ;       (a TC_FULL block). out needs room for ~1650 bytes plus the SNI.
 
+bss
+	g_tlsc_h2	dd ?		; 1: the ClientHello offers h2 (okena bench proto=h2)
+end bss
+
 TC_X25519_SK	:= 0				; ephemeral private keys
 TC_P256_SK	:= 32
 TC_RANDOM	:= 64				; client random (32), then a session id (32)
@@ -127,8 +131,14 @@ tlsc_client_hello:
 	lea	rsi,[rbx+TC_P256_PK]
 	mov	ecx,65
 	rep	movsb
-	; ALPN (16): http/1.1
+	; ALPN (16): http/1.1, or h2 when g_tlsc_h2 says so
+	cmp	dword [g_tlsc_h2],0
+	jne	.alpn_h2
 	ch_lit 0x00,0x10,0x00,0x0B,0x00,0x09,0x08,'h','t','t','p','/','1','.','1'
+	jmp	.alpn_done
+.alpn_h2:
+	ch_lit 0x00,0x10,0x00,0x05,0x00,0x03,0x02,'h','2'
+.alpn_done:
 	; server_name (0), when there is one
 	test	r14d,r14d
 	jz	.ext_done

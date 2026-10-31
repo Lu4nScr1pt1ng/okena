@@ -114,6 +114,9 @@ C2F_SEND	:= 2				; a send in flight
 C2F_CLOSING	:= 4				; GOAWAY queued: close once it is out
 C2F_PEERGONE	:= 8				; the client sent GOAWAY
 C2F_EPOUT	:= 16				; epoll: the socket was full
+C2F_FLUSHQ	:= 32				; in the flush list: its send goes at the iteration's end
+H2_FLUSH_MAX	:= 4096
+H2_RESERVE	:= 17				; OUT keeps room for a GOAWAY
 
 ; a stream session's fields (the end of its H record) and request queue
 H_H2C		:= 472				; d: its connection's session
@@ -152,6 +155,8 @@ Q_CAP		:= (1 shl 16) - Q_DATA
 bss
 	align 8
 	g_h2tmp:	rb 20480		; a response head's HPACK block
+	g_h2fl_n	dd ?			; connections whose send waits for the iteration's end
+	g_h2fl:		rq H2_FLUSH_MAX		; (session, generation) each
 end bss
 
 rodata
@@ -271,7 +276,7 @@ h2_frame:
 ; esi = stream, edx = error: RST_STREAM, when there is room
 h2_out_rst:
 	call	h2_room
-	cmp	eax,13
+	cmp	eax,13 + H2_RESERVE
 	jb	.out
 	push	rdx
 	mov	r8d,esi
@@ -289,7 +294,7 @@ h2_out_rst:
 ; when there is no room.
 h2_out_window:
 	call	h2_room
-	cmp	eax,13
+	cmp	eax,13 + H2_RESERVE
 	jb	.full
 	push	rdx
 	mov	r8d,esi
@@ -343,7 +348,7 @@ h2_pump:
 	call	session_ptr
 	cmp	dword [rax+S_STATE],ST_OPEN
 	jne	.out
-	call	h2_send
+	call	h2_want_send
 	c2_regs
 	test	dword [r13+C2_FLAGS],C2F_CLOSING
 	jnz	.closing
@@ -366,6 +371,65 @@ h2_pump:
 	mov	edi,ebx				; the GOAWAY is out
 	jmp	session_close
 .out:
+	ret
+
+; c2 registers: the send of what OUT holds goes at the end of this loop
+; iteration (h2_flush), so frames from every stream answered in it go in
+; one send; at once when the list is full.
+h2_want_send:
+	test	dword [r13+C2_FLAGS],C2F_SEND or C2F_FLUSHQ
+	jnz	.out
+	cmp	dword [r13+C2_OUTLEN],0
+	jne	@f
+	cmp	dword [r13+C2_CLEN],0
+	je	.out
+@@:
+	mov	eax,[g_h2fl_n]
+	cmp	eax,H2_FLUSH_MAX
+	jae	h2_send
+	inc	dword [g_h2fl_n]
+	or	dword [r13+C2_FLAGS],C2F_FLUSHQ
+	mov	[g_h2fl+rax*8],ebx
+	call	session_ptr
+	mov	ecx,[rax+S_GEN]
+	mov	eax,[g_h2fl_n]
+	mov	[g_h2fl+rax*8-4],ecx
+.out:
+	ret
+
+; The worker's loop, after the deliveries: every connection that asked
+; sends what it has.
+h2_flush:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	xor	r12d,r12d
+.next:
+	cmp	r12d,[g_h2fl_n]
+	jae	.done
+	mov	ebx,[g_h2fl+r12*8]
+	mov	ecx,[g_h2fl+r12*8+4]
+	inc	r12d
+	call	session_ptr
+	cmp	[rax+S_GEN],ecx
+	jne	.next				; gone (or another session now)
+	cmp	dword [rax+S_STATE],ST_OPEN
+	jne	.next
+	test	dword [rax+S_FLAGS],SF_H2C
+	jz	.next
+	c2_regs
+	and	dword [r13+C2_FLAGS],not C2F_FLUSHQ
+	call	h2_send
+	jmp	.next
+.done:
+	mov	dword [g_h2fl_n],0
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
 	ret
 
 ; the send of what OUT holds, unless one is in flight. c2 registers.
@@ -912,8 +976,20 @@ h2_unpad:
 	stc
 	ret
 
-; eax = stream: edi = its session or NIL; r8 = its table entry
+; eax = stream: edi = its session or NIL; r8 = its table entry. A stream
+; sits in slot (id / 2) mod H2_MAXS when that was free (nearly always:
+; ids are sequential, at most 100 are open), else anywhere.
 h2_find:
+	mov	r8d,eax
+	shr	r8d,1
+	and	r8d,H2_MAXS - 1
+	shl	r8d,4				; * S2_SIZE
+	lea	r8,[r13+C2_ST+r8]
+	cmp	[r8+S2_SID],eax
+	jne	.scan
+	mov	edi,[r8+S2_SESS]
+	ret
+.scan:
 	lea	r8,[r13+C2_ST]
 	mov	ecx,H2_MAXS
 .next:
@@ -979,7 +1055,7 @@ h2_in_settings:
 	jmp	.setting
 .ack:
 	call	h2_room
-	cmp	eax,9
+	cmp	eax,9 + H2_RESERVE
 	jb	.calm
 	xor	esi,esi
 	mov	dl,H2F_SETTINGS
@@ -1033,7 +1109,7 @@ h2_in_ping:
 	test	ecx,H2_ACK
 	jnz	.out
 	call	h2_room
-	cmp	eax,17
+	cmp	eax,17 + H2_RESERVE
 	jb	h2_in_settings.calm		; pings it does not read the answers to
 	mov	esi,8
 	mov	dl,H2F_PING
@@ -1934,7 +2010,14 @@ h2_stream_new:
 	lea	rax,[rbp+Q_DATA]
 	sub	rdi,rax
 	mov	[rbp+Q_LEN],edi
-	; into the table, and its exchange starts
+	; into the table (its home slot when free), and its exchange starts
+	mov	r8d,[rsp+H2N_SID]
+	shr	r8d,1
+	and	r8d,H2_MAXS - 1
+	shl	r8d,4
+	lea	r8,[r13+C2_ST+r8]
+	cmp	dword [r8+S2_SID],0
+	je	.slot_found
 	lea	r8,[r13+C2_ST]
 	mov	ecx,H2_MAXS
 .slot:
@@ -2427,6 +2510,22 @@ h2_stream_out:
 
 ; ebp = stream session: out of its connection's table (c2 registers)
 h2_untable:
+	mov	eax,ebp				; its home slot first
+	shl	rax,H_SHIFT
+	add	rax,[g_http_base]
+	mov	r8d,[rax+H_H2SID]
+	shr	r8d,1
+	and	r8d,H2_MAXS - 1
+	shl	r8d,4
+	lea	r8,[r13+C2_ST+r8]
+	cmp	dword [r8+S2_SID],0
+	je	.scan
+	cmp	[r8+S2_SESS],ebp
+	jne	.scan
+	mov	dword [r8+S2_SID],0
+	dec	dword [r13+C2_NSTR]
+	ret
+.scan:
 	lea	r8,[r13+C2_ST]
 	mov	ecx,H2_MAXS
 .next:

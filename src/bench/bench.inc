@@ -44,13 +44,17 @@ BC_SLOT		:= 60				; d: which of its schedule's requests is next
 BC_HS		:= 64				; d: BH_* (0 = plain bytes)
 BC_HTRY		:= 68				; d: the server flight's records tried so far
 BC_CLEN		:= 72				; d: ciphertext bytes in BC_CBUF
+BC_H2SID	:= 76				; d: proto=h2: the next stream id
+BC_H2CUR	:= 80				; d: the stream of the request in flight
+BC_H2RCV	:= 84				; d: DATA bytes not yet credited back to the connection
 BC_BUF		:= 128				; plaintext of the answer
-BC_CAP		:= 16384
+BC_CAP		:= 32768				; (an HTTP/2 frame, 16 KiB + 9, fits)
 BC_CBUF		:= BC_BUF + BC_CAP		; new=on, https: records as received
 BC_CCAP		:= 32768
 BC_TC		:= BC_CBUF + BC_CCAP		; new=on, https: the handshake
 BC_SNAP		:= BC_TC + TC_FULL		; the transcript through the ClientHello
-BC_SIZE		:= (BC_SNAP + SHA256_CTX_SIZE + 63) and not 63
+BC_HP		:= (BC_SNAP + SHA256_CTX_SIZE + 63) and not 63	; proto=h2: the HPACK decoder
+BC_SIZE		:= (BC_HP + HPD_BYTES + 63) and not 63
 
 BH_CONNECTING	:= 1				; waiting for the connect
 BH_FLIGHT	:= 2				; ClientHello sent, reading the server's flight
@@ -125,6 +129,8 @@ bss
 	g_b_heapn	dd ?
 	g_b_alive	dd ?
 	g_b_new		dd ?			; a new connection (and handshake) per request
+	g_b_h2		dd ?			; proto=h2
+	g_b_h2len	dd ?			; the request's HPACK block
 	g_b_rate	dq ?			; requests/s in all, 0 = closed loop
 	g_b_dur		dq ?			; us
 	g_b_warm	dq ?			; us
@@ -161,6 +167,11 @@ bss
 	g_b_snap:	rb SHA256_CTX_SIZE
 	g_b_hout:	rb 4096			; ClientHello, then the client Finished
 	g_b_hsend:	rb BENCH_REQ_CAP + 4096	; new=on: the Finished and the sealed request
+	g_b_h2blk:	rb 8192			; proto=h2: the request's HPACK block
+	g_b_h2out:	rb BENCH_REQ_CAP + 512	; proto=h2: frames to send
+	align 8
+	g_b_h2fld:	rb 64 * HP_SIZE
+	g_b_h2str:	rb 16384
 	g_b_hdec:	rb BENCH_HIN_CAP	; the decrypted server flight (as large as what it comes from)
 	g_b_hin:	rb BENCH_HIN_CAP	; the server's flight as received
 	g_b_req:	rb BENCH_REQ_CAP
@@ -198,6 +209,9 @@ cstring str_bk_size, 'size',0
 cstring str_bk_sni, 'sni',0
 cstring str_bk_format, 'format',0
 cstring str_bk_new, 'new',0
+cstring str_bk_proto, 'proto',0
+cstring str_bk_h1, 'h1',0
+cstring str_bk_h2, 'h2',0
 cstring str_bk_on, 'on',0
 cstring str_bk_off, 'off',0
 cstring str_bk_text, 'text',0
@@ -266,7 +280,24 @@ cli_bench:
 	bench_key str_bk_sni, .sni
 	bench_key str_bk_format, .format
 	bench_key str_bk_new, .new
+	bench_key str_bk_proto, .proto
 	jmp	.badkey
+.proto:
+	mov	rdi,r14
+	mov	esi,r15d
+	lea	rdx,[str_bk_h2]
+	call	mem_eq_cstr
+	mov	[g_b_h2],eax
+	mov	[g_tlsc_h2],eax
+	test	eax,eax
+	jnz	.arg
+	mov	rdi,r14
+	mov	esi,r15d
+	lea	rdx,[str_bk_h1]
+	call	mem_eq_cstr
+	test	eax,eax
+	jz	.badval
+	jmp	.arg
 .new:
 	mov	rdi,r14
 	mov	esi,r15d
@@ -392,15 +423,26 @@ cli_bench:
 	ja	.toomany
 	call	bench_parse_url
 	jc	.badurl
+	cmp	dword [g_b_h2],0
+	je	@f
+	cmp	dword [g_b_new],0		; one stream a connection, kept open
+	jne	.h2new
+	cmp	dword [g_b_mode],2
+	je	.h2new
+	call	bench_h2_block
+	jc	.toolong
+	jmp	.built
+@@:
 	call	bench_build_request
 	jc	.toolong
+.built:
 	call	bench_calibrate
 	call	bench_run			; eax = exit status
 	mov	edi,eax
 	jmp	exit_process
 .usage:
 	call	log_begin
-	out_lit 'usage: okena bench URL [rate=N] [conns=N] [duration=10s] [warmup=1s] [workers=N] [new=on] [method=GET] [header=...] [body=TEXT] [size=N] [sni=NAME] [format=text|kv]'
+	out_lit 'usage: okena bench URL [rate=N] [conns=N] [duration=10s] [warmup=1s] [workers=N] [new=on] [proto=h1|h2] [method=GET] [header=...] [body=TEXT] [size=N] [sni=NAME] [format=text|kv]'
 	jmp	.fail
 .badkey:
 	call	log_begin
@@ -425,6 +467,10 @@ cli_bench:
 .badurl:
 	call	log_begin
 	out_lit 'bench: the URL must be http://, https:// or tcp:// and an IP address or localhost with a port'
+	jmp	.fail
+.h2new:
+	call	log_begin
+	out_lit 'bench: proto=h2 is for http:// and https:// with kept connections (not new=on)'
 	jmp	.fail
 .toolong:
 	call	log_begin
@@ -1017,6 +1063,12 @@ bench_open:
 	mov	[rbx+BC_RLEN],eax
 	mov	[rbx+BC_ROFF],eax
 	mov	[rbx+BC_FLAGS],eax
+	cmp	dword [g_b_h2],0
+	je	@f
+	call	bench_h2_open
+	test	eax,eax
+	jz	.close
+@@:
 	sub	rsp,16
 	mov	dword [rsp],EPOLLIN
 	mov	eax,[rbx+BC_GIDX]
@@ -1218,6 +1270,8 @@ bench_send:
 @@:
 	cmp	dword [g_b_new],0
 	jne	bench_new_open
+	cmp	dword [g_b_h2],0
+	jne	bench_h2_send
 ; the rest of the request, as far as the socket takes it
 bench_send_more:
 	cmp	dword [rbx+BC_HS],BH_RECORDS
@@ -1342,6 +1396,8 @@ bench_readable:
 	add	[rbx+BC_RLEN],eax
 	mov	rcx,[g_b_wres]
 	add	[rcx+BW_BYTES],rax
+	cmp	dword [g_b_h2],0
+	jne	bench_h2_after
 	cmp	dword [rbx+BC_STATE],BCS_FLIGHT
 	jne	bench_fail			; bytes nobody asked for
 	call	bench_parse
@@ -1606,6 +1662,16 @@ bench_tls_readable:
 	mov	ecx,r13d
 	rep	movsb
 	mov	[rbx+BC_RLEN],eax
+	cmp	dword [g_b_h2],0
+	je	.h1parse
+	call	bench_h2_parse			; frames may come while idle too
+	test	eax,eax
+	js	.fail
+	jz	.record
+	cmp	dword [rbx+BC_STATE],BCS_FLIGHT
+	jne	.record
+	jmp	.done_rec
+.h1parse:
 	cmp	dword [rbx+BC_STATE],BCS_FLIGHT
 	jne	.fail
 	call	bench_parse
@@ -1615,6 +1681,7 @@ bench_tls_readable:
 	mov	eax,[rbx+BC_ROFF]
 	cmp	eax,[rbx+BC_RLEN]
 	jne	.fail
+.done_rec:
 	mov	ecx,[rbx+BC_CLEN]		; the records opened leave the buffer
 	sub	ecx,r12d			; (a keep-alive connection reads on)
 	mov	[rbx+BC_CLEN],ecx
@@ -1813,8 +1880,11 @@ bench_complete:
 	call	bh_index
 	inc	qword [r8+BW_HS+rax*8]
 .counted:
+	cmp	dword [g_b_h2],0
+	jne	@f				; h2: frames after the answer stay
 	mov	dword [rbx+BC_RLEN],0
 	mov	dword [rbx+BC_ROFF],0
+@@:
 	cmp	dword [g_b_new],0
 	je	@f
 	call	bench_new_close
@@ -2170,6 +2240,438 @@ bench_parse:
 .f_conn	db 'connection:'
 .f_te	db 'transfer-encoding:'
 .v_close db 'close'
+
+; -------------------------------------------------------------- proto=h2
+
+; The request's HPACK block (stateless: okena's encoder): :method,
+; :scheme, :authority, :path, the headers (names lower-cased), and a
+; content-length when there is a body. CF when it does not fit.
+bench_h2_block:
+	push	rbx
+	push	r12
+	lea	rdi,[g_b_h2blk]
+	lea	rsi,[.n_method]
+	mov	edx,7
+	mov	rcx,[g_b_method]
+	mov	r8,[g_b_methodlen]
+	call	hpack_encode
+	mov	rdi,rax
+	lea	rsi,[.n_scheme]
+	mov	edx,7
+	lea	rcx,[.v_http]
+	mov	r8d,4
+	cmp	dword [g_b_mode],1
+	jne	@f
+	lea	rcx,[.v_https]
+	mov	r8d,5
+@@:
+	call	hpack_encode
+	mov	rdi,rax
+	lea	rsi,[.n_auth]
+	mov	edx,10
+	mov	rcx,[g_b_auth]
+	mov	r8,[g_b_authlen]
+	call	hpack_encode
+	mov	rdi,rax
+	lea	rsi,[.n_path]
+	mov	edx,5
+	mov	rcx,[g_b_path]
+	mov	r8,[g_b_pathlen]
+	call	hpack_encode
+	mov	rdi,rax
+	xor	r12d,r12d
+.hdr:
+	cmp	r12d,[g_b_nhdr]
+	jae	.body
+	mov	rsi,[g_b_hdr+r12*8]		; "Name: value", lower-cased name
+	inc	r12d
+	xor	edx,edx
+@@:
+	mov	al,[rsi+rdx]
+	test	al,al
+	jz	.hdr				; no colon: skipped
+	cmp	al,':'
+	je	@f
+	cmp	al,'A'
+	jb	.lc
+	cmp	al,'Z'
+	ja	.lc
+	or	byte [rsi+rdx],0x20
+.lc:
+	inc	edx
+	jmp	@b
+@@:
+	lea	rcx,[rsi+rdx+1]
+@@:
+	cmp	byte [rcx],' '
+	jne	@f
+	inc	rcx
+	jmp	@b
+@@:
+	xor	r8d,r8d
+@@:
+	cmp	byte [rcx+r8],0
+	je	@f
+	inc	r8d
+	jmp	@b
+@@:
+	call	hpack_encode
+	mov	rdi,rax
+	lea	rax,[g_b_h2blk+8192-1024]
+	cmp	rdi,rax
+	ja	.long
+	jmp	.hdr
+.body:
+	cmp	qword [g_b_body],0
+	je	.done
+	cmp	qword [g_b_bodylen],16384
+	ja	.long
+	push	rdi				; content-length in decimal
+	lea	rdi,[g_b_h2out]
+	mov	rax,[g_b_bodylen]
+	call	fmt_u64
+	lea	r8,[g_b_h2out]
+	sub	rdi,r8
+	mov	r8d,edi
+	pop	rdi
+	lea	rsi,[.n_clen]
+	mov	edx,14
+	lea	rcx,[g_b_h2out]
+	call	hpack_encode
+	mov	rdi,rax
+.done:
+	lea	rax,[g_b_h2blk]
+	sub	rdi,rax
+	cmp	edi,16384 - 64
+	ja	.long
+	mov	[g_b_h2len],edi
+	clc
+	pop	r12
+	pop	rbx
+	ret
+.long:
+	stc
+	pop	r12
+	pop	rbx
+	ret
+.n_method db ':method'
+.n_scheme db ':scheme'
+.n_auth	db ':authority'
+.n_path	db ':path'
+.n_clen	db 'content-length'
+.v_http	db 'http'
+.v_https db 'https'
+
+; rbx = connection, rsi = bytes, edx = length: out on it, sealed when its
+; records are ours; blocking (setup) or not (eax = 0 when the socket
+; would not take it all). eax = 1 when all went out.
+bench_h2_out:
+	push	r12
+	push	r13
+	mov	r12,rsi
+	mov	r13d,edx
+	cmp	dword [rbx+BC_HS],BH_RECORDS
+	jne	.raw
+	lea	rdi,[rbx+BC_TC]			; one record (callers send < 16 KiB)
+	lea	rsi,[g_b_hsend]
+	mov	rdx,r12
+	mov	ecx,r13d
+	call	tlsc_seal
+	lea	r12,[g_b_hsend]
+	mov	r13d,eax
+.raw:
+	mov	rsi,r12
+	mov	edx,r13d
+	call	bench_new_sendall
+	mov	eax,1
+	jnc	@f
+	xor	eax,eax
+@@:
+	pop	r13
+	pop	r12
+	ret
+
+; rbx = connection, just connected (and through TLS): the client preface,
+; SETTINGS (windows at their largest, no push) and the connection's
+; WINDOW_UPDATE; a fresh HPACK decoder. eax = 1, or 0.
+bench_h2_open:
+	mov	dword [rbx+BC_H2SID],1
+	mov	dword [rbx+BC_H2CUR],0
+	mov	dword [rbx+BC_H2RCV],0
+	lea	rdi,[rbx+BC_HP]
+	mov	esi,4096
+	call	hpack_init
+	lea	rsi,[.preface]
+	mov	edx,.preface.len
+	jmp	bench_h2_out
+.preface db 'PRI * HTTP/2.0',13,10,13,10,'SM',13,10,13,10
+	db 0,0,12, 4, 0, 0,0,0,0		; SETTINGS
+	db 0,4, 0x7F,0xFF,0xFF,0xFF		; INITIAL_WINDOW_SIZE 2^31 - 1
+	db 0,2, 0,0,0,0				; ENABLE_PUSH 0
+	db 0,0,4, 8, 0, 0,0,0,0			; WINDOW_UPDATE, the connection
+	db 0x7F,0xFF,0x00,0x00			; + 2^31 - 65536
+.preface.len = $ - .preface
+
+; rbx = connection, rax = now (the common part done by bench_send): the
+; request as HEADERS (and DATA), a new stream.
+bench_h2_send:
+	push	r12
+	mov	eax,[rbx+BC_H2SID]
+	mov	[rbx+BC_H2CUR],eax
+	add	dword [rbx+BC_H2SID],2
+	lea	rdi,[g_b_h2out]
+	mov	esi,[g_b_h2len]
+	mov	dl,1				; HEADERS
+	mov	cl,4				; END_HEADERS
+	cmp	qword [g_b_body],0
+	jne	@f
+	or	cl,1				; END_STREAM
+@@:
+	call	.frame
+	lea	rsi,[g_b_h2blk]
+	mov	ecx,[g_b_h2len]
+	rep	movsb
+	cmp	qword [g_b_body],0
+	je	.out
+	mov	rsi,[g_b_bodylen]
+	mov	dl,0				; DATA
+	mov	cl,1				; END_STREAM
+	call	.frame
+	mov	rsi,[g_b_body]
+	mov	rcx,[g_b_bodylen]
+	rep	movsb
+.out:
+	lea	rsi,[g_b_h2out]
+	mov	rdx,rdi
+	sub	rdx,rsi
+	call	bench_h2_out
+	pop	r12
+	test	eax,eax
+	jz	bench_fail
+	mov	eax,[g_b_reqlen]
+	mov	[rbx+BC_SOFF],eax
+	ret
+; rdi = where, esi = length, dl = type, cl = flags: a frame header for
+; the stream in flight. rdi advanced.
+.frame:
+	mov	eax,esi
+	bswap	eax
+	shr	eax,8
+	mov	[rdi],ax
+	shr	eax,16
+	mov	[rdi+2],al
+	mov	[rdi+3],dl
+	mov	[rdi+4],cl
+	mov	eax,[rbx+BC_H2CUR]
+	bswap	eax
+	mov	[rdi+5],eax
+	add	rdi,9
+	ret
+
+; rbx = connection, bytes just read into its buffer (plain sockets)
+bench_h2_after:
+	call	bench_h2_parse
+	test	eax,eax
+	js	bench_fail
+	jz	.ret
+	cmp	dword [rbx+BC_STATE],BCS_FLIGHT
+	jne	.ret
+	jmp	bench_complete
+.ret:
+	ret
+
+; rbx = connection: every whole frame in its buffer. eax = 1 when the
+; stream in flight ended (its status in BC_STATUS), 0 when more is
+; needed, -1 on an error (GOAWAY, a reset of that stream, a broken frame).
+bench_h2_parse:
+	push	r12
+	push	r13
+	push	r14
+	xor	r14d,r14d			; 1 once the stream in flight ended
+.frame:
+	mov	r12d,[rbx+BC_ROFF]
+	mov	ecx,[rbx+BC_RLEN]
+	sub	ecx,r12d
+	cmp	ecx,9
+	jb	.compact
+	lea	r13,[rbx+BC_BUF+r12]		; the frame
+	movzx	eax,word [r13]
+	xchg	al,ah
+	shl	eax,8
+	movzx	edx,byte [r13+2]
+	or	eax,edx				; its length
+	cmp	eax,BC_CAP - 9
+	ja	.bad
+	lea	edx,[rax+9]
+	cmp	ecx,edx
+	jb	.compact
+	add	[rbx+BC_ROFF],edx
+	mov	esi,eax				; esi = length
+	movzx	ecx,byte [r13+3]		; type
+	movzx	r8d,byte [r13+4]		; flags
+	mov	edx,[r13+5]
+	bswap	edx
+	and	edx,0x7FFFFFFF			; stream
+	add	r13,9				; payload
+	cmp	ecx,0
+	je	.data
+	cmp	ecx,1
+	je	.headers
+	cmp	ecx,3
+	je	.rst
+	cmp	ecx,4
+	je	.settings
+	cmp	ecx,6
+	je	.ping
+	cmp	ecx,7
+	je	.bad				; GOAWAY: the connection is done
+	jmp	.frame				; the rest: nothing to do
+.data:
+	add	[rbx+BC_H2RCV],esi
+	cmp	dword [rbx+BC_H2RCV],1 shl 30
+	jb	@f
+	call	.credit
+@@:
+	cmp	edx,[rbx+BC_H2CUR]
+	jne	.frame
+	test	r8d,1
+	jz	.frame
+	mov	r14d,1
+	jmp	.frame
+.headers:
+	test	r8d,8				; PADDED
+	jz	@f
+	movzx	eax,byte [r13]
+	inc	r13
+	dec	esi
+	sub	esi,eax
+	js	.bad
+@@:
+	test	r8d,0x20			; PRIORITY
+	jz	@f
+	add	r13,5
+	sub	esi,5
+	js	.bad
+@@:
+	push	rdx
+	push	r8
+	sub	rsp,HPO_SIZE			; decoded always (the table's sake)
+	lea	rax,[g_b_h2fld]
+	mov	[rsp+HPO_FIELDS],rax
+	mov	dword [rsp+HPO_FMAX],64
+	lea	rax,[g_b_h2str]
+	mov	[rsp+HPO_BUF],rax
+	mov	dword [rsp+HPO_BCAP],16384
+	lea	rdi,[rbx+BC_HP]
+	mov	edx,esi
+	mov	rsi,r13
+	mov	rcx,rsp
+	call	hpack_decode
+	mov	ecx,[rsp+HPO_COUNT]
+	add	rsp,HPO_SIZE
+	pop	r8
+	pop	rdx
+	test	eax,eax
+	jnz	.bad
+	cmp	edx,[rbx+BC_H2CUR]
+	jne	.frame
+	; :status
+	lea	r9,[g_b_h2fld]
+@@:
+	test	ecx,ecx
+	jz	.hdone
+	dec	ecx
+	cmp	dword [r9+HP_NLEN],7
+	jne	.next_f
+	mov	rax,[r9+HP_NAME]
+	cmp	dword [rax],':sta'
+	jne	.next_f
+	mov	rax,[r9+HP_VALUE]
+	movzx	r10d,byte [rax]
+	sub	r10d,'0'
+	imul	r10d,r10d,100
+	movzx	r11d,byte [rax+1]
+	sub	r11d,'0'
+	imul	r11d,r11d,10
+	add	r10d,r11d
+	movzx	r11d,byte [rax+2]
+	sub	r11d,'0'
+	add	r10d,r11d
+	mov	[rbx+BC_STATUS],r10d
+.next_f:
+	add	r9,HP_SIZE
+	jmp	@b
+.hdone:
+	test	r8d,1				; END_STREAM: no body
+	jz	.frame
+	mov	r14d,1
+	jmp	.frame
+.rst:
+	cmp	edx,[rbx+BC_H2CUR]
+	je	.bad
+	jmp	.frame
+.settings:
+	test	r8d,1
+	jnz	.frame				; an ACK
+	lea	rsi,[.ack]
+	mov	edx,9
+	call	bench_h2_out
+	jmp	.frame
+.ping:
+	test	r8d,1
+	jnz	.frame
+	cmp	esi,8
+	jne	.bad
+	mov	rax,[r13]
+	mov	qword [g_b_h2out],0
+	mov	dword [g_b_h2out],0x06000800	; length 8, type 6
+	mov	byte [g_b_h2out+4],1		; ACK
+	mov	[g_b_h2out+9],rax
+	lea	rsi,[g_b_h2out]
+	mov	edx,17
+	call	bench_h2_out
+	jmp	.frame
+.compact:
+	mov	eax,[rbx+BC_ROFF]		; a partial frame to the front
+	test	eax,eax
+	jz	.ret
+	mov	ecx,[rbx+BC_RLEN]
+	sub	ecx,eax
+	mov	[rbx+BC_RLEN],ecx
+	mov	dword [rbx+BC_ROFF],0
+	lea	rsi,[rbx+BC_BUF+rax]
+	lea	rdi,[rbx+BC_BUF]
+	rep	movsb
+.ret:
+	mov	eax,r14d
+	jmp	.out
+.bad:
+	mov	eax,-1
+.out:
+	pop	r14
+	pop	r13
+	pop	r12
+	ret
+; the connection's window back up (every GiB read)
+.credit:
+	push	rdx
+	push	r8
+	push	rsi
+	mov	eax,[rbx+BC_H2RCV]
+	mov	dword [rbx+BC_H2RCV],0
+	bswap	eax
+	mov	dword [g_b_h2out],0x08040000	; length 4, type 8
+	mov	byte [g_b_h2out+4],0
+	mov	dword [g_b_h2out+5],0
+	mov	[g_b_h2out+9],eax
+	lea	rsi,[g_b_h2out]
+	mov	edx,13
+	call	bench_h2_out
+	pop	rsi
+	pop	r8
+	pop	rdx
+	ret
+.ack	db 0,0,0, 4, 1, 0,0,0,0
 
 ; ---------------------------------------------------------------- worker
 
