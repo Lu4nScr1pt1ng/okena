@@ -35,7 +35,7 @@ H2_STRCAP	:= 16384
 H2_MAXFIELDS	:= 128
 H2_RST_BUDGET	:= 200				; resets a client may cause in a second
 H2_CHEAP_BUDGET	:= 2000				; frames that ask work and carry nothing, a second
-H2_CHEAP_CREDIT	:= 2				; more of them for each DATA or HEADERS sent
+H2_CHEAP_CREDIT	:= 4				; more of them for each DATA or HEADERS sent
 H2_CONT_MAX	:= 64				; CONTINUATION frames in one header block
 
 ; frame types and flags
@@ -116,8 +116,12 @@ C2F_CLOSING	:= 4				; GOAWAY queued: close once it is out
 C2F_PEERGONE	:= 8				; the client sent GOAWAY
 C2F_EPOUT	:= 16				; epoll: the socket was full
 C2F_FLUSHQ	:= 32				; in the flush list: its send goes at the iteration's end
+C2F_SACKED	:= 128				; the client acknowledged our SETTINGS
 H2_FLUSH_MAX	:= 4096
 H2_RESERVE	:= 17				; OUT keeps room for a GOAWAY
+H2_CTRL		:= 512				; DATA and HEADERS leave this much for the
+						; acks, window updates and resets (OUT full of
+						; them is a peer that does not read: CALM)
 
 ; a stream session's fields (the end of its H record) and request queue
 H_H2C		:= 472				; d: its connection's session
@@ -138,7 +142,10 @@ S2F_SENDING	:= 64				; an h_send is pending
 SF_H2C		:= 4096				; S_FLAGS: an HTTP/2 connection
 SF_H2S		:= 8192				; S_FLAGS: a stream of one
 
-HB_H2Q		:= HB_TLS			; a stream's request queue (it has no TLS of its own)
+; a stream's request queue: past the HTTP buffers, over the TLS area (a
+; stream has no TLS of its own), room for a whole default window (65535,
+; what a client may send before it has our SETTINGS) with its head
+HB_H2Q		:= (HB_TRAIL + CK_TRAIL_MAX + 63) and not 63
 Q_LEN		:= 0
 Q_OFF		:= 4
 Q_DST		:= 8				; q: a receive parked here
@@ -151,7 +158,9 @@ Q_CHUNKED	:= 36				; DATA goes out chunk-framed (no content-length)
 Q_CLEN		:= 40				; q: the declared content-length, -1 = none
 Q_GOT		:= 48				; q: body bytes received
 Q_DATA		:= 64
-Q_CAP		:= (1 shl 16) - Q_DATA
+Q_CAP		:= (1 shl 16) - Q_DATA		; (an upstream response queue)
+H2Q_CAP		:= (1 shl 17) - HB_H2Q - Q_DATA	; a stream's request queue
+assert H2Q_CAP >= 65535 + 2048
 
 bss
 	align 8
@@ -258,7 +267,8 @@ h2_room:
 ; payload). c2 registers.
 h2_frame:
 	; what we send earns the peer cheap frames: a client's flow control
-	; and pings follow the DATA it gets (gRPC's BDP pings, one per read)
+	; and pings follow the DATA it gets (gRPC: a window update for the
+	; stream and one for the connection, a BDP ping, per read)
 	cmp	dl,H2F_HEADERS
 	ja	@f
 	mov	eax,[r13+C2_CHEAPN]
@@ -986,6 +996,8 @@ h2_frame_in:
 	test	ecx,H2_END_STREAM
 	jnz	.counted
 .cheap:
+	test	dword [r13+C2_FLAGS],C2F_CLIENT
+	jnz	.counted			; a backend okena was told to use: no budget
 	push	rax
 	mov	eax,[g_tick]
 	cmp	eax,[r13+C2_CHEAPT]
@@ -1130,6 +1142,34 @@ h2_in_settings:
 	jz	.values
 	test	esi,esi
 	jnz	h2_frame_in.frame_size
+	test	dword [r13+C2_FLAGS],C2F_CLIENT or C2F_SACKED
+	jnz	.acked
+	; the client has our window now: streams it opened before had the
+	; default one (RFC 9113 6.9.2), they get ours
+	or	dword [r13+C2_FLAGS],C2F_SACKED
+	push	r12
+	lea	r12,[r13+C2_ST]
+	mov	ecx,H2_MAXS
+.ack_stream:
+	cmp	dword [r12+S2_SID],0
+	je	.ack_next
+	mov	eax,[r12+S2_SESS]
+	shl	rax,S_SHIFT
+	add	rax,[g_sess_base]
+	mov	edx,[rax+S_GEN]
+	cmp	edx,[r12+S2_GEN]
+	jne	.ack_next
+	mov	eax,[r12+S2_SESS]
+	shl	rax,H_SHIFT
+	add	rax,[g_http_base]
+	mov	rax,[rax+H_BUF]
+	sub	dword [rax+HB_H2Q+Q_RWIN],65535 - H2_INIT_WIN
+.ack_next:
+	add	r12,S2_SIZE
+	dec	ecx
+	jnz	.ack_stream
+	pop	r12
+.acked:
 	ret
 .values:
 	mov	eax,esi
@@ -1466,11 +1506,13 @@ h2_stream_data:
 @@:
 	; room: content, chunk framing, the last chunk
 	push	rcx
-	call	h2q_compact
+	push	rsi
+	call	h2q_compact			; (its copy takes rsi, rdi, rcx)
+	pop	rsi
 	pop	rcx
 	mov	eax,[r14+Q_LEN]
 	lea	eax,[rax+rsi+32]
-	cmp	eax,Q_CAP
+	cmp	eax,H2Q_CAP
 	ja	.flow				; beyond what its window allows
 	add	[r14+Q_PEND],esi
 	test	esi,esi
@@ -1538,6 +1580,7 @@ h2_stream_data:
 	mov	edx,H2E_PROTOCOL
 .reset:
 	mov	esi,ebp
+	mov	edi,ebx				; (rdi went to the copies)
 	pop	r15
 	pop	r14
 	pop	r12
@@ -1563,6 +1606,8 @@ h2q_compact:
 ; ebx = stream, r15 = its record, r14 = its queue: a receive parked there
 ; gets what the queue holds
 h2q_serve:
+	test	dword [r15+H_FLAGS],HX_DUPLEX
+	jnz	http_duplex_pump		; the body goes upstream beside the response
 	cmp	dword [r14+Q_WAIT],0
 	je	.out
 	mov	ecx,[r14+Q_LEN]
@@ -2070,7 +2115,12 @@ h2_stream_new:
 	mov	[rbp+Q_OFF],eax
 	mov	[rbp+Q_WAIT],eax
 	mov	[rbp+Q_PEND],eax
-	mov	dword [rbp+Q_RWIN],H2_INIT_WIN
+	mov	eax,H2_INIT_WIN			; ours, or the default until the client
+	test	dword [r13+C2_FLAGS],C2F_SACKED	; has ours
+	jnz	@f
+	mov	eax,65535
+@@:
+	mov	[rbp+Q_RWIN],eax
 	mov	eax,[r13+C2_HBEND]
 	mov	[rbp+Q_ENDED],eax
 	mov	dword [rbp+Q_CHUNKED],0
@@ -2438,6 +2488,14 @@ h2s_recv:
 ; ebx = stream, r15 = record, r14 = queue, rdi = buffer, esi = room: copy
 ; what fits, deliver it; the window is given back once the queue drains.
 h2s_take:
+	call	h2s_copy
+	mov	edx,1
+	xor	ecx,ecx
+	h_rec
+	jmp	hep_queue
+
+; the same, without the delivery: rax = bytes copied
+h2s_copy:
 	mov	ecx,[r14+Q_LEN]
 	mov	eax,[r14+Q_OFF]
 	sub	ecx,eax
@@ -2451,19 +2509,16 @@ h2s_take:
 	rep	movsb
 	mov	eax,[r14+Q_OFF]
 	cmp	eax,[r14+Q_LEN]
-	jne	.deliver
+	jne	.out
 	mov	dword [r14+Q_OFF],0
 	mov	dword [r14+Q_LEN],0
 	cmp	dword [r14+Q_PEND],0
-	je	.deliver
+	je	.out
 	or	dword [r15+H_H2F],S2F_CREDIT
 	call	h2s_kick			; the credit goes out with the connection
-.deliver:
+.out:
 	pop	rax
-	mov	edx,1
-	xor	ecx,ecx
-	h_rec
-	jmp	hep_queue
+	ret
 
 ; h_send on a stream: ebx = stream, rdi = bytes, esi = length. Turned into
 ; frames as far as room and windows allow; the rest waits.
@@ -2676,7 +2731,7 @@ h2_stream_out:
 @@:
 	mov	r12d,eax
 	call	h2_room
-	sub	eax,9
+	sub	eax,9 + H2_CTRL
 	cmp	r12d,eax
 	jle	@f
 	mov	r12d,eax
@@ -2933,7 +2988,7 @@ h2_head_out:
 	div	dword [r13+C2_PMAXF]
 	inc	eax
 	imul	eax,eax,9
-	add	eax,r12d
+	lea	eax,[rax+r12+H2_CTRL]
 	push	rax
 	call	h2_room
 	pop	rdx
@@ -3131,7 +3186,7 @@ h2_trailers_out:
 	sub	rdi,rax
 	mov	r12d,edi
 	call	h2_room
-	lea	edx,[r12+9+H2_RESERVE]
+	lea	edx,[r12+9+H2_CTRL]
 	cmp	eax,edx
 	jb	.full
 	mov	esi,r12d

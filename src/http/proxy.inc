@@ -127,6 +127,7 @@ HX_HTTP10	:= 131072	; the client speaks HTTP/1.0 (no 1xx for it)
 HX_INTERIM	:= 262144	; the head being written is an interim (1xx) one
 HX_SELF		:= 524288	; okena answers this request itself (a redirect)
 HX_GRPC		:= 1048576	; a gRPC request: okena's own errors answer as gRPC
+HX_DUPLEX	:= 2097152	; HTTP/2 both ends: the body goes on beside the response
 
 SIDE_CLIENT	:= 0
 SIDE_UP		:= 1
@@ -1479,6 +1480,20 @@ http_send_plain:
 ; Move the request body upstream, a piece at a time. ebx = session.
 http_req_pump:
 	h_rec
+	cmp	dword [r15+H_STATE],HS_SEND_HEAD
+	jne	.pump
+	cmp	dword [r15+H_BODY],BK_NONE
+	je	.pump
+	call	session_ptr			; the head went: HTTP/2 both ends?
+	mov	eax,[rax+S_FLAGS]
+	and	eax,SF_H2S or SF_UPH2
+	cmp	eax,SF_H2S or SF_UPH2
+	jne	.pump
+	or	dword [r15+H_FLAGS],HX_DUPLEX	; then the response is read at once
+	call	http_duplex_pump
+	jmp	http_start_response
+.pump:
+	h_rec
 	mov	eax,[r15+H_BODY]
 	cmp	eax,BK_LENGTH
 	je	.length
@@ -1567,6 +1582,119 @@ http_req_pump:
 	mov	esi,str_last_chunk.len
 	jmp	h_send
 
+; HTTP/2 at both ends (a stream from the client, a stream to the backend):
+; the request body goes on beside the response, as gRPC's bidirectional
+; streams need (the backend answers messages before the request ends).
+; The exchange reads the response; this moves the body from the client
+; stream's queue to the upstream stream, decoded as http_req_pump decodes
+; it, whenever either can take more: DATA from the client (h2q_serve), the
+; upstream window opening (h2u_kick). Its end is END_STREAM upstream.
+; ebx = session; keeps every register but rax, rcx, rdx, rsi, rdi, r8-r11.
+http_duplex_pump:
+	push	rbx
+	push	rbp
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	call	session_ptr
+	cmp	dword [rax+S_STATE],ST_OPEN
+	jne	.out
+	test	dword [rax+S_FLAGS],SF_UPH2
+	jz	.out
+	h_rec
+	test	dword [r15+H_FLAGS],HX_DUPLEX
+	jz	.out
+	u2_at	r12, ebx
+	test	dword [r12+U2_F],U2F_DPUMP
+	jnz	.out
+	or	dword [r12+U2_F],U2F_DPUMP
+.next:
+	h_rec
+	test	dword [r12+U2_F],U2F_SENDING
+	jnz	.wait				; until the window lets the rest go
+	test	dword [r12+U2_F],U2F_RST
+	jnz	.stop
+	mov	eax,[r15+H_BODY]
+	cmp	eax,BK_LENGTH
+	je	.length
+	cmp	eax,BK_CHUNKED
+	jne	.stop
+	lea	rdi,[r15+H_CK]
+	mov	eax,[r15+H_INOFF]
+	mov	rsi,[r15+H_BUF]
+	lea	rsi,[rsi+HB_IN+rax]
+	mov	edx,[r15+H_INLEN]
+	sub	edx,eax
+	call	chunk_step
+	h_rec
+	add	[r15+H_INOFF],ecx
+	cmp	eax,CK_DATAOUT
+	je	.data
+	cmp	eax,CK_MORE
+	je	.refill
+	jmp	.ended				; the end (the framing is okena's own)
+.length:
+	cmp	qword [r15+H_REMAIN],0
+	je	.ended
+	mov	ecx,[r15+H_INLEN]
+	sub	ecx,[r15+H_INOFF]
+	jz	.refill
+	mov	rax,[r15+H_REMAIN]
+	cmp	rax,rcx
+	jae	@f
+	mov	ecx,eax
+@@:
+	sub	[r15+H_REMAIN],rcx
+	mov	eax,[r15+H_INOFF]
+	add	[r15+H_INOFF],ecx
+	mov	r8,[r15+H_BUF]
+	lea	r8,[r8+HB_IN+rax]
+	mov	r9d,ecx
+.data:
+	mov	[r12+U2_PP],r8
+	mov	[r12+U2_PL],r9d
+	or	dword [r12+U2_F],U2F_SENDING
+	call	h2u_kick
+	test	dword [r12+U2_F],U2F_SENDING
+	jnz	.wait
+	cmp	dword [r12+U2_PL],0
+	jne	.stop				; nowhere to go (its connection went)
+	jmp	.next
+.refill:
+	; IN is all taken (and sent): the stream's queue next
+	mov	dword [r15+H_INLEN],0
+	mov	dword [r15+H_INOFF],0
+	mov	r14,[r15+H_BUF]
+	add	r14,HB_H2Q
+	mov	ecx,[r14+Q_LEN]
+	cmp	ecx,[r14+Q_OFF]
+	je	.wait				; more when the client sends it
+	mov	rdi,[r15+H_BUF]
+	lea	rdi,[rdi+HB_IN]
+	mov	esi,H_IN_CAP
+	call	h2s_copy
+	h_rec
+	add	[r15+H_INLEN],eax
+	jmp	.next
+.ended:
+	mov	dword [r15+H_BODY],BK_NONE
+	or	dword [r12+U2_F],U2F_FINISH
+	call	h2u_kick
+.stop:
+	h_rec
+	and	dword [r15+H_FLAGS],not HX_DUPLEX
+.wait:
+	and	dword [r12+U2_F],not U2F_DPUMP
+.out:
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbp
+	pop	rbx
+	ret
+
 ; r8 = data, r9d = length, r15 = record: OUT = "<hex>\r\n<data>\r\n".
 http_frame_chunk:
 	mov	rdi,[r15+H_BUF]
@@ -1620,6 +1748,9 @@ http_start_response:
 	call	session_ptr			; a stream upstream: the request ends
 	test	dword [rax+S_FLAGS],SF_UPH2
 	jz	@f
+	h_rec
+	test	dword [r15+H_FLAGS],HX_DUPLEX
+	jnz	@f				; (unless its body goes on beside)
 	call	h2u_req_end
 @@:
 	h_rec
@@ -3200,6 +3331,7 @@ http_tunnel_start:
 ; request on the client connection, or close it.
 http_exchange_done:
 	h_rec
+	and	dword [r15+H_FLAGS],not HX_DUPLEX
 	xor	esi,esi
 	test	dword [r15+H_FLAGS],HX_SELF
 	setnz	sil				; okena's own answer, or the backend's
@@ -3267,6 +3399,7 @@ http_error:
 	test	dword [rax+S_FLAGS],SF_H2U
 	jnz	h2u_failed			; (its TLS handshake failed: nobody to answer)
 	h_rec
+	and	dword [r15+H_FLAGS],not HX_DUPLEX
 	test	dword [r15+H_FLAGS],HX_STARTED
 	jnz	.close
 	push	rdi

@@ -82,8 +82,13 @@ ep_main:
 @@:
 	call	ep_wait_timeout			; edx = ms
 	cmp	dword [g_hs_count],0
-	je	@f
-	xor	edx,edx				; hellos waiting: do not sleep
+	jne	.nosleep			; hellos waiting: do not sleep
+	cmp	dword [g_hready_head],NIL
+	jne	.nosleep			; deliveries made after this iteration's:
+	cmp	dword [g_h2fl_n],0		; a send that completed in h2_flush woke
+	je	@f				; streams (epoll writes at once)
+.nosleep:
+	xor	edx,edx
 @@:
 	mov	edi,[g_epfd]
 	lea	rsi,[g_ep_events]

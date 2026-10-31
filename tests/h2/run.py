@@ -442,6 +442,29 @@ def run_cases():
           got == 400000, f"{got} bytes")
     c.close()
 
+    # a client that stops reading a while (OUT fills with DATA) and pings:
+    # the acks wait for room, the connection is not cut
+    c = Client(PLAIN, window=2 ** 30)
+    c.s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)     # the kernel holds little of it
+    c.c.increment_flow_control_window(2 ** 30 - 65535)
+    c.flush()
+    sid = c.request("/big/8000000")
+    time.sleep(0.5)
+    for i in range(5):
+        c.c.ping(bytes([i]) * 8)
+    c.flush()
+    c.s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 << 20)
+    c.pump(lambda: any(isinstance(e, (h2.events.StreamEnded, h2.events.ConnectionTerminated))
+                       for e in c.events if not isinstance(e, str)) or "eof" in c.events, timeout=10)
+    got = sum(len(e.data) for e in c.events if isinstance(e, h2.events.DataReceived))
+    acks = sum(1 for e in c.events if isinstance(e, h2.events.PingAckReceived))
+    term = [e for e in c.events if isinstance(e, h2.events.ConnectionTerminated)]
+    c.pump(lambda: sum(1 for e in c.events if isinstance(e, h2.events.PingAckReceived)) >= 5, timeout=2)
+    acks = sum(1 for e in c.events if isinstance(e, h2.events.PingAckReceived))
+    check("pings while okena's output is full of DATA: answered, not GOAWAY",
+          got == 8000000 and acks == 5 and not term, f"{got} bytes, {acks} acks, {term}")
+    c.close()
+
     # ALPN h2 over TLS
     c = Client(TLSL, tls=True)
     check("TLS: ALPN chose h2", c.alpn == "h2", str(c.alpn))

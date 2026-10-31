@@ -54,7 +54,7 @@ def h2_backend():
         conn = h2.connection.H2Connection(cfg)
         conn.initiate_connection()
         c.sendall(conn.data_to_send())
-        bodies, heads = {}, {}
+        bodies, heads, echo, ending = {}, {}, {}, {}
         try:
             while True:
                 d = c.recv(65536)
@@ -67,10 +67,21 @@ def h2_backend():
                     elif isinstance(e, h2.events.DataReceived):
                         bodies[e.stream_id] = bodies.get(e.stream_id, b"") + e.data
                         conn.acknowledge_received_data(e.flow_controlled_length, e.stream_id)
+                        if heads[e.stream_id].get(":path") == "/bidi" and e.data:
+                            # each piece back at once, the request still open
+                            if not heads[e.stream_id].get("_answered"):
+                                heads[e.stream_id]["_answered"] = "1"
+                                conn.send_headers(e.stream_id, [(":status", "200"),
+                                                                ("content-type", "application/grpc")])
+                            echo[e.stream_id] = echo.get(e.stream_id, b"") + e.data
                     elif isinstance(e, h2.events.StreamEnded):
                         sid, h, b = e.stream_id, heads[e.stream_id], bodies[e.stream_id]
                         path = h.get(":path", "")
-                        if path == "/rst":
+                        if path == "/bidi":
+                            if not h.get("_answered"):
+                                conn.send_headers(sid, [(":status", "200"), ("content-type", "application/grpc")])
+                            ending[sid] = len(b)
+                        elif path == "/rst":
                             conn.reset_stream(sid, error_code=8)
                         elif path == "/trailers":
                             conn.send_headers(sid, [(":status", "200"), ("content-type", "application/grpc")])
@@ -104,9 +115,24 @@ def h2_backend():
                             conn.close_connection()
                             c.sendall(conn.data_to_send())
                             return
+                for sid in list(echo):                  # echoes within the windows okena gives
+                    while echo[sid]:
+                        w = min(conn.local_flow_control_window(sid), conn.max_outbound_frame_size, len(echo[sid]))
+                        if w <= 0:
+                            break
+                        conn.send_data(sid, echo[sid][:w])
+                        echo[sid] = echo[sid][w:]
+                    if not echo[sid] and sid in ending:
+                        conn.send_headers(sid, [("grpc-status", "0"), ("echoed", str(ending.pop(sid)))],
+                                          end_stream=True)
+                        del echo[sid]
+                for sid in [x for x in ending if x not in echo]:
+                    conn.send_headers(sid, [("grpc-status", "0"), ("echoed", str(ending.pop(sid)))], end_stream=True)
                 c.sendall(conn.data_to_send())
-        except Exception:
-            pass
+        except Exception as e:
+            if os.environ.get("H2B_DEBUG"):
+                import traceback
+                traceback.print_exc()
         finally:
             c.close()
 
@@ -330,6 +356,100 @@ def cases():
     tr = [dict((k.decode(), v.decode()) for k, v in e.headers) for e in evs if isinstance(e, h2.events.TrailersReceived)]
     check("an HTTP/2 client gets the backend's trailers as trailers",
           tr == [{"grpc-status": "0", "grpc-message": "fine"}], str(tr))
+
+    # both directions at once: each message is echoed before the next is
+    # sent, the request still open (gRPC's bidirectional streams)
+    for extra, label in (([], "no content-length"), ([("content-length", "4000")], "with content-length")):
+        s = socket.create_connection(("127.0.0.1", FRONT), timeout=5)
+        c = hc.H2Connection(h2.config.H2Configuration(client_side=True, header_encoding=None))
+        c.initiate_connection()
+        c.send_headers(1, [(":method", "POST"), (":scheme", "http"), (":authority", "x"), (":path", "/bidi"),
+                           ("content-type", "application/grpc"), ("te", "trailers")] + extra)
+        s.sendall(c.data_to_send())
+        got, trailers, rounds = b"", None, 0
+        for i in range(40):
+            msg = bytes([65 + i % 26]) * 100
+            c.send_data(1, msg, end_stream=i == 39)
+            s.sendall(c.data_to_send())
+            want = len(got) + 100
+            deadline = time.time() + 3
+            while len(got) < want and time.time() < deadline:
+                try:
+                    d = s.recv(65536)
+                except socket.timeout:
+                    break
+                if not d:
+                    break
+                for e in c.receive_data(d):
+                    if isinstance(e, h2.events.DataReceived):
+                        got += e.data
+                        c.acknowledge_received_data(e.flow_controlled_length, 1)
+                    elif isinstance(e, h2.events.TrailersReceived):
+                        trailers = dict((k.decode(), v.decode()) for k, v in e.headers)
+                s.sendall(c.data_to_send())
+            if len(got) < want:
+                break
+            rounds += 1
+        deadline = time.time() + 3
+        while trailers is None and time.time() < deadline:
+            try:
+                d = s.recv(65536)
+            except socket.timeout:
+                break
+            if not d:
+                break
+            for e in c.receive_data(d):
+                if isinstance(e, h2.events.TrailersReceived):
+                    trailers = dict((k.decode(), v.decode()) for k, v in e.headers)
+        s.close()
+        expect = b"".join(bytes([65 + i % 26]) * 100 for i in range(40))
+        check(f"a bidirectional stream ({label}): 40 messages each echoed before the next",
+              rounds == 40 and got == expect, f"{rounds} rounds, {len(got)} bytes")
+        check("  then the backend's trailers", trailers is not None and trailers.get("echoed") == "4000",
+              str(trailers))
+
+    # a megabyte up and echoed back at once: both windows, both ways
+    import select
+    s = socket.create_connection(("127.0.0.1", FRONT), timeout=5)
+    s.setblocking(False)
+    c = hc.H2Connection(h2.config.H2Configuration(client_side=True, header_encoding=None))
+    c.initiate_connection()
+    c.send_headers(1, [(":method", "POST"), (":scheme", "http"), (":authority", "x"), (":path", "/bidi"),
+                       ("content-type", "application/grpc")])
+    up = os.urandom(1 << 20)
+    off, got, out, done, last = 0, bytearray(), b"", False, None
+    deadline = time.time() + 20
+    while not done and time.time() < deadline:
+        while off < len(up) and c.local_flow_control_window(1) > 0:
+            n = min(c.local_flow_control_window(1), c.max_outbound_frame_size, len(up) - off)
+            c.send_data(1, up[off:off + n], end_stream=off + n == len(up))
+            off += n
+        out += c.data_to_send()
+        r, w, _ = select.select([s], [s] if out else [], [], 1)
+        if w:
+            try:
+                out = out[s.send(out):]
+            except BlockingIOError:
+                pass
+        if r:
+            try:
+                d = s.recv(1 << 16)
+            except BlockingIOError:
+                continue
+            except OSError:
+                break
+            if not d:
+                break
+            for e in c.receive_data(d):
+                if isinstance(e, h2.events.DataReceived):
+                    got += e.data
+                    c.acknowledge_received_data(e.flow_controlled_length, 1)
+                elif isinstance(e, (h2.events.StreamEnded, h2.events.StreamReset, h2.events.ConnectionTerminated)):
+                    done = True
+                    last = e
+    s.close()
+    check("a bidirectional stream of 1 MB each way, echoed as it goes", bytes(got) == up and off == len(up),
+          f"{off} sent, {len(got)} back, {last}")
 
     d = h1(FRONT, "/goaway")
     check("the backend answers, then GOAWAY and closes", status(d) == 200, d[:80])

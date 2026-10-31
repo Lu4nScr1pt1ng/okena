@@ -147,6 +147,10 @@ worker_main:
 	xor	edi,edi				; hellos waiting: do not sleep
 	cmp	dword [g_hs_count],0
 	jne	@f
+	cmp	dword [g_hready_head],NIL	; nor deliveries made after this
+	jne	@f				; iteration's
+	cmp	dword [g_h2fl_n],0
+	jne	@f
 	mov	edi,1
 @@:
 	call	ring_enter

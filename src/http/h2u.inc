@@ -62,6 +62,7 @@ U2F_RCHUNK	:= 64				; the response is written chunk-framed
 U2F_REND	:= 128				; the response is complete
 U2F_FINISH	:= 256				; END_STREAM waits for room
 U2F_CREDIT	:= 1024				; stream credit waits for room
+U2F_DPUMP	:= 2048				; http_duplex_pump is running for it
 SF_UPH2		:= 16384			; S_FLAGS: the upstream side is a stream on a UC
 SF_H2U		:= 32768			; S_FLAGS: an upstream HTTP/2 connection
 
@@ -616,6 +617,16 @@ h2u_kick:
 	mov	[r13+C2_BLKH],eax
 .pumped:
 	call	h2_pump
+	; a body going beside its response (proxy.inc): what waited went
+	; out, the next piece
+	mov	ebx,r12d
+	h_rec
+	test	dword [r15+H_FLAGS],HX_DUPLEX
+	jz	.out
+	u2_at	rdx, ebx
+	test	dword [rdx+U2_F],U2F_SENDING or U2F_DPUMP
+	jnz	.out
+	call	http_duplex_pump
 	jmp	.out
 .orphan:
 	; no connection: a pending send fails
@@ -625,6 +636,8 @@ h2u_kick:
 	jz	.out
 	and	dword [rdx+U2_F],not U2F_SENDING
 	h_rec
+	test	dword [r15+H_FLAGS],HX_DUPLEX
+	jnz	.out				; (the response side fails on its own)
 	mov	rax,-1
 	mov	edx,2
 	mov	ecx,SIDE_UP
@@ -761,7 +774,7 @@ h2u_stream_out:
 @@:
 	mov	ebx,eax
 	call	h2_room
-	sub	eax,9 + H2_RESERVE
+	sub	eax,9 + H2_CTRL
 	cmp	ebx,eax
 	jle	@f
 	mov	ebx,eax
@@ -795,6 +808,8 @@ h2u_stream_out:
 .failed:
 	mov	dword [r12+U2_PL],0
 	and	dword [r12+U2_F],not U2F_SENDING
+	test	dword [r15+H_FLAGS],HX_DUPLEX
+	jnz	.done				; (the response side fails on its own)
 	push	rbx
 	mov	ebx,ebp
 	mov	rax,-1
@@ -805,6 +820,8 @@ h2u_stream_out:
 	jmp	.done
 .sent:
 	and	dword [r12+U2_F],not U2F_SENDING
+	test	dword [r15+H_FLAGS],HX_DUPLEX
+	jnz	.finish				; no exchange waits on it
 	push	rbx
 	mov	ebx,ebp
 	xor	eax,eax
@@ -1083,7 +1100,7 @@ h2u_head_out:
 	inc	eax
 	imul	eax,eax,9
 	add	eax,[g_h2u_blen]
-	add	eax,H2_RESERVE
+	add	eax,H2_CTRL
 	push	rax
 	call	h2_room
 	pop	rdx
@@ -1631,7 +1648,9 @@ h2u_data:
 	sub	edx,esi
 	add	[r14+Q_PEND],edx		; padding: credited with the rest
 	push	rcx
-	call	h2q_compact_u
+	push	rsi
+	call	h2q_compact_u			; (its copy takes rsi, rdi, rcx)
+	pop	rsi
 	pop	rcx
 	mov	eax,[r14+Q_LEN]
 	lea	eax,[rax+rsi+32]
