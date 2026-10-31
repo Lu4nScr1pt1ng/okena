@@ -1109,6 +1109,7 @@ start:
 	jz	.wrong
 	lea	rdi,[g_out]
 	mov	esi,32
+	jmp	.print				; (the handler above falls through to it)
 .hpack_dec:
 	; r12 = input cursor, r13 = its end, rbx = g_out cursor
 	mov	r12,rsi
