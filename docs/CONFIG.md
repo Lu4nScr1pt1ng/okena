@@ -12,7 +12,7 @@ not built yet. A directive that is not built is refused by `okena check`
 | `tcp ADDR...` | `to`, `limits { connections; per_source }`, `timeout { idle }`, `proxy_protocol send v1\|v2`, `tls { cert; key }`, `tls passthrough { sni NAME... to pool P; default reject\|to pool P }` |
 | `http ADDR...` | `host`, `route`, `limits`, `timeout { idle; header; body_idle; response }`, `trusted_proxies`, `access_log`, `http2 on\|off`, `tls { cert; key; ktls on\|off }` |
 | `route PATH... [METHOD...]` | `to`, `redirect`, `rewrite path`, `header set\|add\|drop`, `response header set\|add\|drop` |
-| `pool NAME` | `server ADDR [weight=N] [backup]`, `balance least-request\|peak-ewma\|round-robin\|least-conn\|random`, `connect timeout=`, `health tcp\|http ...`, `slow_start`, `tls { trust FILE; sni NAME }` (TLS to the backends), `protocol h1\|h2` |
+| `pool NAME` | `server ADDR [weight=N] [backup]`, `balance least-request\|peak-ewma\|round-robin\|least-conn\|random`, `connect timeout=`, `health tcp\|http\|grpc ...`, `slow_start`, `tls { trust FILE; sni NAME }` (TLS to the backends), `protocol h1\|h2` |
 
 `tls { cert FILE; key FILE }` on an `http` listener makes it HTTPS: TLS
 1.3 with a certificate chain (leaf first) and its key: EC P-256 (SEC 1 or
@@ -426,6 +426,9 @@ pool api {
     health http GET /healthz every=2s timeout=500ms expect=200..299 host=api.internal
                                    # or: health tcp (connect only); expect defaults
                                    # to 200..399, host to the server as written
+                                   # or: health grpc [SERVICE] every=2s host=...
+                                   #     (grpc.health.v1.Health/Check over HTTP/2
+                                   #     by prior knowledge; passes on SERVING)
     outlier errors=5 eject=30s max_ejected=50%
     slow_start 30s
 }

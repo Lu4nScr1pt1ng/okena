@@ -5,7 +5,10 @@
 ; check passes when the connect completes within the timeout. An HTTP
 ; check then sends one request (Connection: close) and passes when the
 ; status line arrives in time with a status in `expect` (200..399 by
-; default); the rest of the answer is not read. `rise`
+; default); the rest of the answer is not read. A gRPC check speaks
+; HTTP/2 by prior knowledge: grpc.health.v1.Health/Check for the service
+; (none: the server as a whole) and passes on SERVING; its frames are
+; walked, not its headers (an answer of headers alone is an error). `rise`
 ; passes in a row bring a server back, `fall` failures take it out; each
 ; change is logged once with its reason. The state goes to a shared table
 ; that workers read with one load per decision (0 = up). A server starts
@@ -31,6 +34,8 @@ bss
 	g_hc_ok		rd MAX_SERVERS	; consecutive passes
 	g_hc_bad	rd MAX_SERVERS	; consecutive failures
 	g_hc_active	rd MAX_SERVERS	; slot held an address at the last look
+	g_hc_skip	rd MAX_SERVERS	; gRPC: bytes of a frame too big to hold, still to drop
+	g_hc_gbuf	rb MAX_SERVERS * HC_GBUF	; gRPC: frames of the answer
 	g_hc_events:	rb EPOLL_EVENT * 64
 end bss
 
@@ -41,6 +46,9 @@ end rodata
 assert 1 shl 4 = 16
 HC_RBUF		:= 16		; "HTTP/1.1 200 " is all a check reads
 HC_STATUS_BASE	:= 100000	; -(HC_STATUS_BASE + N): answered with status N
+HC_GRPC_BASE	:= 200000	; -(HC_GRPC_BASE + N): gRPC serving status N
+HC_GRPC_FAILED	:= 300000	; the gRPC call ended without a status
+HC_GBUF		:= 512
 
 ; Shared table, before forking a generation (zero: everyone up).
 health_table_init:
@@ -172,7 +180,7 @@ health_main:
 	call	hc_connect_done
 	jmp	.next_event
 .answer:
-	call	hc_http_read
+	call	hc_answer
 .next_event:
 	inc	ebx
 	jmp	.event
@@ -343,7 +351,12 @@ hc_connect_done:
 	cmp	dword [r12+PL_H_HTTP],0
 	je	.result
 	mov	edi,ebx
+	cmp	dword [r12+PL_H_HTTP],2
+	je	.grpc
 	call	hc_http_send			; connected: now the request
+	jmp	.out
+.grpc:
+	call	hc_grpc_send
 	jmp	.out
 .result:
 	mov	edi,ebx
@@ -510,6 +523,313 @@ hc_http_read:
 	pop	rbx
 	ret
 
+; edi = server with answer bytes: an HTTP or a gRPC check's. Keeps r12.
+hc_answer:
+	push	rbx
+	push	r12
+	mov	ebx,edi
+	call	hc_pool_of
+	mov	eax,[r12+PL_H_HTTP]
+	mov	edi,ebx
+	pop	r12
+	pop	rbx
+	cmp	eax,2
+	je	hc_grpc_read
+	jmp	hc_http_read
+
+; edi = server whose check connection is up: the HTTP/2 preface, SETTINGS,
+; then HEADERS and DATA of one Check call on stream 1, in one write.
+hc_grpc_send:
+	push	rbx
+	push	r12
+	push	r13
+	mov	ebx,edi
+	call	hc_pool_of			; r12 = pool
+	mov	dword [g_hc_rlen+rbx*4],0
+	mov	dword [g_hc_skip+rbx*4],0
+	sub	rsp,512
+	mov	rdi,rsp
+	lea	rsi,[hc_grpc_pre]
+	mov	ecx,hc_grpc_pre.len
+	rep	movsb
+	mov	r13,rdi				; the HEADERS frame header goes here
+	add	rdi,9
+	lea	rsi,[hc_grpc_block]
+	mov	ecx,hc_grpc_block.len
+	rep	movsb
+	mov	rsi,[r12+PL_H_HOST]		; :authority, literal (static name 1)
+	mov	ecx,[r12+PL_H_HLEN]
+	test	rsi,rsi
+	jnz	@f
+	imul	rax,rbx,SV_SIZE			; the server as written
+	mov	rsi,[g_servers+rax+SV_TEXT]
+	mov	ecx,[g_servers+rax+SV_TLEN]
+@@:
+	cmp	ecx,120
+	jbe	@f
+	mov	ecx,120
+@@:
+	mov	byte [rdi],1
+	mov	[rdi+1],cl
+	add	rdi,2
+	rep	movsb
+	lea	rsi,[hc_grpc_fields]		; then the fields (pseudo-fields first)
+	mov	ecx,hc_grpc_fields.len
+	rep	movsb
+	mov	rax,rdi				; the frame header: length, HEADERS,
+	sub	rax,r13				; END_HEADERS, stream 1
+	sub	eax,9
+	mov	byte [r13],0
+	mov	[r13+2],al			; (under 16 KiB: two bytes)
+	shr	eax,8
+	mov	[r13+1],al
+	mov	dword [r13+3],0x00000401
+	mov	word [r13+7],0x0100
+	; DATA, END_STREAM: the message, a HealthCheckRequest { service }
+	mov	ecx,[r12+PL_H_PLEN]
+	xor	eax,eax
+	test	ecx,ecx
+	jz	@f
+	lea	eax,[rcx+2]			; field 1, length, the name
+@@:
+	lea	edx,[rax+5]
+	mov	byte [rdi],0
+	mov	byte [rdi+1],0
+	mov	[rdi+2],dl
+	mov	dword [rdi+3],0x00000100	; DATA, END_STREAM, stream 1
+	mov	word [rdi+7],0x0100
+	mov	byte [rdi+9],0			; not compressed
+	bswap	eax
+	mov	[rdi+10],eax
+	add	rdi,14
+	test	ecx,ecx
+	jz	@f
+	mov	byte [rdi],0x0A
+	mov	[rdi+1],cl
+	add	rdi,2
+	mov	rsi,[r12+PL_H_PATH]
+	rep	movsb
+@@:
+	mov	rdx,rdi
+	sub	rdx,rsp
+	mov	edi,[g_hc_fd+rbx*4]
+	mov	rsi,rsp
+	mov	eax,SYS_write
+	syscall
+	mov	r13,rax
+	add	rsp,512
+	test	r13,r13
+	js	.failed
+	mov	dword [g_hc_phase+rbx*4],1	; the answer, as for HTTP
+	sub	rsp,16
+	mov	dword [rsp],EPOLLIN or EPOLLRDHUP
+	mov	[rsp+4],rbx
+	mov	edi,[g_hc_epfd]
+	mov	esi,EPOLL_CTL_MOD
+	mov	edx,[g_hc_fd+rbx*4]
+	mov	r10,rsp
+	mov	eax,SYS_epoll_ctl
+	syscall
+	add	rsp,16
+	jmp	.out
+.failed:
+	mov	edi,ebx
+	mov	rsi,r13
+	call	hc_result
+.out:
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+cstring hc_grpc_pre, 'PRI * HTTP/2.0',13,10,13,10,'SM',13,10,13,10, 0,0,0,4,0,0,0,0,0
+; :method POST, :scheme http, :path (then :authority), then content-type
+; and te: trailers (HPACK, indexed or literal without indexing, no Huffman)
+cstring hc_grpc_block, 0x83, 0x86, 0x04, 28, '/grpc.health.v1.Health/Check'
+cstring hc_grpc_fields, 0x0F, 0x10, 16, 'application/grpc', 0x00, 2, 'te', 8, 'trailers'
+cstring hc_settings_ack, 0,0,0,4,1,0,0,0,0
+
+; edi = server with answer bytes on a gRPC check: the frames as they come.
+; SETTINGS are acknowledged; DATA on stream 1 holds the HealthCheckResponse
+; (status: field 1, SERVING = 1); HEADERS ending the stream first (Trailers-
+; Only: an error such as NOT_FOUND), RST_STREAM or GOAWAY fail the check.
+hc_grpc_read:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	mov	ebx,edi
+	mov	r13d,ebx
+	shl	r13,9				; HC_GBUF
+	lea	rax,[g_hc_gbuf]
+	add	r13,rax
+.again:
+	mov	edi,[g_hc_fd+rbx*4]
+	cmp	edi,-1
+	je	.out
+	mov	eax,[g_hc_rlen+rbx*4]
+	lea	rsi,[r13+rax]
+	mov	edx,HC_GBUF
+	sub	edx,eax
+	jz	.bad
+	xor	eax,eax				; SYS_read
+	syscall
+	cmp	rax,-EAGAIN
+	je	.out
+	test	rax,rax
+	jle	.closed
+	add	[g_hc_rlen+rbx*4],eax
+	mov	ecx,[g_hc_skip+rbx*4]		; the rest of a frame too big to hold
+	test	ecx,ecx
+	jz	.frames
+	cmp	ecx,[g_hc_rlen+rbx*4]
+	jbe	@f
+	mov	ecx,[g_hc_rlen+rbx*4]
+@@:
+	sub	[g_hc_skip+rbx*4],ecx
+	mov	r14d,ecx
+	jmp	.compact
+.frames:
+	xor	r14d,r14d			; where the next frame starts
+.frame:
+	mov	eax,[g_hc_rlen+rbx*4]
+	sub	eax,r14d
+	cmp	eax,9
+	jb	.compact
+	lea	rsi,[r13+r14]
+	movzx	ecx,byte [rsi]			; the length (24 bits)
+	shl	ecx,16
+	movzx	edx,byte [rsi+1]
+	shl	edx,8
+	or	ecx,edx
+	movzx	edx,byte [rsi+2]
+	or	ecx,edx
+	lea	edx,[rcx+9]
+	cmp	edx,eax
+	jbe	.whole
+	cmp	edx,HC_GBUF
+	jbe	.compact			; fits once the front is gone
+	sub	edx,eax				; bigger than the buffer: dropped
+	mov	[g_hc_skip+rbx*4],edx
+	mov	[g_hc_rlen+rbx*4],r14d
+	jmp	.compact
+.whole:
+	movzx	eax,byte [rsi+3]		; type
+	movzx	r8d,byte [rsi+4]		; flags
+	mov	r9d,[rsi+5]
+	bswap	r9d
+	and	r9d,0x7FFFFFFF			; stream
+	lea	r14d,[r14+rcx+9]
+	cmp	eax,4				; SETTINGS: acknowledged
+	jne	@f
+	test	r8d,1
+	jnz	.frame
+	push	rcx
+	push	rsi
+	mov	edi,[g_hc_fd+rbx*4]
+	lea	rsi,[hc_settings_ack]
+	mov	edx,hc_settings_ack.len
+	mov	eax,SYS_write
+	syscall
+	pop	rsi
+	pop	rcx
+	jmp	.frame
+@@:
+	cmp	eax,7				; GOAWAY
+	je	.failed
+	cmp	r9d,1
+	jne	.frame
+	cmp	eax,3				; RST_STREAM
+	je	.failed
+	cmp	eax,1				; HEADERS: a head, or Trailers-Only
+	jne	@f
+	test	r8d,1
+	jnz	.failed
+	jmp	.frame
+@@:
+	test	eax,eax
+	jnz	.frame
+	add	rsi,9				; DATA on our stream
+	test	r8d,8
+	jz	@f
+	movzx	edx,byte [rsi]			; padded
+	inc	rsi
+	dec	ecx
+	sub	ecx,edx
+	js	.bad
+@@:
+	cmp	ecx,5
+	jb	.bad
+	cmp	byte [rsi],0			; a compressed answer: not ours
+	jne	.bad
+	mov	edx,[rsi+1]			; the message's length
+	bswap	edx
+	add	rsi,5
+	sub	ecx,5
+	cmp	edx,ecx
+	ja	.bad				; (a few bytes: they come in one frame)
+	xor	eax,eax				; no field: UNKNOWN
+.field:
+	test	edx,edx
+	jz	.judge
+	cmp	edx,2
+	jb	.bad
+	cmp	byte [rsi],0x08			; status: field 1, varint
+	jne	.bad
+	movzx	eax,byte [rsi+1]
+	cmp	eax,0x7F
+	ja	.bad
+	add	rsi,2
+	sub	edx,2
+	jmp	.field
+.judge:
+	cmp	eax,1				; SERVING
+	jne	.not_serving
+	mov	edi,ebx
+	xor	esi,esi
+	call	hc_result
+	jmp	.out
+.not_serving:
+	neg	eax
+	sub	eax,HC_GRPC_BASE
+	movsxd	rsi,eax
+	mov	edi,ebx
+	call	hc_result
+	jmp	.out
+.failed:
+	mov	edi,ebx
+	mov	rsi,-HC_GRPC_FAILED
+	call	hc_result
+	jmp	.out
+.bad:
+	mov	edi,ebx
+	mov	rsi,-EPROTO
+	call	hc_result
+	jmp	.out
+.compact:
+	; what was walked leaves the front; then read on
+	mov	ecx,[g_hc_rlen+rbx*4]
+	sub	ecx,r14d
+	mov	[g_hc_rlen+rbx*4],ecx
+	mov	rdi,r13
+	lea	rsi,[r13+r14]
+	rep	movsb
+	jmp	.again
+.closed:
+	mov	rsi,rax
+	test	rsi,rsi
+	jnz	@f
+	mov	rsi,-ECONNRESET			; closed before an answer
+@@:
+	mov	edi,ebx
+	call	hc_result
+.out:
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
 ; Checks past their timeout fail.
 hc_check_deadlines:
 	push	rbx
@@ -586,6 +906,10 @@ hc_result:
 	out_lit ' is down (health check: '
 	mov	rax,r13
 	neg	rax
+	cmp	rax,HC_GRPC_FAILED
+	je	.grpc_failed
+	cmp	rax,HC_GRPC_BASE
+	jae	.grpc_status
 	cmp	rax,HC_STATUS_BASE
 	jb	.errno
 	sub	rax,HC_STATUS_BASE
@@ -593,6 +917,16 @@ hc_result:
 	out_lit 'HTTP status '
 	pop	rax
 	call	out_u64
+	jmp	.reason
+.grpc_status:
+	sub	rax,HC_GRPC_BASE
+	push	rax
+	out_lit 'gRPC serving status '
+	pop	rax
+	call	out_u64
+	jmp	.reason
+.grpc_failed:
+	out_lit 'the gRPC call failed, no status (an unknown service?)'
 	jmp	.reason
 .errno:
 	call	errno_text

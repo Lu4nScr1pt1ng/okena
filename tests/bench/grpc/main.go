@@ -30,8 +30,10 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/encoding"
+	"google.golang.org/grpc/status"
 )
 
 type raw struct{}
@@ -117,6 +119,36 @@ var desc = grpc.ServiceDesc{
 		{StreamName: "Feed", Handler: feedHandler, ServerStreams: true}},
 }
 
+// grpc.health.v1.Health/Check in raw bytes (for okena's `health grpc`):
+// "" and bench.B are SERVING, bench.Down NOT_SERVING, others NOT_FOUND
+func healthCheck(_ any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
+	var b []byte
+	if err := dec(&b); err != nil {
+		return nil, err
+	}
+	name := ""
+	if len(b) >= 2 && b[0] == 0x0A && int(b[1]) <= len(b)-2 {
+		name = string(b[2 : 2+int(b[1])])
+	}
+	var st byte
+	switch name {
+	case "", "bench.B":
+		st = 1
+	case "bench.Down":
+		st = 2
+	default:
+		return nil, status.Error(codes.NotFound, "unknown service")
+	}
+	out := []byte{0x08, st}
+	return &out, nil
+}
+
+var healthDesc = grpc.ServiceDesc{
+	ServiceName: "grpc.health.v1.Health",
+	HandlerType: (*svc)(nil),
+	Methods:     []grpc.MethodDesc{{MethodName: "Check", Handler: healthCheck}},
+}
+
 func server(args []string) {
 	fs := flag.NewFlagSet("server", flag.ExitOnError)
 	addr := fs.String("addr", "127.0.0.1:28500", "listen")
@@ -128,6 +160,7 @@ func server(args []string) {
 	}
 	s := grpc.NewServer(grpc.ForceServerCodec(raw{}), grpc.MaxConcurrentStreams(1000))
 	s.RegisterService(&desc, nil)
+	s.RegisterService(&healthDesc, nil)
 	s.Serve(l)
 }
 

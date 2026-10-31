@@ -290,5 +290,135 @@ finally:
     if failures:
         print(text2())
 
+# gRPC checks: grpc.health.v1.Health/Check over HTTP/2, answered by a
+# server written with the h2 package, the status the test sets
+try:
+    import h2.config
+    import h2.connection
+    import h2.events
+except ImportError:
+    h2 = None
+G0, G1, GL = BASE + 6, BASE + 7, BASE + 8
+grpc_seen = []
+
+
+def grpc_backend(port, tag, state):
+    s = socket.socket()
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(("127.0.0.1", port))
+    s.listen(256)
+
+    def handle(c):
+        conn = h2.connection.H2Connection(h2.config.H2Configuration(client_side=False, header_encoding=None))
+        try:
+            first = c.recv(65536)
+            if not first.startswith(b"PRI * HTTP/2.0"):
+                c.sendall(tag)                      # traffic, not a check
+                return
+            conn.initiate_connection()
+            data, heads, body = first, {}, {}
+            while data:
+                for e in conn.receive_data(data):
+                    if isinstance(e, h2.events.RequestReceived):
+                        heads[e.stream_id] = [(k.decode(), v.decode()) for k, v in e.headers]
+                        body[e.stream_id] = b""
+                    elif isinstance(e, h2.events.DataReceived):
+                        body[e.stream_id] += e.data
+                        conn.acknowledge_received_data(e.flow_controlled_length, e.stream_id)
+                    elif isinstance(e, h2.events.StreamEnded):
+                        sid, b = e.stream_id, body[e.stream_id]
+                        service = b[7:7 + b[6]].decode() if len(b) > 6 else ""
+                        grpc_seen.append((heads[sid], service))
+                        st = state["status"].get(service)
+                        if st is None:              # Trailers-Only: NOT_FOUND
+                            conn.send_headers(sid, [(":status", "200"), ("content-type", "application/grpc"),
+                                                    ("grpc-status", "5")], end_stream=True)
+                        else:
+                            conn.send_headers(sid, [(":status", "200"), ("content-type", "application/grpc")])
+                            conn.send_data(sid, b"\0\0\0\0\2\x08" + bytes([st]))
+                            conn.send_headers(sid, [("grpc-status", "0")], end_stream=True)
+                c.sendall(conn.data_to_send())
+                data = c.recv(65536)
+        except Exception:
+            pass
+        finally:
+            c.close()
+
+    def loop():
+        while True:
+            c, _ = s.accept()
+            threading.Thread(target=handle, args=(c,), daemon=True).start()
+    threading.Thread(target=loop, daemon=True).start()
+
+
+if h2 is None:
+    print("skip gRPC checks: pip install h2")
+else:
+    g0 = {"status": {"app.Svc": 1}}
+    grpc_backend(G0, b"g0", g0)
+    grpc_backend(G1, b"g1", {"status": {"app.Svc": 1}})
+    conf3 = tmp / "okena-grpc.conf"
+    conf3.write_text(f"""
+okena {{ workers 2 }}
+pool rpc {{
+    protocol h2
+    server 127.0.0.1:{G0}
+    server 127.0.0.1:{G1}
+    health grpc app.Svc every=150ms timeout=300ms rise=2 fall=2 host=rpc.internal
+}}
+tcp 127.0.0.1:{GL} {{ to pool rpc }}
+""")
+    log3 = open(tmp / "log3", "w+")
+    p3 = subprocess.Popen([str(BIN), "-c", str(conf3)], stderr=log3)
+
+    def text3():
+        log3.seek(0)
+        return log3.read()
+
+    def wait3(needle, count=1, seconds=5):
+        t0 = time.time()
+        while time.time() - t0 < seconds:
+            if text3().count(needle) >= count:
+                return time.time() - t0
+            time.sleep(0.05)
+        return None
+
+    def who3():
+        c = socket.create_connection(("127.0.0.1", GL), timeout=3)
+        c.sendall(b"who")
+        r = c.recv(10)
+        c.close()
+        return r
+
+    try:
+        t0 = time.time()
+        while not grpc_seen and time.time() - t0 < 3:
+            time.sleep(0.05)
+        hdrs, service = grpc_seen[0] if grpc_seen else ([], "")
+        check("grpc check: Health/Check for the service, its pseudo-fields first",
+              service == "app.Svc" and hdrs[:4] == [(":method", "POST"), (":scheme", "http"),
+                                                    (":path", "/grpc.health.v1.Health/Check"),
+                                                    (":authority", "rpc.internal")]
+              and ("content-type", "application/grpc") in hdrs and ("te", "trailers") in hdrs, str(grpc_seen[:1]))
+        g0["status"]["app.Svc"] = 2
+        t = wait3(f"backend 127.0.0.1:{G0} is down (health check: gRPC serving status 2")
+        check("NOT_SERVING takes the server out, saying why", t is not None and t < 2, f"{t}")
+        seen = {who3() for _ in range(30)}
+        check("then traffic only to the serving one", seen == {b"g1"}, str(seen))
+        g0["status"]["app.Svc"] = 1
+        t = wait3(f"backend 127.0.0.1:{G0} is up")
+        check("SERVING brings it back", t is not None and t < 2, f"{t}")
+        del g0["status"]["app.Svc"]
+        t = wait3(f"backend 127.0.0.1:{G0} is down (health check: the gRPC call failed", 1)
+        check("a service the server does not know (Trailers-Only) fails the check", t is not None and t < 2, f"{t}")
+    finally:
+        p3.send_signal(signal.SIGTERM)
+        try:
+            p3.wait(10)
+        except subprocess.TimeoutExpired:
+            p3.kill()
+        if failures:
+            print(text3())
+
 print(f"health: {'all passed' if not failures else f'{failures} failed'}")
 sys.exit(1 if failures else 0)

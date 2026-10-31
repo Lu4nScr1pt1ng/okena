@@ -116,7 +116,7 @@ PL_H_EVERY	:= 48		; d: milliseconds
 PL_H_TIMEOUT	:= 52		; d: milliseconds
 PL_H_RISE	:= 56		; d
 PL_H_FALL	:= 60		; d
-PL_H_HTTP	:= 64		; d: 1 for an HTTP check (0: TCP)
+PL_H_HTTP	:= 64		; d: 1 for an HTTP check, 2 for gRPC (0: TCP)
 PL_H_PLEN	:= 68		; d
 PL_H_PATH	:= 72		; q
 PL_H_LO		:= 80		; d: statuses that pass
@@ -899,6 +899,8 @@ compile_pool:
 	; http: [GET|HEAD] PATH, expect=, host=
 	mov	rax,[rbx+N_ARGS]
 	mov	rdi,[rax+A_VAL]
+	cmp	byte [rdi],'g'
+	je	.health_grpc
 	cmp	byte [rdi],'h'
 	jne	.health_keys
 	mov	dword [r13+PL_H_HTTP],1
@@ -927,13 +929,13 @@ compile_pool:
 	lea	rsi,[str_key_expect]
 	call	node_option
 	test	rax,rax
-	jz	@f
+	jz	.health_host
 	mov	rdi,[rax+A_VAL]
 	mov	esi,[rax+A_VLEN]
 	call	parse_statuses
 	mov	[r13+PL_H_LO],eax
 	mov	[r13+PL_H_HI],edx
-@@:
+.health_host:
 	mov	rdi,rbx
 	lea	rsi,[str_key_host]
 	call	node_option
@@ -943,6 +945,21 @@ compile_pool:
 	mov	[r13+PL_H_HOST],rdx
 	mov	edx,[rax+A_VLEN]
 	mov	[r13+PL_H_HLEN],edx
+	jmp	.health_keys
+.health_grpc:
+	; grpc [SERVICE], host=: grpc.health.v1.Health/Check over HTTP/2
+	mov	dword [r13+PL_H_HTTP],2
+	push	rax
+	mov	rdi,rbx
+	call	positional_count
+	pop	rdx
+	cmp	eax,2
+	jne	.health_host
+	mov	rax,[rdx+A_SIZE+A_VAL]
+	mov	[r13+PL_H_PATH],rax
+	mov	eax,[rdx+A_SIZE+A_VLEN]
+	mov	[r13+PL_H_PLEN],eax
+	jmp	.health_host
 .health_keys:
 	mov	rdi,rbx
 	lea	rsi,[str_key_every]

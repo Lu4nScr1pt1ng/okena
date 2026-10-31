@@ -2340,6 +2340,8 @@ check_health:
 	call	cfg_error_limit
 	jmp	.out
 .http:
+	cmp	byte [rdi],'g'			; grpc [SERVICE]
+	je	.grpc
 	cmp	ecx,1
 	je	.no_path
 	cmp	ecx,3
@@ -2389,6 +2391,61 @@ check_health:
 	mov	edx,[rax+A_LINE]
 	call	cfg_error
 	out_lit 'a health check path is a request target: /healthz, /status?full=1 (at most 1024 bytes)'
+	call	cfg_diag_end
+	call	cfg_error_limit
+	jmp	.out
+.grpc:
+	cmp	ecx,3
+	je	.grpc_extra
+	push	rcx
+	mov	rdi,r12
+	lea	rsi,[str_key_expect]
+	call	node_option
+	pop	rcx
+	test	rax,rax
+	jnz	.grpc_expect
+	cmp	ecx,2
+	jne	.out
+	lea	rax,[rbx+A_SIZE]		; the service: a gRPC name, no spaces
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	cmp	esi,120
+	ja	.bad_service
+	xor	ecx,ecx
+@@:
+	cmp	ecx,esi
+	jae	.out
+	movzx	edx,byte [rdi+rcx]
+	cmp	edx,'!'
+	jb	.bad_service
+	cmp	edx,'~'
+	ja	.bad_service
+	inc	ecx
+	jmp	@b
+.bad_service:
+	lea	rdi,[rbx+A_SIZE]
+	call	arg_value_span
+	mov	edx,[rbx+A_SIZE+A_LINE]
+	call	cfg_error
+	out_lit 'a gRPC service name: package.Service, printable, at most 120 bytes'
+	call	cfg_diag_end
+	call	cfg_error_limit
+	jmp	.out
+.grpc_extra:
+	lea	rdi,[rbx+2*A_SIZE]
+	call	arg_value_span
+	mov	edx,[rbx+2*A_SIZE+A_LINE]
+	call	cfg_error
+	out_lit 'a gRPC check takes one service name, or none (the server as a whole)'
+	call	cfg_diag_end
+	call	cfg_error_limit
+	jmp	.out
+.grpc_expect:
+	mov	rdi,rax
+	call	arg_value_span
+	mov	edx,[r12+N_LINE]
+	call	cfg_error
+	out_lit 'a gRPC check passes when the service is SERVING: expect= is for http checks'
 	call	cfg_diag_end
 	call	cfg_error_limit
 	jmp	.out

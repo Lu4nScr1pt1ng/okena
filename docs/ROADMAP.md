@@ -302,8 +302,12 @@ budget towards backends), OUT full of DATA turning a PING into GOAWAY
 CALM (512 bytes are kept for control frames), queue checks reading a
 clobbered length, and an epoll worker sleeping with deliveries queued.
 Open: okena's p99.9 at some rates (wakeups), a body streamed both ways
-when only one end is HTTP/2 (an HTTP/1.1 exchange stays in turn), gRPC
-health checks, WebSocket over h2. The design: an h2
+when only one end is HTTP/2 (an HTTP/1.1 exchange stays in turn),
+WebSocket over h2. gRPC health checks are in (`health grpc [SERVICE]`:
+grpc.health.v1.Health/Check over HTTP/2 by prior knowledge from the
+health process, which walks the answer's frames, not its headers: SERVING
+passes; another status, Trailers-Only, RST_STREAM or GOAWAY fail, each
+logged with its reason; tests/health/run.py). The design: an h2
 connection is a session whose streams are sessions of their own, each
 running the existing HTTP/1.1 exchange (routing, pools, retries, upstream
 TLS, logs, rewrites) with its client side redirected to the connection,

@@ -115,7 +115,7 @@ M_TLS		:= 1 shl CTX_TLS
 enumdef e_io_engine, 'auto', 'io_uring', 'epoll'
 enumdef e_balance, 'round-robin', 'least-conn', 'random', 'least-request', 'peak-ewma'
 enumdef e_server_flags, 'backup'
-enumdef e_health, 'tcp', 'http'
+enumdef e_health, 'tcp', 'http', 'grpc'
 enumdef e_pp_mode, 'send'
 enumdef e_redirect_codes, '301', '302', '303', '307', '308'
 enumdef e_header_ops, 'set', 'add', 'drop'
