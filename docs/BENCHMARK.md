@@ -84,6 +84,46 @@ taskset -c 3 openssl speed -seconds 2 ed25519
 | Worker CPU per new HTTPS connection (x25519) | ~75 us (77 user + 61 kernel with the client on other cores) | 2026-10 | 4 workers, a route okena answers, new connection per request |
 | Worker CPU saved by a session ticket | ~27 us | 2026-10 | same, resumed |
 
+## HTTPS against HAProxy, open loop (2026-10-31)
+
+`tests/bench/tls.sh`: okena and HAProxy 3.2 (official image, host network,
+`nbthread 2`, OpenSSL 3.5.7) on cores 1-2, the backend `l4bench http` on
+4-5, `okena bench` with 8 workers on the four other physical cores (0, 3,
+6, 7 and their SMT siblings), ECDSA P-256, X25519MLKEM768 (both servers
+take the client's hybrid share), AES-128-GCM, 10 s a run. Latency from the
+schedule (corrected for coordinated omission); `behind` counts requests the
+schedule asked for that never went out. Other containers stopped.
+
+| Scenario | Server | req/s | behind | p50 / p99 / p99.9 / max (us) | errors |
+|---|---|---|---|---|---|
+| keep-alive, closed loop | okena, 2 cores | 169122.4 | 0 | 389 / 454 / 622 / 3206 | 0 |
+| keep-alive, 50000/s | okena, 2 cores | 50000.0 | 0 | 33 / 49 / 231 / 2863 | 0 |
+| keep-alive, 100000/s | okena, 2 cores | 100000.0 | 0 | 36 / 65 / 532 / 735 | 0 |
+| new connection each, closed loop | okena, 2 cores | 17055.4 | 0 | 3735 / 7077 / 9699 / 11166 | 0 |
+| new connection each, 2000/s | okena, 2 cores | 2000.0 | 0 | 372 / 548 / 1343 / 2883 | 0 |
+| new connection each, 5000/s | okena, 2 cores | 5000.0 | 0 | 1490 / 3473 / 4325 / 5865 | 0 |
+| new connection each, 10000/s | okena, 2 cores | 10000.0 | 0 | 4390 / 7012 / 7798 / 9282 | 0 |
+| keep-alive, closed loop | HAProxy 3.2, 2 threads | 87106.5 | 0 | 729 / 933 / 1196 / 1508 | 0 |
+| keep-alive, 50000/s | HAProxy 3.2, 2 threads | 50000.0 | 0 | 210 / 63963 / 72351 / 75388 | 0 |
+| keep-alive, 100000/s | HAProxy 3.2, 2 threads | 100000.0 | 0 | 830472 / 1744830 / 1761607 / 1764706 | 0 |
+| new connection each, closed loop | HAProxy 3.2, 2 threads | 4551.9 | 0 | 14024 / 15335 / 18350 / 19231 | 0 |
+| new connection each, 2000/s | HAProxy 3.2, 2 threads | 2000.0 | 0 | 606 / 1097 / 1671 / 4763 | 0 |
+| new connection each, 5000/s | HAProxy 3.2, 2 threads | 5000.0 | 0 | 654311 / 1174405 / 1183079 / 1183079 | 0 |
+| new connection each, 10000/s | HAProxy 3.2, 2 threads | 4888.0 | 50865 | 4194303 / 7113539 / 7113539 / 7116019 | 0 |
+
+Read with care:
+
+* Keep-alive: okena's ceiling is 1.9 times HAProxy's (169k/s against 87k/s);
+  at 50k/s its p99 is 49 us, HAProxy's 64 ms. At 100k/s HAProxy is past its
+  ceiling and its queue grows for the whole run.
+* New connections: 17.1k handshakes/s against 4.55k (3.7 times). At 5k/s
+  HAProxy is saturated (p50 0.65 s), at 10k/s it falls behind by half.
+* Open: okena's latency on new connections rises from ~0.37 ms at 2k/s to
+  1.3-1.5 ms at 5k/s while its two workers are ~35% busy and the generator
+  ~15% a process. Not the handshake budget (the same with it off), not
+  wakeups (the same with busy_poll); the generator's own lag grows with it.
+  Not isolated yet.
+
 ## HTTPS steady state against plaintext (2026-10-30)
 
 okena with 2 workers on cores 1-2 (`taskset`), the backend `l4bench http`

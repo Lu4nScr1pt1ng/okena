@@ -226,11 +226,16 @@ The steady-state exit, measured open loop with `okena bench`
 with a p99 four to eight times plaintext's, all of it kernel time in the
 kernel's TLS. `http` listeners now seal records in user space by default
 (`ktls on` for the kernel): 161k requests/s against 163.5k plain on two
-cores (-1.5%), p50 43-53 us against 38 us at 100k/s. Handshakes: 2.6 times
-HAProxy's new connections per second (closed loop, on two cores). Open:
-the same in open loop against HAProxy, and a tail (p99.9 of 1-3 ms in
-every mode, plaintext included) not yet told apart from the desktop
-machine's own noise.
+cores (-1.5%), p50 43-53 us against 38 us at 100k/s. Handshakes, open loop
+against HAProxy 3.2 on the same two cores (tests/bench/tls.sh): 17.1k new
+HTTPS connections/s against 4.55k (3.7 times), and keep-alive 169k/s
+against 87k/s with a p99 of 49 us at 50k/s against HAProxy's 64 ms. Both
+exits are met. Open, not blocking: a latency knee near 5k new
+connections/s at ~35% CPU, the p99.9 tail of this desktop machine, a broad
+tlsfuzzer run, and Wycheproof's DER ECDSA encodings through the parsers.
+Found on the way: ECDSA verification ran two constant-time ladders on
+public data (259 us; 67 us now, OpenSSL 48), and a server flight split
+across reads failed upstream TLS (fixed).
 
 * SHA-2, HMAC, HKDF (from fasm2crud), AES-GCM (AES-NI, VAES/VPCLMULQDQ),
   ChaCha20-Poly1305, X25519, ML-KEM-768, P-256 ECDH/ECDSA, Ed25519.
