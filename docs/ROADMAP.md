@@ -282,9 +282,22 @@ engines against an HTTP/2 server and okena itself. okena's own errors to a
 gRPC request (content-type application/grpc) are gRPC answers:
 Trailers-Only, grpc-status from the HTTP status (502/503 UNAVAILABLE,
 504/408 DEADLINE_EXCEEDED, ...); a head with content-length: 0 ends its
-HTTP/2 stream itself. Open: ALPN h2 over the pool's TLS is in but
-untested here (upstream TLS needs the tls module), h2spec, and the
-benchmark against Envoy. The design: an h2
+HTTP/2 stream itself. ALPN h2 over a pool's TLS is tested okena to
+okena (tests/h2/upstream.py, when the tls module is loaded); that found
+the upstream TLS client stuck on a server that sends its NewSessionTicket
+with its Finished, fixed. h2spec (v2.6.0, fetched pinned into build/,
+tests/h2/h2spec.py) passes every case on both engines over TLS (ALPN h2 on
+TLS 1.2 too, which its client speaks) and all but the invalid preface by
+prior knowledge, which a listener shared with HTTP/1.1 reads as HTTP/1.1.
+Against Envoy 1.40.2 (tests/bench/grpc.sh, docs/BENCHMARK.md) okena adds
+less latency for unary calls and server-streamed messages at every rate
+measured, p50 and p99 (unary at 5k/s: 35 us at p99 against 174). That run
+found the cheap-frame budget cutting gRPC clients and backends off (their
+BDP pings and window updates follow every DATA frame): DATA and HEADERS
+sent now earn two each. Open: bidirectional streaming (a stream's request
+and response run in turn, as the HTTP/1.1 exchange under it does; a
+stream needs both halves at once when both ends are HTTP/2), gRPC health
+checks, WebSocket over h2. The design: an h2
 connection is a session whose streams are sessions of their own, each
 running the existing HTTP/1.1 exchange (routing, pools, retries, upstream
 TLS, logs, rewrites) with its client side redirected to the connection,

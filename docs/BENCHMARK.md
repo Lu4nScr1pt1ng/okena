@@ -1,8 +1,9 @@
 # Benchmarks
 
 Measurements of okena, and comparisons with the established software for
-each job (OpenSSL for crypto, HAProxy and nginx for proxying), kept so they
-can be rerun and compared later. Every entry says when, on what, and how.
+each job (OpenSSL for crypto, HAProxy and nginx for proxying, Envoy for
+gRPC), kept so they can be rerun and compared later. Every entry says
+when, on what, and how.
 A number without its method is not recorded here.
 
 The exit criteria in [ROADMAP.md](ROADMAP.md) compare against references
@@ -83,6 +84,63 @@ taskset -c 3 openssl speed -seconds 2 ed25519
 | `tls_hello` on a real ClientHello (x25519, ECDSA) | 57 us | 2026-10 | `tests/tls/server.asm`, mode P |
 | Worker CPU per new HTTPS connection (x25519) | ~75 us (77 user + 61 kernel with the client on other cores) | 2026-10 | 4 workers, a route okena answers, new connection per request |
 | Worker CPU saved by a session ticket | ~27 us | 2026-10 | same, resumed |
+
+## gRPC against Envoy, open loop (2026-10-31)
+
+`tests/bench/grpc.sh`: okena (`http2 on`, a pool with `protocol h2`) and
+Envoy 1.40.2 (official image, host network, `--concurrency 2`, circuit
+breakers raised so it queues rather than refuses) on cores 1-2, plain
+HTTP/2 both sides, in front of the same grpc-go backend
+(tests/bench/grpc, `GOMAXPROCS=2` on 4-5), loaded by the same Go program
+(grpc-go client, raw-bytes codec, 8 connections) with `GOMAXPROCS=8` on
+the four other physical cores; 64-byte messages, 10 s after 2 s. Unary:
+a call per tick, latency from the schedule. Stream: 8 server-streaming
+calls held open, the backend sends on a schedule and stamps each message,
+latency until it arrives. Each rate straight to the backend first; "added"
+is a proxy's percentile minus that. Other containers stopped.
+
+| Scenario | Path | rate | p50 / p99 / p99.9 / max (us) | added p50 / p99 | errors |
+|---|---|---|---|---|---|
+| unary, 5000/s | direct | 5000/s | 137 / 194 / 457 / 1487 | | 0 |
+| unary, 20000/s | direct | 20001/s | 135 / 741 / 1859 / 3064 | | 0 |
+| unary, 40000/s | direct | 40002/s | 173 / 2222 / 3405 / 5796 | | 0 |
+| stream, 5000/s | direct | 5000/s | 45 / 62 / 72 / 243 | | 0 |
+| stream, 20000/s | direct | 20001/s | 52 / 73 / 168 / 525 | | 0 |
+| stream, 80000/s | direct | 80001/s | 33 / 135 / 470 / 5640 | | 0 |
+| unary, 5000/s | okena, 2 cores | 5000/s | 172 / 229 / 455 / 2660 | +35 / +35 | 0 |
+| unary, 20000/s | okena, 2 cores | 20000/s | 172 / 731 / 1724 / 3492 | +37 / -10 | 0 |
+| unary, 40000/s | okena, 2 cores | 40001/s | 178 / 1229 / 2849 / 7294 | +5 / -993 | 0 |
+| stream, 5000/s | okena, 2 cores | 5000/s | 64 / 87 / 152 / 2432 | +19 / +25 | 0 |
+| stream, 20000/s | okena, 2 cores | 19998/s | 73 / 98 / 250 / 2893 | +21 / +25 | 0 |
+| stream, 80000/s | okena, 2 cores | 80007/s | 59 / 108 / 448 / 2428 | +26 / -27 | 0 |
+| unary, 5000/s | Envoy 1.40.2, 2 threads | 5000/s | 257 / 368 / 576 / 2134 | +120 / +174 | 0 |
+| unary, 20000/s | Envoy 1.40.2, 2 threads | 20001/s | 685 / 2649 / 5852 / 12204 | +550 / +1908 | 0 |
+| unary, 40000/s | Envoy 1.40.2, 2 threads | 32800/s | 1140200 / 5377467 / 7330549 / 10611783 | +1140027 / +5375245 | 0 |
+| stream, 5000/s | Envoy 1.40.2, 2 threads | 5000/s | 80 / 110 / 139 / 1189 | +35 / +48 | 0 |
+| stream, 20000/s | Envoy 1.40.2, 2 threads | 19998/s | 94 / 128 / 238 / 1294 | +42 / +55 | 0 |
+| stream, 80000/s | Envoy 1.40.2, 2 threads | 80001/s | 136 / 222 / 491 / 2062 | +103 / +87 | 0 |
+
+Read with care:
+
+* okena adds less at every point: unary 35 us at p50 and p99 at 5k/s
+  (Envoy 120 / 174 us), streamed messages 19-26 us at p50 and 25 us at
+  p99 (Envoy 35-103 / 48-87 us).
+* At 20k unary calls/s Envoy's two threads are near their limit (+550 us
+  at p50, +1.9 ms at p99); at 40k/s it passes it (32.8k/s served, queues of
+  seconds). okena serves 40k/s with its p50 5 us above the direct path.
+* The load program is the limit at the top rates: its own p99 straight to
+  the backend reaches 2.2 ms for unary at 40k/s, and an added p99 below
+  zero there means the proxy smoothed the client's bursts, not that it
+  took time away. The comparison that holds is p50, and p99 at 5k-20k/s.
+* Bidirectional streaming does not go through okena yet: a stream's
+  request and response run one after the other (the HTTP/1.1 exchange
+  under each stream), so a call that needs answers before it ends its
+  request stalls. Unary and server streaming are what is measured here;
+  client streaming fits the same order but is not measured.
+* Before this run okena cut such clients off: gRPC's BDP pings and window
+  updates (one each per DATA frame read) counted against the 2000 a
+  second cheap-frame budget, on the client side and towards the backend
+  (502s). DATA and HEADERS sent now earn two cheap frames each.
 
 ## HTTP/2 against HTTP/1.1 through okena (2026-10-31)
 
