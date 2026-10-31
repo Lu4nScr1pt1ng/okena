@@ -100,6 +100,7 @@ LSF_PEER	:= 1		; sessions need the client's address
 LSF_PP_V1	:= 2		; send a PROXY protocol v1 header upstream
 LSF_PP_V2	:= 4		; send a PROXY protocol v2 header upstream
 LSF_WILDCARD	:= 8		; bound to every address: the local one comes from getsockname
+LSF_KTLS	:= 16		; http: the kernel seals and opens the records (`ktls on`)
 
 ; Pool
 PL_FIRST	:= 0		; d: first server
@@ -1372,6 +1373,25 @@ compile_listener:
 	mov	rdi,r12
 	call	compile_tls			; reads and checks the files
 	mov	[g_cmp_tlsi],eax
+	mov	rdi,r12				; `ktls on`: records in the kernel
+	mov	ecx,DIR_TLS
+	call	find_child
+	test	rax,rax
+	jz	@f
+	mov	rdi,rax
+	mov	ecx,DIR_KTLS
+	call	find_child
+	test	rax,rax
+	jz	@f
+	mov	rax,[rax+N_ARGS]
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	lea	rdx,[e_onoff]
+	call	list_index
+	test	eax,eax
+	jnz	@f
+	or	dword [g_cmp_flags],LSF_KTLS
+@@:
 	mov	dword [g_cmp_alog],0
 	mov	rdi,r12
 	mov	ecx,DIR_ACCESS_LOG

@@ -83,7 +83,35 @@ taskset -c 3 openssl speed -seconds 2 ed25519
 | Worker CPU per new HTTPS connection (x25519) | ~75 us (77 user + 61 kernel with the client on other cores) | 2026-10 | 4 workers, a route okena answers, new connection per request |
 | Worker CPU saved by a session ticket | ~27 us | 2026-10 | same, resumed |
 
-## HTTPS throughput (no reference yet)
+## HTTPS steady state against plaintext (2026-10-30)
+
+okena with 2 workers on cores 1-2 (`taskset`), the backend `l4bench http`
+(answers `ok`) on cores 4-5, `okena bench` with 4 workers on 6, 7, 14 and
+15 (SMT siblings are i and i + 8: nothing shares a physical core), 64
+keep-alive connections, ECDSA P-256, X25519MLKEM768. Closed loop for the
+ceiling, then 10 s open loop at 100k/s (about 60% of it), three runs.
+
+| Records | closed loop | p50 @100k/s | p99 @100k/s | p99.9 @100k/s |
+|---|---|---|---|---|
+| plaintext HTTP | 163.5k/s | 37-38 us | 91-696 us | 0.75-2.2 ms |
+| user space (the default now) | 161.0k/s (-1.5%) | 43-53 us | 158-174 us | 0.58-2.7 ms |
+| kTLS (`ktls on`) | 131.5k/s (-19.6%) | 62-70 us | 0.59-1.18 ms | 1.9-6.2 ms |
+
+The workers ran at ~1.96 cores in every mode, 95% of it in the kernel;
+kTLS added ~4 us of kernel time per request. A ping-pong of 100-byte
+messages between two pinned processes (one TLS record each way) puts it
+at ~1.5 us per record and direction: 7.0 us of server CPU per exchange
+plain, 8.4 with kTLS on receive, 8.8 on send, 10.1 on both (4 KiB: 7.6,
+10.3, 10.4, 12.3). The sender's own lag stayed under 0.65 ms at its
+maximum and under a microsecond at p99. The p99.9 swings between runs in
+every mode, plaintext included: this is a desktop (a browser open), not
+an isolated host.
+
+An idle keep-alive HTTPS connection on user-space records keeps its keys'
+page and gives the record buffers back: 2000 of them cost the worker
+~1.2 KiB each.
+
+## HTTPS throughput (earlier, closed loop)
 
 4 workers, a route okena answers itself, `wrk` on other cores, keep-alive.
 
@@ -171,5 +199,6 @@ Read with care:
 * HTTPS keep-alive: 126k/s against 83k/s (okena hands the keys to kTLS;
   HAProxy 3.2 seals in user space).
 
-Not measured yet: the open-loop latency the phase exits ask for (wrk2 or
-`okena bench`), the two-host topology, and nginx.
+Not measured yet: this comparison in open loop (`okena bench`), the
+two-host topology, and nginx. The HTTPS rows above were taken with kTLS,
+before user-space records became the default for `http` listeners.

@@ -29,6 +29,7 @@ BACK, LST, ECHO, TLST = BASE, BASE + 1, BASE + 2, BASE + 3
 SNIL = BASE + 8
 RLST = BASE + 9                                      # an RSA-certificate listener
 DLST = BASE + 10                                     # EC + RSA on one host (dual certificate)
+DEFL = BASE + 5                                      # without `ktls on`: http's default, user-space records
 tmp = pathlib.Path(tempfile.mkdtemp())
 atexit.register(shutil.rmtree, tmp, True)
 failures = 0
@@ -183,7 +184,8 @@ def main():
            f"        cert {tmp / 'b.pem'} key={tmp / 'b.key'}\n        cert {tmp / 'chain.pem'} key={tmp / 'leaf.key'}\n"
            f"    }}\n    route /* {{ to 127.0.0.1:{BACK} }}\n}}\n")
     conf = tmp / "okena.conf"
-    conf.write_text(sni + f"""okena {{ workers 2; io_engine {ENGINE} }}
+    plain_default = f"http 127.0.0.1:{DEFL} {{\n    {tls}\n    route /* {{ to 127.0.0.1:{BACK} }}\n}}\n"
+    text = (sni + f"""okena {{ workers 2; io_engine {ENGINE} }}
 http 127.0.0.1:{LST} {{
     {tls}
     timeout {{ header 1s }}
@@ -201,6 +203,11 @@ http 127.0.0.1:{DLST} {{
     route /* {{ to 127.0.0.1:{BACK} }}
 }}
 """ + ("" if USER else tcp))
+    if not USER:
+        # http listeners keep the records in user space unless `ktls on`
+        text = text.replace("    tls {\n", "    tls {\n        ktls on\n").replace("tls { cert", "tls { ktls on; cert")
+        text += plain_default
+    conf.write_text(text)
     log = open(tmp / "okena.log", "w+")
     env = dict(os.environ, OKENA_KTLS="off") if USER else None
     p = subprocess.Popen([str(BIN), "-c", str(conf)], stderr=log, env=env)
@@ -267,7 +274,14 @@ http 127.0.0.1:{DLST} {{
             ss = subprocess.run(["ss", "-tni", f"( sport = :{LST} )"], capture_output=True, text=True).stdout
             ulp = "tcp-ulp-tls" in ss
             check("records sealed in user space (no kTLS on the socket)" if USER else
-                  "the kernel has the connection (kTLS on the socket)", ulp != USER, ss[-200:])
+                  "`ktls on`: the kernel has the connection (kTLS on the socket)", ulp != USER, ss[-200:])
+            if not USER:
+                s2 = socket.create_connection(("127.0.0.1", DEFL), timeout=10)
+                with context().wrap_socket(s2, server_hostname="okena.test") as t2:
+                    st, _ = request(t2, "GET", "/default")
+                    ss = subprocess.run(["ss", "-tni", f"( sport = :{DEFL} )"], capture_output=True, text=True).stdout
+                    check("by default an http listener seals its records in user space",
+                          st.startswith(b"HTTP/1.1 200") and "tcp-ulp-tls" not in ss, ss[-200:])
         ok = all(json.loads(request(t, "GET", f"/n/{i}")[1])["target"] == f"/n/{i}" for i in range(20))
         check("20 more requests on the same connection", ok)
         body = os.urandom(2 << 20)

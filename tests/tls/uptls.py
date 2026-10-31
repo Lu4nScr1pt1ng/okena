@@ -27,6 +27,7 @@ ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
 BASE = 31000 + os.getpid() % 50 * 10
 BACK, PLAIN, LST, LST_BAD, LST_HOST = BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4
 BACK12, BACK12R, LST12, LST12R = BASE + 5, BASE + 6, BASE + 7, BASE + 8
+LSTS = BASE + 9                                 # HTTPS in front (user-space records), TLS behind
 BACKED, LSTED, LSTEDBAD = (33600 + os.getpid() % 50 * 3 + i for i in range(3))
 tmp = pathlib.Path(tempfile.mkdtemp())
 atexit.register(shutil.rmtree, tmp, True)
@@ -170,6 +171,10 @@ http 127.0.0.1:{LST12}  {{ route /* {{ to pool good12 }} }}
 http 127.0.0.1:{LST12R} {{ route /* {{ to pool good12rsa }} }}
 http 127.0.0.1:{LSTED}  {{ route /* {{ to pool gooded }} }}
 http 127.0.0.1:{LSTEDBAD} {{ route /* {{ to pool badedanchor }} }}
+http 127.0.0.1:{LSTS} {{
+    tls {{ cert {tmp}/leaf.pem; key {tmp}/leaf.key }}
+    route /* {{ to pool good }}
+}}
 pool badedanchor {{
     tls {{ trust {tmp}/ca.pem; sni backend.test }}
     server 127.0.0.1:{BACKED}
@@ -267,6 +272,26 @@ pool plain {{
                 break
     check("kTLS upstream reused across a keep-alive client's 30 requests",
           ok and backend_conns <= 2, f"ok={ok} backend_conns={backend_conns}")
+
+    # HTTPS in front on user-space records (http's default) and TLS behind:
+    # the two handshakes and their buffers do not share space
+    ctx = ssl.create_default_context()
+    ctx.check_hostname, ctx.verify_mode = False, ssl.CERT_NONE
+    oks = 0
+    try:
+        with ctx.wrap_socket(socket.create_connection(("127.0.0.1", LSTS), timeout=5)) as t:
+            f = t.makefile("rwb")
+            for i in range(10):
+                f.write(f"GET /s{i} HTTP/1.1\r\nHost: t\r\n\r\n".encode())
+                f.flush()
+                status, clen = f.readline(), 0
+                while (line := f.readline()) not in (b"\r\n", b""):
+                    if line.lower().startswith(b"content-length:"):
+                        clen = int(line.split(b":")[1])
+                oks += status.split()[1:2] == [b"200"] and f.read(clen) == b"backend-ok:/s%d" % i
+    except (OSError, ssl.SSLError) as e:
+        print("  https front:", repr(e))
+    check("HTTPS front (user-space records) to a TLS backend: 10 requests", oks == 10, f"{oks}/10")
 
     check("wrong trust anchor: 502, not proxied", get(LST_BAD)[0] == 502, str(get(LST_BAD)))
     check("plaintext backend on a tls pool: 502", get(LST_HOST)[0] == 502, str(get(LST_HOST)))

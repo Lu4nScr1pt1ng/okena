@@ -1324,6 +1324,27 @@ check_tls:
 	call	find_child
 	test	rax,rax
 	jnz	.pt_only
+	mov	rdi,rbx				; a tcp listener's TLS is the kernel's
+	mov	ecx,DIR_KTLS
+	call	find_child
+	test	rax,rax
+	jz	.ktls_ok
+	mov	rcx,[g_chk_tls_listener]
+	lea	rdx,[dir_table + D_SIZE*DIR_TCP]
+	cmp	[rcx+N_DEF],rdx
+	jne	.ktls_ok
+	mov	rdx,[rax+N_ARGS]
+	mov	rdx,[rdx+A_VAL]
+	cmp	byte [rdx+1],'f'		; `off`
+	jne	.ktls_ok
+	mov	rdi,[rax+N_NAME]
+	mov	esi,[rax+N_NLEN]
+	mov	edx,[rax+N_LINE]
+	call	cfg_error
+	out_lit 'a tcp listener',39,'s TLS runs on kTLS: its bytes go through the kernel, not through okena'
+	call	cfg_diag_end
+	call	cfg_error_limit
+.ktls_ok:
 	mov	rdi,rbx
 	mov	ecx,DIR_KEY
 	call	find_child
@@ -1382,7 +1403,22 @@ check_tls:
 	call	cfg_note_end
 	call	cfg_error_limit
 	jmp	.done
+.ktls_pt_err:
+	; ktls in a passthrough block: there are no keys to place
+	mov	rdi,[rax+N_NAME]
+	mov	esi,[rax+N_NLEN]
+	mov	edx,[rax+N_LINE]
+	call	cfg_error
+	out_lit '`ktls` is for a tls block that decrypts; passthrough never holds the keys'
+	call	cfg_diag_end
+	call	cfg_error_limit
+	jmp	.done
 .passthrough:
+	mov	rdi,rbx
+	mov	ecx,DIR_KTLS
+	call	find_child
+	test	rax,rax
+	jnz	.ktls_pt_err
 	mov	rdi,[g_chk_tls_listener]
 	mov	rsi,rbx
 	call	check_passthrough

@@ -296,6 +296,19 @@ http_tls_fin_in:
 	call	.info
 	cmp	dword [g_no_ktls],0
 	jne	http_utls_start
+	; http listeners keep the records here unless `ktls on`: for request
+	; and response traffic the kernel's records cost more (docs/BENCHMARK.md);
+	; a tcp listener's bytes go through the kernel and need its TLS
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_TLS_HS
+	jnz	.kernel
+	mov	eax,[rax+S_LST]
+	imul	rax,rax,LS_SIZE
+	lea	rcx,[g_listeners]
+	test	dword [rcx+rax+LS_FLAGS],LSF_KTLS
+	jz	http_utls_start
+.kernel:
+	mov	r8,[r15+H_BUF]
 	cmp	dword [r8+HB_TS+TS_SUITE],0
 	je	@f
 	cmp	dword [g_no_ktls_cp],0		; the kernel has no ChaCha20-Poly1305

@@ -1,0 +1,10 @@
+exit: 2
+--- stdout
+--- stderr
+ktls_where.conf:3:56: error: a tcp listener's TLS runs on kTLS: its bytes go through the kernel, not through okena
+     3 |     tls { cert /etc/okena/c.pem; key /etc/okena/k.pem; ktls off }
+       |                                                        ^^^^
+ktls_where.conf:8:9: error: `ktls` is for a tls block that decrypts; passthrough never holds the keys
+     8 |         ktls on
+       |         ^^^^
+2 errors in ktls_where.conf

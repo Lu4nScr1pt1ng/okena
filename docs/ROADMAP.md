@@ -220,8 +220,17 @@ cases over AES-128-GCM, ChaCha20-Poly1305, X25519, ECDSA and ECDH P-256,
 Ed25519, RSA PKCS #1 v1.5 and PSS, HMAC and HKDF, and ML-KEM-768
 encapsulation, key generation and decapsulation; it found RSA signatures
 not below n verifying (refused now). Left for later: Wycheproof's DER
-encodings of ECDSA signatures through the TLS and X.509 parsers, and the
-benchmark exits of this phase (docs/BENCHMARK.md).
+encodings of ECDSA signatures through the TLS and X.509 parsers.
+The steady-state exit, measured open loop with `okena bench`
+(docs/BENCHMARK.md): kTLS was 20% under plaintext on keep-alive requests,
+with a p99 four to eight times plaintext's, all of it kernel time in the
+kernel's TLS. `http` listeners now seal records in user space by default
+(`ktls on` for the kernel): 161k requests/s against 163.5k plain on two
+cores (-1.5%), p50 43-53 us against 38 us at 100k/s. Handshakes: 2.6 times
+HAProxy's new connections per second (closed loop, on two cores). Open:
+the same in open loop against HAProxy, and a tail (p99.9 of 1-3 ms in
+every mode, plaintext included) not yet told apart from the desktop
+machine's own noise.
 
 * SHA-2, HMAC, HKDF (from fasm2crud), AES-GCM (AES-NI, VAES/VPCLMULQDQ),
   ChaCha20-Poly1305, X25519, ML-KEM-768, P-256 ECDH/ECDSA, Ed25519.

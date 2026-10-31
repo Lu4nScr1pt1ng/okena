@@ -639,6 +639,15 @@ ECN. 0-RTT off by default and, when on, only for routes marked idempotent.
   (and PKCS #1 v1.5 for TLS 1.2) and Ed25519 (TLS 1.3); upstream chains
   and CertificateVerify verify with all three; client certificates are not
   asked for yet.
+* Records: on `http` listeners okena seals and opens them itself by
+  default; the kernel's TLS costs ~1.5 us of kernel time per record and
+  direction on this kernel (a ping-pong of 100-byte messages: 7.0 us of
+  server CPU plain, 10.1 with kTLS both ways), which for request and
+  response traffic is more than AES-GCM in user space (0.1-0.2 us), and
+  its tail is worse. `ktls on` keeps kTLS for a listener; `tcp` listeners
+  always use it (their bytes do not pass through okena). The session's
+  buffers hold the downstream records and, past them, an upstream
+  handshake, so HTTPS in front and TLS behind work together.
 * SNI selects the certificate; ALPN picks h2/http/1.1; resumption with
   tickets encrypted under keys rotated every hour and shared across
   workers through the plan (read-only, so no lock).

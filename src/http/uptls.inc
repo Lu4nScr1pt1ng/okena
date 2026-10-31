@@ -15,11 +15,9 @@
 ; SNI is configured, the host name (cert_match_host). Any failure answers
 ; the client 502 rather than proxying over an unverified connection.
 ;
-; The handshake workspace lives in the session's TLS buffer area, free
-; here: a plain-HTTP listener never touches it, and a TLS listener has
-; handed its own keys to the kernel by now. okena refuses upstream TLS
-; when that area is in use for user-space records (no kTLS module), the
-; one case the two would collide; those backends then answer 502.
+; The handshake workspace lives in the session's buffers past the
+; downstream TLS area (HB_UPTLS), so a client on user-space records and a
+; TLS backend work together; its pages are touched only by this.
 
 HS_UTLS_HELLO	:= 23
 HS_UTLS_FLIGHT	:= 24
@@ -28,7 +26,9 @@ HS_UTLS_KTLS	:= 26
 HS_UTLS12_FIN	:= 30				; 1.2: our flight sent, reading the server's
 HS_UTLS12_RX	:= 31				; 1.2: the server's CCS + Finished are in
 
-HB_UTC		:= HB_TLS			; the upstream handshake TC block
+HB_UPTLS	:= 1 shl 17			; past the downstream TLS area (records, 1.2 state)
+assert HB_C12 + C12_SIZE <= HB_UPTLS
+HB_UTC		:= HB_UPTLS			; the upstream handshake TC block
 HB_USNAP	:= HB_UTC + TC_FULL		; the post-ClientHello transcript snapshot
 HB_UWORK	:= HB_USNAP + SHA256_CTX_SIZE	; ClientHello (~1.7 KB) / Finished / crypto_info / time
 HB_UDEC		:= HB_UWORK + 2048		; the decrypted server handshake
@@ -53,8 +53,6 @@ http_up_ready:
 http_uptls_start:
 	h_rec
 	cmp	dword [g_no_ktls],0		; upstream TLS needs the kernel tls module
-	jne	.unavail
-	cmp	dword [r15+H_UTLS],0		; downstream user-space records share the area
 	jne	.unavail
 	mov	r14,[r15+H_BUF]
 	call	session_ptr

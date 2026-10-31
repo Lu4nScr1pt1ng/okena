@@ -10,7 +10,7 @@ not built yet. A directive that is not built is refused by `okena check`
 |---|---|
 | `okena` | `workers`, `io_engine`, `busy_poll`, `watchdog`, `drain delay= timeout=`, `metrics`, `ticket_keys`, `handshake_budget wait=` |
 | `tcp ADDR...` | `to`, `limits { connections; per_source }`, `timeout { idle }`, `proxy_protocol send v1\|v2`, `tls { cert; key }`, `tls passthrough { sni NAME... to pool P; default reject\|to pool P }` |
-| `http ADDR...` | `host`, `route`, `limits`, `timeout { idle; header; body_idle; response }`, `trusted_proxies`, `access_log`, `tls { cert; key }` |
+| `http ADDR...` | `host`, `route`, `limits`, `timeout { idle; header; body_idle; response }`, `trusted_proxies`, `access_log`, `tls { cert; key; ktls on\|off }` |
 | `route PATH... [METHOD...]` | `to`, `redirect`, `rewrite path`, `header set\|add\|drop`, `response header set\|add\|drop` |
 | `pool NAME` | `server ADDR [weight=N] [backup]`, `balance least-request\|peak-ewma\|round-robin\|least-conn\|random`, `connect timeout=`, `health tcp\|http ...`, `slow_start`, `tls { trust FILE; sni NAME }` (TLS to the backends) |
 
@@ -22,10 +22,14 @@ several certificates each line names its key, `cert FILE key=FILE`; the
 client's SNI picks the one whose subjectAltName names the host (exactly,
 then `*.parent`), the first being the default. A request whose `Host`
 the chosen certificate does not name gets 421 (domain fronting). ALPN
-http/1.1, then the connection handed to the kernel's TLS (kTLS) when the
-host has the `tls` module (`modprobe tls`), or records sealed by okena
-itself when it does not (said once at the start; `OKENA_KTLS=off` forces
-it). Session tickets are on: a returning client resumes
+http/1.1, then the records are sealed and opened by okena itself, which
+for request and response traffic costs less than the kernel's TLS (1.5%
+under plaintext against 20%, docs/BENCHMARK.md). `ktls on` in the block
+hands the connection to the kernel (kTLS) instead, when the host has the
+`tls` module (`modprobe tls`; without it okena seals the records and says
+so once at the start; `OKENA_KTLS=off` forces that). A `tcp` listener's
+TLS always runs on kTLS, its bytes going through the kernel; `ktls off`
+there is refused. Session tickets are on: a returning client resumes
 without the certificate and the signature. The ticket key rotates every
 hour and the previous one is still accepted, so a ticket lasts one to two
 hours; keys live in memory only (a restart starts afresh). For a fleet,

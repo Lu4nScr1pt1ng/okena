@@ -1,0 +1,7 @@
+exit: 2
+--- stdout
+--- stderr
+ktls_value.conf:3:61: error: `maybe` is not one of: on off
+     3 |     tls { cert /etc/okena/c.pem; key /etc/okena/k.pem; ktls maybe }
+       |                                                             ^^^^^
+1 error in ktls_value.conf

@@ -21,7 +21,7 @@
 ; space of their own, touched only as far as an exchange uses them, and
 ; given back whole when the connection is idle (PH_TRIM).
 H_SHIFT		:= 9		; state
-HB_SHIFT	:= 17		; buffers: 64 KiB for HTTP, then the TLS area
+HB_SHIFT	:= 18		; buffers: 64 KiB for HTTP, the TLS area, the upstream TLS area
 H_STATE		:= 0
 H_INLEN		:= 4		; bytes in IN
 H_INOFF		:= 8		; first unconsumed byte of IN
@@ -3007,11 +3007,22 @@ http_phase_expired:
 	mov	esi,1 shl HB_SHIFT
 	cmp	dword [r15+H_UTLS],0
 	je	@f
-	mov	esi,HB_TLS			; its keys and records stay
+	mov	esi,HB_TLS			; user-space records: the keys stay
 @@:
 	mov	edx,MADV_DONTNEED
 	mov	eax,SYS_madvise
 	syscall
+	cmp	dword [r15+H_UTLS],0
+	je	@f
+	cmp	dword [r15+H_RXC],0		; ciphertext of the next request waits
+	jne	@f
+	mov	rdi,[r15+H_BUF]			; the record buffers past the keys' page
+	add	rdi,HB_TLS + 4096
+	mov	esi,(1 shl HB_SHIFT) - HB_TLS - 4096
+	mov	edx,MADV_DONTNEED
+	mov	eax,SYS_madvise
+	syscall
+@@:
 	inc	qword [g_st_http_trimmed]
 	ret
 .response:
