@@ -254,6 +254,22 @@ certificates; kTLS steady state within a few percent of plaintext.
 
 ## Phase 4 — HTTP/2 and gRPC
 
+Progress: HPACK is in (src/http/hpack.inc: the dynamic table, Huffman both
+ways, a stateless encoder, expansion bounded by the caller's buffer;
+tests/h2/hpack_suite.py: RFC 7541 appendix C byte for byte and a
+differential run against the hpack package). The plan for the rest: an h2
+connection is a session whose streams are sessions of their own, each
+running the existing HTTP/1.1 exchange (routing, pools, retries, upstream
+TLS, logs, rewrites) with its client side redirected to the connection,
+as user-space TLS records redirect it today: h_recv on a stream hands it
+the request (from HEADERS, CONTINUATION and DATA), h_send takes its
+response and turns it into HEADERS and DATA. Then the connection itself:
+the preface, SETTINGS, PING, GOAWAY, RST_STREAM, WINDOW_UPDATE and flow
+control both ways, the abuse budgets (rapid reset, CONTINUATION, SETTINGS
+and PING floods, empty frames, window-zero stalls); ALPN h2 on TLS
+listeners and prior knowledge on plain ones; h2spec and frame fuzzing.
+Upstream h2 and gRPC come after.
+
 * h2 downstream and upstream, HPACK, RFC 9218 priorities, flow control.
 * Protocol translation h1 ↔ h2 in both directions; WebSocket over h2.
 * Upstream multiplexing; gRPC routing, trailers, gRPC health checks,
