@@ -340,8 +340,8 @@ h2u_ready:
 	lea	rsi,[h2_preface]		; the client preface, then our SETTINGS
 	mov	ecx,H2_PREFACE_LEN
 	call	h2_out_raw
-	lea	rsi,[h2_settings]
-	mov	ecx,h2_settings.len
+	lea	rsi,[h2_settings_c]
+	mov	ecx,h2_settings_c.len
 	call	h2_out_raw
 	mov	dword [r14+HB_IN+W_READY],1
 	; the waiting requests go

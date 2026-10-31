@@ -100,6 +100,7 @@ HS_TUNNEL_UP	:= 11		; 101 sent: bytes the backend sent early go to the client
 HS_TUNNEL_IN	:= 12		; then bytes the client sent early go to the backend
 HS_INTERIM_SEND	:= 13		; writing a 1xx (103 Early Hints...) before the final response
 HS_SELF_SEND	:= 14		; writing okena's own answer (a redirect), connection kept
+HS_H2TUN	:= 41		; WebSocket over an HTTP/2 stream (http_h2tun_*)
 
 BK_NONE		:= 0
 BK_LENGTH	:= 1
@@ -128,6 +129,9 @@ HX_INTERIM	:= 262144	; the head being written is an interim (1xx) one
 HX_SELF		:= 524288	; okena answers this request itself (a redirect)
 HX_GRPC		:= 1048576	; a gRPC request: okena's own errors answer as gRPC
 HX_DUPLEX	:= 2097152	; HTTP/2 both ends: the body goes on beside the response
+HX_H2TUN	:= 4194304	; WebSocket over an HTTP/2 stream: bytes both ways
+HX_TSEND	:= 8388608	; its bytes to the backend: a send in flight, or the
+				; socket full (epoll: EPOLLOUT resumes it)
 
 SIDE_CLIENT	:= 0
 SIDE_UP		:= 1
@@ -1331,6 +1335,8 @@ http_recv_plain:
 	je	http_uptls12_rx
 	cmp	edx,HS_TLS12_FIN
 	je	http_tls12_fin
+	cmp	edx,HS_H2TUN
+	je	http_h2tun_recv
 	ret
 .head:
 	test	rax,rax
@@ -1439,6 +1445,8 @@ http_send_plain:
 	je	http_tls12_flight_sent
 	cmp	edx,HS_TLS12_FIN2
 	je	http_tls12_fin2_sent
+	cmp	edx,HS_H2TUN
+	je	http_h2tun_read			; (its sends to the client: the next read)
 	ret
 .self_sent:
 	test	dword [r15+H_FLAGS],HX_CLOSE
@@ -3308,6 +3316,8 @@ http_tunnel_start:
 	xor	esi,esi
 	call	alog_exchange			; the 101 exchange; then bytes, unlogged
 	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_H2S
+	jnz	http_h2tun_start		; a stream: no socket of its own to relay
 	or	dword [rax+S_FLAGS],SF_TUNNEL
 	cmp	dword [g_engine],ENGINE_EPOLL
 	je	.epoll
@@ -3327,11 +3337,166 @@ http_tunnel_start:
 .out:
 	ret
 
+; WebSocket over an HTTP/2 stream (RFC 8441), after the 101 (the stream's
+; 200): the backend's bytes go to the stream by the exchange's own loop
+; (h_recv on the upstream side, h_send of them on the stream), the
+; client's DATA to the backend beside it (http_h2tun_pump, with sends of
+; its own). It ends when the backend closes: END_STREAM. ebx = session.
+http_h2tun_start:
+	h_rec
+	mov	dword [r15+H_STATE],HS_H2TUN
+	or	dword [r15+H_FLAGS],HX_H2TUN
+	and	dword [r15+H_FLAGS],not HX_TSEND
+	mov	dword [r15+H_INLEN],0
+	mov	dword [r15+H_INOFF],0
+	call	http_h2tun_pump			; what the client sent already
+http_h2tun_read:
+	h_rec
+	mov	ecx,SIDE_UP
+	mov	rdi,[r15+H_BUF]
+	lea	rdi,[rdi+HB_UP]
+	mov	esi,H_UP_CAP
+	jmp	h_recv
+
+; rax = the backend's bytes (side 1), or its end
+http_h2tun_recv:
+	test	rax,rax
+	jle	.end
+	push	rax
+	mov	edi,ebx
+	call	idle_touch
+	pop	rsi
+	h_rec
+	mov	rdi,[r15+H_BUF]
+	lea	rdi,[rdi+HB_UP]
+	mov	ecx,SIDE_CLIENT
+	jmp	h_send
+.end:
+	h_rec
+	and	dword [r15+H_FLAGS],not HX_H2TUN
+	jmp	http_exchange_done		; END_STREAM, the upstream closed
+
+; The client's bytes to the backend: what IN holds, then the stream's
+; queue, a send at a time (io_uring: OP_H2T_SEND; epoll: written at once,
+; EPOLLOUT when the socket is full). The client's END_STREAM sends
+; nothing: the backend ends the tunnel. ebx = session; keeps every
+; register but rax, rcx, rdx, rsi, rdi, r8-r11.
+http_h2tun_pump:
+	push	rbx
+	push	rbp
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	call	session_ptr
+	cmp	dword [rax+S_STATE],ST_OPEN
+	jne	.out
+	h_rec
+	test	dword [r15+H_FLAGS],HX_H2TUN
+	jz	.out
+	test	dword [r15+H_FLAGS],HX_TSEND
+	jnz	.out				; its end calls again
+.next:
+	mov	ecx,[r15+H_INLEN]
+	sub	ecx,[r15+H_INOFF]
+	jnz	.send
+	mov	dword [r15+H_INLEN],0
+	mov	dword [r15+H_INOFF],0
+	mov	r14,[r15+H_BUF]
+	add	r14,HB_H2Q
+	mov	ecx,[r14+Q_LEN]
+	cmp	ecx,[r14+Q_OFF]
+	je	.out				; nothing more yet
+	mov	rdi,[r15+H_BUF]
+	lea	rdi,[rdi+HB_IN]
+	mov	esi,H_IN_CAP
+	call	h2s_copy			; (the window goes back as it drains)
+	h_rec
+	add	[r15+H_INLEN],eax
+	jmp	.next
+.send:
+	mov	edi,ebx
+	push	rcx
+	call	idle_touch
+	pop	rcx
+	h_rec
+	mov	eax,[r15+H_INOFF]
+	mov	rsi,[r15+H_BUF]
+	lea	rsi,[rsi+HB_IN+rax]
+	cmp	dword [g_engine],ENGINE_EPOLL
+	je	.write
+	or	dword [r15+H_FLAGS],HX_TSEND
+	push	rsi
+	push	rcx
+	mov	edi,OP_H2T_SEND
+	mov	esi,ebx
+	call	sess_sqe			; rax = SQE, rdx = session
+	pop	rcx
+	pop	rsi
+	mov	byte [rax+SQE_OPCODE],IORING_OP_SEND
+	mov	[rax+SQE_ADDR],rsi
+	mov	[rax+SQE_LEN],ecx
+	mov	dword [rax+SQE_OP_FLAGS],MSG_NOSIGNAL
+	mov	ecx,SIDE_UP
+	call	h_sqe_fd
+	jmp	.out
+.write:
+	push	rsi
+	push	rcx
+	call	session_ptr
+	mov	edi,[rax+S_UPFD]
+	pop	rdx
+	pop	rsi
+	mov	eax,SYS_write
+	syscall
+	cmp	rax,-EINTR
+	je	.send
+	cmp	rax,-EAGAIN
+	je	.full
+	test	rax,rax
+	js	.stop				; (the backend's side ends it)
+	h_rec
+	add	[r15+H_INOFF],eax
+	jmp	.next
+.full:
+	h_rec
+	or	dword [r15+H_FLAGS],HX_TSEND	; until EPOLLOUT (hep_event)
+	jmp	.out
+.stop:
+	h_rec
+	or	dword [r15+H_FLAGS],HX_TSEND	; nothing more goes
+.out:
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbp
+	pop	rbx
+	ret
+
+; io_uring: a send of the pump finished (ebx, r12d = generation, r14 = res)
+on_h2t_send:
+	call	sess_complete
+	jc	.out
+	cmp	dword [rax+S_STATE],ST_CLOSING
+	je	.closing
+	h_rec
+	test	r14,r14
+	js	.out				; the backend's side ends it (HX_TSEND stays)
+	add	[r15+H_INOFF],r14d
+	and	dword [r15+H_FLAGS],not HX_TSEND
+	jmp	http_h2tun_pump
+.closing:
+	mov	edi,ebx
+	jmp	session_maybe_free
+.out:
+	ret
+
 ; One exchange is over: drop the upstream connection, then the next
 ; request on the client connection, or close it.
 http_exchange_done:
 	h_rec
-	and	dword [r15+H_FLAGS],not HX_DUPLEX
+	and	dword [r15+H_FLAGS],not (HX_DUPLEX or HX_H2TUN)
 	xor	esi,esi
 	test	dword [r15+H_FLAGS],HX_SELF
 	setnz	sil				; okena's own answer, or the backend's

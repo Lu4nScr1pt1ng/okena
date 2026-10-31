@@ -349,7 +349,8 @@ OP_H_KTLS12	:= 27		; TLS 1.2 server: the keys are in the kernel
 OP_H2_RECV	:= 28		; HTTP/2: frames (or records) from the client
 OP_H2_SEND	:= 29		; HTTP/2: frames (or records) to the client
 OP_H2_DRAIN	:= 30		; HTTP/2 upstream: a kTLS control record taken
-OP_COUNT	:= 31
+OP_H2T_SEND	:= 31		; WebSocket over an HTTP/2 stream: bytes to the backend
+OP_COUNT	:= 32
 
 rodata
 	align 8
@@ -360,7 +361,7 @@ rodata
 			dq on_h_recv_c, on_h_recv_u, on_h_send_c, on_h_send_u
 			dq on_pool_watch, on_h_ktls, on_h_ulp, on_s_send_pfx
 			dq on_h_uktls, on_h_udrain, on_h_ktls12
-			dq on_h2_recv, on_h2_send, on_h2_drain
+			dq on_h2_recv, on_h2_send, on_h2_drain, on_h2t_send
 end rodata
 
 ring_reap:

@@ -593,6 +593,20 @@ hep_event:
 	h_rec
 	cmp	dword [r15+H_STATE],HS_H2
 	je	h2_ep_event			; an HTTP/2 connection reads and writes at once
+	test	dword [r15+H_FLAGS],HX_TSEND	; WebSocket over a stream: the backend's
+	jz	@f				; socket has room again
+	cmp	r8d,SIDE_UP
+	jne	@f
+	test	edi,EPOLLOUT or EPOLLERR or EPOLLHUP
+	jz	@f
+	push	rdi
+	push	r8
+	and	dword [r15+H_FLAGS],not HX_TSEND
+	call	http_h2tun_pump
+	pop	r8
+	pop	rdi
+	h_rec
+@@:
 	cmp	dword [r15+H_EPOP],0
 	je	.out
 	cmp	[r15+H_EPSIDE],r8d

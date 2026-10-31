@@ -61,6 +61,17 @@ timeout and half-close. Its upstream connection never returns to a
 pool. Any other answer is an ordinary response and the connection keeps
 serving requests; a 101 to a request that did not ask for one is a 502.
 
+Over HTTP/2 (`http2 on`) a client asks with an extended CONNECT (RFC
+8441: okena's SETTINGS allow it; `:protocol websocket`, `:path`,
+`:authority`). The backend gets an HTTP/1.1 upgrade: `GET` with the path,
+`Upgrade: websocket`, `Connection: Upgrade`, a `Sec-WebSocket-Key` okena
+makes, and the client's own fields (`Sec-WebSocket-Version`, `Origin`,
+subprotocols, extensions). Its 101 becomes the stream's 200 (without the
+handshake's fields); then the stream carries the bytes both ways (its
+DATA, credited as the backend takes them) until the backend closes, which
+ends the stream. Any other answer goes back as it is. Plain CONNECT and
+other `:protocol` values are reset (PROTOCOL_ERROR).
+
 ## Upstream connection pools
 
 Per worker, per server: a LIFO stack of idle connections (the warmest

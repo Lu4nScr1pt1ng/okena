@@ -139,6 +139,7 @@ S2F_WAITING	:= 8				; in the waiting list
 S2F_FINISH	:= 16				; END_STREAM waits for room
 S2F_CREDIT	:= 32				; stream credit waits for room
 S2F_SENDING	:= 64				; an h_send is pending
+S2F_WS		:= 128				; extended CONNECT for WebSocket (RFC 8441)
 SF_H2C		:= 4096				; S_FLAGS: an HTTP/2 connection
 SF_H2S		:= 8192				; S_FLAGS: a stream of one
 
@@ -172,9 +173,11 @@ end bss
 
 rodata
 	h2_preface	db 'PRI * HTTP/2.0',13,10,13,10,'SM',13,10,13,10
-	; our SETTINGS: MAX_CONCURRENT_STREAMS, INITIAL_WINDOW_SIZE, ENABLE_PUSH 0,
-	; MAX_HEADER_LIST_SIZE; then a WINDOW_UPDATE for the connection
-	h2_settings	db 0,0,24, H2F_SETTINGS, 0, 0,0,0,0
+	; our SETTINGS: extended CONNECT, MAX_CONCURRENT_STREAMS,
+	; INITIAL_WINDOW_SIZE, ENABLE_PUSH 0, MAX_HEADER_LIST_SIZE; then a
+	; WINDOW_UPDATE for the connection (a client's settings skip the first)
+	h2_settings	db 0,0,30, H2F_SETTINGS, 0, 0,0,0,0
+			db 0,8, 0,0,0,1			; ENABLE_CONNECT_PROTOCOL (RFC 8441)
 			db 0,3, 0,0,0,H2_MAX_OPEN
 			db 0,4, 0,0,H2_INIT_WIN shr 8,0
 			db 0,2, 0,0,0,0
@@ -183,6 +186,16 @@ rodata
 			db (H2_CONN_WIN - 65535) shr 24, ((H2_CONN_WIN - 65535) shr 16) and 255
 			db ((H2_CONN_WIN - 65535) shr 8) and 255, (H2_CONN_WIN - 65535) and 255
 	h2_settings.len = $ - h2_settings
+	; a client's (towards backends): the same but extended CONNECT
+	h2_settings_c	db 0,0,24, H2F_SETTINGS, 0, 0,0,0,0
+			db 0,3, 0,0,0,H2_MAX_OPEN
+			db 0,4, 0,0,H2_INIT_WIN shr 8,0
+			db 0,2, 0,0,0,0
+			db 0,6, 0,0,H2_MAX_HLIST shr 8,0
+			db 0,0,4, H2F_WINDOW, 0, 0,0,0,0
+			db (H2_CONN_WIN - 65535) shr 24, ((H2_CONN_WIN - 65535) shr 16) and 255
+			db ((H2_CONN_WIN - 65535) shr 8) and 255, (H2_CONN_WIN - 65535) and 255
+	h2_settings_c.len = $ - h2_settings_c
 end rodata
 
 ; edi = session: rax = its H record, rdx = its buffers, rcx = its C2 area
@@ -1608,6 +1621,8 @@ h2q_compact:
 h2q_serve:
 	test	dword [r15+H_FLAGS],HX_DUPLEX
 	jnz	http_duplex_pump		; the body goes upstream beside the response
+	test	dword [r15+H_FLAGS],HX_H2TUN
+	jnz	http_h2tun_pump			; WebSocket bytes, to the backend
 	cmp	dword [r14+Q_WAIT],0
 	je	.out
 	mov	ecx,[r14+Q_LEN]
@@ -1856,7 +1871,10 @@ H2N_SCHEME	:= 56
 H2N_SESS	:= 72
 H2N_HAVEHOST	:= 76
 H2N_CLEN	:= 80				; q
-H2N_SIZE	:= 96
+H2N_PROTO	:= 96				; q, then its length at +104
+H2N_WS		:= 112				; d: 1 for WebSocket over the stream
+H2N_KEY		:= 120				; 16 bytes: its Sec-WebSocket-Key
+H2N_SIZE	:= 144
 h2_stream_new:
 	push	rbx
 	push	rbp
@@ -1873,6 +1891,8 @@ h2_stream_new:
 	mov	[rsp+H2N_AUTH],rax
 	mov	[rsp+H2N_SCHEME],rax
 	mov	[rsp+H2N_HAVEHOST],eax
+	mov	[rsp+H2N_PROTO],rax
+	mov	[rsp+H2N_WS],eax
 	mov	qword [rsp+H2N_CLEN],-1
 	; the fields: pseudo ones first, each once, names lower case, no
 	; connection-specific ones, values without CR, LF or NUL
@@ -2001,6 +2021,16 @@ h2_stream_new:
 	mov	edi,H2N_PATH
 	jmp	.pseudo_set
 @@:
+	cmp	ecx,9
+	jne	@f
+	mov	rax,':protoco'
+	cmp	[rsi],rax
+	jne	.malformed
+	cmp	byte [rsi+8],'l'
+	jne	.malformed
+	mov	edi,H2N_PROTO
+	jmp	.pseudo_set
+@@:
 	cmp	ecx,10
 	jne	.malformed			; :status or unknown
 	mov	rax,':authori'
@@ -2026,15 +2056,35 @@ h2_stream_new:
 	je	.malformed
 	cmp	qword [rsp+H2N_PATH+8],0
 	je	.malformed			; an empty :path
-	mov	rax,[rsp+H2N_METHOD]		; CONNECT (and its extended form) not yet
-	cmp	qword [rsp+H2N_METHOD+8],7
-	jne	@f
+	mov	rax,[rsp+H2N_METHOD]		; CONNECT: only its extended form, for
+	cmp	qword [rsp+H2N_METHOD+8],7	; WebSocket (RFC 8441)
+	jne	.not_connect
 	cmp	dword [rax],'CONN'
-	jne	@f
+	jne	.not_connect
 	cmp	word [rax+4],'EC'
-	jne	@f
+	jne	.not_connect
 	cmp	byte [rax+6],'T'
+	jne	.not_connect
+	cmp	qword [rsp+H2N_PROTO+8],9
+	jne	.malformed
+	mov	rax,[rsp+H2N_PROTO]
+	mov	rdx,[rax]
+	mov	rcx,0x2020202020202020		; (letters: case does not matter)
+	or	rdx,rcx
+	mov	rcx,'websocke'
+	cmp	rdx,rcx
+	jne	.malformed
+	movzx	edx,byte [rax+8]
+	or	edx,0x20
+	cmp	edx,'t'
+	jne	.malformed
+	cmp	qword [rsp+H2N_AUTH],0
 	je	.malformed
+	mov	dword [rsp+H2N_WS],1
+	jmp	@f
+.not_connect:
+	cmp	qword [rsp+H2N_PROTO],0
+	jne	.malformed			; :protocol goes with CONNECT only
 @@:
 	; a session for it
 	call	session_alloc
@@ -2131,6 +2181,11 @@ h2_stream_new:
 	lea	r11,[rbp+Q_DATA+H_IN_CAP-8]	; a head must fit IN
 	mov	rsi,[rsp+H2N_METHOD]
 	mov	rcx,[rsp+H2N_METHOD+8]
+	cmp	dword [rsp+H2N_WS],0
+	je	@f
+	lea	rsi,[.get]			; WebSocket: an HTTP/1.1 upgrade
+	mov	ecx,3
+@@:
 	call	.put
 	mov	byte [rdi],' '
 	inc	rdi
@@ -2148,6 +2203,25 @@ h2_stream_new:
 	mov	rsi,[rsp+H2N_AUTH]
 	mov	rcx,[rsp+H2N_AUTH+8]
 	call	.put
+	mov	word [rdi],0x0A0D
+	add	rdi,2
+	cmp	dword [rsp+H2N_WS],0
+	je	.fields
+	lea	rsi,[.ws]			; Upgrade, Connection, a fresh key
+	mov	ecx,.ws.len
+	call	.put
+	push	r11				; (syscall takes rcx and r11)
+	push	rdi
+	lea	rdi,[rsp+16+H2N_KEY]
+	mov	esi,16
+	xor	edx,edx
+	mov	eax,SYS_getrandom
+	syscall
+	pop	rdi
+	lea	rsi,[rsp+8+H2N_KEY]
+	mov	edx,16
+	call	base64_encode			; 24 characters, rdi past them
+	pop	r11
 	mov	word [rdi],0x0A0D
 	add	rdi,2
 .fields:
@@ -2236,6 +2310,8 @@ h2_stream_new:
 	mov	word [rdi],0x0A0D
 	add	rdi,2
 .framing:
+	cmp	dword [rsp+H2N_WS],0
+	jne	.end_head			; WebSocket: bytes as they come, unframed
 	cmp	dword [rbp+Q_ENDED],0
 	jne	.end_head			; no body
 	cmp	qword [rbp+Q_CLEN],-1
@@ -2252,6 +2328,10 @@ h2_stream_new:
 	lea	rax,[rbp+Q_DATA]
 	sub	rdi,rax
 	mov	[rbp+Q_LEN],edi
+	cmp	dword [rsp+H2N_WS],0
+	je	@f
+	or	dword [r15+H_H2F],S2F_WS
+@@:
 	; into the table (its home slot when free), and its exchange starts
 	mov	r8d,[rsp+H2N_SID]
 	shr	r8d,1
@@ -2336,6 +2416,9 @@ h2_stream_new:
 .cookie.len = $ - .cookie
 .chunked db 'transfer-encoding: chunked',13,10
 .chunked.len = $ - .chunked
+.get	db 'GET'
+cstring .ws, 'upgrade: websocket',13,10,'connection: Upgrade',13,10,'sec-websocket-key: '
+.n_ws	db 20,'sec-websocket-accept',0
 .n_conn	db 10,'connection',10,'keep-alive',16,'proxy-connection',17,'transfer-encoding',7,'upgrade',0
 
 ; rdi/esi = a name, rdx = a list of (length byte, name) ending with 0:
@@ -2866,13 +2949,21 @@ h2_head_out:
 	; :status
 	push	rsi
 	lea	rcx,[rsi+9]
+	test	dword [r15+H_H2F],S2F_WS	; WebSocket: the backend's 101 is the
+	jz	@f				; stream's 200 (RFC 8441)
+	cmp	dword [rsi+9],'101 '
+	jne	@f
+	lea	rcx,[.s200]
+@@:
+	push	rcx
 	lea	rsi,[.status]
 	mov	edx,7
 	mov	r8d,3
 	call	hpack_encode
 	mov	rdi,rax
+	pop	rcx
 	pop	rsi
-	movzx	eax,word [rsi+9]		; 1xx: an informational head
+	movzx	eax,word [rcx]			; 1xx: an informational head
 	mov	r9d,eax
 	; the fields: from after the status line to the empty line
 	xor	ecx,ecx
@@ -2946,6 +3037,25 @@ h2_head_out:
 	pop	rdx
 	pop	rsi
 	jnc	.next_line
+	test	dword [r15+H_H2F],S2F_WS	; nor the handshake's answer key
+	jz	@f
+	push	rsi
+	push	rdx
+	push	rcx
+	push	r9
+	push	rdi
+	lea	rdi,[rsi+rcx]
+	mov	esi,r8d
+	sub	esi,ecx
+	lea	rdx,[h2_stream_new.n_ws]
+	call	h2_name_in
+	pop	rdi
+	pop	r9
+	pop	rcx
+	pop	rdx
+	pop	rsi
+	jnc	.next_line
+@@:
 	cmp	rdi,r12
 	ja	.broken				; a head larger than one block
 	push	rsi
@@ -3055,6 +3165,7 @@ h2_head_out:
 	pop	r12
 	ret
 .status	db ':status'
+.s200	db '200'
 
 ; rsi = an HTTP/1.1 head, ebp = its length: eax = H2_END_STREAM when it
 ; has "content-length: 0" (any case), else 0. Keeps everything else.

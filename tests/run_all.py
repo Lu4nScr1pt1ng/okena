@@ -76,6 +76,8 @@ SUITES = [
     ("h2 fuzz epoll", ["tests/h2/fuzz.py", "epoll", "300"]),
     ("h2spec io_uring", ["tests/h2/h2spec.py", "io_uring"]),
     ("h2spec epoll", ["tests/h2/h2spec.py", "epoll"]),
+    ("websocket h2 io_uring", ["tests/h2/websocket.py", "io_uring"]),
+    ("websocket h2 epoll", ["tests/h2/websocket.py", "epoll"]),
 ]
 
 

@@ -301,9 +301,15 @@ updates follow every DATA frame: DATA and HEADERS sent earn four now, no
 budget towards backends), OUT full of DATA turning a PING into GOAWAY
 CALM (512 bytes are kept for control frames), queue checks reading a
 clobbered length, and an epoll worker sleeping with deliveries queued.
-Open: okena's p99.9 at some rates (wakeups), a body streamed both ways
-when only one end is HTTP/2 (an HTTP/1.1 exchange stays in turn),
-WebSocket over h2. gRPC health checks are in (`health grpc [SERVICE]`:
+WebSocket over h2 is in (RFC 8441: SETTINGS_ENABLE_CONNECT_PROTOCOL, an
+extended CONNECT with :protocol websocket becomes an HTTP/1.1 upgrade
+with okena's own Sec-WebSocket-Key, the backend's 101 the stream's 200;
+then the backend's bytes go to the stream by the exchange's loop and the
+client's DATA to the backend beside it, with sends of its own, until the
+backend closes; tests/h2/websocket.py on both engines). Open: okena's
+p99.9 at some rates (wakeups); an ordinary request body streamed both
+ways when only one end is HTTP/2 (that exchange stays in turn); RFC 9218
+priorities. gRPC health checks are in (`health grpc [SERVICE]`:
 grpc.health.v1.Health/Check over HTTP/2 by prior knowledge from the
 health process, which walks the answer's frames, not its headers: SERVING
 passes; another status, Trailers-Only, RST_STREAM or GOAWAY fail, each
@@ -327,7 +333,9 @@ Upstream h2 and gRPC come after.
 * Abuse limits (rapid reset, CONTINUATION, HPACK bomb, floods).
 * h2spec clean; fuzzing of frames and HPACK.
 
-Exit: beats Envoy on added p99 for gRPC unary and streaming.
+Exit: beats Envoy on added p99 for gRPC unary and streaming. Met
+(2026-10-31, docs/BENCHMARK.md): unary, server streaming and
+bidirectional streams, every rate measured.
 
 ## Phase 5 — HTTP/3 and QUIC
 
