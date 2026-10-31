@@ -29,6 +29,14 @@
 ;   'n' HPACK encode: fields (name length (2, LE), name, value length (2,
 ;       LE), value) -> the block
 ;   'G' AES-128-GCM open: key, iv, aad len, aad, ciphertext | tag; 'FAIL' if wrong
+;   '0' QUIC Initial seal: version (4, LE), dcid len (1), dcid, side (1: 0 the
+;       client's keys, 1 the server's), packet number (8, LE), its length (1),
+;       header length (2, LE), header, payload -> the protected packet
+;   '1' QUIC Initial open: version, dcid len, dcid, side, packet number offset
+;       (2, LE), largest received (8, LE), packet -> header | payload, or FAIL
+;   '9' QUIC seal from a secret: version (4), aead (1: 0 AES-128-GCM, 1
+;       ChaCha20-Poly1305), secret (32), then as '0' from the packet number
+;   '#' QUIC Retry tag: version (4), original dcid len (1), dcid, the packet
 
 format ELF64 executable 3
 entry start
@@ -55,6 +63,7 @@ include '../../src/crypto/p256.inc'
 include '../../src/crypto/rsa.inc'
 include '../../src/tls/x509.inc'
 include '../../src/tls/keyschedule.inc'
+include '../../src/quic/crypto.inc'
 include '../../src/tls/client.inc'
 include '../../src/tls/tls12.inc'
 include '../../src/http/hpack_tables.inc'
@@ -81,6 +90,8 @@ bss
 	g_ho:		rb HPO_SIZE
 	g_hf:		rb 256 * HP_SIZE
 	g_hs:		rb 65536
+	align 16
+	g_qk:		rb 2 * QK_SIZE
 	g_in:		rb INPUT_MAX + 64
 end bss
 
@@ -113,6 +124,14 @@ start:
 	inc	rsi
 	dec	rdx
 @@:
+	cmp	al,'0'
+	je	.quic_seal
+	cmp	al,'1'
+	je	.quic_open
+	cmp	al,'9'
+	je	.quic_vseal
+	cmp	al,'#'
+	je	.quic_retry
 	cmp	al,'d'
 	je	.hpack_dec
 	cmp	al,'n'
@@ -1110,6 +1129,94 @@ start:
 	lea	rdi,[g_out]
 	mov	esi,32
 	jmp	.print				; (the handler above falls through to it)
+; QUIC: r12 = input cursor
+.quic_initial_keys:
+	; version (4), dcid len (1), dcid, side (1) -> rdi = that side's QK
+	mov	r14d,[r12]
+	movzx	ecx,byte [r12+4]
+	lea	rdx,[r12+5]
+	lea	r12,[r12+5+rcx]
+	lea	rdi,[g_qk]
+	lea	rsi,[g_qk+QK_SIZE]
+	mov	r8d,r14d
+	call	quic_initial
+	lea	rdi,[g_qk]
+	cmp	byte [r12],0
+	je	@f
+	lea	rdi,[g_qk+QK_SIZE]
+@@:
+	inc	r12
+	ret
+.quic_seal:
+	mov	r12,rsi
+	call	.quic_initial_keys
+.quic_seal_rest:
+	; pn (8), pn len (1), header len (2), header, payload -> g_out
+	mov	rbx,rdi
+	mov	r8,[r12]
+	movzx	r13d,byte [r12+8]
+	movzx	r14d,word [r12+9]
+	lea	rsi,[r12+11]
+	lea	rdi,[g_out]
+	mov	rax,[g_in_len]
+	lea	rcx,[g_in+rax]
+	sub	rcx,rsi				; header + payload
+	mov	r9,rcx
+	sub	r9d,r14d			; payload length
+	rep	movsb
+	mov	rdi,rbx
+	lea	rsi,[g_out]
+	mov	edx,r14d
+	mov	ecx,r13d
+	call	quic_seal
+	mov	esi,eax
+	jmp	.print
+.quic_vseal:
+	mov	r12,rsi
+	lea	rdi,[g_qk]
+	lea	rsi,[r12+5]			; the secret
+	mov	edx,[r12]
+	movzx	ecx,byte [r12+4]
+	call	quic_keys
+	add	r12,37
+	lea	rdi,[g_qk]
+	jmp	.quic_seal_rest
+.quic_open:
+	mov	r12,rsi
+	call	.quic_initial_keys
+	mov	rbx,rdi
+	movzx	r13d,word [r12]			; packet number offset
+	mov	r14,[r12+2]			; largest received
+	lea	rsi,[r12+10]
+	mov	rax,[g_in_len]
+	lea	rcx,[g_in+rax]
+	sub	rcx,rsi
+	mov	r15,rcx				; packet length
+	lea	rdi,[g_out]
+	rep	movsb
+	mov	rdi,rbx
+	lea	rsi,[g_out]
+	mov	edx,r15d
+	mov	ecx,r13d
+	mov	r8,r14
+	call	quic_open
+	cmp	eax,-1
+	je	.wrong
+	lea	esi,[r15-16]			; header | payload
+	jmp	.print
+.quic_retry:
+	mov	r12,rsi
+	mov	r9d,[r12]
+	movzx	edx,byte [r12+4]
+	lea	rsi,[r12+5]
+	lea	rcx,[rsi+rdx]
+	mov	rax,[g_in_len]
+	lea	r8,[g_in+rax]
+	sub	r8,rcx
+	lea	rdi,[g_out]
+	call	quic_retry_tag
+	mov	esi,16
+	jmp	.print
 .hpack_dec:
 	; r12 = input cursor, r13 = its end, rbx = g_out cursor
 	mov	r12,rsi

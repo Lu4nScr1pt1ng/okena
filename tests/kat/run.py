@@ -844,5 +844,54 @@ try:
 except (OSError, subprocess.CalledProcessError, ValueError) as e:
     check("ml-kem-768 against openssl", repr(e), "")
 
+# QUIC packet protection: RFC 9001 / RFC 9369 Appendix A, both versions
+from quic_vectors import VECTORS  # noqa: E402
+DCID = bytes.fromhex("8394c8f03e515708")
+for ver, v in VECTORS.items():
+    wire = (1 if ver == 1 else 0x6b3343cf).to_bytes(4, "little")
+    name = f"quic v{ver}"
+    # the client's Initial: the CRYPTO frame padded to 1162 bytes, pn 2 in 4 bytes
+    hdr = bytes.fromhex(v["client_header"])
+    payload = bytes.fromhex(v["client_payload"]).ljust(1162, b"\0")
+    pre = wire + bytes([len(DCID)]) + DCID
+    check(f"{name}: the client's Initial, protected byte for byte (A.2)",
+          run(b"0", pre + b"\0" + (2).to_bytes(8, "little") + b"\4" + len(hdr).to_bytes(2, "little") + hdr + payload),
+          v["client_packet"])
+    pkt = bytes.fromhex(v["client_packet"])
+    check(f"{name}: and opened back (the server's view)",
+          run(b"1", pre + b"\0" + (len(hdr) - 4).to_bytes(2, "little") + (2 ** 64 - 1).to_bytes(8, "little") + pkt),
+          (hdr + payload).hex())
+    bad = bytearray(pkt)
+    bad[-1] ^= 1
+    check(f"{name}: a flipped bit does not open",
+          run(b"1", pre + b"\0" + (len(hdr) - 4).to_bytes(2, "little") + (2 ** 64 - 1).to_bytes(8, "little")
+              + bytes(bad)), "FAIL")
+    # the server's Initial: pn 1 in 2 bytes, keys from the client's dcid
+    hdr = bytes.fromhex(v["server_header"])
+    payload = bytes.fromhex(v["server_payload"])
+    check(f"{name}: the server's Initial (A.3)",
+          run(b"0", pre + b"\1" + (1).to_bytes(8, "little") + b"\2" + len(hdr).to_bytes(2, "little") + hdr + payload),
+          v["server_packet"])
+    check(f"{name}: and opened back (the client's view, nothing received before)",
+          run(b"1", pre + b"\1" + (len(hdr) - 2).to_bytes(2, "little") + (2 ** 64 - 1).to_bytes(8, "little")
+              + bytes.fromhex(v["server_packet"])), (hdr + payload).hex())
+    # Retry: the tag over the client's original dcid and the packet
+    retry = bytes.fromhex(v["retry"])
+    check(f"{name}: the Retry integrity tag (A.4)",
+          run(b"#", wire + bytes([len(DCID)]) + DCID + retry[:-16]), retry[-16:].hex())
+    # ChaCha20-Poly1305, a short header (A.5): pn 654360564 in 3 bytes
+    hdr = bytes.fromhex(v["cc_header"])
+    check(f"{name}: ChaCha20-Poly1305 and its header protection (A.5)",
+          run(b"9", wire + b"\1" + bytes.fromhex(v["cc_secret"]) + v["cc_pn"].to_bytes(8, "little") + b"\3"
+              + len(hdr).to_bytes(2, "little") + hdr + bytes.fromhex(v["cc_payload"])), v["cc_packet"])
+# packet number decoding (RFC 9000 A.3): largest 0xa82f30ea, 2 bytes 0x9b32 -> 0xa82f9b32
+hdr0 = bytes.fromhex("c300000001088394c8f03e5157080000449e") + b"\x9b\x32"
+w1 = (1).to_bytes(4, "little") + bytes([8]) + DCID
+sealed = bytes.fromhex(run(b"0", w1 + b"\0" + (0xa82f9b32).to_bytes(8, "little") + b"\2" + bytes([0x9e - 0x9e + 20, 0])
+                            + bytes([0xc1]) + hdr0[1:] + bytes(40)))
+opened = run(b"1", w1 + b"\0" + (18).to_bytes(2, "little") + (0xa82f30ea).to_bytes(8, "little") + sealed)
+check("quic: a truncated packet number decodes near the largest received (RFC 9000 A.3)",
+      opened, (bytes([0xc1]) + hdr0[1:] + bytes(40)).hex())
+
 print(f"kat: {'all passed' if not failures else f'{failures} failed'} ({checks} checks)")
 sys.exit(1 if failures else 0)
