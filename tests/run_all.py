@@ -67,6 +67,7 @@ SUITES = [
     ("config fuzz", ["tests/config/fuzz.py", "2000"]),
     ("config", ["tests/config/run.py"]),
     ("bench", ["tests/bench/run.py"]),
+    ("hpack", ["tests/h2/hpack_suite.py"]),
 ]
 
 

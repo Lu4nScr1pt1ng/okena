@@ -22,6 +22,12 @@
 ;   'I' mod_inv mod p: a (4 limbs, Montgomery form); 'D' G + G (projective, raw)
 ;   'u' x25519_base: scalar (32) -> the public key, as x25519(scalar, 9)
 ;   'B' benchmark: op ('x', 'u', 'E', 'v' ECDSA verify, ...), count (4, LE), the op's input -> ns per op
+;   'd' HPACK decode: table limit (4, LE), then blocks (length (4, LE), bytes),
+;       one context: per field name length (2, LE), name, value length (2,
+;       LE), value; FFFF after a block; FFFE and the error code at the first
+;       error, the end (as hex, like every answer)
+;   'n' HPACK encode: fields (name length (2, LE), name, value length (2,
+;       LE), value) -> the block
 ;   'G' AES-128-GCM open: key, iv, aad len, aad, ciphertext | tag; 'FAIL' if wrong
 
 format ELF64 executable 3
@@ -51,6 +57,8 @@ include '../../src/tls/x509.inc'
 include '../../src/tls/keyschedule.inc'
 include '../../src/tls/client.inc'
 include '../../src/tls/tls12.inc'
+include '../../src/http/hpack_tables.inc'
+include '../../src/http/hpack.inc'
 
 INPUT_MAX := 1 shl 22
 
@@ -69,6 +77,10 @@ bss
 	g_gcm12:	rb 512
 	g_der:		rb 8192
 	g_anchor:	rb PK_SIZE
+	g_hd:		rb HPD_BYTES
+	g_ho:		rb HPO_SIZE
+	g_hf:		rb 256 * HP_SIZE
+	g_hs:		rb 65536
 	g_in:		rb INPUT_MAX + 64
 end bss
 
@@ -101,6 +113,10 @@ start:
 	inc	rsi
 	dec	rdx
 @@:
+	cmp	al,'d'
+	je	.hpack_dec
+	cmp	al,'n'
+	je	.hpack_enc
 	cmp	al,'s'
 	je	.sha
 	cmp	al,'3'
@@ -1093,6 +1109,92 @@ start:
 	jz	.wrong
 	lea	rdi,[g_out]
 	mov	esi,32
+.hpack_dec:
+	; r12 = input cursor, r13 = its end, rbx = g_out cursor
+	mov	r12,rsi
+	lea	r13,[rsi+rdx]
+	lea	rdi,[g_hd]
+	mov	esi,[r12]
+	add	r12,4
+	call	hpack_init
+	lea	rbx,[g_out]
+	lea	rax,[g_hf]
+	mov	[g_ho+HPO_FIELDS],rax
+	mov	dword [g_ho+HPO_FMAX],256
+	lea	rax,[g_hs]
+	mov	[g_ho+HPO_BUF],rax
+	mov	dword [g_ho+HPO_BCAP],65536
+.hd_block:
+	lea	rax,[r12+4]
+	cmp	rax,r13
+	ja	.hd_done
+	mov	edx,[r12]
+	add	r12,4
+	lea	rdi,[g_hd]
+	mov	rsi,r12
+	add	r12,rdx
+	lea	rcx,[g_ho]
+	call	hpack_decode
+	test	eax,eax
+	jnz	.hd_err
+	xor	r14d,r14d
+.hd_field:
+	cmp	r14d,[g_ho+HPO_COUNT]
+	jae	.hd_end
+	imul	eax,r14d,HP_SIZE
+	lea	r15,[g_hf+rax]
+	mov	rdi,rbx
+	mov	ecx,[r15+HP_NLEN]
+	mov	[rdi],cx
+	add	rdi,2
+	mov	rsi,[r15+HP_NAME]
+	rep	movsb
+	mov	ecx,[r15+HP_VLEN]
+	mov	[rdi],cx
+	add	rdi,2
+	mov	rsi,[r15+HP_VALUE]
+	rep	movsb
+	mov	rbx,rdi
+	inc	r14d
+	jmp	.hd_field
+.hd_end:
+	mov	word [rbx],0xFFFF		; the block's end
+	add	rbx,2
+	jmp	.hd_block
+.hd_err:
+	mov	word [rbx],0xFFFE		; an error, then its code
+	mov	[rbx+2],al
+	add	rbx,3
+.hd_done:
+	lea	rdi,[g_out]
+	mov	rsi,rbx
+	sub	rsi,rdi
+	jmp	.print
+
+.hpack_enc:
+	mov	r12,rsi
+	lea	r13,[rsi+rdx]
+	lea	rbx,[g_out]
+.he_field:
+	lea	rax,[r12+2]
+	cmp	rax,r13
+	ja	.he_done
+	movzx	edx,word [r12]			; name
+	lea	rsi,[r12+2]
+	lea	r12,[rsi+rdx]
+	movzx	r8d,word [r12]			; value
+	lea	rcx,[r12+2]
+	lea	r12,[rcx+r8]
+	mov	rdi,rbx
+	call	hpack_encode
+	mov	rbx,rax
+	jmp	.he_field
+.he_done:
+	lea	rdi,[g_out]
+	mov	rsi,rbx
+	sub	rsi,rdi
+	jmp	.print
+
 .print:
 	; g_out, esi bytes, as hex
 	lea	rdi,[g_in]
