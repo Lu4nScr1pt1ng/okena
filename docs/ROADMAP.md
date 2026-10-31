@@ -268,8 +268,20 @@ flood (64 frames a block, 16 KiB), frames that ask work and carry nothing
 pings and settings a client does not read the answers to; each ends in
 GOAWAY ENHANCE_YOUR_CALM. tests/h2/fuzz.py sends mutated and random frame
 sequences (4000 connections an engine clean; `make fuzz` runs more).
-Next: h2spec, the h2load benchmark against Envoy, then upstream h2 and
-gRPC. The design: an h2
+A chunked response's trailers reach the client (after the last chunk for
+HTTP/1.1, a trailing HEADERS for HTTP/2), so gRPC's status gets through.
+HTTP/2 towards backends is in (src/http/h2u.inc, `protocol h2` in a
+pool): connections of their own a server (at most 4, streams up to what
+the server allows), the h2.inc connection code in client mode, the
+requesting session's upstream side served like an HTTP/2 stream's client
+side (its HTTP/1.1 head into HEADERS with :authority and te: trailers,
+the body unframed into DATA, the response back as HTTP/1.1, chunk-framed
+with its trailers when it has no length); RST_STREAM, GOAWAY and a lost
+connection fail the requests they hold. tests/h2/upstream.py on both
+engines against an HTTP/2 server and okena itself. Open: ALPN h2 over the
+pool's TLS is in but untested here (upstream TLS needs the tls module),
+gRPC status for okena's own errors, h2spec, and the benchmark against
+Envoy. The design: an h2
 connection is a session whose streams are sessions of their own, each
 running the existing HTTP/1.1 exchange (routing, pools, retries, upstream
 TLS, logs, rewrites) with its client side redirected to the connection,

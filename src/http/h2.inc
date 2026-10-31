@@ -417,7 +417,7 @@ h2_flush:
 	jne	.next				; gone (or another session now)
 	cmp	dword [rax+S_STATE],ST_OPEN
 	jne	.next
-	test	dword [rax+S_FLAGS],SF_H2C
+	test	dword [rax+S_FLAGS],SF_H2C or SF_H2U
 	jz	.next
 	c2_regs
 	and	dword [r13+C2_FLAGS],not C2F_FLUSHQ
@@ -514,13 +514,13 @@ h2_sock_send:
 	mov	[rax+SQE_ADDR],rdi
 	mov	[rax+SQE_LEN],esi
 	mov	dword [rax+SQE_OP_FLAGS],MSG_NOSIGNAL
-	xor	ecx,ecx
+	call	h2_side
 	jmp	h_sqe_fd
 .epoll:
 	push	rdi
 	push	rsi
-	call	session_ptr
-	mov	edi,[rax+S_CLIENT]
+	call	h2_fd
+	mov	edi,eax
 	pop	rdx
 	pop	rsi
 	mov	eax,SYS_write			; (the epoll worker's seccomp allows write)
@@ -597,8 +597,85 @@ h2_recv:
 	mov	[rax+SQE_ADDR],rdi
 	mov	[rax+SQE_LEN],esi
 	mov	dword [rax+SQE_OP_FLAGS],0
-	xor	ecx,ecx
+	call	h2_side
 	jmp	h_sqe_fd
+.out:
+	ret
+
+; c2 registers: ecx = the socket's side (SIDE_UP for an upstream
+; connection), keeps the rest but flags
+h2_side:
+	xor	ecx,ecx
+	test	dword [r13+C2_FLAGS],C2F_CLIENT
+	jz	@f
+	mov	ecx,SIDE_UP
+@@:
+	ret
+
+; c2 registers: eax = the socket (epoll), keeps the rest but rdx
+h2_fd:
+	call	session_ptr
+	test	dword [r13+C2_FLAGS],C2F_CLIENT
+	jnz	@f
+	mov	eax,[rax+S_CLIENT]
+	ret
+@@:
+	mov	eax,[rax+S_UPFD]
+	ret
+
+; an upstream connection's kTLS socket has a control record next (a
+; NewSessionTicket): it is taken with recvmsg (a control buffer makes the
+; kernel hand it over) into a scratch place, then receiving goes on.
+; c2 registers; the scratch is the decoded-strings area, idle meanwhile.
+h2_drain:
+	lea	rax,[r14+HB_H2STR+256]
+	mov	[r14+HB_H2STR+56],rax		; iovec
+	mov	qword [r14+HB_H2STR+64],4096
+	xor	eax,eax
+	mov	[r14+HB_H2STR],rax		; msghdr: name, namelen
+	mov	[r14+HB_H2STR+8],rax
+	lea	rax,[r14+HB_H2STR+56]
+	mov	[r14+HB_H2STR+16],rax
+	mov	qword [r14+HB_H2STR+24],1
+	lea	rax,[r14+HB_H2STR+72]
+	mov	[r14+HB_H2STR+32],rax
+	mov	qword [r14+HB_H2STR+40],64
+	mov	dword [r14+HB_H2STR+48],0
+	cmp	dword [g_engine],ENGINE_EPOLL
+	je	.epoll
+	or	dword [r13+C2_FLAGS],C2F_RECV
+	mov	edi,OP_H2_DRAIN
+	mov	esi,ebx
+	call	sess_sqe
+	mov	byte [rax+SQE_OPCODE],IORING_OP_RECVMSG
+	lea	rcx,[r14+HB_H2STR]
+	mov	[rax+SQE_ADDR],rcx
+	mov	dword [rax+SQE_LEN],0
+	mov	dword [rax+SQE_OP_FLAGS],0
+	mov	ecx,SIDE_UP
+	jmp	h_sqe_fd
+.epoll:
+	call	h2_fd
+	mov	edi,eax
+	lea	rsi,[r14+HB_H2STR]
+	mov	edx,MSG_DONTWAIT
+	mov	eax,SYS_recvmsg
+	syscall
+	ret
+
+on_h2_drain:
+	call	sess_complete
+	jc	.out
+	cmp	dword [rax+S_STATE],ST_CLOSING
+	je	.closing
+	c2_regs
+	and	dword [r13+C2_FLAGS],not C2F_RECV
+	test	r14,r14
+	js	h2_drop
+	jmp	h2_pump
+.closing:
+	mov	edi,ebx
+	jmp	session_maybe_free
 .out:
 	ret
 
@@ -696,7 +773,12 @@ on_h2_recv:
 	je	.closing
 	mov	rax,r14
 	c2_regs
-	jmp	h2_received
+	cmp	rax,-5				; -EIO: a kTLS control record is next
+	jne	h2_received
+	test	dword [r13+C2_FLAGS],C2F_CLIENT
+	jz	h2_received
+	and	dword [r13+C2_FLAGS],not C2F_RECV
+	jmp	h2_drain
 .closing:
 	mov	edi,ebx
 	jmp	session_maybe_free
@@ -756,8 +838,8 @@ h2_ep_event:
 	jz	.out				; full: the streams drain it first
 	push	rsi
 	push	rdx
-	call	session_ptr
-	mov	edi,[rax+S_CLIENT]
+	call	h2_fd
+	mov	edi,eax
 	pop	rdx
 	pop	rsi
 	mov	r10d,MSG_DONTWAIT
@@ -769,6 +851,17 @@ h2_ep_event:
 	je	.drained
 	cmp	rax,-EINTR
 	je	.again
+	cmp	rax,-5				; a kTLS control record (an upstream's ticket)
+	jne	.data
+	test	dword [r13+C2_FLAGS],C2F_CLIENT
+	jz	.data
+	call	h2_drain
+	test	rax,rax
+	js	.drop
+	jmp	.again
+.drop:
+	jmp	h2_drop
+.data:
 	call	h2_received
 	call	session_ptr
 	cmp	dword [rax+S_STATE],ST_OPEN
@@ -948,6 +1041,13 @@ h2_frame_in:
 	cmp	esi,8
 	jb	.frame_size
 	or	dword [r13+C2_FLAGS],C2F_PEERGONE
+	test	dword [r13+C2_FLAGS],C2F_CLIENT
+	jz	@f
+	mov	eax,[r12]			; client: streams above its last are not taken
+	bswap	eax
+	and	eax,0x7FFFFFFF
+	jmp	h2u_goaway_streams
+@@:
 	ret
 .protocol:
 	mov	edx,H2E_PROTOCOL
@@ -1045,6 +1145,11 @@ h2_in_settings:
 	jc	.flow
 	jmp	.setting
 @@:
+	cmp	eax,3				; MAX_CONCURRENT_STREAMS (what a server allows us)
+	jne	@f
+	mov	[r13+C2_PMAXS],edx
+	jmp	.setting
+@@:
 	cmp	eax,5				; MAX_FRAME_SIZE
 	jne	.setting
 	cmp	edx,16384
@@ -1083,12 +1188,18 @@ h2_windows_shift:
 	mov	eax,edi
 	shl	rax,H_SHIFT
 	add	rax,[g_http_base]
-	movsxd	rdx,dword [rax+H_H2SWIN]
+	lea	r10,[rax+H_H2SWIN]
+	test	dword [r13+C2_FLAGS],C2F_CLIENT
+	jz	@f
+	mov	r10,[rax+H_BUF]
+	add	r10,HB_U2 + U2_SWIN
+@@:
+	movsxd	rdx,dword [r10]
 	movsxd	r8,ecx
 	add	rdx,r8
 	cmp	rdx,0x7FFFFFFF
 	jg	.over
-	mov	[rax+H_H2SWIN],edx
+	mov	[r10],edx
 .skip:
 	add	r12,S2_SIZE
 	dec	r9d
@@ -1121,6 +1232,25 @@ h2_in_ping:
 .out:
 	ret
 
+; eax = stream: CF when it is idle (never opened): above the last stream
+; the client opened (server mode), at or above our next id (client mode).
+; Keeps everything but flags.
+h2_idle_sid:
+	test	dword [r13+C2_FLAGS],C2F_CLIENT
+	jnz	.client
+	cmp	eax,[r13+C2_LASTSID]
+	ja	.idle
+	clc
+	ret
+.client:
+	cmp	eax,[r13+C2_NEXTSID]
+	jae	.idle
+	clc
+	ret
+.idle:
+	stc
+	ret
+
 h2_in_window:
 	cmp	esi,4
 	jne	h2_frame_in.frame_size
@@ -1138,8 +1268,8 @@ h2_in_window:
 	mov	[r13+C2_SWIN],eax
 	jmp	h2_unblock
 .stream:
-	cmp	eax,[r13+C2_LASTSID]
-	ja	h2_frame_in.protocol		; an idle stream
+	call	h2_idle_sid
+	jc	h2_frame_in.protocol		; an idle stream
 	push	rdx
 	push	rax
 	call	h2_find
@@ -1152,11 +1282,17 @@ h2_in_window:
 	mov	eax,edi
 	shl	rax,H_SHIFT
 	add	rax,[g_http_base]
-	movsxd	rcx,dword [rax+H_H2SWIN]
+	lea	r9,[rax+H_H2SWIN]
+	test	dword [r13+C2_FLAGS],C2F_CLIENT
+	jz	@f
+	mov	r9,[rax+H_BUF]			; client mode: the request's U2 area
+	add	r9,HB_U2 + U2_SWIN
+@@:
+	movsxd	rcx,dword [r9]
 	add	rcx,rdx
 	cmp	rcx,0x7FFFFFFF
 	jg	.flow
-	mov	[rax+H_H2SWIN],ecx
+	mov	[r9],ecx
 	jmp	h2_unblock
 .reset:
 	mov	edx,H2E_PROTOCOL
@@ -1172,8 +1308,10 @@ h2_in_rst:
 	jz	h2_frame_in.protocol
 	cmp	esi,4
 	jne	h2_frame_in.frame_size
-	cmp	eax,[r13+C2_LASTSID]
-	ja	h2_frame_in.protocol		; an idle stream
+	call	h2_idle_sid
+	jc	h2_frame_in.protocol		; an idle stream
+	test	dword [r13+C2_FLAGS],C2F_CLIENT
+	jnz	.client
 	call	h2_rst_count
 	jc	.calm
 	push	rax
@@ -1191,6 +1329,18 @@ h2_in_rst:
 .calm:
 	mov	edx,H2E_CALM			; rapid reset
 	jmp	h2_goaway
+.client:
+	; the server reset one of our requests: it fails
+	call	h2_find
+	cmp	edi,NIL
+	je	.out
+	push	rbp
+	mov	ebp,edi
+	push	rdi
+	call	h2_untable
+	pop	rdi
+	pop	rbp
+	jmp	h2u_fail
 
 ; counts a reset the client caused; CF past the budget for this second
 h2_rst_count:
@@ -1236,11 +1386,16 @@ h2_in_data:
 	pop	rdx				; the frame's length
 	cmp	edi,NIL
 	je	.closed
+	test	dword [r13+C2_FLAGS],C2F_CLIENT
+	jnz	.client
 	call	h2_stream_data
 	jmp	h2_conn_credit
+.client:
+	call	h2u_data
+	jmp	h2_conn_credit
 .closed:
-	cmp	eax,[r13+C2_LASTSID]
-	ja	h2_frame_in.protocol		; an idle stream
+	call	h2_idle_sid
+	jc	h2_frame_in.protocol		; an idle stream
 	mov	esi,eax
 	mov	edx,H2E_CLOSED
 	call	h2_out_rst
@@ -1537,6 +1692,12 @@ h2_block_done:
 	test	eax,eax
 	jnz	.calm				; larger than we take (the table is
 						; mid-block: the connection cannot go on)
+	test	dword [r13+C2_FLAGS],C2F_CLIENT
+	jz	@f
+	mov	eax,r12d			; client mode: a response's head or trailers
+	call	h2u_block_done
+	jmp	.out
+@@:
 	push	rcx
 	mov	eax,r12d
 	call	h2_find
@@ -2142,6 +2303,17 @@ h2_streams_close:
 	mov	edi,[r12+S2_SESS]
 	mov	dword [r12+S2_SID],0		; out of the table first
 	dec	dword [r13+C2_NSTR]
+	test	dword [r13+C2_FLAGS],C2F_CLIENT
+	jz	.server
+	mov	eax,edi
+	shl	rax,S_SHIFT
+	add	rax,[g_sess_base]
+	mov	ecx,[rax+S_GEN]
+	cmp	ecx,[r12+S2_GEN]
+	jne	.skip
+	call	h2u_fail			; client mode: the request is told
+	jmp	.skip
+.server:
 	mov	eax,edi
 	shl	rax,H_SHIFT
 	add	rax,[g_http_base]
@@ -2176,6 +2348,36 @@ h2c_closing:
 	pop	r14
 	pop	r13
 	pop	rbx
+	ret
+
+; client mode GOAWAY: eax = the last stream the server took; ours above
+; it fail (they may be tried again elsewhere). c2 registers.
+h2u_goaway_streams:
+	push	r12
+	push	rbp
+	mov	r9d,eax
+	lea	r12,[r13+C2_ST]
+	mov	ecx,H2_MAXS
+.next:
+	push	rcx
+	push	r9
+	mov	eax,[r12+S2_SID]
+	test	eax,eax
+	jz	.skip
+	cmp	eax,r9d
+	jbe	.skip
+	mov	edi,[r12+S2_SESS]
+	mov	dword [r12+S2_SID],0
+	dec	dword [r13+C2_NSTR]
+	call	h2u_fail
+.skip:
+	pop	r9
+	pop	rcx
+	add	r12,S2_SIZE
+	dec	ecx
+	jnz	.next
+	pop	rbp
+	pop	r12
 	ret
 
 ; ------------------------------------------------------ the stream side
@@ -2356,6 +2558,8 @@ h2_unwait:
 
 ; streams waiting for room or window get another try (c2 registers)
 h2_unblock:
+	test	dword [r13+C2_FLAGS],C2F_CLIENT
+	jnz	h2u_unblock
 	push	r12
 	mov	r12d,[r13+C2_BLKH]
 	mov	dword [r13+C2_BLKH],0

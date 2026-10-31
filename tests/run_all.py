@@ -70,6 +70,8 @@ SUITES = [
     ("hpack", ["tests/h2/hpack_suite.py"]),
     ("h2 io_uring", ["tests/h2/run.py", "io_uring"]),
     ("h2 epoll", ["tests/h2/run.py", "epoll"]),
+    ("h2 upstream io_uring", ["tests/h2/upstream.py", "io_uring"]),
+    ("h2 upstream epoll", ["tests/h2/upstream.py", "epoll"]),
     ("h2 fuzz io_uring", ["tests/h2/fuzz.py", "io_uring", "300"]),
     ("h2 fuzz epoll", ["tests/h2/fuzz.py", "epoll", "300"]),
 ]

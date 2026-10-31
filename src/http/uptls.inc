@@ -62,9 +62,12 @@ http_uptls_start:
 	add	rcx,rax
 	lea	rdi,[r14+HB_UTC]
 	lea	rsi,[r14+HB_UWORK]
+	mov	eax,[rcx+PL_H2]			; `protocol h2`: ALPN offers h2
+	mov	[g_tlsc_h2],eax
 	mov	rdx,[rcx+PL_TLS_SNI]
 	mov	ecx,[rcx+PL_TLS_SNILEN]
 	call	tlsc_client_hello
+	mov	dword [g_tlsc_h2],0
 	test	eax,eax
 	jz	.unavail
 	h_rec

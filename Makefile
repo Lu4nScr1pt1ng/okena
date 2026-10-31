@@ -97,6 +97,8 @@ test-serial: $(BIN) $(HTTPH) $(KAT) $(TLSH)
 	python3 -I tests/h2/hpack_suite.py
 	python3 -I tests/h2/run.py io_uring
 	python3 -I tests/h2/run.py epoll
+	python3 -I tests/h2/upstream.py io_uring
+	python3 -I tests/h2/upstream.py epoll
 	python3 -I tests/h2/fuzz.py io_uring 300
 	python3 -I tests/h2/fuzz.py epoll 300
 

@@ -12,7 +12,7 @@ not built yet. A directive that is not built is refused by `okena check`
 | `tcp ADDR...` | `to`, `limits { connections; per_source }`, `timeout { idle }`, `proxy_protocol send v1\|v2`, `tls { cert; key }`, `tls passthrough { sni NAME... to pool P; default reject\|to pool P }` |
 | `http ADDR...` | `host`, `route`, `limits`, `timeout { idle; header; body_idle; response }`, `trusted_proxies`, `access_log`, `http2 on\|off`, `tls { cert; key; ktls on\|off }` |
 | `route PATH... [METHOD...]` | `to`, `redirect`, `rewrite path`, `header set\|add\|drop`, `response header set\|add\|drop` |
-| `pool NAME` | `server ADDR [weight=N] [backup]`, `balance least-request\|peak-ewma\|round-robin\|least-conn\|random`, `connect timeout=`, `health tcp\|http ...`, `slow_start`, `tls { trust FILE; sni NAME }` (TLS to the backends) |
+| `pool NAME` | `server ADDR [weight=N] [backup]`, `balance least-request\|peak-ewma\|round-robin\|least-conn\|random`, `connect timeout=`, `health tcp\|http ...`, `slow_start`, `tls { trust FILE; sni NAME }` (TLS to the backends), `protocol h1\|h2` |
 
 `tls { cert FILE; key FILE }` on an `http` listener makes it HTTPS: TLS
 1.3 with a certificate chain (leaf first) and its key: EC P-256 (SEC 1 or
@@ -41,6 +41,14 @@ rewrites, logs all apply; backends still get HTTP/1.1): up to 100 streams
 a connection, flow control both ways, malformed requests reset, and a
 client resetting more than 200 streams a second gets GOAWAY
 ENHANCE_YOUR_CALM. Off by default while phase 4 is in progress.
+
+`protocol h2` in a pool speaks HTTP/2 to its backends: prior knowledge,
+or ALPN h2 under the pool's `tls { }`. Requests share a few connections a
+server (at most 4, each carrying as many streams as the server allows),
+whatever protocol the client spoke; a backend's trailers (gRPC's status)
+reach HTTP/2 clients as trailers and HTTP/1.1 clients after the last
+chunk. A stream the backend resets, or a connection that goes, is a 502
+(or another try, as for any failed request).
 
 `okena { ticket_keys FILE }` takes the keys from a file every instance
 reads: one a line, 32 bytes of base64 (`openssl rand -base64 32`), the

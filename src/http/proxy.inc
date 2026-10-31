@@ -1253,6 +1253,9 @@ rid_valid:
 
 ; The upstream is connected: send the request head.
 http_connected:
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_H2U
+	jnz	h2u_ready			; an upstream HTTP/2 connection is up
 	h_rec
 	mov	dword [r15+H_STATE],HS_SEND_HEAD
 	mov	ecx,SIDE_UP
@@ -1283,6 +1286,9 @@ http_retry_fresh:
 
 ; No server could be reached.
 http_connect_failed:
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_H2U
+	jnz	h2u_failed			; an upstream HTTP/2 connection: its requests fail over
 	mov	edi,502
 	jmp	http_error
 
@@ -1528,6 +1534,15 @@ http_req_pump:
 	mov	edi,400				; a broken chunked body
 	jmp	http_error
 .chunk_data:
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_UPH2
+	jz	@f
+	mov	dword [r15+H_STATE],HS_REQ_SEND	; a stream: DATA carries it as it is
+	mov	ecx,SIDE_UP
+	mov	rdi,r8
+	mov	esi,r9d
+	jmp	h_send
+@@:
 	call	http_frame_chunk		; r8/r9d: OUT = framed chunk
 	mov	dword [r15+H_STATE],HS_REQ_SEND
 	mov	ecx,SIDE_UP
@@ -1537,6 +1552,9 @@ http_req_pump:
 	jmp	h_send
 .chunk_end:
 	mov	dword [r15+H_BODY],BK_NONE
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_UPH2
+	jnz	http_start_response		; a stream: END_STREAM instead
 	mov	dword [r15+H_STATE],HS_REQ_SEND
 	cstring str_last_chunk, '0',13,10,13,10
 	mov	ecx,SIDE_UP
@@ -1594,6 +1612,11 @@ fmt_hex32:
 ; ----------------------------------------------------------- response
 
 http_start_response:
+	call	session_ptr			; a stream upstream: the request ends
+	test	dword [rax+S_FLAGS],SF_UPH2
+	jz	@f
+	call	h2u_req_end
+@@:
 	h_rec
 	mov	qword [r15+H_UPT0],0
 	call	session_ptr
@@ -3201,6 +3224,9 @@ http_exchange_done:
 ; edi = status: answer it and close. Once the response has started there
 ; is nothing honest to send: just close.
 http_error:
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_H2U
+	jnz	h2u_failed			; (its TLS handshake failed: nobody to answer)
 	h_rec
 	test	dword [r15+H_FLAGS],HX_STARTED
 	jnz	.close

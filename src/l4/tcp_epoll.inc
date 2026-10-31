@@ -1099,6 +1099,15 @@ ep_close:
 	jz	@f
 	call	h2c_closing			; an HTTP/2 connection: its streams first
 @@:
+	test	dword [r12+S_FLAGS],SF_UPH2
+	jz	@f
+	call	h2u_detach			; its upstream stream goes too
+@@:
+	test	dword [r12+S_FLAGS],SF_H2U
+	jz	@f
+	call	h2uc_closing			; an upstream HTTP/2 connection
+	jmp	.client_closed
+@@:
 	test	dword [r12+S_FLAGS],SF_H2S
 	jz	@f
 	call	h2s_closing			; a stream: no socket of its own

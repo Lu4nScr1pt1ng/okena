@@ -2357,9 +2357,19 @@ session_close:
 	jz	@f
 	call	h2c_closing			; an HTTP/2 connection: its streams first
 @@:
+	test	dword [r12+S_FLAGS],SF_UPH2
+	jz	@f
+	call	h2u_detach			; its upstream stream goes too
+@@:
+	test	dword [r12+S_FLAGS],SF_H2U
+	jz	@f
+	call	h2uc_closing			; an upstream HTTP/2 connection: its requests are told
+	jmp	.noclient
+@@:
 	test	dword [r12+S_FLAGS],SF_H2S
 	jz	.client
 	call	h2s_closing			; a stream: no socket of its own
+.noclient:
 	test	dword [r12+S_FLAGS],SF_UP_OPEN
 	jnz	.upstream
 	cmp	dword [r12+S_INFL],0
@@ -2399,8 +2409,8 @@ session_close:
 ; descriptors (nothing of the session is in flight any more).
 session_close_fds:
 	or	dword [r12+S_FLAGS],SF_FDS_CLOSING
-	test	dword [r12+S_FLAGS],SF_H2S
-	jnz	.client_closed			; a stream: no client socket
+	test	dword [r12+S_FLAGS],SF_H2S or SF_H2U
+	jnz	.client_closed			; no client socket
 	mov	edi,OP_S_CLOSE
 	mov	esi,ebx
 	call	sess_sqe
@@ -2443,10 +2453,10 @@ session_maybe_free:
 	jne	.done
 	test	dword [r12+S_FLAGS],SF_FDS_CLOSING
 	jnz	.free
-	test	dword [r12+S_FLAGS],SF_H2S
+	test	dword [r12+S_FLAGS],SF_H2S or SF_H2U
 	jz	@f
 	test	dword [r12+S_FLAGS],SF_UP_OPEN
-	jz	.free				; a stream with nothing to close
+	jz	.free				; no client socket, nothing else to close
 @@:
 	call	session_close_fds
 	jmp	.done

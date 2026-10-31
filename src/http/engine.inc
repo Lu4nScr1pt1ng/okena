@@ -9,7 +9,7 @@ h_recv_peek:
 ; ebx = session, ecx = side, rdi = buffer, esi = room.
 h_recv:
 	test	ecx,ecx
-	jnz	h_recv_raw
+	jnz	h_recv_up
 	call	session_ptr
 	test	dword [rax+S_FLAGS],SF_H2S
 	jnz	h2s_recv			; an HTTP/2 stream: its connection serves it
@@ -18,6 +18,12 @@ h_recv:
 	add	rax,[g_http_base]
 	cmp	dword [rax+H_UTLS],0
 	jne	utls_recv
+	jmp	h_recv_raw
+; the upstream side: a socket, or a stream on an HTTP/2 connection
+h_recv_up:
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_UPH2
+	jnz	h2u_recv
 ; the socket itself, whatever TLS is above it
 h_recv_raw:
 	cmp	dword [g_engine],ENGINE_EPOLL
@@ -54,7 +60,7 @@ h_recv_raw:
 ; ebx = session, ecx = side, rdi = bytes, esi = length.
 h_send:
 	test	ecx,ecx
-	jnz	h_send_raw
+	jnz	h_send_up
 	mov	eax,ebx				; bytes towards the client (access log)
 	shl	rax,H_SHIFT
 	add	rax,[g_http_base]
@@ -67,6 +73,12 @@ h_send:
 	jnz	h2s_send			; an HTTP/2 stream: frames on its connection
 	cmp	dword [rax+H_UTLS],0
 	jne	utls_send
+	jmp	h_send_raw
+; the upstream side: a socket, or a stream on an HTTP/2 connection
+h_send_up:
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_UPH2
+	jnz	h2u_send
 ; the socket itself
 h_send_raw:
 	cmp	dword [g_engine],ENGINE_EPOLL
@@ -120,6 +132,15 @@ h_sqe_fd:
 ; ebx = session: a connection to a server of its pool, an idle one from
 ; that server's pool when there is one.
 h_connect:
+	call	session_ptr
+	mov	ecx,[rax+S_POOL]
+	imul	rcx,rcx,PL_SIZE
+	lea	rdx,[g_pools]
+	cmp	dword [rdx+rcx+PL_H2],0
+	je	@f
+	mov	dword [rax+S_STATE],ST_CONNECTING
+	jmp	h2u_connect			; `protocol h2`: a stream on a shared connection
+@@:
 	push	r12
 	push	r13
 	call	session_ptr
@@ -190,6 +211,9 @@ h_connect:
 ; ebx = session: its upstream connection goes to its server's pool (or
 ; is closed when the pool is full). Keeps rbx.
 h_park:
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_UPH2
+	jnz	h2u_detach			; a stream: it leaves its connection
 	push	r12
 	call	session_ptr
 	mov	r12,rax
@@ -215,6 +239,9 @@ h_park:
 ; ebx = session: close its upstream connection (nothing in flight on it).
 ; Keeps rbx.
 h_upclose:
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_UPH2
+	jnz	h2u_detach
 	push	r12
 	call	session_ptr
 	mov	r12,rax
