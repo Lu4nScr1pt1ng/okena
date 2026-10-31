@@ -27,6 +27,7 @@ ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
 BASE = 31000 + os.getpid() % 50 * 10
 BACK, PLAIN, LST, LST_BAD, LST_HOST = BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4
 BACK12, BACK12R, LST12, LST12R = BASE + 5, BASE + 6, BASE + 7, BASE + 8
+DRIB, LSTD = 33800 + os.getpid() % 50 * 2, 33801 + os.getpid() % 50 * 2   # a dribbling relay
 LSTS = BASE + 9                                 # HTTPS in front (user-space records), TLS behind
 BACKED, LSTED, LSTEDBAD = (33600 + os.getpid() % 50 * 3 + i for i in range(3))
 tmp = pathlib.Path(tempfile.mkdtemp())
@@ -111,6 +112,41 @@ def tls_backend(port):
     httpd.serve_forever()
 
 
+def dribble_relay(port, target):
+    # the backend's bytes to okena 100 at a time, so its flight arrives in
+    # many reads and is processed again as each piece lands
+    s = socket.socket()
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(("127.0.0.1", port))
+    s.listen(64)
+
+    def pipe(a, b, slow):
+        try:
+            while (d := a.recv(65536)):
+                if not slow:
+                    b.sendall(d)
+                    continue
+                for i in range(0, len(d), 100):
+                    b.sendall(d[i:i + 100])
+                    time.sleep(0.002)
+        except OSError:
+            pass
+        finally:
+            for x in (a, b):
+                try:
+                    x.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+
+    while True:
+        c, _ = s.accept()
+        c.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        u = socket.create_connection(("127.0.0.1", target))
+        u.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        threading.Thread(target=pipe, args=(c, u, False), daemon=True).start()
+        threading.Thread(target=pipe, args=(u, c, True), daemon=True).start()
+
+
 def tls13_backend(port, cert, key):
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.minimum_version = ssl.TLSVersion.TLSv1_3
@@ -162,6 +198,7 @@ def main():
     threading.Thread(target=tls12_backend, args=(BACK12, "leaf.pem", "leaf.key"), daemon=True).start()
     threading.Thread(target=tls12_backend, args=(BACK12R, "rsa.pem", "rsa.key"), daemon=True).start()
     threading.Thread(target=tls13_backend, args=(BACKED, "ed.pem", "ed.key"), daemon=True).start()
+    threading.Thread(target=dribble_relay, args=(DRIB, BACK), daemon=True).start()
     conf = tmp / "okena.conf"
     conf.write_text(f"""okena {{ workers 2; io_engine {ENGINE} }}
 http 127.0.0.1:{LST}    {{ route /* {{ to pool good }} }}
@@ -171,6 +208,11 @@ http 127.0.0.1:{LST12}  {{ route /* {{ to pool good12 }} }}
 http 127.0.0.1:{LST12R} {{ route /* {{ to pool good12rsa }} }}
 http 127.0.0.1:{LSTED}  {{ route /* {{ to pool gooded }} }}
 http 127.0.0.1:{LSTEDBAD} {{ route /* {{ to pool badedanchor }} }}
+http 127.0.0.1:{LSTD} {{ route /* {{ to pool dribble }} }}
+pool dribble {{
+    tls {{ trust {tmp}/ca.pem; sni backend.test }}
+    server 127.0.0.1:{DRIB}
+}}
 http 127.0.0.1:{LSTS} {{
     tls {{ cert {tmp}/leaf.pem; key {tmp}/leaf.key }}
     route /* {{ to pool good }}
@@ -272,6 +314,10 @@ pool plain {{
                 break
     check("kTLS upstream reused across a keep-alive client's 30 requests",
           ok and backend_conns <= 2, f"ok={ok} backend_conns={backend_conns}")
+
+    st, body = get(LSTD, "/dribble")
+    check("a TLS backend whose flight arrives 100 bytes at a time", st == 200 and body == b"backend-ok:/dribble",
+          f"{st} {body!r}")
 
     # HTTPS in front on user-space records (http's default) and TLS behind:
     # the two handshakes and their buffers do not share space

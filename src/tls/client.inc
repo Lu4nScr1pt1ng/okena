@@ -249,7 +249,9 @@ TC_FULL		:= TC_KXLEN + 8
 ; rdi = tc, rsi = in (the server's bytes), edx = in length, rcx = out:
 ; parses the ServerHello, computes the ECDH secret, derives the server
 ; handshake key, and decrypts the server's flight into out (the handshake
-; messages, concatenated). eax = plaintext length, or 0 on error.
+; messages, concatenated). eax = plaintext length, or 0 on error. in is
+; not modified (records are opened in out, which needs room for as many
+; bytes as in), so a caller can run it again as the flight arrives.
 TF_TC		:= 0
 TF_IN		:= 8
 TF_END		:= 16
@@ -433,17 +435,24 @@ tlsc_server_flight:
 	mov	rdx,[rbx+TC_SSEQ]
 	call	tls_nonce
 	inc	qword [rbx+TC_SSEQ]
+	; opened in the output, where its handshake bytes stay: the input is
+	; left as it came, so the flight can be processed again when more of
+	; it arrives
+	mov	rdi,[rsp+TF_OP]
+	lea	rsi,[r12+5]
+	mov	ecx,r13d
+	rep	movsb
 	lea	rdi,[rbx+TC_GCM]
 	lea	rsi,[rbx+TC_NONCE]
 	mov	rdx,r12				; aad = the 5-byte record header
 	mov	ecx,5
-	lea	r8,[r12+5]			; ciphertext
+	mov	r8,[rsp+TF_OP]			; ciphertext
 	lea	r9d,[r13-16]			; its length (payload - tag)
 	call	gcm_open
 	test	eax,eax
 	jz	.bad
 	; strip trailing zero padding and the content-type byte
-	lea	rsi,[r12+5]
+	mov	rsi,[rsp+TF_OP]
 	lea	rdi,[rsi+r13-16-1]		; last plaintext byte
 @@:
 	cmp	rdi,rsi
@@ -455,11 +464,7 @@ tlsc_server_flight:
 .got_type:
 	cmp	byte [rdi],22			; handshake content
 	jne	.record_next			; (alert or app data: skip)
-	mov	rcx,rdi
-	sub	rcx,rsi				; handshake bytes in this record
-	mov	rdi,[rsp+TF_OP]
-	rep	movsb
-	mov	[rsp+TF_OP],rdi
+	mov	[rsp+TF_OP],rdi			; its handshake bytes are kept
 .record_next:
 	lea	r12,[r12+5+r13]
 	jmp	.record

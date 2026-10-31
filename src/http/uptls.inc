@@ -32,7 +32,7 @@ HB_UTC		:= HB_UPTLS			; the upstream handshake TC block
 HB_USNAP	:= HB_UTC + TC_FULL		; the post-ClientHello transcript snapshot
 HB_UWORK	:= HB_USNAP + SHA256_CTX_SIZE	; ClientHello (~1.7 KB) / Finished / crypto_info / time
 HB_UDEC		:= HB_UWORK + 2048		; the decrypted server handshake
-assert HB_UDEC + 16384 <= 1 shl HB_SHIFT
+assert HB_UDEC + H_UP_CAP <= 1 shl HB_SHIFT		; the flight is opened into it whole
 ; after the handshake the area is free; the control-record drain reuses it
 HB_UMSG		:= HB_UTC			; struct msghdr (56)
 HB_UIOV		:= HB_UMSG + 56			; struct iovec (16)
