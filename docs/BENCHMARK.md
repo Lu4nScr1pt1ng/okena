@@ -96,51 +96,67 @@ HTTP/2 both sides, in front of the same grpc-go backend
 the four other physical cores; 64-byte messages, 10 s after 2 s. Unary:
 a call per tick, latency from the schedule. Stream: 8 server-streaming
 calls held open, the backend sends on a schedule and stamps each message,
-latency until it arrives. Each rate straight to the backend first; "added"
-is a proxy's percentile minus that. Other containers stopped.
+latency until it arrives. Bidi: 8 bidirectional streams held open, a
+message on the next one each tick, latency until its echo comes back.
+Each rate straight to the backend first; "added" is a proxy's percentile
+minus that. Other containers stopped.
 
 | Scenario | Path | rate | p50 / p99 / p99.9 / max (us) | added p50 / p99 | errors |
 |---|---|---|---|---|---|
-| unary, 5000/s | direct | 5000/s | 137 / 194 / 457 / 1487 | | 0 |
-| unary, 20000/s | direct | 20001/s | 135 / 741 / 1859 / 3064 | | 0 |
-| unary, 40000/s | direct | 40002/s | 173 / 2222 / 3405 / 5796 | | 0 |
-| stream, 5000/s | direct | 5000/s | 45 / 62 / 72 / 243 | | 0 |
-| stream, 20000/s | direct | 20001/s | 52 / 73 / 168 / 525 | | 0 |
-| stream, 80000/s | direct | 80001/s | 33 / 135 / 470 / 5640 | | 0 |
-| unary, 5000/s | okena, 2 cores | 5000/s | 172 / 229 / 455 / 2660 | +35 / +35 | 0 |
-| unary, 20000/s | okena, 2 cores | 20000/s | 172 / 731 / 1724 / 3492 | +37 / -10 | 0 |
-| unary, 40000/s | okena, 2 cores | 40001/s | 178 / 1229 / 2849 / 7294 | +5 / -993 | 0 |
-| stream, 5000/s | okena, 2 cores | 5000/s | 64 / 87 / 152 / 2432 | +19 / +25 | 0 |
-| stream, 20000/s | okena, 2 cores | 19998/s | 73 / 98 / 250 / 2893 | +21 / +25 | 0 |
-| stream, 80000/s | okena, 2 cores | 80007/s | 59 / 108 / 448 / 2428 | +26 / -27 | 0 |
-| unary, 5000/s | Envoy 1.40.2, 2 threads | 5000/s | 257 / 368 / 576 / 2134 | +120 / +174 | 0 |
-| unary, 20000/s | Envoy 1.40.2, 2 threads | 20001/s | 685 / 2649 / 5852 / 12204 | +550 / +1908 | 0 |
-| unary, 40000/s | Envoy 1.40.2, 2 threads | 32800/s | 1140200 / 5377467 / 7330549 / 10611783 | +1140027 / +5375245 | 0 |
-| stream, 5000/s | Envoy 1.40.2, 2 threads | 5000/s | 80 / 110 / 139 / 1189 | +35 / +48 | 0 |
-| stream, 20000/s | Envoy 1.40.2, 2 threads | 19998/s | 94 / 128 / 238 / 1294 | +42 / +55 | 0 |
-| stream, 80000/s | Envoy 1.40.2, 2 threads | 80001/s | 136 / 222 / 491 / 2062 | +103 / +87 | 0 |
+| unary, 5000/s | direct | 5000/s | 137 / 198 / 384 / 1832 | | 0 |
+| unary, 20000/s | direct | 20000/s | 136 / 771 / 2175 / 3394 | | 0 |
+| unary, 40000/s | direct | 40001/s | 175 / 2289 / 3441 / 6505 | | 0 |
+| stream, 5000/s | direct | 5000/s | 45 / 64 / 82 / 227 | | 0 |
+| stream, 20000/s | direct | 20000/s | 51 / 73 / 194 / 663 | | 0 |
+| stream, 80000/s | direct | 80002/s | 27 / 139 / 329 / 5627 | | 0 |
+| bidi, 5000/s | direct | 5000/s | 105 / 127 / 145 / 1789 | | 0 |
+| bidi, 20000/s | direct | 20000/s | 104 / 146 / 903 / 2468 | | 0 |
+| bidi, 40000/s | direct | 40000/s | 84 / 274 / 1694 / 3092 | | 0 |
+| unary, 5000/s | okena, 2 cores | 5000/s | 170 / 246 / 779 / 2984 | +33 / +48 | 0 |
+| unary, 20000/s | okena, 2 cores | 20000/s | 174 / 799 / 2219 / 4701 | +38 / +28 | 0 |
+| unary, 40000/s | okena, 2 cores | 40001/s | 179 / 1199 / 2509 / 4447 | +4 / -1090 | 0 |
+| stream, 5000/s | okena, 2 cores | 5000/s | 67 / 92 / 259 / 1294 | +22 / +28 | 0 |
+| stream, 20000/s | okena, 2 cores | 20000/s | 73 / 101 / 302 / 2411 | +22 / +28 | 0 |
+| stream, 80000/s | okena, 2 cores | 80000/s | 54 / 104 / 311 / 2230 | +27 / -35 | 0 |
+| bidi, 5000/s | okena, 2 cores | 5000/s | 139 / 165 / 318 / 2806 | +34 / +38 | 0 |
+| bidi, 20000/s | okena, 2 cores | 20000/s | 139 / 193 / 1335 / 2981 | +35 / +47 | 0 |
+| bidi, 40000/s | okena, 2 cores | 40001/s | 118 / 270 / 1817 / 2991 | +34 / -4 | 0 |
+| unary, 5000/s | Envoy 1.40.2, 2 threads | 5000/s | 258 / 348 / 492 / 1391 | +121 / +150 | 0 |
+| unary, 20000/s | Envoy 1.40.2, 2 threads | 20005/s | 548 / 5659 / 8112 / 12325 | +412 / +4888 | 0 |
+| unary, 40000/s | Envoy 1.40.2, 2 threads | 40006/s | 1634 / 122000 / 162877 / 195744 | +1459 / +119711 | 0 |
+| stream, 5000/s | Envoy 1.40.2, 2 threads | 5000/s | 75 / 97 / 133 / 1171 | +30 / +33 | 0 |
+| stream, 20000/s | Envoy 1.40.2, 2 threads | 20000/s | 94 / 133 / 260 / 1269 | +43 / +60 | 0 |
+| stream, 80000/s | Envoy 1.40.2, 2 threads | 79998/s | 142 / 239 / 494 / 2610 | +115 / +100 | 0 |
+| bidi, 5000/s | Envoy 1.40.2, 2 threads | 5000/s | 141 / 182 / 245 / 1827 | +36 / +55 | 0 |
+| bidi, 20000/s | Envoy 1.40.2, 2 threads | 20000/s | 148 / 210 / 305 / 1429 | +44 / +64 | 0 |
+| bidi, 40000/s | Envoy 1.40.2, 2 threads | 40001/s | 158 / 376 / 1765 / 2927 | +74 / +102 | 0 |
 
 Read with care:
 
-* okena adds less at every point: unary 35 us at p50 and p99 at 5k/s
-  (Envoy 120 / 174 us), streamed messages 19-26 us at p50 and 25 us at
-  p99 (Envoy 35-103 / 48-87 us).
-* At 20k unary calls/s Envoy's two threads are near their limit (+550 us
-  at p50, +1.9 ms at p99); at 40k/s it passes it (32.8k/s served, queues of
-  seconds). okena serves 40k/s with its p50 5 us above the direct path.
+* okena adds less at p99 at every point: unary 48 us at 5k/s (Envoy
+  150), streamed messages 28 us (Envoy 33-100), bidirectional 38-47 us
+  (Envoy 55-102). At p50 it adds less everywhere too, by little for
+  bidirectional streams at 5k/s (34 against 36 us).
+* okena's p99.9 is the worse one in places (bidirectional at 20k/s:
+  1.3 ms against 0.3 ms; unary at 5k/s: 0.8 ms against 0.5 ms): its
+  tail is wakeups (`busy_poll` takes it in, see the open-loop HTTPS
+  entry) and is not isolated further yet.
+* At 20k unary calls/s Envoy's two threads are near their limit (+412 us
+  at p50, +4.9 ms at p99); at 40k/s it queues (p99 0.12 s). okena serves
+  40k/s with its p50 4 us above the direct path.
 * The load program is the limit at the top rates: its own p99 straight to
-  the backend reaches 2.2 ms for unary at 40k/s, and an added p99 below
+  the backend reaches 2.3 ms for unary at 40k/s, and an added p99 below
   zero there means the proxy smoothed the client's bursts, not that it
   took time away. The comparison that holds is p50, and p99 at 5k-20k/s.
-* Bidirectional streaming does not go through okena yet: a stream's
-  request and response run one after the other (the HTTP/1.1 exchange
-  under each stream), so a call that needs answers before it ends its
-  request stalls. Unary and server streaming are what is measured here;
-  client streaming fits the same order but is not measured.
-* Before this run okena cut such clients off: gRPC's BDP pings and window
-  updates (one each per DATA frame read) counted against the 2000 a
-  second cheap-frame budget, on the client side and towards the backend
-  (502s). DATA and HEADERS sent now earn two cheap frames each.
+* Bidirectional streams through okena are new in this run: when both ends
+  speak HTTP/2 the response is read as soon as the request head is out
+  and the body follows beside it. Getting there under load found the
+  cheap-frame budget cutting gRPC peers off (their BDP pings and window
+  updates follow every DATA frame: credited now, and no budget towards
+  backends), OUT full of okena's own DATA turning a PING into GOAWAY
+  (DATA leaves room for control frames now), and an epoll worker that
+  slept with deliveries waiting. Bidirectional 4 KB messages at 80k/s
+  through one core run clean on both engines.
 
 ## HTTP/2 against HTTP/1.1 through okena (2026-10-31)
 

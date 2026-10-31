@@ -2,8 +2,9 @@
 # gRPC against Envoy, open loop: okena and Envoy (official image, host
 # network) on the same two cores in front of the same gRPC backend (Go,
 # grpc-go, tests/bench/grpc), plain HTTP/2 both sides, loaded by the same
-# program on cores of its own. Unary calls, and messages of server-
-# streaming calls held open; each at fixed rates, straight to the backend
+# program on cores of its own. Unary calls, messages of server-streaming
+# calls held open, and messages echoed on bidirectional streams; each at
+# fixed rates, straight to the backend
 # first: what a proxy adds is its latency minus that (at the top rates the
 # load program itself is near its limit, and the difference is noise or
 # below zero). Output: markdown rows for docs/BENCHMARK.md.
@@ -26,6 +27,7 @@ DUR=${DUR:-10s}
 CONNS=${CONNS:-8}
 UNARY_RATES=${UNARY_RATES:-5000 20000 40000}
 STREAM_RATES=${STREAM_RATES:-5000 20000 80000}
+BIDI_RATES=${BIDI_RATES:-5000 20000 40000}
 W=$(mktemp -d)
 chmod 755 "$W"
 BPID= OKPID=
@@ -93,9 +95,10 @@ load() {
 declare -A BASE
 baseline() {
 	local m r v
-	for m in unary stream; do
+	for m in unary stream bidi; do
 		local rates=$UNARY_RATES
 		[ "$m" = stream ] && rates=$STREAM_RATES
+		[ "$m" = bidi ] && rates=$BIDI_RATES
 		for r in $rates; do
 			read -ra v < <(load 28500 "$m" "$r")
 			BASE[$m.$r.p50]=${v[1]} BASE[$m.$r.p99]=${v[2]}
@@ -105,9 +108,10 @@ baseline() {
 }
 scenarios() {	# label port
 	local m r v
-	for m in unary stream; do
+	for m in unary stream bidi; do
 		local rates=$UNARY_RATES
 		[ "$m" = stream ] && rates=$STREAM_RATES
+		[ "$m" = bidi ] && rates=$BIDI_RATES
 		for r in $rates; do
 			read -ra v < <(load "$2" "$m" "$r")
 			printf '| %s, %s/s | %s | %s | %s / %s / %s / %s | %+d / %+d | %s |\n' "$m" "$r" "$1" "${v[0]}" \

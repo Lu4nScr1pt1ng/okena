@@ -290,14 +290,20 @@ tests/h2/h2spec.py) passes every case on both engines over TLS (ALPN h2 on
 TLS 1.2 too, which its client speaks) and all but the invalid preface by
 prior knowledge, which a listener shared with HTTP/1.1 reads as HTTP/1.1.
 Against Envoy 1.40.2 (tests/bench/grpc.sh, docs/BENCHMARK.md) okena adds
-less latency for unary calls and server-streamed messages at every rate
-measured, p50 and p99 (unary at 5k/s: 35 us at p99 against 174). That run
-found the cheap-frame budget cutting gRPC clients and backends off (their
-BDP pings and window updates follow every DATA frame): DATA and HEADERS
-sent now earn two each. Open: bidirectional streaming (a stream's request
-and response run in turn, as the HTTP/1.1 exchange under it does; a
-stream needs both halves at once when both ends are HTTP/2), gRPC health
-checks, WebSocket over h2. The design: an h2
+less latency at p99 for unary calls, server-streamed messages and
+bidirectional streams at every rate measured (unary at 5k/s: 48 us
+against 150; bidirectional at 20k/s: 47 against 64). Bidirectional
+streams: when the client side is an HTTP/2 stream and the pool speaks
+HTTP/2, the response is read as soon as the request head is out and the
+body goes upstream beside it (http_duplex_pump). Those runs found the
+cheap-frame budget cutting gRPC peers off (their BDP pings and window
+updates follow every DATA frame: DATA and HEADERS sent earn four now, no
+budget towards backends), OUT full of DATA turning a PING into GOAWAY
+CALM (512 bytes are kept for control frames), queue checks reading a
+clobbered length, and an epoll worker sleeping with deliveries queued.
+Open: okena's p99.9 at some rates (wakeups), a body streamed both ways
+when only one end is HTTP/2 (an HTTP/1.1 exchange stays in turn), gRPC
+health checks, WebSocket over h2. The design: an h2
 connection is a session whose streams are sessions of their own, each
 running the existing HTTP/1.1 exchange (routing, pools, retries, upstream
 TLS, logs, rewrites) with its client side redirected to the connection,
