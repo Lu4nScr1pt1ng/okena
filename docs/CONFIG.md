@@ -10,7 +10,7 @@ not built yet. A directive that is not built is refused by `okena check`
 |---|---|
 | `okena` | `workers`, `io_engine`, `busy_poll`, `watchdog`, `drain delay= timeout=`, `metrics`, `ticket_keys`, `handshake_budget wait=` |
 | `tcp ADDR...` | `to`, `limits { connections; per_source }`, `timeout { idle }`, `proxy_protocol send v1\|v2`, `tls { cert; key }`, `tls passthrough { sni NAME... to pool P; default reject\|to pool P }` |
-| `http ADDR...` | `host`, `route`, `limits`, `timeout { idle; header; body_idle; response }`, `trusted_proxies`, `access_log`, `tls { cert; key; ktls on\|off }` |
+| `http ADDR...` | `host`, `route`, `limits`, `timeout { idle; header; body_idle; response }`, `trusted_proxies`, `access_log`, `http2 on\|off`, `tls { cert; key; ktls on\|off }` |
 | `route PATH... [METHOD...]` | `to`, `redirect`, `rewrite path`, `header set\|add\|drop`, `response header set\|add\|drop` |
 | `pool NAME` | `server ADDR [weight=N] [backup]`, `balance least-request\|peak-ewma\|round-robin\|least-conn\|random`, `connect timeout=`, `health tcp\|http ...`, `slow_start`, `tls { trust FILE; sni NAME }` (TLS to the backends) |
 
@@ -33,6 +33,15 @@ there is refused. Session tickets are on: a returning client resumes
 without the certificate and the signature. The ticket key rotates every
 hour and the previous one is still accepted, so a ticket lasts one to two
 hours; keys live in memory only (a restart starts afresh). For a fleet,
+`http2 on` in an `http` listener speaks HTTP/2 to clients that ask for it:
+ALPN h2 on a TLS listener (preferred over http/1.1 when the client offers
+both), prior knowledge (the connection preface) on a plain one. Each
+stream is proxied like an HTTP/1.1 request (routes, pools, retries,
+rewrites, logs all apply; backends still get HTTP/1.1): up to 100 streams
+a connection, flow control both ways, malformed requests reset, and a
+client resetting more than 200 streams a second gets GOAWAY
+ENHANCE_YOUR_CALM. Off by default while phase 4 is in progress.
+
 `okena { ticket_keys FILE }` takes the keys from a file every instance
 reads: one a line, 32 bytes of base64 (`openssl rand -base64 32`), the
 first sealing new tickets, an optional second (the previous) still

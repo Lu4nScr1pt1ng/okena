@@ -101,6 +101,7 @@ LSF_PP_V1	:= 2		; send a PROXY protocol v1 header upstream
 LSF_PP_V2	:= 4		; send a PROXY protocol v2 header upstream
 LSF_WILDCARD	:= 8		; bound to every address: the local one comes from getsockname
 LSF_KTLS	:= 16		; http: the kernel seals and opens the records (`ktls on`)
+LSF_H2		:= 32		; http: HTTP/2 (`http2 on`): ALPN h2, prior knowledge without TLS
 
 ; Pool
 PL_FIRST	:= 0		; d: first server
@@ -1391,6 +1392,20 @@ compile_listener:
 	test	eax,eax
 	jnz	@f
 	or	dword [g_cmp_flags],LSF_KTLS
+@@:
+	mov	rdi,r12				; `http2 on`
+	mov	ecx,DIR_HTTP2
+	call	find_child
+	test	rax,rax
+	jz	@f
+	mov	rax,[rax+N_ARGS]
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	lea	rdx,[e_onoff]
+	call	list_index
+	test	eax,eax
+	jnz	@f
+	or	dword [g_cmp_flags],LSF_H2
 @@:
 	mov	dword [g_cmp_alog],0
 	mov	rdi,r12

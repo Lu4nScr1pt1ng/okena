@@ -257,7 +257,13 @@ certificates; kTLS steady state within a few percent of plaintext.
 Progress: HPACK is in (src/http/hpack.inc: the dynamic table, Huffman both
 ways, a stateless encoder, expansion bounded by the caller's buffer;
 tests/h2/hpack_suite.py: RFC 7541 appendix C byte for byte and a
-differential run against the hpack package). The plan for the rest: an h2
+differential run against the hpack package). HTTP/2 towards clients is in
+(src/http/h2.inc, `http2 on`): ALPN h2 and prior knowledge, the frames and
+their errors, flow control both ways, up to 100 streams each proxied as an
+HTTP/1.1 exchange of its own (the design below), malformed requests reset,
+rapid reset answered with GOAWAY; tests/h2/run.py on both engines, plain
+and TLS. Next: the remaining abuse budgets, h2spec, frame fuzzing, then
+upstream h2 and gRPC. The design: an h2
 connection is a session whose streams are sessions of their own, each
 running the existing HTTP/1.1 exchange (routing, pools, retries, upstream
 TLS, logs, rewrites) with its client side redirected to the connection,

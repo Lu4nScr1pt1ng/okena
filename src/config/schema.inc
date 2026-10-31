@@ -174,6 +174,7 @@ dirdef DIR_PER_SOURCE, 'per_source', M_LIMITS,  0,           F_UNIQUE, 1, 1, T_C
 dirdef DIR_TIMEOUT, 'timeout',     M_TCP or M_HTTP,     CTX_TIMEOUT, F_BLOCK_REQ or F_UNIQUE, 0, 0, T_NONE, T_NONE, 0
 dirdef DIR_IDLE, 'idle',        M_TIMEOUT, 0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
 dirdef DIR_TRUSTED, 'trusted_proxies', M_HTTP, 0,         F_UNIQUE, 1, 64, T_CIDR, T_CIDR, 0
+dirdef DIR_HTTP2, 'http2',       M_HTTP,    0,           F_UNIQUE, 1, 1, e_onoff, T_NONE, 0
 dirdef DIR_REDIRECT, 'redirect',  M_ROUTE,   0,           F_UNIQUE, 2, 2, e_redirect_codes, T_ANY, 0
 dirdef DIR_REWRITE, 'rewrite',    M_ROUTE,   0,           F_UNIQUE, 4, 4, e_rewrite_what, T_ANY, 0
 dirdef DIR_RHEADER, 'header',      M_ROUTE,   0,           0, 2, 3, e_header_ops, T_ANY, 0

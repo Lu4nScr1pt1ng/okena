@@ -10,6 +10,9 @@ h_recv_peek:
 h_recv:
 	test	ecx,ecx
 	jnz	h_recv_raw
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_H2S
+	jnz	h2s_recv			; an HTTP/2 stream: its connection serves it
 	mov	eax,ebx
 	shl	rax,H_SHIFT
 	add	rax,[g_http_base]
@@ -57,6 +60,11 @@ h_send:
 	add	rax,[g_http_base]
 	mov	r8d,esi
 	add	[rax+H_XBYTES],r8
+	push	rax
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_H2S
+	pop	rax
+	jnz	h2s_send			; an HTTP/2 stream: frames on its connection
 	cmp	dword [rax+H_UTLS],0
 	jne	utls_send
 ; the socket itself
@@ -473,12 +481,15 @@ hep_try_send:
 ; Queue a result: ebx = session, edx = kind, ecx = side, rax = result.
 hep_queue:
 	h_rec
-	mov	[r15+H_READY],edx
+	mov	r8d,[r15+H_READY]		; queued already (a slot freed and reused
+	mov	[r15+H_READY],edx		; before its delivery): it carries this one
 	mov	[r15+H_RSIDE],ecx
 	mov	[r15+H_RESULT],rax
 	call	session_ptr
 	mov	eax,[rax+S_GEN]
 	mov	[r15+H_RGEN],eax
+	test	r8d,r8d
+	jnz	.queued
 	mov	dword [r15+H_RNEXT],NIL
 	mov	eax,[g_hready_tail]
 	cmp	dword [g_hready_head],NIL
@@ -491,6 +502,7 @@ hep_queue:
 	add	rax,[g_http_base]
 	mov	[rax+H_RNEXT],ebx
 	mov	[g_hready_tail],ebx
+.queued:
 	ret
 
 ; Main loop: deliver the queued results.
@@ -551,6 +563,8 @@ ep_http_ready:
 ; ep_dispatch, for a session of an http listener: edi = events, r8d = side.
 hep_event:
 	h_rec
+	cmp	dword [r15+H_STATE],HS_H2
+	je	h2_ep_event			; an HTTP/2 connection reads and writes at once
 	cmp	dword [r15+H_EPOP],0
 	je	.out
 	cmp	[r15+H_EPSIDE],r8d

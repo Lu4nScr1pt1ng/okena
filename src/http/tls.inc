@@ -135,6 +135,13 @@ http_tls_start:
 	jnz	@f				; tcp: no application protocol to name
 	mov	rax,[r15+H_BUF]
 	mov	dword [rax+HB_TS+TS_FLAGS],TF_ALPN_H1
+	call	session_ptr			; `http2 on`: h2 is offered too
+	mov	eax,[rax+S_LST]
+	imul	rax,rax,LS_SIZE
+	test	dword [g_listeners+rax+LS_FLAGS],LSF_H2
+	jz	@f
+	mov	rax,[r15+H_BUF]
+	or	dword [rax+HB_TS+TS_FLAGS],TF_ALPN_H2
 @@:
 	mov	dword [r15+H_STATE],HS_TLS_HELLO
 ; read more of the ClientHello
@@ -508,9 +515,11 @@ on_h_ulp:
 http_tls_established:
 	h_rec
 	mov	rdi,[r15+H_BUF]
+	push	qword [rdi+HB_TS+TS_FLAGS]	; (h2 or not, before the wipe)
 	add	rdi,HB_TS			; the kernel has the keys: none kept here
 	mov	ecx,TS_SIZE + 2 * KTLS_SLOT
 	call	secure_zero
+	pop	rcx
 	call	session_ptr
 	test	dword [rax+S_FLAGS],SF_TLS_HS
 	jnz	.tcp
@@ -518,7 +527,10 @@ http_tls_established:
 	xor	eax,eax
 	mov	[r15+H_INLEN],eax
 	mov	[r15+H_INOFF],eax
-	jmp	http_next_request
+	test	ecx,TF_GOT_H2
+	jz	http_next_request
+	xor	edi,edi				; ALPN chose h2: the preface comes whole
+	jmp	h2_start
 .tcp:
 	; a tcp listener: now the upstream, bytes both ways in plaintext
 	and	dword [rax+S_FLAGS],not SF_TLS_HS
@@ -671,7 +683,11 @@ http_utls_start:
 	mov	[r15+H_INLEN],eax
 	mov	[r15+H_INOFF],eax
 	mov	dword [r15+H_UTLS],1
-	jmp	http_next_request
+	mov	rax,[r15+H_BUF]
+	test	dword [rax+HB_TS+TS_FLAGS],TF_GOT_H2
+	jz	http_next_request
+	xor	edi,edi				; ALPN chose h2
+	jmp	h2_start
 
 ; ebx = session, rax = result: delivered to http_recv_plain (edx = 3) or
 ; http_send_plain (edx = 4) by the main loop.

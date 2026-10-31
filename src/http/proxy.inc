@@ -286,6 +286,30 @@ http_next_request:
 
 ; ebx = session, eax = length of the head at the start of IN.
 http_request:
+	cmp	eax,18				; "PRI * HTTP/2.0\r\n\r\n": HTTP/2 by prior
+	jne	.h1				; knowledge, where the listener takes it
+	call	session_ptr
+	mov	ecx,[rax+S_LST]
+	imul	rcx,rcx,LS_SIZE
+	test	dword [g_listeners+rcx+LS_FLAGS],LSF_H2
+	jz	.h1_len
+	cmp	dword [g_listeners+rcx+LS_TLS],0
+	jne	.h1_len				; over TLS only ALPN says h2
+	h_rec
+	mov	rsi,[r15+H_BUF]
+	lea	rsi,[rsi+HB_IN]
+	lea	rdi,[h2_preface]
+	mov	edx,18
+	call	mem_eq
+	test	eax,eax
+	jz	.h1_len
+	h_rec
+	mov	dword [r15+H_INOFF],18
+	mov	edi,18
+	jmp	h2_start
+.h1_len:
+	mov	eax,18
+.h1:
 	push	rax
 	mov	edi,ebx
 	call	ph_disarm			; the head is all here
@@ -1431,6 +1455,9 @@ http_send_plain:
 .error_sent:
 	mov	esi,1
 	call	alog_exchange
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_H2S
+	jnz	h2s_finish			; the error is the stream's whole answer
 .close:
 	mov	edi,ebx
 	jmp	session_close
@@ -1698,7 +1725,7 @@ http_resp_head:
 	test	dword [r14+HM_FLAGS],HMF_CHUNKED
 	jz	@f
 	mov	dword [r15+H_RBODY],BK_CHUNKED
-	or	dword [r15+H_FLAGS],HX_CHUNKOUT
+	call	h_chunkout
 	lea	rdi,[r15+H_RCK]
 	xor	eax,eax
 	mov	ecx,CK_SIZE
@@ -1714,7 +1741,7 @@ http_resp_head:
 .close_delimited:
 	and	dword [r15+H_FLAGS],not HX_UPKEEP	; the end is the close
 	mov	dword [r15+H_RBODY],BK_CLOSE
-	or	dword [r15+H_FLAGS],HX_CHUNKOUT	; framed for the client
+	call	h_chunkout			; framed for the client
 .write:
 	call	http_write_response_head
 	jc	.bad
@@ -1976,14 +2003,35 @@ http_resp_pump:
 	mov	r9d,ecx
 	add	[r15+H_UPOFF],ecx
 .framed:
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_H2S
+	jz	@f
+	mov	rdi,r8				; a stream: the bytes as they are, in DATA
+	mov	esi,r9d
+	jmp	.send
+@@:
 	call	http_frame_chunk
 	mov	rdi,[r15+H_BUF]
 	lea	rdi,[rdi+HB_OUT]
 	mov	esi,[r15+H_OUTLEN]
 	jmp	.send
 
+; ebx = session, r15 = record: the response goes out chunk-framed, except
+; to an HTTP/2 stream (DATA frames carry the length). Keeps everything but
+; rax.
+h_chunkout:
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_H2S
+	jnz	@f
+	or	dword [r15+H_FLAGS],HX_CHUNKOUT
+@@:
+	ret
+
 ; The final chunk to the client, then the exchange is over.
 http_last_chunk:
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_H2S
+	jnz	http_exchange_done		; a stream ends with END_STREAM instead
 	h_rec
 	or	dword [r15+H_FLAGS],HX_LASTCHUNK
 	mov	dword [r15+H_STATE],HS_RESP_SEND
@@ -2999,6 +3047,9 @@ http_phase_expired:
 	; idle between requests: everything but the first page (the record's
 	; fields, and where the next request's first bytes land) goes back to
 	; the kernel; a read in flight there just faults a fresh page in
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_H2S or SF_H2C
+	jnz	.out				; HTTP/2 keeps its queues and tables
 	cmp	dword [r15+H_STATE],HS_HEAD
 	jne	.out
 	cmp	dword [r15+H_INLEN],0
@@ -3107,6 +3158,9 @@ http_exchange_done:
 .drop:
 	call	h_upclose
 .next:
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_H2S
+	jnz	h2s_finish			; an HTTP/2 stream: END_STREAM, then it goes
 	h_rec
 	test	dword [r15+H_FLAGS],HX_CLOSE
 	jnz	.close

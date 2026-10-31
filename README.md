@@ -51,6 +51,8 @@ Early: L4, HTTP/1.1 and TLS (1.3 and 1.2, both ways). What works today:
   timeouts, half-close, graceful drain, workers restarted on crash with
   no lost queued connection;
 * memory that follows the load: a worker uses under 1 MiB at rest;
+* HTTP/2 towards clients (`http2 on`): ALPN h2 and prior knowledge, flow
+  control, each stream proxied to HTTP/1.1 backends;
 * `okena bench`, an open-loop load generator (HTTP, HTTPS, TCP
   echo) whose latency is corrected for coordinated omission:
   `okena bench https://localhost/ rate=50k conns=64 duration=30s`.

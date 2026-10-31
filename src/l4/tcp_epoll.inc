@@ -1094,9 +1094,19 @@ ep_close:
 	call	ph_disarm
 	mov	edi,ebx
 	call	connect_list_remove
+	test	dword [r12+S_FLAGS],SF_H2C
+	jz	@f
+	call	h2c_closing			; an HTTP/2 connection: its streams first
+@@:
+	test	dword [r12+S_FLAGS],SF_H2S
+	jz	@f
+	call	h2s_closing			; a stream: no socket of its own
+	jmp	.client_closed
+@@:
 	mov	edi,[r12+S_CLIENT]
 	mov	eax,SYS_close
 	syscall
+.client_closed:
 	test	dword [r12+S_FLAGS],SF_UP_OPEN
 	jz	@f
 	mov	edi,[r12+S_UPFD]

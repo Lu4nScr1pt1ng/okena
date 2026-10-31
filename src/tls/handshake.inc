@@ -65,6 +65,8 @@ TS_SIZE		:= TS_CERT + 8
 TF_ALPN_H1	:= 1				; set by the caller: answer ALPN with http/1.1
 TF_GOT_H1	:= 2				; the client asked for http/1.1
 TF_HRR		:= 4				; a HelloRetryRequest went out: this is the second hello
+TF_ALPN_H2	:= 8				; set by the caller: h2 may be chosen (preferred)
+TF_GOT_H2	:= 16				; h2 was chosen
 
 TH_MORE		:= 0
 TH_SEND		:= 1
@@ -210,6 +212,7 @@ G_TICKET	:= 1024				; a ticket to send after the flight
 G_SIGALG_RSA	:= 8192				; rsa_pss_rsae_sha256 offered (TLS 1.3 CertificateVerify)
 G_SIGALG_RSA1	:= 16384			; rsa_pkcs1_sha256 offered (a legacy 1.2 client)
 G_SIGALG_ED	:= 262144			; ed25519 offered
+G_H2		:= 524288			; ALPN offers h2
 
 ; the transcript: rsi = bytes, rdx = length
 macro th_add
@@ -665,6 +668,13 @@ tls_hello:
 	lea	r8,[rsi+rcx]
 	cmp	r8,r14
 	ja	.decode
+	cmp	ecx,2
+	jne	@f
+	cmp	word [rsi],'h2'
+	jne	.protocol_next
+	or	dword [rbp+HL_GOT],G_H2
+	jmp	.protocol_next
+@@:
 	cmp	ecx,8
 	jne	.protocol_next
 	mov	rax,'http/1.1'
@@ -747,11 +757,20 @@ tls_hello:
 	mov	dword [rbp+HL_GROUP],1		; secp256r1
 	mov	dword [rbp+HL_KSEXT],73
 .have_share:
-	and	dword [rbx+TS_FLAGS],not TF_GOT_H1
-	test	dword [rbx+TS_FLAGS],TF_ALPN_H1
+	and	dword [rbx+TS_FLAGS],not (TF_GOT_H1 or TF_GOT_H2)
+	test	dword [rbx+TS_FLAGS],TF_ALPN_H1 or TF_ALPN_H2
 	jz	.alpn_done
 	test	eax,G_ALPN
 	jz	.alpn_done
+	test	dword [rbx+TS_FLAGS],TF_ALPN_H2	; h2 first, when the listener takes it
+	jz	.alpn_h1
+	test	eax,G_H2
+	jz	.alpn_h1
+	or	dword [rbx+TS_FLAGS],TF_GOT_H2
+	jmp	.alpn_done
+.alpn_h1:
+	test	dword [rbx+TS_FLAGS],TF_ALPN_H1
+	jz	.no_alpn
 	test	eax,G_H1
 	jz	.no_alpn			; RFC 7301: no protocol in common
 	or	dword [rbx+TS_FLAGS],TF_GOT_H1
@@ -1070,6 +1089,16 @@ tls_hello:
 	ja	.internal
 	mov	r14,r13
 	; EncryptedExtensions
+	test	dword [rbx+TS_FLAGS],TF_GOT_H2
+	jz	.ee_h1
+	mov	dword [r14],0x0B000008		; 11 bytes:
+	mov	dword [r14+4],0x10000900	; 9 of extensions: ALPN,
+	mov	dword [r14+8],0x03000500	; 5 bytes, a 3-byte list,
+	mov	byte [r14+12],2
+	mov	word [r14+13],'h2'
+	add	r14,15
+	jmp	.ee_done
+.ee_h1:
 	test	dword [rbx+TS_FLAGS],TF_GOT_H1
 	jz	.ee_empty
 	mov	dword [r14],0x11000008		; 17 bytes:

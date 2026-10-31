@@ -68,6 +68,8 @@ SUITES = [
     ("config", ["tests/config/run.py"]),
     ("bench", ["tests/bench/run.py"]),
     ("hpack", ["tests/h2/hpack_suite.py"]),
+    ("h2 io_uring", ["tests/h2/run.py", "io_uring"]),
+    ("h2 epoll", ["tests/h2/run.py", "epoll"]),
 ]
 
 
