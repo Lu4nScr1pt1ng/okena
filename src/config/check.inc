@@ -2181,6 +2181,24 @@ check_pool:
 	push	r12
 	push	r13
 	mov	r12,rdi
+	; protocol h2: the language has it, this version not yet
+	mov	rdi,r12
+	mov	ecx,DIR_PROTOCOL
+	call	find_child
+	test	rax,rax
+	jz	.proto_ok
+	mov	rcx,[rax+N_ARGS]
+	mov	rcx,[rcx+A_VAL]
+	cmp	byte [rcx+1],'2'
+	jne	.proto_ok
+	mov	rdi,[rax+N_NAME]
+	mov	esi,[rax+N_NLEN]
+	mov	edx,[rax+N_LINE]
+	call	cfg_error
+	out_lit 'HTTP/2 to backends (`protocol h2`) is not in this version yet'
+	call	cfg_diag_end
+	call	cfg_error_limit
+.proto_ok:
 	; name defined earlier?
 	mov	rax,[r12+N_ARGS]
 	mov	rdi,[rax+A_VAL]

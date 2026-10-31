@@ -130,7 +130,9 @@ PL_TLS_SNI	:= 112		; q: SNI / hostname to verify, 0 = the server as written
 PL_TLS_SNILEN	:= 120		; d
 PL_TLS_HASANCHOR := 124		; d: 1 when an anchor key was loaded
 PL_TLS_ANCHOR	:= 128		; the trust anchor's public key, a PK blob (EC or RSA)
-PL_SIZE		:= 704		; room for PL_TLS_ANCHOR + a PK blob (16 + 528)
+PL_H2		:= 672		; d: 1 when this pool's backends speak HTTP/2 (`protocol h2`)
+PL_SIZE		:= 704		; room for PL_TLS_ANCHOR + a PK blob (16 + 528), then PL_H2
+assert PL_TLS_ANCHOR + PK_SIZE <= PL_H2
 
 ; Server
 SV_SA		:= 0		; sockaddr (sockaddr_un is 110 bytes)
@@ -878,6 +880,14 @@ compile_pool:
 	lea	rcx,[dir_table + D_SIZE*DIR_UPTLS]
 	cmp	rax,rcx
 	je	.uptls
+	lea	rcx,[dir_table + D_SIZE*DIR_PROTOCOL]
+	cmp	rax,rcx
+	jne	.advance
+	mov	rax,[rbx+N_ARGS]		; protocol h1|h2
+	mov	rax,[rax+A_VAL]
+	cmp	byte [rax+1],'2'
+	jne	.advance
+	mov	dword [r13+PL_H2],1
 	jmp	.advance
 .health:
 	mov	dword [r13+PL_HEALTH],1

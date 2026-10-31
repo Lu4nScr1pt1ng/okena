@@ -124,6 +124,7 @@ enumdef e_rewrite_what, 'path'
 enumdef e_pp_version, 'v1', 'v2'
 enumdef e_tls_mode, 'passthrough'
 enumdef e_onoff, 'on', 'off'
+enumdef e_proto, 'h1', 'h2'
 
 keysdef k_drain, 'delay', T_DURATION, 'timeout', T_DURATION
 keysdef k_hs_budget, 'wait', T_DURATION
@@ -143,7 +144,7 @@ enumdef future_names, 'udp', 'xdp', 'policy', 'use', \
 	'addon', 'alerts', 'include', 'admin', 'log', 'reload', 'profile', \
 	'acme', 'discover', 'split', 'mirror', 'header', 'headers', 'cache', \
 	'cors', 'limit', 'auth', 'match', 'source', \
-	'concurrency', 'retry_budget', 'retry', 'outlier', 'protocol', \
+	'concurrency', 'retry_budget', 'retry', 'outlier', \
 	'fault', 'files', 'compress', 'canonical', 'idempotency', 'hold', \
 	'body', 'early_hints', 'signed_urls', 'priority', 'hedge', \
 	'response', 'alpn', 'cert', 'warm'
@@ -195,6 +196,7 @@ dirdef DIR_BALANCE, 'balance',     M_POOL,    0,           F_UNIQUE, 1, 1, e_bal
 dirdef DIR_CONNECT, 'connect',     M_POOL,    0,           F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_connect
 dirdef DIR_HEALTH, 'health',      M_POOL,    0,           F_UNIQUE or F_KEYS_BLOCK, 1, 3, e_health, T_ANY, k_health
 dirdef DIR_UPTLS, 'tls',         M_POOL,    0,           F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_uptls
+dirdef DIR_PROTOCOL, 'protocol', M_POOL,    0,           F_UNIQUE, 1, 1, e_proto, T_NONE, 0
 rodata
 	dir_table_end:
 end rodata
