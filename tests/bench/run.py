@@ -5,7 +5,7 @@ Python backends answer in every framing okena bench must follow
 (Content-Length, chunked, HEAD, 204, Connection: close), and the
 key=value report is checked: no errors, the exact request count at a
 fixed rate, latency from the schedule far above the service time when
-the backend stalls, TCP echo, HTTPS through okena (with kTLS), and
+the backend stalls, TCP echo, HTTPS through okena and OpenSSL, and
 refusals for bad arguments and an unreachable target."""
 import os
 import pathlib
@@ -132,7 +132,7 @@ def clean(name, kv, rc, err):
 
 def openssl_backend(cert, key):
     # Python's ssl (OpenSSL): its flight in several records, two session
-    # tickets after the client's Finished (kTLS control records)
+    # tickets after the client's Finished
     import http.server
     import ssl
 
@@ -154,10 +154,6 @@ def openssl_backend(cert, key):
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", OSSL), H)
     srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
     srv.serve_forever()
-
-
-def have_ktls():
-    return pathlib.Path("/sys/module/tls").exists()
 
 
 def main():
@@ -222,39 +218,37 @@ def main():
     rc, kv, err = bench(f"tcp://127.0.0.1:{ECHO}", "rate=1000", "duration=500ms", "warmup=0s", "conns=2", "size=64")
     check("tcp echo at a rate", rc == 0 and kv["requests"] == 500 and kv["errors"] == 0, str(kv))
 
-    if have_ktls():
-        subprocess.run(["openssl", "ecparam", "-genkey", "-name", "prime256v1", "-noout", "-out",
-                        tmp / "k.pem"], check=True, capture_output=True)
-        subprocess.run(["openssl", "req", "-new", "-x509", "-key", tmp / "k.pem", "-subj", "/CN=localhost",
-                        "-days", "2", "-out", tmp / "c.pem"], check=True, capture_output=True)
-        conf = (f"okena {{ workers 1 }}\nhttp 127.0.0.1:{HTTPS} {{\n"
-                f"    tls {{ cert {tmp / 'c.pem'}; key {tmp / 'k.pem'} }}\n"
-                f"    route /* {{ to 127.0.0.1:{BACK} }}\n}}\n")
-        (tmp / "okena.conf").write_text(conf)
-        ok = subprocess.Popen([str(BIN), "-c", str(tmp / "okena.conf")], stderr=subprocess.DEVNULL)
-        try:
-            time.sleep(0.4)
-            rc, kv, err = bench(f"https://127.0.0.1:{HTTPS}/", *short)
-            clean("https through okena (tickets in its flight, then kTLS)", kv, rc, err)
-            rc, kv, err = bench(f"https://localhost:{HTTPS}/chunked", "rate=1000", "duration=500ms",
-                                "warmup=100ms", "conns=4")
-            check("https at a rate", rc == 0 and kv["requests"] == 500 and kv["errors"] == 0, str(kv))
-            rc, kv, err = bench(f"https://127.0.0.1:{HTTPS}/", *short, "new=on")
-            clean("https, a new connection (and handshake) per request", kv, rc, err)
-            rc, kv, err = bench(f"https://127.0.0.1:{HTTPS}/", "rate=500", "duration=1s", "warmup=200ms",
-                                "conns=16", "new=on")
-            check("https new=on at a rate", rc == 0 and kv["requests"] == 500 and kv["errors"] == 0, str(kv))
-            threading.Thread(target=openssl_backend, args=(tmp / "c.pem", tmp / "k.pem"), daemon=True).start()
-            time.sleep(0.3)
-            rc, kv, err = bench(f"https://127.0.0.1:{OSSL}/", *short)
-            clean("OpenSSL server, keep-alive: its tickets drained from kTLS", kv, rc, err)
-            rc, kv, err = bench(f"https://127.0.0.1:{OSSL}/", *short, "new=on")
-            clean("OpenSSL server, new=on: a flight in several records", kv, rc, err)
-        finally:
-            ok.terminate()
-            ok.wait()
-    else:
-        print("skip https: the tls module is not loaded")
+    # https: neither okena nor the bench needs the kernel's TLS
+    subprocess.run(["openssl", "ecparam", "-genkey", "-name", "prime256v1", "-noout", "-out",
+                    tmp / "k.pem"], check=True, capture_output=True)
+    subprocess.run(["openssl", "req", "-new", "-x509", "-key", tmp / "k.pem", "-subj", "/CN=localhost",
+                    "-days", "2", "-out", tmp / "c.pem"], check=True, capture_output=True)
+    conf = (f"okena {{ workers 1 }}\nhttp 127.0.0.1:{HTTPS} {{\n"
+            f"    tls {{ cert {tmp / 'c.pem'}; key {tmp / 'k.pem'} }}\n"
+            f"    route /* {{ to 127.0.0.1:{BACK} }}\n}}\n")
+    (tmp / "okena.conf").write_text(conf)
+    ok = subprocess.Popen([str(BIN), "-c", str(tmp / "okena.conf")], stderr=subprocess.DEVNULL)
+    try:
+        time.sleep(0.4)
+        rc, kv, err = bench(f"https://127.0.0.1:{HTTPS}/", *short)
+        clean("https through okena (tickets in its flight)", kv, rc, err)
+        rc, kv, err = bench(f"https://localhost:{HTTPS}/chunked", "rate=1000", "duration=500ms",
+                            "warmup=100ms", "conns=4")
+        check("https at a rate", rc == 0 and kv["requests"] == 500 and kv["errors"] == 0, str(kv))
+        rc, kv, err = bench(f"https://127.0.0.1:{HTTPS}/", *short, "new=on")
+        clean("https, a new connection (and handshake) per request", kv, rc, err)
+        rc, kv, err = bench(f"https://127.0.0.1:{HTTPS}/", "rate=500", "duration=1s", "warmup=200ms",
+                            "conns=16", "new=on")
+        check("https new=on at a rate", rc == 0 and kv["requests"] == 500 and kv["errors"] == 0, str(kv))
+        threading.Thread(target=openssl_backend, args=(tmp / "c.pem", tmp / "k.pem"), daemon=True).start()
+        time.sleep(0.3)
+        rc, kv, err = bench(f"https://127.0.0.1:{OSSL}/", *short)
+        clean("OpenSSL server, keep-alive: its tickets after the Finished", kv, rc, err)
+        rc, kv, err = bench(f"https://127.0.0.1:{OSSL}/", *short, "new=on")
+        clean("OpenSSL server, new=on: a flight in several records", kv, rc, err)
+    finally:
+        ok.terminate()
+        ok.wait()
 
     r = subprocess.run([str(BIN), "bench", f"{url}/", "speed=9"], capture_output=True, text=True)
     check("an unknown option is refused", r.returncode == 1 and "unknown option `speed`" in r.stderr, r.stderr)

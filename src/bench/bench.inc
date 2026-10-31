@@ -4,8 +4,8 @@
 ;                   [workers=N] [method=GET] [header='Name: value']...
 ;                   [body=TEXT] [size=N] [sni=NAME] [format=text|kv]
 ;
-; URL is http://ADDR[:PORT]/PATH, https://ADDR[:PORT]/PATH (TLS 1.3, then
-; kTLS) or tcp://ADDR:PORT (echo: `size` bytes out, as many back). ADDR is
+; URL is http://ADDR[:PORT]/PATH, https://ADDR[:PORT]/PATH (TLS 1.3, its
+; records sealed and opened in user space) or tcp://ADDR:PORT (echo: `size` bytes out, as many back). ADDR is
 ; an IP address ([::1] for IPv6) or localhost. rate takes k and M (200k).
 ;
 ; Every connection has a schedule: with rate=N in all, one request every
@@ -41,7 +41,7 @@ BC_STATUS	:= 48				; d
 BC_GIDX		:= 52				; d: index among all connections
 BC_FLAGS	:= 56				; d: BF_*
 BC_SLOT		:= 60				; d: which of its schedule's requests is next
-BC_HS		:= 64				; d: new=on: BH_* (0 = plain bytes or kTLS)
+BC_HS		:= 64				; d: BH_* (0 = plain bytes)
 BC_HTRY		:= 68				; d: the server flight's records tried so far
 BC_CLEN		:= 72				; d: ciphertext bytes in BC_CBUF
 BC_BUF		:= 128				; plaintext of the answer
@@ -103,9 +103,7 @@ BENCH_HIN_CAP	:= 65536
 BENCH_SPIN_NS	:= 50000			; closer to a send than this, poll instead of sleeping
 
 SYS_epoll_pwait2 = 441
-EIO		:= 5
 PR_SET_TIMERSLACK := 29
-TLS_GET_RECORD_TYPE := 2
 
 bss
 	align 8
@@ -161,11 +159,6 @@ bss
 	align 16
 	g_b_tc:		rb TC_FULL
 	g_b_snap:	rb SHA256_CTX_SIZE
-	g_b_txinfo:	rb 40
-	g_b_rxinfo:	rb 40
-	g_b_msg:	rb 56
-	g_b_iov:	rb 16
-	g_b_ctl:	rb 64
 	g_b_hout:	rb 4096			; ClientHello, then the client Finished
 	g_b_hsend:	rb BENCH_REQ_CAP + 4096	; new=on: the Finished and the sealed request
 	g_b_hdec:	rb BENCH_HIN_CAP	; the decrypted server flight (as large as what it comes from)
@@ -177,7 +170,6 @@ bss
 end bss
 
 cstring str_bench_ua, 'User-Agent: okena-bench',13,10
-cstring str_bench_ulp, 'tls',0
 cstring str_bench_localhost, 'localhost',0
 
 ; ------------------------------------------------------------- arguments
@@ -1013,6 +1005,8 @@ bench_open:
 	syscall
 	test	eax,eax
 	jnz	.close
+	mov	dword [rbx+BC_HS],0
+	mov	dword [rbx+BC_CLEN],0
 	cmp	dword [g_b_mode],1
 	jne	@f
 	call	bench_tls
@@ -1050,8 +1044,9 @@ bench_open:
 	ret
 
 ; rbx = connection, just connected: a TLS 1.3 handshake, then the keys to
-; kTLS. Records the server sent after its Finished (session tickets, in
-; okena's own flight) are opened here, and kTLS starts after them.
+; the connection's records go through user space. Records the server sent
+; after its Finished (session tickets, in okena's own flight) are opened
+; here.
 ; eax = 1, or 0.
 bench_tls:
 	push	r12
@@ -1128,7 +1123,7 @@ bench_tls:
 	jz	.fail
 .extra:
 	cmp	r13d,r12d			; whole records after the Finished
-	je	.ktls
+	je	.keys
 	lea	eax,[r13+5]
 	cmp	eax,r12d
 	ja	.more
@@ -1149,41 +1144,15 @@ bench_tls:
 	test	eax,eax
 	jz	.fail
 	jmp	.extra
-.ktls:
-	lea	rdi,[g_b_tc]
-	lea	rsi,[g_b_txinfo]
-	lea	rdx,[g_b_rxinfo]
-	call	tlsc_ktls_info
-	mov	rax,[g_b_tc+TC_RXSEQ]		; after the records opened above
-	bswap	rax
-	mov	[g_b_rxinfo+32],rax
-	mov	edi,[rbx+BC_FD]
-	mov	esi,IPPROTO_TCP
-	mov	edx,TCP_ULP
-	lea	r10,[str_bench_ulp]
-	mov	r8d,4
-	mov	eax,SYS_setsockopt
-	syscall
-	test	eax,eax
-	jnz	.fail
-	mov	edi,[rbx+BC_FD]
-	mov	esi,SOL_TLS
-	mov	edx,TLS_TX
-	lea	r10,[g_b_txinfo]
-	mov	r8d,40
-	mov	eax,SYS_setsockopt
-	syscall
-	test	eax,eax
-	jnz	.fail
-	mov	edi,[rbx+BC_FD]
-	mov	esi,SOL_TLS
-	mov	edx,TLS_RX
-	lea	r10,[g_b_rxinfo]
-	mov	r8d,40
-	mov	eax,SYS_setsockopt
-	syscall
-	test	eax,eax
-	jnz	.fail
+.keys:
+	; the keys stay here: the connection's records are sealed and opened
+	; in user space, as with new=on (cheaper than the kernel's, and no
+	; tls module needed)
+	lea	rsi,[g_b_tc]
+	lea	rdi,[rbx+BC_TC]
+	mov	ecx,TC_FULL
+	rep	movsb
+	mov	dword [rbx+BC_HS],BH_RECORDS
 	mov	eax,1
 	jmp	.out
 .fail:
@@ -1251,6 +1220,8 @@ bench_send:
 	jne	bench_new_open
 ; the rest of the request, as far as the socket takes it
 bench_send_more:
+	cmp	dword [rbx+BC_HS],BH_RECORDS
+	je	.sealed
 .again:
 	mov	edx,[g_b_reqlen]
 	mov	eax,[rbx+BC_SOFF]
@@ -1284,6 +1255,20 @@ bench_send_more:
 	mov	edi,EPOLLIN
 	jmp	bench_epoll_mod
 .ret:
+	ret
+.sealed:
+	; one record, sealed and written whole (a request fits the socket)
+	lea	rdi,[rbx+BC_TC]
+	lea	rsi,[g_b_hsend]
+	lea	rdx,[g_b_req]
+	mov	ecx,[g_b_reqlen]
+	call	tlsc_seal
+	lea	rsi,[g_b_hsend]
+	mov	edx,eax
+	call	bench_new_sendall
+	jc	bench_fail
+	mov	eax,[g_b_reqlen]
+	mov	[rbx+BC_SOFF],eax
 	ret
 
 ; edi = events for the connection in rbx
@@ -1351,8 +1336,6 @@ bench_readable:
 	je	.ret
 	cmp	rax,-EINTR
 	je	.read
-	cmp	rax,-EIO
-	je	.control
 	test	rax,rax
 	js	bench_fail
 	jz	.eof
@@ -1383,35 +1366,6 @@ bench_readable:
 	mov	rax,[g_b_wres]
 	inc	qword [rax+BW_RECON]
 	jmp	bench_reconnect_wait
-.control:
-	cmp	dword [g_b_mode],1
-	jne	bench_fail
-	; a TLS control record (a NewSessionTicket): take it with recvmsg,
-	; which the kernel allows with a control buffer, and drop it
-	mov	eax,[rbx+BC_RLEN]
-	lea	rax,[rbx+BC_BUF+rax]
-	mov	[g_b_iov],rax
-	mov	eax,BC_CAP
-	sub	eax,[rbx+BC_RLEN]
-	mov	[g_b_iov+8],rax
-	xor	eax,eax
-	mov	[g_b_msg],rax
-	mov	[g_b_msg+8],rax
-	lea	rax,[g_b_iov]
-	mov	[g_b_msg+16],rax
-	mov	qword [g_b_msg+24],1
-	lea	rax,[g_b_ctl]
-	mov	[g_b_msg+32],rax
-	mov	qword [g_b_msg+40],64
-	mov	dword [g_b_msg+48],0
-	mov	edi,[rbx+BC_FD]
-	lea	rsi,[g_b_msg]
-	mov	edx,MSG_DONTWAIT
-	mov	eax,SYS_recvmsg
-	syscall
-	test	rax,rax
-	js	bench_fail
-	jmp	.read
 .ret:
 	ret
 
@@ -1661,6 +1615,12 @@ bench_tls_readable:
 	mov	eax,[rbx+BC_ROFF]
 	cmp	eax,[rbx+BC_RLEN]
 	jne	.fail
+	mov	ecx,[rbx+BC_CLEN]		; the records opened leave the buffer
+	sub	ecx,r12d			; (a keep-alive connection reads on)
+	mov	[rbx+BC_CLEN],ecx
+	lea	rsi,[rbx+BC_CBUF+r12]
+	lea	rdi,[rbx+BC_CBUF]
+	rep	movsb
 	pop	r14
 	pop	r13
 	pop	r12
@@ -2614,7 +2574,7 @@ bench_run:
 	call	out_cstr
 	cmp	dword [g_b_mode],1
 	jne	@f
-	out_lit ' (or the TLS 1.3 handshake failed, or kTLS is unavailable)'
+	out_lit ' (or the TLS 1.3 handshake failed)'
 @@:
 	call	log_end
 	mov	eax,EXIT_FAILURE
