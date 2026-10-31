@@ -415,6 +415,33 @@ def run_cases():
     check("rapid reset: GOAWAY ENHANCE_YOUR_CALM", term and term[0].error_code == 11, str(term))
     c.close()
 
+    # a client that answers every DATA frame (credit and a ping, as gRPC's
+    # BDP estimator does) is doing what it should: the budget for cheap
+    # frames grows with what okena sends
+    c = Client(PLAIN, window=100)
+    sid = c.request("/big/400000")
+    got, frames_in, end = 0, 0, False
+    deadline = time.time() + 10
+    while not end and time.time() < deadline:
+        try:
+            data = c.s.recv(65536)
+        except (socket.timeout, OSError):
+            break
+        if not data:
+            break
+        for e in c.c.receive_data(data):
+            if isinstance(e, h2.events.DataReceived):
+                got += len(e.data)
+                frames_in += 1
+                c.c.acknowledge_received_data(e.flow_controlled_length, e.stream_id)
+                c.c.ping(os.urandom(8))
+            elif isinstance(e, (h2.events.StreamEnded, h2.events.ConnectionTerminated)):
+                end = True
+        c.flush()
+    check(f"a client crediting and pinging after each of {frames_in} DATA frames: not cut off",
+          got == 400000, f"{got} bytes")
+    c.close()
+
     # ALPN h2 over TLS
     c = Client(TLSL, tls=True)
     check("TLS: ALPN chose h2", c.alpn == "h2", str(c.alpn))

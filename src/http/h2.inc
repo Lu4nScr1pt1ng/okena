@@ -35,6 +35,7 @@ H2_STRCAP	:= 16384
 H2_MAXFIELDS	:= 128
 H2_RST_BUDGET	:= 200				; resets a client may cause in a second
 H2_CHEAP_BUDGET	:= 2000				; frames that ask work and carry nothing, a second
+H2_CHEAP_CREDIT	:= 2				; more of them for each DATA or HEADERS sent
 H2_CONT_MAX	:= 64				; CONTINUATION frames in one header block
 
 ; frame types and flags
@@ -256,6 +257,17 @@ h2_room:
 ; end of OUT, rdi = where its payload goes (OUTLEN counts header and
 ; payload). c2 registers.
 h2_frame:
+	; what we send earns the peer cheap frames: a client's flow control
+	; and pings follow the DATA it gets (gRPC's BDP pings, one per read)
+	cmp	dl,H2F_HEADERS
+	ja	@f
+	mov	eax,[r13+C2_CHEAPN]
+	sub	eax,H2_CHEAP_CREDIT
+	jae	.credit
+	xor	eax,eax
+.credit:
+	mov	[r13+C2_CHEAPN],eax
+@@:
 	mov	eax,[r13+C2_OUTLEN]
 	lea	rdi,[r14+HB_H2OUT+rax]
 	lea	eax,[rax+rsi+9]
