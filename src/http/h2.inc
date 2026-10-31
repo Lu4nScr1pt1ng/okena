@@ -355,6 +355,8 @@ h2_pump:
 	jnz	.closing
 	test	dword [r13+C2_FLAGS],C2F_PEERGONE
 	jz	.recv
+	test	dword [r13+C2_FLAGS],C2F_CLIENT
+	jz	.recv				; a client's GOAWAY: it closes when it wants
 	cmp	dword [r13+C2_NSTR],0
 	jne	.recv
 	xor	edx,edx				; the client left and nothing is open
@@ -560,8 +562,12 @@ h2_sent:
 	je	.ep
 	jmp	h2_pump
 .ep:
-	c2_regs					; epoll: keep writing until it would block
-	jmp	h2_send
+	c2_regs					; epoll: keep writing until it would block,
+	cmp	dword [r13+C2_OUTLEN],0		; then the pump (a GOAWAY that went out
+	jne	h2_send				; closes the connection)
+	cmp	dword [r13+C2_CLEN],0
+	jne	h2_send
+	jmp	h2_pump
 .gone:
 	jmp	h2_drop
 
@@ -1717,6 +1723,18 @@ h2_block_done:
 	call	h2_stream_new
 	jmp	.out
 .trailers:
+	; on a stream the client ended already: STREAM_CLOSED, whatever it holds
+	mov	eax,edi
+	shl	rax,H_SHIFT
+	add	rax,[g_http_base]
+	mov	rax,[rax+H_BUF]
+	cmp	dword [rax+HB_H2Q+Q_ENDED],0
+	je	@f
+	mov	esi,r12d
+	mov	edx,H2E_CLOSED
+	call	h2_stream_reset
+	jmp	.out
+@@:
 	; trailers end the request (their fields are not passed on), and carry
 	; no pseudo-field
 	cmp	dword [r13+C2_HBEND],0

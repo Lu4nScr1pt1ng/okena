@@ -18,7 +18,8 @@ C12_KEYTYPE	:= 24				; d: 0 = EC P-256, 1 = RSA
 C12_RSA_N	:= 32				; q: pointer to the RSA modulus (big endian)
 C12_RSA_NLEN	:= 40				; d: its length in bytes
 C12_RSA_D	:= 48				; q: pointer to the RSA private exponent
-C12_SIZE	:= 56
+C12_ALPN	:= 56				; d: 1 = answer ALPN with h2 (the caller found it offered)
+C12_SIZE	:= 64
 
 T2_ESK		:= 0				; ephemeral x25519 private key
 T2_CR		:= 32				; client random
@@ -121,6 +122,14 @@ tls12_hello:
 	mov	byte [rdi+8],0x01
 	mov	byte [rdi+9],0x00
 	add	rdi,10
+	cmp	dword [r15+C12_ALPN],0
+	je	@f
+	mov	word [rdi-7],0x0E00		; extensions length 14: ALPN h2 too
+	mov	dword [rdi],0x05001000		; ALPN (16), 5 bytes,
+	mov	dword [rdi+4],0x68020300	; a 3-byte list, "h2"
+	mov	byte [rdi+8],'2'
+	add	rdi,9
+@@:
 	mov	rax,rdi				; body end
 	sub	rax,r13
 	sub	eax,4				; body length

@@ -74,6 +74,8 @@ SUITES = [
     ("h2 upstream epoll", ["tests/h2/upstream.py", "epoll"]),
     ("h2 fuzz io_uring", ["tests/h2/fuzz.py", "io_uring", "300"]),
     ("h2 fuzz epoll", ["tests/h2/fuzz.py", "epoll", "300"]),
+    ("h2spec io_uring", ["tests/h2/h2spec.py", "io_uring"]),
+    ("h2spec epoll", ["tests/h2/h2spec.py", "epoll"]),
 ]
 
 

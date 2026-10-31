@@ -60,6 +60,25 @@ http_tls12_hello:
 	lea	rdx,[rax+TL_RSA_D]
 	mov	[rcx+C12_RSA_D],rdx
 @@:
+	; HTTP/2 over TLS 1.2 (RFC 9113 9.2: ECDHE and AEAD, which is all this
+	; offers): ALPN h2 when the listener takes it and the client asks
+	mov	dword [rcx+C12_ALPN],0
+	push	rcx
+	call	session_ptr
+	mov	eax,[rax+S_LST]
+	imul	rax,rax,LS_SIZE
+	test	dword [g_listeners+rax+LS_FLAGS],LSF_H2
+	jz	@f
+	lea	rsi,[r14+HB_IN]
+	mov	edx,[r15+H_INLEN]
+	call	tls12_alpn_h2
+	mov	rcx,[rsp]
+	mov	[rcx+C12_ALPN],eax
+	test	eax,eax
+	jz	@f
+	or	dword [r14+HB_TS+TS_FLAGS],TF_GOT_H2	; (http_tls_established reads it)
+@@:
+	pop	rcx
 	lea	rdi,[r14+HB_T2]
 	mov	rsi,rcx
 	lea	rdx,[r14+HB_IN]
@@ -253,4 +272,66 @@ on_h_ktls12:
 	mov	edi,ebx
 	jmp	session_maybe_free
 .out:
+	ret
+
+; rsi = a ClientHello record, edx = its length: eax = 1 when its ALPN
+; offers h2. Keeps rbx, r12-r15.
+tls12_alpn_h2:
+	lea	r8,[rsi+rdx]			; the end
+	lea	rcx,[rsi+5+4+2+32]		; past record, handshake header, version, random
+	cmp	rcx,r8
+	jae	.no
+	movzx	eax,byte [rcx]			; session id
+	lea	rcx,[rcx+1+rax]
+	lea	rax,[rcx+2]
+	cmp	rax,r8
+	ja	.no
+	movzx	eax,word [rcx]			; cipher suites
+	xchg	al,ah
+	lea	rcx,[rcx+2+rax]
+	cmp	rcx,r8
+	jae	.no
+	movzx	eax,byte [rcx]			; compression methods
+	lea	rcx,[rcx+1+rax]
+	lea	rax,[rcx+2]
+	cmp	rax,r8
+	ja	.no
+	movzx	eax,word [rcx]			; extensions
+	xchg	al,ah
+	add	rcx,2
+	lea	r9,[rcx+rax]
+	cmp	r9,r8
+	jbe	.ext
+	mov	r9,r8
+.ext:
+	lea	rax,[rcx+4]
+	cmp	rax,r9
+	ja	.no
+	movzx	eax,word [rcx+2]		; its length
+	xchg	al,ah
+	lea	r10,[rcx+4+rax]			; its end
+	cmp	r10,r9
+	ja	.no
+	cmp	word [rcx],0x1000		; ALPN
+	jne	.next
+	lea	r11,[rcx+6]			; past the list's u16 length
+.proto:
+	cmp	r11,r10
+	jae	.no
+	movzx	eax,byte [r11]
+	cmp	eax,2
+	jne	@f
+	cmp	word [r11+1],'h2'
+	je	.yes
+@@:
+	lea	r11,[r11+1+rax]
+	jmp	.proto
+.next:
+	mov	rcx,r10
+	jmp	.ext
+.yes:
+	mov	eax,1
+	ret
+.no:
+	xor	eax,eax
 	ret
