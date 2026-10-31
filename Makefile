@@ -97,6 +97,8 @@ test-serial: $(BIN) $(HTTPH) $(KAT) $(TLSH)
 	python3 -I tests/h2/hpack_suite.py
 	python3 -I tests/h2/run.py io_uring
 	python3 -I tests/h2/run.py epoll
+	python3 -I tests/h2/fuzz.py io_uring 300
+	python3 -I tests/h2/fuzz.py epoll 300
 
 image:
 	docker build -t okena .
@@ -112,6 +114,8 @@ FUZZ_CASES ?= 100000
 fuzz: $(BIN) $(HTTPH)
 	python3 -I tests/config/fuzz.py $(FUZZ_CASES)
 	python3 -I tests/http/run.py $(FUZZ_CASES)
+	python3 -I tests/h2/fuzz.py io_uring $$(( $(FUZZ_CASES) / 20 ))
+	python3 -I tests/h2/fuzz.py epoll $$(( $(FUZZ_CASES) / 20 ))
 
 clean:
 	rm -rf build

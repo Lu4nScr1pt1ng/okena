@@ -262,8 +262,14 @@ differential run against the hpack package). HTTP/2 towards clients is in
 their errors, flow control both ways, up to 100 streams each proxied as an
 HTTP/1.1 exchange of its own (the design below), malformed requests reset,
 rapid reset answered with GOAWAY; tests/h2/run.py on both engines, plain
-and TLS. Next: the remaining abuse budgets, h2spec, frame fuzzing, then
-upstream h2 and gRPC. The design: an h2
+and TLS. Abuse budgets: rapid reset (200 resets a second), a CONTINUATION
+flood (64 frames a block, 16 KiB), frames that ask work and carry nothing
+(PRIORITY, SETTINGS, PING, WINDOW_UPDATE, empty DATA: 2000 a second),
+pings and settings a client does not read the answers to; each ends in
+GOAWAY ENHANCE_YOUR_CALM. tests/h2/fuzz.py sends mutated and random frame
+sequences (4000 connections an engine clean; `make fuzz` runs more).
+Next: h2spec, the h2load benchmark against Envoy, then upstream h2 and
+gRPC. The design: an h2
 connection is a session whose streams are sessions of their own, each
 running the existing HTTP/1.1 exchange (routing, pools, retries, upstream
 TLS, logs, rewrites) with its client side redirected to the connection,

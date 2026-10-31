@@ -351,6 +351,32 @@ def run_cases():
     check("PING on a stream: GOAWAY PROTOCOL_ERROR", goaway_code(out) == 1, out[-40:])
     out = raw(PLAIN, preface + b"\x00\x00\x03\x04\x00\x00\x00\x00\x00" + b"abc")       # SETTINGS, not 6n
     check("SETTINGS of a bad length: GOAWAY FRAME_SIZE_ERROR", goaway_code(out) == 6, out[-40:])
+    import hpack as hp
+    import struct
+
+    def fr(typ, flags, sid, payload=b""):
+        return struct.pack(">I", len(payload))[1:] + bytes([typ, flags]) + struct.pack(">I", sid) + payload
+
+    req = hp.Encoder().encode([(":method", "GET"), (":scheme", "http"), (":authority", "x"), (":path", "/")])
+
+    def rst_code(data, sid):
+        for t, f, s_, p in frames(data):
+            if t == 3 and s_ == sid:
+                return int.from_bytes(p[:4], "big")
+        return None
+    out = raw(PLAIN, preface + fr(1, 1, 1, req[:3]) + fr(9, 0, 1) * 100)     # CONTINUATION, empty, forever
+    check("a CONTINUATION flood: GOAWAY ENHANCE_YOUR_CALM", goaway_code(out) == 11, out[-40:])
+    out = raw(PLAIN, preface + fr(2, 0, 3, b"\0" * 4))                       # PRIORITY of 4 bytes
+    check("PRIORITY of a bad length: RST_STREAM FRAME_SIZE_ERROR", rst_code(out, 3) == 6, out[-40:])
+    out = raw(PLAIN, preface + fr(6, 0, 0, b"12345678") * 3000, wait=2)
+    check("a PING flood: GOAWAY ENHANCE_YOUR_CALM", goaway_code(out) == 11, out[-40:])
+    out = raw(PLAIN, preface + fr(1, 5, 5, req) + fr(1, 5, 3, req))         # stream 3 after 5
+    check("HEADERS on a lower stream id: GOAWAY PROTOCOL_ERROR", goaway_code(out) == 1, out[-40:])
+    trailers = hp.Encoder().encode([(":path", "/x")])
+    post = hp.Encoder().encode([(":method", "POST"), (":scheme", "http"), (":authority", "x"), (":path", "/")])
+    out = raw(PLAIN, preface + fr(1, 4, 1, post) + fr(0, 0, 1, b"abc") + fr(1, 5, 1, trailers))
+    check("trailers with a pseudo-field: RST_STREAM PROTOCOL_ERROR", rst_code(out, 1) == 1, out[-40:])
+
     # rapid reset: HEADERS then RST_STREAM, over and over
     c = Client(PLAIN)
     for _ in range(400):

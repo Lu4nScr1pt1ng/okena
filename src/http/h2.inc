@@ -34,6 +34,8 @@ H2_HBCAP	:= 16384			; a header block (HEADERS + CONTINUATION)
 H2_STRCAP	:= 16384
 H2_MAXFIELDS	:= 128
 H2_RST_BUDGET	:= 200				; resets a client may cause in a second
+H2_CHEAP_BUDGET	:= 2000				; frames that ask work and carry nothing, a second
+H2_CONT_MAX	:= 64				; CONTINUATION frames in one header block
 
 ; frame types and flags
 H2F_DATA	:= 0
@@ -89,6 +91,9 @@ C2_BLKT		:= 76
 C2_PREF		:= 80				; preface bytes matched
 C2_RSTN		:= 84				; resets this second
 C2_RSTT		:= 88				; and the tick they count in
+C2_CHEAPN	:= 92				; cheap frames this second
+C2_CHEAPT	:= 96				; and the tick they count in
+C2_HBN		:= 100				; CONTINUATION frames in the block
 C2_ST		:= 128				; the stream table: H2_MAXS of S2_*
 S2_SID		:= 0
 S2_SESS		:= 4
@@ -788,6 +793,35 @@ h2_process:
 ; One frame: r12 = payload, esi = length, eax = stream, edx = type, ecx =
 ; flags. c2 registers (r12 may change).
 h2_frame_in:
+	; frames that ask work and carry nothing count against a budget:
+	; PRIORITY, SETTINGS, PING, WINDOW_UPDATE, empty DATA without END_STREAM
+	cmp	edx,H2F_PRIORITY
+	je	.cheap
+	cmp	edx,H2F_SETTINGS
+	je	.cheap
+	cmp	edx,H2F_PING
+	je	.cheap
+	cmp	edx,H2F_WINDOW
+	je	.cheap
+	cmp	edx,H2F_DATA
+	jne	.counted
+	test	esi,esi
+	jnz	.counted
+	test	ecx,H2_END_STREAM
+	jnz	.counted
+.cheap:
+	push	rax
+	mov	eax,[g_tick]
+	cmp	eax,[r13+C2_CHEAPT]
+	je	@f
+	mov	[r13+C2_CHEAPT],eax
+	mov	dword [r13+C2_CHEAPN],0
+@@:
+	pop	rax
+	inc	dword [r13+C2_CHEAPN]
+	cmp	dword [r13+C2_CHEAPN],H2_CHEAP_BUDGET
+	ja	.calm
+.counted:
 	cmp	dword [r13+C2_HBSID],0		; a header block must go on uninterrupted
 	je	@f
 	cmp	edx,H2F_CONT
@@ -820,8 +854,30 @@ h2_frame_in:
 	test	eax,eax
 	jz	.protocol
 	cmp	esi,5
-	jne	.frame_size
+	je	.priority_ok
+	mov	esi,eax				; a stream error (RFC 9113 6.3)
+	mov	edx,H2E_FRAME_SIZE
+	push	rsi
+	call	h2_find
+	pop	rsi
+	jmp	h2_stream_reset
+.priority_ok:
+	mov	edx,[r12]			; a stream cannot depend on itself
+	bswap	edx
+	and	edx,0x7FFFFFFF
+	cmp	edx,eax
+	jne	@f
+	mov	esi,eax
+	mov	edx,H2E_PROTOCOL
+	push	rsi
+	call	h2_find
+	pop	rsi
+	jmp	h2_stream_reset
+@@:
 	ret
+.calm:
+	mov	edx,H2E_CALM
+	jmp	h2_goaway
 .goaway:
 	test	eax,eax
 	jnz	.protocol
@@ -1327,6 +1383,7 @@ h2_in_headers:
 	sub	esi,5
 @@:
 	mov	dword [r13+C2_HBLEN],0
+	mov	dword [r13+C2_HBN],0
 	mov	edx,ecx
 	and	edx,H2_END_STREAM
 	mov	[r13+C2_HBEND],edx
@@ -1348,6 +1405,9 @@ h2_in_headers:
 h2_in_cont:
 	cmp	dword [r13+C2_HBSID],0
 	je	h2_frame_in.protocol		; no header block to continue
+	inc	dword [r13+C2_HBN]
+	cmp	dword [r13+C2_HBN],H2_CONT_MAX
+	ja	h2_in_headers.calm		; a CONTINUATION flood
 	call	h2_hb_add
 	jc	h2_in_headers.calm
 	test	ecx,H2_END_HEADERS
@@ -1419,9 +1479,24 @@ h2_block_done:
 	call	h2_stream_new
 	jmp	.out
 .trailers:
-	; trailers end the request (their fields are not passed on)
+	; trailers end the request (their fields are not passed on), and carry
+	; no pseudo-field
 	cmp	dword [r13+C2_HBEND],0
 	je	.malformed
+	push	rdi
+	xor	r8d,r8d
+.trailer_field:
+	cmp	r8d,ecx
+	jae	.trailers_ok
+	imul	eax,r8d,HP_SIZE
+	mov	rax,[r14+HB_H2FLD+rax+HP_NAME]
+	inc	r8d
+	cmp	byte [rax],':'
+	jne	.trailer_field
+	pop	rdi
+	jmp	.malformed
+.trailers_ok:
+	pop	rdi
 	mov	eax,r12d
 	xor	esi,esi
 	xor	edx,edx
@@ -1434,7 +1509,7 @@ h2_block_done:
 	call	h2_stream_reset
 	jmp	.out
 .closed_stream:
-	mov	edx,H2E_CLOSED
+	mov	edx,H2E_PROTOCOL		; not above the last stream it opened
 	call	h2_goaway
 	jmp	.out
 .refuse:
