@@ -21,7 +21,7 @@
 ;   'M' mont_mul mod p, 'a' mod_add, 'b' mod_sub: a, b (4 limbs each, little endian)
 ;   'I' mod_inv mod p: a (4 limbs, Montgomery form); 'D' G + G (projective, raw)
 ;   'u' x25519_base: scalar (32) -> the public key, as x25519(scalar, 9)
-;   'B' benchmark: op ('x', 'u' or 'E'), count (4, LE), the op's input -> ns per op
+;   'B' benchmark: op ('x', 'u', 'E', 'v' ECDSA verify, ...), count (4, LE), the op's input -> ns per op
 ;   'G' AES-128-GCM open: key, iv, aad len, aad, ciphertext | tag; 'FAIL' if wrong
 
 format ELF64 executable 3
@@ -615,6 +615,15 @@ start:
 	call	ed25519_verify
 	jmp	.counted
 .not_V:
+	cmp	r12b,'v'
+	jne	.not_v
+	mov	rdi,r14				; ECDSA P-256 verify: pubkey(65) digest(32) r(32) s(32)
+	lea	rsi,[r14+65]
+	lea	rdx,[r14+97]
+	lea	rcx,[r14+129]
+	call	p256_verify
+	jmp	.counted
+.not_v:
 	cmp	r12b,'p'
 	jne	.not_p
 	lea	rdi,[g_cp]			; ChaCha20-Poly1305 seal of 16 KiB in place

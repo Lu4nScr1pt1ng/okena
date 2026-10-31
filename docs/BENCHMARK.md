@@ -65,6 +65,7 @@ taskset -c 3 openssl speed -seconds 2 ed25519
 | X25519 (variable base) | 25.6 us | ~25.6 us | 2026-10 | mulx/adcx/adox ladder |
 | X25519 (fixed base, key generation) | 8.0 us | | 2026-10 | Edwards-form table |
 | ECDSA P-256 sign (RFC 6979) | 15.6 us | ~15.6 us | 2026-10 | fixed-base table, blinded inversion |
+| ECDSA P-256 verify | 67 us | 47.8 us | 2026-10-30 | u1 G by the fixed-base table, u2 Q by a width-5 NAF in Jacobian coordinates (259 us with two constant-time ladders) |
 | Ed25519 sign | 9.7 us | 30.2 us | 2026-10-30 | fixed-base table (constant time), Barrett mod L |
 | Ed25519 verify | 39 us | 79.8 us | 2026-10-30 | variable-base windows (public data) |
 | AES-128-GCM, 16 KiB records | 6.9 GB/s | 5.8 GB/s | 2026-10 | VAES + VPCLMULQDQ on ymm (4.3 GB/s on the SSE path) |

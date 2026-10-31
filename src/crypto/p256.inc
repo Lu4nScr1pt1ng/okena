@@ -1834,7 +1834,8 @@ p256_ladder:
 ; 04|X|Y (65 bytes), rsi = digest[32] big endian, rdx = r[32] big endian,
 ; rcx = s[32] big endian. eax = 1 when the signature is valid, else 0.
 ; w = s^-1 mod n; u1 = e w, u2 = r w; R = u1 G + u2 Q; valid iff
-; x(R) mod n == r. Public data: variable-time inversion is fine.
+; x(R) mod n == r. Public data: variable time throughout (u1 G by the
+; fixed-base table, u2 Q by a NAF in Jacobian coordinates).
 VF_QP		:= 0				; Q projective Montgomery
 VF_P1		:= PT_SIZE			; u1 * G
 VF_P2		:= 2 * PT_SIZE			; u2 * Q
@@ -1938,10 +1939,32 @@ p256_verify:
 	lea	rdx,[rsp+VF_W]
 	mov	rcx,r12
 	call	mont_mul
+	vt_iszero rsp+VF_U			; u1 G by the fixed-base table, as
+	jnz	@f				; (x : y : 1); u1 = 0 is infinity
+	xor	eax,eax
+	lea	rdi,[rsp+VF_P1]
+	mov	ecx,12
+	rep	stosq
+	jmp	.u2
+@@:
 	lea	rdi,[rsp+VF_P1]
 	lea	rsi,[rsp+VF_U]
-	lea	rdx,[p256_g_m]
-	call	p256_ladder
+	call	p256_mul_g
+	lea	rdi,[rsp+VF_P1+PT_X]
+	mov	rsi,rdi
+	lea	rdx,[p256_p+MOD_RR]
+	lea	rcx,[p256_p]
+	call	mont_mul
+	lea	rdi,[rsp+VF_P1+PT_Y]
+	mov	rsi,rdi
+	lea	rdx,[p256_p+MOD_RR]
+	lea	rcx,[p256_p]
+	call	mont_mul
+	lea	rsi,[p256_p+MOD_ONE]
+	lea	rdi,[rsp+VF_P1+PT_Z]
+	mov	ecx,4
+	rep	movsq
+.u2:
 	lea	r12,[p256_n]			; u2 = r w mod n, then u2 Q
 	lea	rdi,[rsp+VF_U]
 	lea	rsi,[rsp+VF_R]
@@ -1953,23 +1976,24 @@ p256_verify:
 	lea	rdx,[rsp+VF_W]
 	mov	rcx,r12
 	call	mont_mul
-	lea	rdi,[rsp+VF_P2]
+	lea	rdi,[rsp+VF_P2]			; u2 Q, variable time
 	lea	rsi,[rsp+VF_U]
 	lea	rdx,[rsp+VF_QP]
-	call	p256_ladder
+	call	p256_mul_vt
 	lea	rdi,[rsp+VF_SUM]		; R = u1 G + u2 Q
 	lea	rsi,[rsp+VF_P1]
 	lea	rdx,[rsp+VF_P2]
-	call	p256_add
+	call	p256_jadd
 	mov	rax,[rsp+VF_SUM+PT_Z]		; infinity -> invalid
 	or	rax,[rsp+VF_SUM+PT_Z+8]
 	or	rax,[rsp+VF_SUM+PT_Z+16]
 	or	rax,[rsp+VF_SUM+PT_Z+24]
 	jz	.bad
-	lea	rdi,[rsp+VF_ZI]			; x(R) affine, out of Montgomery
+	lea	rdi,[rsp+VF_ZI]			; x(R) = X / Z^2, out of Montgomery
 	lea	rsi,[rsp+VF_SUM+PT_Z]
 	lea	rcx,[p256_p]
 	call	mod_inv
+	F mont_sqr, rsp+VF_ZI, rsp+VF_ZI
 	E mont_mul, VF_SUM+PT_X, VF_SUM+PT_X, VF_ZI
 	lea	rdi,[rsp+VF_X]
 	lea	rsi,[rsp+VF_SUM+PT_X]
@@ -1995,6 +2019,300 @@ p256_verify:
 	xor	eax,eax
 .out:
 	add	rsp,VF_SIZE
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; -------------------------------------------- variable time (public data)
+;
+; Verification multiplies public scalars by public points, so it may
+; branch on them: Jacobian coordinates (x = X/Z^2, y = Y/Z^3, Montgomery
+; form, Z = 0 for infinity), a doubling for a = -3, a general addition
+; with its special cases taken by branches, and u * Q by a width-5 NAF.
+
+; rdi = 4 limbs: ZF set when all zero. Clobbers rax.
+macro vt_iszero addr*
+	mov	rax,[addr]
+	or	rax,[addr+8]
+	or	rax,[addr+16]
+	or	rax,[addr+24]
+end macro
+
+; rdi = out, rsi = P (Jacobian): 2P, dbl-2001-b (3M + 5S). out may be P.
+JD_D		:= 0				; delta = Z^2
+JD_G		:= 32				; gamma = Y^2
+JD_B		:= 64				; beta = X gamma
+JD_A		:= 96				; alpha = 3 (X - delta)(X + delta)
+JD_T		:= 128
+JD_U		:= 160
+JD_X		:= 192
+JD_Y		:= 224
+JD_Z		:= 256
+JD_SIZE		:= 296
+p256_jdbl:
+	push	rbx
+	push	r12
+	sub	rsp,JD_SIZE
+	mov	rbx,rdi
+	mov	r12,rsi
+	F mont_sqr, rsp+JD_D, r12+PT_Z
+	F mont_sqr, rsp+JD_G, r12+PT_Y
+	F mont_mul, rsp+JD_B, r12+PT_X, rsp+JD_G
+	F mod_sub, rsp+JD_T, r12+PT_X, rsp+JD_D
+	F mod_add, rsp+JD_U, r12+PT_X, rsp+JD_D
+	F mont_mul, rsp+JD_A, rsp+JD_T, rsp+JD_U
+	F mod_add, rsp+JD_T, rsp+JD_A, rsp+JD_A
+	F mod_add, rsp+JD_A, rsp+JD_A, rsp+JD_T
+	F mont_sqr, rsp+JD_X, rsp+JD_A
+	F mod_add, rsp+JD_T, rsp+JD_B, rsp+JD_B
+	F mod_add, rsp+JD_T, rsp+JD_T, rsp+JD_T		; 4 beta
+	F mod_add, rsp+JD_U, rsp+JD_T, rsp+JD_T		; 8 beta
+	F mod_sub, rsp+JD_X, rsp+JD_X, rsp+JD_U		; X3 = alpha^2 - 8 beta
+	F mod_add, rsp+JD_Z, r12+PT_Y, r12+PT_Z
+	F mont_sqr, rsp+JD_Z, rsp+JD_Z
+	F mod_sub, rsp+JD_Z, rsp+JD_Z, rsp+JD_G
+	F mod_sub, rsp+JD_Z, rsp+JD_Z, rsp+JD_D		; Z3 = (Y + Z)^2 - gamma - delta
+	F mod_sub, rsp+JD_T, rsp+JD_T, rsp+JD_X
+	F mont_mul, rsp+JD_Y, rsp+JD_A, rsp+JD_T
+	F mont_sqr, rsp+JD_G, rsp+JD_G
+	F mod_add, rsp+JD_G, rsp+JD_G, rsp+JD_G
+	F mod_add, rsp+JD_G, rsp+JD_G, rsp+JD_G
+	F mod_add, rsp+JD_G, rsp+JD_G, rsp+JD_G		; 8 gamma^2
+	F mod_sub, rsp+JD_Y, rsp+JD_Y, rsp+JD_G		; Y3 = alpha (4 beta - X3) - 8 gamma^2
+	lea	rsi,[rsp+JD_X]
+	mov	rdi,rbx
+	mov	ecx,12
+	rep	movsq
+	add	rsp,JD_SIZE
+	pop	r12
+	pop	rbx
+	ret
+
+; rdi = out, rsi = P, rdx = Q (Jacobian): P + Q, add-2007-bl (11M + 5S),
+; P = Q, P = -Q and infinity by branches. out may be P or Q.
+JA_Z1Z1		:= 0
+JA_Z2Z2		:= 32
+JA_U1		:= 64
+JA_U2		:= 96
+JA_S1		:= 128
+JA_S2		:= 160
+JA_H		:= 192
+JA_R		:= 224
+JA_I		:= 256
+JA_J		:= 288
+JA_V		:= 320
+JA_T		:= 352
+JA_X		:= 384
+JA_Y		:= 416
+JA_Z		:= 448
+JA_SIZE		:= 480
+p256_jadd:
+	push	rbx
+	push	r12
+	push	r13
+	sub	rsp,JA_SIZE
+	mov	rbx,rdi
+	mov	r12,rsi
+	mov	r13,rdx
+	vt_iszero r12+PT_Z
+	jz	.q
+	vt_iszero r13+PT_Z
+	jz	.p
+	F mont_sqr, rsp+JA_Z1Z1, r12+PT_Z
+	F mont_sqr, rsp+JA_Z2Z2, r13+PT_Z
+	F mont_mul, rsp+JA_U1, r12+PT_X, rsp+JA_Z2Z2
+	F mont_mul, rsp+JA_U2, r13+PT_X, rsp+JA_Z1Z1
+	F mont_mul, rsp+JA_T, r13+PT_Z, rsp+JA_Z2Z2
+	F mont_mul, rsp+JA_S1, r12+PT_Y, rsp+JA_T
+	F mont_mul, rsp+JA_T, r12+PT_Z, rsp+JA_Z1Z1
+	F mont_mul, rsp+JA_S2, r13+PT_Y, rsp+JA_T
+	F mod_sub, rsp+JA_H, rsp+JA_U2, rsp+JA_U1
+	F mod_sub, rsp+JA_R, rsp+JA_S2, rsp+JA_S1
+	vt_iszero rsp+JA_H
+	jnz	.general
+	vt_iszero rsp+JA_R
+	jnz	.infinity			; P = -Q
+	mov	rdi,rbx				; P = Q
+	mov	rsi,r12
+	call	p256_jdbl
+	jmp	.out
+.general:
+	F mod_add, rsp+JA_R, rsp+JA_R, rsp+JA_R		; r = 2 (S2 - S1)
+	F mod_add, rsp+JA_I, rsp+JA_H, rsp+JA_H
+	F mont_sqr, rsp+JA_I, rsp+JA_I			; I = (2H)^2
+	F mont_mul, rsp+JA_J, rsp+JA_H, rsp+JA_I
+	F mont_mul, rsp+JA_V, rsp+JA_U1, rsp+JA_I
+	F mont_sqr, rsp+JA_X, rsp+JA_R
+	F mod_sub, rsp+JA_X, rsp+JA_X, rsp+JA_J
+	F mod_sub, rsp+JA_X, rsp+JA_X, rsp+JA_V
+	F mod_sub, rsp+JA_X, rsp+JA_X, rsp+JA_V		; X3 = r^2 - J - 2V
+	F mod_sub, rsp+JA_T, rsp+JA_V, rsp+JA_X
+	F mont_mul, rsp+JA_Y, rsp+JA_R, rsp+JA_T
+	F mont_mul, rsp+JA_T, rsp+JA_S1, rsp+JA_J
+	F mod_add, rsp+JA_T, rsp+JA_T, rsp+JA_T
+	F mod_sub, rsp+JA_Y, rsp+JA_Y, rsp+JA_T		; Y3 = r (V - X3) - 2 S1 J
+	F mod_add, rsp+JA_Z, r12+PT_Z, r13+PT_Z
+	F mont_sqr, rsp+JA_Z, rsp+JA_Z
+	F mod_sub, rsp+JA_Z, rsp+JA_Z, rsp+JA_Z1Z1
+	F mod_sub, rsp+JA_Z, rsp+JA_Z, rsp+JA_Z2Z2
+	F mont_mul, rsp+JA_Z, rsp+JA_Z, rsp+JA_H	; Z3 = ((Z1 + Z2)^2 - Z1Z1 - Z2Z2) H
+	lea	rsi,[rsp+JA_X]
+	jmp	.copy
+.infinity:
+	xor	eax,eax
+	mov	rdi,rbx
+	mov	ecx,12
+	rep	stosq
+	jmp	.out
+.q:
+	mov	rsi,r13
+	jmp	.copy
+.p:
+	mov	rsi,r12
+.copy:
+	cmp	rsi,rbx
+	je	.out
+	mov	rdi,rbx
+	mov	ecx,12
+	rep	movsq
+.out:
+	add	rsp,JA_SIZE
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; rdi = out (Jacobian), rsi = k (4 limbs, plain), rdx = Q (Jacobian,
+; Montgomery): k Q, by a width-5 NAF over Q, 3Q .. 15Q. Variable time.
+MV_TAB		:= 0				; Q, 3Q, .. 15Q
+MV_Q2		:= 8 * PT_SIZE
+MV_ACC		:= MV_Q2 + PT_SIZE
+MV_NEG		:= MV_ACC + PT_SIZE
+MV_DIG		:= MV_NEG + PT_SIZE		; the digits, least significant first
+MV_SIZE		:= MV_DIG + 272
+p256_mul_vt:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	sub	rsp,MV_SIZE
+	mov	rbx,rdi
+	mov	r12,rsi
+	mov	rsi,rdx				; the table
+	lea	rdi,[rsp+MV_TAB]
+	mov	ecx,12
+	rep	movsq
+	lea	rdi,[rsp+MV_Q2]
+	lea	rsi,[rsp+MV_TAB]
+	call	p256_jdbl
+	xor	r13d,r13d
+.table:
+	inc	r13d
+	cmp	r13d,8
+	jae	.recode
+	imul	eax,r13d,PT_SIZE
+	lea	rdi,[rsp+MV_TAB+rax]
+	lea	rsi,[rdi-PT_SIZE]
+	lea	rdx,[rsp+MV_Q2]
+	call	p256_jadd
+	jmp	.table
+.recode:
+	mov	r8,[r12]
+	mov	r9,[r12+8]
+	mov	r10,[r12+16]
+	mov	r11,[r12+24]
+	xor	r15d,r15d			; a fifth limb: k + 15 may carry
+	xor	r14d,r14d			; digits
+.digit:
+	mov	rax,r8
+	or	rax,r9
+	or	rax,r10
+	or	rax,r11
+	or	rax,r15
+	jz	.recoded
+	xor	ecx,ecx
+	test	r8d,1
+	jz	.put
+	mov	ecx,r8d
+	and	ecx,31
+	cmp	ecx,16
+	jb	.pos
+	sub	ecx,32				; -15 .. -1
+	mov	eax,ecx
+	neg	eax
+	add	r8,rax
+	adc	r9,0
+	adc	r10,0
+	adc	r11,0
+	adc	r15,0
+	jmp	.put
+.pos:
+	sub	r8,rcx
+	sbb	r9,0
+	sbb	r10,0
+	sbb	r11,0
+	sbb	r15,0
+.put:
+	mov	[rsp+MV_DIG+r14],cl
+	inc	r14d
+	shrd	r8,r9,1
+	shrd	r9,r10,1
+	shrd	r10,r11,1
+	shrd	r11,r15,1
+	shr	r15,1
+	jmp	.digit
+.recoded:
+	xor	eax,eax				; acc = infinity
+	lea	rdi,[rsp+MV_ACC]
+	mov	ecx,12
+	rep	stosq
+	xor	r13d,r13d			; 1 once acc holds a point
+.eval:
+	test	r14d,r14d
+	jz	.done
+	dec	r14d
+	test	r13d,r13d
+	jz	@f
+	lea	rdi,[rsp+MV_ACC]
+	lea	rsi,[rsp+MV_ACC]
+	call	p256_jdbl
+@@:
+	movsx	eax,byte [rsp+MV_DIG+r14]
+	test	eax,eax
+	jz	.eval
+	mov	ecx,eax
+	sar	ecx,31
+	xor	eax,ecx
+	sub	eax,ecx				; |digit|
+	shr	eax,1
+	imul	eax,eax,PT_SIZE
+	lea	rdx,[rsp+MV_TAB+rax]
+	test	ecx,ecx
+	jz	.add
+	push	rdx				; -P = (X, -Y, Z)
+	lea	rdi,[rsp+8+MV_NEG]
+	mov	rsi,rdx
+	mov	ecx,12
+	rep	movsq
+	pop	rdx
+	F mod_sub, rsp+MV_NEG+PT_Y, p256_zero, rdx+PT_Y
+	lea	rdx,[rsp+MV_NEG]
+.add:
+	lea	rdi,[rsp+MV_ACC]
+	lea	rsi,[rsp+MV_ACC]
+	call	p256_jadd
+	mov	r13d,1
+	jmp	.eval
+.done:
+	lea	rsi,[rsp+MV_ACC]
+	mov	rdi,rbx
+	mov	ecx,12
+	rep	movsq
+	add	rsp,MV_SIZE
 	pop	r15
 	pop	r14
 	pop	r13
