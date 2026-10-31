@@ -1307,6 +1307,34 @@ check_tls:
 	push	r14
 	push	r15
 	mov	[g_chk_tls_listener],rdi
+	; `http3 on` is QUIC: always encrypted, it needs a tls block that decrypts
+	mov	r12,rdi
+	mov	ecx,DIR_HTTP3
+	call	find_child
+	test	rax,rax
+	jz	.h3_ok
+	mov	r13,rax
+	mov	rax,[r13+N_ARGS]
+	mov	rax,[rax+A_VAL]
+	cmp	byte [rax+1],'n'		; `on`
+	jne	.h3_ok
+	mov	rdi,r12
+	mov	ecx,DIR_TLS
+	call	find_child
+	test	rax,rax
+	jz	.h3_err
+	cmp	dword [rax+N_ARGC],0
+	je	.h3_ok
+.h3_err:
+	mov	rdi,[r13+N_NAME]
+	mov	esi,[r13+N_NLEN]
+	mov	edx,[r13+N_LINE]
+	call	cfg_error
+	out_lit 'http3 is QUIC, always encrypted: it needs a tls block with a certificate here'
+	call	cfg_diag_end
+	call	cfg_error_limit
+.h3_ok:
+	mov	rdi,r12
 	mov	ecx,DIR_TLS
 	call	find_child
 	test	rax,rax

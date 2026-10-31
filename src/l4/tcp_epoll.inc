@@ -65,6 +65,7 @@ ep_main:
 	js	.no_epoll
 	mov	[g_epfd],eax
 	call	ep_add_listeners
+	call	qs_worker_init			; http3: the UDP sockets
 	mov	edi,[g_sigfd]
 	mov	esi,EPOLLIN
 	mov	rdx,EK_SIGNAL shl 56
@@ -89,6 +90,12 @@ ep_main:
 	je	@f				; streams (epoll writes at once)
 .nosleep:
 	xor	edx,edx
+@@:
+	cmp	dword [g_qc_count],0		; QUIC connections: their 10 ms clock
+	je	@f
+	cmp	edx,10
+	jbe	@f
+	mov	edx,10
 @@:
 	mov	edi,[g_epfd]
 	lea	rsi,[g_ep_events]
@@ -118,6 +125,8 @@ ep_main:
 .timers:
 	call	ep_http_ready
 	call	h2_flush			; HTTP/2: one send a connection an iteration
+	call	qs_tick				; QUIC: timers, then what connections send
+	call	qs_flush
 	call	hs_drain			; hellos that waited for the budget
 	call	ep_wake_waiters
 	call	ep_connect_deadlines
@@ -249,6 +258,11 @@ ep_dispatch:
 	je	.signal
 	cmp	eax,EK_POOL
 	je	.pooled
+	cmp	eax,EK_QUIC
+	jne	@f
+	mov	edi,esi				; a QUIC socket is readable
+	jmp	qs_readable
+@@:
 	; a session side: check the generation
 	mov	r8d,eax				; side
 	mov	r9,rsi
@@ -1116,6 +1130,11 @@ ep_close:
 	test	dword [r12+S_FLAGS],SF_H2S
 	jz	@f
 	call	h2s_closing			; a stream: no socket of its own
+	jmp	.client_closed
+@@:
+	test	dword [r12+S_FLAGS],SF_QC
+	jz	@f
+	call	qc_closing			; a QUIC connection: no socket of its own
 	jmp	.client_closed
 @@:
 	mov	edi,[r12+S_CLIENT]

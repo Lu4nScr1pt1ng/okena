@@ -60,13 +60,37 @@ TS_RX_GCM	:= 208				; user-space records only (tls_records)
 TS_TX_GCM	:= TS_RX_GCM + AEAD_SIZE
 TS_HRR_SHA	:= TS_TX_GCM + AEAD_SIZE	; after a HelloRetryRequest: the transcript so far
 TS_CERT		:= TS_HRR_SHA + SHA256_CTX_SIZE	; q: the entry SNI chose, 0 = the default
-TS_SIZE		:= TS_CERT + 8
+TS_QT		:= TS_CERT + 8			; q: QUIC (TF_QUIC): its QT block
+TS_SIZE		:= TS_QT + 8
+
+; QUIC (RFC 9001): the handshake without records. The caller sets TF_QUIC
+; and TS_QT; tls_hello then takes the ClientHello message itself (from
+; Initial CRYPTO frames), wants ALPN h3 and the client's transport
+; parameters, answers with ours (QT_TPS) and ALPN h3 in EncryptedExtensions,
+; and returns in out the ServerHello (QT_SHLEN bytes, for the Initial
+; level) followed by EncryptedExtensions .. Finished (the Handshake level),
+; plaintext; the traffic secrets go to QT. No middlebox ChangeCipherSpec,
+; no HelloRetryRequest, no tickets. quic_tls_finished checks the client
+; Finished (a message from Handshake CRYPTO frames).
+QT_CHS		:= 0				; client handshake traffic secret (32)
+QT_SHS		:= 32				; server
+QT_CAP		:= 64				; client application traffic secret
+QT_SAP		:= 96				; server
+QT_SHLEN	:= 128				; d: the ServerHello's length in out
+QT_AEAD		:= 132				; d: 0 AES-128-GCM, 1 ChaCha20-Poly1305
+QT_TPSLEN	:= 136				; d: our transport parameters (set by the caller)
+QT_TPS		:= 140				; (256)
+QT_TPCLEN	:= QT_TPS + 256			; d: the client's
+QT_TPC		:= QT_TPCLEN + 4		; (QT_TPC_MAX)
+QT_TPC_MAX	:= 1024
+QT_SIZE		:= QT_TPC + QT_TPC_MAX
 
 TF_ALPN_H1	:= 1				; set by the caller: answer ALPN with http/1.1
 TF_GOT_H1	:= 2				; the client asked for http/1.1
 TF_HRR		:= 4				; a HelloRetryRequest went out: this is the second hello
 TF_ALPN_H2	:= 8				; set by the caller: h2 may be chosen (preferred)
 TF_GOT_H2	:= 16				; h2 was chosen
+TF_QUIC		:= 32				; set by the caller: QUIC (TS_QT)
 
 TH_MORE		:= 0
 TH_SEND		:= 1
@@ -213,6 +237,8 @@ G_SIGALG_RSA	:= 8192				; rsa_pss_rsae_sha256 offered (TLS 1.3 CertificateVerify
 G_SIGALG_RSA1	:= 16384			; rsa_pkcs1_sha256 offered (a legacy 1.2 client)
 G_SIGALG_ED	:= 262144			; ed25519 offered
 G_H2		:= 524288			; ALPN offers h2
+G_H3		:= 1048576			; ALPN offers h3 (QUIC)
+G_QTP		:= 2097152			; quic_transport_parameters (QUIC)
 
 ; the transcript: rsi = bytes, rdx = length
 macro th_add
@@ -256,6 +282,8 @@ tls_hello:
 	mov	[rbp+HL_ROOM],r9d
 	cmp	r9d,CH_MAX + 64
 	jb	.internal
+	test	dword [rbx+TS_FLAGS],TF_QUIC
+	jnz	.quic_in
 
 	; The ClientHello out of its records, into out. rsi = record, r13 = the
 	; end of input, rdi = where its payload goes, r14d = bytes gathered.
@@ -316,8 +344,31 @@ tls_hello:
 	cmp	rsi,r13
 	jne	.unexpected
 	mov	[rbp+HL_MLEN],eax
+	jmp	.parse
+.quic_in:
+	; QUIC: the message itself, whole or not yet
+	cmp	r14d,4
+	jb	.more
+	cmp	byte [r13],1			; client_hello
+	jne	.unexpected
+	mov	eax,[r13]
+	bswap	eax
+	and	eax,0xFFFFFF
+	add	eax,4
+	cmp	eax,CH_MAX
+	ja	.overflow
+	cmp	r14d,eax
+	jb	.more
+	jne	.unexpected			; anything after it at this level
+	mov	[rbp+HL_MLEN],eax
+	mov	rsi,r13
+	mov	rdi,r12
+	mov	ecx,eax
+	rep	movsb
 
+.parse:
 	; Parse. rsi = cursor, r13 = the end of the message.
+	mov	eax,[rbp+HL_MLEN]
 	lea	r13,[r12+rax]
 	lea	rsi,[r12+4]
 	lea	rax,[rsi+35]
@@ -421,6 +472,8 @@ tls_hello:
 	je	.server_name
 	cmp	eax,41
 	je	.psk
+	cmp	eax,57
+	je	.qtp
 .ext_next:
 	mov	rsi,r14
 	jmp	.ext
@@ -622,6 +675,20 @@ tls_hello:
 	or	dword [rbp+HL_GOT],G_PSK
 	jmp	.ext_next
 
+.qtp:						; quic_transport_parameters, kept for QUIC
+	test	dword [rbx+TS_FLAGS],TF_QUIC
+	jz	.ext_next
+	test	dword [rbp+HL_GOT],G_QTP
+	jnz	.illegal			; twice
+	cmp	ecx,QT_TPC_MAX
+	ja	.illegal
+	mov	rdi,[rbx+TS_QT]
+	mov	[rdi+QT_TPCLEN],ecx
+	add	rdi,QT_TPC
+	rep	movsb
+	or	dword [rbp+HL_GOT],G_QTP
+	jmp	.ext_next
+
 .groups:					; supported_groups: u16 length, u16s
 	cmp	ecx,2
 	jb	.decode
@@ -670,6 +737,11 @@ tls_hello:
 	ja	.decode
 	cmp	ecx,2
 	jne	@f
+	cmp	word [rsi],'h3'
+	jne	.not_h3
+	or	dword [rbp+HL_GOT],G_H3
+	jmp	.protocol_next
+.not_h3:
 	cmp	word [rsi],'h2'
 	jne	.protocol_next
 	or	dword [rbp+HL_GOT],G_H2
@@ -757,6 +829,19 @@ tls_hello:
 	mov	dword [rbp+HL_GROUP],1		; secp256r1
 	mov	dword [rbp+HL_KSEXT],73
 .have_share:
+	test	dword [rbx+TS_FLAGS],TF_QUIC	; QUIC: h3 and the transport parameters,
+	jz	.tls_alpn			; no resumption
+	test	eax,G_QTP
+	jz	.missing_ext
+	test	eax,G_H3
+	jz	.no_alpn
+	mov	rcx,[rbx+TS_QT]
+	mov	edx,[rbx+TS_SUITE]
+	mov	[rcx+QT_AEAD],edx
+	call	tls_now_s
+	mov	[rbp+HL_NOW],eax
+	jmp	.full
+.tls_alpn:
 	and	dword [rbx+TS_FLAGS],not (TF_GOT_H1 or TF_GOT_H2)
 	test	dword [rbx+TS_FLAGS],TF_ALPN_H1 or TF_ALPN_H2
 	jz	.alpn_done
@@ -1063,7 +1148,7 @@ tls_hello:
 	mov	rdi,[rbp+HL_W]
 	cmp	dword [rbp+HL_SIDLEN],0
 	je	@f
-	test	dword [rbx+TS_FLAGS],TF_HRR
+	test	dword [rbx+TS_FLAGS],TF_HRR or TF_QUIC
 	jnz	@f				; it went after the HelloRetryRequest
 	mov	dword [rdi],0x00030314
 	mov	word [rdi+4],0x0101
@@ -1075,7 +1160,8 @@ tls_hello:
 	; r14 = the cursor.
 	mov	r15,[rbp+HL_TL]
 	mov	ecx,[r15+TL_CLEN]
-	lea	eax,[rcx+192]			; EE + Certificate + CV + Finished
+	lea	eax,[rcx+192+300]		; EE (QUIC: + parameters) + Certificate
+						; + CV + Finished
 	cmp	dword [r15+TL_KEYTYPE],1		; an RSA CertificateVerify carries
 	jne	@f				; an nbytes signature, not ~72 for ECDSA
 	add	eax,[r15+TL_RSA_NLEN]
@@ -1089,6 +1175,31 @@ tls_hello:
 	ja	.internal
 	mov	r14,r13
 	; EncryptedExtensions
+	test	dword [rbx+TS_FLAGS],TF_QUIC
+	jz	.ee_tls
+	; QUIC: ALPN h3, our transport parameters
+	mov	rcx,[rbx+TS_QT]
+	mov	edx,[rcx+QT_TPSLEN]
+	lea	r8d,[rdx+9+4+2]			; the message body
+	mov	byte [r14],8
+	put24	r14+1, r8d			; (takes eax)
+	lea	eax,[rdx+9+4]			; extensions: ALPN (9), parameters (4 + n)
+	xchg	al,ah				; (big endian)
+	mov	[r14+4],ax
+	mov	dword [r14+6],0x05001000	; ALPN, 5 bytes, a 3-byte list,
+	mov	dword [r14+10],0x68020300	; 'h3'
+	mov	byte [r14+14],'3'
+	mov	word [r14+15],0x3900		; quic_transport_parameters
+	mov	eax,edx
+	xchg	al,ah
+	mov	[r14+17],ax
+	lea	rdi,[r14+19]
+	lea	rsi,[rcx+QT_TPS]
+	mov	ecx,edx
+	rep	movsb
+	mov	r14,rdi
+	jmp	.ee_done
+.ee_tls:
 	test	dword [rbx+TS_FLAGS],TF_GOT_H2
 	jz	.ee_h1
 	mov	dword [r14],0x0B000008		; 11 bytes:
@@ -1225,6 +1336,14 @@ tls_hello:
 	tls_label [rbp+HL_TMP], 32, [rbp+HL_MS], lbl_c_ap, [rbp+HL_TH], 32
 	tls_label [rbx+TS_RX_KEY], [rbx+TS_KEYLEN], [rbp+HL_TMP], lbl_key
 	tls_label [rbx+TS_RX_IV], 12, [rbp+HL_TMP], lbl_iv
+	test	dword [rbx+TS_FLAGS],TF_QUIC
+	jz	@f
+	mov	rdi,[rbx+TS_QT]
+	add	rdi,QT_CAP
+	lea	rsi,[rbp+HL_TMP]
+	mov	ecx,32
+	rep	movsb
+@@:
 	tls_label [rbp+HL_TMP], 32, [rbp+HL_MS], lbl_s_ap, [rbp+HL_TH], 32
 	tls_label [rbx+TS_TX_KEY], [rbx+TS_KEYLEN], [rbp+HL_TMP], lbl_key
 	tls_label [rbx+TS_TX_IV], 12, [rbp+HL_TMP], lbl_iv
@@ -1237,6 +1356,8 @@ tls_hello:
 	xor	eax,eax
 	mov	[rbx+TS_RX_SEQ],rax
 	mov	[rbx+TS_TX_SEQ],rax
+	test	dword [rbx+TS_FLAGS],TF_QUIC
+	jnz	.quic_out
 	cmp	qword [g_tks],0
 	je	.no_ticket
 	; the ticket: resumption_master_secret over the transcript through the
@@ -1364,6 +1485,34 @@ tls_hello:
 	sub	rdx,r12
 	mov	eax,TH_SEND
 	jmp	.out
+.quic_out:
+	; QUIC: the secrets, then out = ServerHello | EE .. Finished
+	mov	rdi,[rbx+TS_QT]
+	lea	rsi,[rbp+HL_TMP]		; (the server application secret)
+	lea	rdi,[rdi+QT_SAP]
+	mov	ecx,32
+	rep	movsb
+	mov	rdi,[rbx+TS_QT]
+	lea	rsi,[rbp+HL_CHT]
+	mov	ecx,64				; CHT, SHT: adjacent here and in QT
+	rep	movsb
+	mov	rdi,r12				; the ServerHello without its record header
+	lea	rsi,[r12+5]
+	mov	ecx,[rbp+HL_SHLEN]
+	mov	rax,[rbx+TS_QT]
+	mov	[rax+QT_SHLEN],ecx
+	rep	movsb
+	mov	rsi,r13
+	mov	rcx,r14
+	sub	rcx,r13
+	rep	movsb
+	mov	rdx,rdi
+	sub	rdx,r12
+	mov	eax,TH_SEND
+	jmp	.out
+.missing_ext:
+	mov	ecx,109				; missing_extension
+	jmp	.alert
 .bad_binder:
 	mov	ecx,AL_DECRYPT			; a ticket of ours, a binder that is not
 	jmp	.alert
@@ -1372,6 +1521,8 @@ tls_hello:
 	; a group offered without its share: a HelloRetryRequest, once
 	test	eax,G_GROUP or G_GROUP256
 	jz	.handshake			; no group in common
+	test	dword [rbx+TS_FLAGS],TF_QUIC
+	jnz	.handshake			; (not over QUIC yet)
 	test	dword [rbx+TS_FLAGS],TF_HRR
 	jnz	.illegal			; asked already, and still no share
 	; transcript: message_hash(Hash(ClientHello1)), then the retry request
@@ -1621,6 +1772,39 @@ tls_finished:
 	pop	r13
 	pop	r12
 	pop	rbx
+	ret
+
+; rdi = ts, rsi = in, ecx = its length: the client Finished, a message
+; from Handshake CRYPTO frames (QUIC). eax = TH_MORE, TH_DONE (edx = 36),
+; or TH_FAIL.
+quic_tls_finished:
+	cmp	ecx,4
+	jb	.more
+	cmp	dword [rsi],0x20000014
+	jne	.fail
+	cmp	ecx,36
+	jb	.more
+	jne	.fail
+	push	rdi
+	lea	rdi,[rsi+4]
+	lea	rsi,[rdi+TS_CFIN]
+	mov	rsi,[rsp]
+	add	rsi,TS_CFIN
+	mov	edx,32
+	call	ct_equal
+	pop	rdi
+	test	eax,eax
+	jz	.fail
+	mov	edx,36
+	mov	eax,TH_DONE
+	ret
+.more:
+	xor	edx,edx
+	mov	eax,TH_MORE
+	ret
+.fail:
+	xor	edx,edx
+	mov	eax,TH_FAIL
 	ret
 
 ; ------------------------------------------------- user-space records

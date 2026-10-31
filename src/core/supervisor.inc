@@ -127,6 +127,9 @@ supervisor_main:
 	inc	r12d
 	jmp	.listener
 .opened:
+	call	qs_open_all			; http3: a UDP socket per worker
+	test	eax,eax
+	js	.no_udp
 	call	log_begin
 	out_lit 'started with '
 	mov	eax,[g_workers]
@@ -218,6 +221,18 @@ supervisor_main:
 	mov	eax,SYS_kill
 	syscall
 	jmp	.wait_signal
+
+.no_udp:
+	push	rax
+	call	log_begin
+	out_lit 'cannot open the UDP sockets of http3 (errno '
+	pop	rax
+	neg	rax
+	call	out_u64
+	out_lit ')'
+	call	log_end
+	mov	edi,EXIT_FAILURE
+	jmp	exit_process
 
 .no_signalfd:
 	call	log_begin

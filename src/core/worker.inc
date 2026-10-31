@@ -97,6 +97,7 @@ worker_main:
 	call	arm_accepts
 	call	arm_timer
 	call	arm_signal
+	call	qs_worker_init			; http3: the UDP sockets
 	mov	rax,[g_plan_busy_poll]
 	test	rax,rax
 	jz	.confine
@@ -133,6 +134,7 @@ worker_main:
 	call	ring_reap
 	call	ep_http_ready			; user-space TLS deliveries
 	call	h2_flush			; HTTP/2: one send a connection an iteration
+	call	qs_flush			; QUIC: what connections send
 	call	hs_drain			; hellos that waited for the budget
 	mov	eax,[g_reaped]
 	cmp	eax,[g_reaped_mark]
@@ -157,6 +159,7 @@ worker_main:
 	call	ring_reap
 	call	ep_http_ready			; user-space TLS deliveries
 	call	h2_flush			; HTTP/2: one send a connection an iteration
+	call	qs_flush			; QUIC: what connections send
 	call	hs_drain			; hellos that waited for the budget
 	jmp	.loop
 .drained:

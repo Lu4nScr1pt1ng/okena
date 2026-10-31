@@ -350,7 +350,9 @@ OP_H2_RECV	:= 28		; HTTP/2: frames (or records) from the client
 OP_H2_SEND	:= 29		; HTTP/2: frames (or records) to the client
 OP_H2_DRAIN	:= 30		; HTTP/2 upstream: a kTLS control record taken
 OP_H2T_SEND	:= 31		; WebSocket over an HTTP/2 stream: bytes to the backend
-OP_COUNT	:= 32
+OP_QPOLL	:= 32		; QUIC: a UDP socket is readable (the low bits: its slot)
+OP_QTIMER	:= 33		; QUIC: the 10 ms clock
+OP_COUNT	:= 34
 
 rodata
 	align 8
@@ -362,6 +364,7 @@ rodata
 			dq on_pool_watch, on_h_ktls, on_h_ulp, on_s_send_pfx
 			dq on_h_uktls, on_h_udrain, on_h_ktls12
 			dq on_h2_recv, on_h2_send, on_h2_drain, on_h2t_send
+			dq on_qpoll, on_qtimer
 end rodata
 
 ring_reap:

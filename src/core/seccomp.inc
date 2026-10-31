@@ -155,6 +155,8 @@ rodata
 	sc_allow filter_supervisor, SYS_nanosleep
 	sc_allow filter_supervisor, SYS_clock_gettime
 	sc_allow filter_supervisor, SYS_getrandom
+	sc_allow filter_supervisor, SYS_recvmmsg		; (QUIC, in workers)
+	sc_allow filter_supervisor, SYS_sendmmsg
 	sc_check filter_supervisor, SYS_socket, socket
 	sc_allow filter_supervisor, SYS_bind
 	sc_allow filter_supervisor, SYS_listen
@@ -187,6 +189,8 @@ rodata
 	sc_allow filter_worker_uring, SYS_getsockname	; PROXY protocol, wildcard listeners
 	sc_allow filter_worker_uring, SYS_clock_gettime	; once a tick: access log time
 	sc_allow filter_worker_uring, SYS_getrandom	; TLS: server random, ephemeral keys
+	sc_allow filter_worker_uring, SYS_recvmmsg	; QUIC datagrams
+	sc_allow filter_worker_uring, SYS_sendmmsg
 	sc_end filter_worker_uring
 
 	; epoll worker
@@ -207,6 +211,8 @@ rodata
 	sc_allow filter_worker_epoll, SYS_getsockname
 	sc_allow filter_worker_epoll, SYS_recvfrom	; peeks: pooled connections, TLS Finished
 	sc_allow filter_worker_epoll, SYS_getrandom	; TLS: server random, ephemeral keys
+	sc_allow filter_worker_epoll, SYS_recvmmsg	; QUIC datagrams
+	sc_allow filter_worker_epoll, SYS_sendmmsg
 	sc_allow filter_worker_epoll, SYS_recvmsg	; kTLS upstream: control records (tickets)
 	sc_end filter_worker_epoll
 
