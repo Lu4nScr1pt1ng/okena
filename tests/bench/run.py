@@ -20,7 +20,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 BIN = ROOT / "build" / "okena"
 # ports 23000-23999: this suite's own range
 BASE = 23000 + os.getpid() % 99 * 10
-HTTP, ECHO, HTTPS, BACK = BASE, BASE + 1, BASE + 2, BASE + 3
+HTTP, ECHO, HTTPS, BACK, OSSL = BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4
 tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-bench-"))
 failures = 0
 stall = {"every": 0, "n": 0}
@@ -130,6 +130,32 @@ def clean(name, kv, rc, err):
     check(name, rc == 0 and n > 0 and kv["errors"] == 0 and kv["ok"] == n, f"rc={rc} {kv} {err}")
 
 
+def openssl_backend(cert, key):
+    # Python's ssl (OpenSSL): its flight in several records, two session
+    # tickets after the client's Finished (kTLS control records)
+    import http.server
+    import ssl
+
+    class H(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+        def log_message(self, *a):
+            pass
+
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_3
+    ctx.load_cert_chain(cert, key)
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", OSSL), H)
+    srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+    srv.serve_forever()
+
+
 def have_ktls():
     return pathlib.Path("/sys/module/tls").exists()
 
@@ -164,6 +190,11 @@ def main():
           and kv["ok"] == 0, str(kv))
     rc, kv, err = bench(f"http://localhost:{HTTP}/", *short, "workers=2")
     clean("localhost, two workers", kv, rc, err)
+    rc, kv, err = bench(f"{url}/", *short, "new=on")
+    clean("new=on: a connection per request", kv, rc, err)
+    check("  no reconnects counted for new=on", kv.get("reconnects", 1) == 0, str(kv))
+    rc, kv, err = bench(f"{url}/chunked", "rate=1000", "duration=500ms", "warmup=0s", "conns=8", "new=on")
+    check("new=on at a rate", rc == 0 and kv["requests"] == 500 and kv["errors"] == 0, str(kv))
 
     # a fixed rate gives exactly rate * duration answers
     rc, kv, err = bench(f"{url}/", "rate=2000", "duration=1s", "warmup=200ms", "conns=8", "workers=2")
@@ -208,6 +239,17 @@ def main():
             rc, kv, err = bench(f"https://localhost:{HTTPS}/chunked", "rate=1000", "duration=500ms",
                                 "warmup=100ms", "conns=4")
             check("https at a rate", rc == 0 and kv["requests"] == 500 and kv["errors"] == 0, str(kv))
+            rc, kv, err = bench(f"https://127.0.0.1:{HTTPS}/", *short, "new=on")
+            clean("https, a new connection (and handshake) per request", kv, rc, err)
+            rc, kv, err = bench(f"https://127.0.0.1:{HTTPS}/", "rate=500", "duration=1s", "warmup=200ms",
+                                "conns=16", "new=on")
+            check("https new=on at a rate", rc == 0 and kv["requests"] == 500 and kv["errors"] == 0, str(kv))
+            threading.Thread(target=openssl_backend, args=(tmp / "c.pem", tmp / "k.pem"), daemon=True).start()
+            time.sleep(0.3)
+            rc, kv, err = bench(f"https://127.0.0.1:{OSSL}/", *short)
+            clean("OpenSSL server, keep-alive: its tickets drained from kTLS", kv, rc, err)
+            rc, kv, err = bench(f"https://127.0.0.1:{OSSL}/", *short, "new=on")
+            clean("OpenSSL server, new=on: a flight in several records", kv, rc, err)
         finally:
             ok.terminate()
             ok.wait()

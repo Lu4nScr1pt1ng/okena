@@ -41,9 +41,20 @@ BC_STATUS	:= 48				; d
 BC_GIDX		:= 52				; d: index among all connections
 BC_FLAGS	:= 56				; d: BF_*
 BC_SLOT		:= 60				; d: which of its schedule's requests is next
-BC_BUF		:= 64
+BC_HS		:= 64				; d: new=on: BH_* (0 = plain bytes or kTLS)
+BC_HTRY		:= 68				; d: the server flight's records tried so far
+BC_CLEN		:= 72				; d: ciphertext bytes in BC_CBUF
+BC_BUF		:= 128				; plaintext of the answer
 BC_CAP		:= 16384
-BC_SIZE		:= BC_BUF + BC_CAP
+BC_CBUF		:= BC_BUF + BC_CAP		; new=on, https: records as received
+BC_CCAP		:= 32768
+BC_TC		:= BC_CBUF + BC_CCAP		; new=on, https: the handshake
+BC_SNAP		:= BC_TC + TC_FULL		; the transcript through the ClientHello
+BC_SIZE		:= (BC_SNAP + SHA256_CTX_SIZE + 63) and not 63
+
+BH_CONNECTING	:= 1				; waiting for the connect
+BH_FLIGHT	:= 2				; ClientHello sent, reading the server's flight
+BH_RECORDS	:= 3				; established: records opened here
 
 BCS_WAIT	:= 0				; idle, its next request in the heap
 BCS_FLIGHT	:= 1				; a request out, its answer pending
@@ -115,6 +126,7 @@ bss
 	g_b_inflight	dd ?
 	g_b_heapn	dd ?
 	g_b_alive	dd ?
+	g_b_new		dd ?			; a new connection (and handshake) per request
 	g_b_rate	dq ?			; requests/s in all, 0 = closed loop
 	g_b_dur		dq ?			; us
 	g_b_warm	dq ?			; us
@@ -155,7 +167,8 @@ bss
 	g_b_iov:	rb 16
 	g_b_ctl:	rb 64
 	g_b_hout:	rb 4096			; ClientHello, then the client Finished
-	g_b_hdec:	rb 32768		; the decrypted server flight
+	g_b_hsend:	rb BENCH_REQ_CAP + 4096	; new=on: the Finished and the sealed request
+	g_b_hdec:	rb BENCH_HIN_CAP	; the decrypted server flight (as large as what it comes from)
 	g_b_hin:	rb BENCH_HIN_CAP	; the server's flight as received
 	g_b_req:	rb BENCH_REQ_CAP
 	g_b_hist:	rq 3 * BH_NB		; the parent's sum
@@ -192,6 +205,9 @@ cstring str_bk_body, 'body',0
 cstring str_bk_size, 'size',0
 cstring str_bk_sni, 'sni',0
 cstring str_bk_format, 'format',0
+cstring str_bk_new, 'new',0
+cstring str_bk_on, 'on',0
+cstring str_bk_off, 'off',0
 cstring str_bk_text, 'text',0
 cstring str_bk_kv, 'kv',0
 cstring str_bk_head, 'HEAD',0
@@ -257,7 +273,23 @@ cli_bench:
 	bench_key str_bk_size, .size
 	bench_key str_bk_sni, .sni
 	bench_key str_bk_format, .format
+	bench_key str_bk_new, .new
 	jmp	.badkey
+.new:
+	mov	rdi,r14
+	mov	esi,r15d
+	lea	rdx,[str_bk_on]
+	call	mem_eq_cstr
+	mov	[g_b_new],eax
+	test	eax,eax
+	jnz	.arg
+	mov	rdi,r14
+	mov	esi,r15d
+	lea	rdx,[str_bk_off]
+	call	mem_eq_cstr
+	test	eax,eax
+	jz	.badval
+	jmp	.arg
 .rate:
 	mov	rdi,r14
 	mov	esi,r15d
@@ -376,7 +408,7 @@ cli_bench:
 	jmp	exit_process
 .usage:
 	call	log_begin
-	out_lit 'usage: okena bench URL [rate=N] [conns=N] [duration=10s] [warmup=1s] [workers=N] [method=GET] [header=...] [body=TEXT] [size=N] [sni=NAME] [format=text|kv]'
+	out_lit 'usage: okena bench URL [rate=N] [conns=N] [duration=10s] [warmup=1s] [workers=N] [new=on] [method=GET] [header=...] [body=TEXT] [size=N] [sni=NAME] [format=text|kv]'
 	jmp	.fail
 .badkey:
 	call	log_begin
@@ -676,6 +708,10 @@ bench_build_request:
 	inc	r8d
 	jmp	.hdr
 .hdrs_done:
+	cmp	dword [g_b_new],0
+	je	@f
+	breq_lit 'Connection: close',13,10
+@@:
 	cmp	qword [g_b_body],0
 	je	.end
 	breq_lit 'Content-Length: '
@@ -1206,10 +1242,13 @@ bench_send:
 	mov	[rbx+BC_STATUS],eax
 	mov	dword [rbx+BC_PHASE],BP_HEAD
 	cmp	dword [g_b_mode],2
-	jne	bench_send_more
+	jne	@f
 	mov	dword [rbx+BC_PHASE],BP_ECHO
 	mov	rax,[g_b_size]
 	mov	[rbx+BC_REM],rax
+@@:
+	cmp	dword [g_b_new],0
+	jne	bench_new_open
 ; the rest of the request, as far as the socket takes it
 bench_send_more:
 .again:
@@ -1268,6 +1307,8 @@ bench_epoll_mod:
 bench_fail:
 	mov	rax,[g_b_wres]
 	inc	qword [rax+BW_ERR]
+	cmp	dword [g_b_new],0
+	jne	bench_new_fail
 	cmp	dword [rbx+BC_STATE],BCS_FLIGHT
 	jne	bench_reconnect_wait		; idle: it may be in the heap already
 	dec	dword [g_b_inflight]
@@ -1281,6 +1322,8 @@ bench_fail:
 
 ; rbx = connection, readable
 bench_readable:
+	cmp	dword [rbx+BC_HS],BH_FLIGHT
+	jae	bench_tls_readable
 	mov	ecx,[rbx+BC_ROFF]		; move what is left to the front
 	test	ecx,ecx
 	jz	.read
@@ -1335,6 +1378,8 @@ bench_readable:
 	jmp	bench_complete
 .closed_idle:
 	; the server closed a keep-alive connection between requests
+	cmp	dword [g_b_new],0
+	jne	bench_fail
 	mov	rax,[g_b_wres]
 	inc	qword [rax+BW_RECON]
 	jmp	bench_reconnect_wait
@@ -1343,8 +1388,8 @@ bench_readable:
 	jne	bench_fail
 	; a TLS control record (a NewSessionTicket): take it with recvmsg,
 	; which the kernel allows with a control buffer, and drop it
-	lea	rax,[rbx+BC_BUF]
-	add	eax,[rbx+BC_RLEN]
+	mov	eax,[rbx+BC_RLEN]
+	lea	rax,[rbx+BC_BUF+rax]
 	mov	[g_b_iov],rax
 	mov	eax,BC_CAP
 	sub	eax,[rbx+BC_RLEN]
@@ -1368,6 +1413,361 @@ bench_readable:
 	js	bench_fail
 	jmp	.read
 .ret:
+	ret
+
+; ------------------------------------------------- new=on: a connection each
+
+; rbx = connection whose server closed it while records were read here
+bench_eof:
+	cmp	dword [rbx+BC_STATE],BCS_FLIGHT
+	jne	bench_fail
+	cmp	dword [rbx+BC_PHASE],BP_CLOSE
+	jne	bench_fail
+	or	dword [rbx+BC_FLAGS],BF_CLOSE
+	jmp	bench_complete
+
+; rbx = connection whose request is due: a new socket, connecting. The
+; request (after a TLS handshake for https) goes out when it is connected.
+bench_new_open:
+	mov	edi,[g_b_family]
+	mov	esi,SOCK_STREAM or SOCK_NONBLOCK or SOCK_CLOEXEC
+	xor	edx,edx
+	mov	eax,SYS_socket
+	syscall
+	test	eax,eax
+	js	bench_fail
+	mov	[rbx+BC_FD],eax
+	sub	rsp,16
+	mov	dword [rsp],1
+	mov	edi,[rbx+BC_FD]
+	mov	esi,IPPROTO_TCP
+	mov	edx,TCP_NODELAY
+	mov	r10,rsp
+	mov	r8d,4
+	mov	eax,SYS_setsockopt
+	syscall
+	mov	dword [rsp],1			; SO_LINGER 0: the close resets, so
+	mov	dword [rsp+4],0			; no TIME_WAIT eats the local ports
+	mov	edi,[rbx+BC_FD]
+	mov	esi,1				; SOL_SOCKET
+	mov	edx,13				; SO_LINGER
+	mov	r10,rsp
+	mov	r8d,8
+	mov	eax,SYS_setsockopt
+	syscall
+	add	rsp,16
+	xor	eax,eax
+	mov	[rbx+BC_RLEN],eax
+	mov	[rbx+BC_ROFF],eax
+	mov	[rbx+BC_CLEN],eax
+	mov	[rbx+BC_FLAGS],eax
+	mov	dword [rbx+BC_HS],BH_CONNECTING
+	mov	edi,[rbx+BC_FD]
+	lea	rsi,[g_b_sa]
+	mov	edx,[g_b_salen]
+	mov	eax,SYS_connect
+	syscall
+	test	eax,eax
+	jz	@f
+	cmp	eax,-EINPROGRESS
+	jne	bench_fail
+@@:
+	sub	rsp,16
+	mov	dword [rsp],EPOLLOUT
+	mov	eax,[rbx+BC_GIDX]
+	sub	eax,[g_b_c0]
+	mov	[rsp+4],rax
+	mov	edi,[g_b_ep]
+	mov	esi,EPOLL_CTL_ADD
+	mov	edx,[rbx+BC_FD]
+	mov	r10,rsp
+	mov	eax,SYS_epoll_ctl
+	syscall
+	add	rsp,16
+	test	eax,eax
+	jnz	bench_fail
+	ret
+
+; rbx: the connect finished (or failed)
+bench_new_connected:
+	sub	rsp,16
+	mov	dword [rsp],0
+	mov	dword [rsp+4],4
+	mov	edi,[rbx+BC_FD]
+	mov	esi,1				; SOL_SOCKET
+	mov	edx,4				; SO_ERROR
+	mov	r10,rsp
+	lea	r8,[rsp+4]
+	mov	eax,SYS_getsockopt
+	syscall
+	mov	ecx,[rsp]
+	add	rsp,16
+	test	eax,eax
+	jnz	bench_fail
+	test	ecx,ecx
+	jnz	bench_fail
+	cmp	dword [g_b_mode],1
+	je	.tls
+	mov	dword [rbx+BC_HS],0
+	mov	edi,EPOLLIN
+	call	bench_epoll_mod
+	jmp	bench_send_more
+.tls:
+	lea	rdi,[rbx+BC_TC]
+	lea	rsi,[g_b_hout]
+	mov	rdx,[g_b_sni]
+	mov	ecx,[g_b_snilen]
+	call	tlsc_client_hello
+	test	eax,eax
+	jz	bench_fail
+	push	rax
+	lea	rsi,[rbx+BC_TC+TC_SHA]		; the transcript through the ClientHello
+	lea	rdi,[rbx+BC_SNAP]
+	mov	ecx,SHA256_CTX_SIZE
+	rep	movsb
+	pop	rdx
+	lea	rsi,[g_b_hout]
+	call	bench_new_sendall
+	jc	bench_fail
+	mov	dword [rbx+BC_HS],BH_FLIGHT
+	mov	dword [rbx+BC_HTRY],0
+	mov	edi,EPOLLIN
+	jmp	bench_epoll_mod
+
+; rsi = bytes, edx = length: all of it into the fresh connection in rbx at
+; once (it fits the socket's buffer), else CF
+bench_new_sendall:
+	push	rdx
+	mov	edi,[rbx+BC_FD]
+	mov	r10d,MSG_DONTWAIT or MSG_NOSIGNAL
+	xor	r8d,r8d
+	xor	r9d,r9d
+	mov	eax,SYS_sendto
+	syscall
+	pop	rdx
+	cmp	rax,rdx
+	jne	.short
+	clc
+	ret
+.short:
+	stc
+	ret
+
+; rbx = connection, its exchange over: closed (with a reset)
+bench_new_close:
+	mov	edi,[rbx+BC_FD]
+	test	edi,edi
+	js	@f
+	mov	eax,SYS_close
+	syscall
+@@:
+	mov	dword [rbx+BC_FD],-1
+	mov	dword [rbx+BC_HS],0
+	ret
+
+; rbx = connection: an error (counted already). Closed; the schedule goes on.
+bench_new_fail:
+	call	bench_new_close
+	cmp	dword [rbx+BC_STATE],BCS_FLIGHT
+	jne	.idle
+	dec	dword [g_b_inflight]
+	mov	dword [rbx+BC_STATE],BCS_WAIT
+	bench_now
+	jmp	bench_schedule
+.idle:
+	ret
+
+; rbx = connection in its TLS handshake or on user-space records: readable
+bench_tls_readable:
+	push	r12
+	push	r13
+	push	r14
+.read:
+	mov	edx,BC_CCAP
+	sub	edx,[rbx+BC_CLEN]
+	jz	.fail
+	mov	edi,[rbx+BC_FD]
+	mov	eax,[rbx+BC_CLEN]
+	lea	rsi,[rbx+BC_CBUF+rax]
+	mov	r10d,MSG_DONTWAIT
+	xor	r8d,r8d
+	xor	r9d,r9d
+	mov	eax,SYS_recvfrom
+	syscall
+	cmp	rax,-EAGAIN
+	je	.out
+	cmp	rax,-EINTR
+	je	.read
+	test	rax,rax
+	js	.fail
+	jz	.eof
+	add	[rbx+BC_CLEN],eax
+	mov	rcx,[g_b_wres]
+	add	[rcx+BW_BYTES],rax
+	cmp	dword [rbx+BC_HS],BH_FLIGHT
+	je	.flight
+.records:
+	; every whole record: its plaintext to the answer's buffer, parsed
+	xor	r12d,r12d
+.record:
+	lea	eax,[r12+5]
+	cmp	eax,[rbx+BC_CLEN]
+	ja	.compact
+	movzx	eax,word [rbx+BC_CBUF+r12+3]
+	xchg	al,ah
+	lea	r13d,[r12+rax+5]
+	cmp	r13d,[rbx+BC_CLEN]
+	ja	.compact
+	lea	rdi,[rbx+BC_TC]
+	lea	rsi,[rbx+BC_CBUF+r12]
+	call	tlsc_open
+	mov	r12d,r13d
+	test	eax,eax
+	jz	.fail
+	cmp	r8d,21				; an alert: the end
+	je	.eof
+	cmp	r8d,23
+	jne	.record				; a session ticket: not kept
+	mov	r14,rsi				; plaintext
+	mov	r13d,ecx
+	mov	ecx,[rbx+BC_ROFF]		; what is parsed leaves the buffer
+	test	ecx,ecx
+	jz	@f
+	mov	edx,[rbx+BC_RLEN]
+	sub	edx,ecx
+	mov	[rbx+BC_RLEN],edx
+	mov	dword [rbx+BC_ROFF],0
+	lea	rsi,[rbx+BC_BUF+rcx]
+	lea	rdi,[rbx+BC_BUF]
+	mov	ecx,edx
+	rep	movsb
+@@:
+	mov	eax,[rbx+BC_RLEN]
+	add	eax,r13d
+	cmp	eax,BC_CAP
+	ja	.fail
+	mov	ecx,[rbx+BC_RLEN]
+	lea	rdi,[rbx+BC_BUF+rcx]
+	mov	rsi,r14
+	mov	ecx,r13d
+	rep	movsb
+	mov	[rbx+BC_RLEN],eax
+	cmp	dword [rbx+BC_STATE],BCS_FLIGHT
+	jne	.fail
+	call	bench_parse
+	test	eax,eax
+	js	.fail
+	jz	.record
+	mov	eax,[rbx+BC_ROFF]
+	cmp	eax,[rbx+BC_RLEN]
+	jne	.fail
+	pop	r14
+	pop	r13
+	pop	r12
+	jmp	bench_complete
+.compact:
+	mov	ecx,[rbx+BC_CLEN]		; a partial record to the front
+	sub	ecx,r12d
+	mov	[rbx+BC_CLEN],ecx
+	lea	rsi,[rbx+BC_CBUF+r12]
+	lea	rdi,[rbx+BC_CBUF]
+	rep	movsb
+	jmp	.read
+.flight:
+	mov	r12d,[rbx+BC_HTRY]
+.frec:
+	lea	eax,[r12+5]
+	cmp	eax,[rbx+BC_CLEN]
+	ja	.fmore
+	movzx	eax,word [rbx+BC_CBUF+r12+3]
+	xchg	al,ah
+	lea	r12d,[r12+rax+5]
+	cmp	r12d,[rbx+BC_CLEN]
+	ja	.fmore_back
+	lea	rsi,[rbx+BC_CBUF]
+	mov	edx,r12d
+	call	tlsc_is_tls12
+	test	eax,eax
+	jnz	.fail
+	lea	rsi,[rbx+BC_SNAP]
+	lea	rdi,[rbx+BC_TC+TC_SHA]
+	mov	ecx,SHA256_CTX_SIZE
+	rep	movsb
+	lea	rdi,[rbx+BC_TC]
+	lea	rsi,[rbx+BC_CBUF]
+	mov	edx,r12d
+	lea	rcx,[g_b_hdec]
+	call	tlsc_server_flight
+	test	eax,eax
+	jz	.frec
+	mov	r13d,eax
+	lea	rsi,[g_b_hdec]
+	mov	edx,eax
+	call	tlsc_flight_complete
+	test	eax,eax
+	jz	.frec
+	lea	rdi,[rbx+BC_TC]
+	lea	rsi,[g_b_hdec]
+	mov	edx,r13d
+	call	tlsc_verify
+	test	eax,eax
+	jz	.fail
+	lea	rdi,[rbx+BC_TC]
+	lea	rsi,[g_b_hsend]
+	call	tlsc_finish
+	mov	r13d,eax			; the Finished, then the request sealed
+	lea	rdi,[rbx+BC_TC]
+	lea	rsi,[g_b_hsend+r13]
+	lea	rdx,[g_b_req]
+	mov	ecx,[g_b_reqlen]
+	call	tlsc_seal
+	add	r13d,eax
+	lea	rsi,[g_b_hsend]
+	mov	edx,r13d
+	call	bench_new_sendall
+	jc	.fail
+	mov	eax,[g_b_reqlen]
+	mov	[rbx+BC_SOFF],eax
+	mov	dword [rbx+BC_HS],BH_RECORDS
+	mov	ecx,[rbx+BC_CLEN]		; what came after the Finished stays
+	sub	ecx,r12d
+	mov	[rbx+BC_CLEN],ecx
+	lea	rsi,[rbx+BC_CBUF+r12]
+	lea	rdi,[rbx+BC_CBUF]
+	rep	movsb
+	jmp	.records
+.fmore_back:
+	; that record is not whole: from the last whole one next time
+	mov	r12d,[rbx+BC_HTRY]
+.fmore_scan:
+	; the last whole-record boundary at or after HTRY
+	lea	eax,[r12+5]
+	cmp	eax,[rbx+BC_CLEN]
+	ja	.fmore
+	movzx	eax,word [rbx+BC_CBUF+r12+3]
+	xchg	al,ah
+	lea	eax,[r12+rax+5]
+	cmp	eax,[rbx+BC_CLEN]
+	ja	.fmore
+	mov	r12d,eax
+	jmp	.fmore_scan
+.fmore:
+	mov	[rbx+BC_HTRY],r12d
+	jmp	.read
+.eof:
+	pop	r14
+	pop	r13
+	pop	r12
+	jmp	bench_eof
+.fail:
+	pop	r14
+	pop	r13
+	pop	r12
+	jmp	bench_fail
+.out:
+	pop	r14
+	pop	r13
+	pop	r12
 	ret
 
 ; rbx: the connection closed between requests; replace it, same schedule
@@ -1455,6 +1855,11 @@ bench_complete:
 .counted:
 	mov	dword [rbx+BC_RLEN],0
 	mov	dword [rbx+BC_ROFF],0
+	cmp	dword [g_b_new],0
+	je	@f
+	call	bench_new_close
+	jmp	.next
+@@:
 	test	dword [rbx+BC_FLAGS],BF_CLOSE
 	jz	.next
 	mov	rax,[g_b_wres]
@@ -1874,9 +2279,13 @@ bench_worker:
 	mov	eax,[g_b_c0]
 	add	eax,r12d
 	mov	[rbx+BC_GIDX],eax
+	mov	dword [rbx+BC_FD],-1
+	cmp	dword [g_b_new],0		; new=on: each request connects
+	jne	@f
 	call	bench_open
 	test	eax,eax
 	jz	.fail
+@@:
 	inc	r12d
 	jmp	.open
 .opened:
@@ -2057,6 +2466,11 @@ bench_loop:
 	add	rbx,rax
 	cmp	dword [rbx+BC_STATE],BCS_DEAD
 	je	.event
+	cmp	dword [rbx+BC_HS],BH_CONNECTING
+	jne	@f
+	call	bench_new_connected
+	jmp	.event
+@@:
 	push	rdx
 	test	edx,EPOLLOUT
 	jz	@f
@@ -2396,7 +2810,12 @@ bench_report:
 	out_lit ': '
 	mov	eax,[g_b_conns]
 	call	out_u64
-	out_lit ' connections, '
+	out_lit ' connections'
+	cmp	dword [g_b_new],0
+	je	@f
+	out_lit ' (a new one for each request)'
+@@:
+	out_lit ', '
 	mov	eax,[g_b_workers]
 	call	out_u64
 	out_lit ' worker'
