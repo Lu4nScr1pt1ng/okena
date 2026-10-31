@@ -7,7 +7,27 @@ A number without its method is not recorded here.
 
 The exit criteria in [ROADMAP.md](ROADMAP.md) compare against references
 on the same machine, with cores pinned and open-loop load. Entries made
-before that harness exists (`okena bench`, the two-host topology) say so.
+with a closed-loop generator (wrk) say so; the two-host topology is not
+in place yet.
+
+## The load generator
+
+`okena bench URL rate=N conns=C duration=D` gives every connection a
+schedule (one request each C/N seconds, the connections staggered) and
+measures each answer from the time its request was due, the way wrk2
+does: a stall is charged to every request it held back, not only to the
+one that saw it. It prints three histograms:
+
+* `latency`: from the schedule (the number to quote);
+* `service`: from the actual send (what a closed-loop tool reports);
+* `sender`: how late the generator itself sent a request whose connection
+  was idle, so its own error is on the page (on this machine, p99 under
+  0.5 us and p99.9 a few us when it has a core of its own).
+
+`behind` counts requests the schedule asked for that never went out: the
+server did not keep up, and the percentiles do not include them. A run
+with `behind` above zero did not reach its rate and says nothing about
+latency at that rate. Without `rate=` the run is closed loop.
 
 ## Machine
 

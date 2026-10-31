@@ -866,7 +866,9 @@ the CDN.
   with defaults), `okena route 'GET https://api.example.com/v1/users'`
   (which listener, route, filters, pool and backend a request would get),
   `okena bench` (open-loop load generator with coordinated-omission
-  correction, built on the same engine).
+  correction, built on the same engine). **Today** it runs on epoll in
+  worker processes of its own (TLS through the same client code, then
+  kTLS), not on the io_uring loop.
 * Containers from `scratch` (see Containers), systemd unit with socket activation.
 
 ## Containers

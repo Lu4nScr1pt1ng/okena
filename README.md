@@ -50,7 +50,10 @@ Early: L4 and HTTP/1.1, no TLS yet. What works today:
   timeouts with failover, passive ejection of failing backends, idle
   timeouts, half-close, graceful drain, workers restarted on crash with
   no lost queued connection;
-* memory that follows the load: a worker uses under 1 MiB at rest.
+* memory that follows the load: a worker uses under 1 MiB at rest;
+* `okena bench`, an open-loop load generator (HTTP, HTTPS over kTLS, TCP
+  echo) whose latency is corrected for coordinated omission:
+  `okena bench https://localhost/ rate=50k conns=64 duration=30s`.
 
 * backends by name (`to app:3000`): /etc/hosts and DNS with search
   domains, A and AAAA, every address of a name used, re-resolved by TTL
@@ -109,6 +112,7 @@ make test-serial   # the same, one after the other, with all output
 python3 tests/run_all.py http l4   # only the suites whose name has a word
 make docker-test   # the image under both seccomp profiles
 make bench    # added latency of the L4 proxy
+build/okena bench http://127.0.0.1:8080/ rate=100k   # open-loop load, any server
 ```
 
 ## License

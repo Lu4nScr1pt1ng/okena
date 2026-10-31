@@ -67,6 +67,7 @@ include 'http/hsbudget.inc'
 include 'http/tls12_srv.inc'
 include 'http/uptls.inc'
 include 'core/accesslog.inc'
+include 'bench/bench.inc'
 include 'cli.inc'
 
 start:

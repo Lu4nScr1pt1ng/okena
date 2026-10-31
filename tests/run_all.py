@@ -66,6 +66,7 @@ SUITES = [
     ("peer epoll", ["tests/peer/run.py", "epoll"]),
     ("config fuzz", ["tests/config/fuzz.py", "2000"]),
     ("config", ["tests/config/run.py"]),
+    ("bench", ["tests/bench/run.py"]),
 ]
 
 

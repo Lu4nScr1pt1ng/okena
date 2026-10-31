@@ -29,7 +29,10 @@ References used for comparison: HAProxy 3.x (L4 and HTTP/1), nginx
 * Worker heartbeat watchdog and query-of-death quarantine.
 * Provided buffer rings with incremental consumption, recv/send bundles.
 * Test harness: unit tests in assembly, Python integration runner,
-  `okena bench` (open loop, coordinated-omission corrected).
+  `okena bench` (open loop, coordinated-omission corrected). **Done:**
+  `okena bench` (src/bench/bench.inc) drives HTTP, HTTPS (kTLS) and TCP
+  echo on a per-connection schedule, wrk2's correction, and reports the
+  generator's own lag beside it (tests/bench/run.py).
 * Two I/O engines from day one: io_uring and epoll, same code above them,
   both in CI.
 * Container awareness: cgroup CPU quota and memory limit, `scratch`

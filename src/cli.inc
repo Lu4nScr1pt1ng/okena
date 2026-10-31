@@ -2,6 +2,7 @@
 ;
 ;   okena [run] [-c FILE]          serve (default file /etc/okena/okena.conf)
 ;   okena check [FILE]             validate a configuration
+;   okena bench URL [key=value...] open-loop load (src/bench/bench.inc)
 ;   okena tcp :5432 to db:5432     the configuration itself, on the line
 ;   okena version | help
 ;
@@ -15,6 +16,7 @@ cstring str_cmd_run, 'run',0
 cstring str_cmd_version, 'version',0
 cstring str_cmd_help, 'help',0
 cstring str_cmd_health, 'health',0
+cstring str_cmd_bench, 'bench',0
 cstring str_flag_help, '--help',0
 cstring str_flag_version, '--version',0
 cstring str_flag_c, '-c',0
@@ -53,6 +55,12 @@ cli_main:
 	call	cli_source_from_args
 	jmp	cli_health
 @@:
+	mov	rax,[g_argv]
+	mov	rdi,[rax+8]
+	lea	rsi,[str_cmd_bench]
+	call	cstr_eq
+	test	eax,eax
+	jnz	cli_bench
 	mov	rax,[g_argv]
 	mov	rdi,[rax+8]
 	lea	rsi,[str_cmd_version]
@@ -296,6 +304,7 @@ cli_help:
 	out_lit '  okena check [FILE]           validate a configuration and exit', 10
 	out_lit '  okena tcp :5432 to db:5432   configuration given on the command line', 10
 	out_lit '  okena health [FILE]          exit 0 when the running instance is ready (/ready)', 10
+	out_lit '  okena bench URL [rate=N] ... open-loop load: latency corrected for coordinated omission', 10
 	out_lit '  okena version', 10, 10
 	out_lit 'OKENA_CONFIG, when set, holds configuration text used instead of the file.', 10
 	xor	edi,edi

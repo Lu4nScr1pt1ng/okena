@@ -93,6 +93,7 @@ test-serial: $(BIN) $(HTTPH) $(KAT) $(TLSH)
 	python3 -I tests/overload/run.py epoll
 	python3 -I tests/httpproxy/run.py io_uring
 	python3 -I tests/httpproxy/run.py epoll
+	python3 -I tests/bench/run.py
 
 image:
 	docker build -t okena .

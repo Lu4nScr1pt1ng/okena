@@ -497,10 +497,21 @@ okena fmt -w okena.conf            # canonical formatting
 okena explain                      # effective config, defaults included
 okena route 'GET https://api.example.com/v1/users/42 x-canary:yes'
 okena top                          # live per-route/backend view
-okena bench https://localhost/v1/ --rate 200k --duration 60s
+okena bench https://localhost/v1/ rate=200k duration=60s
 okena health                       # exit 0 when ready (Docker HEALTHCHECK)
 okena check --host                 # kernel features, limits, sysctls, container
 ```
+
+`okena bench URL [key=value...]` is an open-loop load generator (http://,
+https:// over TLS 1.3 and kTLS, tcp:// for echo). Options: `rate=N`
+(requests/s in all, `k` and `M` allowed; without it the run is closed
+loop), `conns=64`, `duration=10s`, `warmup=1s`, `workers=1` (processes),
+`method=GET`, `header='Name: value'` (repeatable), `body=TEXT`,
+`size=64` (tcp), `sni=NAME`, `format=text|kv`. It reports p50 to p99.99
+and the maximum three ways: `latency` from the time the schedule asked
+for each request (corrected for coordinated omission), `service` from the
+actual send, and `sender`, how late the generator itself was. Requests the
+schedule asked for that never went out are reported as `behind`.
 
 `okena route` answers "where does this request go": listener, matched
 route and why, filters in order, pool, chosen backend and the limits that
