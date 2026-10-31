@@ -532,32 +532,61 @@ http_tls_established:
 	je	ep_connect
 	jmp	session_connect
 
-; Before serving: tls without the kernel's TLS (the module, "tls") works
-; on http listeners, slower (said once), and not on tcp ones (exits with
-; EXIT_CONFIG and why: their bytes move without okena seeing them).
+; Before serving: without the kernel's TLS (the module, "tls") an http
+; listener seals its records itself, as it does by default (said once
+; when one asked for `ktls on`); a tcp listener that terminates TLS cannot
+; (exits with EXIT_CONFIG and why: its bytes move without okena seeing
+; them); passthrough never needs it; TLS to backends needs it (said once:
+; those backends answer 502).
 tls_serve_check:
 	push	rbx
+	push	r12
 	xor	ecx,ecx
 	xor	edx,edx				; edx = listeners with tls
-	xor	ebx,ebx				; ebx = tcp ones
+	xor	ebx,ebx				; ebx = tcp ones that terminate it
+	xor	r12d,r12d			; r12d = http ones with `ktls on`
 .listener:
 	cmp	ecx,[g_plan_listeners]
-	jae	.scanned
+	jae	.pools
 	imul	rax,rcx,LS_SIZE
 	inc	ecx
+	cmp	dword [g_listeners+rax+LS_PT],0
+	jne	.listener			; passthrough: no keys, no records
 	cmp	dword [g_listeners+rax+LS_TLS],0
 	je	.listener
 	inc	edx
 	cmp	dword [g_listeners+rax+LS_KIND],LK_HTTP
-	je	.listener
+	je	.http
 	inc	ebx
 	jmp	.listener
+.http:
+	test	dword [g_listeners+rax+LS_FLAGS],LSF_KTLS
+	jz	.listener
+	inc	r12d
+	jmp	.listener
+.pools:
+	xor	ecx,ecx				; pools with tls { } (upstream kTLS)
+.pool:
+	cmp	ecx,[g_plan_pools]
+	jae	.scanned
+	imul	rax,rcx,PL_SIZE
+	inc	ecx
+	lea	r8,[g_pools]
+	cmp	dword [r8+rax+PL_TLS],0
+	je	.pool
+	or	r12d,1 shl 30
+	jmp	.pool
 .scanned:
 	test	edx,edx
+	jnz	@f
+	test	r12d,r12d
 	jz	.ok
+	jmp	.probe_env			; only pools: no ticket keys to make
+@@:
 	push	rdx
 	call	tls_tickets_init		; before the workers fork: one key for all
 	pop	rdx
+.probe_env:
 	; OKENA_KTLS=off: records in user space even with the module (tests,
 	; comparisons)
 	lea	rdi,[env_okena_ktls]
@@ -593,16 +622,25 @@ tls_serve_check:
 	cmp	eax,-ENOENT
 	je	.no_ktls
 .ok:
+	pop	r12
 	pop	rbx
 	ret
 .no_ktls:
 	mov	dword [g_no_ktls],1		; the workers forked from here know
 	test	ebx,ebx
 	jnz	.tcp
+	test	r12d,1 shl 30
+	jz	@f
 	call	log_begin
-	out_lit 'no kernel TLS (modprobe tls): TLS records are sealed in user space, which costs more CPU'
-	pop	rbx
-	jmp	log_end
+	out_lit 'no kernel TLS (modprobe tls): pools with tls { } cannot reach their backends (502)'
+	call	log_end
+@@:
+	test	r12d,(1 shl 30) - 1
+	jz	.ok
+	call	log_begin
+	out_lit 'no kernel TLS (modprobe tls): `ktls on` listeners seal their records in user space'
+	call	log_end
+	jmp	.ok
 .tcp:
 	call	log_begin
 	out_lit 'tls { } on a tcp listener needs kernel TLS, and its module is not loaded: modprobe tls (on the host, for a container)'

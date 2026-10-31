@@ -193,6 +193,9 @@ def main():
     if not shutil.which("openssl"):
         print("skip uptls: openssl not found")
         return 0
+    if not pathlib.Path("/sys/module/tls").exists():
+        print("skip uptls: TLS to backends runs on kTLS and the tls module is not loaded (sudo modprobe tls)")
+        return 0
     threading.Thread(target=tls_backend, args=(BACK,), daemon=True).start()
     threading.Thread(target=plain_backend, args=(PLAIN,), daemon=True).start()
     threading.Thread(target=tls12_backend, args=(BACK12, "leaf.pem", "leaf.key"), daemon=True).start()
