@@ -4,7 +4,8 @@ engine (argument): okena in front of an HTTP/2 server written with the h2
 package, and in front of another okena (`http2 on`). HTTP/1.1 and HTTP/2
 clients; trailers (gRPC's status) reach both; request bodies with and
 without content-length go out as DATA, unframed; streams share upstream
-connections; a server's RST_STREAM and GOAWAY, a backend down."""
+connections; a server's RST_STREAM and GOAWAY, a backend down; over TLS
+(ALPN h2, the chain verified) when the tls module is loaded."""
 import hashlib
 import json
 import os
@@ -21,6 +22,8 @@ BIN = ROOT / "build" / "okena"
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
 BASE = 26000 + os.getpid() % 90 * 10 + (5 if ENGINE == "epoll" else 0)
 H2B, FRONT, CHAIN, MID, DOWN, H1B = BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4, 26990 - (5 if ENGINE == "epoll" else 0)
+TCHAIN, TMID = BASE + 5, BASE + 6
+KTLS = pathlib.Path("/sys/module/tls").exists()
 tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-h2u-"))
 failures = 0
 conns = {"n": 0}
@@ -186,8 +189,31 @@ def main():
         return 0
     threading.Thread(target=h2_backend, daemon=True).start()
     threading.Thread(target=h1_backend, daemon=True).start()
+    tls_part = ""
+    if KTLS:
+        sh = lambda *a: subprocess.run(a, cwd=tmp, check=True, capture_output=True)
+        sh("openssl", "ecparam", "-genkey", "-name", "prime256v1", "-noout", "-out", "ca.key")
+        sh("openssl", "req", "-new", "-x509", "-key", "ca.key", "-sha256", "-subj", "/CN=test-ca", "-days", "2",
+           "-out", "ca.pem")
+        sh("openssl", "ecparam", "-genkey", "-name", "prime256v1", "-noout", "-out", "leaf.key")
+        sh("openssl", "req", "-new", "-key", "leaf.key", "-subj", "/CN=front.test", "-out", "leaf.csr")
+        (tmp / "ext.cnf").write_text("subjectAltName=DNS:front.test\n")
+        sh("openssl", "x509", "-req", "-in", "leaf.csr", "-CA", "ca.pem", "-CAkey", "ca.key", "-CAcreateserial",
+           "-days", "2", "-sha256", "-extfile", "ext.cnf", "-out", "leaf.pem")
+        tls_part = f"""http 127.0.0.1:{TCHAIN} {{ route /* {{ to pool midt }} }}
+pool midt {{
+    protocol h2
+    tls {{ trust {tmp}/ca.pem; sni front.test }}
+    server 127.0.0.1:{TMID}
+}}
+http 127.0.0.1:{TMID} {{
+    http2 on
+    tls {{ cert {tmp}/leaf.pem; key {tmp}/leaf.key }}
+    route /* {{ to 127.0.0.1:{H1B} }}
+}}
+"""
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 1; io_engine {ENGINE} }}
+    conf.write_text(tls_part + f"""okena {{ workers 1; io_engine {ENGINE} }}
 http 127.0.0.1:{FRONT} {{
     http2 on
     route /* {{ to pool h2b }}
@@ -338,6 +364,15 @@ def cases():
     check("  as Trailers-Only: END_STREAM on the HEADERS, no DATA",
           resp and resp[0].stream_ended is not None and not any(isinstance(e, h2.events.DataReceived) for e in evs),
           str(evs))
+    if KTLS:
+        d = h1(TCHAIN, "/chain")
+        check("okena -> okena over HTTP/2 on TLS (ALPN h2) -> an HTTP/1.1 backend",
+              status(d) == 200 and h1_body(d)[0] == b"chain!", d[-120:])
+        d = h1(TCHAIN, "/again")
+        check("  the next request on the same TLS connection", status(d) == 200 and h1_body(d)[0] == b"chain!",
+              d[-120:])
+    else:
+        print("skip  HTTP/2 on TLS to a backend: the tls module is not loaded")
     t0 = time.time()
     d = h1(DOWN, "/x")
     check("a backend down: 502, at once", status(d) == 502 and time.time() - t0 < 2, d[:80])

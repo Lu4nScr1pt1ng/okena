@@ -254,6 +254,8 @@ TC_KXLEN	:= TC_SH64 + 64			; d: the key exchange is done (the flight
 						; is processed again as it arrives): the
 						; secret's length (32 at TC_SHARED, 64 at
 						; TC_SH64), 0 before
+TC_FEND		:= TC_KXLEN + 4		; d: where the flight ends in the input
+						; (records after the server Finished follow)
 TC_FULL		:= TC_KXLEN + 8
 
 ; rdi = tc, rsi = in (the server's bytes), edx = in length, rcx = out:
@@ -475,6 +477,16 @@ tlsc_server_flight:
 	cmp	byte [rdi],22			; handshake content
 	jne	.record_next			; (alert or app data: skip)
 	mov	[rsp+TF_OP],rdi			; its handshake bytes are kept
+	lea	r12,[r12+5+r13]
+	; the flight ends at the server Finished: records after it (a
+	; NewSessionTicket sent at once) are under the application key
+	mov	rsi,[rsp+TF_OUT]
+	mov	rdx,rdi
+	sub	rdx,rsi
+	call	tlsc_flight_complete
+	test	eax,eax
+	jnz	.done
+	jmp	.record
 .record_next:
 	lea	r12,[r12+5+r13]
 	jmp	.record
@@ -486,6 +498,8 @@ tlsc_server_flight:
 .done:
 	mov	rax,[rsp+TF_OP]
 	sub	rax,[rsp+TF_OUT]
+	mov	rdx,r12				; the input taken
+	sub	rdx,[rsp+TF_IN]
 	jmp	.out
 .bad:
 	xor	eax,eax
@@ -888,9 +902,10 @@ tlsc_open:
 
 ; rdi = tc, rsi = TX crypto_info out, rdx = RX crypto_info out: fills two
 ; struct tls12_crypto_info_aes_gcm_128 (40 bytes each) from the application
-; keys for the kernel's TLS, both at record sequence 0. TX seals what the
-; client sends (the client application key); RX opens what the server sends
-; (the server application key). Layout matches the server side in tls.inc.
+; keys for the kernel's TLS: TX at record sequence 0, RX past the records
+; tlsc_open took (tickets that came with the flight). TX seals what the
+; client sends (the client application key); RX opens what the server
+; sends (the server application key). Layout matches the server side in tls.inc.
 tlsc_ktls_info:
 	mov	r9,rdi				; tc
 	lea	rax,[r9+TC_CAPK]		; client key(16) then IV(12)
@@ -899,7 +914,7 @@ tlsc_ktls_info:
 	call	.fill
 	lea	rax,[r9+TC_SAPK]		; server key(16) then IV(12)
 	mov	rcx,rdx
-	xor	r8d,r8d
+	mov	r8,[r9+TC_RXSEQ]		; past records opened here (tickets)
 	call	.fill
 	ret
 ; rax = key(16)+IV(12), rcx = out(40), r8 = the next record sequence.

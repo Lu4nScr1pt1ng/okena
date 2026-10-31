@@ -123,11 +123,28 @@ http_uptls_flight_in:
 	test	eax,eax
 	jz	.more
 	mov	r13d,eax
+	mov	[r14+HB_UTC+TC_FEND],edx
 	lea	rsi,[r14+HB_UDEC]
 	mov	edx,eax
 	call	tlsc_flight_complete
 	test	eax,eax
 	jz	.more
+	; what came after the server Finished (a NewSessionTicket) must be
+	; whole records: they are opened here, the kernel takes what follows
+	mov	ecx,[r14+HB_UTC+TC_FEND]
+.after:
+	cmp	ecx,[r15+H_UPLEN]
+	je	.flight
+	lea	eax,[rcx+5]
+	cmp	eax,[r15+H_UPLEN]
+	ja	.more
+	movzx	eax,word [r14+HB_UP+rcx+3]
+	xchg	al,ah
+	lea	ecx,[rcx+rax+5]
+	cmp	ecx,[r15+H_UPLEN]
+	ja	.more
+	jmp	.after
+.flight:
 	lea	rdi,[r14+HB_UTC]		; CertificateVerify + server Finished
 	lea	rsi,[r14+HB_UDEC]
 	mov	edx,r13d
@@ -189,8 +206,29 @@ http_uptls_flight_in:
 	call	tlsc_finish
 	h_rec
 	mov	[r15+H_UHLEN],eax
+	mov	r14,[r15+H_BUF]			; the records after the server Finished:
+	mov	r13d,[r14+HB_UTC+TC_FEND]	; tickets (not kept), nothing else
+.ticket:
+	cmp	r13d,[r15+H_UPLEN]
+	jae	.tickets_done
+	movzx	eax,word [r14+HB_UP+r13+3]
+	xchg	al,ah
+	push	rax
+	lea	rdi,[r14+HB_UTC]
+	lea	rsi,[r14+HB_UP+r13]
+	call	tlsc_open
+	pop	rdx
+	test	eax,eax
+	jz	.badcert
+	cmp	r8d,22				; application data before our Finished:
+	jne	.badcert			; not taken
+	h_rec
+	mov	r14,[r15+H_BUF]
+	lea	r13d,[r13+rdx+5]
+	jmp	.ticket
+.tickets_done:
 	mov	dword [r15+H_STATE],HS_UTLS_FIN
-	mov	esi,eax
+	mov	esi,[r15+H_UHLEN]
 	mov	r14,[r15+H_BUF]
 	lea	rdi,[r14+HB_UWORK]
 	mov	ecx,SIDE_UP
