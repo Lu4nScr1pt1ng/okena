@@ -84,7 +84,9 @@ QT_TPCLEN	:= QT_TPS + 256			; d: the client's
 QT_TPC		:= QT_TPCLEN + 4		; (QT_TPC_MAX)
 QT_TPC_MAX	:= 1024
 QT_HQ		:= QT_TPC + QT_TPC_MAX		; d: ALPN hq-interop (HTTP/0.9), not h3
-QT_SIZE		:= QT_HQ + 4
+QT_NSTLEN	:= QT_HQ + 4			; d: a NewSessionTicket after the flight in
+						; out (1-RTT CRYPTO once the handshake is done)
+QT_SIZE		:= QT_NSTLEN + 4
 
 TF_ALPN_H1	:= 1				; set by the caller: answer ALPN with http/1.1
 TF_GOT_H1	:= 2				; the client asked for http/1.1
@@ -857,7 +859,7 @@ tls_hello:
 	mov	[rcx+QT_AEAD],edx
 	call	tls_now_s
 	mov	[rbp+HL_NOW],eax
-	jmp	.full
+	jmp	.psk_check			; a ticket of ours resumes (no early data)
 .tls_alpn:
 	and	dword [rbx+TS_FLAGS],not (TF_GOT_H1 or TF_GOT_H2)
 	test	dword [rbx+TS_FLAGS],TF_ALPN_H1 or TF_ALPN_H2
@@ -879,6 +881,7 @@ tls_hello:
 .alpn_done:
 	call	tls_now_s
 	mov	[rbp+HL_NOW],eax
+.psk_check:
 	mov	eax,[rbp+HL_GOT]
 	and	eax,G_PSK or G_PSKDHE
 	cmp	eax,G_PSK or G_PSKDHE
@@ -1394,7 +1397,13 @@ tls_hello:
 	mov	[rbx+TS_RX_SEQ],rax
 	mov	[rbx+TS_TX_SEQ],rax
 	test	dword [rbx+TS_FLAGS],TF_QUIC
-	jnz	.quic_out
+	jz	@f
+	mov	rdi,[rbx+TS_QT]			; QUIC: the server application secret now
+	lea	rsi,[rbp+HL_TMP]		; (the ticket takes HL_TMP)
+	lea	rdi,[rdi+QT_SAP]
+	mov	ecx,32
+	rep	movsb
+@@:
 	cmp	qword [g_tks],0
 	je	.no_ticket
 	; the ticket: resumption_master_secret over the transcript through the
@@ -1441,6 +1450,8 @@ tls_hello:
 	call	gcm_seal
 	or	dword [rbp+HL_GOT],G_TICKET
 .no_ticket:
+	test	dword [rbx+TS_FLAGS],TF_QUIC
+	jnz	.quic_out
 
 	; Seal them into records: r13 = plaintext left, r14 = its end,
 	; r15 = the record being written.
@@ -1523,12 +1534,8 @@ tls_hello:
 	mov	eax,TH_SEND
 	jmp	.out
 .quic_out:
-	; QUIC: the secrets, then out = ServerHello | EE .. Finished
-	mov	rdi,[rbx+TS_QT]
-	lea	rsi,[rbp+HL_TMP]		; (the server application secret)
-	lea	rdi,[rdi+QT_SAP]
-	mov	ecx,32
-	rep	movsb
+	; QUIC: the secrets, then out = ServerHello | EE .. Finished, and after
+	; it (not counted in the flight) a NewSessionTicket
 	mov	rdi,[rbx+TS_QT]
 	lea	rsi,[rbp+HL_CHT]
 	mov	ecx,64				; CHT, SHT: adjacent here and in QT
@@ -1545,6 +1552,25 @@ tls_hello:
 	rep	movsb
 	mov	rdx,rdi
 	sub	rdx,r12
+	mov	rax,[rbx+TS_QT]
+	mov	dword [rax+QT_NSTLEN],0
+	test	dword [rbp+HL_GOT],G_TICKET
+	jz	@f
+	mov	dword [rax+QT_NSTLEN],105
+	mov	dword [rdi],0x65000004		; new_session_ticket, 101 bytes
+	mov	eax,[g_tk_life]
+	bswap	eax
+	mov	[rdi+4],eax
+	mov	eax,[rbp+HL_RAND+76]
+	mov	[rdi+8],eax			; ticket_age_add
+	mov	byte [rdi+12],0			; no ticket_nonce
+	mov	word [rdi+13],0x5800		; the ticket, 88 bytes
+	lea	rsi,[rbp+HL_TICKET]
+	add	rdi,15
+	mov	ecx,TK_SIZE
+	rep	movsb
+	mov	word [rdi],0			; no extensions (no early data)
+@@:
 	mov	eax,TH_SEND
 	jmp	.out
 .missing_ext:

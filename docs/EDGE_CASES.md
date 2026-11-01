@@ -120,8 +120,11 @@ the connection closed when its framing can no longer be trusted.
 |---|---|
 | Client address migration, NAT rebinding | the client followed to its new address (the newest packet decides), the path validated with PATH_CHALLENGE, 3x limit until it is; a new IP restarts congestion control and the RTT. Active migration (new connection IDs) not offered yet |
 | Key update | followed (RFC 9001 6): the next keys tried when the key phase flips, ours updated with them |
+| Session resumption over QUIC | a ticket at 1-RTT after the handshake; a ticket of ours resumes (no 0-RTT: no early_data in it) |
+| ECN | our datagrams ECT(0); the marks received counted per space and reported in ACK_ECN. No ECN validation yet (a path that drops ECT would need it) |
+| The client's hello again before the handshake is done | our Initial and Handshake data go again at once, not at the probe timer |
 | Amplification | 3x limit before address validation; Retry under load (64 unvalidated connections a worker) or always (`http3 retry`) |
-| Version negotiation, QUIC v2 | supported |
+| Version negotiation, QUIC v2 | supported: Version Negotiation for unknown versions; a v1 client whose version_information offers v2 is moved to v2 (compatible version negotiation, RFC 9368) |
 | 1-RTT packets before the client's Finished | dropped unacknowledged (they come again once the handshake completes) |
 | Out-of-order stream data | held (up to 64 pieces a connection) and acknowledged, delivered when the gap fills |
 | UDP blocked or throttled by the network | clients fall back to TCP; `Alt-Svc` not sent if h3 failed recently for that listener |

@@ -1683,6 +1683,10 @@ h3_request_new:
 	mov	[r14+H_UTLS],eax
 	mov	[r14+H_EPOP],eax
 	mov	rax,[r15+QC_TS+TS_CERT]		; the certificate the handshake chose
+	cmp	dword [r15+QC_HQ],0		; (HTTP/0.9 names no host to check it against)
+	je	@f
+	xor	eax,eax
+@@:
 	mov	[r14+H_SNICERT],rax
 	mov	[r14+H_H3C],ebx
 	mov	[r14+H_H3CG],r13d
@@ -2539,7 +2543,7 @@ qc_app_pending:
 	call	qc_ctl_len
 	cmp	[r15+QC_CTL_SENT],eax
 	jb	.yes
-	test	dword [r15+QC_FL2],QF2_MAXD or QF2_MAXS or QF2_PATH or QF2_MSD or QF2_PCHAL
+	test	dword [r15+QC_FL2],QF2_MAXD or QF2_MAXS or QF2_PATH or QF2_MSD
 	jnz	.yes
 	cmp	dword [r15+QC_RSTN],0
 	jne	.yes
@@ -2674,16 +2678,7 @@ qc_app_write:
 	and	dword [r15+QC_FL2],not QF2_PATH
 	mov	r12d,1
 @@:
-	test	dword [r15+QC_FL2],QF2_PCHAL
-	jz	@f
-	mov	byte [rdi],0x1A			; PATH_CHALLENGE
-	mov	rax,[r15+QC_PCHALO]
-	mov	[rdi+1],rax
-	add	rdi,9
-	and	dword [r15+QC_FL2],not QF2_PCHAL
-	or	dword [r15+QC_LW_FR],QF2_PCHAL
-	mov	r12d,1
-@@:
+
 	; RESET_STREAMs
 	mov	ecx,[r15+QC_RSTN]
 	test	ecx,ecx

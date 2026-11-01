@@ -113,7 +113,9 @@ QC_KUSEC	:= 608				; 32: and their secret
 QC_PATHNV	:= 640				; d: the client moved: its new path not validated
 QC_PCHALO	:= 648				; q: our PATH_CHALLENGE on it
 QC_HQ		:= 656				; d: ALPN hq-interop: HTTP/0.9 on the streams
-QC_FIELDS_END	:= 704
+QC_ECN		:= 664				; 3 * (ECT(0), ECT(1), CE) q: ECN marks received a space
+QC_FIELDS_END	:= 768
+assert QC_ECN + 72 <= QC_FIELDS_END
 assert QC_PCHALO + 8 <= QC_FIELDS_END
 QUIC_RETRY_AT	:= 64				; connections not validated yet, a worker:
 						; past it new ones get a Retry first
@@ -196,6 +198,7 @@ bss
 	g_qc_unval	dd ?				; not validated yet (QUIC_RETRY_AT)
 	g_qd_sa		dq ?				; the datagram qc_packet takes: its sender
 	g_qd_salen	dd ?
+	g_qd_ecn	dd ?				; and its ECN codepoint (0 none, 1 ECT(1), 2 ECT(0), 3 CE)
 	g_qst_retry	dq ?				; Retries sent
 	g_qtok_key	rb 16				; supervisor: Retry tokens' key
 	g_qsr_key	rb 32				; and stateless resets' (right after it)
@@ -214,6 +217,7 @@ bss
 	g_qrx_mm:	rb QRX_N * 64
 	g_qrx_iov:	rb QRX_N * 16
 	g_qrx_sa:	rb QRX_N * 32
+	g_qrx_cm:	rb QRX_N * 64			; control: the ECN mark (IP_TOS, IPV6_TCLASS)
 	g_qtx_mm:	rb QTX_N * 64
 	g_qtx_iov:	rb QTX_N * 16
 	g_qtx_sa:	rb QTX_N * 32
@@ -225,6 +229,7 @@ rodata
 	align 8
 	ts_qtick	dq 0, 10000000			; 10 ms
 	qs_bufsize	dd 4 shl 20			; UDP socket buffers (capped by the kernel)
+	ecn_ect0	dd 2				; IP_TOS / IPV6_TCLASS: ECT(0)
 	; our transport parameters past the connection IDs: max_idle_timeout
 	; 30 s, max_udp_payload_size 1472, initial_max_data 1 MiB, stream data
 	; 256 KiB (bidi local), 48 KiB (bidi remote: a request's body; more as its
@@ -437,6 +442,20 @@ qs_open_all:
 	mov	r8d,4
 	mov	eax,SYS_setsockopt
 	syscall
+	; ECN: our datagrams ECT(0); the marks of those that come, reported
+	; (either family: a dual-stack socket carries IPv4 too)
+	irp opt, <IPPROTO_IP,IP_TOS,ecn_ect0>, <IPPROTO_IPV6,IPV6_TCLASS,ecn_ect0>, \
+		 <IPPROTO_IP,IP_RECVTOS,one_int>, <IPPROTO_IPV6,IPV6_RECVTCLASS,one_int>
+		match lvl=,nm=,val, opt
+			mov	rdi,[rsp]
+			mov	esi,lvl
+			mov	edx,nm
+			lea	r10,[val]
+			mov	r8d,4
+			mov	eax,SYS_setsockopt
+			syscall
+		end match
+	end irp
 	mov	rdi,[rsp]
 	lea	rsi,[rbx+LS_SA]
 	mov	edx,[rbx+LS_SALEN]
@@ -502,6 +521,10 @@ qs_worker_init:
 	lea	r8,[g_qrx_sa+r8]
 	mov	[rdx],r8			; msg_name
 	mov	dword [rdx+8],28		; msg_namelen
+	mov	r8,rcx
+	shl	r8,6
+	lea	r8,[g_qrx_cm+r8]
+	mov	[rdx+32],r8			; msg_control
 	mov	r8,rcx
 	shl	r8,4
 	lea	r8,[g_qrx_iov+r8]
@@ -596,6 +619,7 @@ qs_readable:
 	mov	rax,rcx
 	shl	rax,6
 	mov	dword [g_qrx_mm+rax+8],28
+	mov	qword [g_qrx_mm+rax+40],64	; msg_controllen
 	inc	ecx
 	cmp	ecx,QRX_N
 	jb	@b
@@ -618,6 +642,7 @@ qs_readable:
 	jae	.more
 	mov	rax,rbx
 	shl	rax,6
+	call	qs_ecn_of			; g_qd_ecn: its ECN mark
 	mov	edx,[g_qrx_mm+rax+56]		; msg_len
 	mov	r8d,[g_qrx_mm+rax+8]		; msg_namelen
 	imul	rsi,rbx,QRX_SZ
@@ -644,6 +669,42 @@ qs_readable:
 	pop	r13
 	pop	r12
 	pop	rbx
+	ret
+
+; rax = a receive slot's offset in g_qrx_mm: g_qd_ecn = the ECN codepoint
+; its control messages carry (IP_TOS or IPV6_TCLASS), 0 without. Keeps rax.
+qs_ecn_of:
+	mov	dword [g_qd_ecn],0
+	mov	rsi,[g_qrx_mm+rax+32]		; msg_control
+	mov	rdx,[g_qrx_mm+rax+40]		; msg_controllen
+	add	rdx,rsi
+.cmsg:
+	lea	rcx,[rsi+16]
+	cmp	rcx,rdx
+	ja	.out
+	mov	rcx,[rsi]			; cmsg_len
+	cmp	rcx,16
+	jb	.out
+	cmp	dword [rsi+8],IPPROTO_IP
+	jne	@f
+	cmp	dword [rsi+12],IP_TOS
+	je	.mark
+@@:
+	cmp	dword [rsi+8],IPPROTO_IPV6
+	jne	.next
+	cmp	dword [rsi+12],IPV6_TCLASS
+	jne	.next
+.mark:
+	movzx	ecx,byte [rsi+16]
+	and	ecx,3
+	mov	[g_qd_ecn],ecx
+	ret
+.next:
+	add	rcx,7				; aligned to 8
+	and	rcx,not 7
+	add	rsi,rcx
+	jmp	.cmsg
+.out:
 	ret
 
 ; the loop's turn: the sockets qs_readable left datagrams in, read again
@@ -1544,12 +1605,113 @@ qc_tp_build:
 	call	qs_reset_token
 	pop	rdi
 	add	rdi,16
+	mov	word [rdi],0x0C11		; version_information: the chosen one, then
+	mov	eax,[r15+QC_VER]		; those we take (v2, v1)
+	bswap	eax
+	mov	[rdi+2],eax
+	mov	dword [rdi+6],0xCF43336B
+	mov	dword [rdi+10],0x01000000
+	add	rdi,14
 	lea	rsi,[qtp_fixed]
 	mov	ecx,qtp_fixed.len
 	rep	movsb
 	lea	rax,[r15+QC_QT+QT_TPS]
 	sub	rdi,rax
 	mov	[r15+QC_QT+QT_TPSLEN],edi
+	ret
+
+; r15 = connection, rdx = its ClientHello so far, ecx = how much of it: a
+; whole one from a v1 client whose version_information transport parameter
+; offers v2 moves the connection to v2 before the answer (compatible
+; version negotiation, RFC 9368): v2 Initial keys, our parameters again.
+qc_compat_vn:
+	cmp	dword [r15+QC_VER],QUIC_V1
+	jne	.out
+	mov	rsi,rdx
+	lea	r8,[rdx+rcx]			; what came
+	cmp	ecx,4
+	jb	.out
+	mov	eax,[rsi]
+	bswap	eax
+	and	eax,0xFFFFFF			; the message's length
+	lea	rdx,[rsi+rax+4]
+	cmp	rdx,r8
+	ja	.out				; not whole yet
+	add	rsi,4 + 2 + 32			; type, length, version, random
+	call	.skip8				; session id
+	jc	.out
+	call	.skip16				; cipher suites
+	jc	.out
+	call	.skip8				; compression
+	jc	.out
+	add	rsi,2				; the extensions' length
+.ext:
+	lea	rax,[rsi+4]
+	cmp	rax,rdx
+	ja	.out
+	movzx	eax,word [rsi]
+	movzx	ecx,word [rsi+2]
+	xchg	cl,ch
+	add	rsi,4
+	lea	r9,[rsi+rcx]
+	cmp	r9,rdx
+	ja	.out
+	cmp	eax,0x3900			; quic_transport_parameters
+	je	.tps
+	mov	rsi,r9
+	jmp	.ext
+.tps:
+	mov	rdx,r9
+.tp:
+	cmp	rsi,rdx
+	jae	.out
+	call	qv_read				; id
+	jc	.out
+	mov	r10,rax
+	call	qv_read				; length
+	jc	.out
+	lea	r9,[rsi+rax]
+	cmp	r9,rdx
+	ja	.out
+	cmp	r10,0x11
+	je	.vi
+	mov	rsi,r9
+	jmp	.tp
+.vi:
+	add	rsi,4				; past the chosen version: those offered
+.offered:
+	lea	rax,[rsi+4]
+	cmp	rax,r9
+	ja	.out
+	cmp	dword [rsi],0xCF43336B		; v2
+	je	.v2
+	add	rsi,4
+	jmp	.offered
+.v2:
+	mov	dword [r15+QC_VER],QUIC_V2
+	qc_key	QL_INIT, 0
+	mov	rdi,rax
+	qc_key	QL_INIT, 1
+	mov	rsi,rax
+	lea	rdx,[r15+QC_ODCID]
+	mov	ecx,[r15+QC_ODCIDLEN]
+	mov	r8d,QUIC_V2
+	call	quic_initial
+	jmp	qc_tp_build
+.out:
+	ret
+.skip8:
+	movzx	eax,byte [rsi]
+	lea	rsi,[rsi+rax+1]
+	cmp	rsi,rdx
+	cmc
+	ret
+.skip16:
+	movzx	eax,word [rsi]
+	xchg	al,ah
+	lea	rsi,[rsi+rax+2]
+	cmp	rsi,rdx
+	cmc
 	ret
 
 ; r15 = connection, g_qd_sa/g_qd_salen = where a packet came from: ZF
@@ -1747,6 +1909,7 @@ QP_DROP		:= 48				; d: not taken (out of order): not acknowledged
 QP_LARGEST	:= 56				; q: the largest received of its space
 QP_HSAVE	:= 64				; the first byte and packet number as they came
 QP_DGRAM	:= 72				; d: the datagram's length (counted once)
+QP_HELLO0	:= 76				; d: the hello was answered before this packet
 QP_SIZE		:= 88
 qc_packet:
 	push	rbx
@@ -1764,6 +1927,9 @@ qc_packet:
 	mov	dword [rsp+QP_ACKEL],0
 	mov	dword [rsp+QP_DROP],0
 	mov	[rsp+QP_DGRAM],r9d
+	mov	eax,[r15+QC_FLAGS]
+	and	eax,QF_HELLO or QF_DONE
+	mov	[rsp+QP_HELLO0],eax
 	add	[r15+QC_RXB],r9
 	cmp	dword [r15+QC_STATE],QCS_CLOSING
 	je	.out
@@ -1844,6 +2010,14 @@ qc_packet:
 	mov	rsi,[rsp+QP_PN]
 	call	qc_seen
 	jc	.out				; a duplicate: once is enough
+	mov	eax,[g_qd_ecn]			; its ECN mark, counted in its space
+	test	eax,eax
+	jz	@f
+	movzx	ecx,byte [.ecn_slot+rax]
+	imul	edx,[rsp+QP_LEVEL],24
+	add	edx,ecx
+	inc	qword [r15+QC_ECN+rdx]
+@@:
 	; 1-RTT, the newest yet, from another address: the client moved
 	; (NAT rebinding): it is followed there, the path validated
 	cmp	dword [rsp+QP_LEVEL],QL_APP
@@ -1964,6 +2138,15 @@ qc_packet:
 	call	qc_received
 	cmp	dword [rsp+QP_ACKEL],0
 	je	.out
+	; the client's Initial again (its hello retransmitted, a probe) while
+	; the handshake is not done: our flight did not reach it, it goes again
+	; now rather than at our probe timer (backed off, no RTT known yet)
+	cmp	dword [rsp+QP_LEVEL],QL_INIT
+	jne	@f
+	cmp	dword [rsp+QP_HELLO0],QF_HELLO
+	jne	@f
+	call	qc_flight_again
+@@:
 	imul	eax,[rsp+QP_LEVEL],PS_SIZE
 	inc	dword [r15+QC_PS+rax+PS_ACKQ]
 	call	qc_dirty
@@ -1976,6 +2159,7 @@ qc_packet:
 	pop	rbp
 	pop	rbx
 	ret
+.ecn_slot	db 0, 8, 0, 16			; (ECT(1), ECT(0), CE: their counters)
 
 ; ------------------------------------------------ received, acknowledged
 
@@ -2421,6 +2605,15 @@ qc_crypto_in:
 	lea	rdi,[r15+QC_TS]
 	mov	rdx,r13
 	mov	ecx,r9d
+	push	rsi
+	push	rdi
+	push	rdx
+	push	rcx
+	call	qc_compat_vn			; v1 offering v2: v2 from here (RFC 9368)
+	pop	rcx
+	pop	rdx
+	pop	rdi
+	pop	rsi
 	lea	r8,[r15+QC_TLSOUT]
 	mov	r9d,QC_TLSROOM
 	call	tls_hello
@@ -2478,7 +2671,10 @@ qc_crypto_in:
 	je	.ok
 	cmp	eax,TH_DONE
 	jne	.bad_finished
-	; complete: HANDSHAKE_DONE goes, the handshake data needs no more sending
+	; complete: HANDSHAKE_DONE goes, the handshake data needs no more sending;
+	; a session ticket goes at 1-RTT (it sits after the flight in TLSOUT)
+	mov	eax,[r15+QC_QT+QT_NSTLEN]
+	mov	[r15+QC_CS_LEN+8],eax
 	or	dword [r15+QC_FLAGS],QF_DONE or QF_HDONE
 	mov	dword [r15+QC_STATE],QCS_EST
 	mov	eax,[r15+QC_CS_LEN+4]
@@ -2618,10 +2814,19 @@ qc_build:
 	jz	@f
 	or	r13d,4
 @@:
+	mov	eax,[r15+QC_CS_SENT+8]		; the session ticket
+	cmp	eax,[r15+QC_CS_LEN+8]
+	jae	@f
+	or	r13d,2
+@@:
 	call	qc_app_pending			; http3.inc: stream data, flow control
 	test	eax,eax
-	jz	.probe_wants
+	jz	@f
 	or	r13d,16
+@@:
+	test	dword [r15+QC_FL2],QF2_PCHAL	; a new path's PATH_CHALLENGE: in the
+	jz	.probe_wants			; first packet there, past the window
+	or	r13d,64
 .probe_wants:
 	cmp	dword [r15+QC_PROBE+r12*4],0
 	je	@f
@@ -2671,7 +2876,7 @@ qc_build:
 	cmp	rcx,rax
 	jae	@f
 	mov	eax,ecx
-	cmp	eax,128
+	cmp	eax,64
 	jb	.nothing
 @@:
 	mov	[rsp+QB_MAX],eax
@@ -2751,6 +2956,16 @@ qc_build:
 	mov	ecx,r12d
 	call	qc_ack_write			; rdi past it
 @@:
+	test	dword [rsp+QB_FLAGS],64
+	jz	@f
+	mov	byte [rdi],0x1A			; PATH_CHALLENGE
+	mov	rax,[r15+QC_PCHALO]
+	mov	[rdi+1],rax
+	add	rdi,9
+	and	dword [r15+QC_FL2],not QF2_PCHAL
+	or	dword [r15+QC_LW_FR],QF2_PCHAL
+	mov	dword [rsp+QB_ACKEL],1
+@@:
 	test	dword [rsp+QB_FLAGS],2
 	jz	.no_crypto
 	; CRYPTO: as much as fits
@@ -2778,9 +2993,13 @@ qc_build:
 	add	rdi,7
 	mov	eax,[rsp+QB_CRYPTO]
 	lea	rsi,[r15+QC_TLSOUT+rax]
-	cmp	r12d,QL_HS
+	cmp	r12d,QL_INIT
+	je	@f
+	mov	edx,[r15+QC_CS_LEN+0]		; Handshake data follows the ServerHello,
+	add	rsi,rdx				; 1-RTT's (the ticket) the Handshake data
+	cmp	r12d,QL_APP
 	jne	@f
-	mov	edx,[r15+QC_CS_LEN+0]		; Handshake data follows the ServerHello
+	mov	edx,[r15+QC_CS_LEN+4]
 	add	rsi,rdx
 @@:
 	rep	movsb
@@ -2979,6 +3198,9 @@ qc_close_level:
 qc_ack_write:
 	imul	eax,ecx,PS_SIZE
 	lea	r8,[r15+QC_PS+rax]
+	mov	r11,rdi				; (the type: 3 when ECN counts follow)
+	imul	edx,ecx,24			; (the space's ECN counts, rcx goes)
+	lea	rdx,[r15+QC_ECN+rdx]
 	mov	byte [rdi],2
 	inc	rdi
 	mov	rax,[r8+PS_R]			; largest
@@ -3012,6 +3234,19 @@ qc_ack_write:
 	inc	r9d
 	jmp	.range
 .done:
+	; ECN marks seen in this space: the ACK_ECN form (type 3) and its counts
+	mov	rax,[rdx]
+	or	rax,[rdx+8]
+	or	rax,[rdx+16]
+	jz	.plain
+	mov	byte [r11],3
+	mov	rax,[rdx]
+	call	qv_write			; ECT(0)
+	mov	rax,[rdx+8]
+	call	qv_write			; ECT(1)
+	mov	rax,[rdx+16]
+	call	qv_write			; CE
+.plain:
 	ret
 
 ; ------------------------------------------------------- the send batch
@@ -3266,6 +3501,49 @@ qc_on_pto:
 .done:
 	pop	r12
 	jmp	qc_dirty
+
+; r15 = connection: what went at Initial and Handshake and is not
+; acknowledged is lost (its crypto data goes again), without a probe
+; timeout counted
+qc_flight_again:
+	push	r12
+	xor	r12d,r12d
+.level:
+	mov	eax,r12d
+	imul	eax,eax,SP_N * SP_SIZE
+	lea	r8,[r15+QC_SP+rax]
+	mov	ecx,SP_N
+	mov	r9d,-1				; the lowest crypto offset lost
+.slot:
+	mov	eax,[r8+SP_FL]
+	and	eax,SPF_SENT or SPF_ACKEL or SPF_ACKED
+	cmp	eax,SPF_SENT or SPF_ACKEL
+	jne	.next
+	and	dword [r8+SP_FL],not SPF_SENT
+	mov	eax,[r8+SP_BYTES]
+	sub	[r15+QC_INFL],rax
+	jns	@f
+	mov	qword [r15+QC_INFL],0
+@@:
+	cmp	dword [r8+SP_CLEN],0
+	je	.next
+	mov	eax,[r8+SP_COFF]
+	cmp	eax,r9d
+	jae	.next
+	mov	r9d,eax
+.next:
+	add	r8,SP_SIZE
+	dec	ecx
+	jnz	.slot
+	cmp	r9d,[r15+QC_CS_SENT+r12*4]
+	jae	@f
+	mov	[r15+QC_CS_SENT+r12*4],r9d
+@@:
+	inc	r12d
+	cmp	r12d,2
+	jb	.level
+	pop	r12
+	ret
 
 ; ebx = connection: it goes (session_close calls qc_closing)
 qc_free:

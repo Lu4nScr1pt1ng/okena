@@ -205,8 +205,10 @@ class Client(QuicConnectionProtocol):
 
 def config(version=None):
     cfg = QuicConfiguration(is_client=True, alpn_protocols=["h3"], verify_mode=ssl.CERT_NONE)
-    if version:
-        cfg.supported_versions = [version]
+    # v1 unless asked: offered v2 too, okena moves to it (RFC 9368), and
+    # aioquic's key updates in v2 use v1's label ("quic ku", not RFC 9369's
+    # "quicv2 ku")
+    cfg.supported_versions = [version or QuicProtocolVersion.VERSION_1]
     return cfg
 
 
@@ -276,6 +278,31 @@ async def cases():
         r2 = await c.request("GET", "/cc2")
         check("ChaCha20-Poly1305, and a key update with it",
               r1["body"] == b"hello /cc h3.test\n" and r2["body"] == b"hello /cc2 h3.test\n", str((r1, r2))[:120])
+    cfg = config()
+    cfg.supported_versions = [QuicProtocolVersion.VERSION_1, QuicProtocolVersion.VERSION_2]
+    async with connect("127.0.0.1", LST, configuration=cfg, create_protocol=Client) as c:
+        r = await c.request("GET", "/cvn")
+        check("compatible version negotiation (RFC 9368): v1 offering v2 ends in v2",
+              r["body"] == b"hello /cvn h3.test\n" and c._quic._version == QuicProtocolVersion.VERSION_2,
+              f"{r['body'][:40]} {c._quic._version}")
+    # resumption: the ticket the first connection got resumes the second
+    tickets = []
+    cfg = config()
+    async with connect("127.0.0.1", LST, configuration=cfg, create_protocol=Client,
+                       session_ticket_handler=tickets.append) as c:
+        await c.request("GET", "/t1")
+        for _ in range(20):
+            if tickets:
+                break
+            await asyncio.sleep(0.05)
+    cfg = config()
+    cfg.session_ticket = tickets[0] if tickets else None
+    async with connect("127.0.0.1", LST, configuration=cfg, create_protocol=Client) as c:
+        r = await c.request("GET", "/t2")
+        check("resumption: a session ticket at 1-RTT, the next connection resumes with it (no 0-RTT)",
+              len(tickets) >= 1 and c._quic.tls.session_resumed and r["body"] == b"hello /t2 h3.test\n"
+              and not c._quic.tls.early_data_accepted,
+              f"{len(tickets)} tickets, resumed {c._quic.tls.session_resumed}, {r['body'][:30]}")
     # `http3 retry`: a Retry first, its token back, then the handshake
     for ver, name in ((None, "v1"), (QuicProtocolVersion.VERSION_2, "v2")):
         async with connect("127.0.0.1", RETRY, configuration=config(ver), create_protocol=Client) as c:
