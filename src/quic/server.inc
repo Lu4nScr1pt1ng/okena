@@ -118,8 +118,11 @@ QC_WMAX		:= 736				; q: CUBIC: the window before the last reduction
 QC_EPOCH	:= 744				; q: µs its congestion avoidance began, 0 none yet
 QC_K		:= 752				; q: ms to get back to QC_WMAX
 QC_WEST		:= 760				; q: the Reno-friendly window
-QC_FIELDS_END	:= 768
-assert QC_WEST + 8 <= QC_FIELDS_END
+QC_LOSS_AT	:= 768				; q: µs a packet in flight passes the time threshold, 0 none
+QC_LOSS_PN	:= 776				; q: (the largest acknowledged then)
+QC_LOSS_LVL	:= 784				; d: (its space)
+QC_FIELDS_END	:= 832
+assert QC_LOSS_LVL + 4 <= QC_FIELDS_END
 assert QC_PCHALO + 8 <= QC_FIELDS_END
 QUIC_RETRY_AT	:= 64				; connections not validated yet, a worker:
 						; past it new ones get a Retry first
@@ -3419,6 +3422,16 @@ qs_tick:
 	call	qc_free
 	jmp	.next
 .pto:
+	mov	rax,[r15+QC_LOSS_AT]		; the loss timer first
+	test	rax,rax
+	jz	@f
+	cmp	rax,[g_qnow]
+	ja	@f
+	mov	qword [r15+QC_LOSS_AT],0
+	mov	edi,[r15+QC_LOSS_LVL]
+	mov	rsi,[r15+QC_LOSS_PN]
+	call	qc_detect_lost
+@@:
 	mov	rax,[r15+QC_PTO_AT]
 	test	rax,rax
 	jz	.next
@@ -3809,6 +3822,7 @@ qc_detect_lost:
 	mov	r14,[g_qnow]
 	sub	r14,rax				; sent before this: lost
 	xor	ebx,ebx				; the latest lost packet's send time
+	mov	qword [r15+QC_LOSS_AT],-1	; the earliest a packet still out passes it
 	mov	eax,r12d
 	imul	eax,eax,SP_N * SP_SIZE
 	lea	r8,[r15+QC_SP+rax]
@@ -3825,7 +3839,7 @@ qc_detect_lost:
 	cmp	rdx,r13
 	jbe	.lost				; three numbers older
 	cmp	[r8+SP_TIME],r14
-	ja	.next
+	ja	.pending
 .lost:
 	and	dword [r8+SP_FL],not SPF_SENT
 	mov	eax,[r8+SP_BYTES]
@@ -3858,10 +3872,26 @@ qc_detect_lost:
 	call	qc_app_lost
 	pop	r8
 	pop	rcx
+	jmp	.next
+.pending:
+	mov	rax,[g_qnow]			; lost at its send time + the threshold,
+	sub	rax,r14				; unless acknowledged before (RFC 9002
+	add	rax,[r8+SP_TIME]		; 6.1.2): the loss timer
+	cmp	rax,[r15+QC_LOSS_AT]
+	jae	.next
+	mov	[r15+QC_LOSS_AT],rax
 .next:
 	add	r8,SP_SIZE
 	dec	ecx
 	jnz	.slot
+	cmp	qword [r15+QC_LOSS_AT],-1
+	jne	@f
+	mov	qword [r15+QC_LOSS_AT],0
+	jmp	.timer_set
+@@:
+	mov	[r15+QC_LOSS_PN],r13
+	mov	[r15+QC_LOSS_LVL],r12d
+.timer_set:
 	test	rbx,rbx
 	jz	.out
 	; a congestion event, unless the losses were sent before the last one
