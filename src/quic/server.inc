@@ -121,8 +121,10 @@ QC_WEST		:= 760				; q: the Reno-friendly window
 QC_LOSS_AT	:= 768				; q: µs a packet in flight passes the time threshold, 0 none
 QC_LOSS_PN	:= 776				; q: (the largest acknowledged then)
 QC_LOSS_LVL	:= 784				; d: (its space)
+QC_RSTWIN	:= 792				; q: µs this second of client resets began
+QC_RSTCNT	:= 800				; d: requests the client cancelled in it
 QC_FIELDS_END	:= 832
-assert QC_LOSS_LVL + 4 <= QC_FIELDS_END
+assert QC_RSTCNT + 4 <= QC_FIELDS_END
 assert QC_PCHALO + 8 <= QC_FIELDS_END
 QUIC_RETRY_AT	:= 64				; connections not validated yet, a worker:
 						; past it new ones get a Retry first

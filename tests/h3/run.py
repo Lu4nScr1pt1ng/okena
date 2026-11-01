@@ -332,6 +332,29 @@ async def cases():
         check("POST of 500 KB the same way", r["body"] == hashlib.md5(up).hexdigest().encode(), str(r)[:80])
 
 
+async def rapid_reset():
+    """Requests opened and cancelled at once (STOP_SENDING), over and over: past 200 a
+    second the connection closes with H3_EXCESSIVE_LOAD."""
+    async with connect("127.0.0.1", LST, configuration=config(), create_protocol=Client) as c:
+        await c.request("GET", "/hello")
+        for i in range(300):
+            sid = c._quic.get_next_available_stream_id()
+            c.h3.send_headers(sid, [(b":method", b"GET"), (b":scheme", b"https"), (b":authority", b"h3.test"),
+                                    (b":path", b"/slow")], end_stream=True)
+            c.transmit()
+            await asyncio.sleep(0.001)
+            c._quic.stop_stream(sid, 0x10C)                # STOP_SENDING: the answer is not wanted
+            c.transmit()
+            if c.closed:
+                break
+        for _ in range(30):
+            if c.closed:
+                break
+            await asyncio.sleep(0.1)
+        check("rapid reset: 300 requests opened and cancelled, the connection closes (H3_EXCESSIVE_LOAD)",
+              c.closed is not None and c.closed.error_code == 0x107, str(c.closed))
+
+
 async def stateless_reset(p):
     """A worker that restarts no longer holds the connection: a packet for
     it gets a Stateless Reset carrying the token the transport parameters
@@ -442,6 +465,7 @@ http 127.0.0.1:{RETRY} {{
                                 f"https://h3.test:{LST}/alt"], capture_output=True, timeout=20)
             check(f"Alt-Svc on TCP ({v[2:]}) points at HTTP/3 on the port",
                   f'alt-svc: h3=":{LST}"; ma=86400'.encode() in r.stdout.lower(), r.stdout[:300])
+        asyncio.run(rapid_reset())
         asyncio.run(stateless_reset(p))
         asyncio.run(drain(p))
         log.seek(0)

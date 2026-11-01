@@ -100,6 +100,7 @@ QC_WINDOW	:= 1048576			; the connection's
 H3_HEADERS_MAX	:= 16384			; a HEADERS frame (gathered in HB_OUT)
 H3_FIELDS_MAX	:= 128
 
+H3_RST_BUDGET	:= 200				; requests a client may cancel in a second
 H3E_NO_ERROR	:= 0x100
 H3E_GENERAL	:= 0x101
 H3E_FRAME_UNEXPECTED := 0x105
@@ -468,6 +469,24 @@ qc_app_frame:
 	pop	rbx
 	inc	qword [r15+QC_SDONE]
 	or	dword [r15+QC_FL2],QF2_MAXS
+	; a request opened and cancelled costs a backend request each: past
+	; H3_RST_BUDGET a second, the connection goes (as HTTP/2's rapid reset)
+	mov	rax,[g_qnow]
+	sub	rax,[r15+QC_RSTWIN]
+	cmp	rax,1000000
+	jb	.rst_count
+	mov	rax,[g_qnow]
+	mov	[r15+QC_RSTWIN],rax
+	mov	dword [r15+QC_RSTCNT],0
+.rst_count:
+	inc	dword [r15+QC_RSTCNT]
+	cmp	dword [r15+QC_RSTCNT],H3_RST_BUDGET
+	jbe	@f
+	pop	rdx
+	pop	rsi
+	mov	qword [r15+QC_ERR],H3E_EXCESSIVE
+	or	dword [r15+QC_FLAGS],QF_APP_ERR
+	jmp	.error
 @@:
 	pop	rdx
 	pop	rsi
