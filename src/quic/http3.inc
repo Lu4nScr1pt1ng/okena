@@ -2772,8 +2772,10 @@ sp_stream_ring:
 	mov	edx,[rcx+S_GEN]
 	cmp	edx,[rdi+SP_SGEN]
 	jne	.gone
-	cmp	dword [rcx+S_STATE],ST_OPEN
-	jne	.gone
+	cmp	dword [rcx+S_STATE],ST_FREE	; alive, whatever its exchange is doing
+	je	.gone				; (connecting to a backend again, say)
+	cmp	dword [rcx+S_STATE],ST_CLOSING
+	je	.gone
 	h3_ptrs	eax
 	add	r9,HB_H3TX
 	clc

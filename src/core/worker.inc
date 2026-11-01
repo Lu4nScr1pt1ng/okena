@@ -134,6 +134,7 @@ worker_main:
 	call	ring_reap
 	call	ep_http_ready			; user-space TLS deliveries
 	call	h2_flush			; HTTP/2: one send a connection an iteration
+	call	qs_resume			; QUIC: datagrams left from the last turn
 	call	qs_flush			; QUIC: what connections send
 	call	hs_drain			; hellos that waited for the budget
 	mov	eax,[g_reaped]
@@ -153,12 +154,15 @@ worker_main:
 	jne	@f				; iteration's
 	cmp	dword [g_h2fl_n],0
 	jne	@f
+	cmp	dword [g_qs_pend],0		; nor datagrams left to read
+	jne	@f
 	mov	edi,1
 @@:
 	call	ring_enter
 	call	ring_reap
 	call	ep_http_ready			; user-space TLS deliveries
 	call	h2_flush			; HTTP/2: one send a connection an iteration
+	call	qs_resume			; QUIC: datagrams left from the last turn
 	call	qs_flush			; QUIC: what connections send
 	call	hs_drain			; hellos that waited for the budget
 	jmp	.loop

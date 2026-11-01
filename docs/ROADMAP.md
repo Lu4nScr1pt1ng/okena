@@ -348,6 +348,21 @@ header protection); each HTTP/3 request stream a session running the
 HTTP/1.1 exchange, as HTTP/2 streams do (src/http/h2.inc), so routing,
 pools and everything after them stay one code path.
 
+In progress (`http3 on`, off by default). In: packet protection (RFC
+9001, 9369, with the RFC's test vectors), Version Negotiation, the
+handshake on a UDP socket per worker (TLS 1.3 in QUIC mode, X25519 and
+X25519MLKEM768), the 3x amplification limit, ACK ranges, PTO, NewReno
+with packet and time threshold loss detection; request streams as
+sessions running the HTTP/1.1 exchange, QPACK with the static table,
+stream and connection flow control, out-of-order stream data held until
+the gap fills, Retry with sealed address tokens (under load or always:
+`http3 retry`), GOAWAY on drain, Alt-Svc on HTTP/1.1 and HTTP/2 answers.
+tests/h3/run.py drives it with aioquic and curl (ngtcp2) on both engines,
+through a relay that loses a tenth of the datagrams each way. Open:
+CUBIC/BBR, pacing, PMTU, migration, QUIC-LB IDs with eBPF steering,
+GSO/GRO, ECN, stateless reset, the QPACK dynamic table, 0-RTT, the abuse
+budgets, `okena bench` over HTTP/3, the interop runner, the comparisons.
+
 * QUIC v1 (RFC 9000/9001/9002) and v2 (RFC 9369): packets, frames,
   streams and their flow control, ACKs, loss recovery, CUBIC then BBR,
   pacing, PMTU, connection migration; stateless retry and address

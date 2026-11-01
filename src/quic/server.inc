@@ -25,11 +25,13 @@
 
 QS_MAX		:= 16				; UDP sockets a worker reads
 QRX_N		:= 32				; datagrams a recvmmsg takes
+QRX_BUDGET	:= 8				; recvmmsgs a turn of the loop, then the
+						; rest waits for the next (qs_resume)
 QRX_SZ		:= 2048
 QTX_N		:= 64				; datagrams a sendmmsg sends
 QTX_SZ		:= 1472
 QUIC_DGRAM	:= 1350				; the largest datagram okena sends
-QH_BITS		:= 14				; connection ID hash: 16384 entries
+QH_BITS		:= 17				; connection ID hash: 131072 entries
 QH_N		:= 1 shl QH_BITS
 QDIRTY_MAX	:= 512
 EK_QUIC		:= 5				; epoll data: a QUIC socket (slot in the low bits)
@@ -179,6 +181,7 @@ bss
 	align 16
 	g_qfd		rd MAX_LISTENERS * MAX_WORKERS	; supervisor: the UDP sockets
 	g_qs_n		dd ?
+	g_qs_pend	dd ?				; sockets with datagrams left (bits)
 	g_qs_fd		rd QS_MAX
 	g_qs_lst	rd QS_MAX
 	g_qnow		dq ?				; µs (CLOCK_MONOTONIC)
@@ -187,6 +190,9 @@ bss
 	g_qc_unval	dd ?				; not validated yet (QUIC_RETRY_AT)
 	g_qst_retry	dq ?				; Retries sent
 	g_qtok_key	rb 16				; supervisor: Retry tokens' key
+	g_qsr_key	rb 32				; and stateless resets' (right after it)
+	g_qsr_win	dq ?				; resets sent: this second's start (µs)
+	g_qsr_n		dd ?				; and how many
 	g_qtok_buf	rb 64				; a token opened
 	align 16
 	g_qtok_gcm	rb GCM_SIZE
@@ -335,8 +341,8 @@ qs_open_all:
 	push	rbx
 	push	r12
 	push	r13
-	lea	rdi,[g_qtok_key]		; Retry tokens: one key for every worker
-	mov	esi,16
+	lea	rdi,[g_qtok_key]		; Retry tokens, stateless resets: keys
+	mov	esi,16 + 32			; every worker shares
 	xor	edx,edx
 	mov	eax,SYS_getrandom
 	syscall
@@ -443,6 +449,7 @@ qs_worker_init:
 	push	rbx
 	push	r12
 	mov	dword [g_qs_n],0
+	mov	dword [g_qs_pend],0
 	mov	dword [g_qc_head],0
 	mov	dword [g_qc_count],0
 	mov	dword [g_qc_unval],0
@@ -571,7 +578,10 @@ qs_readable:
 	push	rbx
 	push	r12
 	push	r13
+	push	r14
 	mov	r12d,edi
+	btr	[g_qs_pend],edi
+	mov	r14d,QRX_BUDGET
 .batch:
 	xor	ecx,ecx				; names: room again
 @@:
@@ -617,10 +627,30 @@ qs_readable:
 	jmp	.dgram
 .more:
 	cmp	r13d,QRX_N
-	je	.batch				; maybe more waiting
+	jne	.done
+	dec	r14d				; maybe more waiting: within the budget,
+	jnz	.batch				; or on the loop's next turn (the timers,
+	bts	[g_qs_pend],r12d		; the sends and other sockets first)
 .done:
+	pop	r14
 	pop	r13
 	pop	r12
+	pop	rbx
+	ret
+
+; the loop's turn: the sockets qs_readable left datagrams in, read again
+; (each once a turn)
+qs_resume:
+	push	rbx
+	mov	ebx,[g_qs_pend]
+.next:
+	test	ebx,ebx
+	jz	.done
+	bsf	edi,ebx
+	btr	ebx,edi
+	call	qs_readable			; (clears its bit, may set it again)
+	jmp	.next
+.done:
 	pop	rbx
 	ret
 
@@ -824,7 +854,7 @@ qs_datagram:
 	mov	esi,8
 	call	qh_find
 	cmp	eax,NIL
-	je	.out				; (a stateless reset would go here)
+	je	.reset
 	cmp	ebx,NIL
 	je	@f
 	cmp	eax,ebx
@@ -845,6 +875,93 @@ qs_datagram:
 	pop	r13
 	pop	r12
 	pop	rbp
+	pop	rbx
+	ret
+.reset:
+	cmp	r12,[rsp+QD_BUF]
+	jne	.out				; (only for a datagram's first packet)
+	mov	rdi,rsp
+	call	qs_send_reset
+	jmp	.out
+
+; rdi = the datagram's frame: its short header names no connection we
+; hold (a worker restarted, a connection long gone): a Stateless Reset
+; (RFC 9000 10.3), shorter than what came so two servers cannot loop,
+; at most 1000 a second
+qs_send_reset:
+	push	rbx
+	push	r12
+	push	r13
+	mov	r12,rdi
+	mov	r13d,[r12+QD_LEN]
+	dec	r13d				; shorter than the trigger
+	cmp	r13d,21 + 20
+	jb	.out				; too short to pass for a packet
+	cmp	r13d,43
+	jbe	@f
+	mov	r13d,43
+@@:
+	mov	rax,[g_qnow]
+	mov	rcx,rax
+	sub	rcx,[g_qsr_win]
+	cmp	rcx,1000000
+	jb	@f
+	mov	[g_qsr_win],rax
+	mov	dword [g_qsr_n],0
+@@:
+	cmp	dword [g_qsr_n],1000
+	jae	.out
+	inc	dword [g_qsr_n]
+	call	qtx_slot
+	test	rax,rax
+	jz	.out
+	mov	rbx,rax
+	rdtsc					; unpredictable enough bytes before the token
+	shl	rdx,32
+	or	rax,rdx
+	mov	rdx,0x9E3779B97F4A7C15
+	xor	ecx,ecx
+@@:
+	imul	rax,rdx
+	ror	rax,29
+	mov	[rbx+rcx],rax
+	add	ecx,8
+	cmp	ecx,32
+	jb	@b
+	mov	al,[rbx]
+	and	al,0x3F
+	or	al,0x40				; a short header's first byte
+	mov	[rbx],al
+	lea	rdi,[rbx+r13-16]
+	mov	rsi,[r12+QD_BUF]
+	inc	rsi				; the connection ID it named
+	call	qs_reset_token
+	mov	edi,[r12+QD_SLOT]
+	mov	ecx,r13d
+	mov	rsi,[r12+QD_SA]
+	mov	r8d,[r12+QD_SALEN]
+	call	qtx_commit
+.out:
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; rdi = out[16], rsi = one of our connection IDs (8 bytes): its stateless
+; reset token, HMAC-SHA256 with the shared key (the same in every worker)
+qs_reset_token:
+	push	rbx
+	sub	rsp,32
+	mov	rbx,rdi
+	mov	rcx,rsi
+	mov	rdi,rsp
+	lea	rsi,[g_qsr_key]
+	mov	edx,32
+	mov	r8d,8
+	call	hmac_sha256
+	movdqu	xmm0,[rsp]
+	movdqu	[rbx],xmm0
+	add	rsp,32
 	pop	rbx
 	ret
 
@@ -1053,13 +1170,15 @@ qs_send_vn:
 ; rdi = connection ID, esi = its length: eax = its connection, or NIL.
 ; Keeps rbx, rbp, r12-r15.
 qh_find:
+	push	r8
+	push	r9
+	push	r10
 	call	qh_key				; rax = key, rdx = first slot
+	mov	r10d,QH_N			; (never more probes than slots)
 .probe:
 	mov	ecx,[g_qh+rdx+8]
 	test	ecx,ecx
 	jz	.none
-	cmp	ecx,-1
-	je	.skip
 	cmp	[g_qh+rdx],rax
 	jne	.skip
 	dec	ecx				; still that session?
@@ -1072,13 +1191,18 @@ qh_find:
 	cmp	dword [r8+S_STATE],ST_OPEN
 	jne	.skip
 	mov	eax,ecx
-	ret
+	jmp	.out
 .skip:
 	add	edx,16
 	and	edx,QH_N * 16 - 1
-	jmp	.probe
+	dec	r10d
+	jnz	.probe
 .none:
 	mov	eax,NIL
+.out:
+	pop	r10
+	pop	r9
+	pop	r8
 	ret
 
 ; rdi = connection ID, esi = length: rax = its key, rdx = its home slot's offset
@@ -1110,18 +1234,19 @@ qh_key:
 	shl	edx,4
 	ret
 
-; rdi = connection ID, esi = length, ebx = session: in
+; rdi = connection ID, esi = length, ebx = session: in (linear probing,
+; no tombstones: qh_del shifts back what follows). Not in when full.
 qh_add:
 	call	qh_key
+	mov	r10d,QH_N
 .probe:
-	mov	ecx,[g_qh+rdx+8]
-	test	ecx,ecx
-	jz	.here
-	cmp	ecx,-1
+	cmp	dword [g_qh+rdx+8],0
 	je	.here
 	add	edx,16
 	and	edx,QH_N * 16 - 1
-	jmp	.probe
+	dec	r10d
+	jnz	.probe
+	ret
 .here:
 	mov	[g_qh+rdx],rax
 	lea	ecx,[rbx+1]
@@ -1131,9 +1256,12 @@ qh_add:
 	mov	[g_qh+rdx+12],ecx
 	ret
 
-; rdi = connection ID, esi = length, ebx = session: out
+; rdi = connection ID, esi = length, ebx = session: out. The entries after
+; it in its run move back where their probe would find them (backward
+; shift deletion), so a run never holds holes nor tombstones.
 qh_del:
 	call	qh_key
+	mov	r10d,QH_N
 .probe:
 	mov	ecx,[g_qh+rdx+8]
 	test	ecx,ecx
@@ -1142,15 +1270,42 @@ qh_del:
 	jne	.skip
 	dec	ecx
 	cmp	ecx,ebx
-	jne	.skip
-	mov	dword [g_qh+rdx+8],-1		; a tombstone
-	ret
+	je	.found
 .skip:
 	add	edx,16
 	and	edx,QH_N * 16 - 1
-	jmp	.probe
+	dec	r10d
+	jnz	.probe
 .out:
 	ret
+.found:
+	mov	r8d,edx				; the hole
+	mov	r9d,edx				; the next entry looked at
+.shift:
+	mov	dword [g_qh+r8+8],0
+.next:
+	add	r9d,16
+	and	r9d,QH_N * 16 - 1
+	cmp	dword [g_qh+r9+8],0
+	je	.out
+	mov	rax,[g_qh+r9]			; its home slot
+	mov	rcx,0x9E3779B97F4A7C15
+	imul	rax,rcx
+	shr	rax,64 - QH_BITS
+	shl	eax,4
+	; it stays when its home lies cyclically in (hole, it]
+	mov	ecx,r9d
+	sub	ecx,eax
+	and	ecx,QH_N * 16 - 1		; its distance from home
+	mov	edx,r9d
+	sub	edx,r8d
+	and	edx,QH_N * 16 - 1		; the hole's distance behind it
+	cmp	ecx,edx
+	jb	.next
+	movdqu	xmm0,[g_qh+r9]			; into the hole
+	movdqu	[g_qh+r8],xmm0
+	mov	r8d,r9d
+	jmp	.shift
 
 ; ------------------------------------------------------ connections
 
@@ -1355,6 +1510,13 @@ qc_tp_build:
 	mov	rax,[r15+QC_SCID]
 	mov	[rdi],rax
 	add	rdi,8
+	mov	word [rdi],0x1002		; stateless_reset_token
+	add	rdi,2
+	push	rdi
+	lea	rsi,[r15+QC_SCID]
+	call	qs_reset_token
+	pop	rdi
+	add	rdi,16
 	lea	rsi,[qtp_fixed]
 	mov	ecx,qtp_fixed.len
 	rep	movsb
@@ -1470,11 +1632,17 @@ qc_packet:
 	; a Handshake packet: the client's address is good, Initial is over
 	cmp	dword [rsp+QP_LEVEL],QL_HS
 	jne	.frames_begin
+	test	dword [r15+QC_FLAGS],QF_INIT_GONE
+	jnz	.frames_begin
 	test	dword [r15+QC_FLAGS],QF_VALID
 	jnz	@f
 	dec	dword [g_qc_unval]
 @@:
 	or	dword [r15+QC_FLAGS],QF_VALID or QF_INIT_GONE
+	; the client names us by our own ID from now on: its first one out
+	lea	rdi,[r15+QC_ODCID]
+	mov	esi,[r15+QC_ODCIDLEN]
+	call	qh_del
 .frames_begin:
 	; frames
 	mov	rsi,[rsp+QP_PAY]
@@ -2463,7 +2631,8 @@ qc_build:
 	; the record it takes: one still in flight there is lost (a packet
 	; must go: an ACK, a probe)
 	push	rdi
-	call	qc_sp_next_built
+	mov	rax,[rsp+8+QB_PN]		; (past the push)
+	call	qc_sp_at
 	mov	eax,[rdx+SP_FL]
 	and	eax,SPF_SENT or SPF_ACKEL or SPF_ACKED
 	cmp	eax,SPF_SENT or SPF_ACKEL
@@ -3056,9 +3225,7 @@ qc_sp_next:
 	imul	eax,r12d,PS_SIZE
 	mov	rax,[r15+QC_PS+rax+PS_NEXT]
 	jmp	qc_sp_at
-; (in qc_build, the number already taken: QB_PN)
-qc_sp_next_built:
-	mov	rax,[rsp+8+QB_PN]
+; rax = a packet number: rdx = its record (ecx/r12d = level)
 qc_sp_at:
 	and	eax,SP_N - 1
 	shl	eax,6				; SP_SIZE

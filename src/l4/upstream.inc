@@ -12,7 +12,7 @@
 ; backend keep-alive timeouts so okena closes first, not the backend in
 ; the middle of a reuse.
 
-POOL_MAX	:= 64
+POOL_MAX	:= 512
 POOL_IDLE	:= 50
 UPSLOT_MAX	:= 2 shl 20
 

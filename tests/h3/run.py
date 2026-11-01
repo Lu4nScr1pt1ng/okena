@@ -159,7 +159,7 @@ class Client(QuicConnectionProtocol):
         try:
             await asyncio.wait_for(self.ended[sid], 20)
         except asyncio.TimeoutError:
-            return {"headers": None, "body": b"", "timeout": sid}
+            return dict(self.res.get(sid, {"headers": None, "body": b""}), timeout=sid)
         return self.res.get(sid, {"headers": None, "body": b""})
 
 
@@ -220,6 +220,35 @@ async def cases():
         up = os.urandom(500_000)
         r = await c.request("POST", "/up", up)
         check("POST of 500 KB the same way", r["body"] == hashlib.md5(up).hexdigest().encode(), str(r)[:80])
+
+
+async def stateless_reset(p):
+    """A worker that restarts no longer holds the connection: a packet for
+    it gets a Stateless Reset carrying the token the transport parameters
+    announced (the key is the supervisor's, the same in the new worker)."""
+    async with connect("127.0.0.1", LST, configuration=config(), create_protocol=Client) as c:
+        await c.request("GET", "/hello")
+        cid, token = c._quic._peer_cid.cid, c._quic._peer_cid.stateless_reset_token
+        workers = subprocess.run(["pgrep", "-P", str(p.pid)], capture_output=True, text=True).stdout.split()
+        for w in workers:
+            os.kill(int(w), 9)
+        await asyncio.sleep(0.6)
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(2)
+        s.sendto(bytes([0x41]) + cid + os.urandom(60), ("127.0.0.1", LST))
+        try:
+            d = s.recv(2048)
+        except socket.timeout:
+            d = b""
+        check("a worker restarted: a Stateless Reset with the announced token",
+              len(token) == 16 and 21 <= len(d) < 69 and d[0] & 0xC0 == 0x40 and d[-16:] == token,
+              f"{len(workers)} workers, {d.hex()} vs {token.hex()}")
+        s.sendto(bytes([0x41]) + cid + b"x" * 34, ("127.0.0.1", LST))
+        try:
+            d = s.recv(2048)
+        except socket.timeout:
+            d = b""
+        check("  always shorter than what triggered it (43 bytes: 42)", len(d) == 42 and d[-16:] == token, d.hex())
 
 
 async def drain(p):
@@ -303,9 +332,11 @@ http 127.0.0.1:{RETRY} {{
                                 f"https://h3.test:{LST}/alt"], capture_output=True, timeout=20)
             check(f"Alt-Svc on TCP ({v[2:]}) points at HTTP/3 on the port",
                   f'alt-svc: h3=":{LST}"; ma=86400'.encode() in r.stdout.lower(), r.stdout[:300])
+        asyncio.run(stateless_reset(p))
         asyncio.run(drain(p))
         log.seek(0)
         text = log.read()
+        text = text.replace("killed by signal 9", "")       # (the stateless reset case)
         check("no worker died", "killed" not in text and "exited with status" not in text, text[-300:])
     finally:
         p.terminate()

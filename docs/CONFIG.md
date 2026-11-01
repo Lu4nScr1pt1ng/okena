@@ -10,7 +10,7 @@ not built yet. A directive that is not built is refused by `okena check`
 |---|---|
 | `okena` | `workers`, `io_engine`, `busy_poll`, `watchdog`, `drain delay= timeout=`, `metrics`, `ticket_keys`, `handshake_budget wait=` |
 | `tcp ADDR...` | `to`, `limits { connections; per_source }`, `timeout { idle }`, `proxy_protocol send v1\|v2`, `tls { cert; key }`, `tls passthrough { sni NAME... to pool P; default reject\|to pool P }` |
-| `http ADDR...` | `host`, `route`, `limits`, `timeout { idle; header; body_idle; response }`, `trusted_proxies`, `access_log`, `http2 on\|off`, `tls { cert; key; ktls on\|off }` |
+| `http ADDR...` | `host`, `route`, `limits`, `timeout { idle; header; body_idle; response }`, `trusted_proxies`, `access_log`, `http2 on\|off`, `http3 on\|off\|retry`, `tls { cert; key; ktls on\|off }` |
 | `route PATH... [METHOD...]` | `to`, `redirect`, `rewrite path`, `header set\|add\|drop`, `response header set\|add\|drop` |
 | `pool NAME` | `server ADDR [weight=N] [backup]`, `balance least-request\|peak-ewma\|round-robin\|least-conn\|random`, `connect timeout=`, `health tcp\|http\|grpc ...`, `slow_start`, `tls { trust FILE; sni NAME }` (TLS to the backends), `protocol h1\|h2` |
 
@@ -41,6 +41,17 @@ rewrites, logs all apply; backends still get HTTP/1.1): up to 100 streams
 a connection, flow control both ways, malformed requests reset, and a
 client resetting more than 200 streams a second gets GOAWAY
 ENHANCE_YOUR_CALM. Off by default while phase 4 is in progress.
+
+`http3 on` adds HTTP/3 on the same port over UDP: QUIC v1 and v2, the
+listener's `tls { }` certificate (it is required), one UDP socket a
+worker. Requests are proxied like HTTP/2 streams (backends get
+HTTP/1.1); HTTP/1.1 and HTTP/2 answers on that listener announce it
+(`Alt-Svc: h3=":PORT"; ma=86400`). A worker holding 64 connections whose
+address is not validated yet answers new ones with a Retry first (a
+token sealed with a key the workers share, good for 10 s); `http3 retry`
+does so for every new connection. On a drain each connection gets
+GOAWAY, finishes the requests it has, then closes (H3_NO_ERROR). 0-RTT
+is not accepted. Off by default while phase 5 is in progress.
 
 `protocol h2` in a pool speaks HTTP/2 to its backends: prior knowledge,
 or ALPN h2 under the pool's `tls { }`. Requests share a few connections a

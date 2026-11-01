@@ -119,8 +119,10 @@ the connection closed when its framing can no longer be trusted.
 | Case | Behaviour |
 |---|---|
 | Client address migration, NAT rebinding | connection ID routing to the owning worker; path validation |
-| Amplification | 3x limit before address validation; Retry under load |
+| Amplification | 3x limit before address validation; Retry under load (64 unvalidated connections a worker) or always (`http3 retry`) |
 | Version negotiation, QUIC v2 | supported |
+| 1-RTT packets before the client's Finished | dropped unacknowledged (they come again once the handshake completes) |
+| Out-of-order stream data | held (up to 64 pieces a connection) and acknowledged, delivered when the gap fills |
 | UDP blocked or throttled by the network | clients fall back to TCP; `Alt-Svc` not sent if h3 failed recently for that listener |
 | Stateless reset | supported, tokens derived per instance (shareable across a fleet) |
 
