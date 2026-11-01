@@ -2190,13 +2190,16 @@ qc_packet:
 	call	qc_received
 	cmp	dword [rsp+QP_ACKEL],0
 	je	.out
-	; the client's Initial again (its hello retransmitted, a probe) while
-	; the handshake is not done: our flight did not reach it, it goes again
-	; now rather than at our probe timer (backed off, no RTT known yet)
-	cmp	dword [rsp+QP_LEVEL],QL_INIT
-	jne	@f
+	; the client's Initial or Handshake again (its hello retransmitted, a
+	; probe) while the handshake is not done: our flight did not reach it,
+	; it goes again now rather than at our probe timer (backed off, no RTT
+	; known yet)
+	cmp	dword [rsp+QP_LEVEL],QL_APP	; (Initial or Handshake: a probe at
+	je	@f				; either level says the same)
 	cmp	dword [rsp+QP_HELLO0],QF_HELLO
 	jne	@f
+	test	dword [r15+QC_FLAGS],QF_DONE	; (its Finished came with it: not lost)
+	jnz	@f
 	call	qc_flight_again
 @@:
 	imul	eax,[rsp+QP_LEVEL],PS_SIZE
