@@ -45,9 +45,14 @@ TX_FINACKED	:= 48				; d
 TX_NACK		:= 52				; d: acknowledged ranges past the base
 TX_ACK		:= 56				; TX_ACKMAX of (lo q, hi q)
 TX_ACKMAX	:= 12
-TX_DATA		:= 256
-TX_CAP		:= 32768
-assert HB_H3TX + TX_DATA + TX_CAP <= 1 shl HB_SHIFT
+TX_HDR		:= 256				; the header's size
+; the bytes: the downstream TLS area (a stream session has no TLS of its
+; own: the connection's QUIC carries it), 64 KiB: what a stream may have
+; in flight, a window an RTT
+TX_DATA		:= HB_TLS - HB_H3TX		; (from the header: before it)
+TX_CAP		:= 65536
+assert HB_TLS + TX_CAP <= HB_UPTLS
+assert TX_HDR <= 256
 assert HB_U2Q + Q_DATA + Q_CAP <= HB_H3TX
 
 ; the connection's stream table
@@ -1726,7 +1731,7 @@ h3_request_new:
 	mov	[rdi+QST_SGEN],eax
 	; its send ring
 	lea	rdi,[rbp+HB_H3TX]
-	mov	ecx,TX_DATA / 8
+	mov	ecx,TX_HDR / 8
 	xor	eax,eax
 	rep	stosq
 	mov	rax,[r15+QC_PSD_BIDI]

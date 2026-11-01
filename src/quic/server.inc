@@ -123,8 +123,12 @@ QC_LOSS_PN	:= 776				; q: (the largest acknowledged then)
 QC_LOSS_LVL	:= 784				; d: (its space)
 QC_RSTWIN	:= 792				; q: µs this second of client resets began
 QC_RSTCNT	:= 800				; d: requests the client cancelled in it
+QC_PACE_T	:= 808				; q: µs the pacing budget was last filled
+QC_PACE_B	:= 816				; q: bytes it allows (signed)
+QC_PACE_AT	:= 824				; q: µs data may go again, 0 not waiting
 QC_FIELDS_END	:= 832
-assert QC_RSTCNT + 4 <= QC_FIELDS_END
+assert QC_PACE_AT + 8 <= QC_FIELDS_END
+PACE_MIN_RTT	:= 20000			; µs: below it no pacing (the QUIC tick is 10 ms)
 assert QC_PCHALO + 8 <= QC_FIELDS_END
 QUIC_RETRY_AT	:= 64				; connections not validated yet, a worker:
 						; past it new ones get a Retry first
@@ -2906,7 +2910,11 @@ qc_build:
 	mov	eax,[rdx+SP_FL]
 	and	eax,SPF_SENT or SPF_ACKEL or SPF_ACKED
 	cmp	eax,SPF_SENT or SPF_ACKEL
-	jne	.cc_done
+	je	.cc_block
+	call	qc_pace				; CF: not yet (QC_PACE_AT set)
+	jnc	.cc_done
+	and	r13d,not (2 or 4 or 16)
+	jmp	.cc_done
 .cc_block:
 	and	r13d,not (2 or 4 or 16)
 	cmp	qword [r15+QC_PTO_AT],0		; something must end the wait: the probe
@@ -3470,6 +3478,14 @@ qs_tick:
 	call	qc_free
 	jmp	.next
 .pto:
+	mov	rax,[r15+QC_PACE_AT]		; pacing held data: its time has come
+	test	rax,rax
+	jz	@f
+	cmp	rax,[g_qnow]
+	ja	@f
+	mov	qword [r15+QC_PACE_AT],0
+	call	qc_dirty
+@@:
 	mov	rax,[r15+QC_LOSS_AT]		; the loss timer first
 	test	rax,rax
 	jz	@f
@@ -3608,6 +3624,69 @@ qc_flight_again:
 	cmp	r12d,2
 	jb	.level
 	pop	r12
+	ret
+
+; r15 = connection, before a packet that carries data: CF when pacing
+; holds it (RFC 9002 7.7): a budget refilled at 1.25 cwnd / srtt, at most
+; a tick and a half of it, a datagram taken a packet; QC_PACE_AT is when it
+; allows one again (the QUIC tick sends then). Only on paths whose RTT is
+; well above the tick.
+qc_pace:
+	mov	rcx,[r15+QC_SRTT]
+	cmp	rcx,PACE_MIN_RTT
+	jb	.go
+	mov	rax,[g_qnow]
+	mov	rdx,rax
+	sub	rax,[r15+QC_PACE_T]		; µs since the last fill
+	mov	[r15+QC_PACE_T],rdx
+	cmp	rax,1000000
+	jbe	@f
+	mov	eax,1000000
+@@:
+	mov	r8,[r15+QC_CWND]
+	imul	rax,r8
+	imul	rax,rax,5
+	shr	rax,2				; * 1.25 cwnd
+	xor	edx,edx
+	div	rcx				; / srtt: bytes earned
+	add	rax,[r15+QC_PACE_B]
+	mov	r9,r8				; the cap: 15 ms of sending
+	imul	r9,r9,15000 * 5 / 4
+	push	rax
+	mov	rax,r9
+	xor	edx,edx
+	div	rcx
+	mov	r9,rax
+	pop	rax
+	cmp	r9,10 * QUIC_DGRAM
+	jge	@f
+	mov	r9d,10 * QUIC_DGRAM
+@@:
+	cmp	rax,r9
+	jle	@f
+	mov	rax,r9
+@@:
+	cmp	rax,QUIC_DGRAM
+	jl	.wait
+	sub	rax,QUIC_DGRAM
+	mov	[r15+QC_PACE_B],rax
+	mov	qword [r15+QC_PACE_AT],0
+.go:
+	clc
+	ret
+.wait:
+	mov	[r15+QC_PACE_B],rax
+	mov	rdx,QUIC_DGRAM			; µs to earn the rest of a datagram
+	sub	rdx,rax
+	mov	rax,rdx
+	imul	rax,rcx
+	imul	r8,r8,5
+	shr	r8,2
+	xor	edx,edx
+	div	r8
+	add	rax,[g_qnow]
+	mov	[r15+QC_PACE_AT],rax
+	stc
 	ret
 
 ; ebx = connection: it goes (session_close calls qc_closing)
