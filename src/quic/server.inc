@@ -103,8 +103,13 @@ QC_RECOV	:= 544				; q: recovery started (µs): losses of packets
 QC_LATEST	:= 552				; q: the latest RTT sample
 QC_HBOWN	:= 560				; q: the stream entry gathering in QC_H3HB, 0 none
 QC_HBOWNID	:= 568				; q: (its id)
+QC_TODCIDLEN	:= 576				; d: after a Retry: the client's first
+QC_TODCID	:= 580				; 20: Destination Connection ID (its token's)
 QC_FIELDS_END	:= 640
-assert QC_HBOWNID + 8 <= QC_FIELDS_END
+assert QC_TODCID + 20 <= QC_FIELDS_END
+QUIC_RETRY_AT	:= 64				; connections not validated yet, a worker:
+						; past it new ones get a Retry first
+QTOK_LIFE	:= 10000000			; a Retry token is good 10 s (µs)
 QUIC_CWND0	:= 14720			; the initial window
 QUIC_CWNDMIN	:= 2 * QUIC_DGRAM
 
@@ -179,6 +184,12 @@ bss
 	g_qnow		dq ?				; µs (CLOCK_MONOTONIC)
 	g_qc_head	dd ?				; connections (+ 1)
 	g_qc_count	dd ?
+	g_qc_unval	dd ?				; not validated yet (QUIC_RETRY_AT)
+	g_qst_retry	dq ?				; Retries sent
+	g_qtok_key	rb 16				; supervisor: Retry tokens' key
+	g_qtok_buf	rb 64				; a token opened
+	align 16
+	g_qtok_gcm	rb GCM_SIZE
 	g_qdirty_n	dd ?
 	g_qdirty	rq QDIRTY_MAX			; session | generation << 32
 	g_qtx_n		dd ?
@@ -324,6 +335,11 @@ qs_open_all:
 	push	rbx
 	push	r12
 	push	r13
+	lea	rdi,[g_qtok_key]		; Retry tokens: one key for every worker
+	mov	esi,16
+	xor	edx,edx
+	mov	eax,SYS_getrandom
+	syscall
 	xor	r12d,r12d			; listener
 .listener:
 	cmp	r12d,[g_plan_listeners]
@@ -429,7 +445,11 @@ qs_worker_init:
 	mov	dword [g_qs_n],0
 	mov	dword [g_qc_head],0
 	mov	dword [g_qc_count],0
+	mov	dword [g_qc_unval],0
 	mov	dword [g_qdirty_n],0
+	lea	rdi,[g_qtok_gcm]		; Retry tokens: the supervisor's key
+	lea	rsi,[g_qtok_key]
+	call	gcm_init
 	mov	dword [g_qtx_n],0
 	xor	ebx,ebx
 .listener:
@@ -613,7 +633,12 @@ QD_SA		:= 24
 QD_SALEN	:= 32
 QD_LEN		:= 36
 QD_VER		:= 40
-QD_SIZE		:= 56
+QD_TOK		:= 48				; q: an Initial's token
+QD_TOKLEN	:= 56				; d
+QD_RETRIED	:= 60				; d: its token is our Retry's: validated
+QD_ODC		:= 64				; q: then the first Destination Connection ID
+QD_ODCLEN	:= 72				; d
+QD_SIZE		:= 88
 qs_datagram:
 	push	rbx
 	push	rbp
@@ -629,6 +654,8 @@ qs_datagram:
 	mov	[rsp+QD_SA],rcx
 	mov	[rsp+QD_SALEN],r8d
 	mov	[rsp+QD_LEN],edx
+	mov	dword [rsp+QD_TOKLEN],0
+	mov	dword [rsp+QD_RETRIED],0
 	mov	r12,rsi				; the packet's start
 	mov	ebx,NIL				; no connection yet
 .packet:
@@ -698,6 +725,8 @@ qs_datagram:
 	jne	.no_token
 	call	qv_read				; Initial: the token
 	jc	.pop_out
+	mov	[rsp+32+QD_TOK],rsi
+	mov	[rsp+32+QD_TOKLEN],eax
 	add	rsi,rax
 	cmp	rsi,rdx
 	ja	.pop_out
@@ -729,6 +758,35 @@ qs_datagram:
 	jb	.out
 	cmp	r9d,8
 	jb	.out
+	; its address: validated by the token of our Retry, or not yet; past
+	; QUIC_RETRY_AT not yet validated (or `http3 retry`), a Retry first
+	cmp	dword [rsp+QD_TOKLEN],0
+	je	@f
+	push	r8
+	push	r9
+	push	r10
+	push	r11
+	lea	rdi,[rsp+32]
+	call	qs_token_check			; QD_RETRIED, QD_ODC when it is good
+	pop	r11
+	pop	r10
+	pop	r9
+	pop	r8
+@@:
+	cmp	dword [rsp+QD_RETRIED],0
+	jne	.create
+	mov	eax,[rsp+QD_SLOT]
+	mov	eax,[g_qs_lst+rax*4]
+	imul	rax,rax,LS_SIZE
+	test	dword [g_listeners+rax+LS_FLAGS],LSF_H3RETRY
+	jnz	.retry
+	cmp	dword [g_qc_unval],QUIC_RETRY_AT
+	jb	.create
+.retry:
+	mov	rdi,rsp
+	call	qs_send_retry			; r8/r9 dcid, r10/r11 scid
+	jmp	.out
+.create:
 	mov	rdi,rsp				; a new connection
 	call	qc_new				; r8/r9 dcid, r10/r11 scid
 	cmp	eax,NIL
@@ -787,6 +845,159 @@ qs_datagram:
 	pop	r13
 	pop	r12
 	pop	rbp
+	pop	rbx
+	ret
+
+; rdi = the datagram's frame (QD_*) of a client's first Initial, r8/r9d its
+; Destination Connection ID, r10/r11d its Source: a Retry back (RFC 9000
+; 17.2.5): a new connection ID to come back to, a token that proves the
+; address (qs_token_make), the integrity tag
+qs_send_retry:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	push	rbp
+	mov	r12,rdi
+	mov	r13,r8
+	mov	r14d,r9d
+	mov	r15,r10
+	mov	ebp,r11d
+	call	qtx_slot			; rax = buffer
+	test	rax,rax
+	jz	.out
+	mov	rbx,rax
+	rdtsc
+	and	al,0x0F
+	or	al,0xF0				; v1: type 3
+	cmp	dword [r12+QD_VER],QUIC_V2
+	jne	@f
+	xor	al,0x30				; v2: type 0
+@@:
+	mov	[rbx],al
+	mov	eax,[r12+QD_VER]
+	bswap	eax
+	mov	[rbx+1],eax
+	lea	rdi,[rbx+5]
+	mov	[rdi],bpl			; theirs, as they chose it
+	inc	rdi
+	mov	rsi,r15
+	mov	ecx,ebp
+	rep	movsb
+	mov	byte [rdi],8			; ours: new
+	inc	rdi
+	mov	r15,rdi
+	mov	esi,8
+	xor	edx,edx
+	mov	eax,SYS_getrandom
+	syscall
+	lea	rdi,[r15+8]
+	call	qs_token_make			; rdi past it
+	mov	r8,rdi
+	sub	r8,rbx
+	push	r8
+	push	r8
+	mov	rcx,rbx
+	mov	rsi,r13
+	mov	edx,r14d
+	mov	r9d,[r12+QD_VER]
+	call	quic_retry_tag			; after it
+	pop	rcx
+	pop	rcx
+	add	ecx,16
+	mov	edi,[r12+QD_SLOT]
+	mov	rsi,[r12+QD_SA]
+	mov	r8d,[r12+QD_SALEN]
+	call	qtx_commit
+	inc	qword [g_qst_retry]
+.out:
+	pop	rbp
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; rdi = out, r12 = the datagram's frame, r13/r14d = the client's first
+; Destination Connection ID: a Retry token, rdi past it. 'R', a nonce
+; (the TSC, the worker), then sealed with the key every worker shares
+; (the client's address as associated data): when, the connection ID.
+qs_token_make:
+	push	rbx
+	mov	rbx,rdi
+	mov	byte [rbx],'R'
+	rdtsc
+	mov	[rbx+1],eax
+	mov	[rbx+5],edx
+	mov	eax,[g_worker_id]
+	mov	[rbx+9],eax
+	mov	rax,[g_qnow]
+	mov	[rbx+13],rax
+	mov	[rbx+21],r14b
+	lea	rdi,[rbx+22]
+	mov	rsi,r13
+	mov	ecx,r14d
+	rep	movsb
+	lea	rdi,[g_qtok_gcm]
+	lea	rsi,[rbx+1]
+	mov	rdx,[r12+QD_SA]
+	mov	ecx,[r12+QD_SALEN]
+	lea	r8,[rbx+13]
+	lea	r9d,[r14+9]
+	call	gcm_seal
+	lea	rdi,[rbx+13+9+16]
+	add	rdi,r14
+	pop	rbx
+	ret
+
+; rdi = the datagram's frame, its Initial's token (QD_TOK): when it is our
+; Retry's, for this address and not stale, QD_RETRIED = 1 and QD_ODC the
+; client's first Destination Connection ID (in g_qtok_buf)
+qs_token_check:
+	push	rbx
+	mov	rbx,rdi
+	mov	r9d,[rbx+QD_TOKLEN]
+	sub	r9d,1 + 12 + 16
+	cmp	r9d,9 + 8
+	jb	.out
+	cmp	r9d,9 + 20
+	ja	.out
+	mov	rsi,[rbx+QD_TOK]
+	cmp	byte [rsi],'R'
+	jne	.out
+	push	r9
+	push	r9
+	lea	rsi,[rsi+13]			; a copy: the token is in the
+	lea	rdi,[g_qtok_buf]		; packet's protected header
+	lea	ecx,[r9+16]
+	rep	movsb
+	lea	rdi,[g_qtok_gcm]
+	mov	rsi,[rbx+QD_TOK]
+	inc	rsi
+	mov	rdx,[rbx+QD_SA]
+	mov	ecx,[rbx+QD_SALEN]
+	lea	r8,[g_qtok_buf]
+	call	gcm_open
+	pop	r9
+	pop	r9
+	test	eax,eax
+	jz	.out
+	movzx	eax,byte [g_qtok_buf+8]
+	add	eax,9
+	cmp	eax,r9d
+	jne	.out
+	mov	rax,[g_qnow]
+	sub	rax,qword [g_qtok_buf]
+	cmp	rax,QTOK_LIFE
+	ja	.out
+	mov	dword [rbx+QD_RETRIED],1
+	lea	rax,[g_qtok_buf+9]
+	mov	[rbx+QD_ODC],rax
+	movzx	eax,byte [g_qtok_buf+8]
+	mov	[rbx+QD_ODCLEN],eax
+.out:
 	pop	rbx
 	ret
 
@@ -1052,6 +1263,18 @@ qc_new:
 	mov	rsi,r8
 	mov	ecx,r9d
 	rep	movsb
+	cmp	dword [rbp+QD_RETRIED],0	; its address proven by our Retry's token
+	je	.unvalidated
+	mov	ecx,[rbp+QD_ODCLEN]
+	mov	[r15+QC_TODCIDLEN],ecx
+	lea	rdi,[r15+QC_TODCID]
+	mov	rsi,[rbp+QD_ODC]
+	rep	movsb
+	or	dword [r15+QC_FLAGS],QF_VALID
+	jmp	@f
+.unvalidated:
+	inc	dword [g_qc_unval]
+@@:
 	; Initial keys from the client's dcid: rx are the client's
 	qc_key	QL_INIT, 0
 	mov	rdi,rax
@@ -1107,11 +1330,26 @@ qc_tp_build:
 	lea	rdi,[r15+QC_QT+QT_TPS]
 	mov	byte [rdi],0x00			; original_destination_connection_id
 	mov	eax,[r15+QC_ODCIDLEN]
+	lea	rsi,[r15+QC_ODCID]
+	cmp	dword [r15+QC_TODCIDLEN],0
+	je	@f
+	mov	eax,[r15+QC_TODCIDLEN]		; (after a Retry: the first one)
+	lea	rsi,[r15+QC_TODCID]
+@@:
+	mov	[rdi+1],al
+	add	rdi,2
+	mov	ecx,eax
+	rep	movsb
+	cmp	dword [r15+QC_TODCIDLEN],0
+	je	@f
+	mov	byte [rdi],0x10			; retry_source_connection_id: what the
+	mov	eax,[r15+QC_ODCIDLEN]		; Retry gave, this Initial's
 	mov	[rdi+1],al
 	add	rdi,2
 	lea	rsi,[r15+QC_ODCID]
 	mov	ecx,eax
 	rep	movsb
+@@:
 	mov	word [rdi],0x080F		; initial_source_connection_id, 8 bytes
 	add	rdi,2
 	mov	rax,[r15+QC_SCID]
@@ -1231,9 +1469,13 @@ qc_packet:
 	call	idle_touch
 	; a Handshake packet: the client's address is good, Initial is over
 	cmp	dword [rsp+QP_LEVEL],QL_HS
-	jne	@f
-	or	dword [r15+QC_FLAGS],QF_VALID or QF_INIT_GONE
+	jne	.frames_begin
+	test	dword [r15+QC_FLAGS],QF_VALID
+	jnz	@f
+	dec	dword [g_qc_unval]
 @@:
+	or	dword [r15+QC_FLAGS],QF_VALID or QF_INIT_GONE
+.frames_begin:
 	; frames
 	mov	rsi,[rsp+QP_PAY]
 .frame:
@@ -2517,6 +2759,10 @@ qs_tick:
 	shl	r15,HB_SHIFT
 	add	r15,[g_hbuf_base]
 	mov	r12d,[r15+QC_LINK]		; (before it may go)
+	cmp	dword [g_draining],2
+	jb	@f
+	call	qc_drain			; http3.inc: GOAWAY, then close
+@@:
 	cmp	dword [r15+QC_STATE],QCS_CLOSING
 	jne	.pto
 	test	dword [r15+QC_FLAGS],QF_CLOSE
@@ -2634,6 +2880,10 @@ qc_closing:
 	cmp	ecx,[r15+QC_GEN]
 	jne	.out
 	and	dword [r15+QC_FLAGS],not QF_LINKED	; (once)
+	test	dword [r15+QC_FLAGS],QF_VALID
+	jnz	@f
+	dec	dword [g_qc_unval]
+@@:
 	lea	rdi,[r15+QC_SCID]
 	mov	esi,8
 	call	qh_del

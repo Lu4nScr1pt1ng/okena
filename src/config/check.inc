@@ -1316,8 +1316,8 @@ check_tls:
 	mov	r13,rax
 	mov	rax,[r13+N_ARGS]
 	mov	rax,[rax+A_VAL]
-	cmp	byte [rax+1],'n'		; `on`
-	jne	.h3_ok
+	cmp	byte [rax+1],'f'		; `off`: no QUIC
+	je	.h3_ok
 	mov	rdi,r12
 	mov	ecx,DIR_TLS
 	call	find_child

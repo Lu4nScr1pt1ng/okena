@@ -2055,6 +2055,23 @@ http_write_response_head:
 	call	hdrop_emit
 	jc	.full
 @@:
+	; `http3 on`: HTTP/3 on the same port (RFC 7838), but on HTTP/3 itself
+	mov	eax,[rsp+24]			; the session
+	shl	rax,S_SHIFT
+	add	rax,[g_sess_base]
+	test	dword [rax+S_FLAGS],SF_H3S
+	jnz	@f
+	mov	ecx,[rax+S_LST]
+	imul	rcx,rcx,LS_SIZE
+	test	dword [g_listeners+rcx+LS_FLAGS],LSF_H3
+	jz	@f
+	push	rcx
+	memit_x 'Alt-Svc: h3=":'
+	pop	rcx
+	mov	eax,[g_listeners+rcx+LS_PORT]
+	call	fmt_u64
+	memit_x '"; ma=86400',13,10
+@@:
 	mov	eax,[r15+H_RBODY]
 	test	dword [r15+H_FLAGS],HX_CHUNKOUT
 	jz	@f

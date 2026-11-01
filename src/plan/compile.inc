@@ -103,6 +103,7 @@ LSF_WILDCARD	:= 8		; bound to every address: the local one comes from getsocknam
 LSF_KTLS	:= 16		; http: the kernel seals and opens the records (`ktls on`)
 LSF_H2		:= 32		; http: HTTP/2 (`http2 on`): ALPN h2, prior knowledge without TLS
 LSF_H3		:= 64		; http: HTTP/3 (`http3 on`): QUIC on the same port, UDP
+LSF_H3RETRY	:= 128		; http: `http3 retry`: every new QUIC connection proves its address first
 
 ; Pool
 PL_FIRST	:= 0		; d: first server
@@ -1443,11 +1444,14 @@ compile_listener:
 	mov	rax,[rax+N_ARGS]
 	mov	rdi,[rax+A_VAL]
 	mov	esi,[rax+A_VLEN]
-	lea	rdx,[e_onoff]
+	lea	rdx,[e_h3]
 	call	list_index
-	test	eax,eax
-	jnz	@f
+	cmp	eax,1
+	je	@f				; off
 	or	dword [g_cmp_flags],LSF_H3
+	cmp	eax,2
+	jne	@f
+	or	dword [g_cmp_flags],LSF_H3RETRY
 @@:
 	mov	dword [g_cmp_alog],0
 	mov	rdi,r12

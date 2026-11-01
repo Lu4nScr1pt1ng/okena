@@ -40,7 +40,7 @@ except ImportError:
     sys.exit(0)
 
 BASE = 29000 + os.getpid() % 90 * 10 + (5 if ENGINE == "epoll" else 0)
-BACK, LST, RELAY = BASE, BASE + 1, BASE + 2
+BACK, LST, RELAY, RETRY = BASE, BASE + 1, BASE + 2, BASE + 3
 failures = 0
 
 
@@ -58,6 +58,8 @@ def backend():
         protocol_version = "HTTP/1.1"
 
         def do_GET(self):
+            if self.path == "/slow":
+                time.sleep(1)
             if self.path.startswith("/big/"):
                 n = int(self.path[5:])
                 body = bytes(random.Random(n).randbytes(n))
@@ -174,7 +176,7 @@ async def cases():
         r = await c.request("GET", "/hello?x=1")
         h = r["headers"] or {}
         check("GET: the backend's 200, its fields, :authority as Host",
-              h.get(b":status") == b"200" and h.get(b"x-back") == b"yes"
+              h.get(b":status") == b"200" and h.get(b"x-back") == b"yes" and b"alt-svc" not in h
               and r["body"] == b"hello /hello?x=1 h3.test\n", str(r)[:200])
         r = await c.request("GET", "/missing")
         check("its status as it is (404)", (r["headers"] or {}).get(b":status") == b"404", str(r["headers"]))
@@ -201,6 +203,12 @@ async def cases():
         r = await c.request("GET", "/v2")
         check("QUIC version 2 (RFC 9369)", r["body"] == b"hello /v2 h3.test\n" and c._quic._version == 0x6B3343CF,
               str(r)[:100])
+    # `http3 retry`: a Retry first, its token back, then the handshake
+    for ver, name in ((None, "v1"), (QuicProtocolVersion.VERSION_2, "v2")):
+        async with connect("127.0.0.1", RETRY, configuration=config(ver), create_protocol=Client) as c:
+            r = await c.request("GET", "/retried")
+            check(f"http3 retry ({name}): a Retry, then the connection with its token",
+                  r["body"] == b"hello /retried h3.test\n" and c._quic._retry_count == 1, str(r)[:100])
     # through a lossy relay: what is lost is sent again
     threading.Thread(target=relay, args=(0.1,), daemon=True).start()
     async with connect("127.0.0.1", RELAY, configuration=config(), create_protocol=Client) as c:
@@ -212,6 +220,31 @@ async def cases():
         up = os.urandom(500_000)
         r = await c.request("POST", "/up", up)
         check("POST of 500 KB the same way", r["body"] == hashlib.md5(up).hexdigest().encode(), str(r)[:80])
+
+
+async def drain(p):
+    """SIGTERM: GOAWAY, what is in flight finishes, then CONNECTION_CLOSE
+    (H3_NO_ERROR) and the worker exits."""
+    async with connect("127.0.0.1", LST, configuration=config(), create_protocol=Client) as c:
+        await c.request("GET", "/hello")
+        slow = asyncio.ensure_future(c.request("GET", "/slow"))
+        await asyncio.sleep(0.3)
+        p.terminate()
+        r = await slow
+        check("draining: a request in flight still finishes", r["body"] == b"hello /slow h3.test\n", str(r)[:120])
+        for _ in range(30):
+            if c.closed:
+                break
+            await asyncio.sleep(0.1)
+        check("  then CONNECTION_CLOSE with H3_NO_ERROR", c.closed is not None and c.closed.error_code == 0x100,
+              str(c.closed))
+    t0 = time.time()
+    try:
+        p.wait(5)
+    except subprocess.TimeoutExpired:
+        pass
+    check("  and okena exits before its drain timeout", p.poll() is not None and time.time() - t0 < 4,
+          f"{p.poll()} after {time.time() - t0:.1f}s")
 
 
 def version_negotiation():
@@ -237,12 +270,17 @@ def main():
                    check=True, capture_output=True)
     threading.Thread(target=backend, daemon=True).start()
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 1; io_engine {ENGINE} }}
+    conf.write_text(f"""okena {{ workers 1; io_engine {ENGINE}; drain delay=0s timeout=8s }}
 http 127.0.0.1:{LST} {{
     http2 on
     http3 on
     tls {{ cert {tmp / 'c.pem'}; key {tmp / 'k.pem'} }}
     access_log {tmp / 'access.log'}
+    route /* {{ to 127.0.0.1:{BACK} }}
+}}
+http 127.0.0.1:{RETRY} {{
+    http3 retry
+    tls {{ cert {tmp / 'c.pem'}; key {tmp / 'k.pem'} }}
     route /* {{ to 127.0.0.1:{BACK} }}
 }}
 """)
@@ -257,6 +295,15 @@ http 127.0.0.1:{LST} {{
             r = subprocess.run([curl, "-qsk", "--http3-only", "--resolve", f"h3.test:{LST}:127.0.0.1",
                                 f"https://h3.test:{LST}/curl"], capture_output=True, timeout=20)
             check("curl (ngtcp2) over HTTP/3", r.stdout.startswith(b"hello /curl h3.test"), r.stdout[:80] + r.stderr[:80])
+            r = subprocess.run([curl, "-qsk", "--http3-only", "--resolve", f"h3.test:{RETRY}:127.0.0.1",
+                                f"https://h3.test:{RETRY}/curl"], capture_output=True, timeout=20)
+            check("curl through a Retry", r.stdout.startswith(b"hello /curl h3.test"), r.stdout[:80] + r.stderr[:80])
+        for v in ("--http1.1", "--http2"):
+            r = subprocess.run(["curl", "-qski", v, "--resolve", f"h3.test:{LST}:127.0.0.1",
+                                f"https://h3.test:{LST}/alt"], capture_output=True, timeout=20)
+            check(f"Alt-Svc on TCP ({v[2:]}) points at HTTP/3 on the port",
+                  f'alt-svc: h3=":{LST}"; ma=86400'.encode() in r.stdout.lower(), r.stdout[:300])
+        asyncio.run(drain(p))
         log.seek(0)
         text = log.read()
         check("no worker died", "killed" not in text and "exited with status" not in text, text[-300:])

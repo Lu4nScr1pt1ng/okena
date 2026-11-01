@@ -95,6 +95,7 @@ QC_WINDOW	:= 1048576			; the connection's
 H3_HEADERS_MAX	:= 16384			; a HEADERS frame (gathered in HB_OUT)
 H3_FIELDS_MAX	:= 128
 
+H3E_NO_ERROR	:= 0x100
 H3E_GENERAL	:= 0x101
 H3E_FRAME_UNEXPECTED := 0x105
 H3E_EXCESSIVE	:= 0x107
@@ -574,15 +575,36 @@ qc_stream_one:
 	shr	rcx,2
 	cmp	rcx,[r15+QC_MAXS_OURS]
 	jae	.limit
+	; it opens every lower one not open yet too (RFC 9000 3.2): their
+	; first bytes may come later
+	mov	rax,[r15+QC_SMAX]
+.open:
 	lea	rcx,[rax+4]
 	mov	[r15+QC_SMAX],rcx
-	call	qst_new
+	call	qst_new				; (keeps rax)
 	test	r8,r8
 	jz	.rejected
 	mov	dword [r8+QST_KIND],QSK_REQ
 	mov	dword [r8+QST_SESS],NIL
 	mov	qword [r8+QST_MSD],H3_WINDOW
-	jmp	.have
+	mov	rcx,[r15+QC_GOAWAY]		; past our GOAWAY: refused
+	test	rcx,rcx
+	jz	@f
+	dec	rcx
+	cmp	rax,rcx
+	jb	@f
+	push	rax
+	push	r8
+	mov	rdi,r8
+	mov	eax,H3E_REQ_REJECTED
+	call	qst_refuse
+	pop	r8
+	pop	rax
+@@:
+	cmp	rax,[rsp+QI_ID]
+	je	.have
+	add	rax,4
+	jmp	.open
 .new_uni:
 	cmp	rax,[r15+QC_UMAX]
 	jb	.ok
@@ -2269,12 +2291,67 @@ h3s_closing:
 
 ; ------------------------------------------------------- sending
 
+; r15 = connection: eax = our control stream's length (its type and
+; SETTINGS, and GOAWAY when queued). Keeps all but rax, rcx.
+qc_ctl_len:
+	mov	eax,3
+	mov	rcx,[r15+QC_GOAWAY]
+	test	rcx,rcx
+	jz	.out
+	dec	rcx
+	add	eax,3				; type, length, a 1-byte id
+	cmp	rcx,64
+	jb	.out
+	inc	eax
+	cmp	rcx,16384
+	jb	.out
+	add	eax,2
+	cmp	rcx,1 shl 30
+	jb	.out
+	add	eax,4
+.out:
+	ret
+
+; ebx, r15 = connection, on the QUIC tick while the worker drains: GOAWAY
+; once (the first stream not taken: none past those already open), then
+; CONNECTION_CLOSE (H3_NO_ERROR) once it is delivered and no request is
+; left
+qc_drain:
+	cmp	dword [r15+QC_STATE],QCS_EST
+	jne	.out
+	test	dword [r15+QC_FLAGS],QF_DONE
+	jz	.out
+	cmp	qword [r15+QC_GOAWAY],0
+	jne	.wait
+	mov	rax,[r15+QC_SMAX]
+	inc	rax
+	mov	[r15+QC_GOAWAY],rax
+	jmp	qc_dirty
+.wait:
+	call	qc_ctl_len
+	cmp	[r15+QC_CTL_ACKED],eax
+	jb	.out
+	lea	r8,[r15+QC_QST]
+	mov	ecx,QST_N
+.next:
+	cmp	dword [r8+QST_KIND],QSK_REQ
+	je	.out				; a request is still going
+	add	r8,QST_SIZE
+	dec	ecx
+	jnz	.next
+	mov	qword [r15+QC_ERR],H3E_NO_ERROR
+	or	dword [r15+QC_FLAGS],QF_APP_ERR
+	jmp	qc_fail
+.out:
+	ret
+
 ; eax = 1 when there is something to send on the streams (ebx, r15 =
 ; the connection)
 qc_app_pending:
 	test	dword [r15+QC_FLAGS],QF_DONE
 	jz	.none
-	cmp	dword [r15+QC_CTL_SENT],3
+	call	qc_ctl_len
+	cmp	[r15+QC_CTL_SENT],eax
 	jb	.yes
 	test	dword [r15+QC_FL2],QF2_MAXD or QF2_MAXS or QF2_PATH or QF2_MSD
 	jnz	.yes
@@ -2473,15 +2550,31 @@ qc_app_write:
 	dec	ecx
 	jnz	.msd_next
 .control:
-	; our control stream (id 3): its type (0), an empty SETTINGS
-	mov	eax,[r15+QC_CTL_SENT]
-	cmp	eax,3
+	; our control stream (id 3): its type (0), an empty SETTINGS, then
+	; GOAWAY when draining; all of it again when some was lost
+	call	qc_ctl_len
+	cmp	[r15+QC_CTL_SENT],eax
 	jae	.streams
-	mov	dword [rdi],0x0300030E		; STREAM, OFF|LEN: id 3, offset 0, length 3
+	mov	[r15+QC_CTL_SENT],eax
+	mov	[r15+QC_LW_CTL],eax
+	mov	dword [rdi],0x0000030E		; STREAM, OFF|LEN: id 3, offset 0,
+	mov	[rdi+3],al			; the length
 	mov	dword [rdi+4],0x00000400	; 00 04 00
 	add	rdi,7
-	mov	dword [r15+QC_CTL_SENT],3
-	mov	dword [r15+QC_LW_CTL],3
+	mov	rax,[r15+QC_GOAWAY]
+	test	rax,rax
+	jz	@f
+	dec	rax
+	mov	byte [rdi],7			; GOAWAY: the first stream not taken
+	push	rdi
+	add	rdi,2
+	call	qv_write
+	pop	rcx
+	mov	rax,rdi
+	sub	rax,rcx
+	sub	eax,2
+	mov	[rcx+1],al
+@@:
 	mov	r12d,1
 .streams:
 	; one request stream's data, the next with something after the last
@@ -2693,9 +2786,10 @@ sp_stream_ring:
 ; delivered: the ring frees up to the first gap; a stream whose exchange
 ; is over and whose bytes and FIN are all delivered goes.
 qc_app_acked:
-	cmp	dword [rdi+SP_CTL],0
-	je	@f
-	mov	dword [r15+QC_CTL_ACKED],3
+	mov	eax,[rdi+SP_CTL]
+	cmp	eax,[r15+QC_CTL_ACKED]
+	jbe	@f
+	mov	[r15+QC_CTL_ACKED],eax
 @@:
 	mov	eax,[rdi+SP_SLEN]
 	or	eax,[rdi+SP_SFIN]
