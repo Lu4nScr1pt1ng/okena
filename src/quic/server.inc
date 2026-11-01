@@ -668,6 +668,7 @@ QD_TOKLEN	:= 56				; d
 QD_RETRIED	:= 60				; d: its token is our Retry's: validated
 QD_ODC		:= 64				; q: then the first Destination Connection ID
 QD_ODCLEN	:= 72				; d
+QD_NEW		:= 76				; d: its connection was made for it
 QD_SIZE		:= 88
 qs_datagram:
 	push	rbx
@@ -686,6 +687,7 @@ qs_datagram:
 	mov	[rsp+QD_LEN],edx
 	mov	dword [rsp+QD_TOKLEN],0
 	mov	dword [rsp+QD_RETRIED],0
+	mov	dword [rsp+QD_NEW],0
 	mov	r12,rsi				; the packet's start
 	mov	ebx,NIL				; no connection yet
 .packet:
@@ -822,6 +824,7 @@ qs_datagram:
 	cmp	eax,NIL
 	je	.out
 	mov	ebx,eax
+	mov	dword [rsp+QD_NEW],1
 .have:
 	mov	edi,ebx
 	mov	esi,ebp
@@ -837,6 +840,14 @@ qs_datagram:
 	mov	r9d,[rsp+QD_LEN]
 	call	qc_packet
 	mov	dword [rsp+QD_LEN],0		; (the datagram is counted once)
+	cmp	dword [rsp+QD_NEW],0
+	je	.next_packet
+	mov	dword [rsp+QD_NEW],0
+	qc_regs					; made for a first packet that did not
+	cmp	qword [r15+QC_PS+PS_LARGEST],-1	; open (noise, a forged Initial): gone
+	jne	.next_packet			; now, not at its idle timeout
+	call	qc_free
+	jmp	.out
 .next_packet:
 	mov	r12,r13
 	jmp	.packet

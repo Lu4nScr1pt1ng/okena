@@ -158,6 +158,68 @@ Read with care:
   slept with deliveries waiting. Bidirectional 4 KB messages at 80k/s
   through one core run clean on both engines.
 
+## HTTP/3 against HAProxy and nginx (2026-11-01)
+
+`tests/bench/h3.sh`: okena (2 workers, `http3 on`), HAProxy 3.2 (`nbthread
+2`, `bind quic4@`, OpenSSL 3.5.7) and nginx 1.27 (2 workers, `listen ...
+quic reuseport`), official images on the host network, all on cores 1-2;
+the backend `l4bench http` on 4-5; the load from h2load built with
+HTTP/3 (nghttp2 1.66, ngtcp2 1.14, nghttp3 1.11 on OpenSSL 3.5:
+tests/bench/h3/Dockerfile) on the four other physical cores. ECDSA P-256,
+X25519 for all three, 10 s a run. h2load is closed loop and its
+latencies are per request after the connection (no correction for
+coordinated omission); "first byte" includes the handshake. Other
+containers stopped.
+
+| HTTP/3, many streams (64 x 10) | server | requests/s | p50 / p99 / p99.9 / max (µs) | failed |
+|---|---|---|---|---|
+| closed loop | okena, 2 workers | 156467.10 | 3935 / 7959 / 9119 / 37520 | 0 |
+| closed loop | HAProxy 3.2, 2 threads | 130119.70 | 4824 / 5951 / 7054 / 85520 | 0 |
+| closed loop | nginx 1.27, 2 workers | 101925.70 | 6039 / 14170 / 46370 / 265266 | 0 |
+
+| HTTP/3, a new connection each | server | requests/s | p50 / p99 / p99.9 / max (µs) | failed | first byte, mean / max |
+|---|---|---|---|---|---|
+| 2000/s | okena, 2 workers | 2016.40 | 5340 / 12267 / 13348 / 14468 | 0 | 15.31ms / 53.97ms |
+| 2000/s | HAProxy 3.2, 2 threads | 1290.26 | 20984 / 53448 / 62701 / 68579 | 0 | 73.46ms / 15.00s |
+| 2000/s | nginx 1.27, 2 workers | 1129.69 | 72184 / 743814 / 3047199 / 6715533 | 0 | 732.69ms / 15.03s |
+| 5000/s | okena, 2 workers | 4987.77 | 15044 / 37876 / 42416 / 48325 | 0 | 48.58ms / 128.17ms |
+| 5000/s | HAProxy 3.2, 2 threads | 696.55 | 7123150 / 19914114 / 20379466 / 21065281 | 50218 | 17.00s / 21.25s |
+| 5000/s | nginx 1.27, 2 workers | 1098.90 | 79407 / 2367427 / 12662978 / 31727648 | 13600 | 6.31s / 31.74s |
+| 10000/s | okena, 2 workers | 9963.36 | 46677 / 128538 / 157558 / 171545 | 0 | 124.54ms / 368.95ms |
+| 10000/s | HAProxy 3.2, 2 threads | 710.38 | 5297702 / 14181013 / 14588906 / 14609103 | 137928 | 18.62s / 28.66s |
+| 10000/s | nginx 1.27, 2 workers | 1077.52 | 400329 / 15773753 / 26582463 / 32603516 | 127886 | 7.03s / 32.65s |
+| 20000/s | okena, 2 workers | 10163.02 | 451804 / 603239 / 669774 / 1007493 | 0 | 1.30s / 2.00s |
+| 20000/s | HAProxy 3.2, 2 threads | 557.98 | 11032289 / 36058846 / 37090015 / 37951107 | 312244 | 29.25s / 65.39s |
+| 20000/s | nginx 1.27, 2 workers | 567.63 | 2048190 / 27719186 / 37857429 / 44176674 | 326646 | 7.99s / 44.22s |
+
+| HTTP/3, keep-alive at 18k/s (60 x 300/s) | server | requests/s | p50 / p99 / p99.9 / max (µs) | failed |
+|---|---|---|---|---|
+| quiet | okena, 2 workers | 17987.50 | 129 / 342 / 476 / 4096 | 0 |
+| under an Initial flood | okena, 2 workers | 17987.70 | 1080 / 3134 / 5795 / 13542 | 0 |
+| quiet | HAProxy 3.2, 2 threads | 17984.40 | 91 / 178 / 482 / 16911 | 0 |
+| under an Initial flood | HAProxy 3.2, 2 threads | 2622.20 | 102 / 100640 / 104095 / 169022 | 0 |
+| quiet | nginx 1.27, 2 workers | 17982.90 | 81 / 235 / 1155 / 12463 | 0 |
+| under an Initial flood | nginx 1.27, 2 workers | 4086.40 | 980 / 190636 / 2018478 / 7058696 | 0 |
+
+* Many streams: okena 20% above HAProxy, 53% above nginx. Before this run
+  okena did 33k/s here: past 64 idle connections a server a worker its
+  pools closed connections, so streams reconnected to the backend for
+  most requests (now 512).
+* Handshakes: okena keeps up to about 10k new connections a second on two
+  cores, and past that serves 10k/s with none failing (the rest wait);
+  HAProxy and nginx top out near 1.1-1.3k/s here, and fail connections
+  when offered more. HAProxy's `tune.quic.socket-owner` either way and
+  nginx's `quic_bpf on` gave the same.
+* Quiet keep-alive at 18k/s: HAProxy's and nginx's p50 and p99 are lower
+  than okena's (91 / 178 and 81 / 235 us against 129 / 342).
+* Under the flood (about 330k Initials a second, real ClientHellos never
+  answered, tests/bench/h3flood.py) okena keeps the 18k/s with p99 at 3 ms
+  (Retry once 64 connections a worker are not validated, and Initials
+  that do not open free their connection at once); HAProxy falls to 2.6k/s
+  and nginx to 4.1k/s, with p99 above 100 ms. Not flat yet: the Retry path
+  (two AES-GCM seals and a send a packet) shares the workers with the
+  traffic.
+
 ## HTTP/2 against HTTP/1.1 through okena (2026-10-31)
 
 One worker on core 1, the backend `l4bench http` on 4-5, `okena bench`
