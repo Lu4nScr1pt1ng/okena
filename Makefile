@@ -107,6 +107,8 @@ test-serial: $(BIN) $(HTTPH) $(KAT) $(TLSH)
 	python3 -I tests/h2/websocket.py epoll
 	python3 -I tests/h3/run.py io_uring
 	python3 -I tests/h3/run.py epoll
+	python3 -I tests/h3/steer.py io_uring
+	python3 -I tests/h3/steer.py epoll
 
 image:
 	docker build -t okena .

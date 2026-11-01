@@ -237,6 +237,32 @@ rodata
 	ts_qtick	dq 0, 10000000			; 10 ms
 	qs_bufsize	dd 4 shl 20			; UDP socket buffers (capped by the kernel)
 	ecn_ect0	dd 2				; IP_TOS / IPV6_TCLASS: ECT(0)
+	; classic BPF for the UDP sockets' reuseport group (it sees the UDP
+	; payload): the socket index (= the worker) is the first byte of the
+	; Destination Connection ID, at 1 in a short header, at 6 in a long
+	; one; an index past the group's sockets falls back to the hash
+	align 8
+	qs_steer_prog	dw 0x30
+			db 0, 0
+			dd 0				; ld  byte [0]
+			dw 0x45
+			db 0, 2
+			dd 0x80				; jset #0x80: long
+			dw 0x30
+			db 0, 0
+			dd 6				; ld  byte [6]
+			dw 0x16
+			db 0, 0
+			dd 0				; ret a
+			dw 0x30
+			db 0, 0
+			dd 1				; ld  byte [1]
+			dw 0x16
+			db 0, 0
+			dd 0				; ret a
+	align 8
+	qs_steer	dw 6, 0, 0, 0			; struct sock_fprog
+			dq qs_steer_prog
 	; our transport parameters past the connection IDs: max_idle_timeout
 	; 30 s, max_udp_payload_size 1472, initial_max_data 1 MiB, stream data
 	; 256 KiB (bidi local), 48 KiB (bidi remote: a request's body; more as its
@@ -386,6 +412,18 @@ qs_open_all:
 	inc	r13d
 	cmp	r13d,[g_workers]
 	jb	.socket
+	; the group's steering: a packet goes to the worker its connection ID
+	; names (RFC 9000's connection IDs; a client's first Initial, whose ID
+	; it chose, falls back to the kernel's hash)
+	mov	edi,r12d
+	imul	edi,edi,MAX_WORKERS
+	mov	edi,[g_qfd+rdi*4]
+	mov	esi,SOL_SOCKET
+	mov	edx,SO_ATTACH_REUSEPORT_CBPF
+	lea	r10,[qs_steer]
+	mov	r8d,16
+	mov	eax,SYS_setsockopt
+	syscall
 .next:
 	inc	r12d
 	jmp	.listener
@@ -1104,6 +1142,8 @@ qs_send_retry:
 	xor	edx,edx
 	mov	eax,SYS_getrandom
 	syscall
+	mov	eax,[g_worker_id]		; (its first byte: this worker, qs_steer)
+	mov	[r15],al
 	lea	rdi,[r15+8]
 	call	qs_token_make			; rdi past it
 	mov	r8,rdi
@@ -1493,12 +1533,15 @@ qc_new:
 	mov	[r15+QC_SSTH],rax
 	mov	qword [r15+QC_SRTT],333000	; RFC 9002: the initial RTT
 	mov	qword [r15+QC_RTTVAR],166500
-	; connection IDs: ours random, the client's as it chose them
+	; connection IDs: ours random but its first byte, this worker (the
+	; kernel steers by it: qs_steer), the client's as it chose them
 	lea	rdi,[r15+QC_SCID]
 	mov	esi,8
 	xor	edx,edx
 	mov	eax,SYS_getrandom
 	syscall
+	mov	eax,[g_worker_id]
+	mov	[r15+QC_SCID],al
 	pop	r11
 	pop	r10
 	pop	r9

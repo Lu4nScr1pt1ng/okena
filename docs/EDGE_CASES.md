@@ -118,7 +118,7 @@ the connection closed when its framing can no longer be trusted.
 
 | Case | Behaviour |
 |---|---|
-| Client address migration, NAT rebinding | the client followed to its new address (the newest packet decides), the path validated with PATH_CHALLENGE, 3x limit until it is; a new IP restarts congestion control and the RTT. Active migration (new connection IDs) not offered yet |
+| Client address migration, NAT rebinding | the kernel steers each packet to the worker its connection ID names (classic BPF on the reuseport group: the ID's first byte), so a moved client still reaches its connection; the client followed to its new address (the newest packet decides), the path validated with PATH_CHALLENGE, 3x limit until it is; a new IP restarts congestion control and the RTT. Active migration (new connection IDs) not offered yet |
 | Key update | followed (RFC 9001 6): the next keys tried when the key phase flips, ours updated with them |
 | Session resumption over QUIC | a ticket at 1-RTT after the handshake; a ticket of ours resumes (no 0-RTT: no early_data in it) |
 | ECN | our datagrams ECT(0); the marks received counted per space and reported in ACK_ECN. No ECN validation yet (a path that drops ECT would need it) |
