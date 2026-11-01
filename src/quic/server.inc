@@ -70,7 +70,43 @@ QC_CR_END	:= 200				; d * 3: crypto received in order
 QC_PROBE	:= 212				; d * 3: a PING to send
 QC_GEN		:= 224				; d: the session's generation
 QC_ACKED_ALL	:= 228				; d * 3: 1 once all crypto sent is acknowledged
-QC_FIELDS_END	:= 512
+QC_MAXD_PEER	:= 240				; q: connection data we may send (MAX_DATA)
+QC_DSENT	:= 248				; q: new stream data sent
+QC_DRECV	:= 256				; q: stream data received (highest offsets)
+QC_MAXD_OURS	:= 264				; q: what we allow (MAX_DATA)
+QC_MAXS_OURS	:= 272				; q: bidi streams we allow (MAX_STREAMS)
+QC_SDONE	:= 280				; q: request streams done
+QC_PSD_BIDI	:= 288				; q: the client's initial_max_stream_data_bidi_local
+QC_PSD_UNI	:= 296				; q
+QC_FL2		:= 304				; d: QF2_*
+QC_CTL_SENT	:= 308				; d: our control stream: bytes sent
+QC_CTL_ACKED	:= 312				; d
+QC_LW_SESS	:= 316				; d: the stream frame the packet being built carries
+QC_LW_SGEN	:= 320				; d
+QC_LW_FIN	:= 324				; d
+QC_LW_OFF	:= 328				; q
+QC_LW_LEN	:= 336				; d
+QC_LW_CTL	:= 340				; d
+QC_LW_FR	:= 344				; d
+QC_RR		:= 348				; d: round robin over the streams
+QC_SMAX		:= 352				; q: the highest client stream id seen + 4 (bidi)
+QC_UMAX		:= 360				; q: (uni)
+QC_PCHAL	:= 368				; q: a PATH_CHALLENGE to answer
+QC_GOAWAY	:= 376				; q
+QC_RSTN		:= 384				; d: RESET_STREAMs to send
+QC_RST		:= 392				; 8 * (id q, error q)
+QC_CWND		:= 520				; q: congestion window (NewReno, RFC 9002 7)
+QC_INFL		:= 528				; q: bytes in flight
+QC_SSTH		:= 536				; q: slow start threshold
+QC_RECOV	:= 544				; q: recovery started (µs): losses of packets
+						; sent before it are no new congestion
+QC_LATEST	:= 552				; q: the latest RTT sample
+QC_HBOWN	:= 560				; q: the stream entry gathering in QC_H3HB, 0 none
+QC_HBOWNID	:= 568				; q: (its id)
+QC_FIELDS_END	:= 640
+assert QC_HBOWNID + 8 <= QC_FIELDS_END
+QUIC_CWND0	:= 14720			; the initial window
+QUIC_CWNDMIN	:= 2 * QUIC_DGRAM
 
 QCS_HS		:= 1				; handshaking
 QCS_EST		:= 2				; established
@@ -83,6 +119,7 @@ QF_DONE		:= 8				; the handshake is complete
 QF_HDONE	:= 16				; HANDSHAKE_DONE to send
 QF_CLOSE	:= 32				; CONNECTION_CLOSE to send
 QF_APP_ERR	:= 64				; ... of the application (0x1d)
+QF_LINKED	:= 128				; in the list and the hash (until qc_closing)
 
 ; packet number spaces
 QC_PS		:= QC_FIELDS_END
@@ -103,7 +140,15 @@ SP_TIME		:= 8				; q
 SP_FL		:= 16				; d: SPF_*
 SP_COFF		:= 20				; d: its crypto data
 SP_CLEN		:= 24				; d
-SP_SIZE		:= 32
+SP_SSESS	:= 28				; d: the stream session whose data it carried
+SP_SGEN		:= 32				; d: (its generation)
+SP_SFIN		:= 36				; d: and its FIN
+SP_SOFF		:= 40				; q: the stream data's offset
+SP_SLEN		:= 48				; d: and length
+SP_CTL		:= 52				; d: our control stream's bytes in it
+SP_FR		:= 56				; d: control frames (QF2_*) it carried
+SP_BYTES	:= 60				; d: its size (in flight while ack-eliciting)
+SP_SIZE		:= 64
 SPF_SENT	:= 1				; a packet is recorded here
 SPF_ACKEL	:= 2				; ack-eliciting
 SPF_ACKED	:= 4
@@ -112,7 +157,7 @@ SPF_HDONE	:= 8				; it carried HANDSHAKE_DONE
 QC_TS		:= QC_SP + 3 * SP_N * SP_SIZE	; the TLS state (TS_SIZE)
 QC_QT		:= QC_TS + 2048			; QUIC's TLS block (QT_SIZE)
 QC_KEYS		:= QC_QT + 2048			; 6 * QK: rx, tx a level
-QC_CRX		:= 32768			; crypto received: Initial (CH_MAX)
+QC_CRX		:= 36864			; crypto received: Initial (CH_MAX)
 QC_CRX_HS	:= QC_CRX + CH_MAX		; Handshake (2048)
 QC_CRX_HSCAP	:= 2048
 QC_CRBM		:= QC_CRX_HS + QC_CRX_HSCAP	; which bytes came: Initial
@@ -154,15 +199,17 @@ end bss
 rodata
 	align 8
 	ts_qtick	dq 0, 10000000			; 10 ms
+	qs_bufsize	dd 4 shl 20			; UDP socket buffers (capped by the kernel)
 	; our transport parameters past the connection IDs: max_idle_timeout
 	; 30 s, max_udp_payload_size 1472, initial_max_data 1 MiB, stream data
-	; 256 KiB (bidi local and remote) and 64 KiB (uni), 100 bidi streams,
+	; 256 KiB (bidi local), 48 KiB (bidi remote: a request's body; more as its
+	; queue drains), 64 KiB (uni), 100 bidi streams,
 	; 16 uni, no active migration
 	qtp_fixed	db 0x01,4, 0x80,0x00,0x75,0x30
 			db 0x03,2, 0x45,0xC0
 			db 0x04,4, 0x80,0x10,0x00,0x00
 			db 0x05,4, 0x80,0x04,0x00,0x00
-			db 0x06,4, 0x80,0x04,0x00,0x00
+			db 0x06,4, 0x80,0x00,0xC0,0x00	; (H3_WINDOW: a request's queue holds it)
 			db 0x07,4, 0x80,0x01,0x00,0x00
 			db 0x08,2, 0x40,100
 			db 0x09,1, 16
@@ -343,6 +390,20 @@ qs_open_all:
 	mov	esi,SOL_SOCKET
 	mov	edx,SO_REUSEPORT
 	lea	r10,[one_int]
+	mov	r8d,4
+	mov	eax,SYS_setsockopt
+	syscall
+	mov	rdi,[rsp]			; room for bursts both ways
+	mov	esi,SOL_SOCKET
+	mov	edx,SO_SNDBUF
+	lea	r10,[qs_bufsize]
+	mov	r8d,4
+	mov	eax,SYS_setsockopt
+	syscall
+	mov	rdi,[rsp]
+	mov	esi,SOL_SOCKET
+	mov	edx,SO_RCVBUF
+	lea	r10,[qs_bufsize]
 	mov	r8d,4
 	mov	eax,SYS_setsockopt
 	syscall
@@ -552,7 +613,7 @@ QD_SA		:= 24
 QD_SALEN	:= 32
 QD_LEN		:= 36
 QD_VER		:= 40
-QD_SIZE		:= 48
+QD_SIZE		:= 56
 qs_datagram:
 	push	rbx
 	push	rbp
@@ -939,6 +1000,11 @@ qc_new:
 	rep	stosq
 	pop	rcx
 	mov	[r15+QC_GEN],ecx
+	mov	dword [r15+QC_LW_SESS],NIL	; no stream frame in the next packet
+	mov	eax,ebx				; its record names its buffers
+	shl	rax,H_SHIFT
+	add	rax,[g_http_base]
+	mov	[rax+H_BUF],r15
 	mov	eax,[rbp+QD_SLOT]
 	mov	[r15+QC_SOCK],eax
 	mov	eax,[rbp+QD_VER]
@@ -950,10 +1016,20 @@ qc_new:
 	rep	movsb
 	mov	eax,[rbp+QD_SALEN]
 	mov	[r15+QC_PEERLEN],eax
+	call	peer_ptr			; its side record: the client's address
+	mov	rdi,rax				; (request streams copy it)
+	mov	rsi,[rbp+QD_SA]
+	mov	ecx,28
+	rep	movsb
+	mov	dword [rax+P_SLOT],-1
+	mov	dword [rax+P_HLEN],0
 	mov	rax,-1
 	mov	[r15+QC_PS+0*PS_SIZE+PS_LARGEST],rax
 	mov	[r15+QC_PS+1*PS_SIZE+PS_LARGEST],rax
 	mov	[r15+QC_PS+2*PS_SIZE+PS_LARGEST],rax
+	mov	qword [r15+QC_CWND],QUIC_CWND0
+	mov	rax,1 shl 62
+	mov	[r15+QC_SSTH],rax
 	mov	qword [r15+QC_SRTT],333000	; RFC 9002: the initial RTT
 	mov	qword [r15+QC_RTTVAR],166500
 	; connection IDs: ours random, the client's as it chose them
@@ -1011,6 +1087,7 @@ qc_new:
 	lea	eax,[rbx+1]
 	mov	[g_qc_head],eax
 	inc	dword [g_qc_count]
+	or	dword [r15+QC_FLAGS],QF_LINKED
 	mov	eax,ebx
 	jmp	.out
 .none:
@@ -1048,9 +1125,11 @@ qc_tp_build:
 	mov	[r15+QC_QT+QT_TPSLEN],edi
 	ret
 
-; ebx = connection: on the flush list (sends at the iteration's end)
+; ebx = connection: on the flush list (sends at the iteration's end).
+; Keeps every register but rax, rcx.
 qc_dirty:
 	push	r15
+	push	r14
 	qc_regs
 	cmp	dword [r15+QC_DIRTY],0
 	jne	.out
@@ -1064,9 +1143,11 @@ qc_dirty:
 	or	rcx,rbx
 	mov	[g_qdirty+rax*8],rcx
 .out:
+	pop	r14
 	pop	r15
 	ret
 .now:
+	pop	r14
 	pop	r15
 	jmp	qc_send
 
@@ -1082,7 +1163,8 @@ QP_END		:= 24
 QP_PN		:= 32
 QP_ACKEL	:= 40
 QP_PNOFF	:= 44
-QP_SIZE		:= 48
+QP_DROP		:= 48				; d: not taken (out of order): not acknowledged
+QP_SIZE		:= 56
 qc_packet:
 	push	rbx
 	push	rbp
@@ -1097,6 +1179,7 @@ qc_packet:
 	mov	[rsp+QP_PKT],rdx
 	mov	[rsp+QP_PNOFF],r8d
 	mov	dword [rsp+QP_ACKEL],0
+	mov	dword [rsp+QP_DROP],0
 	add	[r15+QC_RXB],r9
 	cmp	dword [r15+QC_STATE],QCS_CLOSING
 	je	.out
@@ -1108,8 +1191,9 @@ qc_packet:
 @@:
 	cmp	r12d,QL_APP
 	jne	@f
-	test	dword [r15+QC_FLAGS],QF_HELLO
-	jz	.out				; no 1-RTT keys yet
+	test	dword [r15+QC_FLAGS],QF_DONE
+	jz	.out				; before the client's Finished: dropped (it
+						; comes again; its streams are not set up yet)
 @@:
 	cmp	r12d,QL_HS
 	jne	@f
@@ -1233,6 +1317,8 @@ qc_packet:
 	call	qc_fail
 	jmp	.out
 .frames_done:
+	cmp	dword [rsp+QP_DROP],0
+	jne	.out				; it comes again (stream data out of order)
 	; recorded as received; acknowledged when it asks for it
 	mov	edi,[rsp+QP_LEVEL]
 	mov	rsi,[rsp+QP_PN]
@@ -1435,14 +1521,26 @@ qc_on_ack:
 	call	qv_read
 	jc	.bad
 .done:
-	; anything newly acknowledged: the probe count starts over, the
-	; timer follows what is still out
+	; anything newly acknowledged: what was sent well before the largest
+	; acknowledged is lost; the probe count starts over, the timer follows
+	; what is still out
 	cmp	dword [rsp+QA_NEWLY],0
 	je	.ok
+	push	rsi
+	push	rdx
+	mov	edi,[rsp+16+QA_LEVEL]
+	mov	rsi,[rsp+16+QA_LARGEST]
+	call	qc_detect_lost
+	pop	rdx
+	pop	rsi
 	mov	dword [r15+QC_PTOCNT],0
 	push	rsi
 	push	rdx
 	call	qc_pto_arm
+	push	rbx				; room in the window, the rings: what
+	mov	rbx,[rsp+24+QA_SIZE+16]		; waited may go now (the session again)
+	call	qc_dirty
+	pop	rbx
 	pop	rdx
 	pop	rsi
 .ok:
@@ -1473,13 +1571,13 @@ qc_on_ack:
 	mov	r9d,[rsp+16+8+QA_LEVEL]
 	imul	r9d,r9d,SP_N * SP_SIZE
 	lea	r9,[r15+QC_SP+r9]
-	mov	r10,r12
+	mov	r10,rbx				; lowest first: stream bytes arrive in order
 .mark_one:
-	cmp	r10,rbx
-	jl	.mark_out
+	cmp	r10,r12
+	jg	.mark_out
 	mov	eax,r10d
 	and	eax,SP_N - 1
-	shl	eax,5				; SP_SIZE
+	shl	eax,6				; SP_SIZE
 	lea	r11,[r9+rax]
 	cmp	[r11+SP_PN],r10
 	jne	.mark_next
@@ -1490,6 +1588,23 @@ qc_on_ack:
 	jnz	.mark_next
 	or	dword [r11+SP_FL],SPF_ACKED
 	mov	dword [rsp+16+8+QA_NEWLY],1
+	test	eax,SPF_ACKEL
+	jz	@f
+	call	qc_cc_acked			; r11 = the record
+@@:
+	cmp	dword [rsp+16+8+QA_LEVEL],QL_APP
+	jne	@f
+	push	rax
+	push	r9
+	push	r10
+	push	r11
+	mov	rdi,r11
+	call	qc_app_acked			; http3.inc: its stream data, delivered
+	pop	r11
+	pop	r10
+	pop	r9
+	pop	rax
+@@:
 	; an RTT sample from the largest acknowledged, when it asked for one
 	cmp	r10,[rsp+16+8+QA_LARGEST]
 	jne	.mark_next
@@ -1499,7 +1614,7 @@ qc_on_ack:
 	sub	rax,[r11+SP_TIME]
 	call	qc_rtt_sample
 .mark_next:
-	dec	r10
+	inc	r10
 	jmp	.mark_one
 .mark_out:
 	pop	rdx
@@ -1512,6 +1627,7 @@ qc_rtt_sample:
 	jg	@f
 	mov	eax,1
 @@:
+	mov	[r15+QC_LATEST],rax
 	mov	rcx,[r15+QC_SRTT]
 	cmp	rcx,333000
 	jne	.update
@@ -1599,6 +1715,7 @@ qc_crypto_in:
 	push	r12
 	push	r13
 	push	r14
+	sub	rsp,8				; (16-aligned at the calls)
 	mov	r12d,edi
 	cmp	r12d,QL_APP
 	je	.ok				; (post-handshake messages: none expected)
@@ -1749,6 +1866,7 @@ qc_crypto_in:
 .fail:
 	stc
 .out:
+	lea	rsp,[rsp+8]
 	pop	r14
 	pop	r13
 	pop	r12
@@ -1815,7 +1933,7 @@ QB_MAX		:= 36				; the datagram's room
 QB_CRYPTO	:= 40				; d, d: crypto offset and length in it
 QB_HDONE	:= 48
 QB_FLAGS	:= 52
-QB_SIZE		:= 64
+QB_SIZE		:= 72
 qc_build:
 	push	rbx
 	push	r12
@@ -1875,6 +1993,25 @@ qc_build:
 	jne	@f
 	mov	r13d,32				; closing: that is all it says
 @@:
+	; congestion: past the window only ACKs, probes and closing go; nor
+	; while the record the packet would take still holds one in flight
+	test	r13d,2 or 4 or 16
+	jz	.cc_done
+	mov	rax,[r15+QC_INFL]
+	add	rax,QUIC_DGRAM
+	cmp	rax,[r15+QC_CWND]
+	ja	.cc_block
+	call	qc_sp_next			; rdx = the record the next packet takes
+	mov	eax,[rdx+SP_FL]
+	and	eax,SPF_SENT or SPF_ACKEL or SPF_ACKED
+	cmp	eax,SPF_SENT or SPF_ACKEL
+	jne	.cc_done
+.cc_block:
+	and	r13d,not (2 or 4 or 16)
+	cmp	qword [r15+QC_PTO_AT],0		; something must end the wait: the probe
+	jne	.cc_done			; timer (what is out gets lost or acknowledged)
+	call	qc_pto_arm
+.cc_done:
 	test	r13d,r13d
 	jz	.nothing
 	mov	[rsp+QB_FLAGS],r13d
@@ -2081,10 +2218,25 @@ qc_build:
 	mov	rdx,[rsp+QB_BUF]
 	mov	[rdx+rax],cx
 @@:
+	; the record it takes: one still in flight there is lost (a packet
+	; must go: an ACK, a probe)
+	push	rdi
+	call	qc_sp_next_built
+	mov	eax,[rdx+SP_FL]
+	and	eax,SPF_SENT or SPF_ACKEL or SPF_ACKED
+	cmp	eax,SPF_SENT or SPF_ACKEL
+	jne	.slot_free
+	push	r9
+	mov	r8,rdx
+	mov	edi,r12d
+	call	qc_lose_one
+	pop	r9
+.slot_free:
+	pop	rdi
 	; recorded, sealed, queued
 	mov	eax,[rsp+QB_PN]
 	and	eax,SP_N - 1
-	shl	eax,5
+	shl	eax,6				; SP_SIZE
 	mov	ecx,r12d
 	imul	ecx,ecx,SP_N * SP_SIZE
 	lea	rdx,[r15+QC_SP+rcx]
@@ -2124,6 +2276,19 @@ qc_build:
 	mov	r8,[rsp+QB_PN]
 	call	quic_seal			; eax = the packet's length
 	add	[r15+QC_TXB],rax
+	push	rax
+	mov	ecx,[rsp+8+QB_PN]
+	and	ecx,SP_N - 1
+	shl	ecx,6				; SP_SIZE
+	mov	edx,r12d
+	imul	edx,edx,SP_N * SP_SIZE
+	add	ecx,edx
+	mov	[r15+QC_SP+rcx+SP_BYTES],eax
+	cmp	dword [rsp+8+QB_ACKEL],0
+	je	@f
+	add	[r15+QC_INFL],rax
+@@:
+	pop	rax
 	mov	ecx,eax
 	mov	edi,[r15+QC_SOCK]
 	lea	rsi,[r15+QC_PEER]
@@ -2401,6 +2566,11 @@ qc_on_pto:
 	jne	.slot_next
 	mov	r10d,1
 	and	dword [r8+SP_FL],not SPF_SENT	; lost: it goes again in a new packet
+	mov	eax,[r8+SP_BYTES]
+	sub	[r15+QC_INFL],rax
+	jns	@f
+	mov	qword [r15+QC_INFL],0
+@@:
 	cmp	dword [r8+SP_CLEN],0
 	je	@f
 	mov	eax,[r8+SP_COFF]
@@ -2457,13 +2627,13 @@ qc_closing:
 	push	rbx
 	push	r12
 	qc_regs
-	cmp	dword [r15+QC_GEN],0
-	je	.out
+	test	dword [r15+QC_FLAGS],QF_LINKED
+	jz	.out
 	call	session_ptr
 	mov	ecx,[rax+S_GEN]
 	cmp	ecx,[r15+QC_GEN]
 	jne	.out
-	mov	dword [r15+QC_GEN],0		; (once)
+	and	dword [r15+QC_FLAGS],not QF_LINKED	; (once)
 	lea	rdi,[r15+QC_SCID]
 	mov	esi,8
 	call	qh_del
@@ -2497,3 +2667,182 @@ qc_closing:
 	pop	r14
 	pop	r15
 	ret
+
+; ------------------------------------------------------------ congestion
+
+; r11 = a sent packet's record, acknowledged (it was in flight): out of
+; flight; the window grows (slow start, or congestion avoidance), unless
+; it was sent before the recovery began. Keeps every register but rax,
+; rcx, rdx.
+qc_cc_acked:
+	mov	eax,[r11+SP_BYTES]
+	sub	[r15+QC_INFL],rax
+	jns	@f
+	mov	qword [r15+QC_INFL],0
+@@:
+	mov	rcx,[r11+SP_TIME]
+	cmp	rcx,[r15+QC_RECOV]
+	jbe	.out				; in recovery: no growth
+	mov	rcx,[r15+QC_CWND]
+	cmp	rcx,[r15+QC_SSTH]
+	jae	.avoid
+	add	[r15+QC_CWND],rax		; slow start: a byte a byte acknowledged
+	ret
+.avoid:
+	imul	rax,rax,QUIC_DGRAM		; congestion avoidance: a datagram a window
+	xor	edx,edx
+	div	rcx
+	add	[r15+QC_CWND],rax
+.out:
+	ret
+
+; edi = level, rsi = the largest packet number just acknowledged: the
+; packets sent before it that are not acknowledged and are three numbers
+; older, or older than 9/8 of the RTT, are lost (RFC 9002 6.1): they go
+; again; one congestion event for them
+qc_detect_lost:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	mov	r12d,edi
+	mov	r13,rsi
+	; the time threshold: 9/8 max(srtt, latest), at least 1 ms
+	mov	rax,[r15+QC_SRTT]
+	cmp	rax,[r15+QC_LATEST]
+	jae	@f
+	mov	rax,[r15+QC_LATEST]
+@@:
+	mov	rcx,rax
+	shr	rcx,3
+	add	rax,rcx
+	cmp	rax,1000
+	jae	@f
+	mov	eax,1000
+@@:
+	mov	r14,[g_qnow]
+	sub	r14,rax				; sent before this: lost
+	xor	ebx,ebx				; the latest lost packet's send time
+	mov	eax,r12d
+	imul	eax,eax,SP_N * SP_SIZE
+	lea	r8,[r15+QC_SP+rax]
+	mov	ecx,SP_N
+.slot:
+	mov	eax,[r8+SP_FL]
+	and	eax,SPF_SENT or SPF_ACKEL or SPF_ACKED
+	cmp	eax,SPF_SENT or SPF_ACKEL
+	jne	.next
+	mov	rax,[r8+SP_PN]
+	cmp	rax,r13
+	jae	.next				; not before the largest
+	lea	rdx,[rax+3]
+	cmp	rdx,r13
+	jbe	.lost				; three numbers older
+	cmp	[r8+SP_TIME],r14
+	ja	.next
+.lost:
+	and	dword [r8+SP_FL],not SPF_SENT
+	mov	eax,[r8+SP_BYTES]
+	sub	[r15+QC_INFL],rax
+	jns	@f
+	mov	qword [r15+QC_INFL],0
+@@:
+	mov	rax,[r8+SP_TIME]
+	cmp	rax,rbx
+	jbe	@f
+	mov	rbx,rax
+@@:
+	; what it carried goes again
+	cmp	dword [r8+SP_CLEN],0
+	je	@f
+	mov	eax,[r8+SP_COFF]
+	cmp	eax,[r15+QC_CS_SENT+r12*4]
+	jae	@f
+	mov	[r15+QC_CS_SENT+r12*4],eax
+@@:
+	test	dword [r8+SP_FL],SPF_HDONE
+	jz	@f
+	or	dword [r15+QC_FLAGS],QF_HDONE
+@@:
+	cmp	r12d,QL_APP
+	jne	.next
+	push	rcx
+	push	r8
+	mov	rdi,r8
+	call	qc_app_lost
+	pop	r8
+	pop	rcx
+.next:
+	add	r8,SP_SIZE
+	dec	ecx
+	jnz	.slot
+	test	rbx,rbx
+	jz	.out
+	; a congestion event, unless the losses were sent before the last one
+	cmp	rbx,[r15+QC_RECOV]
+	jbe	.dirty
+	mov	rax,[g_qnow]
+	mov	[r15+QC_RECOV],rax
+	mov	rax,[r15+QC_CWND]
+	shr	rax,1
+	cmp	rax,QUIC_CWNDMIN
+	jae	@f
+	mov	eax,QUIC_CWNDMIN
+@@:
+	mov	[r15+QC_SSTH],rax
+	mov	[r15+QC_CWND],rax
+.dirty:
+	mov	rbx,[rsp+24]			; the session again (rbx held a time)
+	call	qc_dirty
+.out:
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; ecx/r12d = level: rdx = the record the next packet of that space takes
+qc_sp_next:
+	imul	eax,r12d,PS_SIZE
+	mov	rax,[r15+QC_PS+rax+PS_NEXT]
+	jmp	qc_sp_at
+; (in qc_build, the number already taken: QB_PN)
+qc_sp_next_built:
+	mov	rax,[rsp+8+QB_PN]
+qc_sp_at:
+	and	eax,SP_N - 1
+	shl	eax,6				; SP_SIZE
+	mov	edx,r12d
+	imul	edx,edx,SP_N * SP_SIZE
+	add	eax,edx
+	lea	rdx,[r15+QC_SP+rax]
+	ret
+
+; r8 = a record in flight, edi = its level: lost (out of flight, what it
+; carried goes again)
+qc_lose_one:
+	and	dword [r8+SP_FL],not SPF_SENT
+	mov	eax,[r8+SP_BYTES]
+	sub	[r15+QC_INFL],rax
+	jns	@f
+	mov	qword [r15+QC_INFL],0
+@@:
+	cmp	dword [r8+SP_CLEN],0
+	je	@f
+	mov	eax,[r8+SP_COFF]
+	cmp	eax,[r15+QC_CS_SENT+rdi*4]
+	jae	@f
+	mov	[r15+QC_CS_SENT+rdi*4],eax
+@@:
+	test	dword [r8+SP_FL],SPF_HDONE
+	jz	@f
+	or	dword [r15+QC_FLAGS],QF_HDONE
+@@:
+	cmp	edi,QL_APP
+	jne	@f
+	mov	rdi,r8
+	jmp	qc_app_lost
+@@:
+	ret
+
+

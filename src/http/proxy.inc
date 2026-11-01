@@ -1477,6 +1477,8 @@ http_send_plain:
 	mov	esi,1
 	call	alog_exchange
 	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_H3S
+	jnz	h3s_finish
 	test	dword [rax+S_FLAGS],SF_H2S
 	jnz	h2s_finish			; the error is the stream's whole answer
 .close:
@@ -2176,7 +2178,7 @@ http_resp_pump:
 	add	[r15+H_UPOFF],ecx
 .framed:
 	call	session_ptr
-	test	dword [rax+S_FLAGS],SF_H2S
+	test	dword [rax+S_FLAGS],SF_H2S or SF_H3S
 	jz	@f
 	mov	rdi,r8				; a stream: the bytes as they are, in DATA
 	mov	esi,r9d
@@ -2193,7 +2195,7 @@ http_resp_pump:
 ; rax.
 h_chunkout:
 	call	session_ptr
-	test	dword [rax+S_FLAGS],SF_H2S
+	test	dword [rax+S_FLAGS],SF_H2S or SF_H3S
 	jnz	@f
 	or	dword [r15+H_FLAGS],HX_CHUNKOUT
 @@:
@@ -2202,7 +2204,7 @@ h_chunkout:
 ; The final chunk to the client, then the exchange is over.
 http_last_chunk:
 	call	session_ptr
-	test	dword [rax+S_FLAGS],SF_H2S
+	test	dword [rax+S_FLAGS],SF_H2S or SF_H3S
 	jnz	http_exchange_done		; a stream ends with END_STREAM (and its trailers)
 	h_rec
 	or	dword [r15+H_FLAGS],HX_LASTCHUNK
@@ -3242,8 +3244,8 @@ http_phase_expired:
 	; fields, and where the next request's first bytes land) goes back to
 	; the kernel; a read in flight there just faults a fresh page in
 	call	session_ptr
-	test	dword [rax+S_FLAGS],SF_H2S or SF_H2C
-	jnz	.out				; HTTP/2 keeps its queues and tables
+	test	dword [rax+S_FLAGS],SF_H2S or SF_H2C or SF_H3S or SF_QC
+	jnz	.out				; HTTP/2 and 3 keep their queues and tables
 	cmp	dword [r15+H_STATE],HS_HEAD
 	jne	.out
 	cmp	dword [r15+H_INLEN],0
@@ -3511,6 +3513,8 @@ http_exchange_done:
 	call	h_upclose
 .next:
 	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_H3S
+	jnz	h3s_finish			; an HTTP/3 stream: FIN, then it goes
 	test	dword [rax+S_FLAGS],SF_H2S
 	jnz	h2s_finish			; an HTTP/2 stream: END_STREAM, then it goes
 	h_rec

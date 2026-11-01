@@ -2371,6 +2371,11 @@ session_close:
 	call	qc_closing			; a QUIC connection: no socket of its own
 	jmp	.noclient
 @@:
+	test	dword [r12+S_FLAGS],SF_H3S
+	jz	@f
+	call	h3s_closing			; an HTTP/3 stream: no socket either
+	jmp	.noclient
+@@:
 	test	dword [r12+S_FLAGS],SF_H2S
 	jz	.client
 	call	h2s_closing			; a stream: no socket of its own
@@ -2414,7 +2419,7 @@ session_close:
 ; descriptors (nothing of the session is in flight any more).
 session_close_fds:
 	or	dword [r12+S_FLAGS],SF_FDS_CLOSING
-	test	dword [r12+S_FLAGS],SF_H2S or SF_H2U or SF_QC
+	test	dword [r12+S_FLAGS],SF_H2S or SF_H2U or SF_QC or SF_H3S
 	jnz	.client_closed			; no client socket
 	mov	edi,OP_S_CLOSE
 	mov	esi,ebx
@@ -2458,7 +2463,7 @@ session_maybe_free:
 	jne	.done
 	test	dword [r12+S_FLAGS],SF_FDS_CLOSING
 	jnz	.free
-	test	dword [r12+S_FLAGS],SF_H2S or SF_H2U or SF_QC
+	test	dword [r12+S_FLAGS],SF_H2S or SF_H2U or SF_QC or SF_H3S
 	jz	@f
 	test	dword [r12+S_FLAGS],SF_UP_OPEN
 	jz	.free				; no client socket, nothing else to close

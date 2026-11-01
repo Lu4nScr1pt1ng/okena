@@ -13,6 +13,8 @@ h_recv:
 	call	session_ptr
 	test	dword [rax+S_FLAGS],SF_H2S
 	jnz	h2s_recv			; an HTTP/2 stream: its connection serves it
+	test	dword [rax+S_FLAGS],SF_H3S
+	jnz	h3s_recv			; an HTTP/3 stream
 	mov	eax,ebx
 	shl	rax,H_SHIFT
 	add	rax,[g_http_base]
@@ -68,12 +70,17 @@ h_send:
 	add	[rax+H_XBYTES],r8
 	push	rax
 	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_H3S
+	jnz	.h3
 	test	dword [rax+S_FLAGS],SF_H2S
 	pop	rax
 	jnz	h2s_send			; an HTTP/2 stream: frames on its connection
 	cmp	dword [rax+H_UTLS],0
 	jne	utls_send
 	jmp	h_send_raw
+.h3:
+	pop	rax
+	jmp	h3s_send			; an HTTP/3 stream: frames on its connection
 ; the upstream side: a socket, or a stream on an HTTP/2 connection
 h_send_up:
 	call	session_ptr

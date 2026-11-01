@@ -1137,6 +1137,11 @@ ep_close:
 	call	qc_closing			; a QUIC connection: no socket of its own
 	jmp	.client_closed
 @@:
+	test	dword [r12+S_FLAGS],SF_H3S
+	jz	@f
+	call	h3s_closing			; an HTTP/3 stream: no socket either
+	jmp	.client_closed
+@@:
 	mov	edi,[r12+S_CLIENT]
 	mov	eax,SYS_close
 	syscall
