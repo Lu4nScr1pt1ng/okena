@@ -159,7 +159,11 @@ def rebind_relay(port, moves):
 class Client(QuicConnectionProtocol):
     def __init__(self, *a, **k):
         super().__init__(*a, **k)
-        self.h3 = H3Connection(self._quic)
+        if self._quic.configuration.alpn_protocols == ["hq-interop"]:
+            from aioquic.h0.connection import H0Connection
+            self.h3 = H0Connection(self._quic)
+        else:
+            self.h3 = H3Connection(self._quic)
         self.res = {}
         self.ended = {}
         self.closed = None
@@ -237,6 +241,11 @@ async def cases():
         check("20 streams at once on one connection",
               all(x["body"] == f"hello /s{i} h3.test\n".encode() for i, x in enumerate(rs)),
               str([x["body"][:20] for x in rs]))
+        ok = True
+        for b in range(5):                               # past the 100 streams allowed at first
+            rs = await asyncio.gather(*[c.request("GET", f"/m{b}-{i}") for i in range(50)])
+            ok = ok and all(x["body"] == f"hello /m{b}-{i} h3.test\n".encode() for i, x in enumerate(rs))
+        check("250 requests on one connection (MAX_STREAMS raised, the stream table reused)", ok)
         rs = await asyncio.gather(*[c.request("GET", f"/big/{200_000 + i}") for i in range(8)])
         check("8 responses of 200 KB at once, interleaved",
               all(x["body"] == bytes(random.Random(200_000 + i).randbytes(200_000 + i)) for i, x in enumerate(rs)),
@@ -246,6 +255,18 @@ async def cases():
         r = await c.request("GET", "/v2")
         check("QUIC version 2 (RFC 9369)", r["body"] == b"hello /v2 h3.test\n" and c._quic._version == 0x6B3343CF,
               str(r)[:100])
+    # hq-interop (the interop runner's HTTP/0.9): the body alone, many at once
+    cfg = config()
+    cfg.alpn_protocols = ["hq-interop"]
+    async with connect("127.0.0.1", LST, configuration=cfg, create_protocol=Client) as c:
+        n = 300_000
+        rs = await asyncio.gather(c.request("GET", "/hq"), c.request("GET", f"/big/{n}"),
+                                  *[c.request("GET", f"/hq{i}") for i in range(30)])
+        check("hq-interop: HTTP/0.9 on QUIC, the body alone, 32 streams at once",
+              c._quic.tls.alpn_negotiated == "hq-interop" and rs[0]["body"] == b"hello /hq localhost\n"
+              and rs[1]["body"] == bytes(random.Random(n).randbytes(n))
+              and all(r["body"] == f"hello /hq{i} localhost\n".encode() for i, r in enumerate(rs[2:])),
+              str([(i, r["body"][:30], r.get("timeout")) for i, r in enumerate(rs) if r.get("timeout")]))
     from aioquic.tls import CipherSuite
     cfg = config()
     cfg.cipher_suites = [CipherSuite.CHACHA20_POLY1305_SHA256]

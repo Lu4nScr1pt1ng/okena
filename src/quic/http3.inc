@@ -30,6 +30,7 @@ H3F_HEAD	:= 1				; the final response head went into the ring
 H3F_SENDING	:= 2				; an h_send is pending
 H3F_FINISH	:= 4				; the exchange is over: FIN after the ring
 H3F_ENDED	:= 8				; the client ended its request
+H3F_HQ		:= 16				; hq-interop: the body alone, no frames
 
 ; its send ring, in its buffers past the HTTP/2 upstream area
 HB_H3TX		:= 196864
@@ -145,6 +146,8 @@ qc_established:
 	mov	ecx,RA_N * RA_ESIZE / 8
 	rep	stosq
 	mov	[r15+QC_HBOWN],rax
+	mov	eax,[r15+QC_QT+QT_HQ]		; the protocol ALPN chose
+	mov	[r15+QC_HQ],eax
 	; the client's parameters: initial_max_data, stream data
 	lea	rsi,[r15+QC_QT+QT_TPC]
 	mov	edx,[r15+QC_QT+QT_TPCLEN]
@@ -758,6 +761,8 @@ qc_stream_one:
 ; rdi = the stream's entry, rsi = new bytes in order, rcx = how many: its
 ; frames, a byte at a time through their headers. CF on an error.
 h3_req_bytes:
+	cmp	dword [r15+QC_HQ],0
+	jne	hq_req_bytes
 	push	rbx
 	push	r12
 	push	r13
@@ -919,6 +924,133 @@ h3_req_bytes:
 	pop	r12
 	pop	rbx
 	ret
+
+; hq-interop (the interop runner's HTTP/0.9): rdi = the stream's entry,
+; rsi = new bytes, rcx = how many. The request line ("GET /path", then
+; CRLF or the stream's end) becomes a QPACK field section in g_h3tmp, and
+; the request goes as an HTTP/3 one would; anything after it is ignored.
+; Gathered like a split HEADERS frame when it spans packets. CF on an error.
+hq_req_bytes:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	mov	r12,rdi
+	mov	r13,rsi
+	mov	r14,rcx
+	cmp	dword [r12+QST_PHASE],0
+	jne	.ok
+	mov	rdi,r13				; complete in these bytes?
+	mov	al,10
+	repne	scasb
+	setz	r10b			; (rbx is the connection's session)
+	cmp	dword [r12+QST_FINHERE],0
+	setne	al
+	or	r10b,al
+	mov	eax,[r12+QST_HBLEN]
+	lea	edx,[rax+r14]
+	cmp	edx,2048
+	ja	.refuse
+	test	eax,eax
+	jnz	.gather
+	test	r10b,r10b
+	jnz	.parse				; whole: from the packet
+	call	h3_hb_take
+	jc	.refuse
+	xor	eax,eax
+.gather:
+	lea	rdi,[r15+QC_H3HB+rax]
+	mov	rsi,r13
+	mov	rcx,r14
+	add	[r12+QST_HBLEN],ecx
+	rep	movsb
+	test	r10b,r10b
+	jz	.ok
+	lea	r13,[r15+QC_H3HB]
+	mov	r14d,[r12+QST_HBLEN]
+	mov	qword [r15+QC_HBOWN],0
+.parse:
+	cmp	r14,5
+	jb	.refuse
+	cmp	dword [r13],'GET '
+	jne	.refuse
+	lea	rsi,[r13+4]			; the path: to a space, CR or LF
+	lea	rdx,[r13+r14]
+	mov	r8,rsi
+@@:
+	cmp	rsi,rdx
+	jae	@f
+	mov	al,[rsi]
+	cmp	al,' '
+	je	@f
+	cmp	al,13
+	je	@f
+	cmp	al,10
+	je	@f
+	inc	rsi
+	jmp	@b
+@@:
+	mov	r9,rsi
+	sub	r9,r8
+	jz	.refuse
+	cmp	byte [r8],'/'
+	jne	.refuse
+	lea	rdi,[g_h3tmp]
+	mov	word [rdi],0			; Required Insert Count 0, Delta Base 0
+	add	rdi,2
+	push	r8
+	push	r9
+	lea	rsi,[.n_method]
+	mov	ecx,7
+	lea	r8,[.v_get]
+	mov	r9d,3
+	call	h3_lit
+	lea	rsi,[.n_scheme]
+	mov	ecx,7
+	lea	r8,[.v_https]
+	mov	r9d,5
+	call	h3_lit
+	lea	rsi,[.n_auth]
+	mov	ecx,10
+	lea	r8,[.v_host]
+	mov	r9d,9
+	call	h3_lit
+	pop	r9
+	pop	r8
+	lea	rsi,[.n_path]
+	mov	ecx,5
+	call	h3_lit
+	lea	rax,[g_h3tmp]
+	sub	rdi,rax
+	mov	[r12+QST_HBLEN],edi
+	mov	dword [r12+QST_FINHERE],1	; HTTP/0.9: never a body
+	mov	rdi,r12
+	call	h3_request_new			; the request: its session, its exchange
+	jc	.error
+	mov	dword [r12+QST_PHASE],1
+.ok:
+	clc
+	jmp	.out
+.refuse:
+	mov	rdi,r12
+	mov	eax,H3E_REQ_REJECTED
+	call	qst_refuse
+	jmp	.ok
+.error:
+	stc
+.out:
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+.n_method	db ':method'
+.v_get		db 'GET'
+.n_scheme	db ':scheme'
+.v_https	db 'https'
+.n_auth		db ':authority'
+.v_host		db 'localhost'
+.n_path		db ':path'
 
 ; rdi = a request stream's entry, eax = the error: refused (RESET_STREAM);
 ; its further bytes are read and ignored
@@ -1557,7 +1689,9 @@ h3_request_new:
 	mov	rdi,[rsp+H3N_ENTRY]
 	mov	eax,[rdi+QST_ID]
 	mov	[r14+H_H3SID],eax
-	mov	dword [r14+H_H3F],0
+	mov	eax,[r15+QC_HQ]
+	shl	eax,4				; H3F_HQ
+	mov	[r14+H_H3F],eax
 	mov	dword [r14+H_H3PL],0
 	mov	eax,[rsp+H3N_SESS]
 	mov	[rdi+QST_SESS],eax
@@ -1883,15 +2017,38 @@ h3s_push:
 	je	.sent
 	test	dword [r12+H_H3F],H3F_HEAD
 	jnz	.body
+	test	dword [r12+H_H3F],H3F_HQ
+	jnz	.hq_head
 	call	h3_head_out			; HEADERS from the HTTP/1.1 head; CF: no room
 	jc	.kick
 	jmp	.more
+.hq_head:
+	; hq-interop: no head at all, the body follows
+	mov	rsi,[r12+H_H3PP]
+	mov	ecx,[r12+H_H3PL]
+	xor	edx,edx
+@@:
+	lea	eax,[rdx+4]
+	cmp	eax,ecx
+	ja	.kick				; (the whole head comes in one send)
+	cmp	dword [rsi+rdx],0x0A0D0A0D
+	je	@f
+	inc	edx
+	jmp	@b
+@@:
+	add	edx,4
+	add	[r12+H_H3PP],rdx
+	sub	[r12+H_H3PL],edx
+	or	dword [r12+H_H3F],H3F_HEAD
+	jmp	.more
 .body:
-	; DATA: a frame header (type, a 4-byte length) and what fits
 	mov	rax,[r13+TX_END]
 	sub	rax,[r13+TX_BASE]
 	mov	ecx,TX_CAP
 	sub	rcx,rax				; room
+	test	dword [r12+H_H3F],H3F_HQ
+	jnz	.hq_body
+	; DATA: a frame header (type, a 4-byte length) and what fits
 	sub	rcx,5
 	jle	.kick
 	mov	eax,[r12+H_H3PL]
@@ -1909,6 +2066,19 @@ h3s_push:
 	mov	ecx,5
 	call	h3tx_put
 	pop	rcx
+	mov	rsi,[r12+H_H3PP]
+	add	[r12+H_H3PP],rcx
+	sub	[r12+H_H3PL],ecx
+	call	h3tx_put
+	jmp	.more
+.hq_body:
+	test	rcx,rcx
+	jle	.kick
+	mov	eax,[r12+H_H3PL]
+	cmp	rcx,rax
+	jbe	@f
+	mov	ecx,eax
+@@:
 	mov	rsi,[r12+H_H3PP]
 	add	[r12+H_H3PP],rcx
 	sub	[r12+H_H3PL],ecx
@@ -2165,6 +2335,8 @@ h3s_finish:
 	mov	r13,[r12+H_BUF]
 	add	r13,HB_H3TX
 	or	dword [r12+H_H3F],H3F_FINISH
+	test	dword [r12+H_H3F],H3F_HQ
+	jnz	.fin				; (hq-interop has no trailers)
 	cmp	dword [r12+H_RCK+CK_TLEN],0
 	je	.fin
 	call	h3_trailers_out
@@ -2305,6 +2477,9 @@ h3s_closing:
 ; r15 = connection: eax = our control stream's length (its type and
 ; SETTINGS, and GOAWAY when queued). Keeps all but rax, rcx.
 qc_ctl_len:
+	xor	eax,eax
+	cmp	dword [r15+QC_HQ],0		; hq-interop: no control stream
+	jne	.out
 	mov	eax,3
 	mov	rcx,[r15+QC_GOAWAY]
 	test	rcx,rcx

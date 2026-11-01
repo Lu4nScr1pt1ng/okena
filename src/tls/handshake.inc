@@ -83,7 +83,8 @@ QT_TPS		:= 140				; (256)
 QT_TPCLEN	:= QT_TPS + 256			; d: the client's
 QT_TPC		:= QT_TPCLEN + 4		; (QT_TPC_MAX)
 QT_TPC_MAX	:= 1024
-QT_SIZE		:= QT_TPC + QT_TPC_MAX
+QT_HQ		:= QT_TPC + QT_TPC_MAX		; d: ALPN hq-interop (HTTP/0.9), not h3
+QT_SIZE		:= QT_HQ + 4
 
 TF_ALPN_H1	:= 1				; set by the caller: answer ALPN with http/1.1
 TF_GOT_H1	:= 2				; the client asked for http/1.1
@@ -239,6 +240,7 @@ G_SIGALG_ED	:= 262144			; ed25519 offered
 G_H2		:= 524288			; ALPN offers h2
 G_H3		:= 1048576			; ALPN offers h3 (QUIC)
 G_QTP		:= 2097152			; quic_transport_parameters (QUIC)
+G_HQ		:= 4194304			; ALPN offers hq-interop (QUIC, the interop runner)
 
 ; the transcript: rsi = bytes, rdx = length
 macro th_add
@@ -747,6 +749,16 @@ tls_hello:
 	or	dword [rbp+HL_GOT],G_H2
 	jmp	.protocol_next
 @@:
+	cmp	ecx,10
+	jne	@f
+	mov	rax,'hq-inter'
+	cmp	[rsi],rax
+	jne	.protocol_next
+	cmp	word [rsi+8],'op'
+	jne	.protocol_next
+	or	dword [rbp+HL_GOT],G_HQ
+	jmp	.protocol_next
+@@:
 	cmp	ecx,8
 	jne	.protocol_next
 	mov	rax,'http/1.1'
@@ -833,9 +845,14 @@ tls_hello:
 	jz	.tls_alpn			; no resumption
 	test	eax,G_QTP
 	jz	.missing_ext
-	test	eax,G_H3
-	jz	.no_alpn
 	mov	rcx,[rbx+TS_QT]
+	mov	dword [rcx+QT_HQ],0
+	test	eax,G_H3			; h3, or hq-interop when only that
+	jnz	@f
+	test	eax,G_HQ
+	jz	.no_alpn
+	mov	dword [rcx+QT_HQ],1
+@@:
 	mov	edx,[rbx+TS_SUITE]
 	mov	[rcx+QT_AEAD],edx
 	call	tls_now_s
@@ -1177,9 +1194,11 @@ tls_hello:
 	; EncryptedExtensions
 	test	dword [rbx+TS_FLAGS],TF_QUIC
 	jz	.ee_tls
-	; QUIC: ALPN h3, our transport parameters
+	; QUIC: ALPN h3 (or hq-interop), our transport parameters
 	mov	rcx,[rbx+TS_QT]
 	mov	edx,[rcx+QT_TPSLEN]
+	cmp	dword [rcx+QT_HQ],0
+	jne	.ee_hq
 	lea	r8d,[rdx+9+4+2]			; the message body
 	mov	byte [r14],8
 	put24	r14+1, r8d			; (takes eax)
@@ -1189,11 +1208,29 @@ tls_hello:
 	mov	dword [r14+6],0x05001000	; ALPN, 5 bytes, a 3-byte list,
 	mov	dword [r14+10],0x68020300	; 'h3'
 	mov	byte [r14+14],'3'
-	mov	word [r14+15],0x3900		; quic_transport_parameters
+	add	r14,15
+	jmp	.ee_tp
+.ee_hq:
+	lea	r8d,[rdx+17+4+2]
+	mov	byte [r14],8
+	put24	r14+1, r8d
+	lea	eax,[rdx+17+4]
+	xchg	al,ah
+	mov	[r14+4],ax
+	mov	dword [r14+6],0x0D001000	; ALPN, 13 bytes, an 11-byte list,
+	mov	word [r14+10],0x0B00
+	mov	byte [r14+12],10
+	mov	rax,'hq-inter'
+	mov	[r14+13],rax
+	mov	word [r14+21],'op'
+	add	r14,23
+.ee_tp:
+	mov	rcx,[rbx+TS_QT]
+	mov	word [r14],0x3900		; quic_transport_parameters
 	mov	eax,edx
 	xchg	al,ah
-	mov	[r14+17],ax
-	lea	rdi,[r14+19]
+	mov	[r14+2],ax
+	lea	rdi,[r14+4]
 	lea	rsi,[rcx+QT_TPS]
 	mov	ecx,edx
 	rep	movsb

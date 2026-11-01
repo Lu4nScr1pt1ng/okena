@@ -112,6 +112,7 @@ QC_KUREADY	:= 604				; d: QC_KU holds the next receive keys
 QC_KUSEC	:= 608				; 32: and their secret
 QC_PATHNV	:= 640				; d: the client moved: its new path not validated
 QC_PCHALO	:= 648				; q: our PATH_CHALLENGE on it
+QC_HQ		:= 656				; d: ALPN hq-interop: HTTP/0.9 on the streams
 QC_FIELDS_END	:= 704
 assert QC_PCHALO + 8 <= QC_FIELDS_END
 QUIC_RETRY_AT	:= 64				; connections not validated yet, a worker:
@@ -2549,6 +2550,7 @@ qc_send:
 	jz	.next
 	dec	r13d
 	jnz	.more
+	call	qc_dirty			; more to send: again on the next flush
 .next:
 	inc	r12d
 	jmp	.level

@@ -51,7 +51,9 @@ address is not validated yet answers new ones with a Retry first (a
 token sealed with a key the workers share, good for 10 s); `http3 retry`
 does so for every new connection. On a drain each connection gets
 GOAWAY, finishes the requests it has, then closes (H3_NO_ERROR). 0-RTT
-is not accepted. Off by default while phase 5 is in progress.
+is not accepted. A client that offers only ALPN hq-interop (the QUIC
+interop runner's HTTP/0.9: `GET /path`, the body back alone) gets it,
+proxied as a GET. Off by default while phase 5 is in progress.
 
 `protocol h2` in a pool speaks HTTP/2 to its backends: prior knowledge,
 or ALPN h2 under the pool's `tls { }`. Requests share a few connections a
