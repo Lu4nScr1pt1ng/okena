@@ -107,8 +107,13 @@ QC_HBOWN	:= 560				; q: the stream entry gathering in QC_H3HB, 0 none
 QC_HBOWNID	:= 568				; q: (its id)
 QC_TODCIDLEN	:= 576				; d: after a Retry: the client's first
 QC_TODCID	:= 580				; 20: Destination Connection ID (its token's)
-QC_FIELDS_END	:= 640
-assert QC_TODCID + 20 <= QC_FIELDS_END
+QC_KPHASE	:= 600				; d: the 1-RTT key phase (0, 1)
+QC_KUREADY	:= 604				; d: QC_KU holds the next receive keys
+QC_KUSEC	:= 608				; 32: and their secret
+QC_PATHNV	:= 640				; d: the client moved: its new path not validated
+QC_PCHALO	:= 648				; q: our PATH_CHALLENGE on it
+QC_FIELDS_END	:= 704
+assert QC_PCHALO + 8 <= QC_FIELDS_END
 QUIC_RETRY_AT	:= 64				; connections not validated yet, a worker:
 						; past it new ones get a Retry first
 QTOK_LIFE	:= 10000000			; a Retry token is good 10 s (µs)
@@ -188,6 +193,8 @@ bss
 	g_qc_head	dd ?				; connections (+ 1)
 	g_qc_count	dd ?
 	g_qc_unval	dd ?				; not validated yet (QUIC_RETRY_AT)
+	g_qd_sa		dq ?				; the datagram qc_packet takes: its sender
+	g_qd_salen	dd ?
 	g_qst_retry	dq ?				; Retries sent
 	g_qtok_key	rb 16				; supervisor: Retry tokens' key
 	g_qsr_key	rb 32				; and stateless resets' (right after it)
@@ -838,6 +845,10 @@ qs_datagram:
 	mov	r8,r15
 	sub	r8,r12				; its packet number's offset
 	mov	r9d,[rsp+QD_LEN]
+	mov	rax,[rsp+QD_SA]			; where it came from (qc_migrate)
+	mov	[g_qd_sa],rax
+	mov	eax,[rsp+QD_SALEN]
+	mov	[g_qd_salen],eax
 	call	qc_packet
 	mov	dword [rsp+QD_LEN],0		; (the datagram is counted once)
 	cmp	dword [rsp+QD_NEW],0
@@ -878,6 +889,10 @@ qs_datagram:
 	sub	rcx,r12
 	mov	r8d,9
 	mov	r9d,[rsp+QD_LEN]
+	mov	rax,[rsp+QD_SA]			; where it came from (qc_migrate)
+	mov	[g_qd_sa],rax
+	mov	eax,[rsp+QD_SALEN]
+	mov	[g_qd_salen],eax
 	call	qc_packet
 .out:
 	add	rsp,QD_SIZE
@@ -1536,6 +1551,159 @@ qc_tp_build:
 	mov	[r15+QC_QT+QT_TPSLEN],edi
 	ret
 
+; r15 = connection, g_qd_sa/g_qd_salen = where a packet came from: ZF
+; when that is the client's address
+qc_peer_moved:
+	mov	ecx,[g_qd_salen]
+	cmp	ecx,[r15+QC_PEERLEN]
+	jne	.out
+	cmp	ecx,28
+	jbe	@f
+	mov	ecx,28
+@@:
+	mov	rsi,[g_qd_sa]
+	lea	rdi,[r15+QC_PEER]
+	repe	cmpsb
+.out:
+	ret
+
+; r15 = connection, ebx = its session, edi = the datagram's length: the
+; client is at g_qd_sa now (RFC 9000 9). Packets go there; until a
+; PATH_CHALLENGE comes back, three times what came from it at most; a new
+; IP address (not only a new port) starts congestion control and the RTT
+; afresh.
+qc_migrate:
+	push	r12
+	mov	r12d,edi
+	mov	rsi,[g_qd_sa]
+	xor	eax,eax				; IP changed?
+	cmp	word [rsi],AF_INET6
+	je	.v6
+	mov	ecx,[rsi+4]
+	cmp	ecx,[r15+QC_PEER+4]
+	setne	al
+	jmp	.copy
+.v6:
+	mov	rcx,[rsi+8]
+	mov	rdx,[rsi+16]
+	cmp	rcx,[r15+QC_PEER+8]
+	setne	al
+	cmp	rdx,[r15+QC_PEER+16]
+	setne	cl
+	or	al,cl
+.copy:
+	push	rax
+	lea	rdi,[r15+QC_PEER]
+	mov	ecx,28
+	rep	movsb
+	mov	eax,[g_qd_salen]
+	mov	[r15+QC_PEERLEN],eax
+	call	peer_ptr			; new streams see the new address
+	mov	rdi,rax
+	mov	rsi,[g_qd_sa]
+	mov	ecx,28
+	rep	movsb
+	pop	rax
+	test	eax,eax
+	jz	@f
+	mov	qword [r15+QC_CWND],QUIC_CWND0
+	mov	rax,1 shl 62
+	mov	[r15+QC_SSTH],rax
+	mov	qword [r15+QC_SRTT],333000
+	mov	qword [r15+QC_RTTVAR],166500
+	mov	rax,[g_qnow]
+	mov	[r15+QC_RECOV],rax		; (what is lost on the old path is no event)
+@@:
+	mov	[r15+QC_RXB],r12
+	mov	qword [r15+QC_TXB],0
+	mov	dword [r15+QC_PATHNV],1
+	rdtsc
+	shl	rdx,32
+	or	rax,rdx
+	mov	rdx,0x9E3779B97F4A7C15
+	imul	rax,rdx
+	xor	rax,[r15+QC_SCID]
+	mov	[r15+QC_PCHALO],rax
+	or	dword [r15+QC_FL2],QF2_PCHAL
+	pop	r12
+	jmp	qc_dirty
+
+; r15 = connection: QC_KU = the next generation of the client's 1-RTT
+; keys (RFC 9001 6: secret' = HKDF-Expand-Label(secret, "quic ku"), the
+; header protection key unchanged), QC_KUSEC its secret. Once a phase.
+qc_ku_prepare:
+	cmp	dword [r15+QC_KUREADY],0
+	jne	.out
+	lea	rdi,[r15+QC_KUSEC]
+	lea	rdx,[r15+QC_QT+QT_CAP]
+	call	qc_ku_secret
+	lea	rdi,[r15+QC_KU]
+	lea	rsi,[r15+QC_KUSEC]
+	qc_key	QL_APP, 0
+	mov	r8,rax
+	call	qc_ku_keys
+	mov	dword [r15+QC_KUREADY],1
+.out:
+	ret
+
+; the next keys opened a packet: they are the client's now, and ours the
+; next generation of the server's
+qc_ku_commit:
+	qc_key	QL_APP, 0
+	mov	rdi,rax
+	lea	rsi,[r15+QC_KU]
+	mov	ecx,QK_SIZE
+	rep	movsb
+	lea	rsi,[r15+QC_KUSEC]
+	lea	rdi,[r15+QC_QT+QT_CAP]
+	mov	ecx,32
+	rep	movsb
+	lea	rdi,[r15+QC_QT+QT_SAP]
+	mov	rdx,rdi
+	call	qc_ku_secret
+	lea	rdi,[r15+QC_KU]
+	lea	rsi,[r15+QC_QT+QT_SAP]
+	qc_key	QL_APP, 1
+	mov	r8,rax
+	call	qc_ku_keys
+	qc_key	QL_APP, 1
+	mov	rdi,rax
+	lea	rsi,[r15+QC_KU]
+	mov	ecx,QK_SIZE
+	rep	movsb
+	xor	dword [r15+QC_KPHASE],1
+	mov	dword [r15+QC_KUREADY],0
+	lea	rdi,[r15+QC_KUSEC]
+	mov	ecx,32
+	jmp	secure_zero
+
+; rdi = out[32], rdx = a 1-RTT secret: the next one
+qc_ku_secret:
+	mov	esi,32
+	lea	rcx,[lbl_quic_ku]
+	cmp	dword [r15+QC_VER],QUIC_V2
+	jne	@f
+	lea	rcx,[lbl_quic2_ku]
+@@:
+	xor	r8d,r8d
+	xor	r9d,r9d
+	jmp	tls13_expand_label
+
+; rdi = QK, rsi = secret, r8 = the QK whose header protection it keeps
+qc_ku_keys:
+	push	r8
+	push	rdi
+	mov	edx,[r15+QC_VER]
+	mov	ecx,[r15+QC_QT+QT_AEAD]
+	call	quic_keys
+	pop	rdi
+	pop	rsi
+	add	rdi,QK_HPC
+	add	rsi,QK_HPC
+	mov	ecx,GCM_SIZE
+	rep	movsb
+	ret
+
 ; ebx = connection: on the flush list (sends at the iteration's end).
 ; Keeps every register but rax, rcx.
 qc_dirty:
@@ -1575,7 +1743,10 @@ QP_PN		:= 32
 QP_ACKEL	:= 40
 QP_PNOFF	:= 44
 QP_DROP		:= 48				; d: not taken (out of order): not acknowledged
-QP_SIZE		:= 56
+QP_LARGEST	:= 56				; q: the largest received of its space
+QP_HSAVE	:= 64				; the first byte and packet number as they came
+QP_DGRAM	:= 72				; d: the datagram's length (counted once)
+QP_SIZE		:= 88
 qc_packet:
 	push	rbx
 	push	rbp
@@ -1591,6 +1762,7 @@ qc_packet:
 	mov	[rsp+QP_PNOFF],r8d
 	mov	dword [rsp+QP_ACKEL],0
 	mov	dword [rsp+QP_DROP],0
+	mov	[rsp+QP_DGRAM],r9d
 	add	[r15+QC_RXB],r9
 	cmp	dword [r15+QC_STATE],QCS_CLOSING
 	je	.out
@@ -1616,6 +1788,12 @@ qc_packet:
 	mov	r14d,ecx			; its length
 	imul	eax,r12d,PS_SIZE
 	mov	r8,[r15+QC_PS+rax+PS_LARGEST]
+	mov	[rsp+QP_LARGEST],r8
+	mov	eax,[r13]			; the header as it came (a second try
+	mov	[rsp+QP_HSAVE],eax		; with the next keys starts from it)
+	mov	eax,[rsp+QP_PNOFF]
+	mov	eax,[r13+rax]
+	mov	[rsp+QP_HSAVE+4],eax
 	lea	eax,[r12*2]
 	imul	eax,eax,QK_SIZE
 	lea	rdi,[r15+QC_KEYS+rax]
@@ -1624,7 +1802,34 @@ qc_packet:
 	mov	ecx,[rsp+QP_PNOFF]
 	call	quic_open
 	cmp	eax,-1
-	je	.out				; not ours, or damaged: dropped
+	jne	.opened
+	; 1-RTT with the other key phase: the client updated its keys
+	cmp	r12d,QL_APP
+	jne	.out				; not ours, or damaged: dropped
+	movzx	eax,byte [r13]			; (left unmasked)
+	shr	eax,2
+	and	eax,1
+	cmp	eax,[r15+QC_KPHASE]
+	je	.out
+	call	qc_ku_prepare
+	mov	eax,[rsp+QP_HSAVE]
+	mov	[r13],al
+	mov	ecx,[rsp+QP_PNOFF]
+	mov	eax,[rsp+QP_HSAVE+4]
+	mov	[r13+rcx],eax
+	lea	rdi,[r15+QC_KU]
+	mov	rsi,r13
+	mov	edx,r14d
+	mov	r8,[rsp+QP_LARGEST]
+	call	quic_open
+	cmp	eax,-1
+	je	.out
+	push	rax
+	push	rdx
+	call	qc_ku_commit			; it is: ours follow
+	pop	rdx
+	pop	rax
+.opened:
 	mov	[rsp+QP_PN],rdx
 	movzx	ecx,byte [r13]
 	and	ecx,3
@@ -1638,6 +1843,18 @@ qc_packet:
 	mov	rsi,[rsp+QP_PN]
 	call	qc_seen
 	jc	.out				; a duplicate: once is enough
+	; 1-RTT, the newest yet, from another address: the client moved
+	; (NAT rebinding): it is followed there, the path validated
+	cmp	dword [rsp+QP_LEVEL],QL_APP
+	jne	@f
+	mov	rax,[rsp+QP_PN]
+	cmp	rax,[rsp+QP_LARGEST]
+	jle	@f
+	call	qc_peer_moved			; ZF: same address
+	jz	@f
+	mov	edi,[rsp+QP_DGRAM]
+	call	qc_migrate
+@@:
 	mov	edi,ebx
 	call	idle_touch
 	; a Handshake packet: the client's address is good, Initial is over
@@ -2241,9 +2458,10 @@ qc_crypto_in:
 	mov	edx,[r15+QC_VER]
 	mov	ecx,[r15+QC_QT+QT_AEAD]
 	call	quic_keys
-	; the secrets are done with (the handshake's own are in its TS)
+	; the handshake secrets are done with (the handshake's own are in its
+	; TS); the application ones stay for key updates
 	lea	rdi,[r15+QC_QT]
-	mov	ecx,128
+	mov	ecx,64
 	call	secure_zero
 	jmp	.ok
 .handshake:
@@ -2436,10 +2654,14 @@ qc_build:
 	test	r13d,r13d
 	jz	.nothing
 	mov	[rsp+QB_FLAGS],r13d
-	; room: a datagram, and before validation three times what came
+	; room: a datagram, and before validation (of the address, of a new
+	; path) three times what came
 	mov	eax,QUIC_DGRAM
 	test	dword [r15+QC_FLAGS],QF_VALID
-	jnz	@f
+	jz	.limited
+	cmp	dword [r15+QC_PATHNV],0
+	je	@f
+.limited:
 	mov	rcx,[r15+QC_RXB]
 	lea	rcx,[rcx*2+rcx]
 	sub	rcx,[r15+QC_TXB]
@@ -2497,7 +2719,10 @@ qc_build:
 	add	rdi,2				; the length: two bytes, after
 	jmp	.pn
 .short:
-	mov	byte [rdi],0x43			; fixed bit, key phase 0, a 4-byte number
+	mov	al,[r15+QC_KPHASE]		; fixed bit, the key phase, a 4-byte number
+	shl	al,2
+	or	al,0x43
+	mov	[rdi],al
 	inc	rdi
 	mov	ecx,[r15+QC_DCIDLEN]
 	lea	rsi,[r15+QC_DCID]

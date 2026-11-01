@@ -56,6 +56,8 @@ rodata
 	lbl_quic2_key	db 'quicv2 key',0
 	lbl_quic2_iv	db 'quicv2 iv',0
 	lbl_quic2_hp	db 'quicv2 hp',0
+	lbl_quic_ku	db 'quic ku',0		; key update (RFC 9001 6.1)
+	lbl_quic2_ku	db 'quicv2 ku',0
 end rodata
 
 quic_initial:

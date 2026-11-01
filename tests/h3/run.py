@@ -120,6 +120,42 @@ def relay(drop):
             up.send(d)
 
 
+def rebind_relay(port, moves):
+    """A UDP relay to okena whose own address changes (a NAT rebinding)
+    after each count of client datagrams in `moves`: (count, source IP)."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.bind(("127.0.0.1", port))
+    client = [None]
+    ups = []
+
+    def new_up(ip):
+        for old in ups:                                 # the old address is gone
+            old.close()
+        u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        u.bind((ip, 0))
+        u.connect(("127.0.0.1", LST))
+        ups.append(u)
+
+        def back():
+            while True:
+                try:
+                    d = u.recv(65536)
+                except OSError:
+                    return
+                if client[0]:
+                    s.sendto(d, client[0])
+        threading.Thread(target=back, daemon=True).start()
+    new_up("127.0.0.1")
+    n, moves = 0, list(moves)
+    while True:
+        d, a = s.recvfrom(65536)
+        client[0] = a
+        n += 1
+        if moves and n == moves[0][0]:
+            new_up(moves.pop(0)[1])
+        ups[-1].send(d)
+
+
 class Client(QuicConnectionProtocol):
     def __init__(self, *a, **k):
         super().__init__(*a, **k)
@@ -190,6 +226,13 @@ async def cases():
         r = await c.request("POST", "/up", up[:500_000], length=False)
         check("POST of 500 KB without content-length (chunk-framed to the backend)",
               r["body"] == hashlib.md5(up[:500_000]).hexdigest().encode(), str(r)[:120])
+        bodies = []
+        for k in range(3):                               # the client updates its keys
+            c._quic.request_key_update()
+            r = await c.request("GET", f"/ku{k}")
+            bodies.append(r["body"])
+        check("key updates (RFC 9001 6): okena follows each, its packets in the new phase",
+              bodies == [f"hello /ku{k} h3.test\n".encode() for k in range(3)], str(bodies))
         rs = await asyncio.gather(*[c.request("GET", f"/s{i}") for i in range(20)])
         check("20 streams at once on one connection",
               all(x["body"] == f"hello /s{i} h3.test\n".encode() for i, x in enumerate(rs)),
@@ -203,12 +246,31 @@ async def cases():
         r = await c.request("GET", "/v2")
         check("QUIC version 2 (RFC 9369)", r["body"] == b"hello /v2 h3.test\n" and c._quic._version == 0x6B3343CF,
               str(r)[:100])
+    from aioquic.tls import CipherSuite
+    cfg = config()
+    cfg.cipher_suites = [CipherSuite.CHACHA20_POLY1305_SHA256]
+    async with connect("127.0.0.1", LST, configuration=cfg, create_protocol=Client) as c:
+        r1 = await c.request("GET", "/cc")
+        c._quic.request_key_update()
+        r2 = await c.request("GET", "/cc2")
+        check("ChaCha20-Poly1305, and a key update with it",
+              r1["body"] == b"hello /cc h3.test\n" and r2["body"] == b"hello /cc2 h3.test\n", str((r1, r2))[:120])
     # `http3 retry`: a Retry first, its token back, then the handshake
     for ver, name in ((None, "v1"), (QuicProtocolVersion.VERSION_2, "v2")):
         async with connect("127.0.0.1", RETRY, configuration=config(ver), create_protocol=Client) as c:
             r = await c.request("GET", "/retried")
             check(f"http3 retry ({name}): a Retry, then the connection with its token",
                   r["body"] == b"hello /retried h3.test\n" and c._quic._retry_count == 1, str(r)[:100])
+    # a NAT rebinding mid-transfer: a new port, then a new IP address
+    threading.Thread(target=rebind_relay, args=(RELAY + 10, [(60, "127.0.0.1"), (300, "127.0.0.2")]),
+                     daemon=True).start()
+    async with connect("127.0.0.1", RELAY + 10, configuration=config(), create_protocol=Client) as c:
+        n = 1_000_000
+        r = await c.request("GET", f"/big/{n}")
+        r2 = await c.request("GET", "/after-move")
+        check("NAT rebinding mid-transfer (a new port, then a new IP): okena follows the client",
+              r["body"] == bytes(random.Random(n).randbytes(n)) and r2["body"] == b"hello /after-move h3.test\n",
+              f"{len(r['body'])} bytes {r.get('timeout')} {r2['body'][:40]}")
     # through a lossy relay: what is lost is sent again
     threading.Thread(target=relay, args=(0.1,), daemon=True).start()
     async with connect("127.0.0.1", RELAY, configuration=config(), create_protocol=Client) as c:

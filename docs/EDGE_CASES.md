@@ -118,7 +118,8 @@ the connection closed when its framing can no longer be trusted.
 
 | Case | Behaviour |
 |---|---|
-| Client address migration, NAT rebinding | connection ID routing to the owning worker; path validation |
+| Client address migration, NAT rebinding | the client followed to its new address (the newest packet decides), the path validated with PATH_CHALLENGE, 3x limit until it is; a new IP restarts congestion control and the RTT. Active migration (new connection IDs) not offered yet |
+| Key update | followed (RFC 9001 6): the next keys tried when the key phase flips, ours updated with them |
 | Amplification | 3x limit before address validation; Retry under load (64 unvalidated connections a worker) or always (`http3 retry`) |
 | Version negotiation, QUIC v2 | supported |
 | 1-RTT packets before the client's Finished | dropped unacknowledged (they come again once the handshake completes) |

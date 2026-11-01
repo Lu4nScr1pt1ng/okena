@@ -357,7 +357,9 @@ sessions running the HTTP/1.1 exchange, QPACK with the static table,
 stream and connection flow control, out-of-order stream data held until
 the gap fills, Retry with sealed address tokens (under load or always:
 `http3 retry`), GOAWAY on drain, Alt-Svc on HTTP/1.1 and HTTP/2 answers.
-Stateless resets with a key the workers share. tests/h3/run.py drives
+Stateless resets with a key the workers share. Key updates (RFC 9001 6)
+and NAT rebinding (the client followed to its new address, the path
+validated). tests/h3/run.py drives
 it with aioquic and curl (ngtcp2) on both engines, through a relay that
 loses a tenth of the datagrams each way. Measured against HAProxy 3.2
 and nginx 1.27 (docs/BENCHMARK.md, h2load with HTTP/3): ahead on many
@@ -365,7 +367,7 @@ streams (156k/s against 130k and 102k), on handshakes (10k/s on two
 cores, none failing past it, against about 1.2k) and under an Initial
 flood (18k/s kept, p99 3 ms; they fall to 2.6k and 4.1k/s); behind them
 on quiet keep-alive p50/p99. Open: latency under the flood not flat yet,
-quiet p99, CUBIC/BBR, pacing, PMTU, migration, QUIC-LB IDs with eBPF
+quiet p99, CUBIC/BBR, pacing, PMTU, active migration, QUIC-LB IDs with eBPF
 steering, GSO/GRO, ECN, the QPACK dynamic table, 0-RTT, the abuse
 budgets, `okena bench` over HTTP/3, the interop runner.
 

@@ -84,10 +84,14 @@ RA_ESIZE	:= 32
 RA_DCAP		:= 1400				; its bytes, at QC_RAD + slot * RA_DCAP
 QC_RAD		:= QC_RA + RA_N * RA_ESIZE
 assert QC_RAD + RA_N * RA_DCAP <= 1 shl HB_SHIFT
+QC_KU		:= QC_RAD + RA_N * RA_DCAP	; the client's next 1-RTT keys (server.inc)
+assert QC_KU and 15 = 0
+assert QC_KU + QK_SIZE <= 1 shl HB_SHIFT
 
 QF2_MAXD	:= 1				; MAX_DATA to send
 QF2_MAXS	:= 2				; MAX_STREAMS (bidi)
 QF2_PATH	:= 4				; PATH_RESPONSE
+QF2_PCHAL	:= 16				; PATH_CHALLENGE (a new path to validate)
 QF2_MSD		:= 8				; some stream has a MAX_STREAM_DATA
 
 H3_WINDOW	:= 49152			; a request stream's window (the queue holds it)
@@ -407,9 +411,16 @@ qc_app_frame:
 	jmp	.ok
 .response:
 	mov	dword [r12+QP_ACKEL],1
-	add	rsi,8
-	cmp	rsi,rdx
+	lea	rax,[rsi+8]
+	cmp	rax,rdx
 	ja	.encoding
+	mov	rax,[rsi]			; ours back: the new path is good
+	cmp	rax,[r15+QC_PCHALO]
+	jne	@f
+	mov	dword [r15+QC_PATHNV],0
+	and	dword [r15+QC_FL2],not QF2_PCHAL
+@@:
+	add	rsi,8
 	jmp	.ok
 .reset_stream:
 	mov	dword [r12+QP_ACKEL],1
@@ -2353,7 +2364,7 @@ qc_app_pending:
 	call	qc_ctl_len
 	cmp	[r15+QC_CTL_SENT],eax
 	jb	.yes
-	test	dword [r15+QC_FL2],QF2_MAXD or QF2_MAXS or QF2_PATH or QF2_MSD
+	test	dword [r15+QC_FL2],QF2_MAXD or QF2_MAXS or QF2_PATH or QF2_MSD or QF2_PCHAL
 	jnz	.yes
 	cmp	dword [r15+QC_RSTN],0
 	jne	.yes
@@ -2486,6 +2497,16 @@ qc_app_write:
 	mov	[rdi+1],rax
 	add	rdi,9
 	and	dword [r15+QC_FL2],not QF2_PATH
+	mov	r12d,1
+@@:
+	test	dword [r15+QC_FL2],QF2_PCHAL
+	jz	@f
+	mov	byte [rdi],0x1A			; PATH_CHALLENGE
+	mov	rax,[r15+QC_PCHALO]
+	mov	[rdi+1],rax
+	add	rdi,9
+	and	dword [r15+QC_FL2],not QF2_PCHAL
+	or	dword [r15+QC_LW_FR],QF2_PCHAL
 	mov	r12d,1
 @@:
 	; RESET_STREAMs
@@ -2725,6 +2746,12 @@ qc_app_lost:
 	mov	eax,[rdi+SP_FR]
 	and	eax,QF2_MAXD or QF2_MAXS or QF2_MSD
 	or	[r15+QC_FL2],eax
+	test	dword [rdi+SP_FR],QF2_PCHAL	; a challenge lost: again, while the
+	jz	@f				; path is still not validated
+	cmp	dword [r15+QC_PATHNV],0
+	je	@f
+	or	dword [r15+QC_FL2],QF2_PCHAL
+@@:
 	test	eax,QF2_MSD
 	jz	.streams
 	lea	r8,[r15+QC_QST]			; MAX_STREAM_DATA lost: each request
