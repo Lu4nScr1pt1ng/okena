@@ -114,8 +114,12 @@ QC_PATHNV	:= 640				; d: the client moved: its new path not validated
 QC_PCHALO	:= 648				; q: our PATH_CHALLENGE on it
 QC_HQ		:= 656				; d: ALPN hq-interop: HTTP/0.9 on the streams
 QC_ECN		:= 664				; 3 * (ECT(0), ECT(1), CE) q: ECN marks received a space
+QC_WMAX		:= 736				; q: CUBIC: the window before the last reduction
+QC_EPOCH	:= 744				; q: µs its congestion avoidance began, 0 none yet
+QC_K		:= 752				; q: ms to get back to QC_WMAX
+QC_WEST		:= 760				; q: the Reno-friendly window
 QC_FIELDS_END	:= 768
-assert QC_ECN + 72 <= QC_FIELDS_END
+assert QC_WEST + 8 <= QC_FIELDS_END
 assert QC_PCHALO + 8 <= QC_FIELDS_END
 QUIC_RETRY_AT	:= 64				; connections not validated yet, a worker:
 						; past it new ones get a Retry first
@@ -3624,11 +3628,158 @@ qc_cc_acked:
 	add	[r15+QC_CWND],rax		; slow start: a byte a byte acknowledged
 	ret
 .avoid:
-	imul	rax,rax,QUIC_DGRAM		; congestion avoidance: a datagram a window
+	; CUBIC (RFC 9438): W(t) = C (t - K)^3 + Wmax, C = 0.4 datagrams/s^3,
+	; t the epoch's age plus an RTT; never below the Reno-friendly window
+	push	rbx
+	push	r8
+	push	r9
+	push	r10
+	mov	rbx,rax				; bytes acknowledged
+	cmp	qword [r15+QC_EPOCH],0
+	jne	.epoch
+	mov	rax,[g_qnow]
+	mov	[r15+QC_EPOCH],rax
+	mov	[r15+QC_WEST],rcx
+	xor	r8d,r8d				; K: 0 when at or above Wmax
+	mov	rax,[r15+QC_WMAX]
+	sub	rax,rcx
+	jbe	.k
+	mov	rdx,2500000000			; (Wmax - cwnd) / (0.4 datagram) in s^3:
+	mul	rdx				; in ms^3, * 1e9
+	mov	r9d,QUIC_DGRAM
+	div	r9
+	call	qc_cbrt
+	mov	r8,rax
+.k:
+	mov	[r15+QC_K],r8
+.epoch:
+	mov	rax,[g_qnow]			; t in ms
+	sub	rax,[r15+QC_EPOCH]
+	add	rax,[r15+QC_SRTT]
+	xor	edx,edx
+	mov	r9d,1000
+	div	r9
+	sub	rax,[r15+QC_K]			; t - K (signed)
+	cmp	rax,100000
+	jle	@f
+	mov	eax,100000			; (no overflow: 100 s past K is far enough)
+@@:
+	cmp	rax,-100000
+	jge	@f
+	mov	rax,-100000
+@@:
+	mov	r9,rax
+	imul	rax,r9
+	imul	rax,r9				; (t - K)^3, ms^3
+	cqo
+	mov	r10,1000
+	idiv	r10
+	imul	rax,rax,4 * QUIC_DGRAM		; * 0.4 datagram / 1e9 ms^3 = * 4 / 1e10
+	cqo
+	mov	r10,10000000
+	idiv	r10
+	add	rax,[r15+QC_WMAX]		; the cubic window
+	mov	r9,rax
+	; Reno-friendly: + 3(1 - b)/(1 + b) = 9/17 datagram a window acknowledged
+	mov	rax,rbx
+	imul	rax,rax,9 * QUIC_DGRAM
+	mov	rcx,[r15+QC_CWND]
+	imul	rcx,rcx,17
 	xor	edx,edx
 	div	rcx
+	add	rax,[r15+QC_WEST]
+	mov	[r15+QC_WEST],rax
+	cmp	r9,rax
+	jge	@f
+	mov	r9,rax
+@@:
+	; toward the target: (target - cwnd) / cwnd a byte acknowledged, at
+	; most half a datagram a datagram
+	mov	rcx,[r15+QC_CWND]
+	mov	rax,r9
+	sub	rax,rcx
+	jle	.done
+	imul	rax,rbx
+	xor	edx,edx
+	div	rcx
+	mov	rdx,rbx
+	shr	rdx,1
+	cmp	rax,rdx
+	jbe	@f
+	mov	rax,rdx
+@@:
 	add	[r15+QC_CWND],rax
+.done:
+	pop	r10
+	pop	r9
+	pop	r8
+	pop	rbx
 .out:
+	ret
+
+; a congestion event (r15 = connection): CUBIC's reduction to 0.7 of the
+; window, Wmax (lower when the window was still shrinking: fast
+; convergence), a new epoch
+qc_cc_loss:
+	mov	rax,[r15+QC_CWND]
+	mov	rcx,rax
+	cmp	rax,[r15+QC_WMAX]
+	jae	@f
+	imul	rcx,rcx,17			; 1.7 / 2 of it
+	shr	rcx,1
+	mov	edx,10
+	push	rax
+	mov	rax,rcx
+	xor	edx,edx
+	mov	ecx,10
+	div	rcx
+	mov	rcx,rax
+	pop	rax
+@@:
+	mov	[r15+QC_WMAX],rcx
+	imul	rax,rax,7
+	xor	edx,edx
+	mov	ecx,10
+	div	rcx
+	cmp	rax,QUIC_CWNDMIN
+	jae	@f
+	mov	eax,QUIC_CWNDMIN
+@@:
+	mov	[r15+QC_SSTH],rax
+	mov	[r15+QC_CWND],rax
+	mov	qword [r15+QC_EPOCH],0
+	ret
+
+; rax = n: rax = floor(cbrt(n)) (n < 2^63)
+qc_cbrt:
+	push	rbx
+	push	rcx
+	push	rdx
+	mov	rbx,rax
+	xor	ecx,ecx				; lo
+	mov	r9d,2097152			; hi: (2^21)^3 = 2^63
+.step:
+	lea	rax,[rcx+r9+1]
+	shr	rax,1				; mid, rounded up
+	cmp	rax,r9
+	ja	.done
+	cmp	rcx,r9
+	jae	.done
+	mov	rdx,rax
+	imul	rdx,rax
+	imul	rdx,rax
+	cmp	rdx,rbx
+	ja	.high
+	mov	rcx,rax
+	jmp	.step
+.high:
+	lea	r9,[rax-1]
+	jmp	.step
+.done:
+	mov	rax,rcx
+	pop	rdx
+	pop	rcx
+	pop	rbx
 	ret
 
 ; edi = level, rsi = the largest packet number just acknowledged: the
@@ -3718,14 +3869,7 @@ qc_detect_lost:
 	jbe	.dirty
 	mov	rax,[g_qnow]
 	mov	[r15+QC_RECOV],rax
-	mov	rax,[r15+QC_CWND]
-	shr	rax,1
-	cmp	rax,QUIC_CWNDMIN
-	jae	@f
-	mov	eax,QUIC_CWNDMIN
-@@:
-	mov	[r15+QC_SSTH],rax
-	mov	[r15+QC_CWND],rax
+	call	qc_cc_loss
 .dirty:
 	mov	rbx,[rsp+24]			; the session again (rbx held a time)
 	call	qc_dirty

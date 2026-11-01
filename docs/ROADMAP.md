@@ -351,7 +351,7 @@ pools and everything after them stay one code path.
 In progress (`http3 on`, off by default). In: packet protection (RFC
 9001, 9369, with the RFC's test vectors), Version Negotiation, the
 handshake on a UDP socket per worker (TLS 1.3 in QUIC mode, X25519 and
-X25519MLKEM768), the 3x amplification limit, ACK ranges, PTO, NewReno
+X25519MLKEM768), the 3x amplification limit, ACK ranges, PTO, CUBIC (RFC 9438)
 with packet and time threshold loss detection; request streams as
 sessions running the HTTP/1.1 exchange, QPACK with the static table,
 stream and connection flow control, out-of-order stream data held until
@@ -367,7 +367,7 @@ streams (156k/s against 130k and 102k), on handshakes (10k/s on two
 cores, none failing past it, against about 1.2k) and under an Initial
 flood (18k/s kept, p99 3 ms; they fall to 2.6k and 4.1k/s); behind them
 on quiet keep-alive p50/p99. Open: latency under the flood not flat yet,
-quiet p99, CUBIC/BBR, pacing, PMTU, active migration, QUIC-LB IDs with eBPF
+quiet p99, BBR, pacing, PMTU, active migration, QUIC-LB IDs with eBPF
 steering, GSO/GRO, ECN, the QPACK dynamic table, 0-RTT, the abuse
 budgets, `okena bench` over HTTP/3, the interop runner.
 
