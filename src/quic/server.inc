@@ -2903,7 +2903,9 @@ qc_on_ack:
 @@:
 	test	eax,SPF_ACKEL
 	jz	@f
+	push	rax				; (the flags: the RTT sample below)
 	call	qc_cc_acked			; r11 = the record
+	pop	rax
 @@:
 	cmp	dword [rsp+16+8+QA_LEVEL],QL_APP
 	jne	@f
