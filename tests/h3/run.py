@@ -422,6 +422,8 @@ async def cases():
         await c.request("GET", "/probe")
         q = c._quic
         q._write_ping_frame = lambda b, uids=[], comment="": b.start_frame(0).push_bytes(b"\x1a12345678")
+        for space in q._spaces.values():	# (an ACK would make it not a probe: the connection moves)
+            space.ack_at = None
         q.send_ping(1)
         probe = min((d for d, _ in q.datagrams_to_send(now=time.time())), key=len)
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -434,6 +436,8 @@ async def cases():
         s.close()
         check("a small PATH_CHALLENGE from another address: answered, 3x its size at most",
               0 < answer <= 3 * len(probe) and len(probe) < 400, f"{len(probe)} -> {answer}")
+        r = await c.request("GET", "/after-probe")
+        check("  and the connection did not move for it", r["body"].startswith(b"hello /after-probe"), str(r)[:80])
     # resumption: the ticket the first connection got resumes the second
     tickets = []
     cfg = config()
