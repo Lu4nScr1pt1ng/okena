@@ -126,6 +126,7 @@ QF2_PATH	:= 4				; PATH_RESPONSE
 QF2_PCHAL	:= 16				; PATH_CHALLENGE (a new path to validate)
 QF2_MSD		:= 8				; some stream has a MAX_STREAM_DATA
 QF2_NCID	:= 32				; NEW_CONNECTION_IDs (QC_CIDS)
+QF2_PALT	:= 64				; PATH_RESPONSE on another path (QC_ALT_*)
 
 H3_WINDOW	:= 49152			; a request stream's window (the queue holds it)
 QC_WINDOW	:= 1048576			; the connection's
@@ -529,9 +530,37 @@ qc_app_frame:
 	cmp	rax,rdx
 	ja	.encoding
 	mov	rax,[rsi]
+	add	rsi,8
+	; on another path (a socket or an address not the connection's): the
+	; answer goes on that path, the connection stays (unless the packet
+	; moves it: server.inc)
+	push	rsi
+	push	rdx
+	push	rax
+	mov	eax,[g_qd_slot]
+	cmp	eax,[r15+QC_SOCK]
+	jne	.alt_path
+	call	qc_peer_moved
+	jnz	.alt_path
+	pop	rax
 	mov	[r15+QC_PCHAL],rax
 	or	dword [r15+QC_FL2],QF2_PATH
-	add	rsi,8
+	jmp	.challenged
+.alt_path:
+	pop	rax
+	mov	[r15+QC_ALT_DATA],rax
+	mov	eax,[g_qd_slot]
+	mov	[r15+QC_ALT_SLOT],eax
+	mov	eax,[g_qd_salen]
+	mov	[r15+QC_ALT_LEN],eax
+	mov	rsi,[g_qd_sa]
+	lea	rdi,[r15+QC_ALT_SA]
+	mov	ecx,28
+	rep	movsb
+	or	dword [r15+QC_FL2],QF2_PALT
+.challenged:
+	pop	rdx
+	pop	rsi
 	call	qc_dirty
 	jmp	.ok
 .response:

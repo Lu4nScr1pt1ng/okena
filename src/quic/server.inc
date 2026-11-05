@@ -149,8 +149,12 @@ QC_QD_END	:= 960				; q: written
 QC_QD_SENT	:= 968				; q: sent (back to what is acknowledged)
 QC_QD_ACK	:= 976				; q: acknowledged
 QC_PACID	:= 984				; d: QC_CIDS's first went in preferred_address
-QC_FIELDS_END	:= 1024
-assert QC_PACID + 4 <= QC_FIELDS_END
+QC_ALT_SLOT	:= 988				; d: a PATH_CHALLENGE on another path: its socket,
+QC_ALT_DATA	:= 992				; q: its data,
+QC_ALT_SA	:= 1000				; 28: and where it came from (the answer goes there)
+QC_ALT_LEN	:= 1028				; d
+QC_FIELDS_END	:= 1088
+assert QC_ALT_LEN + 4 <= QC_FIELDS_END
 QUIC_MTU_MIN	:= 1200				; every QUIC path takes this (RFC 9000 14)
 PACE_MIN_RTT	:= 4000				; µs: below it no pacing (the pacing timer: 0.2 ms at least)
 assert QC_PCHALO + 8 <= QC_FIELDS_END
@@ -2264,6 +2268,7 @@ QP_HSAVE	:= 64				; the first byte and packet number as they came
 QP_DGRAM	:= 72				; d: the datagram's length (counted once)
 QP_HELLO0	:= 76				; d: the hello was answered before this packet
 QP_EARLY	:= 80				; d: a 0-RTT packet
+QP_NONPROBE	:= 84				; d: a frame other than a path probe's (RFC 9000 9.1)
 QP_SIZE		:= 88
 qc_packet:
 	push	rbx
@@ -2277,6 +2282,7 @@ qc_packet:
 	qc_regs
 	mov	[rsp+QP_LEVEL],esi
 	mov	dword [rsp+QP_EARLY],0
+	mov	dword [rsp+QP_NONPROBE],0
 	cmp	esi,QL_0RTT			; 0-RTT: 1-RTT's packet number space
 	jne	@f
 	mov	esi,QL_APP
@@ -2393,26 +2399,7 @@ qc_packet:
 	add	edx,ecx
 	inc	qword [r15+QC_ECN+rdx]
 @@:
-	; 1-RTT, the newest yet, from another address: the client moved
-	; (NAT rebinding): it is followed there, the path validated
-	cmp	dword [rsp+QP_LEVEL],QL_APP
-	jne	@f
-	cmp	dword [rsp+QP_EARLY],0
-	jne	@f
-	mov	rax,[rsp+QP_PN]
-	cmp	rax,[rsp+QP_LARGEST]
-	jle	@f
-	mov	eax,[g_qd_slot]			; on another of our sockets (the client
-	cmp	eax,[r15+QC_SOCK]		; moved to our preferred address): that
-	jne	.moved				; one sends from now
-	call	qc_peer_moved			; ZF: same address
-	jz	@f
-.moved:
-	mov	eax,[g_qd_slot]
-	mov	[r15+QC_SOCK],eax
-	mov	edi,[rsp+QP_DGRAM]
-	call	qc_migrate
-@@:
+
 	mov	edi,ebx
 	call	idle_touch
 	; a Handshake packet: the client's address is good, Initial is over
@@ -2438,6 +2425,16 @@ qc_packet:
 	jae	.frames_done
 	call	qv_read
 	jc	.encoding
+	test	rax,rax				; anything but a probe's frames: the
+	jz	@f				; packet may move the connection
+	cmp	rax,0x1A
+	je	@f
+	cmp	rax,0x1B
+	je	@f
+	cmp	rax,0x18
+	je	@f
+	mov	dword [rsp+QP_NONPROBE],1
+@@:
 	test	rax,rax
 	jz	.padding
 	cmp	rax,1
@@ -2519,6 +2516,35 @@ qc_packet:
 	mov	edi,[rsp+QP_LEVEL]
 	mov	rsi,[rsp+QP_PN]
 	call	qc_received
+	; 1-RTT, the newest yet and not only probing, from another address or
+	; to another of our sockets (NAT rebinding, our preferred address): the
+	; connection moves there, the path validated (RFC 9000 9)
+	cmp	dword [rsp+QP_LEVEL],QL_APP
+	jne	.stays
+	cmp	dword [rsp+QP_EARLY],0
+	jne	.stays
+	cmp	dword [rsp+QP_NONPROBE],0
+	je	.stays
+	mov	rax,[rsp+QP_PN]
+	cmp	rax,[rsp+QP_LARGEST]
+	jle	.stays
+	mov	eax,[g_qd_slot]
+	cmp	eax,[r15+QC_SOCK]
+	jne	.moved
+	call	qc_peer_moved			; ZF: same address
+	jz	.stays
+.moved:
+	mov	eax,[g_qd_slot]
+	mov	[r15+QC_SOCK],eax
+	mov	edi,[rsp+QP_DGRAM]
+	call	qc_migrate
+	test	dword [r15+QC_FL2],QF2_PALT	; a probe's answer pending there: the
+	jz	.stays				; connection's path now
+	and	dword [r15+QC_FL2],not QF2_PALT
+	mov	rax,[r15+QC_ALT_DATA]
+	mov	[r15+QC_PCHAL],rax
+	or	dword [r15+QC_FL2],QF2_PATH
+.stays:
 	cmp	dword [rsp+QP_ACKEL],0
 	je	.out
 	; the client's Initial or Handshake again (its hello retransmitted, a
@@ -3265,6 +3291,14 @@ qc_build:
 	jz	.probe_wants			; first packet there, past the window
 	or	r13d,64
 .probe_wants:
+	; an answer to a probe on another path: a datagram of its own, there
+	cmp	r12d,QL_APP
+	jne	@f
+	test	dword [r15+QC_FL2],QF2_PALT
+	jz	@f
+	mov	r13d,256
+	jmp	.cc_done
+@@:
 	; a path MTU probe due: a packet of its own, past the window
 	cmp	r12d,QL_APP
 	jne	.mtu_wants_done
@@ -3324,6 +3358,11 @@ qc_build:
 	; room: a datagram, and before validation (of the address, of a new
 	; path) three times what came
 	mov	eax,[r15+QC_MTU]
+	test	r13d,256
+	jz	.not_alt
+	mov	eax,QUIC_MTU_MIN		; (the answer padded to 1200, RFC 9000 8.2.2)
+	jmp	@f
+.not_alt:
 	test	r13d,128
 	jz	@f
 	and	r13d,1 or 128			; (the probe: an ACK with it, nothing else)
@@ -3432,6 +3471,19 @@ qc_build:
 	or	dword [r15+QC_LW_FR],QF2_PCHAL
 	mov	dword [rsp+QB_ACKEL],1
 @@:
+	test	dword [rsp+QB_FLAGS],256
+	jz	.no_alt
+	mov	byte [rdi],0x1B			; PATH_RESPONSE, then padding
+	mov	rax,[r15+QC_ALT_DATA]
+	mov	[rdi+1],rax
+	add	rdi,9
+	and	dword [r15+QC_FL2],not QF2_PALT
+	mov	rcx,r14
+	sub	rcx,rdi
+	xor	eax,eax
+	rep	stosb
+	jmp	.frames_end
+.no_alt:
 	test	dword [rsp+QB_FLAGS],128
 	jz	.no_mtu_probe
 	; the MTU probe: PING, padded to the size tried. Not ack-eliciting in
@@ -3648,6 +3700,12 @@ qc_build:
 	mov	edi,[r15+QC_SOCK]
 	lea	rsi,[r15+QC_PEER]
 	mov	r8d,[r15+QC_PEERLEN]
+	test	dword [rsp+QB_FLAGS],256	; (a probe's answer: to its path)
+	jz	@f
+	mov	edi,[r15+QC_ALT_SLOT]
+	lea	rsi,[r15+QC_ALT_SA]
+	mov	r8d,[r15+QC_ALT_LEN]
+@@:
 	mov	edx,[r15+QC_ECNOFF]
 	xor	edx,1
 	mov	[g_qtx_ect],edx

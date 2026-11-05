@@ -15,6 +15,7 @@ case "$TESTCASE" in
 	handshakeloss|transferloss|handshakecorruption|transfercorruption|amplificationlimit| \
 	ipv6|rebind-port|rebind-addr|goodput|crosstraffic|http3|resumption|ecn) ;;
 	retry) H3=retry ;;
+	zerortt) PREF="early_data on" ;;
 	connectionmigration)		# our preferred addresses: another port, both families
 		IP4=$(hostname -I | cut -f1 -d" ")
 		IP6=$(hostname -I | cut -f2 -d" ")

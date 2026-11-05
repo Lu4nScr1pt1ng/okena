@@ -403,7 +403,10 @@ async def cases():
             r = await c.request("GET", f"/pa{i}")
             bodies.append(r["body"])
             await asyncio.sleep(0.05)
-        addrs = [p.addr[1] for p in c._quic._network_paths if p.is_validated]
+        n = 2_000_000
+        rb = await c.request("GET", f"/big/{n}")
+        check("  2 MB after the move (the client's probes on its new path answered there, not moving it)",
+              rb["body"] == bytes(random.Random(n).randbytes(n)), f"{len(rb['body'])} bytes {rb.get('timeout')}")
         check("preferred_address: announced, validated by the client, the connection moved there",
               pa is not None and pa.ipv4_address == ("127.0.0.1", PREF_TO) and len(pa.connection_id) == 8
               and bodies == [f"hello /pa{i} h3.test\n".encode() for i in range(6)]
