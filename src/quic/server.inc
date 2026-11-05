@@ -153,8 +153,9 @@ QC_ALT_SLOT	:= 988				; d: a PATH_CHALLENGE on another path: its socket,
 QC_ALT_DATA	:= 992				; q: its data,
 QC_ALT_SA	:= 1000				; 28: and where it came from (the answer goes there)
 QC_ALT_LEN	:= 1028				; d
+QC_ALT_MAX	:= 1032				; d: at most this answers it (3x, RFC 9000 8.2.1)
 QC_FIELDS_END	:= 1088
-assert QC_ALT_LEN + 4 <= QC_FIELDS_END
+assert QC_ALT_MAX + 4 <= QC_FIELDS_END
 QUIC_MTU_MIN	:= 1200				; every QUIC path takes this (RFC 9000 14)
 PACE_MIN_RTT	:= 4000				; µs: below it no pacing (the pacing timer: 0.2 ms at least)
 assert QC_PCHALO + 8 <= QC_FIELDS_END
@@ -3389,8 +3390,14 @@ qc_build:
 	mov	eax,[r15+QC_MTU]
 	test	r13d,256
 	jz	.not_alt
-	mov	eax,QUIC_MTU_MIN		; (the answer padded to 1200, RFC 9000 8.2.2)
-	jmp	@f
+	mov	eax,QUIC_MTU_MIN		; (the answer padded to 1200, RFC 9000 8.2.2,
+	cmp	eax,[r15+QC_ALT_MAX]		; as far as that path may be sent)
+	jbe	.room_set
+	mov	eax,[r15+QC_ALT_MAX]
+	cmp	eax,64
+	jae	.room_set
+	and	dword [r15+QC_FL2],not QF2_PALT	; (no room: the client probes again)
+	jmp	.nothing
 .not_alt:
 	test	r13d,128
 	jz	@f
@@ -3398,6 +3405,7 @@ qc_build:
 	mov	[rsp+QB_FLAGS],r13d
 	mov	eax,[r15+QC_MTU_TRY]
 @@:
+.room_set:
 	test	dword [r15+QC_FLAGS],QF_VALID
 	jz	.limited
 	cmp	dword [r15+QC_PATHNV],0

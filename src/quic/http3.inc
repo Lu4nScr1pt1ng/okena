@@ -553,6 +553,9 @@ qc_app_frame:
 	mov	[r15+QC_ALT_SLOT],eax
 	mov	eax,[g_qd_salen]
 	mov	[r15+QC_ALT_LEN],eax
+	mov	eax,[r12+QP_DGRAM]		; (not validated: 3x what came from it)
+	lea	eax,[rax*2+rax]
+	mov	[r15+QC_ALT_MAX],eax
 	mov	rsi,[g_qd_sa]
 	lea	rdi,[r15+QC_ALT_SA]
 	mov	ecx,28

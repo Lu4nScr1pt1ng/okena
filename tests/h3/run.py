@@ -416,6 +416,24 @@ async def cases():
               f"{pa} paths {[(p.addr, p.is_validated) for p in c._quic._network_paths]} {bodies[-1][:30]}")
         check("preferred_address: its datagrams come from that socket (1-RTT packets remember theirs)",
               PREF_TO in froms, str(froms))
+    # a small probe from another address (spoofable: it is not validated)
+    # answered with 3x its size at most, not padded to 1200
+    async with connect("127.0.0.1", LST, configuration=config(), create_protocol=Client) as c:
+        await c.request("GET", "/probe")
+        q = c._quic
+        q._write_ping_frame = lambda b, uids=[], comment="": b.start_frame(0).push_bytes(b"\x1a12345678")
+        q.send_ping(1)
+        probe = min((d for d, _ in q.datagrams_to_send(now=time.time())), key=len)
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(1)
+        s.sendto(probe, ("127.0.0.1", LST))
+        try:
+            answer = len(s.recv(2048))
+        except TimeoutError:
+            answer = 0
+        s.close()
+        check("a small PATH_CHALLENGE from another address: answered, 3x its size at most",
+              0 < answer <= 3 * len(probe) and len(probe) < 400, f"{len(probe)} -> {answer}")
     # resumption: the ticket the first connection got resumes the second
     tickets = []
     cfg = config()

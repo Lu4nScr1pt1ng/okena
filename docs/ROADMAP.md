@@ -359,7 +359,8 @@ the gap fills, Retry with sealed address tokens (under load or always:
 `http3 retry`), GOAWAY on drain, Alt-Svc on HTTP/1.1 and HTTP/2 answers.
 Stateless resets with a key the workers share. Key updates (RFC 9001 6)
 and NAT rebinding (the client followed to its new address, the path
-validated), packets steered to the worker their connection ID names
+validated), preferred_address (each path probed both ways, a probe's
+answer 3x what came at most), packets steered to the worker their connection ID names
 (classic BPF on the reuseport group). Resumption with session tickets,
 0-RTT behind `early_data on` (safe methods only), ECN marks and ACK_ECN, compatible version negotiation to v2
 (RFC 9368), the loss timer, hq-interop for the interop runner
