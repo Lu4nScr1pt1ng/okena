@@ -1242,6 +1242,8 @@ qs_datagram:
 	mov	[g_qd_sa],rax
 	mov	eax,[rsp+QD_SALEN]
 	mov	[g_qd_salen],eax
+	mov	eax,[rsp+QD_SLOT]
+	mov	[g_qd_slot],eax
 	call	qc_packet
 .out:
 	add	rsp,QD_SIZE
@@ -2570,14 +2572,8 @@ qc_packet:
 	mov	eax,[g_qd_slot]
 	mov	[r15+QC_SOCK],eax
 	mov	edi,[rsp+QP_DGRAM]
-	call	qc_migrate
-	test	dword [r15+QC_FL2],QF2_PALT	; a probe's answer pending there: the
-	jz	.stays				; connection's path now
-	and	dword [r15+QC_FL2],not QF2_PALT
-	mov	rax,[r15+QC_ALT_DATA]
-	mov	[r15+QC_PCHAL],rax
-	or	dword [r15+QC_FL2],QF2_PATH
-.stays:
+	call	qc_migrate			; (a probe's answer pending stays on
+.stays:						; its own path: QC_ALT_*)
 	cmp	dword [rsp+QP_ACKEL],0
 	je	.out
 	; the client's Initial or Handshake again (its hello retransmitted, a

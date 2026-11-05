@@ -398,6 +398,8 @@ async def cases():
     # preferred_address: the client validates it and moves there
     async with connect("127.0.0.1", PREF, configuration=config(), create_protocol=Client) as c:
         pa = c._quic._remote_preferred_address
+        froms, took = set(), c.datagram_received
+        c.datagram_received = lambda d, a: (froms.add(a[1]), took(d, a))[1]
         bodies = []
         for i in range(6):
             r = await c.request("GET", f"/pa{i}")
@@ -412,6 +414,8 @@ async def cases():
               and bodies == [f"hello /pa{i} h3.test\n".encode() for i in range(6)]
               and c._quic._network_paths[0].addr[1] == PREF_TO,
               f"{pa} paths {[(p.addr, p.is_validated) for p in c._quic._network_paths]} {bodies[-1][:30]}")
+        check("preferred_address: its datagrams come from that socket (1-RTT packets remember theirs)",
+              PREF_TO in froms, str(froms))
     # resumption: the ticket the first connection got resumes the second
     tickets = []
     cfg = config()
