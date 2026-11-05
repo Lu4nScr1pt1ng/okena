@@ -72,6 +72,7 @@ QST_FHAVE	:= 48				; d: header bytes gathered
 QST_HBLEN	:= 52				; d: HEADERS payload gathered
 QST_FHDR	:= 56				; 16: the header's bytes so far
 QST_MSDPEND	:= 72				; d: a MAX_STREAM_DATA to send
+QST_OPENED	:= 76				; d: when (g_tick)
 QST_MSD		:= 80				; q: what we allow it
 QST_FINHERE	:= 88				; d: these bytes end the stream; then, the head did
 QST_EARLY	:= 92				; d: opened by 0-RTT data
@@ -141,6 +142,7 @@ H3E_FRAME_UNEXPECTED := 0x105
 H3E_EXCESSIVE	:= 0x107
 H3E_REQ_REJECTED := 0x10B
 H3E_REQ_CANCELLED := 0x10C
+H3E_INCOMPLETE	:= 0x10D
 H3E_MESSAGE	:= 0x10E
 QPACK_DECOMPRESSION := 0x200
 
@@ -787,6 +789,8 @@ qc_stream_one:
 	test	r8,r8
 	jz	.rejected
 	mov	dword [r8+QST_KIND],QSK_REQ
+	mov	ecx,[g_tick]
+	mov	[r8+QST_OPENED],ecx
 	mov	dword [r8+QST_SESS],NIL
 	mov	qword [r8+QST_MSD],H3_WINDOW
 	mov	rcx,[rsp+QI_PKT]		; (in 0-RTT: replayable)
@@ -1270,6 +1274,48 @@ qst_refuse:
 	inc	dword [r15+QC_RSTN]
 	jmp	qc_dirty
 @@:
+	ret
+
+; r15 = connection, ebx its slot: once a second, requests whose head has not
+; come within the listener's `timeout { header }` go (a slow client holds an
+; entry of QST_N each; no session yet: nothing else to free)
+qc_heads_expire:
+	mov	eax,[g_tick]
+	cmp	eax,[r15+QC_HDR_TICK]
+	je	.none
+	mov	[r15+QC_HDR_TICK],eax
+	mov	eax,[r15+QC_SOCK]
+	mov	eax,[g_qs_lst+rax*4]
+	imul	rax,rax,LS_SIZE
+	mov	eax,[g_listeners+rax+LS_T_HEADER]
+	test	eax,eax
+	jz	.none
+	push	r12
+	push	r13
+	push	r14
+	mov	r14d,eax
+	lea	r12,[r15+QC_QST]
+	mov	r13d,QST_N
+.next:
+	cmp	dword [r12+QST_KIND],QSK_REQ
+	jne	.skip
+	cmp	dword [r12+QST_PHASE],0
+	jne	.skip
+	mov	eax,[g_tick]
+	sub	eax,[r12+QST_OPENED]
+	cmp	eax,r14d
+	jbe	.skip				; never early
+	mov	rdi,r12
+	mov	eax,H3E_INCOMPLETE
+	call	qst_refuse
+.skip:
+	add	r12,QST_SIZE
+	dec	r13d
+	jnz	.next
+	pop	r14
+	pop	r13
+	pop	r12
+.none:
 	ret
 
 ; r12 = a stream's entry: QC_H3HB is its to gather in (CF: another's)

@@ -44,6 +44,7 @@ BACK, LST, RELAY, RETRY, V2 = BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4
 INNER_H2, INNER_TLS = BASE + 16, BASE + 17
 PREF, PREF_TO = BASE + 18, BASE + 19
 EARLY = BASE + 20
+SLOW = BASE + 21
 failures = 0
 
 
@@ -456,6 +457,31 @@ async def cases():
             pass
         s.close()
         check("  60 of them at once: at most the second's budget answered", 0 < answers <= 16, str(answers))
+    # slow clients, the connection kept alive: a head that never ends, a
+    # body that stops
+    async with connect("127.0.0.1", SLOW, configuration=config(), create_protocol=Client) as c:
+        q = c._quic
+        head, body = q.get_next_available_stream_id(), None
+        c.ended[head] = asyncio.get_running_loop().create_future()
+        q.send_stream_data(head, b"\x01\x40\x40\x00\x00")
+        body = q.get_next_available_stream_id()
+        c.ended[body] = asyncio.get_running_loop().create_future()
+        c.h3.send_headers(body, [(b":method", b"POST"), (b":scheme", b"https"), (b":authority", b"h3.test"),
+                                 (b":path", b"/up"), (b"content-length", b"1000")])
+        q.send_stream_data(body, b"\x00\x40\x64abc")
+        c.transmit()
+        for i in range(20):
+            await asyncio.sleep(0.2)
+            q.send_ping(4 + i)
+            c.transmit()
+            if c.ended[head].done() and c.ended[body].done():
+                break
+        rh, rb = c.res.get(head, {}), c.res.get(body, {})
+        check("timeout header: a head that never ends, H3_REQUEST_INCOMPLETE", rh.get("reset") == 0x10D, str(rh)[:80])
+        check("timeout body_idle: a body that stops, 408",
+              (rb.get("headers") or {}).get(b":status") == b"408", str(rb)[:80])
+        r = await c.request("GET", "/after-slow")
+        check("  and the connection goes on", r["body"].startswith(b"hello /after-slow"), str(r)[:80])
     # an ACK of a packet never sent (an optimistic ACK): PROTOCOL_VIOLATION
     async with connect("127.0.0.1", LST, configuration=config(), create_protocol=Client) as c:
         await c.request("GET", "/ack")
@@ -671,7 +697,8 @@ async def stateless_reset(p):
     async with connect("127.0.0.1", LST, configuration=config(), create_protocol=Client) as c:
         await c.request("GET", "/hello")
         cid, token = c._quic._peer_cid.cid, c._quic._peer_cid.stateless_reset_token
-        workers = subprocess.run(["pgrep", "-P", str(p.pid)], capture_output=True, text=True).stdout.split()
+        master = subprocess.run(["pgrep", "-P", str(p.pid)], capture_output=True, text=True).stdout.split()[0]	# (under timeout)
+        workers = subprocess.run(["pgrep", "-P", master], capture_output=True, text=True).stdout.split()
         for w in workers:
             os.kill(int(w), 9)
         await asyncio.sleep(0.6)
@@ -773,6 +800,12 @@ http 127.0.0.1:{EARLY} {{
     tls {{ cert {tmp / 'c.pem'}; key {tmp / 'k.pem'} }}
     route /* {{ to 127.0.0.1:{BACK} }}
 }}
+http 127.0.0.1:{SLOW} {{
+    http3 on
+    timeout {{ header 1s; body_idle 1s }}
+    tls {{ cert {tmp / 'c.pem'}; key {tmp / 'k.pem'} }}
+    route /* {{ to 127.0.0.1:{BACK} }}
+}}
 http 127.0.0.1:{PREF} {{
     http3 on
     preferred_address 127.0.0.1:{PREF_TO}
@@ -791,7 +824,7 @@ http 127.0.0.1:{RETRY} {{
 }}
 """)
     log = open(tmp / "okena.log", "w+")
-    p = subprocess.Popen([str(BIN), "-c", str(conf)], stderr=log)
+    p = subprocess.Popen(["timeout", "--foreground", "150", str(BIN), "-c", str(conf)], stderr=log)
     try:
         time.sleep(0.5)
         asyncio.run(cases())

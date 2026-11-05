@@ -156,8 +156,9 @@ QC_ALT_LEN	:= 1028				; d
 QC_ALT_MAX	:= 1032				; d: at most this answers it (3x, RFC 9000 8.2.1)
 QC_ALT_CNT	:= 1036				; d: answered in this second,
 QC_ALT_WIN	:= 1040				; q: which began then
+QC_HDR_TICK	:= 1048				; d: g_tick at the last look for late heads
 QC_FIELDS_END	:= 1088
-assert QC_ALT_WIN + 8 <= QC_FIELDS_END
+assert QC_HDR_TICK + 4 <= QC_FIELDS_END
 QUIC_MTU_MIN	:= 1200				; every QUIC path takes this (RFC 9000 14)
 PACE_MIN_RTT	:= 4000				; µs: below it no pacing (the pacing timer: 0.2 ms at least)
 assert QC_PCHALO + 8 <= QC_FIELDS_END
@@ -4187,6 +4188,7 @@ qs_tick:
 	call	qc_free
 	jmp	.next
 .pto:
+	call	qc_heads_expire			; http3.inc
 	mov	rax,[r15+QC_PACE_AT]		; still held by pacing: the timer's
 	test	rax,rax
 	jz	@f
