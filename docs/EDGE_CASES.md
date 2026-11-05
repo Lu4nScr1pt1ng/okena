@@ -16,7 +16,7 @@ the connection closed when its framing can no longer be trusted.
 | RST in the middle of a response | upstream stream cancelled, upstream connection reused only if its framing is intact |
 | Client IP behind NAT (thousands of users, one address) | per-source connection limits configurable, and keyable by other attributes |
 | IPv6, dual stack, IPv4-mapped addresses | normalised to one form for limits, logs and ACLs; happy eyeballs to dual-stack backends |
-| MTU/PMTU black holes | `TCP_MSS` clamp option; QUIC packet size probing |
+| MTU/PMTU black holes | `TCP_MSS` clamp option; QUIC starts at 1200 bytes and probes 1350 and 1452 (RFC 9000 14.3), a lost probe costing nothing |
 | Clients behind proxies that send PROXY protocol | accepted only from `proxy_protocol accept from=`; v1 and v2 with TLVs (TLS info, unique ID) |
 | Upstream port exhaustion | `IP_BIND_ADDRESS_NO_PORT`, several source addresses, free ports as a pressure signal |
 | Backend black-holed (no RST, no answer) | connect deadline, `TCP_USER_TIMEOUT`, keepalive, response deadline |

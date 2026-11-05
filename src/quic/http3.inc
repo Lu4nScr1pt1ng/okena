@@ -144,6 +144,7 @@ qc_established:
 	mov	qword [r15+QC_MAXD_OURS],QC_WINDOW
 	mov	qword [r15+QC_MAXS_OURS],100
 	mov	qword [r15+QC_ACIDL],2		; (the default when it says nothing)
+	mov	qword [r15+QC_PMAX],65527
 	mov	dword [r15+QC_CTL_SENT],0
 	mov	dword [r15+QC_CTL_ACKED],0
 	lea	rdi,[r15+QC_QST]		; no streams yet
@@ -179,6 +180,14 @@ qc_established:
 	je	.uni
 	cmp	r12,0x0E
 	je	.acidl
+	cmp	r12,3
+	je	.pmax
+	mov	rsi,r8
+	jmp	.param
+.pmax:
+	call	qv_read
+	jc	.done
+	mov	[r15+QC_PMAX],rax
 	mov	rsi,r8
 	jmp	.param
 .acidl:
@@ -206,6 +215,7 @@ qc_established:
 	mov	rsi,r8
 	jmp	.param
 .done:
+	call	qc_mtu_next			; this path's MTU: probes from now
 	; spare connection IDs for the client (to change paths, or IDs): as
 	; many as it takes past ours, at most 2; each names this worker too
 	mov	rax,[r15+QC_ACIDL]

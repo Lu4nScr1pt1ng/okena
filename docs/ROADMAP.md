@@ -371,8 +371,8 @@ streams (156k/s against 130k and 102k), on handshakes (10k/s on two
 cores, none failing past it, against about 1.2k) and under an Initial
 flood (18k/s kept, p99 3 ms; they fall to 2.6k and 4.1k/s); behind them
 on quiet keep-alive p50/p99. Open: latency under the flood not flat yet,
-quiet p99, BBR, finer pacing (the QUIC tick is 10 ms), a stream's send window past 64 KiB, PMTU, active migration (preferred_address, new
-connection IDs), QUIC-LB IDs (encrypted, for a fleet), GSO/GRO, ECN
+quiet p99, BBR, finer pacing (the QUIC tick is 10 ms), a stream's send window past 64 KiB, active migration's preferred_address,
+QUIC-LB IDs (encrypted, for a fleet), GSO/GRO, ECN
 validation, the QPACK dynamic table, 0-RTT, the abuse budgets, `okena
 bench` over HTTP/3.
 

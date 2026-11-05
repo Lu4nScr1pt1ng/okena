@@ -120,6 +120,29 @@ def relay(drop):
             up.send(d)
 
 
+def mtu_relay(port, mtu, seen):
+    """A UDP relay to okena that drops datagrams larger than `mtu` (a path
+    that takes no more); seen[0]: the largest of okena's it forwarded."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.bind(("127.0.0.1", port))
+    up = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    up.connect(("127.0.0.1", LST))
+    client = [None]
+
+    def back():
+        while True:
+            d = up.recv(65536)
+            if client[0] and len(d) <= mtu:
+                seen[0] = max(seen[0], len(d))
+                s.sendto(d, client[0])
+    threading.Thread(target=back, daemon=True).start()
+    while True:
+        d, a = s.recvfrom(65536)
+        client[0] = a
+        if len(d) <= mtu:
+            up.send(d)
+
+
 def rebind_relay(port, moves):
     """A UDP relay to okena whose own address changes (a NAT rebinding)
     after each count of client datagrams in `moves`: (count, source IP)."""
@@ -321,6 +344,16 @@ async def cases():
             r = await c.request("GET", "/retried")
             check(f"http3 retry ({name}): a Retry, then the connection with its token",
                   r["body"] == b"hello /retried h3.test\n" and c._quic._retry_count == 1, str(r)[:100])
+    # the path MTU: 1200 until shown otherwise, probes find what the path takes
+    for port, mtu, low, high in ((RELAY + 11, 1280, 1200, 1280), (RELAY + 12, 1500, 1401, 1452)):
+        seen = [0]
+        threading.Thread(target=mtu_relay, args=(port, mtu, seen), daemon=True).start()
+        async with connect("127.0.0.1", port, configuration=config(), create_protocol=Client) as c:
+            n = 1_000_000
+            r = await c.request("GET", f"/big/{n}")
+            check(f"a path of MTU {mtu}: 1 MB whole, datagrams up to {seen[0]}",
+                  r["body"] == bytes(random.Random(n).randbytes(n)) and low <= seen[0] <= high,
+                  f"{len(r['body'])} bytes {r.get('timeout')} largest {seen[0]}")
     # a NAT rebinding mid-transfer: a new port, then a new IP address
     threading.Thread(target=rebind_relay, args=(RELAY + 10, [(60, "127.0.0.1"), (300, "127.0.0.2")]),
                      daemon=True).start()

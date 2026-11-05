@@ -129,8 +129,14 @@ QC_PACE_AT	:= 824				; q: µs data may go again, 0 not waiting
 QC_CIDS		:= 832				; 2 * 8: connection IDs issued after ours (sequence 1, 2)
 QC_NCIDS	:= 848				; d: how many (the client's active_connection_id_limit - 1, at most 2)
 QC_ACIDL	:= 856				; q: the client's active_connection_id_limit
+QC_MTU		:= 864				; d: the datagrams this path has shown it takes
+QC_MTU_TRY	:= 868				; d: the size being probed, 0 none
+QC_MTU_N	:= 872				; d: probes of it so far
+QC_PMAX		:= 880				; q: the client's max_udp_payload_size
+QC_MTU_AT	:= 888				; q: µs the next probe is due
 QC_FIELDS_END	:= 896
-assert QC_ACIDL + 8 <= QC_FIELDS_END
+assert QC_MTU_AT + 8 <= QC_FIELDS_END
+QUIC_MTU_MIN	:= 1200				; every QUIC path takes this (RFC 9000 14)
 PACE_MIN_RTT	:= 20000			; µs: below it no pacing (the QUIC tick is 10 ms)
 assert QC_PCHALO + 8 <= QC_FIELDS_END
 QUIC_RETRY_AT	:= 64				; connections not validated yet, a worker:
@@ -184,6 +190,7 @@ SPF_SENT	:= 1				; a packet is recorded here
 SPF_ACKEL	:= 2				; ack-eliciting
 SPF_ACKED	:= 4
 SPF_HDONE	:= 8				; it carried HANDSHAKE_DONE
+SPF_MTU		:= 16				; a path MTU probe (QC_MTU_TRY)
 
 QC_TS		:= QC_SP + 3 * SP_N * SP_SIZE	; the TLS state (TS_SIZE)
 QC_QT		:= QC_TS + 2048			; QUIC's TLS block (QT_SIZE)
@@ -1536,6 +1543,7 @@ qc_new:
 	mov	[r15+QC_PS+0*PS_SIZE+PS_LARGEST],rax
 	mov	[r15+QC_PS+1*PS_SIZE+PS_LARGEST],rax
 	mov	[r15+QC_PS+2*PS_SIZE+PS_LARGEST],rax
+	mov	dword [r15+QC_MTU],QUIC_MTU_MIN
 	mov	qword [r15+QC_CWND],QUIC_CWND0
 	mov	rax,1 shl 62
 	mov	[r15+QC_SSTH],rax
@@ -1838,6 +1846,8 @@ qc_migrate:
 	mov	[r15+QC_SSTH],rax
 	mov	qword [r15+QC_SRTT],333000
 	mov	qword [r15+QC_RTTVAR],166500
+	mov	dword [r15+QC_MTU],QUIC_MTU_MIN	; another path: its MTU is not known
+	call	qc_mtu_next
 	mov	rax,[g_qnow]
 	mov	[r15+QC_RECOV],rax		; (what is lost on the old path is no event)
 @@:
@@ -2478,6 +2488,16 @@ qc_on_ack:
 	jnz	.mark_next
 	or	dword [r11+SP_FL],SPF_ACKED
 	mov	dword [rsp+16+8+QA_NEWLY],1
+	test	eax,SPF_MTU			; a size the path takes: that, and the next
+	jz	@f
+	mov	edx,[r15+QC_MTU_TRY]
+	test	edx,edx
+	jz	@f
+	mov	[r15+QC_MTU],edx
+	push	rax
+	call	qc_mtu_next
+	pop	rax
+@@:
 	test	eax,SPF_ACKEL
 	jz	@f
 	call	qc_cc_acked			; r11 = the record
@@ -2895,6 +2915,25 @@ qc_build:
 	jz	.probe_wants			; first packet there, past the window
 	or	r13d,64
 .probe_wants:
+	; a path MTU probe due: a packet of its own, past the window
+	cmp	r12d,QL_APP
+	jne	.mtu_wants_done
+	cmp	dword [r15+QC_MTU_TRY],0
+	je	.mtu_wants_done
+	test	dword [r15+QC_FLAGS],QF_DONE
+	jz	.mtu_wants_done
+	cmp	dword [r15+QC_PATHNV],0
+	jne	.mtu_wants_done
+	mov	rax,[g_qnow]
+	cmp	rax,[r15+QC_MTU_AT]
+	jb	.mtu_wants_done
+	cmp	dword [r15+QC_MTU_N],3
+	jb	@f
+	mov	dword [r15+QC_MTU_TRY],0	; not taken: this size is too much
+	jmp	.mtu_wants_done
+@@:
+	or	r13d,128
+.mtu_wants_done:
 	cmp	dword [r15+QC_PROBE+r12*4],0
 	je	@f
 	or	r13d,8
@@ -2934,7 +2973,13 @@ qc_build:
 	mov	[rsp+QB_FLAGS],r13d
 	; room: a datagram, and before validation (of the address, of a new
 	; path) three times what came
-	mov	eax,QUIC_DGRAM
+	mov	eax,[r15+QC_MTU]
+	test	r13d,128
+	jz	@f
+	and	r13d,1 or 128			; (the probe: an ACK with it, nothing else)
+	mov	[rsp+QB_FLAGS],r13d
+	mov	eax,[r15+QC_MTU_TRY]
+@@:
 	test	dword [r15+QC_FLAGS],QF_VALID
 	jz	.limited
 	cmp	dword [r15+QC_PATHNV],0
@@ -3037,6 +3082,23 @@ qc_build:
 	or	dword [r15+QC_LW_FR],QF2_PCHAL
 	mov	dword [rsp+QB_ACKEL],1
 @@:
+	test	dword [rsp+QB_FLAGS],128
+	jz	.no_mtu_probe
+	; the MTU probe: PING, padded to the size tried. Not ack-eliciting in
+	; its record: out of flight, no probe timer, its loss no congestion
+	mov	byte [rdi],1
+	inc	rdi
+	mov	rcx,r14
+	sub	rcx,rdi
+	xor	eax,eax
+	rep	stosb
+	inc	dword [r15+QC_MTU_N]
+	call	qc_pto_period
+	lea	rax,[rax*2+rax]
+	add	rax,[g_qnow]
+	mov	[r15+QC_MTU_AT],rax
+	jmp	.frames_end
+.no_mtu_probe:
 	test	dword [rsp+QB_FLAGS],2
 	jz	.no_crypto
 	; CRYPTO: as much as fits
@@ -3192,6 +3254,10 @@ qc_build:
 	cmp	dword [rsp+QB_HDONE],0
 	je	@f
 	or	eax,SPF_HDONE
+@@:
+	test	dword [rsp+QB_FLAGS],128
+	jz	@f
+	or	eax,SPF_MTU
 @@:
 	mov	[rdx+SP_FL],eax
 	mov	eax,[rsp+QB_CRYPTO]
@@ -3486,6 +3552,13 @@ qs_tick:
 	call	qc_free
 	jmp	.next
 .pto:
+	cmp	dword [r15+QC_MTU_TRY],0	; a path MTU probe due
+	je	@f
+	mov	rax,[r15+QC_MTU_AT]
+	cmp	rax,[g_qnow]
+	ja	@f
+	call	qc_dirty
+@@:
 	mov	rax,[r15+QC_PACE_AT]		; pacing held data: its time has come
 	test	rax,rax
 	jz	@f
@@ -3869,6 +3942,27 @@ qc_cc_acked:
 	pop	r8
 	pop	rbx
 .out:
+	ret
+
+; r15 = connection: the next datagram size to try on this path (RFC 9000
+; 14.3): none past what the client takes. Keeps all but rax.
+qc_mtu_next:
+	mov	eax,1350
+	cmp	eax,[r15+QC_MTU]
+	ja	.have
+	mov	eax,1452
+	cmp	eax,[r15+QC_MTU]
+	ja	.have
+.none:
+	mov	dword [r15+QC_MTU_TRY],0
+	ret
+.have:
+	cmp	rax,[r15+QC_PMAX]
+	ja	.none
+	mov	[r15+QC_MTU_TRY],eax
+	mov	dword [r15+QC_MTU_N],0
+	mov	rax,[g_qnow]
+	mov	[r15+QC_MTU_AT],rax
 	ret
 
 ; a congestion event (r15 = connection): CUBIC's reduction to 0.7 of the
