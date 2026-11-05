@@ -158,7 +158,25 @@ QC_ALT_CNT	:= 1036				; d: answered in this second,
 QC_ALT_WIN	:= 1040				; q: which began then
 QC_HDR_TICK	:= 1048				; d: g_tick at the last look for late heads
 QC_FIELDS_END	:= 1088
-assert QC_HDR_TICK + 4 <= QC_FIELDS_END
+; BBR (qc_bbr_acked), in CUBIC's fields where it can: a connection has one
+QB_BW		:= QC_WMAX			; q: bytes/s, the best sample of these rounds
+QB_BW2		:= QC_EPOCH			; q: and of the rounds before
+QB_RT		:= QC_K				; d: µs, the least round trip lately
+QB_RT_TICK	:= QC_K + 4			; d: when (g_tick)
+QB_FULL		:= QC_WEST			; d: KiB/s, startup's best
+QB_FLAT		:= QC_WEST + 4			; d: rounds it has not grown
+QB_ROUNDS	:= 1052				; d
+QB_DELIV	:= 1056				; q: bytes acknowledged, ever
+QB_SNAP_D	:= 1064				; q: as the round's packet went
+QB_SNAP_T	:= 1072				; q: and when, 0 none out
+QB_STATE	:= 1080				; d: BBR_*
+QB_CYCLE	:= 1084				; d: rounds in the state
+BBR_STARTUP	:= 0
+BBR_DRAIN	:= 1
+BBR_PROBE_BW	:= 2
+BBR_PROBE_RTT	:= 3
+assert QB_CYCLE + 4 <= QC_FIELDS_END
+assert QC_HDR_TICK + 4 <= QB_ROUNDS
 QUIC_MTU_MIN	:= 1200				; every QUIC path takes this (RFC 9000 14)
 PACE_MIN_RTT	:= 4000				; µs: below it no pacing (the pacing timer: 0.2 ms at least)
 assert QC_PCHALO + 8 <= QC_FIELDS_END
@@ -180,6 +198,7 @@ QF_HDONE	:= 16				; HANDSHAKE_DONE to send
 QF_CLOSE	:= 32				; CONNECTION_CLOSE to send
 QF_APP_ERR	:= 64				; ... of the application (0x1d)
 QF_LINKED	:= 128				; in the list and the hash (until qc_closing)
+QF_BBR		:= 512				; BBR's its congestion control (QB_*), not CUBIC
 QF_EARLY	:= 256				; 0-RTT taken: its keys at QC_K0, the streams ready
 
 ; packet number spaces
@@ -215,6 +234,7 @@ SPF_ACKEL	:= 2				; ack-eliciting
 SPF_ACKED	:= 4
 SPF_HDONE	:= 8				; it carried HANDSHAKE_DONE
 SPF_MTU		:= 16				; a path MTU probe (QC_MTU_TRY)
+SPF_RATE	:= 32				; BBR: the round's packet
 
 QC_TS		:= QC_SP + 3 * SP_N * SP_SIZE	; the TLS state (TS_SIZE)
 QC_QT		:= QC_TS + 2048			; QUIC's TLS block (QT_SIZE)
@@ -1785,6 +1805,10 @@ qc_new:
 	mov	[r15+QC_SSTH],rax
 	mov	qword [r15+QC_SRTT],333000	; RFC 9002: the initial RTT
 	mov	qword [r15+QC_RTTVAR],166500
+	cmp	dword [g_plan_qcc],0
+	je	@f
+	or	dword [r15+QC_FLAGS],QF_BBR
+@@:
 	; connection IDs: ours random but its first byte, this worker (the
 	; kernel steers by it: qs_steer), the client's as it chose them
 	lea	rdi,[r15+QC_SCID]
@@ -2168,6 +2192,7 @@ qc_migrate:
 	mov	[r15+QC_SSTH],rax
 	mov	qword [r15+QC_SRTT],333000
 	mov	qword [r15+QC_RTTVAR],166500
+	call	qc_bbr_reset
 	mov	dword [r15+QC_MTU],QUIC_MTU_MIN	; another path: its MTU is not known
 	call	qc_mtu_next
 	mov	rax,[g_qnow]
@@ -3760,6 +3785,11 @@ qc_build:
 	cmp	dword [rsp+8+QB_ACKEL],0
 	je	@f
 	add	[r15+QC_INFL],rax
+	cmp	r12d,QL_APP
+	jne	@f
+	test	dword [r15+QC_FLAGS],QF_BBR
+	jz	@f
+	call	qc_bbr_sent
 @@:
 	pop	rax
 	mov	ecx,eax
@@ -4376,7 +4406,7 @@ qc_pace:
 	jbe	@f
 	mov	eax,1000000
 @@:
-	mov	r8,[r15+QC_CWND]
+	call	qc_pace_window			; r8
 	imul	rax,r8
 	imul	rax,rax,5
 	shr	rax,2				; * 1.25 cwnd
@@ -4508,6 +4538,8 @@ qc_cc_acked:
 	jns	@f
 	mov	qword [r15+QC_INFL],0
 @@:
+	test	dword [r15+QC_FLAGS],QF_BBR
+	jnz	qc_bbr_acked
 	mov	rcx,[r11+SP_TIME]
 	cmp	rcx,[r15+QC_RECOV]
 	jbe	.out				; in recovery: no growth
@@ -4631,6 +4663,10 @@ qc_mtu_next:
 ; window, Wmax (lower when the window was still shrinking: fast
 ; convergence), a new epoch
 qc_cc_loss:
+	test	dword [r15+QC_FLAGS],QF_BBR	; (BBR's model is not of losses)
+	jz	@f
+	ret
+@@:
 	mov	rax,[r15+QC_CWND]
 	mov	rcx,rax
 	cmp	rax,[r15+QC_WMAX]
@@ -4658,6 +4694,235 @@ qc_cc_loss:
 	mov	[r15+QC_SSTH],rax
 	mov	[r15+QC_CWND],rax
 	mov	qword [r15+QC_EPOCH],0
+	ret
+
+; r15 = connection: BBR starts over (a new path). Keeps all but rcx.
+qc_bbr_reset:
+	lea	rcx,[r15+QC_WMAX]
+	test	dword [r15+QC_FLAGS],QF_BBR
+	jz	.out
+	mov	qword [rcx],0
+	mov	qword [rcx+8],0
+	mov	qword [rcx+16],0
+	mov	qword [rcx+24],0
+	mov	qword [r15+QB_SNAP_T],0
+	mov	dword [r15+QB_STATE],BBR_STARTUP
+	mov	dword [r15+QB_CYCLE],0
+.out:
+	ret
+
+; r15 = connection, rcx = a 1-RTT packet's record's offset, just sent: one
+; packet a round carries the rate sample (the records have no room for one a
+; packet). Another takes over from one that was lost.
+qc_bbr_sent:
+	mov	rdx,[g_qnow]
+	mov	r8,[r15+QB_SNAP_T]
+	test	r8,r8
+	jz	.mark
+	mov	r9,rdx
+	sub	r9,r8
+	mov	r8,[r15+QC_SRTT]
+	shl	r8,2
+	cmp	r9,r8
+	jb	.out
+.mark:
+	mov	[r15+QB_SNAP_T],rdx
+	mov	rdx,[r15+QB_DELIV]
+	mov	[r15+QB_SNAP_D],rdx
+	or	dword [r15+QC_SP+rcx+SP_FL],SPF_RATE
+.out:
+	ret
+
+; r15 = connection: the bandwidth estimate (rax), bytes/s, 0 none yet
+qc_bbr_bw:
+	mov	rax,[r15+QB_BW]
+	cmp	rax,[r15+QB_BW2]
+	jae	.out
+	mov	rax,[r15+QB_BW2]
+.out:
+	ret
+
+; from qc_cc_acked: rax = bytes acknowledged, r11 = their packet's record. BBR
+; (draft-cardwell-iccrg-bbr-congestion-control): the window and the pacing
+; follow the path's measured bandwidth and round trip, a sample a round,
+; losses aside. Startup at a gain of 2.89 until the bandwidth stops growing,
+; a drain of that queue, then a cycle of 1.25, 0.75, 1 x 6; when no lower
+; round trip has been seen in 10 s, a round or two of little in flight.
+; Keeps r8-r11, rbx.
+qc_bbr_acked:
+	add	[r15+QB_DELIV],rax
+	cmp	dword [r15+QB_STATE],BBR_STARTUP
+	jne	@f
+	add	[r15+QC_CWND],rax		; (startup: as slow start)
+@@:
+	test	dword [r11+SP_FL],SPF_RATE
+	jz	.out
+	mov	rcx,[g_qnow]
+	sub	rcx,[r15+QB_SNAP_T]
+	jle	.out				; (a stale mark, its sample gone)
+	cmp	qword [r15+QB_SNAP_T],0
+	je	.out
+	mov	qword [r15+QB_SNAP_T],0
+	push	r8
+	push	r9
+	push	r10
+	mov	r10,rcx				; the round trip
+	mov	rax,[r15+QB_DELIV]
+	sub	rax,[r15+QB_SNAP_D]
+	mov	rdx,1000000
+	mul	rdx
+	div	r10				; the rate
+	mov	r8,rax
+	; the bandwidth: the best of 5 to 10 rounds
+	inc	dword [r15+QB_ROUNDS]
+	mov	eax,[r15+QB_ROUNDS]
+	xor	edx,edx
+	mov	ecx,5
+	div	ecx
+	test	edx,edx
+	jnz	@f
+	mov	rax,[r15+QB_BW]
+	mov	[r15+QB_BW2],rax
+	mov	qword [r15+QB_BW],0
+@@:
+	cmp	r8,[r15+QB_BW]
+	jbe	@f
+	mov	[r15+QB_BW],r8
+@@:
+	; the round trip: the least, or a fresh one after 10 s
+	xor	r9d,r9d				; expired?
+	mov	eax,[g_tick]
+	sub	eax,[r15+QB_RT_TICK]
+	cmp	eax,10
+	jbe	@f
+	inc	r9d
+	jmp	.rt_take
+@@:
+	cmp	dword [r15+QB_RT],0
+	je	.rt_take
+	cmp	r10d,[r15+QB_RT]
+	ja	.rt_kept
+.rt_take:
+	mov	[r15+QB_RT],r10d
+	mov	eax,[g_tick]
+	mov	[r15+QB_RT_TICK],eax
+.rt_kept:
+	call	qc_bbr_bw
+	mov	r8,rax				; the bandwidth
+	mov	ecx,[r15+QB_RT]
+	mul	rcx
+	mov	rcx,1000000
+	div	rcx
+	mov	r10,rax				; bandwidth * round trip
+	mov	eax,[r15+QB_STATE]
+	cmp	eax,BBR_DRAIN
+	je	.drain
+	cmp	eax,BBR_PROBE_BW
+	je	.cycle
+	cmp	eax,BBR_PROBE_RTT
+	je	.low
+	; startup: over after 3 rounds under 25% better, the window in use
+	mov	rax,r8
+	shr	rax,10
+	mov	ecx,[r15+QB_FULL]
+	mov	edx,ecx
+	shr	edx,2
+	add	ecx,edx
+	cmp	eax,ecx
+	jb	.flat
+	mov	[r15+QB_FULL],eax
+	mov	dword [r15+QB_FLAT],0
+	jmp	.done
+.flat:
+	mov	rax,[r15+QC_INFL]
+	add	rax,rax
+	cmp	rax,[r15+QC_CWND]
+	jb	.done				; (the application had no more to send)
+	inc	dword [r15+QB_FLAT]
+	cmp	dword [r15+QB_FLAT],3
+	jb	.done
+	mov	dword [r15+QB_STATE],BBR_DRAIN
+	jmp	.window
+.drain:
+	cmp	[r15+QC_INFL],r10
+	ja	.window
+	mov	dword [r15+QB_STATE],BBR_PROBE_BW
+	mov	dword [r15+QB_CYCLE],0
+	jmp	.window
+.cycle:
+	test	r9d,r9d
+	jnz	.to_low
+	inc	dword [r15+QB_CYCLE]
+	cmp	dword [r15+QB_CYCLE],8
+	jb	.window
+	mov	dword [r15+QB_CYCLE],0
+	jmp	.window
+.to_low:
+	mov	dword [r15+QB_STATE],BBR_PROBE_RTT
+	mov	dword [r15+QB_CYCLE],0
+	jmp	.window
+.low:
+	inc	dword [r15+QB_CYCLE]
+	cmp	dword [r15+QB_CYCLE],2
+	jb	.window
+	mov	dword [r15+QB_STATE],BBR_PROBE_BW
+	mov	dword [r15+QB_CYCLE],0
+.window:
+	mov	eax,4 * QUIC_DGRAM
+	cmp	dword [r15+QB_STATE],BBR_PROBE_RTT
+	je	.set
+	lea	rax,[r10+r10]			; twice bandwidth * round trip
+	cmp	rax,QUIC_CWNDMIN
+	jae	.set
+	mov	eax,QUIC_CWNDMIN
+.set:
+	mov	[r15+QC_CWND],rax
+.done:
+	pop	r10
+	pop	r9
+	pop	r8
+.out:
+	ret
+
+; r15 = connection, rcx = the smoothed RTT: r8 = the window qc_pace paces
+; (bytes a round trip at 1 / 1.25 of the rate). Keeps rax, rcx.
+qc_pace_window:
+	mov	r8,[r15+QC_CWND]
+	test	dword [r15+QC_FLAGS],QF_BBR
+	jz	.out
+	push	rax
+	push	rcx
+	call	qc_bbr_bw
+	test	rax,rax
+	jz	.none
+	mov	ecx,289
+	cmp	dword [r15+QB_STATE],BBR_STARTUP
+	je	.gain
+	mov	ecx,35
+	cmp	dword [r15+QB_STATE],BBR_DRAIN
+	je	.gain
+	mov	ecx,100
+	cmp	dword [r15+QB_STATE],BBR_PROBE_BW
+	jne	.gain
+	cmp	dword [r15+QB_CYCLE],1
+	ja	.gain
+	mov	ecx,125
+	cmp	dword [r15+QB_CYCLE],0
+	je	.gain
+	mov	ecx,75
+.gain:
+	mul	rcx
+	mov	rcx,100
+	div	rcx
+	mov	rcx,[rsp]			; the smoothed RTT
+	mul	rcx
+	mov	rcx,1000000 * 5 / 4
+	div	rcx
+	mov	r8,rax
+.none:
+	pop	rcx
+	pop	rax
+.out:
 	ret
 
 ; rax = n: rax = floor(cbrt(n)) (n < 2^63)

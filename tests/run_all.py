@@ -82,6 +82,8 @@ SUITES = [
     ("h3 epoll", ["tests/h3/run.py", "epoll"]),
     ("h3 steering io_uring", ["tests/h3/steer.py", "io_uring"]),
     ("h3 steering epoll", ["tests/h3/steer.py", "epoll"]),
+    ("h3 bbr io_uring", ["tests/h3/bbr.py", "io_uring"]),
+    ("h3 bbr epoll", ["tests/h3/bbr.py", "epoll"]),
 ]
 
 

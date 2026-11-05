@@ -180,6 +180,7 @@ bss
 	g_plan_drain_timeout	dq ?
 	g_plan_watchdog		dq ?
 	g_plan_busy_poll	dq ?		; microseconds, 0 = off
+	g_plan_qcc		dd ?		; quic_cc: 0 cubic, 1 bbr
 	g_plan_qlb_len		dd ?		; quic_server_id: its bytes (0: none)
 	g_plan_qlb_sid		rb 4
 	g_plan_hs_budget	dq ?		; microseconds per loop iteration, 0 = off
@@ -398,11 +399,22 @@ compile_settings:
 	lea	rcx,[dir_table + D_SIZE*DIR_QUIC_SID]
 	cmp	rax,rcx
 	je	.quic_sid
+	lea	rcx,[dir_table + D_SIZE*DIR_QUIC_CC]
+	cmp	rax,rcx
+	je	.quic_cc
 	lea	rcx,[dir_table + D_SIZE*DIR_TICKET_KEYS]
 	cmp	rax,rcx
 	jne	.advance
 	mov	rdi,rbx
 	call	compile_ticket_keys
+	jmp	.advance
+.quic_cc:
+	; quic_cc cubic|bbr: for connections made from now on
+	mov	rax,[rbx+N_ARGS]
+	xor	ecx,ecx
+	cmp	dword [rax+A_VLEN],3		; (bbr; the schema allows no other of 3)
+	sete	cl
+	mov	[g_plan_qcc],ecx
 	jmp	.advance
 .quic_sid:
 	; quic_server_id HEX: this instance's server ID in its QUIC connection

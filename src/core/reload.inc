@@ -49,6 +49,7 @@ macro plan_regions action
 	action g_plan_drain_timeout, 8
 	action g_plan_watchdog, 8
 	action g_plan_busy_poll, 8
+	action g_plan_qcc, 4
 	action g_plan_qlb_len, 4
 	action g_plan_qlb_sid, 4
 	action g_plan_hs_budget, 8

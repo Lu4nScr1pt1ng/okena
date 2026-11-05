@@ -56,6 +56,8 @@ requests in its first flight (RFC 9001 4.6), which can be replayed, so
 only GET, HEAD and OPTIONS go on (with `Early-Data: 1` to the backend, RFC
 8470) and anything else is refused with REQUEST_REJECTED, for the client to
 send again after the handshake. A connection stays in the QUIC version its client chose;
+`okena { quic_cc bbr }` sets the congestion control of new QUIC connections (default `cubic`; measured with `bbr`: 3 MB at 30 ms RTT in 1.48 s against 6.07 s at 1% loss, 1.06 s against 0.87 s with none).
+
 `http3 v2` moves a v1 client that offers v2 to it (RFC 9368). `okena { quic_server_id HEX }` (1 or 2 bytes) puts this instance's ID in
 its QUIC connection IDs, QUIC-LB's plaintext format (a first octet, the
 server ID, the worker, at least 4 random bytes), so a load balancer in front
