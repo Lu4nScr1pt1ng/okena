@@ -438,6 +438,35 @@ async def cases():
               0 < answer <= 3 * len(probe) and len(probe) < 400, f"{len(probe)} -> {answer}")
         r = await c.request("GET", "/after-probe")
         check("  and the connection did not move for it", r["body"].startswith(b"hello /after-probe"), str(r)[:80])
+        # a flood of them: only so many answers a second
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(0.3)
+        for i in range(60):
+            for space in q._spaces.values():
+                space.ack_at = None
+            q.send_ping(2)
+            for d, _ in q.datagrams_to_send(now=time.time()):
+                s.sendto(d, ("127.0.0.1", LST))
+        answers = 0
+        try:
+            while True:
+                s.recv(2048)
+                answers += 1
+        except TimeoutError:
+            pass
+        s.close()
+        check("  60 of them at once: at most the second's budget answered", 0 < answers <= 16, str(answers))
+    # an ACK of a packet never sent (an optimistic ACK): PROTOCOL_VIOLATION
+    async with connect("127.0.0.1", LST, configuration=config(), create_protocol=Client) as c:
+        await c.request("GET", "/ack")
+        q = c._quic
+        q._write_ping_frame = lambda b, uids=[], comment="": b.start_frame(0).push_bytes(
+            b"\x02\xbf\xff\xff\xff\x00\x00\x00")
+        q.send_ping(3)
+        c.transmit()
+        await asyncio.sleep(0.2)
+        code = q._close_event.error_code if q._close_event else None
+        check("an ACK of a packet never sent: PROTOCOL_VIOLATION", code == 0x0A, str(code))
     # resumption: the ticket the first connection got resumes the second
     tickets = []
     cfg = config()

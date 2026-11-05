@@ -134,6 +134,7 @@ H3_HEADERS_MAX	:= 16384			; a HEADERS frame (gathered in HB_OUT)
 H3_FIELDS_MAX	:= 128
 
 H3_RST_BUDGET	:= 200				; requests a client may cancel in a second
+QUIC_ALT_BUDGET	:= 16				; probes from other paths answered in a second
 H3E_NO_ERROR	:= 0x100
 H3E_GENERAL	:= 0x101
 H3E_FRAME_UNEXPECTED := 0x105
@@ -547,7 +548,20 @@ qc_app_frame:
 	or	dword [r15+QC_FL2],QF2_PATH
 	jmp	.challenged
 .alt_path:
+	; each answer goes where the packet says it came from, not validated:
+	; a client sending them to another's address gets QUIC_ALT_BUDGET a second
 	pop	rax
+	mov	rcx,[g_qnow]
+	sub	rcx,[r15+QC_ALT_WIN]
+	cmp	rcx,1000000
+	jb	.alt_count
+	mov	rcx,[g_qnow]
+	mov	[r15+QC_ALT_WIN],rcx
+	mov	dword [r15+QC_ALT_CNT],0
+.alt_count:
+	inc	dword [r15+QC_ALT_CNT]
+	cmp	dword [r15+QC_ALT_CNT],QUIC_ALT_BUDGET
+	ja	.challenged
 	mov	[r15+QC_ALT_DATA],rax
 	mov	eax,[g_qd_slot]
 	mov	[r15+QC_ALT_SLOT],eax

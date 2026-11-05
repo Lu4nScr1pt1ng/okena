@@ -154,8 +154,10 @@ QC_ALT_DATA	:= 992				; q: its data,
 QC_ALT_SA	:= 1000				; 28: and where it came from (the answer goes there)
 QC_ALT_LEN	:= 1028				; d
 QC_ALT_MAX	:= 1032				; d: at most this answers it (3x, RFC 9000 8.2.1)
+QC_ALT_CNT	:= 1036				; d: answered in this second,
+QC_ALT_WIN	:= 1040				; q: which began then
 QC_FIELDS_END	:= 1088
-assert QC_ALT_MAX + 4 <= QC_FIELDS_END
+assert QC_ALT_WIN + 8 <= QC_FIELDS_END
 QUIC_MTU_MIN	:= 1200				; every QUIC path takes this (RFC 9000 14)
 PACE_MIN_RTT	:= 4000				; µs: below it no pacing (the pacing timer: 0.2 ms at least)
 assert QC_PCHALO + 8 <= QC_FIELDS_END
@@ -2506,8 +2508,10 @@ qc_packet:
 	mov	edi,[rsp+8+QP_LEVEL]
 	pop	rcx
 	call	qc_on_ack			; rsi past the frame, CF on a bad one
-	jc	.encoding
-	jmp	.frame
+	jnc	.frame
+	cmp	qword [r15+QC_ERR],0		; (its own error, else the encoding's)
+	jne	.error
+	jmp	.encoding
 .crypto:
 	mov	dword [rsp+QP_ACKEL],1
 	call	qv_read				; offset
@@ -2743,6 +2747,9 @@ qc_on_ack:
 	mov	dword [rsp+QA_NEWLY],0
 	call	qv_read				; largest acknowledged
 	jc	.bad
+	imul	ecx,[rsp+QA_LEVEL],PS_SIZE	; a packet we never sent: PROTOCOL_VIOLATION
+	cmp	rax,[r15+QC_PS+rcx+PS_NEXT]	; (RFC 9000 13.1: an optimistic ACK)
+	jae	.unsent
 	mov	[rsp+QA_LARGEST],rax
 	mov	r12,rax				; the range's top
 	call	qv_read				; ack delay
@@ -2835,6 +2842,8 @@ qc_on_ack:
 .ok:
 	clc
 	jmp	.out
+.unsent:
+	mov	qword [r15+QC_ERR],0x0A
 .bad:
 	stc
 .out:
@@ -2850,17 +2859,21 @@ qc_on_ack:
 	imul	eax,[rsp+16+8+QA_LEVEL],PS_SIZE
 	mov	r8,[r15+QC_PS+rax+PS_NEXT]
 	cmp	r12,r8
-	jae	.mark_out			; (acks what we never sent: ignored)
-	mov	rcx,r12
-	sub	rcx,rbx
-	cmp	rcx,SP_N
-	jb	@f
-	lea	rbx,[r12-SP_N+1]		; only the ring's window
+	jae	.mark_out			; (the top one was checked: not above it)
+	sub	r8,SP_N				; only the ring's window: a frame of stale
+	jnc	@f				; ranges costs its parsing, no more
+	xor	r8d,r8d
+@@:
+	cmp	r12,r8
+	jb	.mark_out
+	mov	r10,rbx				; (rbx stays: the next range counts from it)
+	cmp	r10,r8
+	jae	@f
+	mov	r10,r8
 @@:
 	mov	r9d,[rsp+16+8+QA_LEVEL]
 	imul	r9d,r9d,SP_N * SP_SIZE
-	lea	r9,[r15+QC_SP+r9]
-	mov	r10,rbx				; lowest first: stream bytes arrive in order
+	lea	r9,[r15+QC_SP+r9]		; (lowest first: stream bytes arrive in order)
 .mark_one:
 	cmp	r10,r12
 	jg	.mark_out
