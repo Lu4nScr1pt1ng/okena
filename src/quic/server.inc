@@ -224,6 +224,11 @@ bss
 	g_qd_sa		dq ?				; the datagram qc_packet takes: its sender
 	g_qd_salen	dd ?
 	g_qtx_ect	dd ?				; the next datagram is marked ECT(0)
+	g_qgso_off	dd ?				; this worker's device cannot segment
+	g_qgso_first	rd QTX_N			; a message's first datagram
+	g_qgso_fd	rd QTX_N
+	g_qgso_mm:	rb QTX_N * 64
+	g_qgso_cm:	rb QTX_N * 48			; UDP_SEGMENT, the ECN mark
 	g_qd_ecn	dd ?				; and its ECN codepoint (0 none, 1 ECT(1), 2 ECT(0), 3 CE)
 	g_qst_retry	dq ?				; Retries sent
 	g_qtok_key	rb 16				; supervisor: Retry tokens' key
@@ -3498,10 +3503,147 @@ qtx_commit:
 	inc	dword [g_qtx_n]
 	ret
 
-; the batch goes, a sendmmsg per run of datagrams on one socket
+; the batch goes, a sendmmsg per run of datagrams on one socket. Runs of
+; datagrams to one address, of one size (the last may be shorter) and one
+; ECN mark go as one message the kernel segments (UDP_SEGMENT); a device
+; that cannot (no checksum offload: EIO) turns that off in this worker and
+; they go one by one.
+QGSO_MAX	:= 32
 qtx_send:
 	push	rbx
 	push	r12
+	push	r13
+	push	r14
+	cmp	dword [g_qgso_off],0
+	jne	.plain
+	xor	ebx,ebx				; i: the first datagram of a message
+	xor	r12d,r12d			; w: the messages
+.m_next:
+	cmp	ebx,[g_qtx_n]
+	jae	.m_done
+	lea	r13d,[rbx+1]			; j: past its last
+	mov	rax,rbx
+	shl	rax,4
+	mov	r14,[g_qtx_iov+rax+8]		; the segment size
+.m_more:
+	cmp	r13d,[g_qtx_n]
+	jae	.m_end
+	mov	eax,r13d
+	sub	eax,ebx
+	cmp	eax,QGSO_MAX
+	jae	.m_end
+	mov	eax,[g_qtx_fds+r13*4]
+	cmp	eax,[g_qtx_fds+rbx*4]
+	jne	.m_end
+	lea	rax,[r13-1]
+	shl	rax,4
+	cmp	[g_qtx_iov+rax+8],r14		; only the last may be shorter
+	jne	.m_end
+	mov	rax,r13
+	shl	rax,4
+	cmp	[g_qtx_iov+rax+8],r14
+	ja	.m_end
+	mov	rax,r13
+	shl	rax,6
+	mov	rcx,rbx
+	shl	rcx,6
+	mov	rdx,[g_qtx_mm+rax+32]
+	cmp	rdx,[g_qtx_mm+rcx+32]
+	jne	.m_end
+	mov	rsi,r13
+	shl	rsi,5
+	lea	rsi,[g_qtx_sa+rsi]
+	mov	rdi,rbx
+	shl	rdi,5
+	lea	rdi,[g_qtx_sa+rdi]
+	mov	ecx,28
+	repe	cmpsb
+	jne	.m_end
+	inc	r13d
+	jmp	.m_more
+.m_end:
+	mov	rsi,rbx
+	shl	rsi,6
+	lea	rsi,[g_qtx_mm+rsi]
+	mov	rdi,r12
+	shl	rdi,6
+	lea	rdi,[g_qgso_mm+rdi]
+	mov	rdx,rdi
+	mov	ecx,8
+	rep	movsq
+	mov	[g_qgso_first+r12*4],ebx
+	mov	eax,[g_qtx_fds+rbx*4]
+	mov	[g_qgso_fd+r12*4],eax
+	mov	eax,r13d
+	sub	eax,ebx
+	cmp	eax,2
+	jb	.m_single
+	mov	[rdx+24],rax			; msg_iovlen: its datagrams' iovecs
+	imul	rcx,r12,48
+	lea	rcx,[g_qgso_cm+rcx]
+	mov	qword [rcx],18			; UDP_SEGMENT, and the mark after it
+	mov	dword [rcx+8],SOL_UDP
+	mov	dword [rcx+12],UDP_SEGMENT
+	mov	[rcx+16],r14w
+	mov	r8d,24
+	mov	rsi,[rdx+32]
+	test	rsi,rsi
+	jz	@f
+	mov	rax,[rsi]
+	mov	[rcx+24],rax
+	mov	rax,[rsi+8]
+	mov	[rcx+32],rax
+	mov	rax,[rsi+16]
+	mov	[rcx+40],rax
+	mov	r8d,48
+@@:
+	mov	[rdx+32],rcx
+	mov	[rdx+40],r8
+.m_single:
+	inc	r12d
+	mov	ebx,r13d
+	jmp	.m_next
+.m_done:
+	xor	ebx,ebx
+.s_run:
+	cmp	ebx,r12d
+	jae	.done
+	mov	r13d,ebx			; the run: same socket
+	mov	eax,[g_qgso_fd+rbx*4]
+@@:
+	inc	r13d
+	cmp	r13d,r12d
+	jae	@f
+	cmp	[g_qgso_fd+r13*4],eax
+	je	@b
+@@:
+	mov	edi,eax
+	mov	rsi,rbx
+	shl	rsi,6
+	lea	rsi,[g_qgso_mm+rsi]
+	mov	edx,r13d
+	sub	edx,ebx
+	xor	r10d,r10d
+	mov	eax,SYS_sendmmsg
+	syscall
+	test	eax,eax
+	js	.s_err
+	add	ebx,eax
+	jmp	.s_run
+.s_err:
+	cmp	eax,-EIO
+	je	.s_off
+	cmp	eax,-EINVAL
+	je	.s_off
+	cmp	eax,-EOPNOTSUPP
+	je	.s_off
+	mov	ebx,r13d			; (a full socket drops the rest: QUIC recovers)
+	jmp	.s_run
+.s_off:
+	mov	dword [g_qgso_off],1
+	mov	ebx,[g_qgso_first+rbx*4]	; from there on, one by one
+	jmp	.run
+.plain:
 	xor	ebx,ebx
 .run:
 	cmp	ebx,[g_qtx_n]
@@ -3528,6 +3670,8 @@ qtx_send:
 	jmp	.run
 .done:
 	mov	dword [g_qtx_n],0
+	pop	r14
+	pop	r13
 	pop	r12
 	pop	rbx
 	ret
