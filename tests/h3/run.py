@@ -41,6 +41,7 @@ except ImportError:
 
 BASE = 29000 + os.getpid() % 90 * 10 + (5 if ENGINE == "epoll" else 0)
 BACK, LST, RELAY, RETRY, V2 = BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4
+INNER_H2, INNER_TLS = BASE + 16, BASE + 17
 failures = 0
 
 
@@ -60,8 +61,8 @@ def backend():
         def do_GET(self):
             if self.path == "/slow":
                 time.sleep(1)
-            if self.path.startswith("/big/"):
-                n = int(self.path[5:])
+            if "/big/" in self.path:                    # (/viah2/big/N, /viatls/big/N too)
+                n = int(self.path.split("/big/")[1])
                 body = bytes(random.Random(n).randbytes(n))
             else:
                 body = f"hello {self.path} {self.headers.get('Host')}\n".encode()
@@ -293,6 +294,11 @@ async def cases():
         check("spare connection IDs (NEW_CONNECTION_ID); the client moves onto them and retires the old",
               spare >= 1 and bodies == [b"hello /cid0 h3.test\n", b"hello /cid1 h3.test\n"]
               and c._quic._peer_cid.sequence_number == 2, f"{spare} spare, {bodies}, seq {c._quic._peer_cid.sequence_number}")
+        n = 3_000_000
+        for via in ("viah2", "viatls"):                  # their areas are not the send ring's
+            r = await c.request("GET", f"/{via}/big/{n}")
+            check(f"3 MB through a backend pool that uses {via[3:]}: whole",
+                  r["body"] == bytes(random.Random(n).randbytes(n)), f"{len(r['body'])} bytes {str(r)[:100]}")
         rs = await asyncio.gather(*[c.request("GET", f"/s{i}") for i in range(20)])
         check("20 streams at once on one connection",
               all(x["body"] == f"hello /s{i} h3.test\n".encode() for i, x in enumerate(rs)),
@@ -514,6 +520,24 @@ http 127.0.0.1:{LST} {{
     http3 on
     tls {{ cert {tmp / 'c.pem'}; key {tmp / 'k.pem'} }}
     access_log {tmp / 'access.log'}
+    route /viah2/* {{ to pool viah2 }}
+    route /viatls/* {{ to pool viatls }}
+    route /* {{ to 127.0.0.1:{BACK} }}
+}}
+pool viah2 {{
+    protocol h2
+    server 127.0.0.1:{INNER_H2}
+}}
+pool viatls {{
+    tls {{ trust {tmp / 'c.pem'}; sni h3.test }}
+    server 127.0.0.1:{INNER_TLS}
+}}
+http 127.0.0.1:{INNER_H2} {{
+    http2 on
+    route /* {{ to 127.0.0.1:{BACK} }}
+}}
+http 127.0.0.1:{INNER_TLS} {{
+    tls {{ cert {tmp / 'c.pem'}; key {tmp / 'k.pem'} }}
     route /* {{ to 127.0.0.1:{BACK} }}
 }}
 http 127.0.0.1:{V2} {{

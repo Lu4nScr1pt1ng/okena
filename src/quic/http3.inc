@@ -45,13 +45,16 @@ TX_FINACKED	:= 48				; d
 TX_NACK		:= 52				; d: acknowledged ranges past the base
 TX_ACK		:= 56				; TX_ACKMAX of (lo q, hi q)
 TX_ACKMAX	:= 12
+TX_CAPV		:= 248				; d: the ring's size (TX_CAP, or twice that)
 TX_HDR		:= 256				; the header's size
 ; the bytes: the downstream TLS area (a stream session has no TLS of its
-; own: the connection's QUIC carries it), 64 KiB: what a stream may have
-; in flight, a window an RTT
+; own: the connection's QUIC carries it), 64 KiB, and the upstream TLS and
+; HTTP/2 area after it when its pool uses neither, 128 KiB (a power of two
+; either way): what a stream may have in flight, a window an RTT
 TX_DATA		:= HB_TLS - HB_H3TX		; (from the header: before it)
 TX_CAP		:= 65536
 assert HB_TLS + TX_CAP <= HB_UPTLS
+assert HB_TLS + TX_CAP * 2 <= HB_H3TX
 assert TX_HDR <= 256
 assert HB_U2Q + Q_DATA + Q_CAP <= HB_H3TX
 
@@ -1806,6 +1809,7 @@ h3_request_new:
 	mov	ecx,TX_HDR / 8
 	xor	eax,eax
 	rep	stosq
+	mov	dword [rbp+HB_H3TX+TX_CAPV],TX_CAP
 	mov	rax,[r15+QC_PSD_BIDI]
 	mov	[rbp+HB_H3TX+TX_MAXSD],rax
 	; its queue: the request head
@@ -2117,6 +2121,18 @@ h3s_push:
 	je	.sent
 	test	dword [r12+H_H3F],H3F_HEAD
 	jnz	.body
+	; the first bytes: its route is known, so is the room its pool leaves
+	cmp	qword [r13+TX_END],0
+	jne	.ring_sized
+	call	session_ptr
+	mov	eax,[rax+S_POOL]
+	imul	rax,rax,PL_SIZE
+	lea	rcx,[g_pools]
+	mov	edx,[rcx+rax+PL_TLS]
+	or	edx,[rcx+rax+PL_H2]
+	jnz	.ring_sized
+	mov	dword [r13+TX_CAPV],TX_CAP * 2
+.ring_sized:
 	test	dword [r12+H_H3F],H3F_HQ
 	jnz	.hq_head
 	call	h3_head_out			; HEADERS from the HTTP/1.1 head; CF: no room
@@ -2144,7 +2160,7 @@ h3s_push:
 .body:
 	mov	rax,[r13+TX_END]
 	sub	rax,[r13+TX_BASE]
-	mov	ecx,TX_CAP
+	mov	ecx,[r13+TX_CAPV]
 	sub	rcx,rax				; room
 	test	dword [r12+H_H3F],H3F_HQ
 	jnz	.hq_body
@@ -2207,8 +2223,10 @@ h3tx_put:
 	test	ecx,ecx
 	jz	.out
 	mov	rax,[r13+TX_END]
-	and	eax,TX_CAP - 1
-	mov	edx,TX_CAP
+	mov	edx,[r13+TX_CAPV]
+	dec	edx
+	and	eax,edx
+	inc	edx
 	sub	edx,eax				; to the wrap
 	cmp	ecx,edx
 	jbe	@f
@@ -2366,7 +2384,7 @@ h3_head_out:
 	sub	rcx,rax				; the section's length
 	mov	rax,[r13+TX_END]
 	sub	rax,[r13+TX_BASE]
-	mov	edx,TX_CAP
+	mov	edx,[r13+TX_CAPV]
 	sub	rdx,rax
 	lea	rax,[rcx+5]
 	cmp	rax,rdx
@@ -2524,7 +2542,7 @@ h3_trailers_out:
 	sub	rcx,rax
 	mov	rax,[r13+TX_END]
 	sub	rax,[r13+TX_BASE]
-	mov	edx,TX_CAP
+	mov	edx,[r13+TX_CAPV]
 	sub	rdx,rax
 	lea	rax,[rcx+5]
 	cmp	rax,rdx
@@ -2975,8 +2993,10 @@ qc_app_write:
 	mov	[r15+QC_LW_SGEN],eax
 	mov	rcx,r10
 	mov	rax,[r9+TX_SENT]
-	and	eax,TX_CAP - 1
-	mov	edx,TX_CAP
+	mov	edx,[r9+TX_CAPV]
+	dec	edx
+	and	eax,edx
+	inc	edx
 	sub	edx,eax
 	cmp	ecx,edx
 	jbe	@f
