@@ -1681,10 +1681,16 @@ qc_tp_build:
 ; r15 = connection, rdx = its ClientHello so far, ecx = how much of it: a
 ; whole one from a v1 client whose version_information transport parameter
 ; offers v2 moves the connection to v2 before the answer (compatible
-; version negotiation, RFC 9368): v2 Initial keys, our parameters again.
+; version negotiation, RFC 9368) when the listener asks (`http3 v2`; else
+; the client's choice stands): v2 Initial keys, our parameters again.
 qc_compat_vn:
 	cmp	dword [r15+QC_VER],QUIC_V1
 	jne	.out
+	mov	eax,[r15+QC_SOCK]
+	mov	eax,[g_qs_lst+rax*4]
+	imul	rax,rax,LS_SIZE
+	test	dword [g_listeners+rax+LS_FLAGS],LSF_H3V2
+	jz	.out
 	mov	rsi,rdx
 	lea	r8,[rdx+rcx]			; what came
 	cmp	ecx,4

@@ -104,6 +104,7 @@ LSF_KTLS	:= 16		; http: the kernel seals and opens the records (`ktls on`)
 LSF_H2		:= 32		; http: HTTP/2 (`http2 on`): ALPN h2, prior knowledge without TLS
 LSF_H3		:= 64		; http: HTTP/3 (`http3 on`): QUIC on the same port, UDP
 LSF_H3RETRY	:= 128		; http: `http3 retry`: every new QUIC connection proves its address first
+LSF_H3V2	:= 256		; http: `http3 v2`: a v1 client that offers v2 is moved to it
 
 ; Pool
 PL_FIRST	:= 0		; d: first server
@@ -1449,6 +1450,10 @@ compile_listener:
 	cmp	eax,1
 	je	@f				; off
 	or	dword [g_cmp_flags],LSF_H3
+	cmp	eax,3
+	jne	.h3_not_v2
+	or	dword [g_cmp_flags],LSF_H3V2
+.h3_not_v2:
 	cmp	eax,2
 	jne	@f
 	or	dword [g_cmp_flags],LSF_H3RETRY

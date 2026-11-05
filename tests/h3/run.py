@@ -40,7 +40,7 @@ except ImportError:
     sys.exit(0)
 
 BASE = 29000 + os.getpid() % 90 * 10 + (5 if ENGINE == "epoll" else 0)
-BACK, LST, RELAY, RETRY = BASE, BASE + 1, BASE + 2, BASE + 3
+BACK, LST, RELAY, RETRY, V2 = BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4
 failures = 0
 
 
@@ -205,9 +205,8 @@ class Client(QuicConnectionProtocol):
 
 def config(version=None):
     cfg = QuicConfiguration(is_client=True, alpn_protocols=["h3"], verify_mode=ssl.CERT_NONE)
-    # v1 unless asked: offered v2 too, okena moves to it (RFC 9368), and
-    # aioquic's key updates in v2 use v1's label ("quic ku", not RFC 9369's
-    # "quicv2 ku")
+    # v1 unless asked (aioquic's key updates in v2 use v1's label, "quic ku",
+    # not RFC 9369's "quicv2 ku")
     cfg.supported_versions = [version or QuicProtocolVersion.VERSION_1]
     return cfg
 
@@ -291,7 +290,11 @@ async def cases():
     cfg.supported_versions = [QuicProtocolVersion.VERSION_1, QuicProtocolVersion.VERSION_2]
     async with connect("127.0.0.1", LST, configuration=cfg, create_protocol=Client) as c:
         r = await c.request("GET", "/cvn")
-        check("compatible version negotiation (RFC 9368): v1 offering v2 ends in v2",
+        check("v1 offering v2 stays in v1 by default", r["body"] == b"hello /cvn h3.test\n"
+              and c._quic._version == QuicProtocolVersion.VERSION_1, f"{r['body'][:40]} {c._quic._version}")
+    async with connect("127.0.0.1", V2, configuration=cfg, create_protocol=Client) as c:
+        r = await c.request("GET", "/cvn")
+        check("`http3 v2`: compatible version negotiation (RFC 9368), v1 offering v2 ends in v2",
               r["body"] == b"hello /cvn h3.test\n" and c._quic._version == QuicProtocolVersion.VERSION_2,
               f"{r['body'][:40]} {c._quic._version}")
     # resumption: the ticket the first connection got resumes the second
@@ -447,6 +450,11 @@ http 127.0.0.1:{LST} {{
     http3 on
     tls {{ cert {tmp / 'c.pem'}; key {tmp / 'k.pem'} }}
     access_log {tmp / 'access.log'}
+    route /* {{ to 127.0.0.1:{BACK} }}
+}}
+http 127.0.0.1:{V2} {{
+    http3 v2
+    tls {{ cert {tmp / 'c.pem'}; key {tmp / 'k.pem'} }}
     route /* {{ to 127.0.0.1:{BACK} }}
 }}
 http 127.0.0.1:{RETRY} {{

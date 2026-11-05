@@ -13,8 +13,9 @@ H3=on
 case "$TESTCASE" in
 	handshake|transfer|multiplexing|longrtt|chacha20|multiconnect|blackhole|keyupdate| \
 	handshakeloss|transferloss|handshakecorruption|transfercorruption|amplificationlimit| \
-	ipv6|rebind-port|rebind-addr|goodput|crosstraffic|http3|v2|resumption|ecn) ;;
+	ipv6|rebind-port|rebind-addr|goodput|crosstraffic|http3|resumption|ecn) ;;
 	retry) H3=retry ;;
+	v2) H3=v2 ;;
 	*) echo "test case $TESTCASE not supported"; exit 127 ;;
 esac
 

@@ -124,7 +124,7 @@ enumdef e_rewrite_what, 'path'
 enumdef e_pp_version, 'v1', 'v2'
 enumdef e_tls_mode, 'passthrough'
 enumdef e_onoff, 'on', 'off'
-enumdef e_h3, 'on', 'off', 'retry'
+enumdef e_h3, 'on', 'off', 'retry', 'v2'
 enumdef e_proto, 'h1', 'h2'
 
 keysdef k_drain, 'delay', T_DURATION, 'timeout', T_DURATION
