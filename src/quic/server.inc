@@ -439,6 +439,13 @@ qs_open_all:
 	rep	movsb
 	mov	eax,[g_workers]
 	mov	dword [qs_steer_prog+5 * 8 + 4],eax
+	mov	eax,[g_plan_qlb_len]		; the worker's byte after the server ID
+	test	eax,eax
+	jz	@f
+	inc	eax
+	add	dword [qs_steer_prog+2 * 8 + 4],eax
+	add	dword [qs_steer_prog+4 * 8 + 4],eax
+@@:
 	xor	r12d,r12d			; listener
 .listener:
 	cmp	r12d,[g_plan_listeners]
@@ -1380,8 +1387,8 @@ qs_send_retry:
 	imul	rax,rdx
 	xor	rax,qword [g_qsr_key]
 	mov	[r15],rax
-	mov	eax,[g_worker_id]		; (its first byte: this worker, qs_steer)
-	mov	[r15],al
+	mov	rdi,r15				; (this worker's: qs_steer)
+	call	qc_cid_brand
 	lea	rdi,[r15+8]
 	call	qs_token_make			; rdi past it
 	mov	r8,rdi
@@ -1779,8 +1786,8 @@ qc_new:
 	xor	edx,edx
 	mov	eax,SYS_getrandom
 	syscall
-	mov	eax,[g_worker_id]
-	mov	[r15+QC_SCID],al
+	lea	rdi,[r15+QC_SCID]
+	call	qc_cid_brand
 	; a preferred_address to announce: its connection ID (sequence 1) now
 	mov	eax,[rbp+QD_SLOT]
 	mov	eax,[g_qs_lst+rax*4]
@@ -1794,8 +1801,8 @@ qc_new:
 	xor	edx,edx
 	mov	eax,SYS_getrandom
 	syscall
-	mov	eax,[g_worker_id]
-	mov	[r15+QC_CIDS],al
+	lea	rdi,[r15+QC_CIDS]
+	call	qc_cid_brand
 	mov	dword [r15+QC_PACID],1
 	mov	dword [r15+QC_NCIDS],1
 	lea	rdi,[r15+QC_CIDS]
@@ -2067,6 +2074,32 @@ qc_compat_vn:
 	lea	rsi,[rsi+rax+2]
 	cmp	rsi,rdx
 	cmc
+	ret
+
+; rdi = one of our connection IDs (8 random bytes): its first ones name
+; this instance (QUIC-LB plaintext: a first octet, the server ID; with
+; quic_server_id) and this worker, for the load balancer and the kernel's
+; steering. Keeps all but rax, rcx.
+qc_cid_brand:
+	mov	ecx,[g_plan_qlb_len]
+	test	ecx,ecx
+	jz	.worker
+	lea	eax,[rcx+1]			; config rotation 0, the length
+	mov	byte [rdi],7
+	mov	al,[g_plan_qlb_sid]
+	mov	[rdi+1],al
+	cmp	ecx,2
+	jb	@f
+	mov	al,[g_plan_qlb_sid+1]
+	mov	[rdi+2],al
+@@:
+	inc	ecx
+	mov	eax,[g_worker_id]
+	mov	[rdi+rcx],al
+	ret
+.worker:
+	mov	eax,[g_worker_id]
+	mov	[rdi],al
 	ret
 
 ; r15 = connection, g_qd_sa/g_qd_salen = where a packet came from: ZF

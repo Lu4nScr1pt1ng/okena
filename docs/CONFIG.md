@@ -8,7 +8,7 @@ not built yet. A directive that is not built is refused by `okena check`
 
 | Block | Directives |
 |---|---|
-| `okena` | `workers`, `io_engine`, `busy_poll`, `watchdog`, `drain delay= timeout=`, `metrics`, `ticket_keys`, `handshake_budget wait=` |
+| `okena` | `workers`, `io_engine`, `busy_poll`, `watchdog`, `drain delay= timeout=`, `metrics`, `ticket_keys`, `handshake_budget wait=`, `quic_server_id HEX` |
 | `tcp ADDR...` | `to`, `limits { connections; per_source }`, `timeout { idle }`, `proxy_protocol send v1\|v2`, `tls { cert; key }`, `tls passthrough { sni NAME... to pool P; default reject\|to pool P }` |
 | `http ADDR...` | `host`, `route`, `limits`, `timeout { idle; header; body_idle; response }`, `trusted_proxies`, `access_log`, `http2 on\|off`, `http3 on\|off\|retry\|v2`, `preferred_address`, `early_data on\|off`, `tls { cert; key; ktls on\|off }` |
 | `route PATH... [METHOD...]` | `to`, `redirect`, `rewrite path`, `header set\|add\|drop`, `response header set\|add\|drop` |
@@ -56,7 +56,10 @@ requests in its first flight (RFC 9001 4.6), which can be replayed, so
 only GET, HEAD and OPTIONS go on (with `Early-Data: 1` to the backend, RFC
 8470) and anything else is refused with REQUEST_REJECTED, for the client to
 send again after the handshake. A connection stays in the QUIC version its client chose;
-`http3 v2` moves a v1 client that offers v2 to it (RFC 9368). `preferred_address
+`http3 v2` moves a v1 client that offers v2 to it (RFC 9368). `okena { quic_server_id HEX }` (1 or 2 bytes) puts this instance's ID in
+its QUIC connection IDs, QUIC-LB's plaintext format (a first octet, the
+server ID, the worker, at least 4 random bytes), so a load balancer in front
+of a fleet can route by connection ID. `preferred_address
 ADDR:PORT [ADDR:PORT]` (an IPv4 and an IPv6 address) offers clients
 somewhere to move to after the handshake (RFC 9000 9.6): okena listens
 there too and the connection follows the client. A client

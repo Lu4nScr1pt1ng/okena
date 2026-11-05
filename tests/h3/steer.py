@@ -31,6 +31,7 @@ ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
 BASE = 30000 + os.getpid() % 90 * 10 + (5 if ENGINE == "epoll" else 0)
 t.BACK, t.LST = BASE, BASE + 1
 CONNS, MOVES = 8, (40, 120, 220)
+CIDS = []
 
 
 async def one(i):
@@ -41,12 +42,16 @@ async def one(i):
     async with t.connect("127.0.0.1", port, configuration=t.config(), create_protocol=t.Client) as c:
         n = 300_000 + i
         r = await c.request("GET", f"/big/{n}")
+        CIDS.append(c._quic._peer_cid.cid)
         return r["body"] == bytes(random.Random(n).randbytes(n))
 
 
 async def cases():
     ok = await asyncio.gather(*[one(i) for i in range(CONNS)])
     t.check(f"{CONNS} connections over 4 workers, each moving 3 times: every one finishes", all(ok), str(ok))
+    t.check("QUIC-LB (quic_server_id beef): IDs of 8, a first octet, the server ID, the worker",
+            all(len(x) == 8 and x[:3] == b"\x07\xbe\xef" and x[3] < 4 for x in CIDS) and len({x[3] for x in CIDS}) > 1,
+            str([x.hex() for x in CIDS]))
 
 
 def main():
@@ -58,7 +63,7 @@ def main():
                    check=True, capture_output=True)
     threading.Thread(target=t.backend, daemon=True).start()
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 4; io_engine {ENGINE} }}
+    conf.write_text(f"""okena {{ workers 4; io_engine {ENGINE}; quic_server_id beef }}
 http 127.0.0.1:{t.LST} {{
     http3 on
     tls {{ cert {tmp / 'c.pem'}; key {tmp / 'k.pem'} }}

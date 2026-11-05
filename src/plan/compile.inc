@@ -180,6 +180,8 @@ bss
 	g_plan_drain_timeout	dq ?
 	g_plan_watchdog		dq ?
 	g_plan_busy_poll	dq ?		; microseconds, 0 = off
+	g_plan_qlb_len		dd ?		; quic_server_id: its bytes (0: none)
+	g_plan_qlb_sid		rb 4
 	g_plan_hs_budget	dq ?		; microseconds per loop iteration, 0 = off
 	g_plan_hs_wait		dq ?		; microseconds a queued hello may wait
 	g_plan_health		dd ?		; pools with active checks
@@ -393,11 +395,50 @@ compile_settings:
 	lea	rcx,[dir_table + D_SIZE*DIR_HS_BUDGET]
 	cmp	rax,rcx
 	je	.hs_budget
+	lea	rcx,[dir_table + D_SIZE*DIR_QUIC_SID]
+	cmp	rax,rcx
+	je	.quic_sid
 	lea	rcx,[dir_table + D_SIZE*DIR_TICKET_KEYS]
 	cmp	rax,rcx
 	jne	.advance
 	mov	rdi,rbx
 	call	compile_ticket_keys
+	jmp	.advance
+.quic_sid:
+	; quic_server_id HEX: this instance's server ID in its QUIC connection
+	; IDs (QUIC-LB, plaintext): 1 or 2 bytes
+	mov	rax,[rbx+N_ARGS]
+	mov	rsi,[rax+A_VAL]
+	mov	ecx,[rax+A_VLEN]
+	test	ecx,1
+	jnz	.advance
+	shr	ecx,1
+	jz	.advance
+	cmp	ecx,2
+	ja	.advance
+	mov	[g_plan_qlb_len],ecx
+	lea	rdi,[g_plan_qlb_sid]
+.sid_byte:
+	xor	edx,edx
+	mov	r8d,2
+.sid_nibble:
+	movzx	eax,byte [rsi]
+	inc	rsi
+	or	al,0x20				; (lower case)
+	sub	al,'0'
+	cmp	al,9
+	jbe	@f
+	sub	al,'a' - '0' - 10
+@@:
+	and	eax,15
+	shl	edx,4
+	or	edx,eax
+	dec	r8d
+	jnz	.sid_nibble
+	mov	[rdi],dl
+	inc	rdi
+	dec	ecx
+	jnz	.sid_byte
 	jmp	.advance
 .metrics:
 	mov	rax,[rbx+N_ARGS]

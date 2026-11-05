@@ -263,8 +263,8 @@ qc_established:
 	xor	edx,edx
 	mov	eax,SYS_getrandom
 	syscall
-	mov	eax,[g_worker_id]
-	mov	[r15+QC_CIDS+8],al
+	lea	rdi,[r15+QC_CIDS+8]
+	call	qc_cid_brand
 	cmp	dword [r15+QC_PACID],0
 	jne	.second
 	lea	rdi,[r15+QC_CIDS]
@@ -272,8 +272,8 @@ qc_established:
 	xor	edx,edx
 	mov	eax,SYS_getrandom
 	syscall
-	mov	eax,[g_worker_id]
-	mov	[r15+QC_CIDS],al
+	lea	rdi,[r15+QC_CIDS]
+	call	qc_cid_brand
 	lea	rdi,[r15+QC_CIDS]
 	mov	esi,8
 	call	qh_add

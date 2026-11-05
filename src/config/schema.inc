@@ -161,6 +161,7 @@ dirdef DIR_WATCHDOG, 'watchdog',    M_OKENA,   0,           F_UNIQUE, 1, 1, T_DU
 dirdef DIR_METRICS, 'metrics',     M_OKENA,   0,           F_UNIQUE, 1, 1, T_LISTEN, T_NONE, 0
 dirdef DIR_BUSY_POLL, 'busy_poll',   M_OKENA,   0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
 dirdef DIR_TICKET_KEYS, 'ticket_keys', M_OKENA, 0,       F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
+dirdef DIR_QUIC_SID, 'quic_server_id', M_OKENA, 0,      F_UNIQUE, 1, 1, T_NAME, T_NONE, 0
 dirdef DIR_DRAIN, 'drain',       M_OKENA,   0,           F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_drain
 dirdef DIR_HS_BUDGET, 'handshake_budget', M_OKENA, 0,    F_UNIQUE or F_KEYS_BLOCK, 1, 1, T_DURATION, T_NONE, k_hs_budget
 dirdef DIR_TCP, 'tcp',         M_TOP,     CTX_TCP,     F_BLOCK_REQ, 1, 16, T_LISTEN, T_LISTEN, 0
