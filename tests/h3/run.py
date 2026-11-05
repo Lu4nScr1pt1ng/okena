@@ -239,6 +239,15 @@ async def cases():
             bodies.append(r["body"])
         check("key updates (RFC 9001 6): okena follows each, its packets in the new phase",
               bodies == [f"hello /ku{k} h3.test\n".encode() for k in range(3)], str(bodies))
+        spare = len(c._quic._peer_cid_available)
+        bodies = []
+        for k in range(2):                               # onto the spare IDs, the old ones retired
+            c._quic.change_connection_id()
+            r = await c.request("GET", f"/cid{k}")
+            bodies.append(r["body"])
+        check("spare connection IDs (NEW_CONNECTION_ID); the client moves onto them and retires the old",
+              spare >= 1 and bodies == [b"hello /cid0 h3.test\n", b"hello /cid1 h3.test\n"]
+              and c._quic._peer_cid.sequence_number == 2, f"{spare} spare, {bodies}, seq {c._quic._peer_cid.sequence_number}")
         rs = await asyncio.gather(*[c.request("GET", f"/s{i}") for i in range(20)])
         check("20 streams at once on one connection",
               all(x["body"] == f"hello /s{i} h3.test\n".encode() for i, x in enumerate(rs)),

@@ -99,6 +99,7 @@ QF2_MAXS	:= 2				; MAX_STREAMS (bidi)
 QF2_PATH	:= 4				; PATH_RESPONSE
 QF2_PCHAL	:= 16				; PATH_CHALLENGE (a new path to validate)
 QF2_MSD		:= 8				; some stream has a MAX_STREAM_DATA
+QF2_NCID	:= 32				; NEW_CONNECTION_IDs (QC_CIDS)
 
 H3_WINDOW	:= 49152			; a request stream's window (the queue holds it)
 QC_WINDOW	:= 1048576			; the connection's
@@ -142,6 +143,7 @@ qc_established:
 	push	r12
 	mov	qword [r15+QC_MAXD_OURS],QC_WINDOW
 	mov	qword [r15+QC_MAXS_OURS],100
+	mov	qword [r15+QC_ACIDL],2		; (the default when it says nothing)
 	mov	dword [r15+QC_CTL_SENT],0
 	mov	dword [r15+QC_CTL_ACKED],0
 	lea	rdi,[r15+QC_QST]		; no streams yet
@@ -175,6 +177,14 @@ qc_established:
 	je	.bidi
 	cmp	r12,7
 	je	.uni
+	cmp	r12,0x0E
+	je	.acidl
+	mov	rsi,r8
+	jmp	.param
+.acidl:
+	call	qv_read
+	jc	.done
+	mov	[r15+QC_ACIDL],rax
 	mov	rsi,r8
 	jmp	.param
 .maxd:
@@ -196,6 +206,35 @@ qc_established:
 	mov	rsi,r8
 	jmp	.param
 .done:
+	; spare connection IDs for the client (to change paths, or IDs): as
+	; many as it takes past ours, at most 2; each names this worker too
+	mov	rax,[r15+QC_ACIDL]
+	sub	rax,1
+	jbe	.no_cids
+	cmp	rax,2
+	jbe	@f
+	mov	eax,2
+@@:
+	mov	[r15+QC_NCIDS],eax
+	lea	rdi,[r15+QC_CIDS]
+	mov	esi,16
+	xor	edx,edx
+	mov	eax,SYS_getrandom
+	syscall
+	mov	eax,[g_worker_id]
+	mov	[r15+QC_CIDS],al
+	mov	[r15+QC_CIDS+8],al
+	lea	rdi,[r15+QC_CIDS]
+	mov	esi,8
+	call	qh_add
+	cmp	dword [r15+QC_NCIDS],2
+	jb	@f
+	lea	rdi,[r15+QC_CIDS+8]
+	mov	esi,8
+	call	qh_add
+@@:
+	or	dword [r15+QC_FL2],QF2_NCID
+.no_cids:
 	pop	r12
 	jmp	qc_dirty
 
@@ -304,7 +343,7 @@ qc_app_frame:
 	cmp	rax,0x18
 	je	.new_cid
 	cmp	rax,0x19
-	je	.one_value			; RETIRE_CONNECTION_ID
+	je	.retire_cid
 	cmp	rax,0x1A
 	je	.challenge
 	cmp	rax,0x1B
@@ -394,6 +433,29 @@ qc_app_frame:
 	call	qv_read
 	jc	.encoding
 	jmp	.ok
+.retire_cid:
+	; the client is done with one of our IDs: out of the hash
+	mov	dword [r12+QP_ACKEL],1
+	call	qv_read				; its sequence number
+	jc	.encoding
+	push	rsi
+	push	rdx
+	lea	rdi,[r15+QC_SCID]
+	test	rax,rax
+	jz	@f
+	lea	rdi,[r15+QC_CIDS+rax*8-8]
+	cmp	rax,[r15+QC_NCIDS]
+	ja	.retire_bad
+@@:
+	mov	esi,8
+	call	qh_del
+	pop	rdx
+	pop	rsi
+	jmp	.ok
+.retire_bad:
+	pop	rdx
+	pop	rsi
+	jmp	.violation			; (never issued)
 .new_cid:
 	mov	dword [r12+QP_ACKEL],1
 	call	qv_read				; sequence
@@ -2567,7 +2629,7 @@ qc_app_pending:
 	call	qc_ctl_len
 	cmp	[r15+QC_CTL_SENT],eax
 	jb	.yes
-	test	dword [r15+QC_FL2],QF2_MAXD or QF2_MAXS or QF2_PATH or QF2_MSD
+	test	dword [r15+QC_FL2],QF2_MAXD or QF2_MAXS or QF2_PATH or QF2_MSD or QF2_NCID
 	jnz	.yes
 	cmp	dword [r15+QC_RSTN],0
 	jne	.yes
@@ -2703,6 +2765,38 @@ qc_app_write:
 	mov	r12d,1
 @@:
 
+	; NEW_CONNECTION_IDs: sequence 1.., none retired, 8 bytes, the reset token
+	test	dword [r15+QC_FL2],QF2_NCID
+	jz	.ncid_done
+	mov	rax,r14
+	sub	rax,rdi
+	cmp	rax,64
+	jb	.ncid_done
+	and	dword [r15+QC_FL2],not QF2_NCID
+	or	dword [r15+QC_LW_FR],QF2_NCID
+	xor	ecx,ecx
+.ncid:
+	cmp	ecx,[r15+QC_NCIDS]
+	jae	.ncid_end
+	lea	eax,[rcx+1]
+	mov	byte [rdi],0x18
+	mov	[rdi+1],al			; sequence (< 64)
+	mov	word [rdi+2],0x0800		; retire prior to 0, length 8
+	mov	rax,[r15+QC_CIDS+rcx*8]
+	mov	[rdi+4],rax
+	push	rcx
+	lea	rsi,[r15+QC_CIDS+rcx*8]
+	add	rdi,12
+	push	rdi
+	call	qs_reset_token
+	pop	rdi
+	add	rdi,16
+	pop	rcx
+	inc	ecx
+	jmp	.ncid
+.ncid_end:
+	mov	r12d,1
+.ncid_done:
 	; RESET_STREAMs
 	mov	ecx,[r15+QC_RSTN]
 	test	ecx,ecx
@@ -2938,7 +3032,7 @@ qc_app_lost:
 	mov	dword [r15+QC_CTL_SENT],0
 @@:
 	mov	eax,[rdi+SP_FR]
-	and	eax,QF2_MAXD or QF2_MAXS or QF2_MSD
+	and	eax,QF2_MAXD or QF2_MAXS or QF2_MSD or QF2_NCID
 	or	[r15+QC_FL2],eax
 	test	dword [rdi+SP_FR],QF2_PCHAL	; a challenge lost: again, while the
 	jz	@f				; path is still not validated

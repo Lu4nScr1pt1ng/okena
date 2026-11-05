@@ -126,8 +126,11 @@ QC_RSTCNT	:= 800				; d: requests the client cancelled in it
 QC_PACE_T	:= 808				; q: µs the pacing budget was last filled
 QC_PACE_B	:= 816				; q: bytes it allows (signed)
 QC_PACE_AT	:= 824				; q: µs data may go again, 0 not waiting
-QC_FIELDS_END	:= 832
-assert QC_PACE_AT + 8 <= QC_FIELDS_END
+QC_CIDS		:= 832				; 2 * 8: connection IDs issued after ours (sequence 1, 2)
+QC_NCIDS	:= 848				; d: how many (the client's active_connection_id_limit - 1, at most 2)
+QC_ACIDL	:= 856				; q: the client's active_connection_id_limit
+QC_FIELDS_END	:= 896
+assert QC_ACIDL + 8 <= QC_FIELDS_END
 PACE_MIN_RTT	:= 20000			; µs: below it no pacing (the QUIC tick is 10 ms)
 assert QC_PCHALO + 8 <= QC_FIELDS_END
 QUIC_RETRY_AT	:= 64				; connections not validated yet, a worker:
@@ -273,7 +276,7 @@ rodata
 	; 30 s, max_udp_payload_size 1472, initial_max_data 1 MiB, stream data
 	; 256 KiB (bidi local), 48 KiB (bidi remote: a request's body; more as its
 	; queue drains), 64 KiB (uni), 100 bidi streams,
-	; 16 uni, no active migration
+	; 16 uni
 	qtp_fixed	db 0x01,4, 0x80,0x00,0x75,0x30
 			db 0x03,2, 0x45,0xC0
 			db 0x04,4, 0x80,0x10,0x00,0x00
@@ -282,7 +285,6 @@ rodata
 			db 0x07,4, 0x80,0x01,0x00,0x00
 			db 0x08,2, 0x40,100
 			db 0x09,1, 16
-			db 0x0C,0
 	qtp_fixed.len = $ - qtp_fixed
 end rodata
 
@@ -3718,6 +3720,12 @@ qc_closing:
 	call	qh_del
 	lea	rdi,[r15+QC_ODCID]
 	mov	esi,[r15+QC_ODCIDLEN]
+	call	qh_del
+	lea	rdi,[r15+QC_CIDS]		; those issued later (not in: a no-op)
+	mov	esi,8
+	call	qh_del
+	lea	rdi,[r15+QC_CIDS+8]
+	mov	esi,8
 	call	qh_del
 	mov	eax,[r15+QC_LINK]
 	mov	ecx,[r15+QC_PLINK]
