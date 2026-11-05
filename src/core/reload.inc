@@ -52,6 +52,9 @@ macro plan_regions action
 	action g_plan_qcc, 4
 	action g_plan_qlb_len, 4
 	action g_plan_qlb_sid, 4
+	action g_plan_qlb_keyed, 4
+	action g_plan_qlb_rot, 4
+	action g_plan_qlb_key, 16
 	action g_plan_hs_budget, 8
 	action g_plan_hs_wait, 8
 	action g_plan_health, 4

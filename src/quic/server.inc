@@ -283,7 +283,8 @@ bss
 	g_qst_retry	dq ?				; Retries sent
 	g_qtok_key	rb 16				; supervisor: Retry tokens' key
 	align 8
-	qs_steer_prog	rq 7				; (qs_steer: built in qs_open_all)
+	qs_steer_prog	rq 8				; (qs_steer: built in qs_open_all)
+	g_qlb_gcm	rb GCM_SIZE			; (a key schedule: qc_cid_seal)
 	g_qsr_key	rb 32				; and stateless resets' (right after it)
 	g_qsr_win	dq ?				; resets sent: this second's start (µs)
 	g_qsr_n		dd ?				; and how many
@@ -325,7 +326,7 @@ rodata
 	; (random) spread evenly, the same one always to the same worker.
 	; (The modulus is set when the sockets open.)
 	align 8
-	qs_steer	dw 7, 0, 0, 0			; struct sock_fprog
+	qs_steer	dw 8, 0, 0, 0			; struct sock_fprog
 			dq qs_steer_prog
 	; our transport parameters past the connection IDs: max_idle_timeout
 	; 30 s, max_udp_payload_size 1472, initial_max_data 1 MiB, stream data
@@ -459,13 +460,18 @@ qs_open_all:
 	; the steering program, modulo this many workers
 	lea	rdi,[qs_steer_prog]
 	lea	rsi,[.prog]
-	mov	ecx,7 * 8
+	mov	ecx,8 * 8
 	rep	movsb
 	mov	eax,[g_workers]
-	mov	dword [qs_steer_prog+5 * 8 + 4],eax
+	mov	dword [qs_steer_prog+6 * 8 + 4],eax
 	mov	eax,[g_plan_qlb_len]		; the worker's byte after the server ID
 	test	eax,eax
 	jz	@f
+	cmp	dword [g_plan_qlb_keyed],0
+	je	.steer_clear
+	mov	dword [qs_steer_prog+5 * 8 + 4],0x1F	; encrypted: the first octet's free bits
+	jmp	@f
+.steer_clear:
 	inc	eax
 	add	dword [qs_steer_prog+2 * 8 + 4],eax
 	add	dword [qs_steer_prog+4 * 8 + 4],eax
@@ -543,6 +549,9 @@ qs_open_all:
 	dw 0x30
 	db 0, 0
 	dd 1					; ld  byte [1]
+	dw 0x54
+	db 0, 0
+	dd 0xFF					; and #0xFF (encrypted IDs: their free bits)
 	dw 0x94
 	db 0, 0
 	dd 1					; mod #workers (set above)
@@ -2107,15 +2116,19 @@ qc_compat_vn:
 	ret
 
 ; rdi = one of our connection IDs (8 random bytes): its first ones name
-; this instance (QUIC-LB plaintext: a first octet, the server ID; with
-; quic_server_id) and this worker, for the load balancer and the kernel's
-; steering. Keeps all but rax, rcx.
+; this instance (QUIC-LB: a first octet, the server ID; with quic_server_id)
+; and this worker, for the load balancer and the kernel's steering. Keeps all
+; but rax, rcx and the xmm registers.
 qc_cid_brand:
 	mov	ecx,[g_plan_qlb_len]
 	test	ecx,ecx
 	jz	.worker
-	lea	eax,[rcx+1]			; config rotation 0, the length
-	mov	byte [rdi],7
+	cmp	dword [g_plan_qlb_keyed],0
+	jne	qc_cid_seal
+	mov	eax,[g_plan_qlb_rot]		; config rotation, the length
+	shl	eax,5
+	or	eax,7
+	mov	[rdi],al
 	mov	al,[g_plan_qlb_sid]
 	mov	[rdi+1],al
 	cmp	ecx,2
@@ -2130,6 +2143,78 @@ qc_cid_brand:
 .worker:
 	mov	eax,[g_worker_id]
 	mov	[rdi],al
+	ret
+
+; one pass of qc_cid_seal: E(key, input || zeros || length || pass), its first
+; four bytes on the other half
+macro qlb_pass n, from, into, mask
+	movd	xmm0,from
+	mov	eax,7 + (n shl 8)
+	pinsrw	xmm0,eax,7
+	call	gcm_encrypt_block
+	movd	eax,xmm0
+	xor	into,eax
+	and	into,mask
+end macro
+
+; rdi = connection ID, as qc_cid_brand, with a key: QUIC-LB's four-pass
+; cipher (draft-ietf-quic-load-balancers 5.4.2) over the server ID and the
+; nonce, 7 bytes, the middle one's nibbles a half each. The first octet stays
+; in the clear: its 5 free bits are random but for what the kernel's steering
+; takes, modulo the workers (nothing else there tells two IDs of a connection
+; together, and a worker past the 32 they reach gets no QUIC).
+qc_cid_seal:
+	push	rdx
+	push	rsi
+	push	rdi
+	push	r8
+	push	r9
+	push	r10
+	mov	r10,rdi
+	movzx	eax,byte [r10]
+	and	eax,0x1F
+	mov	r9d,eax
+	xor	edx,edx
+	div	dword [g_workers]
+	sub	r9d,edx
+	add	r9d,[g_worker_id]
+	cmp	r9d,31
+	jbe	@f
+	sub	r9d,[g_workers]
+@@:
+	mov	eax,[g_plan_qlb_rot]
+	shl	eax,5
+	or	eax,r9d
+	mov	[r10],al
+	mov	al,[g_plan_qlb_sid]
+	mov	[r10+1],al
+	cmp	ecx,2
+	jb	@f
+	mov	al,[g_plan_qlb_sid+1]
+	mov	[r10+2],al
+@@:
+	lea	rdi,[g_qlb_gcm]
+	lea	rsi,[g_plan_qlb_key]
+	call	gcm_init
+	mov	r8d,[r10+1]
+	and	r8d,0xF0FFFFFF			; left: its last nibble clear
+	mov	r9d,[r10+4]
+	and	r9d,0xFFFFFF0F			; right: its first
+	qlb_pass 1, r8d, r9d, 0xFFFFFF0F
+	qlb_pass 2, r9d, r8d, 0xF0FFFFFF
+	qlb_pass 3, r8d, r9d, 0xFFFFFF0F
+	qlb_pass 4, r9d, r8d, 0xF0FFFFFF
+	mov	[r10+1],r8d
+	shr	r8d,24
+	or	r8b,r9b				; the middle byte, both nibbles
+	mov	[r10+4],r9d
+	mov	[r10+4],r8b
+	pop	r10
+	pop	r9
+	pop	r8
+	pop	rdi
+	pop	rsi
+	pop	rdx
 	ret
 
 ; r15 = connection, g_qd_sa/g_qd_salen = where a packet came from: ZF

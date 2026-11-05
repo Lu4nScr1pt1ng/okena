@@ -58,7 +58,7 @@ only GET, HEAD and OPTIONS go on (with `Early-Data: 1` to the backend, RFC
 send again after the handshake. A connection stays in the QUIC version its client chose;
 `okena { quic_cc bbr }` sets the congestion control of new QUIC connections (default `cubic`; measured with `bbr`: 3 MB at 30 ms RTT in 1.48 s against 6.07 s at 1% loss, 1.06 s against 0.87 s with none).
 
-`http3 v2` moves a v1 client that offers v2 to it (RFC 9368). `okena { quic_server_id HEX }` (1 or 2 bytes) puts this instance's ID in
+`http3 v2` moves a v1 client that offers v2 to it (RFC 9368). `okena { quic_server_id HEX key=HEX rotation=N }`: with `key=` (16 bytes) the IDs are encrypted, QUIC-LB's four-pass cipher (draft-ietf-quic-load-balancers 5.4.2) with `rotation=` (0 to 6) in their first three bits; the other five bits stay in the clear for the kernel's steering, random but for their value modulo the workers, so the worker is visible to anyone and at most 32 workers take QUIC. A malformed value stops the configuration. Adding or removing a key, or the ID itself, takes a restart: steering is built when the sockets open. `okena { quic_server_id HEX }` (1 or 2 bytes) puts this instance's ID in
 its QUIC connection IDs, QUIC-LB's plaintext format (a first octet, the
 server ID, the worker, at least 4 random bytes), so a load balancer in front
 of a fleet can route by connection ID. `preferred_address

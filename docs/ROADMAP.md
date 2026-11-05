@@ -372,8 +372,9 @@ streams (156k/s against 130k and 102k), on handshakes (10k/s on two
 cores, none failing past it, against about 1.2k) and under an Initial
 flood (18k/s kept, p99 3 ms; they fall to 2.6k and 4.1k/s); behind them
 on quiet keep-alive p50/p99. BBR behind `quic_cc bbr`. Open: latency under
-the flood not flat yet, quiet p99, QUIC-LB's encrypted IDs (plaintext ones are in: `quic_server_id`), the abuse budgets, `okena
-bench` over HTTP/3.
+the flood not flat yet, quiet p99, `okena bench` over HTTP/3. QUIC-LB IDs in the clear or encrypted
+(`quic_server_id`), budgets on rapid reset, probes and ACKs, the header
+deadline per stream.
 
 * QUIC v1 (RFC 9000/9001/9002) and v2 (RFC 9369): packets, frames,
   streams and their flow control, ACKs, loss recovery, CUBIC then BBR,

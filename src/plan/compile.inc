@@ -183,6 +183,9 @@ bss
 	g_plan_qcc		dd ?		; quic_cc: 0 cubic, 1 bbr
 	g_plan_qlb_len		dd ?		; quic_server_id: its bytes (0: none)
 	g_plan_qlb_sid		rb 4
+	g_plan_qlb_keyed	dd ?		; its key= was given
+	g_plan_qlb_rot		dd ?		; rotation=
+	g_plan_qlb_key		rb 16
 	g_plan_hs_budget	dq ?		; microseconds per loop iteration, 0 = off
 	g_plan_hs_wait		dq ?		; microseconds a queued hello may wait
 	g_plan_health		dd ?		; pools with active checks
@@ -355,6 +358,8 @@ node_option:
 
 cstring str_key_delay, 'delay',0
 cstring str_key_wait, 'wait',0
+cstring str_key_key, 'key',0
+cstring str_key_rotation, 'rotation',0
 cstring str_key_timeout, 'timeout',0
 cstring str_key_weight, 'weight',0
 cstring str_key_every, 'every',0
@@ -423,34 +428,44 @@ compile_settings:
 	mov	rsi,[rax+A_VAL]
 	mov	ecx,[rax+A_VLEN]
 	test	ecx,1
-	jnz	.advance
+	jnz	plan_bad_quic_sid
 	shr	ecx,1
-	jz	.advance
+	jz	plan_bad_quic_sid
 	cmp	ecx,2
-	ja	.advance
+	ja	plan_bad_quic_sid
 	mov	[g_plan_qlb_len],ecx
 	lea	rdi,[g_plan_qlb_sid]
-.sid_byte:
-	xor	edx,edx
-	mov	r8d,2
-.sid_nibble:
-	movzx	eax,byte [rsi]
-	inc	rsi
-	or	al,0x20				; (lower case)
-	sub	al,'0'
-	cmp	al,9
-	jbe	@f
-	sub	al,'a' - '0' - 10
-@@:
-	and	eax,15
-	shl	edx,4
-	or	edx,eax
-	dec	r8d
-	jnz	.sid_nibble
-	mov	[rdi],dl
-	inc	rdi
-	dec	ecx
-	jnz	.sid_byte
+	call	hex_bytes
+	jc	plan_bad_quic_sid
+	; key=HEX: encrypted IDs (16 bytes, never a key half read: it would
+	; leave the IDs in the clear), rotation=N: their first three bits
+	mov	rdi,rbx
+	lea	rsi,[str_key_key]
+	call	node_option
+	test	rax,rax
+	jz	.sid_rotation
+	cmp	dword [rax+A_VLEN],32
+	jne	plan_bad_quic_sid
+	mov	rsi,[rax+A_VAL]
+	mov	ecx,16
+	lea	rdi,[g_plan_qlb_key]
+	call	hex_bytes
+	jc	plan_bad_quic_sid
+	mov	dword [g_plan_qlb_keyed],1
+.sid_rotation:
+	mov	rdi,rbx
+	lea	rsi,[str_key_rotation]
+	call	node_option
+	test	rax,rax
+	jz	.advance
+	cmp	dword [rax+A_VLEN],1
+	jne	plan_bad_quic_sid
+	mov	rcx,[rax+A_VAL]
+	movzx	eax,byte [rcx]
+	sub	eax,'0'
+	cmp	eax,6				; (7: unroutable, RFC-to-be 3.1)
+	ja	plan_bad_quic_sid
+	mov	[g_plan_qlb_rot],eax
 	jmp	.advance
 .metrics:
 	mov	rax,[rbx+N_ARGS]
@@ -885,6 +900,44 @@ timeout_secs:
 	clc
 	ret
 .absent:
+	stc
+	ret
+
+plan_bad_quic_sid:
+	call	log_begin
+	out_lit 'quic_server_id: 1 or 2 bytes of hex; key= 16 bytes of hex; rotation= 0 to 6'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
+
+; rsi = hex text, ecx = bytes wanted, rdi = where: CF on a digit that is not one
+hex_bytes:
+	mov	r8d,2
+	xor	edx,edx
+.digit:
+	movzx	eax,byte [rsi]
+	inc	rsi
+	sub	al,'0'
+	cmp	al,9
+	jbe	.have
+	add	al,'0'
+	or	al,0x20				; (lower case)
+	sub	al,'a'
+	cmp	al,5
+	ja	.bad
+	add	al,10
+.have:
+	shl	edx,4
+	or	edx,eax
+	dec	r8d
+	jnz	.digit
+	mov	[rdi],dl
+	inc	rdi
+	dec	ecx
+	jnz	hex_bytes
+	clc
+	ret
+.bad:
 	stc
 	ret
 
