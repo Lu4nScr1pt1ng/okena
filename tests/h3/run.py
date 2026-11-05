@@ -482,6 +482,18 @@ async def cases():
               (rb.get("headers") or {}).get(b":status") == b"408", str(rb)[:80])
         r = await c.request("GET", "/after-slow")
         check("  and the connection goes on", r["body"].startswith(b"hello /after-slow"), str(r)[:80])
+    # a small answer is one datagram: its ACK goes with it, MAX_STREAMS only
+    # when the client is running out
+    async with connect("127.0.0.1", LST, configuration=config(), create_protocol=Client) as c:
+        await c.request("GET", "/one")			# (its fields in QPACK's table: no more inserts)
+        await asyncio.sleep(0.05)
+        got, took = [0], c.datagram_received
+        c.datagram_received = lambda d, a: (got.__setitem__(0, got[0] + 1), took(d, a))[1]
+        for i in range(10):
+            await c.request("GET", "/one")
+            await asyncio.sleep(0.01)
+        # (two a request: this backend writes its head and its body apart)
+        check("10 small answers, in about as many datagrams", got[0] <= 22, str(got[0]))
     # an ACK of a packet never sent (an optimistic ACK): PROTOCOL_VIOLATION
     async with connect("127.0.0.1", LST, configuration=config(), create_protocol=Client) as c:
         await c.request("GET", "/ack")

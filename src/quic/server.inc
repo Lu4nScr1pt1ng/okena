@@ -30,6 +30,7 @@ QRX_BUDGET	:= 8				; recvmmsgs a turn of the loop, then the
 QRX_SZ		:= 65536			; (GRO: several datagrams of a flow at once)
 QTX_N		:= 64				; datagrams a sendmmsg sends
 QTX_SZ		:= 1472
+QUIC_ACK_HOLD	:= 5000				; µs an ACK alone waits for an answer
 QUIC_DGRAM	:= 1350				; the largest datagram okena sends
 QH_BITS		:= 17				; connection ID hash: 131072 entries
 QH_N		:= 1 shl QH_BITS
@@ -210,7 +211,9 @@ PS_ACKQ		:= 24				; d: ack-eliciting packets not acknowledged yet
 PS_NR		:= 28				; d: ranges received
 PS_R		:= 32				; PS_RMAX of (hi q, lo q), the highest first
 PS_RMAX		:= 12
+PS_ACKAT	:= PS_R + PS_RMAX * 16		; q: 1-RTT: an ACK held for what answers it, until
 PS_SIZE		:= 256
+assert PS_ACKAT + 8 <= PS_SIZE
 
 ; sent packets, a ring a space
 QC_SP		:= QC_PS + 3 * PS_SIZE
@@ -3510,6 +3513,27 @@ qc_build:
 .cc_done:
 	test	r13d,r13d
 	jz	.nothing
+	; an ACK and nothing else, of one packet: it waits a little for the
+	; answer it can go with, a datagram each way saved. Every second packet
+	; and QUIC_ACK_HOLD and a tick at most, below the 25 ms we announce
+	; (RFC 9000 13.2)
+	cmp	r13d,1
+	jne	.send_it
+	cmp	r12d,QL_APP
+	jne	.send_it
+	cmp	dword [r15+QC_PS+QL_APP*PS_SIZE+PS_ACKQ],2
+	jae	.send_it
+	mov	rax,[r15+QC_PS+QL_APP*PS_SIZE+PS_ACKAT]
+	test	rax,rax
+	jnz	.ack_held
+	mov	rax,[g_qnow]
+	add	rax,QUIC_ACK_HOLD
+	mov	[r15+QC_PS+QL_APP*PS_SIZE+PS_ACKAT],rax
+	jmp	.nothing
+.ack_held:
+	cmp	rax,[g_qnow]
+	ja	.nothing
+.send_it:
 	mov	[rsp+QB_FLAGS],r13d
 	; room: a datagram, and before validation (of the address, of a new
 	; path) three times what came
@@ -3850,6 +3874,7 @@ qc_build:
 @@:
 	imul	eax,r12d,PS_SIZE
 	mov	dword [r15+QC_PS+rax+PS_ACKQ],0
+	mov	qword [r15+QC_PS+rax+PS_ACKAT],0
 	lea	eax,[r12*2+1]
 	imul	eax,eax,QK_SIZE
 	lea	rdi,[r15+QC_KEYS+rax]
@@ -4306,6 +4331,13 @@ qs_tick:
 	jmp	.next
 .pto:
 	call	qc_heads_expire			; http3.inc
+	mov	rax,[r15+QC_PS+QL_APP*PS_SIZE+PS_ACKAT]	; an ACK held: its time has come
+	test	rax,rax
+	jz	@f
+	cmp	rax,[g_qnow]
+	ja	@f
+	call	qc_dirty
+@@:
 	mov	rax,[r15+QC_PACE_AT]		; still held by pacing: the timer's
 	test	rax,rax
 	jz	@f

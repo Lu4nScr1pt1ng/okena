@@ -13,6 +13,9 @@
 #   flood: 60 connections at 300 requests/s each, quiet and then while
 #     two senders replay real client Initials that are never answered
 #     (tests/bench/h3flood.py, about 300k a second)
+#   open loop: okena bench proto=h3 at fixed rates, 60 connections: latency
+#     from when the schedule asked for each request, so a stall counts for
+#     everything it held back (coordinated omission corrected)
 #
 # Output: markdown rows for docs/BENCHMARK.md.
 #
@@ -162,5 +165,19 @@ for s in "okena, 2 workers:28302" "HAProxy 3.2, 2 threads:28402" "nginx 1.27, 2 
 		read -ra r < <(stats)
 		row "$([ $flood = yes ] && echo 'under an Initial flood' || echo 'quiet')" "${s%:*}" "${r[@]}"
 		for p in $pids; do wait "$p" 2>/dev/null || true; done
+	done
+done
+
+echo
+echo '| HTTP/3, open loop (60 connections) | server | requests/s | p50 / p99 / p99.9 / max (µs) | errors |'
+echo '|---|---|---|---|---|'
+us() { awk -v n="$1" 'BEGIN { printf "%d", n / 1000 }'; }
+for rate in ${OPEN_RATES:-5000 18000 40000}; do
+	for s in "okena, 2 workers:28302" "HAProxy 3.2, 2 threads:28402" "nginx 1.27, 2 workers:28502"; do
+		taskset -c "$LOAD_CPUS" "$OKENA" bench "https://127.0.0.1:${s##*:}/" proto=h3 format=kv conns=60 workers=4 \
+			rate="$rate" duration="${DUR}s" warmup=2s >out 2>&1 || true
+		kv() { tr ' ' '\n' <out | awk -F= -v k="$1" '$1 == k { print $2 }'; }
+		row "$rate/s" "${s%:*}" "$(kv rps)" "$(us "$(kv c_p50_ns)")" "$(us "$(kv c_p99_ns)")" \
+			"$(us "$(kv c_p999_ns)")" "$(us "$(kv c_max_ns)")" "$(($(kv errors) + $(kv other)))"
 	done
 done

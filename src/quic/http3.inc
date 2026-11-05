@@ -639,7 +639,12 @@ qc_app_frame:
 	pop	r15
 	pop	rbx
 	inc	qword [r15+QC_SDONE]
+	mov	rax,[r15+QC_MAXS_OURS]		; (MAX_STREAMS: when half are used)
+	sub	rax,[r15+QC_SDONE]
+	cmp	rax,50
+	jge	.maxs_kept
 	or	dword [r15+QC_FL2],QF2_MAXS
+.maxs_kept:
 	; a request opened and cancelled costs a backend request each: past
 	; H3_RST_BUDGET a second, the connection goes (as HTTP/2's rapid reset)
 	mov	rax,[g_qnow]
@@ -3199,7 +3204,12 @@ h3s_closing:
 	jc	.out
 	mov	dword [r8+QST_KIND],QSK_FREE
 	inc	qword [r15+QC_SDONE]
+	mov	rax,[r15+QC_MAXS_OURS]		; (MAX_STREAMS: when half are used: a
+	sub	rax,[r15+QC_SDONE]		; packet each answer otherwise)
+	cmp	rax,50
+	jge	.maxs_kept
 	or	dword [r15+QC_FL2],QF2_MAXS
+.maxs_kept:
 	test	r12d,H3F_FINISH
 	jnz	.done
 	mov	ecx,[r15+QC_RSTN]		; cut short: RESET_STREAM
@@ -3287,9 +3297,17 @@ qc_app_pending:
 	jb	.yes
 	test	dword [r15+QC_FL2],QF2_MAXD or QF2_MAXS or QF2_PATH or QF2_MSD or QF2_NCID
 	jnz	.yes
-	mov	rax,[r15+QC_QD_SENT]
-	cmp	rax,[r15+QC_QD_END]
-	jb	.yes
+	mov	rax,[r15+QC_QD_SENT]		; the decoder stream's bytes go with an
+	cmp	rax,[r15+QC_QD_END]		; ACK held for the answer, not before it
+	jae	.no_decoder
+	cmp	dword [r15+QC_PS+QL_APP*PS_SIZE+PS_ACKQ],1
+	jne	.yes
+	mov	rax,[r15+QC_PS+QL_APP*PS_SIZE+PS_ACKAT]
+	test	rax,rax
+	jz	.no_decoder
+	cmp	rax,[g_qnow]
+	jbe	.yes
+.no_decoder:
 	cmp	dword [r15+QC_RSTN],0
 	jne	.yes
 	lea	r8,[r15+QC_QST]
