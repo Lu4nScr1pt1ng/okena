@@ -75,6 +75,7 @@ include 'quic/server.inc'
 include 'quic/http3.inc'
 include 'core/accesslog.inc'
 include 'bench/bench.inc'
+include 'bench/h3.inc'
 include 'cli.inc'
 
 start:

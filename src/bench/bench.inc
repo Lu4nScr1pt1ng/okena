@@ -4,6 +4,8 @@
 ;                   [workers=N] [method=GET] [header='Name: value']...
 ;                   [body=TEXT] [size=N] [sni=NAME] [format=text|kv]
 ;
+; proto=h3 (https:// URLs) goes over QUIC: src/bench/h3.inc.
+;
 ; URL is http://ADDR[:PORT]/PATH, https://ADDR[:PORT]/PATH (TLS 1.3, its
 ; records sealed and opened in user space) or tcp://ADDR:PORT (echo: `size` bytes out, as many back). ADDR is
 ; an IP address ([::1] for IPv6) or localhost. rate takes k and M (200k).
@@ -212,6 +214,7 @@ cstring str_bk_new, 'new',0
 cstring str_bk_proto, 'proto',0
 cstring str_bk_h1, 'h1',0
 cstring str_bk_h2, 'h2',0
+cstring str_bk_h3, 'h3',0
 cstring str_bk_on, 'on',0
 cstring str_bk_off, 'off',0
 cstring str_bk_text, 'text',0
@@ -289,6 +292,13 @@ cli_bench:
 	call	mem_eq_cstr
 	mov	[g_b_h2],eax
 	mov	[g_tlsc_h2],eax
+	test	eax,eax
+	jnz	.arg
+	mov	rdi,r14
+	mov	esi,r15d
+	lea	rdx,[str_bk_h3]
+	call	mem_eq_cstr
+	mov	[g_b_h3],eax
 	test	eax,eax
 	jnz	.arg
 	mov	rdi,r14
@@ -423,6 +433,24 @@ cli_bench:
 	ja	.toomany
 	call	bench_parse_url
 	jc	.badurl
+	cmp	dword [g_b_h3],0
+	je	.not_h3
+	cmp	dword [g_b_new],0		; handshakes before the clock, https
+	jne	.h3bad
+	cmp	dword [g_b_mode],1
+	jne	.h3bad
+	call	bench_h3_block
+	jc	.h3long
+	jmp	.h3_ready
+.h3bad:
+	call	log_begin
+	out_lit 'bench: proto=h3 is for https:// with kept connections (not new=on)'
+	jmp	.fail
+.h3long:
+	call	log_begin
+	out_lit 'bench: proto=h3 takes a request that fits a packet'
+	jmp	.fail
+.not_h3:
 	cmp	dword [g_b_h2],0
 	je	@f
 	cmp	dword [g_b_new],0		; one stream a connection, kept open
@@ -432,6 +460,7 @@ cli_bench:
 	call	bench_h2_block
 	jc	.toolong
 	jmp	.built
+.h3_ready:
 @@:
 	call	bench_build_request
 	jc	.toolong
@@ -1028,12 +1057,18 @@ bench_open:
 	push	r12
 	mov	edi,[g_b_family]
 	mov	esi,SOCK_STREAM or SOCK_CLOEXEC
+	cmp	dword [g_b_h3],0
+	je	@f
+	mov	esi,SOCK_DGRAM or SOCK_CLOEXEC
+@@:
 	xor	edx,edx
 	mov	eax,SYS_socket
 	syscall
 	test	eax,eax
 	js	.fail
 	mov	[rbx+BC_FD],eax
+	cmp	dword [g_b_h3],0
+	jne	.nodelay_done
 	sub	rsp,16
 	mov	dword [rsp],1
 	mov	edi,[rbx+BC_FD]
@@ -1044,6 +1079,7 @@ bench_open:
 	mov	eax,SYS_setsockopt
 	syscall
 	add	rsp,16
+.nodelay_done:
 	mov	edi,[rbx+BC_FD]
 	lea	rsi,[g_b_sa]
 	mov	edx,[g_b_salen]
@@ -1053,6 +1089,13 @@ bench_open:
 	jnz	.close
 	mov	dword [rbx+BC_HS],0
 	mov	dword [rbx+BC_CLEN],0
+	cmp	dword [g_b_h3],0
+	je	.tcp_tls
+	call	bench_h3_connect
+	test	eax,eax
+	jz	.close
+	jmp	@f
+.tcp_tls:
 	cmp	dword [g_b_mode],1
 	jne	@f
 	call	bench_tls
@@ -1270,8 +1313,14 @@ bench_send:
 @@:
 	cmp	dword [g_b_new],0
 	jne	bench_new_open
+	cmp	dword [g_b_h3],0
+	jne	.h3
 	cmp	dword [g_b_h2],0
 	jne	bench_h2_send
+	jmp	bench_send_more
+.h3:
+	mov	rax,[rbx+BC_SENT]
+	jmp	bench_h3_send
 ; the rest of the request, as far as the socket takes it
 bench_send_more:
 	cmp	dword [rbx+BC_HS],BH_RECORDS
@@ -1361,6 +1410,8 @@ bench_fail:
 
 ; rbx = connection, readable
 bench_readable:
+	cmp	dword [g_b_h3],0
+	jne	bench_h3_readable
 	cmp	dword [rbx+BC_HS],BH_FLIGHT
 	jae	bench_tls_readable
 	mov	ecx,[rbx+BC_ROFF]		; move what is left to the front
@@ -2877,6 +2928,10 @@ bench_loop:
 	mov	r12,rax
 	jmp	.due
 .timeout:
+	cmp	dword [g_b_h3],0
+	je	@f
+	call	bench_h3_sweep
+@@:
 	; sleep until the next send (or poll when it is close)
 	mov	rax,[g_b_tquit]
 	cmp	dword [g_b_heapn],0

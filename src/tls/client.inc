@@ -16,6 +16,9 @@
 
 bss
 	g_tlsc_h2	dd ?		; 1: the ClientHello offers h2 (okena bench proto=h2)
+	g_tlsc_quic	dd ?		; 1: for QUIC (proto=h3): h3, g_tlsc_qtp
+	g_tlsc_qtplen	dd ?		; its transport parameters
+	g_tlsc_qtp	rb 64
 end bss
 
 TC_X25519_SK	:= 0				; ephemeral private keys
@@ -132,9 +135,22 @@ tlsc_client_hello:
 	mov	ecx,65
 	rep	movsb
 	; ALPN (16): http/1.1, or h2 when g_tlsc_h2 says so
+	cmp	dword [g_tlsc_quic],0
+	jne	.alpn_h3
 	cmp	dword [g_tlsc_h2],0
 	jne	.alpn_h2
 	ch_lit 0x00,0x10,0x00,0x0B,0x00,0x09,0x08,'h','t','t','p','/','1','.','1'
+	jmp	.alpn_done
+.alpn_h3:
+	ch_lit 0x00,0x10,0x00,0x05,0x00,0x03,0x02,'h','3'
+	mov	word [rdi],0x3900		; quic_transport_parameters (57)
+	mov	eax,[g_tlsc_qtplen]
+	xchg	al,ah
+	mov	[rdi+2],ax
+	add	rdi,4
+	lea	rsi,[g_tlsc_qtp]
+	mov	ecx,[g_tlsc_qtplen]
+	rep	movsb
 	jmp	.alpn_done
 .alpn_h2:
 	ch_lit 0x00,0x10,0x00,0x05,0x00,0x03,0x02,'h','2'
@@ -256,7 +272,9 @@ TC_KXLEN	:= TC_SH64 + 64			; d: the key exchange is done (the flight
 						; TC_SH64), 0 before
 TC_FEND		:= TC_KXLEN + 4		; d: where the flight ends in the input
 						; (records after the server Finished follow)
-TC_FULL		:= TC_KXLEN + 8
+TC_QCAP		:= TC_KXLEN + 8			; QUIC: the application traffic secrets
+TC_QSAP		:= TC_QCAP + 32
+TC_FULL		:= TC_QSAP + 32
 
 ; rdi = tc, rsi = in (the server's bytes), edx = in length, rcx = out:
 ; parses the ServerHello, computes the ECDH secret, derives the server
@@ -414,6 +432,12 @@ tlsc_server_flight:
 	; server and client handshake traffic secrets, the server key/IV
 	tls_label [rbx+TC_SHT], 32, [rbx+TC_HS], lbl_s_hs, [rbx+TC_TH], 32
 	tls_label [rbx+TC_CHT], 32, [rbx+TC_HS], lbl_c_hs, [rbx+TC_TH], 32
+	cmp	dword [g_tlsc_quic],0		; QUIC: its own keys from these, the
+	je	@f				; flight in CRYPTO frames, not records
+	tls_label [rbx+TC_CFK], 32, [rbx+TC_CHT], lbl_finished
+	mov	eax,1
+	jmp	.out
+@@:
 	tls_label [rbx+TC_SKEY], 16, [rbx+TC_SHT], lbl_key
 	tls_label [rbx+TC_SIV], 12, [rbx+TC_SHT], lbl_iv
 	lea	rdi,[rbx+TC_GCM]
@@ -789,6 +813,8 @@ tlsc_finish:
 	lea	rcx,[tls13_zero32]
 	mov	r8d,32
 	call	hkdf_extract
+	tls_label [rbx+TC_QCAP], 32, [rbx+TC_MS], lbl_c_ap, [rbx+TC_THX], 32
+	tls_label [rbx+TC_QSAP], 32, [rbx+TC_MS], lbl_s_ap, [rbx+TC_THX], 32
 	tls_label [rbx+TC_TMP], 32, [rbx+TC_MS], lbl_c_ap, [rbx+TC_THX], 32
 	tls_label [rbx+TC_CAPK], 16, [rbx+TC_TMP], lbl_key
 	tls_label [rbx+TC_CAPIV], 12, [rbx+TC_TMP], lbl_iv

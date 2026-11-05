@@ -15,6 +15,7 @@ SYS_nanosleep		= 35
 SYS_getpid		= 39
 SYS_socket		= 41
 SYS_sendto		= 44
+SYS_poll		= 7
 SYS_recvmmsg		= 299
 SYS_sendmmsg		= 307
 SYS_connect		= 42
