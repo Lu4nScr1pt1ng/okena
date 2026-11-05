@@ -27,7 +27,7 @@ QS_MAX		:= 16				; UDP sockets a worker reads
 QRX_N		:= 32				; datagrams a recvmmsg takes
 QRX_BUDGET	:= 8				; recvmmsgs a turn of the loop, then the
 						; rest waits for the next (qs_resume)
-QRX_SZ		:= 2048
+QRX_SZ		:= 65536			; (GRO: several datagrams of a flow at once)
 QTX_N		:= 64				; datagrams a sendmmsg sends
 QTX_SZ		:= 1472
 QUIC_DGRAM	:= 1350				; the largest datagram okena sends
@@ -243,6 +243,7 @@ bss
 	g_qgso_fd	rd QTX_N
 	g_qgso_mm:	rb QTX_N * 64
 	g_qgso_cm:	rb QTX_N * 48			; UDP_SEGMENT, the ECN mark
+	g_qd_gro	dd ?				; GRO: its datagrams' size, 0 one datagram
 	g_qd_ecn	dd ?				; and its ECN codepoint (0 none, 1 ECT(1), 2 ECT(0), 3 CE)
 	g_qst_retry	dq ?				; Retries sent
 	g_qtok_key	rb 16				; supervisor: Retry tokens' key
@@ -531,7 +532,8 @@ qs_open_all:
 	syscall
 	; ECN: the marks of those that come, reported (either family: a
 	; dual-stack socket carries IPv4 too)
-	irp opt, <IPPROTO_IP,IP_RECVTOS,one_int>, <IPPROTO_IPV6,IPV6_RECVTCLASS,one_int>
+	irp opt, <IPPROTO_IP,IP_RECVTOS,one_int>, <IPPROTO_IPV6,IPV6_RECVTCLASS,one_int>, \
+		 <SOL_UDP,UDP_GRO,one_int>
 		match lvl=,nm=,val, opt
 			mov	rdi,[rsp]
 			mov	esi,lvl
@@ -776,6 +778,31 @@ qs_readable:
 	mov	edi,r12d
 	push	rbx
 	push	r13
+	mov	eax,[g_qd_gro]			; several datagrams (GRO): one by one
+	test	eax,eax
+	jz	.whole
+	cmp	edx,eax
+	jbe	.whole
+.segment:
+	push	rdx
+	push	rsi
+	push	rcx
+	push	r8
+	push	rdi
+	push	rax
+	mov	edx,eax
+	call	qs_datagram
+	pop	rax
+	pop	rdi
+	pop	r8
+	pop	rcx
+	pop	rsi
+	pop	rdx
+	add	rsi,rax
+	sub	edx,eax
+	cmp	edx,eax
+	ja	.segment
+.whole:
 	call	qs_datagram
 	pop	r13
 	pop	rbx
@@ -798,6 +825,7 @@ qs_readable:
 ; its control messages carry (IP_TOS or IPV6_TCLASS), 0 without. Keeps rax.
 qs_ecn_of:
 	mov	dword [g_qd_ecn],0
+	mov	dword [g_qd_gro],0
 	mov	rsi,[g_qrx_mm+rax+32]		; msg_control
 	mov	rdx,[g_qrx_mm+rax+40]		; msg_controllen
 	add	rdx,rsi
@@ -808,6 +836,15 @@ qs_ecn_of:
 	mov	rcx,[rsi]			; cmsg_len
 	cmp	rcx,16
 	jb	.out
+	cmp	dword [rsi+8],SOL_UDP		; GRO: the datagrams' size
+	jne	@f
+	cmp	dword [rsi+12],UDP_GRO
+	jne	@f
+	movzx	ecx,word [rsi+16]
+	mov	[g_qd_gro],ecx
+	mov	rcx,[rsi]
+	jmp	.next
+@@:
 	cmp	dword [rsi+8],IPPROTO_IP
 	jne	@f
 	cmp	dword [rsi+12],IP_TOS
@@ -821,7 +858,8 @@ qs_ecn_of:
 	movzx	ecx,byte [rsi+16]
 	and	ecx,3
 	mov	[g_qd_ecn],ecx
-	ret
+	mov	rcx,[rsi]
+	jmp	.next
 .next:
 	add	rcx,7				; aligned to 8
 	and	rcx,not 7

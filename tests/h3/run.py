@@ -674,6 +674,12 @@ http 127.0.0.1:{RETRY} {{
             r = subprocess.run([curl, "-qsk", "--http3-only", "--resolve", f"h3.test:{LST}:127.0.0.1",
                                 f"https://h3.test:{LST}/curl"], capture_output=True, timeout=20)
             check("curl (ngtcp2) over HTTP/3", r.stdout.startswith(b"hello /curl h3.test"), r.stdout[:80] + r.stderr[:80])
+            up = tmp / "up.bin"
+            up.write_bytes(os.urandom(5_000_000))
+            r = subprocess.run([curl, "-qsk", "--http3-only", "--resolve", f"h3.test:{LST}:127.0.0.1",
+                                "--data-binary", f"@{up}", f"https://h3.test:{LST}/up"], capture_output=True, timeout=30)
+            check("curl uploads 5 MB (its datagrams GSO-sent, taken whole by GRO)",
+                  r.stdout == hashlib.md5(up.read_bytes()).hexdigest().encode(), r.stdout[:80] + r.stderr[:80])
             r = subprocess.run([curl, "-qsk", "--http3-only", "--resolve", f"h3.test:{RETRY}:127.0.0.1",
                                 f"https://h3.test:{RETRY}/curl"], capture_output=True, timeout=20)
             check("curl through a Retry", r.stdout.startswith(b"hello /curl h3.test"), r.stdout[:80] + r.stderr[:80])
