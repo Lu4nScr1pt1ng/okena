@@ -134,8 +134,10 @@ QC_MTU_TRY	:= 868				; d: the size being probed, 0 none
 QC_MTU_N	:= 872				; d: probes of it so far
 QC_PMAX		:= 880				; q: the client's max_udp_payload_size
 QC_MTU_AT	:= 888				; q: µs the next probe is due
-QC_FIELDS_END	:= 896
-assert QC_MTU_AT + 8 <= QC_FIELDS_END
+QC_ECNOFF	:= 896				; d: the client or the path does not report ECN: no marks
+QC_ECN_CE	:= 904				; q: the CE count it last reported at 1-RTT
+QC_FIELDS_END	:= 960
+assert QC_ECN_CE + 8 <= QC_FIELDS_END
 QUIC_MTU_MIN	:= 1200				; every QUIC path takes this (RFC 9000 14)
 PACE_MIN_RTT	:= 20000			; µs: below it no pacing (the QUIC tick is 10 ms)
 assert QC_PCHALO + 8 <= QC_FIELDS_END
@@ -221,6 +223,7 @@ bss
 	g_qc_unval	dd ?				; not validated yet (QUIC_RETRY_AT)
 	g_qd_sa		dq ?				; the datagram qc_packet takes: its sender
 	g_qd_salen	dd ?
+	g_qtx_ect	dd ?				; the next datagram is marked ECT(0)
 	g_qd_ecn	dd ?				; and its ECN codepoint (0 none, 1 ECT(1), 2 ECT(0), 3 CE)
 	g_qst_retry	dq ?				; Retries sent
 	g_qtok_key	rb 16				; supervisor: Retry tokens' key
@@ -252,7 +255,12 @@ rodata
 	align 8
 	ts_qtick	dq 0, 10000000			; 10 ms
 	qs_bufsize	dd 4 shl 20			; UDP socket buffers (capped by the kernel)
-	ecn_ect0	dd 2				; IP_TOS / IPV6_TCLASS: ECT(0)
+	; a datagram's ECT(0), by control message (qtx_commit)
+	align 8
+	ecn_cm_ip	dq 20
+			dd IPPROTO_IP, IP_TOS, 2, 0
+	ecn_cm_ip6	dq 20
+			dd IPPROTO_IPV6, IPV6_TCLASS, 2, 0
 	; classic BPF for the UDP sockets' reuseport group (it sees the UDP
 	; payload): the socket index (= the worker) is the first byte of the
 	; Destination Connection ID, at 1 in a short header, at 6 in a long
@@ -502,10 +510,9 @@ qs_open_all:
 	mov	r8d,4
 	mov	eax,SYS_setsockopt
 	syscall
-	; ECN: our datagrams ECT(0); the marks of those that come, reported
-	; (either family: a dual-stack socket carries IPv4 too)
-	irp opt, <IPPROTO_IP,IP_TOS,ecn_ect0>, <IPPROTO_IPV6,IPV6_TCLASS,ecn_ect0>, \
-		 <IPPROTO_IP,IP_RECVTOS,one_int>, <IPPROTO_IPV6,IPV6_RECVTCLASS,one_int>
+	; ECN: the marks of those that come, reported (either family: a
+	; dual-stack socket carries IPv4 too)
+	irp opt, <IPPROTO_IP,IP_RECVTOS,one_int>, <IPPROTO_IPV6,IPV6_RECVTCLASS,one_int>
 		match lvl=,nm=,val, opt
 			mov	rdi,[rsp]
 			mov	esi,lvl
@@ -2413,13 +2420,37 @@ qc_on_ack:
 	jmp	.ranges
 .ecn:
 	cmp	dword [rsp+QA_TYPE],3
+	je	.ecn_counts
+	; data acknowledged and no counts: the client or the path does not report
+	; ECN, no more marks on this connection (RFC 9000 13.4.2)
+	cmp	dword [rsp+QA_LEVEL],QL_APP
 	jne	.done
+	cmp	dword [rsp+QA_NEWLY],0
+	je	.done
+	mov	dword [r15+QC_ECNOFF],1
+	jmp	.done
+.ecn_counts:
 	call	qv_read
 	jc	.bad
 	call	qv_read
 	jc	.bad
-	call	qv_read
+	call	qv_read				; CE
 	jc	.bad
+	cmp	dword [rsp+QA_LEVEL],QL_APP
+	jne	.done
+	cmp	rax,[r15+QC_ECN_CE]
+	jbe	.done
+	; marked on the way: congestion, as a loss, once a round trip
+	mov	[r15+QC_ECN_CE],rax
+	mov	rax,[g_qnow]
+	mov	rcx,rax
+	sub	rcx,[r15+QC_RECOV]
+	cmp	rcx,[r15+QC_SRTT]
+	jb	.done
+	mov	[r15+QC_RECOV],rax
+	push	rdx
+	call	qc_cc_loss
+	pop	rdx
 .done:
 	; anything newly acknowledged: what was sent well before the largest
 	; acknowledged is lost; the probe count starts over, the timer follows
@@ -3298,6 +3329,9 @@ qc_build:
 	mov	edi,[r15+QC_SOCK]
 	lea	rsi,[r15+QC_PEER]
 	mov	r8d,[r15+QC_PEERLEN]
+	mov	edx,[r15+QC_ECNOFF]
+	xor	edx,1
+	mov	[g_qtx_ect],edx
 	call	qtx_commit
 	cmp	dword [rsp+QB_ACKEL],0
 	je	@f
@@ -3434,6 +3468,26 @@ qtx_commit:
 	mov	qword [r9+24],1
 	mov	qword [r9+32],0			; no control
 	mov	qword [r9+40],0
+	cmp	dword [g_qtx_ect],0
+	je	.no_mark
+	mov	dword [g_qtx_ect],0
+	; the socket's IPv4 option for an IPv4 address (mapped, on a dual-stack
+	; socket, too), its IPv6 one else
+	lea	rax,[ecn_cm_ip]
+	cmp	word [r10],AF_INET6
+	jne	.mark
+	cmp	dword [r10+8],0
+	jne	.mark6
+	cmp	dword [r10+12],0
+	jne	.mark6
+	cmp	dword [r10+16],0xFFFF0000
+	je	.mark
+.mark6:
+	lea	rax,[ecn_cm_ip6]
+.mark:
+	mov	[r9+32],rax
+	mov	qword [r9+40],24
+.no_mark:
 	mov	dword [r9+48],0
 	imul	rax,rdx,QTX_SZ
 	lea	rax,[g_qtx_buf+rax]

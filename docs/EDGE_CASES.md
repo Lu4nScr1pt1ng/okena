@@ -122,7 +122,7 @@ the connection closed when its framing can no longer be trusted.
 | Key update | followed (RFC 9001 6): the next keys tried when the key phase flips, ours updated with them |
 | Session resumption over QUIC | a ticket at 1-RTT after the handshake; a ticket of ours resumes (no 0-RTT: no early_data in it) |
 | Rapid reset over HTTP/3 | more than 200 requests a second cancelled by the client (STOP_SENDING, RESET_STREAM): CONNECTION_CLOSE H3_EXCESSIVE_LOAD |
-| ECN | our datagrams ECT(0); the marks received counted per space and reported in ACK_ECN. No ECN validation yet (a path that drops ECT would need it) |
+| ECN | our datagrams ECT(0); the marks received counted per space and reported in ACK_ECN. Marks stop on a connection whose client acknowledges data without counts; a rise in the CE count is a congestion event |
 | The client's hello again before the handshake is done | our Initial and Handshake data go again at once, not at the probe timer |
 | Amplification | 3x limit before address validation; Retry under load (64 unvalidated connections a worker) or always (`http3 retry`) |
 | Version negotiation, QUIC v2 | supported: Version Negotiation for unknown versions; a v1 client whose version_information offers v2 stays in v1 unless `http3 v2` moves it (compatible version negotiation, RFC 9368) |

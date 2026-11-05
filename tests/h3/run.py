@@ -143,6 +143,29 @@ def mtu_relay(port, mtu, seen):
             up.send(d)
 
 
+def ecn_relay(port, marks):
+    """A UDP relay to okena that records the ECN codepoint of each of its
+    datagrams."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.bind(("127.0.0.1", port))
+    up = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    up.setsockopt(socket.IPPROTO_IP, socket.IP_RECVTOS, 1)
+    up.connect(("127.0.0.1", LST))
+    client = [None]
+
+    def back():
+        while True:
+            d, anc, _, _ = up.recvmsg(65536, 64)
+            marks.append(anc[0][2][0] & 3 if anc else 0)
+            if client[0]:
+                s.sendto(d, client[0])
+    threading.Thread(target=back, daemon=True).start()
+    while True:
+        d, a = s.recvfrom(65536)
+        client[0] = a
+        up.send(d)
+
+
 def rebind_relay(port, moves):
     """A UDP relay to okena whose own address changes (a NAT rebinding)
     after each count of client datagrams in `moves`: (count, source IP)."""
@@ -344,6 +367,14 @@ async def cases():
             r = await c.request("GET", "/retried")
             check(f"http3 retry ({name}): a Retry, then the connection with its token",
                   r["body"] == b"hello /retried h3.test\n" and c._quic._retry_count == 1, str(r)[:100])
+    # ECN: marked until a client's plain ACKs show it does not report the marks
+    marks = []
+    threading.Thread(target=ecn_relay, args=(RELAY + 13, marks), daemon=True).start()
+    async with connect("127.0.0.1", RELAY + 13, configuration=config(), create_protocol=Client) as c:
+        r = await c.request("GET", "/big/300000")
+        check("ECN: ECT(0) at first, no marks once plain ACKs show the client does not report them",
+              len(r["body"]) == 300000 and marks[0] == 2 and marks[-1] == 0 and marks[-20:] == [0] * 20,
+              f"{len(r['body'])} bytes, marks {marks[:4]}..{marks[-4:]}")
     # the path MTU: 1200 until shown otherwise, probes find what the path takes
     for port, mtu, low, high in ((RELAY + 11, 1280, 1200, 1280), (RELAY + 12, 1500, 1401, 1452)):
         seen = [0]
