@@ -3506,6 +3506,19 @@ qc_build:
 	mov	rax,[r15+QC_ALT_DATA]
 	mov	[rdi+1],rax
 	add	rdi,9
+	; and our own probe of the way back (RFC 9000 9.6.2): a value of its
+	; own, the path only counts once the connection moves (qc_migrate)
+	push	rdx
+	rdtsc
+	shl	rdx,32
+	or	rax,rdx
+	mov	rdx,0x9E3779B97F4A7C15
+	imul	rax,rdx
+	xor	rax,[r15+QC_SCID]
+	pop	rdx
+	mov	byte [rdi],0x1A
+	mov	[rdi+1],rax
+	add	rdi,9
 	and	dword [r15+QC_FL2],not QF2_PALT
 	mov	rcx,r14
 	sub	rcx,rdi
