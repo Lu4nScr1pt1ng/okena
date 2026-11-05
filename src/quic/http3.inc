@@ -78,6 +78,8 @@ QST_SIZE	:= 96
 QSK_FREE	:= 0
 QSK_REQ		:= 1
 QSK_UNI		:= 2				; a client's unidirectional stream: read, ignored
+QSK_UT		:= 3				; one whose type has not come yet
+QSK_ENC		:= 4				; its QPACK encoder stream
 QC_QST		:= QC_STREAMS
 QC_H3HB		:= QC_QST + QST_N * QST_SIZE	; a HEADERS frame split across packets
 ; request stream data that came ahead of what is missing, held (and so
@@ -96,6 +98,23 @@ assert QC_RAD + RA_N * RA_DCAP <= 1 shl HB_SHIFT
 QC_KU		:= QC_RAD + RA_N * RA_DCAP	; the client's next 1-RTT keys (server.inc)
 assert QC_KU and 15 = 0
 assert QC_KU + QK_SIZE <= 1 shl HB_SHIFT
+; QPACK's dynamic table (the client's inserts), its encoder stream's bytes
+; not parsed yet, our decoder stream's not acknowledged yet
+QP_CAPACITY	:= 2048				; what we announce
+QP_MAXE		:= QP_CAPACITY / 32		; entries it can hold
+QPE_OFF		:= 0				; w, in QC_QPD
+QPE_NLEN	:= 2				; w
+QPE_VLEN	:= 4				; w
+QC_QPE		:= QC_KU + QK_SIZE		; QP_MAXE * 8, by absolute index modulo
+QC_QPD		:= QC_QPE + QP_MAXE * 8		; the entries' bytes, in insertion order
+QP_DCAP		:= 4096
+QC_QPB		:= QC_QPD + QP_DCAP
+QP_BCAP		:= 4096
+QC_QDB		:= QC_QPB + QP_BCAP
+QD_CAP		:= 512
+assert QC_QDB + QD_CAP <= 1 shl HB_SHIFT
+assert QP_MAXE = 64
+H3E_ENCODER_STREAM := 0x201
 
 QF2_MAXD	:= 1				; MAX_DATA to send
 QF2_MAXS	:= 2				; MAX_STREAMS (bidi)
@@ -262,6 +281,8 @@ qc_streams_close:
 	jne	.skip
 	mov	dword [r12+QST_KIND],QSK_FREE
 	mov	edi,[r12+QST_SESS]
+	cmp	edi,NIL
+	je	.skip				; (opened, no request on it yet)
 	mov	eax,edi
 	shl	rax,S_SHIFT
 	add	rax,[g_sess_base]
@@ -428,6 +449,8 @@ qc_app_frame:
 	jz	.msd_done
 	cmp	dword [r8+QST_KIND],QSK_REQ
 	jne	.msd_done
+	cmp	dword [r8+QST_SESS],NIL
+	je	.msd_done			; (no request on it yet)
 	h3_ptrs	[r8+QST_SESS]
 	cmp	r13,[r9+HB_H3TX+TX_MAXSD]
 	jbe	.msd_done
@@ -536,6 +559,8 @@ qc_app_frame:
 	jne	@f
 	mov	dword [r8+QST_KIND],QSK_FREE
 	mov	edi,[r8+QST_SESS]
+	cmp	edi,NIL
+	je	@f				; (opened, no request on it yet)
 	mov	eax,edi
 	shl	rax,S_SHIFT
 	add	rax,[g_sess_base]
@@ -620,8 +645,8 @@ qc_stream_in:
 	mov	r9,[rdi+RA_OFF]
 	cmp	r9,[r8+QST_RXOFF]
 	ja	.skip
-	cmp	dword [r8+QST_KIND],QSK_REQ
-	jne	.gone				; (refused meanwhile)
+	cmp	dword [r8+QST_KIND],QSK_UNI
+	je	.gone				; (refused meanwhile, or not read)
 	mov	dword [rdi+RA_USED],0
 	mov	eax,[rdi+RA_FIN]
 	imul	esi,ecx,RA_DCAP
@@ -726,7 +751,8 @@ qc_stream_one:
 	call	qst_new
 	test	r8,r8
 	jz	.ok				; (no room: its bytes are not needed)
-	mov	dword [r8+QST_KIND],QSK_UNI
+	mov	dword [r8+QST_KIND],QSK_UT
+	mov	qword [r8+QST_MSD],65536	; (initial_max_stream_data_uni)
 .have:
 	mov	r12,r8
 	; in order only
@@ -762,6 +788,14 @@ qc_stream_one:
 	je	.ok				; read and ignored
 	cmp	r13,[r12+QST_MSD]
 	ja	.flow
+	cmp	dword [r12+QST_KIND],QSK_REQ
+	je	@f
+	mov	rdi,r12				; a type, then QPACK's encoder stream
+	mov	rcx,r14
+	call	qp_uni_bytes			; CF: an error (QC_ERR set)
+	jc	.error
+	jmp	.ok
+@@:
 	mov	eax,[rsp+QI_FIN]
 	mov	[r12+QST_FINHERE],eax
 	mov	rdi,r12
@@ -1431,7 +1465,361 @@ qp_string:
 
 bss
 	g_h3sp		dq ?
+	g_qp_ric	dq ?			; the field section's Required Insert Count
+	g_qp_base	dq ?			; and Base
+	g_qptmp:	rb QP_CAPACITY
 end bss
+
+; rax = an absolute index below the section's Required Insert Count (r15 =
+; connection): r8/r9d its name, r10/r11d its value; CF when it is not one
+qp_ref:
+	cmp	rax,[g_qp_ric]
+	jae	.bad
+; ... any entry in the table
+qp_entry:
+	cmp	rax,[r15+QC_QP_DROP]
+	jb	qp_ref.bad
+	cmp	rax,[r15+QC_QP_INS]
+	jae	qp_ref.bad
+	mov	ecx,eax
+	and	ecx,QP_MAXE - 1
+	lea	rcx,[r15+QC_QPE+rcx*8]
+	movzx	r8d,word [rcx+QPE_OFF]
+	movzx	r9d,word [rcx+QPE_NLEN]
+	movzx	r11d,word [rcx+QPE_VLEN]
+	lea	r8,[r15+QC_QPD+r8]
+	lea	r10,[r8+r9]
+	clc
+	ret
+qp_ref.bad:
+	stc
+	ret
+
+; r15 = connection: the oldest entry goes
+qp_evict:
+	mov	rax,[r15+QC_QP_DROP]
+	and	eax,QP_MAXE - 1
+	lea	rcx,[r15+QC_QPE+rax*8]
+	movzx	eax,word [rcx+QPE_NLEN]
+	movzx	ecx,word [rcx+QPE_VLEN]
+	lea	eax,[rax+rcx+32]
+	sub	[r15+QC_QP_SIZE],eax
+	inc	qword [r15+QC_QP_DROP]
+	ret
+
+; r8/r9d = a name, r10/r11d = a value (r15 = connection; they may be in the
+; table): a new entry, evicting what its room takes. CF when it cannot fit.
+; Keeps rsi, rdx.
+qp_insert:
+	lea	eax,[r9+r11+32]
+	cmp	eax,[r15+QC_QP_CAP]
+	ja	qp_ref.bad
+	push	rsi
+	push	rdx
+	push	rbx
+	mov	ebx,eax
+	lea	rdi,[g_qptmp]			; a copy: what it names may be evicted
+	mov	rsi,r8
+	mov	ecx,r9d
+	rep	movsb
+	mov	rsi,r10
+	mov	ecx,r11d
+	rep	movsb
+.room:
+	lea	eax,[rbx]
+	add	eax,[r15+QC_QP_SIZE]
+	cmp	eax,[r15+QC_QP_CAP]
+	jbe	.fits
+	call	qp_evict
+	jmp	.room
+.fits:
+	lea	edx,[rbx-32]			; its bytes
+	mov	eax,[r15+QC_QP_TAIL]
+	add	eax,edx
+	cmp	eax,QP_DCAP
+	jbe	.tail_ok
+	; to the start, in order (the table holds less than half of the area)
+	xor	edi,edi				; where the next goes
+	mov	r8,[r15+QC_QP_DROP]
+.compact:
+	cmp	r8,[r15+QC_QP_INS]
+	jae	.compacted
+	mov	eax,r8d
+	and	eax,QP_MAXE - 1
+	lea	r10,[r15+QC_QPE+rax*8]
+	movzx	esi,word [r10+QPE_OFF]
+	movzx	ecx,word [r10+QPE_NLEN]
+	movzx	eax,word [r10+QPE_VLEN]
+	add	ecx,eax
+	mov	[r10+QPE_OFF],di
+	lea	rsi,[r15+QC_QPD+rsi]
+	lea	r10,[r15+QC_QPD+rdi]
+	add	edi,ecx
+	xchg	rdi,r10
+	rep	movsb
+	mov	rdi,r10
+	inc	r8
+	jmp	.compact
+.compacted:
+	mov	[r15+QC_QP_TAIL],edi
+.tail_ok:
+	mov	rax,[r15+QC_QP_INS]
+	and	eax,QP_MAXE - 1
+	lea	r10,[r15+QC_QPE+rax*8]
+	mov	eax,[r15+QC_QP_TAIL]
+	mov	[r10+QPE_OFF],ax
+	mov	[r10+QPE_NLEN],r9w
+	mov	[r10+QPE_VLEN],r11w
+	lea	rdi,[r15+QC_QPD+rax]
+	lea	rsi,[g_qptmp]
+	mov	ecx,edx
+	rep	movsb
+	add	[r15+QC_QP_TAIL],edx
+	add	[r15+QC_QP_SIZE],ebx
+	inc	qword [r15+QC_QP_INS]
+	pop	rbx
+	pop	rdx
+	pop	rsi
+	clc
+	ret
+
+; our decoder stream (r15 = connection): room for a short instruction at
+; its end (its type first); rdi = there, or CF when what is unacknowledged
+; fills the buffer
+qd_room:
+	mov	rax,[r15+QC_QD_END]
+	sub	rax,[r15+QC_QD_BASE]
+	cmp	rax,QD_CAP - 16
+	jbe	.room
+	mov	rcx,[r15+QC_QD_ACK]		; forget what is acknowledged
+	sub	rcx,[r15+QC_QD_BASE]
+	jz	.full
+	lea	rdi,[r15+QC_QDB]
+	lea	rsi,[rdi+rcx]
+	add	[r15+QC_QD_BASE],rcx
+	mov	rax,[r15+QC_QD_END]
+	sub	rax,[r15+QC_QD_BASE]
+	mov	rcx,rax
+	rep	movsb
+	cmp	rax,QD_CAP - 16
+	ja	.full
+.room:
+	lea	rdi,[r15+QC_QDB+rax]
+	cmp	qword [r15+QC_QD_END],0
+	jne	.ok
+	mov	byte [rdi],3			; the stream's type
+	inc	rdi
+	inc	qword [r15+QC_QD_END]
+	inc	qword [r15+QC_DSENT]
+.ok:
+	clc
+	ret
+.full:
+	stc
+	ret
+
+; rdi = past an instruction written after qd_room (r15 = connection, ebx
+; its session): the decoder stream's end there
+qd_written:
+	lea	rax,[r15+QC_QDB]
+	sub	rdi,rax
+	add	rdi,[r15+QC_QD_BASE]
+	mov	rax,rdi
+	sub	rax,[r15+QC_QD_END]
+	add	[r15+QC_DSENT],rax
+	mov	[r15+QC_QD_END],rdi
+	jmp	qc_dirty
+
+; rax = a stream whose field section used the table: Section
+; Acknowledgment, which also tells the client of the inserts it needed.
+; (No room: skipped, the client only keeps its references longer.)
+qd_section_ack:
+	push	rax
+	call	qd_room
+	pop	rax
+	jc	.out
+	mov	cl,7
+	mov	dl,0x80
+	call	hp_put_int
+	mov	rax,[g_qp_ric]
+	cmp	rax,[r15+QC_QP_KNOWN]
+	jbe	@f
+	mov	[r15+QC_QP_KNOWN],rax
+@@:
+	jmp	qd_written
+.out:
+	ret
+
+; rdi = a client's unidirectional stream's entry whose type has not come,
+; or its encoder stream's; rsi = bytes in order, rcx = how many. The type
+; decides: anything but QPACK's encoder stream is read and ignored; its
+; instructions (RFC 9204 4.3) go into the table, whole ones (kept in QC_QPB
+; meanwhile), and the client hears what was inserted. CF on an error.
+QPE_SIZE	:= 32				; locals: a literal name
+qp_uni_bytes:
+	push	r12
+	push	r13
+	push	r14
+	push	rbp
+	sub	rsp,QPE_SIZE
+	mov	r12,rdi
+	test	rcx,rcx
+	jz	.ok
+	cmp	dword [r12+QST_KIND],QSK_ENC
+	je	.append
+	movzx	eax,byte [rsi]
+	mov	dword [r12+QST_KIND],QSK_UNI
+	cmp	eax,2
+	jne	.ok
+	mov	dword [r12+QST_KIND],QSK_ENC
+	inc	rsi
+	dec	rcx
+.append:
+	mov	eax,[r15+QC_QP_PART]
+	lea	edx,[rax+rcx]
+	cmp	edx,QP_BCAP
+	ja	.stream_error
+	lea	rdi,[r15+QC_QPB+rax]
+	mov	[r15+QC_QP_PART],edx
+	rep	movsb
+	lea	rsi,[r15+QC_QPB]
+	mov	rdx,rsi
+	mov	eax,[r15+QC_QP_PART]
+	add	rdx,rax
+.instruction:
+	mov	r13,rsi				; (back here when it is not whole)
+	cmp	rsi,rdx
+	jae	.parsed
+	lea	rax,[g_h3s]
+	mov	[g_h3sp],rax
+	movzx	eax,byte [rsi]
+	test	al,0x80
+	jnz	.with_ref
+	test	al,0x40
+	jnz	.with_name
+	test	al,0x20
+	jnz	.capacity
+	; 000 index(5): Duplicate
+	mov	cl,5
+	call	qp_int
+	jc	.parsed
+	mov	rcx,[r15+QC_QP_INS]
+	dec	rcx
+	sub	rcx,rax
+	mov	rax,rcx
+	call	qp_entry
+	jc	.stream_error
+	call	qp_insert
+	jc	.stream_error
+	jmp	.instruction
+.capacity:					; 001 capacity(5)
+	mov	cl,5
+	call	qp_int
+	jc	.parsed
+	cmp	rax,QP_CAPACITY
+	ja	.stream_error
+	mov	[r15+QC_QP_CAP],eax
+.shrink:
+	mov	eax,[r15+QC_QP_SIZE]
+	cmp	eax,[r15+QC_QP_CAP]
+	jbe	.instruction
+	call	qp_evict
+	jmp	.shrink
+.with_ref:					; 1 T index(6), value
+	mov	r14d,eax
+	mov	cl,6
+	call	qp_int
+	jc	.parsed
+	mov	[rsp],rax
+	mov	cl,7
+	cmp	rsi,rdx
+	jae	.parsed
+	call	qp_string
+	jc	.parsed
+	mov	rbp,rax				; the value
+	mov	[rsp+8],ecx
+	mov	rax,[rsp]
+	test	r14d,0x40
+	jnz	.ref_static
+	mov	rcx,[r15+QC_QP_INS]
+	dec	rcx
+	sub	rcx,rax
+	mov	rax,rcx
+	call	qp_entry
+	jc	.stream_error
+	jmp	.ref_named
+.ref_static:
+	call	qpack_decode.static
+	jc	.stream_error
+.ref_named:
+	mov	r10,rbp
+	mov	r11d,[rsp+8]
+	call	qp_insert
+	jc	.stream_error
+	jmp	.instruction
+.with_name:					; 01 H length(5), name, value
+	mov	cl,5
+	call	qp_string
+	jc	.parsed
+	mov	[rsp],rax
+	mov	[rsp+8],ecx
+	cmp	rsi,rdx
+	jae	.parsed
+	mov	cl,7
+	call	qp_string
+	jc	.parsed
+	mov	r10,rax
+	mov	r11d,ecx
+	mov	r8,[rsp]
+	mov	r9d,[rsp+8]
+	call	qp_insert
+	jc	.stream_error
+	jmp	.instruction
+.parsed:
+	; what is left waits for more; the client hears of new entries
+	lea	rdi,[r15+QC_QPB]
+	mov	rcx,rdx
+	sub	rcx,r13
+	mov	[r15+QC_QP_PART],ecx
+	mov	rsi,r13
+	rep	movsb
+	mov	rax,[r15+QC_QP_INS]
+	sub	rax,[r15+QC_QP_KNOWN]
+	jz	.credit
+	push	rax
+	call	qd_room
+	pop	rax
+	jc	.credit
+	add	[r15+QC_QP_KNOWN],rax
+	mov	cl,6				; Insert Count Increment
+	xor	edx,edx
+	call	hp_put_int
+	call	qd_written
+.credit:
+	; its window: moved along (the stream lives as long as the connection)
+	mov	rax,[r12+QST_RXOFF]
+	add	rax,32768
+	cmp	rax,[r12+QST_MSD]
+	jbe	.ok
+	add	rax,32768
+	mov	[r12+QST_MSD],rax
+	mov	dword [r12+QST_MSDPEND],1
+	or	dword [r15+QC_FL2],QF2_MSD
+	call	qc_dirty
+.ok:
+	clc
+	jmp	.out
+.stream_error:
+	mov	qword [r15+QC_ERR],H3E_ENCODER_STREAM
+	or	dword [r15+QC_FLAGS],QF_APP_ERR
+	stc
+.out:
+	lea	rsp,[rsp+QPE_SIZE]
+	pop	rbp
+	pop	r14
+	pop	r13
+	pop	r12
+	ret
 
 ; rsi = a field section, edx = its length: its field lines into g_h3f
 ; (HP_* entries). eax = how many, or -1 (a decompression error).
@@ -1441,15 +1829,49 @@ qpack_decode:
 	lea	rdx,[rsi+rdx]
 	lea	rax,[g_h3s]
 	mov	[g_h3sp],rax
-	; the prefix: Required Insert Count 0, Delta Base 0 (no dynamic table)
+	; the prefix: the Required Insert Count (RFC 9204 4.5.1.1), which no
+	; blocked stream can exceed, and the Base
 	mov	cl,8
 	call	qp_int
 	jc	.bad
 	test	rax,rax
-	jnz	.bad
+	jz	.ric_set
+	cmp	rax,2 * QP_MAXE
+	ja	.bad
+	mov	r8,[r15+QC_QP_INS]		; (the largest it can be)
+	lea	r8,[r8+QP_MAXE]
+	mov	r9,r8
+	shr	r9,7				; to a multiple of 2 * QP_MAXE = 128
+	shl	r9,7
+	lea	rax,[r9+rax-1]
+	cmp	rax,r8
+	jbe	@f
+	cmp	rax,2 * QP_MAXE
+	jbe	.bad
+	sub	rax,2 * QP_MAXE
+@@:
+	test	rax,rax
+	jz	.bad
+	cmp	rax,[r15+QC_QP_INS]
+	ja	.bad				; (blocked: we allow none)
+.ric_set:
+	mov	[g_qp_ric],rax
+	cmp	rsi,rdx
+	jae	.bad
+	movzx	r8d,byte [rsi]			; S
 	mov	cl,7
 	call	qp_int
 	jc	.bad
+	mov	r9,[g_qp_ric]
+	test	r8d,0x80
+	jnz	.base_neg
+	add	r9,rax
+	jmp	.base_set
+.base_neg:
+	sub	r9,rax
+	dec	r9
+.base_set:
+	mov	[g_qp_base],r9
 	xor	ebx,ebx				; fields
 .line:
 	cmp	rsi,rdx
@@ -1465,15 +1887,41 @@ qpack_decode:
 	jnz	.name_ref
 	test	al,0x20
 	jnz	.literal
-	jmp	.bad				; post-base: a dynamic table
+	test	al,0x10
+	jnz	.post_indexed
+	; 0000 N index(3), value: a name after the Base
+	mov	cl,3
+	call	qp_int
+	jc	.bad
+	add	rax,[g_qp_base]
+	jmp	.dyn_name
+.post_indexed:					; 0001 index(4): an entry after the Base
+	mov	cl,4
+	call	qp_int
+	jc	.bad
+	add	rax,[g_qp_base]
+	jmp	.dyn_field
 .indexed:					; 1 T index(6)
 	test	al,0x40
-	jz	.bad				; dynamic
+	jnz	.indexed_static
+	mov	cl,6
+	call	qp_int
+	jc	.bad
+	mov	rcx,[g_qp_base]
+	dec	rcx
+	sub	rcx,rax
+	mov	rax,rcx
+.dyn_field:
+	call	qp_ref				; r8/r9d, r10/r11d
+	jc	.bad
+	jmp	.field_out
+.indexed_static:
 	mov	cl,6
 	call	qp_int
 	jc	.bad
 	call	.static				; r8 = name, r9d, r10 = value, r11d
 	jc	.bad
+.field_out:
 	mov	[r12+HP_NAME],r8
 	mov	[r12+HP_NLEN],r9d
 	mov	[r12+HP_VALUE],r10
@@ -1482,12 +1930,25 @@ qpack_decode:
 	jmp	.line
 .name_ref:					; 01 N T index(4), value
 	test	al,0x10
-	jz	.bad				; dynamic
+	jnz	.name_static
+	mov	cl,4
+	call	qp_int
+	jc	.bad
+	mov	rcx,[g_qp_base]
+	dec	rcx
+	sub	rcx,rax
+	mov	rax,rcx
+.dyn_name:
+	call	qp_ref
+	jc	.bad
+	jmp	.name_out
+.name_static:
 	mov	cl,4
 	call	qp_int
 	jc	.bad
 	call	.static
 	jc	.bad
+.name_out:
 	mov	[r12+HP_NAME],r8
 	mov	[r12+HP_NLEN],r9d
 	mov	cl,7
@@ -1567,6 +2028,12 @@ h3_request_new:
 	cmp	eax,-1
 	je	.decompression
 	mov	[rsp+H3N_N],eax
+	cmp	qword [g_qp_ric],0		; the dynamic table used: the client hears
+	je	@f
+	mov	rax,[rsp+H3N_ENTRY]
+	mov	rax,[rax+QST_ID]
+	call	qd_section_ack
+@@:
 	xor	eax,eax
 	mov	[rsp+H3N_METHOD],rax
 	mov	[rsp+H3N_PATH],rax
@@ -2598,7 +3065,7 @@ qc_ctl_len:
 	xor	eax,eax
 	cmp	dword [r15+QC_HQ],0		; hq-interop: no control stream
 	jne	.out
-	mov	eax,3
+	mov	eax,6
 	mov	rcx,[r15+QC_GOAWAY]
 	test	rcx,rcx
 	jz	.out
@@ -2659,6 +3126,9 @@ qc_app_pending:
 	jb	.yes
 	test	dword [r15+QC_FL2],QF2_MAXD or QF2_MAXS or QF2_PATH or QF2_MSD or QF2_NCID
 	jnz	.yes
+	mov	rax,[r15+QC_QD_SENT]
+	cmp	rax,[r15+QC_QD_END]
+	jb	.yes
 	cmp	dword [r15+QC_RSTN],0
 	jne	.yes
 	lea	r8,[r15+QC_QST]
@@ -2887,8 +3357,9 @@ qc_app_write:
 	dec	ecx
 	jnz	.msd_next
 .control:
-	; our control stream (id 3): its type (0), an empty SETTINGS, then
-	; GOAWAY when draining; all of it again when some was lost
+	; our control stream (id 3): its type (0), SETTINGS (the QPACK table's
+	; capacity, no blocked streams), then GOAWAY when draining; all of it
+	; again when some was lost
 	call	qc_ctl_len
 	cmp	[r15+QC_CTL_SENT],eax
 	jae	.streams
@@ -2896,8 +3367,9 @@ qc_app_write:
 	mov	[r15+QC_LW_CTL],eax
 	mov	dword [rdi],0x0000030E		; STREAM, OFF|LEN: id 3, offset 0,
 	mov	[rdi+3],al			; the length
-	mov	dword [rdi+4],0x00000400	; 00 04 00
-	add	rdi,7
+	mov	dword [rdi+4],0x01030400	; 00, SETTINGS of 3 bytes: id 1,
+	mov	word [rdi+8],(QP_CAPACITY shr 8) or 0x40 or ((QP_CAPACITY and 255) shl 8)	; 2-byte value
+	add	rdi,10
 	mov	rax,[r15+QC_GOAWAY]
 	test	rax,rax
 	jz	@f
@@ -2914,6 +3386,36 @@ qc_app_write:
 @@:
 	mov	r12d,1
 .streams:
+	; our QPACK decoder stream (id 7)
+	mov	rax,[r15+QC_QD_END]
+	sub	rax,[r15+QC_QD_SENT]
+	jbe	.qd_done
+	mov	rcx,r14
+	sub	rcx,rdi
+	sub	rcx,1 + 1 + 8 + 2
+	jle	.qd_done
+	cmp	rax,rcx
+	jbe	@f
+	mov	rax,rcx
+@@:
+	mov	r10,rax				; how many
+	mov	word [rdi],0x070E		; STREAM, OFF|LEN: id 7
+	add	rdi,2
+	mov	rax,[r15+QC_QD_SENT]
+	call	qv_write
+	mov	rax,r10
+	call	qv_write
+	mov	rsi,[r15+QC_QD_SENT]
+	sub	rsi,[r15+QC_QD_BASE]
+	lea	rsi,[r15+QC_QDB+rsi]
+	mov	rcx,r10
+	rep	movsb
+	add	[r15+QC_QD_SENT],r10
+	mov	eax,dword [r15+QC_QD_SENT]	; (its record: control length, this end)
+	shl	eax,8
+	or	[r15+QC_LW_CTL],eax
+	mov	r12d,1
+.qd_done:
 	; one request stream's data, the next with something after the last
 	mov	r13d,QST_N
 	mov	ecx,[r15+QC_RR]
@@ -3057,9 +3559,14 @@ qc_app_sent:
 ; rdi = a sent packet's record: lost. Its stream data and FIN go again
 ; (from the lowest offset lost), our control stream, its control frames.
 qc_app_lost:
-	cmp	dword [rdi+SP_CTL],0
-	je	@f
+	test	dword [rdi+SP_CTL],0xFF
+	jz	@f
 	mov	dword [r15+QC_CTL_SENT],0
+@@:
+	test	dword [rdi+SP_CTL],not 0xFF	; the decoder stream's: from what is known
+	jz	@f
+	mov	rax,[r15+QC_QD_ACK]
+	mov	[r15+QC_QD_SENT],rax
 @@:
 	mov	eax,[rdi+SP_FR]
 	and	eax,QF2_MAXD or QF2_MAXS or QF2_MSD or QF2_NCID
@@ -3076,7 +3583,10 @@ qc_app_lost:
 	mov	ecx,QST_N			; stream's current limit again
 .msd:
 	cmp	dword [r8+QST_KIND],QSK_REQ
+	je	.msd_again
+	cmp	dword [r8+QST_KIND],QSK_ENC
 	jne	@f
+.msd_again:
 	mov	dword [r8+QST_MSDPEND],1
 @@:
 	add	r8,QST_SIZE
@@ -3134,9 +3644,16 @@ sp_stream_ring:
 ; is over and whose bytes and FIN are all delivered goes.
 qc_app_acked:
 	mov	eax,[rdi+SP_CTL]
+	mov	ecx,eax
+	and	eax,0xFF
 	cmp	eax,[r15+QC_CTL_ACKED]
 	jbe	@f
 	mov	[r15+QC_CTL_ACKED],eax
+@@:
+	shr	ecx,8				; the decoder stream's end in it
+	cmp	rcx,[r15+QC_QD_ACK]
+	jbe	@f
+	mov	[r15+QC_QD_ACK],rcx
 @@:
 	mov	eax,[rdi+SP_SLEN]
 	or	eax,[rdi+SP_SFIN]

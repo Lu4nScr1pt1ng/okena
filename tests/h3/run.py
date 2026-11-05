@@ -66,6 +66,8 @@ def backend():
                 body = bytes(random.Random(n).randbytes(n))
             else:
                 body = f"hello {self.path} {self.headers.get('Host')}\n".encode()
+                if self.headers.get("X-Dyn"):
+                    body = f"{self.headers.get('X-Dyn')}|{self.headers.get('X-Stay')}".encode()
             self.send_response(404 if self.path == "/missing" else 200)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("X-Back", "yes")
@@ -232,10 +234,10 @@ class Client(QuicConnectionProtocol):
             if getattr(e, "stream_ended", False) and e.stream_id in self.ended:
                 self.ended[e.stream_id].set_result(None)
 
-    async def request(self, method, path, body=None, length=True):
+    async def request(self, method, path, body=None, length=True, extra=()):
         sid = self._quic.get_next_available_stream_id()
         hdrs = [(b":method", method.encode()), (b":scheme", b"https"), (b":authority", b"h3.test"),
-                (b":path", path.encode())]
+                (b":path", path.encode())] + list(extra)
         if body is not None and length:
             hdrs.append((b"content-length", str(len(body)).encode()))
         self.ended[sid] = asyncio.get_running_loop().create_future()
@@ -329,6 +331,19 @@ async def cases():
               and rs[1]["body"] == bytes(random.Random(n).randbytes(n))
               and all(r["body"] == f"hello /hq{i} localhost\n".encode() for i, r in enumerate(rs[2:])),
               str([(i, r["body"][:30], r.get("timeout")) for i, r in enumerate(rs) if r.get("timeout")]))
+    # QPACK's dynamic table: the client inserts, okena confirms; many values
+    # evict and move the entries
+    async with connect("127.0.0.1", LST, configuration=config(), create_protocol=Client) as c:
+        stay = b"the-same-long-value-" + b"s" * 60
+        ok = True
+        for i in range(300):
+            v = f"value-{i}-".encode() + b"x" * (i % 90)
+            r = await c.request("GET", "/dyn", extra=[(b"x-dyn", v), (b"x-stay", stay), (f"x-n{i % 7}".encode(), v)])
+            ok = ok and r["body"] == v + b"|" + stay
+        check("QPACK dynamic table: 300 requests inserting, evicting; every value right",
+              ok and c.h3._encoder_bytes_sent > 20 and c.h3._decoder_bytes_received > 10 and c.closed is None,
+              f"{r['body'][:40]} encoder {c.h3._encoder_bytes_sent} decoder {c.h3._decoder_bytes_received} {c.closed}")
+    await qpack_raw()
     from aioquic.tls import CipherSuite
     cfg = config()
     cfg.cipher_suites = [CipherSuite.CHACHA20_POLY1305_SHA256]
@@ -337,7 +352,7 @@ async def cases():
         c._quic.request_key_update()
         r2 = await c.request("GET", "/cc2")
         check("ChaCha20-Poly1305, and a key update with it",
-              r1["body"] == b"hello /cc h3.test\n" and r2["body"] == b"hello /cc2 h3.test\n", str((r1, r2))[:120])
+              r1["body"] == b"hello /cc h3.test\n" and r2["body"] == b"hello /cc2 h3.test\n", f"{r1['body']} {r2['body']} {r2.get('timeout')} {c.closed}")
     cfg = config()
     cfg.supported_versions = [QuicProtocolVersion.VERSION_1, QuicProtocolVersion.VERSION_2]
     async with connect("127.0.0.1", LST, configuration=cfg, create_protocol=Client) as c:
@@ -412,6 +427,103 @@ async def cases():
         up = os.urandom(500_000)
         r = await c.request("POST", "/up", up)
         check("POST of 500 KB the same way", r["body"] == hashlib.md5(up).hexdigest().encode(), str(r)[:80])
+
+
+def qp_i(v, bits, high=0):
+    """A QPACK integer of a prefix of `bits`, the first byte's high bits."""
+    m = (1 << bits) - 1
+    if v < m:
+        return bytes([high | v])
+    out, v = [high | m], v - m
+    while v >= 128:
+        out.append(v % 128 | 128)
+        v //= 128
+    return bytes(out + [v])
+
+
+def qp_lit(b):
+    return qp_i(len(b), 7) + b
+
+
+class RawClient(QuicConnectionProtocol):
+    """QUIC with no HTTP/3 layer: streams' bytes as they come."""
+
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.got, self.ended, self.closed = {}, {}, None
+
+    def quic_event_received(self, ev):
+        if isinstance(ev, ConnectionTerminated):
+            self.closed = ev
+            for f in self.ended.values():
+                if not f.done():
+                    f.set_result(None)
+        if hasattr(ev, "data") and hasattr(ev, "stream_id"):
+            self.got[ev.stream_id] = self.got.get(ev.stream_id, b"") + ev.data
+            if ev.end_stream and ev.stream_id in self.ended and not self.ended[ev.stream_id].done():
+                self.ended[ev.stream_id].set_result(None)
+
+
+def h3_body(b):
+    """The DATA frames' bytes of a raw response stream."""
+    out, i = b"", 0
+
+    def var():
+        nonlocal i
+        n = 1 << (b[i] >> 6)
+        v = int.from_bytes(b[i:i + n], "big") & ((1 << (8 * n - 2)) - 1)
+        i += n
+        return v
+    while i < len(b):
+        t, n = var(), var()
+        if t == 0:
+            out += b[i:i + n]
+        i += n
+    return out
+
+
+async def qpack_raw():
+    """QPACK by hand on the encoder stream: inserts past the capacity, then
+    field sections referencing what is left in each way there is."""
+    async with connect("127.0.0.1", LST, configuration=config(), create_protocol=RawClient) as c:
+        enc = c._quic.get_next_available_stream_id(is_unidirectional=True)
+        ins = bytes([2]) + qp_i(1024, 5, 0x20)           # the type, Set Capacity
+        for i in range(198):                             # literal name, evicting, moving the bytes
+            ins += qp_i(6, 5, 0x40) + b"x-junk" + qp_lit(b"j" * (40 + i % 60))
+        ins += qp_i(5, 5, 0x40) + b"x-dyn" + qp_lit(b"from-table")   # index 198
+        ins += qp_i(6, 5, 0x40) + b"x-stay" + qp_lit(b"also-table")  # index 199
+        ric = 200
+        c._quic.send_stream_data(enc, ins)
+        c.transmit()
+        await asyncio.sleep(0.2)
+
+        async def section(prefix, lines):
+            sid = c._quic.get_next_available_stream_id()
+            base = bytes([0xC0 | 17, 0xC0 | 23]) + qp_i(0, 4, 0x50) + qp_lit(b"h3.test") + qp_i(1, 4, 0x50) + qp_lit(b"/raw")
+            block = prefix + base + lines
+            c.ended[sid] = asyncio.get_running_loop().create_future()
+            c._quic.send_stream_data(sid, bytes([1]) + bytes([0x40 | len(block) >> 8, len(block) & 255]) + block, True)
+            c.transmit()
+            try:
+                await asyncio.wait_for(c.ended[sid], 5)
+            except asyncio.TimeoutError:
+                pass
+            return h3_body(c.got.get(sid, b""))
+
+        eic = qp_i(ric % 128 + 1, 8)
+        r = await section(eic + qp_i(0, 7), qp_i(1, 6, 0x80) + qp_i(0, 6, 0x80))
+        check("QPACK by hand: indexed entries, after evictions and compaction", r == b"from-table|also-table", str(r))
+        r = await section(eic + qp_i(1, 7, 0x80), qp_i(0, 4, 0x10) + qp_i(1, 4, 0x10))
+        check("  post-base references (Base below the Insert Count)", r == b"from-table|also-table", str(r))
+        r = await section(eic + qp_i(0, 7), qp_i(1, 4, 0x40) + qp_lit(b"mine") + qp_i(0, 6, 0x80))
+        check("  a name from the table, a value of its own", r == b"mine|also-table", str(r))
+        await section(eic + qp_i(0, 7), qp_i(150, 6, 0x80))
+        for _ in range(20):
+            if c.closed:
+                break
+            await asyncio.sleep(0.1)
+        check("  a reference to an evicted entry: QPACK_DECOMPRESSION_FAILED",
+              c.closed is not None and c.closed.error_code == 0x200, str(c.closed))
 
 
 async def rapid_reset():

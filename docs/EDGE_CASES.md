@@ -121,6 +121,7 @@ the connection closed when its framing can no longer be trusted.
 | Client address migration, NAT rebinding | the kernel steers each packet to the worker its connection ID names (classic BPF on the reuseport group: the ID's first byte), so a moved client still reaches its connection; the client followed to its new address (the newest packet decides), the path validated with PATH_CHALLENGE, 3x limit until it is; a new IP restarts congestion control and the RTT. Active migration (new connection IDs) not offered yet |
 | Key update | followed (RFC 9001 6): the next keys tried when the key phase flips, ours updated with them |
 | Session resumption over QUIC | a ticket at 1-RTT after the handshake; a ticket of ours resumes (no 0-RTT: no early_data in it) |
+| QPACK | a dynamic table of 2048 bytes for the client's inserts, no blocked streams; a reference outside it is QPACK_DECOMPRESSION_FAILED, a bad instruction QPACK_ENCODER_STREAM_ERROR; responses use the static table |
 | Rapid reset over HTTP/3 | more than 200 requests a second cancelled by the client (STOP_SENDING, RESET_STREAM): CONNECTION_CLOSE H3_EXCESSIVE_LOAD |
 | ECN | our datagrams ECT(0); the marks received counted per space and reported in ACK_ECN. Marks stop on a connection whose client acknowledges data without counts; a rise in the CE count is a congestion event |
 | The client's hello again before the handshake is done | our Initial and Handshake data go again at once, not at the probe timer |

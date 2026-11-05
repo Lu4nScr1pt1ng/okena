@@ -353,7 +353,7 @@ In progress (`http3 on`, off by default). In: packet protection (RFC
 handshake on a UDP socket per worker (TLS 1.3 in QUIC mode, X25519 and
 X25519MLKEM768), the 3x amplification limit, ACK ranges, PTO, CUBIC (RFC 9438)
 with packet and time threshold loss detection; request streams as
-sessions running the HTTP/1.1 exchange, QPACK with the static table,
+sessions running the HTTP/1.1 exchange, QPACK with the static and the dynamic table (the client's inserts, our decoder stream),
 stream and connection flow control, out-of-order stream data held until
 the gap fills, Retry with sealed address tokens (under load or always:
 `http3 retry`), GOAWAY on drain, Alt-Svc on HTTP/1.1 and HTTP/2 answers.
@@ -372,7 +372,7 @@ cores, none failing past it, against about 1.2k) and under an Initial
 flood (18k/s kept, p99 3 ms; they fall to 2.6k and 4.1k/s); behind them
 on quiet keep-alive p50/p99. Open: latency under the flood not flat yet,
 quiet p99, BBR, finer pacing (the QUIC tick is 10 ms), active migration's preferred_address,
-QUIC-LB IDs (encrypted, for a fleet), GRO, the QPACK dynamic table, 0-RTT, the abuse budgets, `okena
+QUIC-LB IDs (encrypted, for a fleet), GRO, 0-RTT, the abuse budgets, `okena
 bench` over HTTP/3.
 
 * QUIC v1 (RFC 9000/9001/9002) and v2 (RFC 9369): packets, frames,
