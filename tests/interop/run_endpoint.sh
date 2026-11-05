@@ -15,6 +15,10 @@ case "$TESTCASE" in
 	handshakeloss|transferloss|handshakecorruption|transfercorruption|amplificationlimit| \
 	ipv6|rebind-port|rebind-addr|goodput|crosstraffic|http3|resumption|ecn) ;;
 	retry) H3=retry ;;
+	connectionmigration)		# our preferred addresses: another port, both families
+		IP4=$(hostname -I | cut -f1 -d" ")
+		IP6=$(hostname -I | cut -f2 -d" ")
+		PREF="preferred_address $IP4:4433 [$IP6]:4433" ;;
 	v2) H3=v2 ;;
 	*) echo "test case $TESTCASE not supported"; exit 127 ;;
 esac
@@ -25,6 +29,7 @@ cat > /okena.conf <<EOC
 okena { workers 1 }
 http :443 {
 	http3 $H3
+	$PREF
 	access_log stderr
 	tls { cert /certs/cert.pem; key /certs/priv.key }
 	route /* { to 127.0.0.1:8000 }

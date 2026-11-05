@@ -31,7 +31,9 @@ LS_TCOUNT	:= 108		; d
 LS_T_BODY	:= 112		; d: http: seconds between bytes of a request body
 LS_PT		:= 116		; d: tls passthrough: names group | (default pool + 1) << 16, 0 = none
 LS_TLS		:= 120		; d: its tls entry + 1 (certificate, key), 0 = none
-LS_SIZE		:= 128
+LS_PA4		:= 128		; http3: `preferred_address`'s IPv4 one (sockaddr_in), family 0 none
+LS_PA6		:= 144		; and IPv6 one (sockaddr_in6)
+LS_SIZE		:= 176
 
 ; Host block name (http): routes for requests to that host
 HO_NAME		:= 0		; q: the name; for "*.example.com", ".example.com"
@@ -197,6 +199,11 @@ bss
 	g_cmp_t_header	dd ?
 	g_cmp_pt	dd ?
 	g_cmp_alog	dd ?
+	g_cmp_pa4:	rb 16			; `preferred_address`, IPv4 and IPv6
+	g_cmp_pa6:	rb 28
+	g_cmp_pasa:	rb 28
+	g_cmp_pan	dq ?
+	g_cmp_pai	dd ?
 	g_cmp_tlsi	dd ?
 	g_cmp_tfirst	dd ?
 	g_cmp_tcount	dd ?
@@ -1458,6 +1465,49 @@ compile_listener:
 	jne	@f
 	or	dword [g_cmp_flags],LSF_H3RETRY
 @@:
+	; preferred_address: where a client may move to (QUIC); an IPv4 and an
+	; IPv6 address at most
+	lea	rdi,[g_cmp_pa4]
+	mov	ecx,16 + 28
+	xor	eax,eax
+	rep	stosb
+	mov	rdi,r12
+	mov	ecx,DIR_PREFADDR
+	call	find_child
+	test	rax,rax
+	jz	.pa_done
+	mov	[g_cmp_pan],rax
+	mov	dword [g_cmp_pai],0
+.pa_next:
+	mov	rax,[g_cmp_pan]
+	mov	ecx,[g_cmp_pai]
+	cmp	ecx,[rax+N_ARGC]
+	jae	.pa_done
+	inc	dword [g_cmp_pai]
+	imul	rcx,rcx,A_SIZE
+	add	rcx,[rax+N_ARGS]
+	mov	rdi,[rcx+A_VAL]
+	mov	esi,[rcx+A_VLEN]
+	lea	rdx,[g_cmp_addr]
+	xor	ecx,ecx
+	call	parse_address
+	jc	.pa_next
+	cmp	dword [g_cmp_addr+AD_KIND],ADDR_ANY
+	je	.pa_next			; (an address is needed)
+	lea	rdi,[g_cmp_pasa]
+	lea	rsi,[g_cmp_addr]
+	call	sockaddr_build
+	lea	rsi,[g_cmp_pasa]
+	lea	rdi,[g_cmp_pa4]
+	mov	ecx,16
+	cmp	edx,AF_INET6
+	jne	@f
+	lea	rdi,[g_cmp_pa6]
+	mov	ecx,28
+@@:
+	rep	movsb
+	jmp	.pa_next
+.pa_done:
 	mov	dword [g_cmp_alog],0
 	mov	rdi,r12
 	mov	ecx,DIR_ACCESS_LOG
@@ -1565,6 +1615,12 @@ compile_listener:
 	mov	[rcx+LS_TFIRST],eax
 	mov	eax,[g_cmp_tcount]
 	mov	[rcx+LS_TCOUNT],eax
+	push	rcx
+	lea	rdi,[rcx+LS_PA4]
+	lea	rsi,[g_cmp_pa4]
+	mov	ecx,16 + 28
+	rep	movsb
+	pop	rcx
 	mov	[rcx+LS_MAXCONN],r15d		; whole instance; split per worker later
 	imul	rax,r13,A_SIZE
 	add	rax,[r12+N_ARGS]

@@ -247,18 +247,32 @@ qc_established:
 	jbe	@f
 	mov	eax,2
 @@:
+	cmp	dword [r15+QC_PACID],0		; the first given already (preferred_address)
+	je	@f
+	cmp	eax,2
+	jb	.no_cids
+@@:
 	mov	[r15+QC_NCIDS],eax
+	lea	rdi,[r15+QC_CIDS+8]
+	mov	esi,8
+	xor	edx,edx
+	mov	eax,SYS_getrandom
+	syscall
+	mov	eax,[g_worker_id]
+	mov	[r15+QC_CIDS+8],al
+	cmp	dword [r15+QC_PACID],0
+	jne	.second
 	lea	rdi,[r15+QC_CIDS]
-	mov	esi,16
+	mov	esi,8
 	xor	edx,edx
 	mov	eax,SYS_getrandom
 	syscall
 	mov	eax,[g_worker_id]
 	mov	[r15+QC_CIDS],al
-	mov	[r15+QC_CIDS+8],al
 	lea	rdi,[r15+QC_CIDS]
 	mov	esi,8
 	call	qh_add
+.second:
 	cmp	dword [r15+QC_NCIDS],2
 	jb	@f
 	lea	rdi,[r15+QC_CIDS+8]
@@ -3272,7 +3286,7 @@ qc_app_write:
 	jb	.ncid_done
 	and	dword [r15+QC_FL2],not QF2_NCID
 	or	dword [r15+QC_LW_FR],QF2_NCID
-	xor	ecx,ecx
+	mov	ecx,[r15+QC_PACID]		; (sequence 1 went in preferred_address)
 .ncid:
 	cmp	ecx,[r15+QC_NCIDS]
 	jae	.ncid_end

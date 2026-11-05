@@ -42,6 +42,7 @@ except ImportError:
 BASE = 29000 + os.getpid() % 90 * 10 + (5 if ENGINE == "epoll" else 0)
 BACK, LST, RELAY, RETRY, V2 = BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4
 INNER_H2, INNER_TLS = BASE + 16, BASE + 17
+PREF, PREF_TO = BASE + 18, BASE + 19
 failures = 0
 
 
@@ -364,6 +365,20 @@ async def cases():
         check("`http3 v2`: compatible version negotiation (RFC 9368), v1 offering v2 ends in v2",
               r["body"] == b"hello /cvn h3.test\n" and c._quic._version == QuicProtocolVersion.VERSION_2,
               f"{r['body'][:40]} {c._quic._version}")
+    # preferred_address: the client validates it and moves there
+    async with connect("127.0.0.1", PREF, configuration=config(), create_protocol=Client) as c:
+        pa = c._quic._remote_preferred_address
+        bodies = []
+        for i in range(6):
+            r = await c.request("GET", f"/pa{i}")
+            bodies.append(r["body"])
+            await asyncio.sleep(0.05)
+        addrs = [p.addr[1] for p in c._quic._network_paths if p.is_validated]
+        check("preferred_address: announced, validated by the client, the connection moved there",
+              pa is not None and pa.ipv4_address == ("127.0.0.1", PREF_TO) and len(pa.connection_id) == 8
+              and bodies == [f"hello /pa{i} h3.test\n".encode() for i in range(6)]
+              and c._quic._network_paths[0].addr[1] == PREF_TO,
+              f"{pa} paths {[(p.addr, p.is_validated) for p in c._quic._network_paths]} {bodies[-1][:30]}")
     # resumption: the ticket the first connection got resumes the second
     tickets = []
     cfg = config()
@@ -649,6 +664,12 @@ http 127.0.0.1:{INNER_H2} {{
     route /* {{ to 127.0.0.1:{BACK} }}
 }}
 http 127.0.0.1:{INNER_TLS} {{
+    tls {{ cert {tmp / 'c.pem'}; key {tmp / 'k.pem'} }}
+    route /* {{ to 127.0.0.1:{BACK} }}
+}}
+http 127.0.0.1:{PREF} {{
+    http3 on
+    preferred_address 127.0.0.1:{PREF_TO}
     tls {{ cert {tmp / 'c.pem'}; key {tmp / 'k.pem'} }}
     route /* {{ to 127.0.0.1:{BACK} }}
 }}

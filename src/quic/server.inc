@@ -147,8 +147,9 @@ QC_QD_BASE	:= 952				; q: the decoder stream: the buffer's first offset
 QC_QD_END	:= 960				; q: written
 QC_QD_SENT	:= 968				; q: sent (back to what is acknowledged)
 QC_QD_ACK	:= 976				; q: acknowledged
+QC_PACID	:= 984				; d: QC_CIDS's first went in preferred_address
 QC_FIELDS_END	:= 1024
-assert QC_QD_ACK + 8 <= QC_FIELDS_END
+assert QC_PACID + 4 <= QC_FIELDS_END
 QUIC_MTU_MIN	:= 1200				; every QUIC path takes this (RFC 9000 14)
 PACE_MIN_RTT	:= 4000				; µs: below it no pacing (the pacing timer: 0.2 ms at least)
 assert QC_PCHALO + 8 <= QC_FIELDS_END
@@ -224,6 +225,9 @@ assert QT_SIZE <= 2048
 bss
 	align 16
 	g_qfd		rd MAX_LISTENERS * MAX_WORKERS	; supervisor: the UDP sockets
+	g_qfd4		rd MAX_LISTENERS * MAX_WORKERS	; and at preferred_address (0 none)
+	g_qfd6		rd MAX_LISTENERS * MAX_WORKERS
+	g_qls_tmp:	rb LS_SIZE			; a listener as at its preferred address
 	g_qs_n		dd ?
 	g_qs_pend	dd ?				; sockets with datagrams left (bits)
 	g_qs_fd		rd QS_MAX
@@ -234,6 +238,7 @@ bss
 	g_qc_unval	dd ?				; not validated yet (QUIC_RETRY_AT)
 	g_qd_sa		dq ?				; the datagram qc_packet takes: its sender
 	g_qd_salen	dd ?
+	g_qd_slot	dd ?				; and the socket it came on
 	g_qpace_next	dq ?				; µs the earliest paced connection may send, 0 none
 	g_qpace_armed	dd ?				; io_uring: its timer is set
 	g_qpace_ts	rq 2				; (that timer's timeout)
@@ -247,6 +252,8 @@ bss
 	g_qd_ecn	dd ?				; and its ECN codepoint (0 none, 1 ECT(1), 2 ECT(0), 3 CE)
 	g_qst_retry	dq ?				; Retries sent
 	g_qtok_key	rb 16				; supervisor: Retry tokens' key
+	align 8
+	qs_steer_prog	rq 7				; (qs_steer: built in qs_open_all)
 	g_qsr_key	rb 32				; and stateless resets' (right after it)
 	g_qsr_win	dq ?				; resets sent: this second's start (µs)
 	g_qsr_n		dd ?				; and how many
@@ -284,28 +291,11 @@ rodata
 	; classic BPF for the UDP sockets' reuseport group (it sees the UDP
 	; payload): the socket index (= the worker) is the first byte of the
 	; Destination Connection ID, at 1 in a short header, at 6 in a long
-	; one; an index past the group's sockets falls back to the hash
+	; one, modulo the workers: ours name their worker, a client's first
+	; (random) spread evenly, the same one always to the same worker.
+	; (The modulus is set when the sockets open.)
 	align 8
-	qs_steer_prog	dw 0x30
-			db 0, 0
-			dd 0				; ld  byte [0]
-			dw 0x45
-			db 0, 2
-			dd 0x80				; jset #0x80: long
-			dw 0x30
-			db 0, 0
-			dd 6				; ld  byte [6]
-			dw 0x16
-			db 0, 0
-			dd 0				; ret a
-			dw 0x30
-			db 0, 0
-			dd 1				; ld  byte [1]
-			dw 0x16
-			db 0, 0
-			dd 0				; ret a
-	align 8
-	qs_steer	dw 6, 0, 0, 0			; struct sock_fprog
+	qs_steer	dw 7, 0, 0, 0			; struct sock_fprog
 			dq qs_steer_prog
 	; our transport parameters past the connection IDs: max_idle_timeout
 	; 30 s, max_udp_payload_size 1472, initial_max_data 1 MiB, stream data
@@ -430,11 +420,19 @@ qs_open_all:
 	push	rbx
 	push	r12
 	push	r13
+	push	r14
 	lea	rdi,[g_qtok_key]		; Retry tokens, stateless resets: keys
 	mov	esi,16 + 32			; every worker shares
 	xor	edx,edx
 	mov	eax,SYS_getrandom
 	syscall
+	; the steering program, modulo this many workers
+	lea	rdi,[qs_steer_prog]
+	lea	rsi,[.prog]
+	mov	ecx,7 * 8
+	rep	movsb
+	mov	eax,[g_workers]
+	mov	dword [qs_steer_prog+5 * 8 + 4],eax
 	xor	r12d,r12d			; listener
 .listener:
 	cmp	r12d,[g_plan_listeners]
@@ -467,16 +465,112 @@ qs_open_all:
 	mov	r8d,16
 	mov	eax,SYS_setsockopt
 	syscall
+	; at its preferred addresses too, their own groups steered the same way
+	mov	r14,rbx
+	lea	rsi,[r14+LS_PA4]
+	mov	edx,16
+	mov	ecx,AF_INET
+	lea	r8,[g_qfd4]
+	call	.preferred
+	js	.failed
+	lea	rsi,[r14+LS_PA6]
+	mov	edx,28
+	mov	ecx,AF_INET6
+	lea	r8,[g_qfd6]
+	call	.preferred
+	js	.failed
+	mov	rbx,r14
 .next:
 	inc	r12d
 	jmp	.listener
 .done:
 	xor	eax,eax
 .failed:
+	pop	r14
 	pop	r13
 	pop	r12
 	pop	rbx
 	ret
+.prog	dw 0x30
+	db 0, 0
+	dd 0					; ld  byte [0]
+	dw 0x45
+	db 0, 2
+	dd 0x80					; jset #0x80: long, else short
+	dw 0x30
+	db 0, 0
+	dd 6					; ld  byte [6]
+	dw 0x05
+	db 0, 0
+	dd 1					; ja past the next
+	dw 0x30
+	db 0, 0
+	dd 1					; ld  byte [1]
+	dw 0x94
+	db 0, 0
+	dd 1					; mod #workers (set above)
+	dw 0x16
+	db 0, 0
+	dd 0					; ret a
+
+; r14 = listener, rsi = one of its preferred addresses (edx bytes, family
+; ecx), r8 = where its sockets go: a socket a worker. eax < 0 on a failure.
+.preferred:
+	xor	eax,eax
+	cmp	word [rsi],0
+	je	.pa_out				; none
+	push	r8
+	push	rcx
+	push	rdx
+	push	rsi
+	lea	rdi,[g_qls_tmp]			; the listener, at that address
+	mov	rsi,r14
+	mov	ecx,LS_SIZE
+	rep	movsb
+	lea	rdi,[g_qls_tmp+LS_SA]
+	mov	ecx,28
+	xor	eax,eax
+	rep	stosb
+	pop	rsi
+	pop	rdx
+	pop	rcx
+	lea	rdi,[g_qls_tmp+LS_SA]
+	push	rcx
+	mov	ecx,edx
+	rep	movsb
+	pop	rcx
+	mov	[g_qls_tmp+LS_SALEN],edx
+	mov	[g_qls_tmp+LS_FAMILY],ecx	; (IPv6 only, for an IPv6 one)
+	pop	r8
+	lea	rbx,[g_qls_tmp]
+	xor	r13d,r13d
+.pa_socket:
+	push	r8
+	call	.open
+	pop	r8
+	test	eax,eax
+	js	.pa_out
+	mov	ecx,r12d
+	imul	ecx,ecx,MAX_WORKERS
+	add	ecx,r13d
+	mov	[r8+rcx*4],eax
+	inc	r13d
+	cmp	r13d,[g_workers]
+	jb	.pa_socket
+	mov	edi,r12d
+	imul	edi,edi,MAX_WORKERS
+	mov	edi,[r8+rdi*4]
+	mov	esi,SOL_SOCKET
+	mov	edx,SO_ATTACH_REUSEPORT_CBPF
+	lea	r10,[qs_steer]
+	mov	r8d,16
+	mov	eax,SYS_setsockopt
+	syscall
+	xor	eax,eax
+.pa_out:
+	test	eax,eax
+	ret
+
 ; rbx = listener: eax = a bound socket, or -errno
 .open:
 	movzx	edi,word [rbx+LS_SA]		; the family its TCP sockets got
@@ -583,18 +677,33 @@ qs_worker_init:
 	mov	eax,ebx
 	imul	eax,eax,MAX_WORKERS
 	add	eax,[g_worker_id]
+	push	rax
 	mov	eax,[g_qfd+rax*4]
+	call	.add
+	mov	rax,[rsp]
+	mov	eax,[g_qfd4+rax*4]		; its preferred addresses' (0 none)
+	call	.add
+	pop	rax
+	mov	eax,[g_qfd6+rax*4]
+	call	.add
+.next:
+	inc	ebx
+	jmp	.listener
+	jmp	.headers
+; eax = a socket (0 none), ebx = its listener: one of the worker's
+.add:
+	test	eax,eax
+	jz	.add_out
 	mov	ecx,[g_qs_n]
 	cmp	ecx,QS_MAX
-	jae	.next
+	jae	.add_out
 	mov	[g_qs_fd+rcx*4],eax
 	mov	[g_qs_lst+rcx*4],ebx
 	inc	dword [g_qs_n]
 	mov	edi,ecx
 	call	qs_watch
-.next:
-	inc	ebx
-	jmp	.listener
+.add_out:
+	ret
 .headers:
 	cmp	dword [g_qs_n],0
 	je	.out
@@ -1072,6 +1181,8 @@ qs_datagram:
 	mov	[g_qd_sa],rax
 	mov	eax,[rsp+QD_SALEN]
 	mov	[g_qd_salen],eax
+	mov	eax,[rsp+QD_SLOT]
+	mov	[g_qd_slot],eax
 	call	qc_packet
 	mov	dword [rsp+QD_LEN],0		; (the datagram is counted once)
 	cmp	dword [rsp+QD_NEW],0
@@ -1662,6 +1773,27 @@ qc_new:
 	syscall
 	mov	eax,[g_worker_id]
 	mov	[r15+QC_SCID],al
+	; a preferred_address to announce: its connection ID (sequence 1) now
+	mov	eax,[rbp+QD_SLOT]
+	mov	eax,[g_qs_lst+rax*4]
+	imul	rax,rax,LS_SIZE
+	mov	ecx,dword [g_listeners+rax+LS_PA4]
+	or	ecx,dword [g_listeners+rax+LS_PA6]
+	test	cx,cx
+	jz	@f
+	lea	rdi,[r15+QC_CIDS]
+	mov	esi,8
+	xor	edx,edx
+	mov	eax,SYS_getrandom
+	syscall
+	mov	eax,[g_worker_id]
+	mov	[r15+QC_CIDS],al
+	mov	dword [r15+QC_PACID],1
+	mov	dword [r15+QC_NCIDS],1
+	lea	rdi,[r15+QC_CIDS]
+	mov	esi,8
+	call	qh_add
+@@:
 	pop	r11
 	pop	r10
 	pop	r9
@@ -1775,6 +1907,37 @@ qc_tp_build:
 	call	qs_reset_token
 	pop	rdi
 	add	rdi,16
+	cmp	dword [r15+QC_PACID],0
+	je	.no_pa
+	; preferred_address: IPv4 address and port, IPv6 address and port (zero
+	; for one not given), connection ID, its reset token
+	mov	word [rdi],0x310D		; (49 bytes)
+	add	rdi,2
+	mov	eax,[r15+QC_SOCK]
+	mov	eax,[g_qs_lst+rax*4]
+	imul	rax,rax,LS_SIZE
+	lea	rsi,[g_listeners+rax+LS_PA4]
+	mov	ecx,[rsi+4]			; sockaddr_in: addr, port
+	mov	[rdi],ecx
+	mov	cx,[rsi+2]
+	mov	[rdi+4],cx
+	lea	rsi,[g_listeners+rax+LS_PA6]
+	mov	rcx,[rsi+8]			; sockaddr_in6: addr, port
+	mov	[rdi+6],rcx
+	mov	rcx,[rsi+16]
+	mov	[rdi+14],rcx
+	mov	cx,[rsi+2]
+	mov	[rdi+22],cx
+	mov	byte [rdi+24],8
+	mov	rax,[r15+QC_CIDS]
+	mov	[rdi+25],rax
+	push	rdi
+	lea	rsi,[r15+QC_CIDS]
+	add	rdi,33
+	call	qs_reset_token
+	pop	rdi
+	add	rdi,49
+.no_pa:
 	mov	word [rdi],0x0C11		; version_information: the chosen one, then
 	mov	eax,[r15+QC_VER]		; those we take (v2, v1)
 	bswap	eax
@@ -2203,8 +2366,14 @@ qc_packet:
 	mov	rax,[rsp+QP_PN]
 	cmp	rax,[rsp+QP_LARGEST]
 	jle	@f
+	mov	eax,[g_qd_slot]			; on another of our sockets (the client
+	cmp	eax,[r15+QC_SOCK]		; moved to our preferred address): that
+	jne	.moved				; one sends from now
 	call	qc_peer_moved			; ZF: same address
 	jz	@f
+.moved:
+	mov	eax,[g_qd_slot]
+	mov	[r15+QC_SOCK],eax
 	mov	edi,[rsp+QP_DGRAM]
 	call	qc_migrate
 @@:

@@ -371,8 +371,7 @@ streams (156k/s against 130k and 102k), on handshakes (10k/s on two
 cores, none failing past it, against about 1.2k) and under an Initial
 flood (18k/s kept, p99 3 ms; they fall to 2.6k and 4.1k/s); behind them
 on quiet keep-alive p50/p99. Open: latency under the flood not flat yet,
-quiet p99, BBR, active migration's preferred_address,
-QUIC-LB IDs (encrypted, for a fleet), 0-RTT, the abuse budgets, `okena
+quiet p99, BBR, QUIC-LB IDs (encrypted, for a fleet), 0-RTT, the abuse budgets, `okena
 bench` over HTTP/3.
 
 * QUIC v1 (RFC 9000/9001/9002) and v2 (RFC 9369): packets, frames,
