@@ -395,22 +395,30 @@ quic_open:
 ; the pseudo-packet: original dcid length (1), the dcid, the Retry packet;
 ; the tag is AES-128-GCM's over it (as aad, nothing sealed) under the
 ; version's fixed key and nonce
+bss
+	align 16
+	g_qrt_gcm	rb 2 * GCM_SIZE
+	g_qrt_ready	rd 2
+end bss
+
 quic_retry_tag:
 	push	rbx
 	push	r12
 	push	rbp
 	mov	rbp,rsp
-	sub	rsp,GCM_SIZE + 1024 + 16
+	sub	rsp,1024 + 16
 	and	rsp,-16
 	mov	rbx,rdi
 	cmp	r8d,1024 - 21
 	ja	.out				; (a Retry is far smaller)
 	lea	r12,[quic_retry_v1]
+	xor	r10d,r10d
 	cmp	r9d,QUIC_V2
 	jne	@f
 	lea	r12,[quic_retry_v2]
+	mov	r10d,1
 @@:
-	lea	rdi,[rsp+GCM_SIZE]		; the pseudo-packet
+	lea	rdi,[rsp]			; the pseudo-packet
 	mov	[rdi],dl
 	inc	rdi
 	push	rcx
@@ -419,16 +427,25 @@ quic_retry_tag:
 	pop	rsi
 	mov	ecx,r8d
 	rep	movsb
-	lea	rax,[rsp+GCM_SIZE]
-	sub	rdi,rax
+	sub	rdi,rsp
 	push	rdi
-	lea	rdi,[rsp+8]
+	push	r10
+	; the key is fixed: its context is made once, a worker (a flood of
+	; Initials answers with a Retry each)
+	imul	eax,r10d,GCM_SIZE
+	lea	rdi,[g_qrt_gcm+rax]
+	cmp	dword [g_qrt_ready+r10*4],0
+	jne	@f
+	mov	dword [g_qrt_ready+r10*4],1
 	mov	rsi,r12
 	call	gcm_init
+@@:
+	pop	r10
 	pop	rcx				; aad length
-	lea	rdi,[rsp]
+	imul	eax,r10d,GCM_SIZE
+	lea	rdi,[g_qrt_gcm+rax]
 	lea	rsi,[r12+16]			; nonce
-	lea	rdx,[rsp+GCM_SIZE]
+	lea	rdx,[rsp]
 	mov	r8,rbx				; nothing sealed: the tag lands at out
 	xor	r9d,r9d
 	call	gcm_seal

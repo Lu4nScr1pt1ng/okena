@@ -1165,10 +1165,13 @@ qs_send_retry:
 	mov	byte [rdi],8			; ours: new
 	inc	rdi
 	mov	r15,rdi
-	mov	esi,8
-	xor	edx,edx
-	mov	eax,SYS_getrandom
-	syscall
+	rdtsc					; (no syscall a packet under a flood; nothing
+	shl	rdx,32				; secret in it, only different each time)
+	or	rax,rdx
+	mov	rdx,0x9E3779B97F4A7C15
+	imul	rax,rdx
+	xor	rax,qword [g_qsr_key]
+	mov	[r15],rax
 	mov	eax,[g_worker_id]		; (its first byte: this worker, qs_steer)
 	mov	[r15],al
 	lea	rdi,[r15+8]
