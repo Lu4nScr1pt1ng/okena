@@ -16,6 +16,7 @@ rodata
 	lbl_c_hs		db 'c hs traffic',0
 	lbl_s_hs		db 's hs traffic',0
 	lbl_c_ap		db 'c ap traffic',0
+	lbl_c_e			db 'c e traffic',0
 	lbl_s_ap		db 's ap traffic',0
 	lbl_derived		db 'derived',0
 	lbl_key			db 'key',0

@@ -42,6 +42,7 @@ SF_QC		:= 65536			; S_FLAGS: a QUIC connection
 QL_INIT		:= 0
 QL_HS		:= 1
 QL_APP		:= 2
+QL_0RTT		:= 3				; (qc_packet's argument: 1-RTT's space, the early keys)
 
 ; a connection's buffer
 QC_LINK		:= 0				; d: next in the worker's list (+ 1), 0 = none
@@ -171,6 +172,7 @@ QF_HDONE	:= 16				; HANDSHAKE_DONE to send
 QF_CLOSE	:= 32				; CONNECTION_CLOSE to send
 QF_APP_ERR	:= 64				; ... of the application (0x1d)
 QF_LINKED	:= 128				; in the list and the hash (until qc_closing)
+QF_EARLY	:= 256				; 0-RTT taken: its keys at QC_K0, the streams ready
 
 ; packet number spaces
 QC_PS		:= QC_FIELDS_END
@@ -1112,8 +1114,6 @@ qs_datagram:
 	pop	r10
 	pop	r9
 	pop	r8
-	cmp	ebp,1
-	je	.next_packet			; 0-RTT: not taken (no early data)
 	; its connection
 	cmp	ebx,NIL
 	jne	.have
@@ -1170,6 +1170,10 @@ qs_datagram:
 	cmp	esi,2
 	jne	@f
 	mov	esi,QL_HS
+@@:
+	cmp	ebp,1
+	jne	@f
+	mov	esi,QL_0RTT			; (dropped unless the connection took 0-RTT)
 @@:
 	mov	rdx,r12
 	mov	rcx,r13
@@ -1832,7 +1836,15 @@ qc_new:
 	; TLS: QUIC mode, our transport parameters
 	lea	rax,[r15+QC_QT]
 	mov	[r15+QC_TS+TS_QT],rax
-	mov	dword [r15+QC_TS+TS_FLAGS],TF_QUIC
+	mov	eax,[rbp+QD_SLOT]		; early data where the listener takes it
+	mov	eax,[g_qs_lst+rax*4]
+	imul	rax,rax,LS_SIZE
+	mov	ecx,TF_QUIC
+	test	dword [g_listeners+rax+LS_FLAGS],LSF_0RTT
+	jz	@f
+	or	ecx,TF_0RTT
+@@:
+	mov	[r15+QC_TS+TS_FLAGS],ecx
 	call	qc_tp_build
 	; named by both IDs, listed
 	lea	rdi,[r15+QC_SCID]
@@ -2251,6 +2263,7 @@ QP_LARGEST	:= 56				; q: the largest received of its space
 QP_HSAVE	:= 64				; the first byte and packet number as they came
 QP_DGRAM	:= 72				; d: the datagram's length (counted once)
 QP_HELLO0	:= 76				; d: the hello was answered before this packet
+QP_EARLY	:= 80				; d: a 0-RTT packet
 QP_SIZE		:= 88
 qc_packet:
 	push	rbx
@@ -2263,6 +2276,13 @@ qc_packet:
 	mov	ebx,edi
 	qc_regs
 	mov	[rsp+QP_LEVEL],esi
+	mov	dword [rsp+QP_EARLY],0
+	cmp	esi,QL_0RTT			; 0-RTT: 1-RTT's packet number space
+	jne	@f
+	mov	esi,QL_APP
+	mov	[rsp+QP_LEVEL],esi
+	mov	dword [rsp+QP_EARLY],1
+@@:
 	mov	[rsp+QP_PKT],rdx
 	mov	[rsp+QP_PNOFF],r8d
 	mov	dword [rsp+QP_ACKEL],0
@@ -2280,6 +2300,14 @@ qc_packet:
 	test	dword [r15+QC_FLAGS],QF_INIT_GONE
 	jnz	.out
 @@:
+	cmp	dword [rsp+QP_EARLY],0
+	je	.not_early
+	test	dword [r15+QC_FLAGS],QF_EARLY	; 0-RTT: only when the hello took it,
+	jz	.out				; until the handshake is done
+	test	dword [r15+QC_FLAGS],QF_DONE
+	jnz	.out
+	jmp	@f
+.not_early:
 	cmp	r12d,QL_APP
 	jne	@f
 	test	dword [r15+QC_FLAGS],QF_DONE
@@ -2305,6 +2333,10 @@ qc_packet:
 	lea	eax,[r12*2]
 	imul	eax,eax,QK_SIZE
 	lea	rdi,[r15+QC_KEYS+rax]
+	cmp	dword [rsp+QP_EARLY],0
+	je	@f
+	lea	rdi,[r15+QC_K0]
+@@:
 	mov	rsi,r13
 	mov	edx,r14d
 	mov	ecx,[rsp+QP_PNOFF]
@@ -2314,6 +2346,8 @@ qc_packet:
 	; 1-RTT with the other key phase: the client updated its keys
 	cmp	r12d,QL_APP
 	jne	.out				; not ours, or damaged: dropped
+	cmp	dword [rsp+QP_EARLY],0
+	jne	.out
 	movzx	eax,byte [r13]			; (left unmasked)
 	shr	eax,2
 	and	eax,1
@@ -2362,6 +2396,8 @@ qc_packet:
 	; 1-RTT, the newest yet, from another address: the client moved
 	; (NAT rebinding): it is followed there, the path validated
 	cmp	dword [rsp+QP_LEVEL],QL_APP
+	jne	@f
+	cmp	dword [rsp+QP_EARLY],0
 	jne	@f
 	mov	rax,[rsp+QP_PN]
 	cmp	rax,[rsp+QP_LARGEST]
@@ -3012,6 +3048,18 @@ qc_crypto_in:
 	sub	edx,ecx
 	mov	[r15+QC_CS_LEN+4],edx
 	or	dword [r15+QC_FLAGS],QF_HELLO
+	cmp	dword [r15+QC_QT+QT_EARLY],0	; 0-RTT taken: its keys, and the streams
+	je	@f				; (and the client's parameters) now
+	lea	rdi,[r15+QC_K0]
+	lea	rsi,[r15+QC_QT+QT_CET]
+	mov	edx,[r15+QC_VER]
+	mov	ecx,[r15+QC_QT+QT_AEAD]
+	call	quic_keys
+	or	dword [r15+QC_FLAGS],QF_EARLY
+	push	rdx
+	call	qc_established
+	pop	rdx
+@@:
 	qc_key	QL_HS, 0
 	mov	rdi,rax
 	lea	rsi,[r15+QC_QT+QT_CHS]
@@ -3066,6 +3114,11 @@ qc_crypto_in:
 	mov	dword [r15+QC_ACKED_ALL+4],1
 	mov	eax,[r15+QC_CS_LEN+0]
 	mov	[r15+QC_CS_SENT+0],eax
+	test	dword [r15+QC_FLAGS],QF_EARLY
+	jz	@f
+	call	qc_dirty			; (set up at the hello already: what
+	jmp	.ok				; waited for the handshake goes now)
+@@:
 	call	qc_established			; http3.inc: the control streams
 .ok:
 	clc

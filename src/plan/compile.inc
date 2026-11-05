@@ -107,6 +107,7 @@ LSF_H2		:= 32		; http: HTTP/2 (`http2 on`): ALPN h2, prior knowledge without TLS
 LSF_H3		:= 64		; http: HTTP/3 (`http3 on`): QUIC on the same port, UDP
 LSF_H3RETRY	:= 128		; http: `http3 retry`: every new QUIC connection proves its address first
 LSF_H3V2	:= 256		; http: `http3 v2`: a v1 client that offers v2 is moved to it
+LSF_0RTT	:= 512		; http: `early_data on`: QUIC 0-RTT for safe requests
 
 ; Pool
 PL_FIRST	:= 0		; d: first server
@@ -1464,6 +1465,20 @@ compile_listener:
 	cmp	eax,2
 	jne	@f
 	or	dword [g_cmp_flags],LSF_H3RETRY
+@@:
+	mov	rdi,r12				; early_data on: QUIC 0-RTT
+	mov	ecx,DIR_EARLY
+	call	find_child
+	test	rax,rax
+	jz	@f
+	mov	rax,[rax+N_ARGS]
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	lea	rdx,[e_onoff]
+	call	list_index
+	test	eax,eax
+	jnz	@f
+	or	dword [g_cmp_flags],LSF_0RTT
 @@:
 	; preferred_address: where a client may move to (QUIC); an IPv4 and an
 	; IPv6 address at most

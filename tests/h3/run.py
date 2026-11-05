@@ -43,6 +43,7 @@ BASE = 29000 + os.getpid() % 90 * 10 + (5 if ENGINE == "epoll" else 0)
 BACK, LST, RELAY, RETRY, V2 = BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4
 INNER_H2, INNER_TLS = BASE + 16, BASE + 17
 PREF, PREF_TO = BASE + 18, BASE + 19
+EARLY = BASE + 20
 failures = 0
 
 
@@ -67,6 +68,8 @@ def backend():
                 body = bytes(random.Random(n).randbytes(n))
             else:
                 body = f"hello {self.path} {self.headers.get('Host')}\n".encode()
+                if self.path.startswith("/e"):
+                    body = f"{self.path} early={self.headers.get('Early-Data')}".encode()
                 if self.headers.get("X-Dyn"):
                     body = f"{self.headers.get('X-Dyn')}|{self.headers.get('X-Stay')}".encode()
             self.send_response(404 if self.path == "/missing" else 200)
@@ -225,6 +228,7 @@ class Client(QuicConnectionProtocol):
                 if not f.done():
                     f.set_result(None)
         if isinstance(ev, StreamReset) and ev.stream_id in self.ended:
+            self.res.setdefault(ev.stream_id, {"headers": None, "body": b""})["reset"] = ev.error_code
             self.ended[ev.stream_id].set_result(None)
         for e in self.h3.handle_event(ev):
             r = self.res.setdefault(e.stream_id, {"headers": None, "body": b""})
@@ -365,6 +369,32 @@ async def cases():
         check("`http3 v2`: compatible version negotiation (RFC 9368), v1 offering v2 ends in v2",
               r["body"] == b"hello /cvn h3.test\n" and c._quic._version == QuicProtocolVersion.VERSION_2,
               f"{r['body'][:40]} {c._quic._version}")
+    # 0-RTT: on a listener that takes it, safe requests in early data
+    for port, on in ((EARLY, True), (LST, False)):
+        tickets = []
+        async with connect("127.0.0.1", port, configuration=config(), create_protocol=Client,
+                           session_ticket_handler=tickets.append) as c:
+            await c.request("GET", "/warm")
+            for _ in range(20):
+                if tickets:
+                    break
+                await asyncio.sleep(0.05)
+        cfg = config()
+        cfg.session_ticket = tickets[0] if tickets else None
+        async with connect("127.0.0.1", port, configuration=cfg, create_protocol=Client,
+                           wait_connected=False) as c:
+            g = asyncio.ensure_future(c.request("GET", "/e1"))
+            p = asyncio.ensure_future(c.request("POST", "/e2", b"x" * 10))
+            rg, rp = await g, await p
+            took = c._quic.tls.early_data_accepted
+            if on:
+                check("0-RTT (`early_data on`): taken; a GET in it served, the backend told (Early-Data: 1)",
+                      took and rg["body"] == b"/e1 early=1", f"took {took} {rg['body'][:40]} {tickets[0].max_early_data_size if tickets else None}")
+                check("  a POST in it refused unprocessed (REQUEST_REJECTED), to be sent again",
+                      rp.get("reset") == 0x10B, str(rp)[:120])
+            else:
+                check("0-RTT not taken where the listener does not say so (the requests go in 1-RTT)",
+                      not took and rg["body"] == b"/e1 early=None", f"took {took} {rg['body'][:40]}")
     # preferred_address: the client validates it and moves there
     async with connect("127.0.0.1", PREF, configuration=config(), create_protocol=Client) as c:
         pa = c._quic._remote_preferred_address
@@ -525,7 +555,19 @@ async def qpack_raw():
                 pass
             return h3_body(c.got.get(sid, b""))
 
+        # a malformed request (no :path) with its body and its end in the same
+        # packet: the stream refused, nothing after it read, the connection
+        # going on
+        sid = c._quic.get_next_available_stream_id()
+        bad = bytes([0, 0, 0xC0 | 20, 0xC0 | 23]) + qp_i(0, 4, 0x50) + qp_lit(b"h3.test")
+        c.ended[sid] = asyncio.get_running_loop().create_future()
+        c._quic.send_stream_data(sid, bytes([1, len(bad)]) + bad + bytes([0, 3]) + b"abc", True)
+        c.transmit()
+        await asyncio.sleep(0.3)
         eic = qp_i(ric % 128 + 1, 8)
+        r = await section(eic + qp_i(0, 7), qp_i(1, 6, 0x80) + qp_i(0, 6, 0x80))
+        check("a malformed request with its body in one packet: refused, the connection lives",
+              c.closed is None and r == b"from-table|also-table", f"{c.closed} {r}")
         r = await section(eic + qp_i(0, 7), qp_i(1, 6, 0x80) + qp_i(0, 6, 0x80))
         check("QPACK by hand: indexed entries, after evictions and compaction", r == b"from-table|also-table", str(r))
         r = await section(eic + qp_i(1, 7, 0x80), qp_i(0, 4, 0x10) + qp_i(1, 4, 0x10))
@@ -664,6 +706,12 @@ http 127.0.0.1:{INNER_H2} {{
     route /* {{ to 127.0.0.1:{BACK} }}
 }}
 http 127.0.0.1:{INNER_TLS} {{
+    tls {{ cert {tmp / 'c.pem'}; key {tmp / 'k.pem'} }}
+    route /* {{ to 127.0.0.1:{BACK} }}
+}}
+http 127.0.0.1:{EARLY} {{
+    http3 on
+    early_data on
     tls {{ cert {tmp / 'c.pem'}; key {tmp / 'k.pem'} }}
     route /* {{ to 127.0.0.1:{BACK} }}
 }}

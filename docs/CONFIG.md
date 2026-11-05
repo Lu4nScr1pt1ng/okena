@@ -10,7 +10,7 @@ not built yet. A directive that is not built is refused by `okena check`
 |---|---|
 | `okena` | `workers`, `io_engine`, `busy_poll`, `watchdog`, `drain delay= timeout=`, `metrics`, `ticket_keys`, `handshake_budget wait=` |
 | `tcp ADDR...` | `to`, `limits { connections; per_source }`, `timeout { idle }`, `proxy_protocol send v1\|v2`, `tls { cert; key }`, `tls passthrough { sni NAME... to pool P; default reject\|to pool P }` |
-| `http ADDR...` | `host`, `route`, `limits`, `timeout { idle; header; body_idle; response }`, `trusted_proxies`, `access_log`, `http2 on\|off`, `http3 on\|off\|retry\|v2`, `preferred_address`, `tls { cert; key; ktls on\|off }` |
+| `http ADDR...` | `host`, `route`, `limits`, `timeout { idle; header; body_idle; response }`, `trusted_proxies`, `access_log`, `http2 on\|off`, `http3 on\|off\|retry\|v2`, `preferred_address`, `early_data on\|off`, `tls { cert; key; ktls on\|off }` |
 | `route PATH... [METHOD...]` | `to`, `redirect`, `rewrite path`, `header set\|add\|drop`, `response header set\|add\|drop` |
 | `pool NAME` | `server ADDR [weight=N] [backup]`, `balance least-request\|peak-ewma\|round-robin\|least-conn\|random`, `connect timeout=`, `health tcp\|http\|grpc ...`, `slow_start`, `tls { trust FILE; sni NAME }` (TLS to the backends), `protocol h1\|h2` |
 
@@ -51,7 +51,11 @@ address is not validated yet answers new ones with a Retry first (a
 token sealed with a key the workers share, good for 10 s); `http3 retry`
 does so for every new connection. On a drain each connection gets
 GOAWAY, finishes the requests it has, then closes (H3_NO_ERROR). 0-RTT
-is not accepted. A connection stays in the QUIC version its client chose;
+is not accepted unless `early_data on`: then a resumed client may send
+requests in its first flight (RFC 9001 4.6), which can be replayed, so
+only GET, HEAD and OPTIONS go on (with `Early-Data: 1` to the backend, RFC
+8470) and anything else is refused with REQUEST_REJECTED, for the client to
+send again after the handshake. A connection stays in the QUIC version its client chose;
 `http3 v2` moves a v1 client that offers v2 to it (RFC 9368). `preferred_address
 ADDR:PORT [ADDR:PORT]` (an IPv4 and an IPv6 address) offers clients
 somewhere to move to after the handshake (RFC 9000 9.6): okena listens

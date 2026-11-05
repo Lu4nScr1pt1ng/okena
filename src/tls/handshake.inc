@@ -86,7 +86,9 @@ QT_TPC_MAX	:= 1024
 QT_HQ		:= QT_TPC + QT_TPC_MAX		; d: ALPN hq-interop (HTTP/0.9), not h3
 QT_NSTLEN	:= QT_HQ + 4			; d: a NewSessionTicket after the flight in
 						; out (1-RTT CRYPTO once the handshake is done)
-QT_SIZE		:= QT_NSTLEN + 4
+QT_EARLY	:= QT_NSTLEN + 4		; d: the client's early data is taken (0-RTT)
+QT_CET		:= QT_EARLY + 4			; client_early_traffic_secret (32)
+QT_SIZE		:= QT_CET + 32
 
 TF_ALPN_H1	:= 1				; set by the caller: answer ALPN with http/1.1
 TF_GOT_H1	:= 2				; the client asked for http/1.1
@@ -94,6 +96,7 @@ TF_HRR		:= 4				; a HelloRetryRequest went out: this is the second hello
 TF_ALPN_H2	:= 8				; set by the caller: h2 may be chosen (preferred)
 TF_GOT_H2	:= 16				; h2 was chosen
 TF_QUIC		:= 32				; set by the caller: QUIC (TS_QT)
+TF_0RTT		:= 64				; set by the caller: QUIC early data may be taken
 
 TH_MORE		:= 0
 TH_SEND		:= 1
@@ -243,6 +246,7 @@ G_H2		:= 524288			; ALPN offers h2
 G_H3		:= 1048576			; ALPN offers h3 (QUIC)
 G_QTP		:= 2097152			; quic_transport_parameters (QUIC)
 G_HQ		:= 4194304			; ALPN offers hq-interop (QUIC, the interop runner)
+G_EARLY		:= 8388608			; early_data: the client sends 0-RTT data
 
 ; the transcript: rsi = bytes, rdx = length
 macro th_add
@@ -478,9 +482,15 @@ tls_hello:
 	je	.psk
 	cmp	eax,57
 	je	.qtp
+	cmp	eax,42
+	je	.early_ext
 .ext_next:
 	mov	rsi,r14
 	jmp	.ext
+
+.early_ext:					; early_data: empty
+	or	dword [rbp+HL_GOT],G_EARLY
+	jmp	.ext_next
 
 .versions:					; supported_versions: u8 length, u16s
 	test	ecx,ecx
@@ -980,6 +990,45 @@ tls_hello:
 	mov	rsi,r12
 	mov	edx,[rbp+HL_MLEN]
 	call	sha256_update
+	; QUIC 0-RTT (RFC 9001 4.6): a resumption that asks for it, where the
+	; caller takes it and the ticket's age is what the client says (within
+	; 11 s: replays from long ago are not): client_early_traffic_secret
+	; over the ClientHello
+	test	dword [rbx+TS_FLAGS],TF_QUIC
+	jz	.no_early
+	mov	rax,[rbx+TS_QT]
+	mov	dword [rax+QT_EARLY],0
+	test	dword [rbx+TS_FLAGS],TF_0RTT
+	jz	.no_early
+	mov	eax,[rbp+HL_GOT]
+	and	eax,G_RESUME or G_EARLY
+	cmp	eax,G_RESUME or G_EARLY
+	jne	.no_early
+	mov	rsi,[rbp+HL_IDP]
+	mov	ecx,[rbp+HL_IDLEN]
+	mov	eax,[rsi+rcx]			; obfuscated_ticket_age
+	bswap	eax
+	mov	edx,[rbp+HL_TICKET+TK_SEALED+TKP_AGE_ADD]
+	bswap	edx
+	sub	eax,edx				; the client's age, ms
+	mov	ecx,[rbp+HL_NOW]
+	sub	ecx,[rbp+HL_TICKET+TK_SEALED+TKP_ISSUED]
+	imul	ecx,ecx,1000			; ours (to the second)
+	sub	eax,ecx
+	jns	@f
+	neg	eax
+@@:
+	cmp	eax,11000
+	ja	.no_early
+	th_snapshot				; H(ClientHello)
+	tls_label [rbp+HL_TMP], 32, [rbp+HL_EARLY], lbl_c_e, [rbp+HL_TH], 32
+	mov	rdi,[rbx+TS_QT]
+	mov	dword [rdi+QT_EARLY],1
+	add	rdi,QT_CET
+	lea	rsi,[rbp+HL_TMP]
+	mov	ecx,32
+	rep	movsb
+.no_early:
 
 	; server random and the ephemeral x25519 key
 	lea	rdi,[rbp+HL_RAND]
@@ -1200,12 +1249,14 @@ tls_hello:
 	; QUIC: ALPN h3 (or hq-interop), our transport parameters
 	mov	rcx,[rbx+TS_QT]
 	mov	edx,[rcx+QT_TPSLEN]
+	mov	r9d,[rcx+QT_EARLY]		; early_data (4) when 0-RTT is taken
+	shl	r9d,2
 	cmp	dword [rcx+QT_HQ],0
 	jne	.ee_hq
-	lea	r8d,[rdx+9+4+2]			; the message body
+	lea	r8d,[rdx+r9+9+4+2]		; the message body
 	mov	byte [r14],8
 	put24	r14+1, r8d			; (takes eax)
-	lea	eax,[rdx+9+4]			; extensions: ALPN (9), parameters (4 + n)
+	lea	eax,[rdx+r9+9+4]		; extensions: ALPN (9), parameters (4 + n)
 	xchg	al,ah				; (big endian)
 	mov	[r14+4],ax
 	mov	dword [r14+6],0x05001000	; ALPN, 5 bytes, a 3-byte list,
@@ -1214,10 +1265,10 @@ tls_hello:
 	add	r14,15
 	jmp	.ee_tp
 .ee_hq:
-	lea	r8d,[rdx+17+4+2]
+	lea	r8d,[rdx+r9+17+4+2]
 	mov	byte [r14],8
 	put24	r14+1, r8d
-	lea	eax,[rdx+17+4]
+	lea	eax,[rdx+r9+17+4]
 	xchg	al,ah
 	mov	[r14+4],ax
 	mov	dword [r14+6],0x0D001000	; ALPN, 13 bytes, an 11-byte list,
@@ -1237,6 +1288,11 @@ tls_hello:
 	lea	rsi,[rcx+QT_TPS]
 	mov	ecx,edx
 	rep	movsb
+	test	r9d,r9d
+	jz	@f
+	mov	dword [rdi],0x00002A00		; early_data, empty: taken
+	add	rdi,4
+@@:
 	mov	r14,rdi
 	jmp	.ee_done
 .ee_tls:
@@ -1558,6 +1614,11 @@ tls_hello:
 	jz	@f
 	mov	dword [rax+QT_NSTLEN],105
 	mov	dword [rdi],0x65000004		; new_session_ticket, 101 bytes
+	test	dword [rbx+TS_FLAGS],TF_0RTT
+	jz	.nst_head
+	mov	dword [rax+QT_NSTLEN],113	; (with early_data: 0-RTT allowed)
+	mov	dword [rdi],0x6D000004		; new_session_ticket, 109 bytes
+.nst_head:
 	mov	eax,[g_tk_life]
 	bswap	eax
 	mov	[rdi+4],eax
@@ -1570,6 +1631,11 @@ tls_hello:
 	mov	ecx,TK_SIZE
 	rep	movsb
 	mov	word [rdi],0			; no extensions (no early data)
+	test	dword [rbx+TS_FLAGS],TF_0RTT
+	jz	@f
+	mov	word [rdi],0x0800		; early_data: max_early_data_size
+	mov	dword [rdi+2],0x04002A00	; 0xffffffff, as QUIC has it (RFC 9001
+	mov	dword [rdi+6],0xFFFFFFFF	; 4.6.1)
 @@:
 	mov	eax,TH_SEND
 	jmp	.out

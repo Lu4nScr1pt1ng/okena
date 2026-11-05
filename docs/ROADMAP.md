@@ -360,8 +360,8 @@ the gap fills, Retry with sealed address tokens (under load or always:
 Stateless resets with a key the workers share. Key updates (RFC 9001 6)
 and NAT rebinding (the client followed to its new address, the path
 validated), packets steered to the worker their connection ID names
-(classic BPF on the reuseport group). Resumption with session tickets
-(no 0-RTT), ECN marks and ACK_ECN, compatible version negotiation to v2
+(classic BPF on the reuseport group). Resumption with session tickets,
+0-RTT behind `early_data on` (safe methods only), ECN marks and ACK_ECN, compatible version negotiation to v2
 (RFC 9368), the loss timer, hq-interop for the interop runner
 (tests/interop). tests/h3/run.py drives
 it with aioquic and curl (ngtcp2) on both engines, through a relay that
@@ -371,7 +371,7 @@ streams (156k/s against 130k and 102k), on handshakes (10k/s on two
 cores, none failing past it, against about 1.2k) and under an Initial
 flood (18k/s kept, p99 3 ms; they fall to 2.6k and 4.1k/s); behind them
 on quiet keep-alive p50/p99. Open: latency under the flood not flat yet,
-quiet p99, BBR, QUIC-LB IDs (encrypted, for a fleet), 0-RTT, the abuse budgets, `okena
+quiet p99, BBR, QUIC-LB IDs (encrypted, for a fleet), the abuse budgets, `okena
 bench` over HTTP/3.
 
 * QUIC v1 (RFC 9000/9001/9002) and v2 (RFC 9369): packets, frames,

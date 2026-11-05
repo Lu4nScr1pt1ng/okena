@@ -74,6 +74,7 @@ QST_FHDR	:= 56				; 16: the header's bytes so far
 QST_MSDPEND	:= 72				; d: a MAX_STREAM_DATA to send
 QST_MSD		:= 80				; q: what we allow it
 QST_FINHERE	:= 88				; d: these bytes end the stream; then, the head did
+QST_EARLY	:= 92				; d: opened by 0-RTT data
 QST_SIZE	:= 96
 QSK_FREE	:= 0
 QSK_REQ		:= 1
@@ -113,6 +114,9 @@ QP_BCAP		:= 4096
 QC_QDB		:= QC_QPB + QP_BCAP
 QD_CAP		:= 512
 assert QC_QDB + QD_CAP <= 1 shl HB_SHIFT
+QC_K0		:= QC_QDB + QD_CAP		; the client's 0-RTT keys (server.inc)
+assert QC_K0 and 15 = 0
+assert QC_K0 + QK_SIZE <= 1 shl HB_SHIFT
 assert QP_MAXE = 64
 H3E_ENCODER_STREAM := 0x201
 
@@ -739,6 +743,9 @@ qc_stream_one:
 	mov	dword [r8+QST_KIND],QSK_REQ
 	mov	dword [r8+QST_SESS],NIL
 	mov	qword [r8+QST_MSD],H3_WINDOW
+	mov	rcx,[rsp+QI_PKT]		; (in 0-RTT: replayable)
+	mov	ecx,[rcx+QP_EARLY]
+	mov	[r8+QST_EARLY],ecx
 	mov	rcx,[r15+QC_GOAWAY]		; past our GOAWAY: refused
 	test	rcx,rcx
 	jz	@f
@@ -816,6 +823,8 @@ qc_stream_one:
 	mov	rcx,r14
 	call	h3_req_bytes			; CF: an error (QC_ERR set)
 	jc	.error
+	cmp	dword [r12+QST_KIND],QSK_REQ
+	jne	.ok				; refused meanwhile: its end is nothing
 	cmp	dword [rsp+QI_FIN],0
 	je	.ok
 	mov	rdi,r12
@@ -1039,6 +1048,8 @@ h3_req_bytes:
 	mov	rdi,r12
 	call	h3_request_new			; the request: its session, its exchange
 	jc	.error
+	cmp	dword [r12+QST_KIND],QSK_REQ
+	jne	.done				; refused: what follows is not read
 	mov	dword [r12+QST_PHASE],1
 	jmp	.next
 .trailers_done:
@@ -2205,6 +2216,35 @@ h3_request_new:
 	cmp	dword [rax],'CONN'
 	je	.malformed
 @@:
+	; in 0-RTT (which may be replayed): only what is safe to do twice,
+	; GET, HEAD, OPTIONS; anything else is refused unprocessed (the client
+	; sends it again once the handshake is done)
+	mov	rdi,[rsp+H3N_ENTRY]
+	cmp	dword [rdi+QST_EARLY],0
+	je	.safe
+	mov	rax,[rsp+H3N_METHOD]
+	mov	rcx,[rsp+H3N_METHOD+8]
+	cmp	rcx,3
+	jne	@f
+	cmp	word [rax],'GE'
+	jne	.too_early
+	cmp	byte [rax+2],'T'
+	je	.safe
+	jmp	.too_early
+@@:
+	cmp	rcx,4
+	jne	@f
+	cmp	dword [rax],'HEAD'
+	je	.safe
+	jmp	.too_early
+@@:
+	cmp	rcx,7
+	jne	.too_early
+	cmp	dword [rax],'OPTI'
+	jne	.too_early
+	cmp	dword [rax+3],'IONS'
+	jne	.too_early
+.safe:
 	; a session for it
 	call	session_alloc
 	cmp	eax,NIL
@@ -2405,6 +2445,13 @@ h3_request_new:
 	mov	word [rdi],0x0A0D
 	add	rdi,2
 .framing:
+	mov	rax,[rsp+H3N_ENTRY]		; in 0-RTT: the backend is told (RFC 8470)
+	cmp	dword [rax+QST_EARLY],0
+	je	@f
+	lea	rsi,[.early_line]
+	mov	ecx,.early_line.len
+	call	h2_stream_new.put
+@@:
 	; a body of unknown length (no content-length) goes chunk-framed; the
 	; stream may still end with nothing more (then "0" ends it)
 	cmp	qword [r13+Q_CLEN],-1
@@ -2445,6 +2492,14 @@ h3_request_new:
 	call	qst_refuse
 	clc
 	jmp	.out
+.too_early:
+	mov	rdi,[rsp+H3N_ENTRY]
+	mov	eax,H3E_REQ_REJECTED
+	call	qst_refuse
+	clc
+	jmp	.out
+.early_line	db 'Early-Data: 1',13,10
+.early_line.len = $ - .early_line
 .decompression:
 	mov	qword [r15+QC_ERR],QPACK_DECOMPRESSION
 	or	dword [r15+QC_FLAGS],QF_APP_ERR
