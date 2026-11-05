@@ -200,6 +200,20 @@ ep_wait_timeout:
 	xor	eax,eax
 @@:
 	inc	eax				; round up: never wake before a deadline
+	mov	rcx,[g_qpace_next]		; QUIC: data pacing holds
+	test	rcx,rcx
+	jz	@f
+	sub	rcx,[g_qnow]
+	jle	.pace_now
+	add	rcx,999
+	shr	rcx,10				; (µs to about ms, rounded up)
+	cmp	rcx,rax
+	jae	@f
+	lea	eax,[rcx+1]
+	jmp	@f
+.pace_now:
+	mov	eax,1
+@@:
 	mov	edx,eax
 	ret
 

@@ -150,7 +150,7 @@ QC_QD_ACK	:= 976				; q: acknowledged
 QC_FIELDS_END	:= 1024
 assert QC_QD_ACK + 8 <= QC_FIELDS_END
 QUIC_MTU_MIN	:= 1200				; every QUIC path takes this (RFC 9000 14)
-PACE_MIN_RTT	:= 20000			; µs: below it no pacing (the QUIC tick is 10 ms)
+PACE_MIN_RTT	:= 4000				; µs: below it no pacing (the pacing timer: 0.2 ms at least)
 assert QC_PCHALO + 8 <= QC_FIELDS_END
 QUIC_RETRY_AT	:= 64				; connections not validated yet, a worker:
 						; past it new ones get a Retry first
@@ -234,6 +234,9 @@ bss
 	g_qc_unval	dd ?				; not validated yet (QUIC_RETRY_AT)
 	g_qd_sa		dq ?				; the datagram qc_packet takes: its sender
 	g_qd_salen	dd ?
+	g_qpace_next	dq ?				; µs the earliest paced connection may send, 0 none
+	g_qpace_armed	dd ?				; io_uring: its timer is set
+	g_qpace_ts	rq 2				; (that timer's timeout)
 	g_qtx_ect	dd ?				; the next datagram is marked ECT(0)
 	g_qgso_off	dd ?				; this worker's device cannot segment
 	g_qgso_first	rd QTX_N			; a message's first datagram
@@ -676,6 +679,43 @@ on_qpoll:
 	jnz	.out
 	mov	edi,ebx				; the multishot poll ended: again
 	jmp	qs_watch
+.out:
+	ret
+
+; io_uring: pacing's timer (qs_pace_timer)
+on_qpace:
+	mov	dword [g_qpace_armed],0
+	jmp	qs_tick
+
+; after the loop's sends: a timer for the earliest data pacing holds, when
+; it comes before the tick (io_uring; epoll's wait takes it: ep_wait_timeout)
+qs_pace_timer:
+	mov	rax,[g_qpace_next]
+	test	rax,rax
+	jz	.out
+	cmp	dword [g_qpace_armed],0
+	jne	.out
+	cmp	dword [g_engine],ENGINE_EPOLL
+	je	.out
+	sub	rax,[g_qnow]
+	cmp	rax,9000
+	jae	.out				; the tick comes first
+	cmp	rax,200
+	jge	@f
+	mov	eax,200
+@@:
+	imul	rax,rax,1000			; ns
+	mov	qword [g_qpace_ts],0
+	mov	[g_qpace_ts+8],rax
+	mov	dword [g_qpace_armed],1
+	call	ring_get_sqe
+	mov	byte [rax+SQE_OPCODE],IORING_OP_TIMEOUT
+	lea	rcx,[g_qpace_ts]
+	mov	[rax+SQE_ADDR],rcx
+	mov	dword [rax+SQE_LEN],1
+	mov	dword [rax+SQE_OP_FLAGS],0
+	mov	rcx,OP_QPACE shl 56
+	mov	[rax+SQE_USER_DATA],rcx
 .out:
 	ret
 
@@ -3726,6 +3766,7 @@ qs_flush:
 	je	@f
 	call	qtx_send
 @@:
+	call	qs_pace_timer
 	pop	r12
 	pop	rbx
 .out:
@@ -3741,6 +3782,7 @@ qs_tick:
 	push	r12
 	push	r15
 	call	qs_clock
+	mov	qword [g_qpace_next],0		; (found again below, and by qc_pace)
 	mov	r12d,[g_qc_head]
 .next:
 	test	r12d,r12d
@@ -3764,6 +3806,19 @@ qs_tick:
 	call	qc_free
 	jmp	.next
 .pto:
+	mov	rax,[r15+QC_PACE_AT]		; still held by pacing: the timer's
+	test	rax,rax
+	jz	@f
+	cmp	rax,[g_qnow]
+	jbe	@f
+	mov	rcx,[g_qpace_next]
+	test	rcx,rcx
+	jz	.pace_min
+	cmp	rax,rcx
+	jae	@f
+.pace_min:
+	mov	[g_qpace_next],rax
+@@:
 	cmp	dword [r15+QC_MTU_TRY],0	; a path MTU probe due
 	je	@f
 	mov	rax,[r15+QC_MTU_AT]
@@ -3969,6 +4024,7 @@ qc_pace:
 	ret
 .wait:
 	mov	[r15+QC_PACE_B],rax
+	push	rax
 	mov	rdx,QUIC_DGRAM			; µs to earn the rest of a datagram
 	sub	rdx,rax
 	mov	rax,rdx
@@ -3979,6 +4035,15 @@ qc_pace:
 	div	r8
 	add	rax,[g_qnow]
 	mov	[r15+QC_PACE_AT],rax
+	mov	rcx,[g_qpace_next]		; the worker's earliest (its timer)
+	test	rcx,rcx
+	jz	@f
+	cmp	rax,rcx
+	jae	.later
+@@:
+	mov	[g_qpace_next],rax
+.later:
+	pop	rax
 	stc
 	ret
 
