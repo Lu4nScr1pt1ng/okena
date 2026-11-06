@@ -35,12 +35,18 @@ AU_JN		:= 80				; d
 AU_CFIRST	:= 84				; d: its claims told
 AU_CN		:= 88				; d
 AU_JSRC		:= 92				; d: the set by URL + 1, 0 a file
-AU_SIZE		:= 96
+AU_POOL		:= 96				; d: forward: who it asks
+AU_TTL		:= 100				; d: seconds a yes is kept, 0 not at all
+AU_TIMEOUT	:= 104				; q: µs it is given
+AU_PATH		:= 112				; q
+AU_PLEN		:= 120				; d
+AU_SIZE		:= 128
 MAX_AUTHS	:= 256
 AK_APIKEY	:= 1
 AK_BASIC	:= 2
 AK_JWT		:= 3
 AK_MTLS		:= 4
+AK_FORWARD	:= 5
 
 ; the table of keys and users, all routes': open addressing on the hash
 AT_KEY		:= 0				; 32: SHA-256 of the key, or of the name
@@ -109,6 +115,12 @@ auth_check:
 	push	r12
 	imul	r12,rdi,AU_SIZE
 	lea	r12,[g_auths+r12]
+	mov	dword [g_fa_mode],0
+	cmp	dword [r12+AU_KIND],AK_FORWARD
+	jne	@f
+	call	fwd_check
+	jmp	.out
+@@:
 	mov	rax,[r15+H_BUF]
 	mov	dword [rax+HB_AUTHL],0
 	mov	dword [rax+HB_JHLEN],0
@@ -258,7 +270,10 @@ auth_hides:
 	lea	r12,[g_auths+rax]
 	push	rdi
 	cmp	dword [r12+AU_KIND],AK_JWT
+	je	.claims
+	cmp	dword [r12+AU_KIND],AK_FORWARD
 	jne	.one_name
+.claims:
 	; what the claims say: only okena says it
 	push	r13
 	push	r14
@@ -339,6 +354,8 @@ auth_emit:
 	cmp	dword [r8+AU_KIND],AK_JWT
 	je	.rendered
 	cmp	dword [r8+AU_KIND],AK_MTLS
+	je	.rendered
+	cmp	dword [r8+AU_KIND],AK_FORWARD
 	jne	.one
 .rendered:
 	lea	rsi,[rax+HB_JHDR]		; rendered when it was verified
@@ -396,19 +413,31 @@ mtls_check:
 	sub	rax,rcx
 	mov	[rdx+HB_JHLEN],eax
 	mov	ecx,[r13+TS_PEERL]
+	lea	rsi,[r13+TS_PEER]
+	call	auth_name
+	clc
+	jmp	.out
+.none:
+	stc
+.out:
+	pop	r13
+	ret
+
+; rsi = a name, ecx = its length, rdx = the buffers: it goes in HB_AUTHN, or a hash
+; of it when it does not fit. Keeps rbx, r12-r15.
+auth_name:
 	cmp	ecx,AUTH_NAME_MAX
 	ja	.long
 	mov	[rdx+HB_AUTHL],ecx
 	lea	rdi,[rdx+HB_AUTHN]
-	lea	rsi,[r13+TS_PEER]
 	rep	movsb
-	jmp	.good
+	ret
 .long:
+	push	rdx
 	lea	rdi,[g_au_digest]
-	lea	rsi,[r13+TS_PEER]
 	mov	edx,ecx
 	call	sha256
-	mov	rdx,[r15+H_BUF]
+	pop	rdx
 	mov	dword [rdx+HB_AUTHL],AUTH_NAME_MAX
 	lea	rdi,[rdx+HB_AUTHN]
 	lea	rsi,[g_au_digest]
@@ -433,21 +462,23 @@ mtls_check:
 	stosb
 	dec	ecx
 	jnz	.hex
-.good:
-	clc
-	jmp	.out
-.none:
-	stc
-.out:
-	pop	r13
 	ret
 
 ; refused: 401, and how to prove it. The connection stays, as for a 429.
 auth_refuse:
+	cmp	dword [g_fa_mode],FA_HELD
+	je	.held
+	cmp	dword [g_fa_mode],FR_FAIL
+	jne	@f
+	mov	edi,503				; who decides cannot be asked: nobody gets in
+	jmp	http_error
+@@:
 	test	dword [r15+H_FLAGS],HX_GRPC
 	jz	@f
 	mov	edi,401
 	jmp	http_error
+.held:
+	ret
 @@:
 	or	dword [r15+H_FLAGS],HX_SELF or HX_STARTED
 	test	dword [r15+H_FLAGS],HX_NOBODY
@@ -458,6 +489,8 @@ auth_refuse:
 	jne	@f
 	call	rid_new
 @@:
+	cmp	dword [g_fa_mode],FR_DENY
+	je	.denied
 	mov	dword [r15+H_STATUS],401
 	mov	edi,401
 	mov	esi,5
@@ -496,6 +529,7 @@ auth_refuse:
 .challenged:
 	pop	r12
 	memit_x 13,10
+.tail:
 	call	cors_emit
 	memit_x 'Content-Length: 0',13,10,'X-Request-Id: '
 	lea	rsi,[r15+H_RID]
@@ -514,3 +548,34 @@ auth_refuse:
 	mov	ecx,SIDE_CLIENT
 	xchg	rsi,rdi
 	jmp	h_send
+; what the service answered, and what it said for the client
+.denied:
+	mov	rax,[r15+H_BUF]
+	mov	eax,[rax+HB_FSTAT]
+	mov	[r15+H_STATUS],eax
+	mov	edi,eax
+	mov	esi,5
+	call	http_count
+	mov	rdi,[r15+H_BUF]
+	lea	rdi,[rdi+HB_OUT]
+	memit_x 'HTTP/1.1 '
+	mov	eax,[r15+H_STATUS]
+	xor	edx,edx
+	mov	ecx,100
+	div	ecx
+	add	al,'0'
+	stosb
+	mov	eax,edx
+	xor	edx,edx
+	mov	ecx,10
+	div	ecx
+	add	al,'0'
+	stosb
+	lea	eax,[rdx+'0']
+	stosb
+	memit_x ' Refused',13,10
+	mov	rax,[r15+H_BUF]
+	lea	rsi,[rax+HB_JHDR]
+	mov	ecx,[rax+HB_JHLEN]
+	rep	movsb
+	jmp	.tail

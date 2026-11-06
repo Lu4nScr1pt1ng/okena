@@ -3206,6 +3206,41 @@ pool_used:
 	ret
 ; rdi = node with a `to`: CF when it is `to pool` + this pool (r12)
 .uses:
+	push	rdi
+	call	.uses_to
+	pop	rdi
+	jc	.used
+	push	rdi
+	mov	ecx,DIR_MIRROR			; `mirror pool NAME`
+	call	find_child
+	pop	rdi
+	test	rax,rax
+	jz	.uses_auth
+	mov	rcx,[rax+N_ARGS]
+	cmp	dword [rax+N_ARGC],2
+	jb	.uses_auth
+	push	rdi
+	lea	rdi,[rcx+A_SIZE]
+	mov	rsi,r12
+	call	same_arg_value
+	pop	rdi
+	jc	.used
+.uses_auth:
+	mov	ecx,DIR_AUTH			; `auth forward pool=NAME`
+	call	find_child
+	test	rax,rax
+	jz	.not
+	mov	rdi,rax
+	lea	rsi,[str_key_pool]
+	call	node_option
+	test	rax,rax
+	jz	.not
+	mov	rdi,rax
+	mov	rsi,r12
+	jmp	same_arg_value
+.used:
+	ret
+.uses_to:
 	mov	ecx,DIR_TO
 	call	find_child
 	test	rax,rax

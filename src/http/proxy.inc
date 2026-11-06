@@ -388,7 +388,7 @@ fault_flush:
 	mov	rax,[g_fd+rdx+FD_SESS]
 	mov	[g_fd+rcx+FD_SESS],rax
 	mov	r10d,ebx
-	and	ebx,not FD_HEDGE
+	and	ebx,not (FD_HEDGE or FD_FWD)
 	push	r8
 	push	r9
 	push	r10
@@ -402,8 +402,13 @@ fault_flush:
 	jne	.next
 	h_rec
 	test	r10d,FD_HEDGE
-	jz	.held
+	jz	.not_hedge
 	call	hedge_fire
+	jmp	.next
+.not_hedge:
+	test	r10d,FD_FWD
+	jz	.held
+	call	fwd_timeout
 	jmp	.next
 .held:
 	cmp	dword [r15+H_STATE],HS_FAULT
@@ -587,6 +592,16 @@ http_request:
 @@:
 	call	http_sni_host_check
 	jc	.misdirected
+	test	dword [r15+H_FLAGS],HX_MIRROR	; `auth forward` asks: not a route's
+	jz	.routing
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_FWD
+	jz	.routing
+	mov	dword [r15+H_ACT],0
+	mov	rax,[r15+H_BUF]
+	mov	r13d,[rax+HB_MIRS]
+	jmp	.pool_chosen
+.routing:
 	call	http_route			; eax = route entry, -1 none, -2 unsafe path
 	cmp	eax,-1
 	je	.no_route
@@ -2207,6 +2222,8 @@ http_resp_head:
 	mov	edi,ebx
 	call	ph_disarm
 	call	hedge_answer
+	mov	eax,[rsp]
+	call	fwd_answer
 	call	http_latency_sample
 	pop	rax
 	mov	edi,eax

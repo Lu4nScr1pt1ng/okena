@@ -128,7 +128,7 @@ enumdef e_pp_version, 'v1', 'v2'
 enumdef e_tls_mode, 'passthrough'
 enumdef e_onoff, 'on', 'off'
 enumdef e_cors_flags, 'credentials'
-enumdef e_auth, 'api_key', 'basic', 'jwt', 'mtls'
+enumdef e_auth, 'api_key', 'basic', 'jwt', 'mtls', 'forward'
 enumdef e_cca, 'required', 'optional'
 enumdef e_priority, 'normal', 'critical', 'bulk'
 enumdef e_mirror_what, 'pool'
@@ -138,7 +138,7 @@ enumdef e_proto, 'h1', 'h2'
 
 keysdef k_drain, 'delay', T_DURATION, 'timeout', T_DURATION
 keysdef k_hs_budget, 'wait', T_DURATION
-keysdef k_auth, 'header', T_ANY, 'keys', T_ANY, 'users', T_ANY, 'realm', T_ANY, 'identity', T_ANY, 'forward', T_ANY
+keysdef k_auth, 'header', T_ANY, 'keys', T_ANY, 'users', T_ANY, 'realm', T_ANY, 'identity', T_ANY, 'forward', T_ANY, 'pool', T_ANY, 'path', T_ANY, 'copy', T_ANY, 'cache', T_DURATION, 'timeout', T_DURATION
 keysdef k_hedge, 'after', T_ANY, 'max', T_COUNT
 keysdef k_cors, 'origins', T_ANY, 'methods', T_ANY, 'headers', T_ANY, 'expose', T_ANY, 'max_age', T_DURATION
 keysdef k_jwks, 'trust', T_ANY, 'refresh', T_DURATION, 'stale', T_DURATION

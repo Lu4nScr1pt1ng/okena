@@ -2379,6 +2379,7 @@ session_close:
 	test	dword [r12+S_FLAGS],SF_MIR
 	jz	@f
 	dec	dword [g_mir_n]			; a mirrored request: no client at all
+	call	fwd_gone
 	jmp	.noclient
 @@:
 	test	dword [r12+S_FLAGS],SF_H2S

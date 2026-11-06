@@ -1214,6 +1214,9 @@ compile_auth:
 	mov	edx,AK_MTLS
 	cmp	byte [rcx],'m'
 	je	@f
+	mov	edx,AK_FORWARD
+	cmp	byte [rcx],'f'
+	je	@f
 	mov	edx,AK_JWT
 @@:
 	mov	[r12+AU_KIND],edx
@@ -1249,6 +1252,11 @@ compile_auth:
 .not_jwt:
 	cmp	dword [r12+AU_KIND],AK_MTLS
 	je	.done
+	cmp	dword [r12+AU_KIND],AK_FORWARD
+	jne	@f
+	call	compile_forward
+	jmp	.done
+@@:
 	cmp	dword [r12+AU_KIND],AK_BASIC
 	je	.basic
 	mov	rdi,rbx

@@ -482,7 +482,7 @@ together), never per worker.
 
 Today, on a route: `auth api_key header=x-api-key keys=FILE`, `auth basic
 users=FILE realm=NAME` (both take `identity=NAME` and `forward=on`) and `auth jwt`.
-What else follows in the block below (`forward`, `allow`) is planned.
+What else follows in the block below (`allow`) is planned.
 
 ```
 auth jwt {
@@ -560,6 +560,26 @@ has no certificate to look at. Not on a `tcp` listener, and not with `http3`: it
 refused at load, because QUIC would be a way around it. A client's chain must fit
 in 16 KB. Revocation (CRL, OCSP) is not checked.
 
+`auth forward pool=NAME path=/verify copy=a,b timeout=2s cache=30s` has another
+service decide. The request waits, and okena asks: GET on `path`, on that pool, so
+its TLS, health checks and balancing apply, with the client's Cookie and
+Authorization and `X-Forwarded-Method`, `X-Forwarded-Uri` and `X-Forwarded-Host`.
+
+* A 2xx lets the request go on. The fields named in `copy` go to the backend, in
+  place of whatever the client sent under those names; the first is what
+  `limit key=auth.user` counts by. A field that does not fit in 256 bytes in all,
+  or has a control byte, is a 503.
+* A 3xx or 4xx is the client's answer, with its `Location`, `WWW-Authenticate` and
+  first `Set-Cookie`, and no body.
+* Anything else, no answer within `timeout`, or the pool down is 503: when who
+  decides cannot be asked, nobody gets in.
+
+`cache` keeps a 2xx in each worker, by method, host, target, Cookie and
+Authorization together; a refusal is not kept, nor is a request with neither of
+those two. A session revoked at the service goes on working for up to that long.
+Limits and faults on the route run after it. At most 256 requests of a worker wait
+at once, and past that they get a 503.
+
 A keys file has lines `name:key`, a users file `name:SALT:SHA256HEX`, the hash
 being of SALT and the password together, as in
 `printf '%s%s' "$salt" "$password" | sha256sum`. Names are up to 20 bytes, and
@@ -597,7 +617,7 @@ policy admin {
 }
 
 policy sso {
-    auth forward https://auth.internal/verify copy=x-user-id,x-user-role
+    auth forward pool=sso path=/verify copy=x-user-id,x-user-role cache=30s
 }
 ```
 

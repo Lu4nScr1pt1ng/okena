@@ -1170,6 +1170,7 @@ ep_close:
 	test	dword [r12+S_FLAGS],SF_MIR
 	jz	@f
 	dec	dword [g_mir_n]			; a mirrored request: no client at all
+	call	fwd_gone
 	jmp	.client_closed
 @@:
 	mov	edi,[r12+S_CLIENT]

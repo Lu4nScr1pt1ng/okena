@@ -409,7 +409,7 @@ the accepted connections' latency flat.
 ## Phase 6 — Gateway
 
 In progress. In: `fault abort= delay=`, `cors`, `split`, `mirror`, `hedge`, `policy` and `use`, `priority` with an overload manager, `auth api_key`,
-`basic`, `mtls` (`client_ca` over TCP) and `jwt` (a JWK set from a file or a URL), `limit` (for now by rate; quotas and `match`
+`basic`, `mtls` (`client_ca` over TCP), `forward` and `jwt` (a JWK set from a file or a URL), `limit` (for now by rate; quotas and `match`
 blocks are to come).
 
 * JWT/JWKS (fetched by a process of its own, not the control process: a slow
