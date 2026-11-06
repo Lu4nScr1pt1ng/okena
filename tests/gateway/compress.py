@@ -267,7 +267,7 @@ http 127.0.0.1:{BASE + 2} {{
             for i in range(8):
                 r = get("/x/long")
                 if plain(r) != BODIES["long"]:
-                    errs.append(len(r[1]))
+                    errs.append((r[0], len(r[1]), r[2]))
         th = [threading.Thread(target=many) for i in range(10)]
         for t in th:
             t.start()
@@ -280,7 +280,8 @@ http 127.0.0.1:{BASE + 2} {{
             t.join()
         check("many at once, clients leaving midway", not errs, errs[:3])
         r = [get("/x/html") for i in range(70)]
-        check("  every context came back", all(x[2].get("content-encoding") == "gzip" for x in r))
+        odd = [(x[0], len(x[1]), x[2]) for x in r if x[2].get("content-encoding") != "gzip"]
+        check("  every context came back", not odd, (len(odd), odd[:1]))
     finally:
         p.terminate()
         p.wait(10)

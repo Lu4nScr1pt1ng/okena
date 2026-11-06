@@ -165,16 +165,26 @@ http 127.0.0.1:{LST} {{
     log = tmp / "log"
     p = subprocess.Popen([str(BIN), "-c", str(conf)], stderr=open(log, "w"))
     try:
-        for i in range(30):
+        for i in range(200):
             try:
                 socket.create_connection(("127.0.0.1", LST), 0.5).close()
                 break
             except OSError:
-                time.sleep(0.1)
+                time.sleep(0.05)
+        else:
+            print("did not start:", p.poll(), log.read_text()[-300:], flush=True)
         fn()
     finally:
         p.terminate()
         p.wait(10)
+        # a ring lets its sockets go after the process has left: until then a
+        # connect succeeds, and the next instance would look started
+        for i in range(200):
+            try:
+                socket.create_connection(("127.0.0.1", LST), 0.5).close()
+                time.sleep(0.02)
+            except OSError:
+                break
     check(f"{name}: no worker died", "killed" not in log.read_text(), log.read_text()[-160:])
 
 

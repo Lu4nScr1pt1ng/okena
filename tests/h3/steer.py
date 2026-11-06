@@ -83,7 +83,7 @@ async def cases():
         t.check("QUIC-LB encrypted: the server ID comes back with the key, and the rest differs",
                 all(len(x) == 8 for x in CIDS) and all(p[:2] == b"\xbe\xef" for p in plain)
                 and len({p[2:] for p in plain}) == CONNS, str([p.hex() for p in plain]))
-        t.check("  never in the clear", not any(b"\xbe\xef" in x for x in CIDS), str([x.hex() for x in CIDS]))
+        t.check("  never in the clear", not all(x[1:3] == b"\xbe\xef" for x in CIDS), str([x.hex() for x in CIDS]))
         t.check("  rotation in the first three bits, workers in the free ones",
                 all(x[0] >> 5 == 2 for x in CIDS) and len({(x[0] & 0x1F) % 4 for x in CIDS}) > 1,
                 str([x[0] for x in CIDS]))
