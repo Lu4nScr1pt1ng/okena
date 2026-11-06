@@ -100,6 +100,7 @@ HS_TUNNEL_UP	:= 11		; 101 sent: bytes the backend sent early go to the client
 HS_TUNNEL_IN	:= 12		; then bytes the client sent early go to the backend
 HS_INTERIM_SEND	:= 13		; writing a 1xx (103 Early Hints...) before the final response
 HS_SELF_SEND	:= 14		; writing okena's own answer (a redirect), connection kept
+HS_HEDGED	:= 43		; its copy won: what it writes goes through here
 HS_FAULT	:= 42		; held by fault delay=: its head waits in IN, nothing reads
 HS_H2TUN	:= 41		; WebSocket over an HTTP/2 stream (http_h2tun_*)
 
@@ -131,6 +132,9 @@ HX_SELF		:= 524288	; okena answers this request itself (a redirect)
 HX_GRPC		:= 1048576	; a gRPC request: okena's own errors answer as gRPC
 HX_DUPLEX	:= 2097152	; HTTP/2 both ends: the body goes on beside the response
 HX_H2TUN	:= 4194304	; WebSocket over an HTTP/2 stream: bytes both ways
+HX_HWON		:= 536870912	; a copy that hedges: its answer goes to the client
+HX_HEDGE	:= 1073741824	; a copy that hedges: its answer may count
+HX_HEDGEW	:= 0x80000000	; its hedge's time is set; its answer ends the race
 HX_TEE		:= 268435456	; its body goes to a copy too: HB_MIRS
 HX_MIRROR	:= 134217728	; a copy (`mirror`): its pool in HB_SPLIT, no filters
 HX_SPLIT	:= 67108864	; `split`: this response gives the client its cookie
@@ -375,6 +379,7 @@ fault_flush:
 .due:
 	mov	ebx,[g_fd+rcx+FD_SESS]
 	mov	r8d,[g_fd+rcx+FD_GEN]
+	mov	r9,rax				; its time
 	dec	dword [g_fd_n]			; the last takes its place
 	mov	edx,[g_fd_n]
 	shl	rdx,4
@@ -382,14 +387,25 @@ fault_flush:
 	mov	[g_fd+rcx+FD_AT],rax
 	mov	rax,[g_fd+rdx+FD_SESS]
 	mov	[g_fd+rcx+FD_SESS],rax
+	mov	r10d,ebx
+	and	ebx,not FD_HEDGE
 	push	r8
+	push	r9
+	push	r10
 	call	session_ptr
+	pop	r10
+	pop	r9
 	pop	r8
 	cmp	[rax+S_GEN],r8d
 	jne	.next				; it went meanwhile
 	cmp	dword [rax+S_STATE],ST_OPEN
 	jne	.next
 	h_rec
+	test	r10d,FD_HEDGE
+	jz	.held
+	call	hedge_fire
+	jmp	.next
+.held:
 	cmp	dword [r15+H_STATE],HS_FAULT
 	jne	.next
 	mov	eax,[r15+H_INOFF]
@@ -579,7 +595,7 @@ http_request:
 	test	dword [r15+H_FLAGS],HX_MIRROR
 	jz	.not_copy
 	mov	rax,[r15+H_BUF]
-	mov	r13d,[rax+HB_SPLIT]
+	mov	r13d,[rax+HB_MIRS]
 	jmp	.pool_chosen
 .not_copy:
 	test	edx,edx
@@ -667,6 +683,20 @@ http_request:
 	call	mirror_spawn
 	h_rec
 .pool_chosen:
+	test	dword [r15+H_FLAGS],HX_MIRROR	; hedge: a time for the second try
+	jnz	.not_hedged
+	mov	eax,[r15+H_ACT]
+	test	eax,eax
+	jz	.not_hedged
+	dec	eax
+	imul	rax,rax,RA_SIZE
+	lea	rdi,[g_acts+rax]
+	mov	rcx,[rdi+RA_HAFTER]
+	or	ecx,[rdi+RA_HPCT]
+	jz	.not_hedged
+	call	hedge_arm
+	h_rec
+.not_hedged:
 	add	dword [g_retry_tokens+r13*4],RETRY_PER_REQ	; the pool's budget grows with its traffic
 	cmp	dword [g_retry_tokens+r13*4],RETRY_CAP
 	jbe	@f
@@ -675,7 +705,10 @@ http_request:
 	call	session_ptr
 	mov	[rax+S_POOL],r13d
 	mov	dword [rax+S_TRIES],0
+	test	dword [r15+H_FLAGS],HX_HEDGE	; (a hedge: S_SERVER, the one to avoid)
+	jnz	@f
 	mov	dword [rax+S_SERVER],NIL
+@@:
 	h_rec
 	call	http_write_request_head
 	jc	.head_too_large
@@ -1549,6 +1582,8 @@ http_recv_done:
 http_recv_plain:
 	h_rec
 	mov	edx,[r15+H_STATE]
+	cmp	edx,HS_HEDGED
+	je	.dropped			; (its old backend, late)
 	cmp	edx,HS_HEAD
 	je	.head
 	cmp	edx,HS_REQ_READ
@@ -1565,6 +1600,10 @@ http_recv_plain:
 	je	http_tls_fin_in
 	cmp	edx,HS_PT_HELLO
 	je	http_pt_in
+	jmp	.past_pt
+.dropped:
+	ret
+.past_pt:
 	cmp	edx,HS_UTLS_FLIGHT
 	je	http_uptls_flight_in
 	cmp	edx,HS_UTLS12_RX
@@ -1656,6 +1695,8 @@ http_send_plain:
 	test	rax,rax
 	js	.failed
 	mov	edx,[r15+H_STATE]
+	cmp	edx,HS_HEDGED
+	je	.hedged
 	cmp	edx,HS_CONTINUE
 	je	.continued
 	cmp	edx,HS_SEND_HEAD
@@ -1692,6 +1733,10 @@ http_send_plain:
 	je	http_tls12_fin2_sent
 	cmp	edx,HS_H2TUN
 	je	http_h2tun_read			; (its sends to the client: the next read)
+	ret
+.hedged:
+	test	ecx,ecx
+	jz	hedge_sent			; (its old backend: nothing to it now)
 	ret
 .self_sent:
 	test	dword [r15+H_FLAGS],HX_CLOSE
@@ -2112,6 +2157,7 @@ http_resp_head:
 	push	rax
 	mov	edi,ebx
 	call	ph_disarm
+	call	hedge_answer
 	call	http_latency_sample
 	pop	rax
 	mov	edi,eax
@@ -2459,7 +2505,7 @@ http_resp_pump:
 	add	[r15+H_UPOFF],ecx
 .framed:
 	call	session_ptr
-	test	dword [rax+S_FLAGS],SF_H2S or SF_H3S
+	test	dword [rax+S_FLAGS],SF_H2S or SF_H3S or SF_HSTRM
 	jz	@f
 	mov	rdi,r8				; a stream: the bytes as they are, in DATA
 	mov	esi,r9d
@@ -2476,7 +2522,7 @@ http_resp_pump:
 ; rax.
 h_chunkout:
 	call	session_ptr
-	test	dword [rax+S_FLAGS],SF_H2S or SF_H3S
+	test	dword [rax+S_FLAGS],SF_H2S or SF_H3S or SF_HSTRM
 	jnz	@f
 	or	dword [r15+H_FLAGS],HX_CHUNKOUT
 @@:
@@ -2485,7 +2531,7 @@ h_chunkout:
 ; The final chunk to the client, then the exchange is over.
 http_last_chunk:
 	call	session_ptr
-	test	dword [rax+S_FLAGS],SF_H2S or SF_H3S
+	test	dword [rax+S_FLAGS],SF_H2S or SF_H3S or SF_HSTRM
 	jnz	http_exchange_done		; a stream ends with END_STREAM (and its trailers)
 	h_rec
 	or	dword [r15+H_FLAGS],HX_LASTCHUNK
@@ -3806,6 +3852,8 @@ http_exchange_done:
 	call	h_upclose
 .next:
 	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_HEDGE
+	jnz	hedge_done
 	test	dword [rax+S_FLAGS],SF_MIR
 	jnz	.close				; a copy: nothing comes after it
 	test	dword [rax+S_FLAGS],SF_H3S

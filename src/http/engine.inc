@@ -87,6 +87,9 @@ h_send:
 	jmp	h3s_send			; an HTTP/3 stream: frames on its connection
 .copy:
 	pop	rax				; a copy's answer: as if sent
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_HEDGE
+	jnz	hedge_send			; (or to the client, if it wins)
 	xor	eax,eax
 	mov	edx,2
 	xor	ecx,ecx

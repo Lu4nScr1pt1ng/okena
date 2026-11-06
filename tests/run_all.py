@@ -96,6 +96,8 @@ SUITES = [
     ("split epoll", ["tests/gateway/split.py", "epoll"]),
     ("mirror io_uring", ["tests/gateway/mirror.py", "io_uring"]),
     ("mirror epoll", ["tests/gateway/mirror.py", "epoll"]),
+    ("hedge io_uring", ["tests/gateway/hedge.py", "io_uring"]),
+    ("hedge epoll", ["tests/gateway/hedge.py", "epoll"]),
 ]
 
 

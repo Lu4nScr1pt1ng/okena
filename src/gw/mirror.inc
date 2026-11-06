@@ -17,72 +17,41 @@ bss
 	g_mir_n		dd ?
 end bss
 
-; ebx = session, r15 = record, rdi = the action, r13d = where the request goes:
-; a copy, maybe. Keeps all.
-mirror_spawn:
-	cmp	dword [g_mir_n],MIR_MAX
-	jae	.none
-	cmp	dword [g_fd_n],FD_MAX
-	jae	.none
-	push	rbx
+; A session with no client, for the request of ebx (record r15), next turn of
+; the loop: edi = the pool, esi = S_FLAGS of its own, edx = H_FLAGS of its own,
+; r9d = bytes of IN it takes, r10d = the head of them. eax = the copy, NIL none.
+; Keeps rbx, r15, r12-r14.
+mirror_new:
 	push	r12
 	push	r13
 	push	r14
-	mov	r12,rdi
-	; this share
-	rdtsc
-	imul	eax,eax,0x9E3779B1
-	mov	ecx,100
-	mul	ecx
-	cmp	edx,[r12+RA_MPCT]
-	jae	.out
-	test	dword [r15+H_FLAGS],HX_UPGRADE
-	jnz	.out
-	; what is here of it: the head, and of the body what has come. r10d: more
-	; of the body is still to come
-	xor	r10d,r10d
-	mov	ecx,[r15+H_INLEN]
-	mov	edx,[r15+H_INOFF]
-	mov	eax,[r15+H_BODY]
-	cmp	eax,BK_NONE
-	je	.none_left
-	inc	r10d
-	cmp	eax,BK_LENGTH
-	jne	.fits				; (chunked: its end is in the bytes)
-	mov	eax,ecx
-	sub	eax,edx
-	cmp	rax,[r15+H_REMAIN]
-	jb	.fits
-	xor	r10d,r10d			; all here
-	add	edx,[r15+H_REMAIN]
-	mov	ecx,edx
-	mov	edx,[r15+H_INOFF]
-	jmp	.fits
-.none_left:
-	mov	ecx,edx				; (what follows is the next request's)
-.fits:
-	mov	r14d,ecx			; bytes to copy; edx: the head
-	push	r10
+	push	rbp
+	push	rdi
+	push	rsi
 	push	rdx
-	mov	r13d,ebx			; the request's session
+	push	r9
+	push	r10
+	mov	r13d,ebx			; the request
+	mov	r14,r15
 	call	session_alloc
 	cmp	eax,NIL
-	je	.no_session
+	je	.out
 	mov	ebx,eax
 	inc	dword [g_mir_n]
-	push	r15
 	xchg	ebx,r13d
 	call	session_ptr			; the request's
-	mov	r8,rax
+	mov	r12,rax
 	xchg	ebx,r13d
 	; (not in g_active or the listener's count: a copy holds no client's place,
 	; and a shadow that hangs must not hold up a drain)
 	call	session_ptr			; the copy's
 	mov	dword [rax+S_STATE],ST_OPEN
 	mov	dword [rax+S_INFL],0
-	mov	dword [rax+S_FLAGS],SF_MIR
+	mov	ecx,[rsp+24]
+	or	ecx,SF_MIR
+	mov	[rax+S_FLAGS],ecx
 	mov	dword [rax+S_CLIENT],-1
-	mov	ecx,[r8+S_LST]
+	mov	ecx,[r12+S_LST]
 	mov	[rax+S_LST],ecx
 	mov	dword [rax+S_TRIES],0
 	mov	dword [rax+S_SERVER],NIL
@@ -102,16 +71,6 @@ mirror_spawn:
 	mov	ecx,P_SIZE
 	rep	movsb
 	; its record and buffers
-	mov	r8,[rsp]			; the request's record
-	cmp	qword [rsp+16],0		; a body to tee: it finds the copy
-	je	.no_tee
-	mov	rdx,[r8+H_BUF]
-	mov	[rdx+HB_MIRS],ebx
-	call	session_ptr
-	mov	eax,[rax+S_GEN]
-	mov	[rdx+HB_MIRG],eax
-	or	dword [r8+H_FLAGS],HX_TEE
-.no_tee:
 	mov	eax,ebx
 	shl	rax,H_SHIFT
 	add	rax,[g_http_base]
@@ -120,6 +79,7 @@ mirror_spawn:
 	shl	rax,HB_SHIFT
 	add	rax,[g_hbuf_base]
 	mov	[r15+H_BUF],rax
+	mov	rbp,rax
 	xor	eax,eax
 	mov	[r15+H_UTLS],eax
 	mov	[r15+H_EPOP],eax
@@ -127,23 +87,24 @@ mirror_spawn:
 	mov	[r15+H_ACT],eax
 	mov	qword [r15+H_SNICERT],0
 	mov	[r15+H_READY],eax
-	mov	dword [r15+H_FLAGS],HX_MIRROR or HX_FAULTED
+	mov	eax,[rsp+16]
+	or	eax,HX_MIRROR or HX_FAULTED
+	mov	[r15+H_FLAGS],eax
 	mov	dword [r15+H_STATE],HS_FAULT
-	mov	[r15+H_INLEN],r14d
-	mov	eax,[rsp+8]			; the head
+	mov	eax,[rsp+8]
+	mov	[r15+H_INLEN],eax
+	mov	eax,[rsp]
 	mov	[r15+H_INOFF],eax
-	mov	rsi,[r8+H_BUF]
+	mov	rsi,[r14+H_BUF]
 	lea	rsi,[rsi+HB_IN]
-	mov	rdi,[r15+H_BUF]
-	lea	rdi,[rdi+HB_IN]
-	mov	ecx,r14d
+	lea	rdi,[rbp+HB_IN]
+	mov	ecx,[rsp+8]
 	rep	movsb
-	mov	rax,[r15+H_BUF]
-	mov	ecx,[r12+RA_MPOOL]
-	mov	[rax+HB_SPLIT],ecx
-	mov	dword [rax+HB_H2Q+Q_LEN],0
-	mov	dword [rax+HB_H2Q+Q_OFF],0
-	mov	dword [rax+HB_H2Q+Q_WAIT],0
+	mov	eax,[rsp+32]
+	mov	[rbp+HB_MIRS],eax		; (a copy: its pool)
+	mov	dword [rbp+HB_H2Q+Q_LEN],0
+	mov	dword [rbp+HB_H2Q+Q_OFF],0
+	mov	dword [rbp+HB_H2Q+Q_WAIT],0
 	; on the loop's next turn
 	mov	ecx,[g_fd_n]
 	inc	dword [g_fd_n]
@@ -154,15 +115,78 @@ mirror_spawn:
 	mov	eax,[rax+S_GEN]
 	mov	[g_fd+rcx+FD_GEN],eax
 	mov	qword [g_fd_next],1
-	pop	r15
-.no_session:
-	pop	rdx
-	pop	r10
+	mov	eax,ebx
 .out:
+	mov	r15,r14
+	mov	ebx,r13d
+	add	rsp,40
+	pop	rbp
 	pop	r14
 	pop	r13
 	pop	r12
+	ret
+
+; ebx = session, r15 = record, rdi = the action, r13d = where the request goes:
+; a copy, maybe. Keeps all.
+mirror_spawn:
+	cmp	dword [g_mir_n],MIR_MAX
+	jae	.none
+	cmp	dword [g_fd_n],FD_MAX
+	jae	.none
+	test	dword [r15+H_FLAGS],HX_UPGRADE
+	jnz	.none
+	push	r12
+	mov	r12,rdi
+	; this share
+	rdtsc
+	imul	eax,eax,0x9E3779B1
+	mov	ecx,100
+	mul	ecx
+	cmp	edx,[r12+RA_MPCT]
+	jae	.out
+	; what is here of it: the head, and of the body what has come. r11d: more of
+	; the body is still to come
+	xor	r11d,r11d
+	mov	r9d,[r15+H_INLEN]
+	mov	r10d,[r15+H_INOFF]
+	mov	eax,[r15+H_BODY]
+	cmp	eax,BK_NONE
+	je	.none_left
+	inc	r11d
+	cmp	eax,BK_LENGTH
+	jne	.fits				; (chunked: its end is in the bytes)
+	mov	eax,r9d
+	sub	eax,r10d
+	cmp	rax,[r15+H_REMAIN]
+	jb	.fits
+	xor	r11d,r11d			; all here
+	mov	r9d,r10d
+	add	r9d,[r15+H_REMAIN]
+	jmp	.fits
+.none_left:
+	mov	r9d,r10d			; (what follows is the next request's)
+.fits:
+	push	r11
+	mov	edi,[r12+RA_MPOOL]
+	xor	esi,esi
+	xor	edx,edx
+	call	mirror_new
+	pop	r11
+	cmp	eax,NIL
+	je	.out
+	test	r11d,r11d
+	jz	.out
+	mov	rdx,[r15+H_BUF]			; a body to tee: it finds the copy
+	push	rbx
+	mov	ebx,eax
+	mov	[rdx+HB_MIRS],eax
+	call	session_ptr
 	pop	rbx
+	mov	eax,[rax+S_GEN]
+	mov	[rdx+HB_MIRG],eax
+	or	dword [r15+H_FLAGS],HX_TEE
+.out:
+	pop	r12
 .none:
 	ret
 

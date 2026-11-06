@@ -85,7 +85,9 @@ RA_CORS		:= 80		; d: its cors entry + 1
 RA_SPLIT	:= 84		; d: its split entry + 1
 RA_MPCT		:= 88		; d: mirror: this share, 0 = none
 RA_MPOOL	:= 92		; d: to this pool
-RA_SIZE		:= 96
+RA_HAFTER	:= 96		; q: hedge: µs before the second try, 0 = none
+RA_HPCT		:= 104		; d: or this percentile of the pool's answers
+RA_SIZE		:= 112
 MAX_ACTS	:= MAX_ROUTES
 HD_KIND		:= 0		; d: HOP_SET, HOP_ADD, HOP_DROP
 HD_PREFIX	:= 4		; d: 1 when the name ends with * (drop)
@@ -375,6 +377,8 @@ cstring str_key_delay, 'delay',0
 cstring str_key_wait, 'wait',0
 cstring str_key_key, 'key',0
 cstring str_key_abort, 'abort',0
+cstring str_key_after, 'after',0
+cstring str_key_max, 'max',0
 cstring str_key_origins, 'origins',0
 cstring str_key_methods, 'methods',0
 cstring str_key_headers, 'headers',0
@@ -700,6 +704,9 @@ compile_route_action:
 	lea	rcx,[dir_table + D_SIZE*DIR_MIRROR]
 	cmp	rax,rcx
 	je	@f
+	lea	rcx,[dir_table + D_SIZE*DIR_HEDGE]
+	cmp	rax,rcx
+	je	@f
 	mov	rbx,[rbx+N_NEXT]
 	jmp	@b
 @@:
@@ -801,6 +808,53 @@ compile_route_action:
 	je	plan_bad_mirror
 	mov	[r13+RA_MPOOL],eax
 .no_mirror:
+	mov	rdi,r12
+	mov	ecx,DIR_HEDGE
+	call	find_child
+	test	rax,rax
+	jz	.no_hedge
+	mov	rbx,rax
+	mov	rdi,rbx
+	lea	rsi,[str_key_max]
+	call	node_option
+	test	rax,rax
+	jz	.hedge_after
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_decimal
+	cmp	eax,1
+	jne	plan_bad_hedge
+.hedge_after:
+	mov	rdi,rbx
+	lea	rsi,[str_key_after]
+	call	node_option
+	test	rax,rax
+	jz	plan_bad_hedge
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	cmp	byte [rdi],'p'
+	je	.hedge_pct
+	call	parse_duration
+	test	rax,rax
+	jz	plan_bad_hedge
+	mov	[r13+RA_HAFTER],rax
+	jmp	.no_hedge
+.hedge_pct:
+	cmp	esi,3
+	jne	plan_bad_hedge
+	movzx	eax,byte [rdi+1]
+	movzx	ecx,byte [rdi+2]
+	sub	eax,'0'
+	sub	ecx,'0'
+	cmp	eax,9
+	ja	plan_bad_hedge
+	cmp	ecx,9
+	ja	plan_bad_hedge
+	imul	eax,eax,10
+	add	eax,ecx
+	jz	plan_bad_hedge
+	mov	[r13+RA_HPCT],eax
+.no_hedge:
 	mov	rdi,r12
 	mov	ecx,DIR_FAULT
 	call	find_child
@@ -1070,6 +1124,13 @@ timeout_secs:
 .absent:
 	stc
 	ret
+
+plan_bad_hedge:
+	call	log_begin
+	out_lit 'hedge: after= is a time or a percentile such as p95; max= can only be 1'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
 
 plan_bad_mirror:
 	call	log_begin

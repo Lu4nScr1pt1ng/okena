@@ -64,6 +64,15 @@ requests in its first flight (RFC 9001 4.6), which can be replayed, so
 only GET, HEAD and OPTIONS go on (with `Early-Data: 1` to the backend, RFC
 8470) and anything else is refused with REQUEST_REJECTED, for the client to
 send again after the handshake. A connection stays in the QUIC version its client chose;
+On a route, `hedge after=50ms` (or `after=p95`) cuts the tail of a pool: a GET,
+HEAD or other idempotent request with no body that has no answer by then is sent
+again to another server, and the first answer goes to the client while the other
+is cancelled. `after=pNN` is that percentile of the pool's recent answers in each
+worker, and hedges nothing until 64 have been seen. An answer of 500 or more
+does not win. Hedges spend the pool's retry budget, so a backend in trouble does
+not get twice the load: past the budget a request just waits for its server. A
+pool of one server has nothing to hedge to. `max=` can only be 1.
+
 On a route, `mirror pool NAME N%` sends a copy of that share of its requests
 (all without `N%`) to another pool and throws away what it answers. The client
 never waits for it: a shadow slow, down or failing is not noticed. A body is
