@@ -230,8 +230,13 @@ tcp :{lst2} {{
             # kill(2) returns before the process is gone: a connection a dying
             # worker accepted dies with it (a crash costs that worker's
             # connections). Measure from the moment the old ones are gone.
-            while any(os.path.exists(f"/proc/{pid}/stat") and open(f"/proc/{pid}/stat").read().split()[2] != "Z"
-                      for pid in killed):
+            def alive(pid):
+                try:
+                    with open(f"/proc/{pid}/stat") as f:
+                        return f.read().split()[2] != "Z"
+                except OSError:			# (gone between one look and the next)
+                    return False
+            while any(alive(pid) for pid in killed):
                 time.sleep(0.001)
             t0 = time.time()
             while time.time() - t0 < 1.0:

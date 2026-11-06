@@ -128,6 +128,9 @@ try:
     t0 = time.time()
     while time.time() - t0 < 5 and metrics()[f"okena_listener_active{L}}}"] != 0:
         time.sleep(0.2)
+    time.sleep(1.2)                     # that 0 may be old: workers publish once a second
+    while time.time() - t0 < 7 and metrics()[f"okena_listener_active{L}}}"] != 0:
+        time.sleep(0.2)
     held = [socket.create_connection(("127.0.0.1", LST), timeout=3) for _ in range(2)]
     ok_held = 0
     for c in held:

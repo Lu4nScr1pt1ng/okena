@@ -107,6 +107,9 @@ mirror_new:
 	rep	movsb
 	mov	eax,[rsp+32]
 	mov	[rbp+HB_MIRS],eax		; (a copy: its pool)
+	mov	dword [rbp+HB_EH],0			; (of whoever had this slot)
+	mov	dword [rbp+HB_ZOK],0
+	mov	dword [rbp+HB_FST],0
 	mov	dword [rbp+HB_H2Q+Q_LEN],0
 	mov	dword [rbp+HB_H2Q+Q_OFF],0
 	mov	dword [rbp+HB_H2Q+Q_WAIT],0

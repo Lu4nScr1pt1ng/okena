@@ -487,7 +487,7 @@ its end. A request's `Range`, or a body, goes to the backend; a conditional one 
 what is kept and gets a 200, and on a miss is not kept. A client's own `Cache-Control`
 is not obeyed.
 
-Unless `shared=on`, a request with Cookie or Authorization, or that an `auth` let in,
+Unless `shared=on`, a request with Cookie or Authorization, or on a route with `auth`,
 neither reads nor fills: an answer for one person must not reach another. A hit says
 `Age` and `Cache-Status: okena; hit; ttl=N`, negative when stale, and runs behind
 what the route has for clients: auth, limits, CORS and `response` rules.

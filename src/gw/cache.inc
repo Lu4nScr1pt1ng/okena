@@ -614,8 +614,12 @@ cache_check:
 	jnz	.origin
 	has_field 'cookie'
 	jnz	.origin
-	mov	rax,[r15+H_BUF]
-	cmp	dword [rax+HB_AUTHL],0
+	; (the route, not HB_AUTHL: that holds, on a route with no auth, what the last
+	; request on this session's buffers left; and a yes may come with no name)
+	mov	eax,[r15+H_ACT]
+	dec	eax
+	imul	rax,rax,RA_SIZE
+	cmp	dword [g_acts+rax+RA_AUTH],0
 	jne	.origin
 .conditional:
 	; a conditional request reads what is kept, but its answer may be a 304
@@ -1450,9 +1454,20 @@ cache_tee:
 	add	r8d,ecx
 	cmp	r8d,[rax+CE_MAX]
 	ja	.no
+	mov	r10,rax
 	lea	r9,[rax+CE_BODY]
 	call	cw_put
-	jnc	.out
+	jc	.no
+	; the whole of what it said? (chunked: at its last chunk, http_resp_pump)
+	mov	rax,[r15+H_BUF]
+	mov	eax,[rax+HB_CE]
+	ce_ptr
+	mov	rcx,[rax+CE_WANT]
+	mov	edx,[rax+CE_BLEN]
+	cmp	rcx,rdx
+	jne	.out
+	call	cache_commit
+	jmp	.out
 .no:
 	call	cache_no
 .out:
@@ -1483,11 +1498,20 @@ cache_finish:
 	test	ecx,SF_FILE
 	jnz	file_done
 	test	ecx,SF_CACHED
-	jz	.filled
+	jz	cache_commit
 	and	dword [rax+S_FLAGS],not SF_CACHED
 	and	dword [r15+H_FLAGS],not HX_UPKEEP
 	jmp	cache_unpin
-.filled:
+.none:
+	ret
+
+; all of the body has passed, ebx, r15: what it filled is kept, whatever becomes of
+; its client: one that reads the last byte and leaves, ahead of the send's completion,
+; must not cost the entry. Keeps rbx, r12-r15.
+cache_commit:
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_CFILL
+	jz	.none
 	and	dword [rax+S_FLAGS],not SF_CFILL
 	push	r12
 	push	r13

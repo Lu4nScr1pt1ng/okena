@@ -2646,6 +2646,8 @@ http_resp_pump:
 	jmp	session_close
 .chunk_end:
 	mov	dword [r15+H_RBODY],BK_NONE
+	call	cache_commit
+	h_rec
 	jmp	http_last_chunk
 .close:
 	; until the backend closes, each piece framed as a chunk

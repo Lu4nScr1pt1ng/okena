@@ -186,6 +186,7 @@ http 127.0.0.1:{lst} {{
     route /s/* {{ cache 1s stale-while-revalidate=4s; to pool b }}
     route /shared/* {{ cache 60s shared=on; to pool b }}
     route /key/* {{ auth api_key header=x-api-key keys={tmp}/keys; cache 60s; to pool b }}
+    route /fwd/* {{ auth forward pool=b path=/ok; cache 60s; to pool b }}
     route /max/* {{ cache 60s max=4KiB; to pool b }}
     route /cors/* {{ cors origins=https://a.test,https://b.test; cache 60s; response header set x-mine okena; to pool b }}
     route /none/* {{ to pool b }}
@@ -280,6 +281,19 @@ def main():
         r1, r2 = get("/key/who", x_api_key="ka"), get("/key/who", x_api_key="kb")
         check("a route with auth: each their own", not hit(r2) and hits["/key/who"] == 2, status_of(r2))
         check("  no key, no answer, kept or not", get("/key/who")[0] == 401)
+        # sessions come back to be used: what an auth route left must not count on one
+        # with none, in either direction
+        for i in range(12):
+            get("/key/who", x_api_key="ka")
+            get("/c/after-auth")
+            r = get("/c/after-auth")
+            if not hit(r):
+                break
+        check("after a route with auth, a route with none caches", hit(r), status_of(r))
+        n = hits.get("/fwd/who", 0)
+        get("/fwd/who")
+        r = get("/fwd/who")
+        check("an auth that gives no name is an auth too", not hit(r) and hits["/fwd/who"] == n + 2, status_of(r))
         get("/shared/who", Cookie="s=one")
         r = get("/shared/who", Cookie="s=two")
         check("shared=on says it is the same for all", hit(r) and r[1].startswith(b"s=one"), r[1])
