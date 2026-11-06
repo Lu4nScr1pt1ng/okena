@@ -330,23 +330,31 @@ One key and one token throughout, so the JWT rows are nearly all the token
 cache's hits: only each worker's first request verifies a signature.
 
 Against the budget in ARCHITECTURE.md, which counts what is added on top of the
-backend: the same load straight at `l4bench`, then through okena, three runs, in
-µs. TLS is 1.3 with ECDSA P-256, on connections opened once; whether kTLS was on
-for these runs was not checked.
+backend: the same load straight at `l4bench`, then through okena, three runs of
+15 s, in µs. TLS is 1.3 with ECDSA P-256, on connections opened once. In the
+last two rows `ss` showed `tcp-ulp-tls` on all 64 connections.
 
-| route | p50 | p99 | p99.9 |
-|---|---|---|---|
-| straight to the backend | 14.6-15.1 | 24.6-27.1 | 42-44 |
-| through okena, no filter | 32.3-33.3 | 48.6-50.7 | 78-256 |
-| TLS, no filter | 33.3-33.8 | 47.6-56.8 | 69-442 |
-| TLS, `auth api_key` + `limit` | 33.3-33.8 | 48.6-59.9 | 71-1311 |
-| TLS, `auth jwt` + `limit` | 34.3 (33.8 once) | 49.7-59.9 | 114-1360 |
+| route | p50 | p99 | p99.9 | p99.99 |
+|---|---|---|---|---|
+| straight to the backend | 14.6-14.8 | 24.8-25.1 | 40-42 | 51-63 |
+| through okena, no filter | 32.3 | 45.1-47.6 | 71-96 | 762-1851 |
+| TLS, `auth api_key` + `limit` | 33.3-33.8 | 49.2-54.8 | 70-258 | 639-1966 |
+| kTLS, `auth api_key` + `limit` | 38.9 | 50.7-58.4 | 101-369 | 2196-2523 |
+| kTLS, `auth jwt` + `limit` | 38.9-39.4 | 51.7-58.9 | 79-819 | 1868-2818 |
 
-TLS, auth and limit add at most 19 µs at p50 and 35 µs at p99, inside the budget
-of 20 and 50. p99.9 is not: the budget says 150 µs, and two runs of three pass
-it, by up to 1.3 ms. Runs of 2 s are too short to say whether that is the filters
-or the machine. With no filter, 18 µs at p50 and 25 µs at p99 against a budget of
-10 and 30: p50 is over it.
+Added to the backend, against a budget of 20, 50 and 150 for "TLS (kTLS), auth
+and rate limit": TLS in okena adds 19 at p50 and 30 at p99, and kTLS 24 and 34,
+over the budget at p50 by 4 µs. p99.9 adds 41 at the median run with TLS, but
+218 at the worst, and with kTLS 219 to 779 in four runs of six: not within it.
+With no filter, 18 and 22 against a budget of 10 and 30: p50 is over it.
+
+The p99.99 of 2-3 ms comes with okena in the path and without any filter, on both
+engines. It stays with workers and backends pinned one to a core and the master
+moved away, so it is neither migration nor the master. Each worker is preempted
+4 to 8 times in 10 s, which fits how rare it is; `l4bench`, on the same cores, is
+preempted as often but stalls 0.9 ms at most, so this does not explain it all.
+Open: on a desktop with no isolated cores, finding what takes the core needs
+scheduler tracing as root.
 
 ## HTTP/2 against HTTP/1.1 through okena (2026-10-31)
 
