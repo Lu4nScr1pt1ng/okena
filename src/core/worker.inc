@@ -295,6 +295,7 @@ tick_work:
 	inc	qword [rax]
 	call	idle_expire
 	call	ph_expire
+	call	overload_tick
 	call	retry_budget_tick
 	call	alog_tick
 	cmp	dword [g_draining],0

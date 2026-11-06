@@ -248,12 +248,13 @@ A spike has to be absorbed or refused in microseconds, without a cascade.
   connection slots, free buffers, loop lag (TSC time between iterations),
   handshake debt. Pressure levels switch on measures in steps, all
   reversible with hysteresis:
-  1. shorten keep-alive idle timeout, lower the h2 stream limit;
-  2. disable TLS full handshakes for new clients in favour of resumptions,
-     send `Connection: close` after responses;
+  1. shorten the keep-alive idle timeout (lowering the h2 stream limit is still
+     to come);
+  2. send `Connection: close` after responses (disabling full TLS handshakes
+     for new clients in favour of resumptions is still to come);
   3. reject new requests on low-priority routes with 503 + `Retry-After`;
-  4. stop accepting new connections (the kernel queue and SYN cookies take
-     over).
+  4. reject the normal routes too, only `critical` going on; connections past
+     the listener's limit are refused as before.
 * **Queues are bounded in time, not only size.** Requests waiting for an
   upstream connection or a concurrency slot use CoDel-style management:
   when the queue's minimum sojourn time stays above target (default 5 ms)

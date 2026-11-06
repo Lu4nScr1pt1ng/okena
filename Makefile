@@ -125,6 +125,8 @@ test-serial: $(BIN) $(HTTPH) $(KAT) $(TLSH)
 	python3 -I tests/gateway/mirror.py epoll
 	python3 -I tests/gateway/hedge.py io_uring
 	python3 -I tests/gateway/hedge.py epoll
+	python3 -I tests/gateway/overload.py io_uring
+	python3 -I tests/gateway/overload.py epoll
 
 image:
 	docker build -t okena .

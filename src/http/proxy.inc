@@ -516,6 +516,10 @@ http_request:
 	jz	@f
 	or	dword [r15+H_FLAGS],HX_CLOSE
 @@:
+	cmp	dword [g_overload],2		; pressed: slots come back
+	jb	@f
+	or	dword [r15+H_FLAGS],HX_CLOSE
+@@:
 	cmp	dword [r14+HM_VERSION],10
 	jne	@f
 	or	dword [r15+H_FLAGS],HX_CLOSE or HX_HTTP10	; HTTP/1.0 clients: one exchange
@@ -599,7 +603,21 @@ http_request:
 	jmp	.pool_chosen
 .not_copy:
 	test	edx,edx
-	jz	@f
+	jnz	.has_action
+	cmp	dword [g_overload],3		; no action: normal
+	jb	.no_action
+	mov	r9,rcx
+	xor	edx,edx
+	call	overload_refuses
+	mov	rcx,r9
+	jc	.shed
+.no_action:
+	jmp	.chosen_none
+.shed:
+	mov	qword [g_lim_retry],1
+	mov	dword [g_lim_status],503
+	jmp	limit_refuse
+.has_action:
 	dec	edx
 	imul	rdx,rdx,RA_SIZE
 	cmp	dword [g_acts+rdx+RA_CORS],0	; cors: a preflight costs nobody anything
@@ -618,6 +636,16 @@ http_request:
 	jnz	cors_preflight
 	h_rec
 .no_cors:
+	cmp	dword [g_overload],3		; (a route with no action: below)
+	jb	.not_shed
+	mov	r8,rdx
+	mov	r9,rcx
+	mov	edx,[r15+H_ACT]
+	call	overload_refuses
+	mov	rdx,r8
+	mov	rcx,r9
+	jc	.shed
+.not_shed:
 	cmp	dword [g_acts+rdx+RA_LCOUNT],0	; rate limits: the cheapest refusal first
 	je	.limited
 	test	dword [r15+H_FLAGS],HX_FAULTED	; (counted before it waited)
@@ -631,7 +659,7 @@ http_request:
 	pop	rdx
 	pop	rcx
 	pop	rax
-	jc	limit_refuse
+	jc	limit_over
 	h_rec
 .limited:
 	cmp	dword [g_acts+rdx+RA_CODE],0
@@ -659,6 +687,7 @@ http_request:
 	mov	edi,[g_acts+r8+RA_FCODE]
 	test	edi,edi
 	jnz	http_error
+.chosen_none:
 @@:
 	mov	r13d,[rcx+RT_POOL]
 	mov	eax,[r15+H_ACT]			; split: another pool, perhaps

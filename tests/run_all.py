@@ -98,6 +98,8 @@ SUITES = [
     ("mirror epoll", ["tests/gateway/mirror.py", "epoll"]),
     ("hedge io_uring", ["tests/gateway/hedge.py", "io_uring"]),
     ("hedge epoll", ["tests/gateway/hedge.py", "epoll"]),
+    ("overload io_uring", ["tests/gateway/overload.py", "io_uring"]),
+    ("overload epoll", ["tests/gateway/overload.py", "epoll"]),
 ]
 
 

@@ -57,6 +57,7 @@ bss
 	g_lim_tbl	dq ?			; shared
 	g_lim_seed	rq 2
 	g_lim_retry	dq ?			; refused: seconds to wait
+	g_lim_status	dd ?			; and with what
 	g_lr:		rb LR_N * LR_SIZE
 end bss
 
@@ -467,10 +468,12 @@ limit_request:
 ; refused: 429 and how long to wait. The connection stays: a client told to
 ; slow down should not have to make a new one, with its handshake, to hear it
 ; again. As with a redirect its body, if any, is not read: then it closes.
+limit_over:
+	mov	dword [g_lim_status],429
 limit_refuse:
 	test	dword [r15+H_FLAGS],HX_GRPC
 	jz	@f
-	mov	edi,429				; (gRPC: its status in trailers)
+	mov	edi,[g_lim_status]		; (gRPC: its status in trailers)
 	jmp	http_error
 @@:
 	or	dword [r15+H_FLAGS],HX_SELF or HX_STARTED
@@ -482,13 +485,21 @@ limit_refuse:
 	jne	@f
 	call	rid_new
 @@:
-	mov	dword [r15+H_STATUS],429
-	mov	edi,429
+	mov	edi,[g_lim_status]
+	mov	[r15+H_STATUS],edi
 	mov	esi,5
 	call	http_count
 	mov	rdi,[r15+H_BUF]
 	lea	rdi,[rdi+HB_OUT]
-	memit_x 'HTTP/1.1 429 Too Many Requests',13,10,'Retry-After: '
+	memit_x 'HTTP/1.1 '
+	mov	eax,[g_lim_status]
+	call	fmt_u64
+	mov	byte [rdi],' '
+	inc	rdi
+	mov	eax,[g_lim_status]
+	call	http_reason
+	call	fmt_cstr
+	memit_x 13,10,'Retry-After: '
 	mov	rax,[g_lim_retry]
 	call	fmt_u64
 	memit_x 13,10

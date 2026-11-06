@@ -87,6 +87,7 @@ RA_MPCT		:= 88		; d: mirror: this share, 0 = none
 RA_MPOOL	:= 92		; d: to this pool
 RA_HAFTER	:= 96		; q: hedge: µs before the second try, 0 = none
 RA_HPCT		:= 104		; d: or this percentile of the pool's answers
+RA_PRIO		:= 108		; d: RP_*
 RA_SIZE		:= 112
 MAX_ACTS	:= MAX_ROUTES
 HD_KIND		:= 0		; d: HOP_SET, HOP_ADD, HOP_DROP
@@ -707,6 +708,9 @@ compile_route_action:
 	lea	rcx,[dir_table + D_SIZE*DIR_HEDGE]
 	cmp	rax,rcx
 	je	@f
+	lea	rcx,[dir_table + D_SIZE*DIR_PRIORITY]
+	cmp	rax,rcx
+	je	@f
 	mov	rbx,[rbx+N_NEXT]
 	jmp	@b
 @@:
@@ -855,6 +859,24 @@ compile_route_action:
 	jz	plan_bad_hedge
 	mov	[r13+RA_HPCT],eax
 .no_hedge:
+	mov	rdi,r12
+	mov	ecx,DIR_PRIORITY
+	call	find_child
+	test	rax,rax
+	jz	.no_priority
+	mov	rax,[rax+N_ARGS]
+	mov	rsi,[rax+A_VAL]
+	mov	ecx,[rax+A_VLEN]
+	xor	edx,edx
+	cmp	byte [rsi],'n'
+	je	.priority
+	mov	edx,RP_CRITICAL
+	cmp	byte [rsi],'c'
+	je	.priority
+	mov	edx,RP_BULK
+.priority:
+	mov	[r13+RA_PRIO],edx
+.no_priority:
 	mov	rdi,r12
 	mov	ecx,DIR_FAULT
 	call	find_child

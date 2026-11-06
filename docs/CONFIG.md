@@ -64,6 +64,15 @@ requests in its first flight (RFC 9001 4.6), which can be replayed, so
 only GET, HEAD and OPTIONS go on (with `Early-Data: 1` to the backend, RFC
 8470) and anything else is refused with REQUEST_REJECTED, for the client to
 send again after the handshake. A connection stays in the QUIC version its client chose;
+On a route, `priority critical|normal|bulk` says what goes first when a worker
+is pressed, by how full a listener's `limits { connections }` are or how late
+its loop runs. Level 1, at 80% or 50 ms: idle connections go sooner. Level 2, 85%
+or 100 ms: responses say `Connection: close`. Level 3, 90% or 250 ms: `bulk`
+routes answer 503 with `Retry-After: 1`. Level 4, 97% or 1 s: so do `normal`
+ones, which is the default, and only `critical` goes on. Each worker decides for
+itself, once a second; the level rises at once and falls one step at a time, after 3
+quiet seconds and 5 points below where it rose. Changes are logged.
+
 On a route, `hedge after=50ms` (or `after=p95`) cuts the tail of a pool: a GET,
 HEAD or other idempotent request with no body that has no answer by then is sent
 again to another server, and the first answer goes to the client while the other
