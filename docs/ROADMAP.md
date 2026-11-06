@@ -426,7 +426,8 @@ In progress. In: `fault abort= delay=`, `cors`, `split`, `mirror`, `hedge`, `pol
 * `okena route` dry-run.
 
 Exit: each filter's added latency measured and documented; a route with
-auth + limit stays within the latency budget in ARCHITECTURE.md.
+auth + limit stays within the latency budget in ARCHITECTURE.md. Met with `busy_poll`
+(docs/BENCHMARK.md); without it p99.9 is over, by what a worker's sleep costs.
 
 ## Phase 7 — Operations
 

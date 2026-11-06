@@ -355,13 +355,28 @@ over the budget at p50 by 4 µs. p99.9 adds 41 at the median run with TLS, but
 218 at the worst, and with kTLS 219 to 779 in four runs of six: not within it.
 With no filter, 18 and 22 against a budget of 10 and 30: p50 is over it.
 
-The p99.99 of 2-3 ms comes with okena in the path and without any filter, on both
-engines. It stays with workers and backends pinned one to a core and the master
-moved away, so it is neither migration nor the master. Each worker is preempted
-4 to 8 times in 10 s, which fits how rare it is; `l4bench`, on the same cores, is
-preempted as often but stalls 0.9 ms at most, so this does not explain it all.
-Open: on a desktop with no isolated cores, finding what takes the core needs
-scheduler tracing as root.
+The p99.99 of 2-3 ms, and most of what p99.9 has over p99, is a worker going to sleep
+and waking. It comes with okena in the path on both engines, with workers and backends
+pinned, and with a cache hit too, so it is not the backend. Timing the loop itself,
+turns longer than 800 µs are all in the wait for the kernel: the work after it took 1
+or 2 µs. With `busy_poll`, where the worker does not sleep, three runs of 6 s each in µs:
+
+| route | p50 | p99 | p99.9 | p99.99 |
+|---|---|---|---|---|
+| no filter, sleeps | 33.8-34.3 | 46.6-55.8 | 385-754 | 2392-3015 |
+| no filter, `busy_poll 200us` | 28.4-28.9 | 38.4-41.0 | 52-60 | 211-803 |
+
+And with `busy_poll 200us`, 10 s a run, over a backend alone at 14.8, 25 and 41:
+
+| route | p50 | p99 | p99.9 | p99.99 |
+|---|---|---|---|---|
+| TLS, `auth api_key` + `limit` | 29.2-29.7 | 40.4-45.1 | 57-77 | 166-918 |
+
+That adds 15, 20 and 36 µs: inside the budget of 20, 50 and 150, in all three, with TLS
+in user space (kTLS was not measured with it). It costs a core per worker at 100% while
+traffic keeps coming, so it is a choice: without it p50 and p99 are still in budget, and
+p99.9 is not. Which part of the kernel's wake-up it is was not found: that needs tracing
+as root. What is left at p99.99 was not looked into.
 
 ## What a cache hit costs (2026-11-06)
 
