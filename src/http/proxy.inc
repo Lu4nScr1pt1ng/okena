@@ -2680,6 +2680,12 @@ http_resp_pump:
 	mov	dword [r15+H_RBODY],BK_NONE
 	call	cache_commit
 	h_rec
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_IDEMF
+	jz	@f
+	call	idem_commit
+	h_rec
+@@:
 	jmp	http_last_chunk
 .close:
 	; until the backend closes, each piece framed as a chunk

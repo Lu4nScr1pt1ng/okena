@@ -468,6 +468,23 @@ idem_head:
 	lea	rax,[r12+ID_HEAD]
 	sub	rdi,rax
 	mov	[r12+ID_HLEN],edi
+	; how much, to know its end when it passes: the client may ask again as soon as it
+	; has the last byte, ahead of this exchange's end
+	mov	r8,[r15+H_BUF]
+	mov	dword [r8+HB_CLEFT],-1
+	mov	eax,[r15+H_RBODY]
+	cmp	eax,BK_LENGTH
+	jne	@f
+	mov	rax,[r15+H_RREMAIN]
+	mov	[r8+HB_CLEFT],eax
+	test	rax,rax
+	jnz	.out
+	call	idem_commit
+	jmp	.out
+@@:
+	cmp	eax,BK_NONE
+	jne	.out
+	call	idem_commit
 .out:
 	pop	r14
 	pop	r13
@@ -483,20 +500,34 @@ idem_tee:
 	push	rsi
 	push	rdi
 	push	r8
+	push	r9
+	push	r10
+	push	r11
 	call	idem_mine
 	jne	.out
 	mov	r8,[r15+H_BUF]
 	mov	edx,[r8+HB_CPOS]
 	lea	edi,[rdx+rcx]
+	cmp	dword [r8+HB_CLEFT],-1
+	je	@f
+	sub	[r8+HB_CLEFT],ecx
+@@:
 	cmp	edi,ID_BMAX
 	ja	.over
 	mov	[r8+HB_CPOS],edi
 	lea	rdi,[rax+ID_BODY+rdx]
 	rep	movsb
-	jmp	.out
+	jmp	.end
 .over:
 	or	dword [r8+HB_CPASS],IF_OVER
+.end:
+	cmp	dword [r8+HB_CLEFT],0
+	jne	.out
+	call	idem_commit
 .out:
+	pop	r11
+	pop	r10
+	pop	r9
 	pop	r8
 	pop	rdi
 	pop	rsi
