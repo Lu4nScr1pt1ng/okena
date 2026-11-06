@@ -408,7 +408,7 @@ do not stall a connection; under a flood of Initial packets retry keeps
 the accepted connections' latency flat.
 ## Phase 6 — Gateway
 
-In progress. In: `fault abort= delay=`, `cors`, `split`, `mirror`, `hedge`, `policy` and `use`, `cache` in memory with coalescing and stale-while-revalidate, `files` with ranges, validators, precompressed variants and a fallback, `compress gzip`, `early_hints`, `headers preset=`, `okena route`, `priority` with an overload manager, `auth api_key`,
+In progress. In: `fault abort= delay=`, `cors`, `split`, `mirror`, `hedge`, `policy` and `use`, `cache` in memory with coalescing and stale-while-revalidate, `files` with ranges, validators, precompressed variants and a fallback, `compress gzip`, `early_hints`, `headers preset=`, `okena route`, `redirects`, `hold`, `priority` with an overload manager, `auth api_key`,
 `basic`, `mtls` (`client_ca` over TCP), `forward` and `jwt` (a JWK set from a file or a URL), `match` blocks, `limit` (for now by rate; quotas
 are to come).
 

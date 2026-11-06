@@ -146,6 +146,7 @@ keysdef k_cache, 'stale-while-revalidate', T_DURATION, 'vary', T_ANY, 'max', T_S
 keysdef k_files, 'index', T_ANY, 'fallback', T_ANY, 'precompressed', T_ANY, 'cache', T_ANY
 keysdef k_compress, 'min', T_SIZE
 keysdef k_headers, 'preset', T_ANY
+keysdef k_rmap, 'code', T_ANY
 keysdef k_limit, 'burst', T_COUNT, 'key', T_ANY, 'instances', T_COUNT
 keysdef k_fault, 'abort', T_COUNT, 'percent', T_COUNT, 'delay', T_DURATION
 keysdef k_quic_sid, 'key', T_ANY, 'rotation', T_ANY
@@ -166,7 +167,7 @@ enumdef future_names, 'udp', 'xdp', \
 	'acme', 'discover', 'header', \
 	'source', \
 	'concurrency', 'retry_budget', 'retry', 'outlier', \
-	'canonical', 'idempotency', 'hold', \
+	'canonical', 'idempotency', \
 	'body', 'signed_urls', \
 	'response', 'alpn', 'cert', 'warm'
 
@@ -214,6 +215,8 @@ dirdef DIR_CLAIMS, 'claims',    M_AUTH,    0,           F_UNIQUE, 3, 64, T_ANY, 
 dirdef DIR_COMPRESS, 'compress', M_HTTP or M_HOST or M_ROUTE, 0, F_UNIQUE, 1, 2, T_ANY, T_ANY, k_compress
 dirdef DIR_HEADERS, 'headers',  M_HTTP or M_HOST or M_ROUTE, 0, F_UNIQUE, 0, 0, T_NONE, T_NONE, k_headers
 dirdef DIR_EARLY_HINTS, 'early_hints', M_ROUTE, 0,    F_UNIQUE, 1, 32, T_ANY, T_ANY, 0
+dirdef DIR_HOLD, 'hold',        M_ROUTE,   0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
+dirdef DIR_REDIRECTS, 'redirects', M_ROUTE, 0,         F_UNIQUE, 1, 1, T_ANY, T_NONE, k_rmap
 dirdef DIR_FILES, 'files',      M_ROUTE,   0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, k_files
 dirdef DIR_MATCH, 'match',      M_ROUTE,   CTX_ROUTE,   F_BLOCK_REQ or F_FREE_KEYS, 0, 16, T_ANY, T_ANY, 0
 dirdef DIR_CACHE, 'cache',      M_ROUTE,   0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, k_cache

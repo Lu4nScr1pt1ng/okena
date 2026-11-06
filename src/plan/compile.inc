@@ -96,7 +96,9 @@ RA_AUTH		:= 112		; d: its auth entry + 1
 RA_CACHE	:= 116		; d: its cache entry + 1
 RA_EH		:= 128		; q: `early_hints`: the 103, ready
 RA_EHLEN	:= 136		; d
-RA_SIZE		:= 144
+RA_HOLD		:= 144		; q: `hold`: µs a request waits for a backend
+RA_RMAP		:= 152		; d: its `redirects` + 1
+RA_SIZE		:= 160
 MAX_ACTS	:= MAX_ROUTES
 HD_KIND		:= 0		; d: HOP_SET, HOP_ADD, HOP_DROP
 HD_PREFIX	:= 4		; d: 1 when the name ends with * (drop)
@@ -767,6 +769,12 @@ compile_route_action:
 	lea	rcx,[dir_table + D_SIZE*DIR_EARLY_HINTS]
 	cmp	rax,rcx
 	je	@f
+	lea	rcx,[dir_table + D_SIZE*DIR_HOLD]
+	cmp	rax,rcx
+	je	@f
+	lea	rcx,[dir_table + D_SIZE*DIR_REDIRECTS]
+	cmp	rax,rcx
+	je	@f
 	mov	rbx,[rbx+N_NEXT]
 	jmp	@b
 .listener_compress:
@@ -978,6 +986,8 @@ compile_route_action:
 .no_files:
 	call	compile_compress
 	call	compile_hints
+	call	compile_hold
+	call	compile_rmap
 	mov	rdi,r12
 	mov	ecx,DIR_AUTH
 	call	find_child

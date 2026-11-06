@@ -36,6 +36,7 @@ hints_inject:
 hints_request:
 	mov	rax,[r15+H_BUF]
 	mov	dword [rax+HB_EH],0
+	mov	qword [rax+HB_HOLD],0
 	mov	eax,[r15+H_ACT]
 	test	eax,eax
 	jz	.none

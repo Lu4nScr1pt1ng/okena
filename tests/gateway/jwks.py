@@ -289,6 +289,7 @@ def main():
         # rotation: the new key works, and the old one stops even for a token seen
         good.paths["/fast"] = jset(k2)
         check("rotation: the new key is taken up", until(lambda: status("/fast", k2.token()) == 200, 4))
+        time.sleep(1.2)				# (each worker takes a new set on its tick)
         check("  the old key's token, verified before, is forgotten", all(status("/fast", t) == 401 for i in range(32)))
 
         # a key not here yet asks for a fetch, and that cannot be used for a flood

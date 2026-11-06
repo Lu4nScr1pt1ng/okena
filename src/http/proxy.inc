@@ -388,7 +388,7 @@ fault_flush:
 	mov	rax,[g_fd+rdx+FD_SESS]
 	mov	[g_fd+rcx+FD_SESS],rax
 	mov	r10d,ebx
-	and	ebx,not (FD_HEDGE or FD_FWD or FD_CACHE)
+	and	ebx,not (FD_HEDGE or FD_FWD or FD_CACHE or FD_HOLD)
 	push	r8
 	push	r9
 	push	r10
@@ -412,8 +412,13 @@ fault_flush:
 	jmp	.next
 .not_fwd:
 	test	r10d,FD_CACHE
-	jz	.held
+	jz	.not_cache
 	call	cache_poll
+	jmp	.next
+.not_cache:
+	test	r10d,FD_HOLD
+	jz	.held
+	call	hold_again
 	jmp	.next
 .held:
 	cmp	dword [r15+H_STATE],HS_FAULT
@@ -705,6 +710,11 @@ http_request:
 	jc	limit_over
 	h_rec
 .limited:
+	cmp	dword [g_acts+rdx+RA_RMAP],0
+	je	@f
+	call	rm_check
+	jc	http_redirect
+@@:
 	cmp	dword [g_acts+rdx+RA_CODE],0
 	jne	http_redirect
 	cmp	dword [g_acts+rdx+RA_FPCT],0	; fault: this share of the requests
@@ -1670,6 +1680,10 @@ http_connect_failed:
 	call	session_ptr
 	test	dword [rax+S_FLAGS],SF_H2U
 	jnz	h2u_failed			; an upstream HTTP/2 connection: its requests fail over
+	call	hold_wait
+	jnc	@f
+	ret
+@@:
 	mov	edi,502
 	jmp	http_error
 

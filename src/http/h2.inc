@@ -177,6 +177,7 @@ HB_FLEFT	:= HB_CK			; q: what is left of it
 HB_ZOK		:= HB_CLEFT + 4		; d: `compress`: may be, past this size
 HB_ZC		:= HB_ZOK + 4		; d: its context
 HB_EH		:= HB_ZC + 4		; d: `early_hints`: still to go
+HB_HOLD		:= HB_FDUE		; q: `hold`: when it stops waiting, 0 not yet (a request is held for one thing at a time)
 HB_H2Q		:= (HB_EH + 4 + 63) and not 63
 Q_LEN		:= 0
 Q_OFF		:= 4

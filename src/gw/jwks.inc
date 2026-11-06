@@ -4,7 +4,7 @@
 ; A process of its own, okena-keys, fetches each set and publishes it in a shared
 ; table under a sequence counter, as the control process does with addresses;
 ; workers copy a set on their tick when it changed, and forget every verified
-; token then, so that a key taken out stops working at once. It is not the control
+; token then, so that a key taken out stops working within a second. It is not the control
 ; process because a slow identity provider must not hold up DNS, and because this
 ; is where bytes from the network get parsed: confined as the control process is.
 ;

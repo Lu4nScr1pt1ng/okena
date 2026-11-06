@@ -492,6 +492,16 @@ neither reads nor fills: an answer for one person must not reach another. A hit 
 `Age` and `Cache-Status: okena; hit; ttl=N`, negative when stale, and runs behind
 what the route has for clients: auth, limits, CORS and `response` rules.
 
+`redirects FILE code=301` keeps thousands of old paths in a file, one lookup each:
+lines `/old /new` or `/old https://else/ 302`, `#` for comments, each path once. The
+path is the normalized one, exact, and the client's query goes along. What is not in
+the file goes on through the route; auth and limits of the route come first.
+
+`hold 10s` makes a request wait for a backend, for that long, when none can be connected
+to, instead of a 502: for a pool that is restarting. Nothing has reached a backend then,
+so a POST can wait too. It tries every 100 ms, ejected servers included, so one that is
+back is found at once. It is about connections: a 503 from a backend is its answer.
+
 A route either forwards (`to`) or redirects (`redirect CODE TARGET`, with
 301, 302, 303, 307 or 308; TARGET a path or an `http(s)://` URL). A
 redirect keeps the request's query unless TARGET has its own, and keeps
@@ -543,7 +553,7 @@ tokens are refused.
 
 A failed fetch, a body that is not a set, or a set with no key usable here changes
 nothing, and is retried within 30 s; a change of keys makes every worker forget
-the tokens it verified. A reload keeps the keys of the URLs that stay. At start,
+the tokens it verified, within a second. A reload keeps the keys of the URLs that stay. At start,
 okena waits up to 3 s for the first keys, and until they come tokens get a 401. A
 token with a `kid` not here asks for a fetch at once, 10 s apart at most. Sets with
 the same URL and `trust` are one set, with the times of the first. Shared secrets
