@@ -502,6 +502,27 @@ to, instead of a 502: for a pool that is restarting. Nothing has reached a backe
 so a POST can wait too. It tries every 100 ms, ejected servers included, so one that is
 back is found at once. It is about connections: a 503 from a backend is its answer.
 
+`idempotency header=idempotency-key ttl=24h lock=60s` on a route makes a request that
+changes something, sent twice with the same key, reach the backend once, whichever
+worker takes it. The second gets the first's answer with `Idempotency-Replayed: true`.
+GET, HEAD and OPTIONS are left alone, as is a request with no key.
+
+The key counts with the route and whoever `auth` proved, so it is no way to someone
+else's answers. While the first runs, others get a 409. A key sent again with another
+method, target, length or content type gets a 422; the body itself is not compared. Up
+to 4096 keys at once and past `ttl` they go; with no room the answer is a 503 rather
+than a request without the guarantee.
+
+Every answer of the backend is kept, 500s too, as it may have done the work, but for
+502, 503 and 504, and for no connection at all: then the key is free again. If the
+request was sent and no answer came, the key stays locked until `lock`: a retry gets a
+409 until then, and after that it runs. So make `lock` longer than the backend may take.
+An answer over 48 KiB cannot be replayed: a retry gets a 409, not a second run. Keys
+live in memory: they outlive a reload and a worker, not a restart.
+
+`limit 10000/d burst=10000 key=auth.user` is a quota: it comes back little by little
+over the day, with no fixed hour when it resets, and starts over with a restart.
+
 A route either forwards (`to`) or redirects (`redirect CODE TARGET`, with
 301, 302, 303, 307 or 308; TARGET a path or an `http(s)://` URL). A
 redirect keeps the request's query unless TARGET has its own, and keeps

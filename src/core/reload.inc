@@ -101,6 +101,8 @@ macro plan_regions action
 	action g_plan_files, 4
 	action g_rmaps, RM_SIZE * MAX_RMAPS
 	action g_plan_rmaps, 4
+	action g_idems, IC_SIZE * MAX_IDEMS
+	action g_plan_idems, 4
 	action g_plan_zip, 4
 	action g_mroutes, RT_SIZE * MAX_MATCH
 	action g_mblocks, MB_SIZE * MAX_MATCH
@@ -314,6 +316,7 @@ supervisor_reload:
 	syscall
 @@:
 	call	jwks_table_init
+	call	idem_table_init
 	call	spawn_keys
 	call	jwks_wait
 	mov	edi,[g_health_pid]

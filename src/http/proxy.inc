@@ -749,6 +749,13 @@ http_request:
 	call	hints_request
 	pop	rcx
 	push	rcx
+	call	idem_check
+	pop	rcx
+	test	eax,eax
+	jz	@f
+	ret
+@@:
+	push	rcx
 	call	cache_check
 	pop	rcx
 	test	eax,eax
@@ -1684,6 +1691,8 @@ http_connect_failed:
 	jnc	@f
 	ret
 @@:
+	h_rec
+	call	idem_release			; nothing reached a backend
 	mov	edi,502
 	jmp	http_error
 
@@ -2333,6 +2342,7 @@ http_resp_head:
 	call	h_chunkout			; framed for the client
 .write:
 	call	cache_head
+	call	idem_head
 	call	zip_head
 	call	http_write_response_head
 	mov	dword [g_zh],0
@@ -4238,7 +4248,7 @@ macro reasons pairs&
 		end iterate
 	end rodata
 end macro
-reasons 301,'Moved Permanently', 302,'Found', 303,'See Other', 307,'Temporary Redirect', \
+reasons 409,'Conflict', 422,'Unprocessable Content', 301,'Moved Permanently', 302,'Found', 303,'See Other', 307,'Temporary Redirect', \
 	308,'Permanent Redirect', 400,'Bad Request', 429,'Too Many Requests', 403,'Forbidden', 401,'Unauthorized', 404,'Not Found', 405,'Method Not Allowed', 408,'Request Timeout', \
 	421,'Misdirected Request', \
 	431,'Request Header Fields Too Large', 501,'Not Implemented', 502,'Bad Gateway', \

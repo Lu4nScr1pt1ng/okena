@@ -157,6 +157,7 @@ supervisor_main:
 	call	tsc_calibrate			; once, for every worker (busy_poll, access log)
 	; from here on the supervisor and everything it forks are confined
 	call	seccomp_supervisor
+	call	idem_table_init
 	call	spawn_keys
 	call	jwks_wait
 	xor	ebx,ebx

@@ -98,6 +98,7 @@ RA_EH		:= 128		; q: `early_hints`: the 103, ready
 RA_EHLEN	:= 136		; d
 RA_HOLD		:= 144		; q: `hold`: µs a request waits for a backend
 RA_RMAP		:= 152		; d: its `redirects` + 1
+RA_IDEM		:= 156		; d: its `idempotency` + 1
 RA_SIZE		:= 160
 MAX_ACTS	:= MAX_ROUTES
 HD_KIND		:= 0		; d: HOP_SET, HOP_ADD, HOP_DROP
@@ -772,6 +773,9 @@ compile_route_action:
 	lea	rcx,[dir_table + D_SIZE*DIR_HOLD]
 	cmp	rax,rcx
 	je	@f
+	lea	rcx,[dir_table + D_SIZE*DIR_IDEMPOTENCY]
+	cmp	rax,rcx
+	je	@f
 	lea	rcx,[dir_table + D_SIZE*DIR_REDIRECTS]
 	cmp	rax,rcx
 	je	@f
@@ -987,6 +991,7 @@ compile_route_action:
 	call	compile_compress
 	call	compile_hints
 	call	compile_hold
+	call	compile_idem
 	call	compile_rmap
 	mov	rdi,r12
 	mov	ecx,DIR_AUTH
@@ -1850,6 +1855,9 @@ compile_limit:
 	je	.period
 	mov	r14d,3600
 	cmp	al,'h'
+	je	.period
+	mov	r14d,86400
+	cmp	al,'d'
 	jne	plan_bad_limit
 .period:
 	; instances=N: this instance's share of a fleet's limit
