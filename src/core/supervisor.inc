@@ -81,6 +81,8 @@ supervisor_main:
 	call	peer_global_init		; per_source table: lives across reloads
 	call	limit_global_init		; and rate limits'
 	call	stats_table_init
+	call	upgrade_receive
+	call	upgrade_listen
 	call	metrics_open
 
 	; TERM, INT, CHLD and ALRM (the watchdog) arrive through a signalfd.
@@ -111,9 +113,15 @@ supervisor_main:
 	cmp	r12d,[g_plan_listeners]
 	jae	.opened
 	mov	edi,r12d
+	call	upgrade_taken			; (a new binary: what the old one had)
+	mov	ebx,eax
+	test	eax,eax
+	jnz	.socket
+	mov	edi,r12d
 	call	listener_probe
-	xor	ebx,ebx
 .socket:
+	cmp	ebx,[g_workers]
+	jae	.sockets
 	mov	edi,r12d
 	call	listener_open
 	mov	ecx,r12d
@@ -121,10 +129,9 @@ supervisor_main:
 	add	ecx,ebx
 	mov	[g_lfd+rcx*4],eax
 	inc	ebx
-	cmp	ebx,[g_workers]
-	jb	.socket
-	mov	eax,[g_workers]
-	mov	[g_lsocks+r12*4],eax
+	jmp	.socket
+.sockets:
+	mov	[g_lsocks+r12*4],ebx
 	call	log_listener
 	inc	r12d
 	jmp	.listener
@@ -172,6 +179,7 @@ supervisor_main:
 	call	spawn_health
 	call	spawn_admin
 	call	spawn_logger
+	call	upgrade_ready
 
 	; check the heartbeats once a second
 	sub	rsp,32
@@ -211,6 +219,7 @@ supervisor_main:
 	call	reap_workers
 	jmp	.wait_signal
 .watchdog:
+	call	upgrade_tick
 	call	watchdog_check
 	call	old_workers_check
 	call	tls_tickets_tick		; the ticket key, once a period
@@ -321,6 +330,7 @@ listener_probe:
 	jnz	@f
 	mov	r13d,AF_INET6
 @@:
+.again:
 	mov	edi,r13d
 	mov	esi,SOCK_STREAM or SOCK_CLOEXEC
 	xor	edx,edx
@@ -362,6 +372,17 @@ listener_probe:
 	pop	rax
 	cmp	eax,-EADDRINUSE
 	jne	.done
+	; a process that has just left can hold the address for a moment: a ring's
+	; sockets go when the kernel gets round to it, after the process is gone
+	inc	dword [g_probe_tries]
+	cmp	dword [g_probe_tries],40
+	ja	.taken
+	lea	rdi,[ts_jf_step]
+	xor	esi,esi
+	mov	eax,SYS_nanosleep
+	syscall
+	jmp	.again
+.taken:
 	call	log_begin
 	out_lit 'cannot listen on '
 	mov	rsi,[rbx+LS_TEXT]

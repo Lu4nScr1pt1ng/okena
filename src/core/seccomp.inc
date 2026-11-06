@@ -160,6 +160,9 @@ rodata
 	sc_check filter_supervisor, SYS_socket, socket
 	sc_allow filter_supervisor, SYS_bind
 	sc_allow filter_supervisor, SYS_listen
+	sc_allow filter_supervisor, SYS_sendmsg_	; an upgrade: sockets to the new binary
+	sc_allow filter_supervisor, SYS_rename_
+	sc_allow filter_supervisor, SYS_getuid_
 	sc_allow filter_supervisor, SYS_connect
 	sc_allow filter_supervisor, SYS_setsockopt
 	; children starting

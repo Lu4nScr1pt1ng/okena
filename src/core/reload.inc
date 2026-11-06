@@ -101,6 +101,8 @@ macro plan_regions action
 	action g_plan_files, 4
 	action g_rmaps, RM_SIZE * MAX_RMAPS
 	action g_plan_rmaps, 4
+	action g_plan_up, 8
+	action g_plan_uplen, 4
 	action g_geo_base, 8
 	action g_geo_end, 8
 	action g_geo_data, 8

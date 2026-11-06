@@ -13,6 +13,7 @@ OKENA_VERSION equ '0.0.1'
 
 cstring str_cmd_check, 'check',0
 cstring str_cmd_route, 'route',0
+cstring str_cmd_upgrade, 'upgrade',0
 cstring str_cmd_run, 'run',0
 cstring str_cmd_version, 'version',0
 cstring str_cmd_help, 'help',0
@@ -52,6 +53,15 @@ cli_main:
 	call	cstr_eq
 	test	eax,eax
 	jnz	cli_route
+	mov	rax,[g_argv]
+	mov	rdi,[rax+8]
+	lea	rsi,[str_cmd_upgrade]
+	call	cstr_eq
+	test	eax,eax
+	jz	@f
+	mov	dword [g_up_mode],1
+	jmp	.run
+@@:
 	mov	rax,[g_argv]
 	mov	rdi,[rax+8]
 	lea	rsi,[str_cmd_health]

@@ -893,6 +893,17 @@ for each request (corrected for coordinated omission), `service` from the
 actual send, and `sender`, how late the generator itself was. Requests the
 schedule asked for that never went out are reported as `behind`.
 
+`okena upgrade -c FILE`, with `okena { upgrade /run/okena/upgrade.sock }` in the
+configuration of both, puts a new binary in place with no connection refused or lost. It
+compiles its configuration, takes the listening sockets from the running okena, starts
+its workers, and only then tells the old one, which finishes what it has, within its
+drain timeout, and exits. Until then the old one has lost nothing: if the new one cannot
+start it goes on. The socket is the owner's only, by mode and by a look at the caller.
+What is reused goes by the address as written; a listener the new configuration no
+longer has closes. HTTP/3 connections do not survive it, as QUIC sockets are opened anew.
+The new okena is a new process in the foreground of whoever started it, so a service
+manager has to be told: with systemd, a `Type=notify` unit does not follow it yet.
+
 `okena route 'GET https://api.example.com/v1/users/42 x-canary:yes' [-c FILE]` answers
 "where does this request go", without starting anything: listener, route, the `match`
 block that fits, filters, and the pool with its servers, or the redirect or the

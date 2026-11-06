@@ -458,6 +458,9 @@ compile_settings:
 	lea	rcx,[dir_table + D_SIZE*DIR_GEOIP]
 	cmp	rax,rcx
 	je	.geoip
+	lea	rcx,[dir_table + D_SIZE*DIR_UPGRADE]
+	cmp	rax,rcx
+	je	.upgrade
 	lea	rcx,[dir_table + D_SIZE*DIR_DRAIN]
 	cmp	rax,rcx
 	je	.drain
@@ -587,6 +590,13 @@ compile_settings:
 .geoip:
 	mov	rdi,rbx
 	call	compile_geoip
+	jmp	.advance
+.upgrade:
+	mov	rax,[rbx+N_ARGS]
+	mov	rcx,[rax+A_VAL]
+	mov	[g_plan_up],rcx
+	mov	ecx,[rax+A_VLEN]
+	mov	[g_plan_uplen],ecx
 	jmp	.advance
 .cache_memory:
 	mov	rax,[rbx+N_ARGS]

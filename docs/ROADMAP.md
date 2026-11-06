@@ -408,7 +408,8 @@ do not stall a connection; under a flood of Initial packets retry keeps
 the accepted connections' latency flat.
 ## Phase 6 — Gateway
 
-In progress. In: `fault abort= delay=`, `cors`, `split`, `mirror`, `hedge`, `policy` and `use`, `cache` in memory with coalescing and stale-while-revalidate, `files` with ranges, validators, precompressed variants and a fallback, `compress gzip`, `early_hints`, `headers preset=`, `okena route`, `redirects`, `hold`, `priority` with an overload manager, `auth api_key`,
+Done. OIDC login is not built in: `auth forward` hands it to a proxy that does it, such as
+oauth2-proxy, as a login flow is a lot of security surface for what that gives. In: `fault abort= delay=`, `cors`, `split`, `mirror`, `hedge`, `policy` and `use`, `cache` in memory with coalescing and stale-while-revalidate, `files` with ranges, validators, precompressed variants and a fallback, `compress gzip`, `early_hints`, `headers preset=`, `okena route`, `redirects`, `hold`, `priority` with an overload manager, `auth api_key`,
 `basic`, `mtls` (`client_ca` over TCP), `forward` and `jwt` (a JWK set from a file or a URL), `match` blocks, `limit` (by rate, up to a day), `idempotency`, `allow` and `deny`, GeoIP by country.
 
 * JWT/JWKS (fetched by a process of its own, not the control process: a slow
@@ -421,7 +422,7 @@ In progress. In: `fault abort= delay=`, `cors`, `split`, `mirror`, `hedge`, `pol
 * Static files and SPAs (fallback, ranges, ETag), precompressed variants,
   on-the-fly gzip/zstd for text, 103 Early Hints.
 * Fault injection per route (`fault delay=`, `fault abort=`).
-* OIDC login, idempotency keys, GeoIP (country), redirect maps, security header
+* Idempotency keys, GeoIP (country), redirect maps, security header
   presets, deploy hold.
 * `okena route` dry-run.
 
@@ -431,7 +432,7 @@ auth + limit stays within the latency budget in ARCHITECTURE.md. Met with `busy_
 
 ## Phase 7 — Operations
 
-* Binary upgrade with socket handoff; admin API and CLI.
+* Binary upgrade with socket handoff (`okena upgrade`: done); admin API and CLI.
 * SRV/file discovery, Docker discovery by labels, Kubernetes
   EndpointSlices.
 * Shared ticket keys and drain API for fleets.

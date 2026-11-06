@@ -163,6 +163,7 @@ logger_main:
 	mov	edi,[g_lg_sigfd]
 	call	logger_watch
 	mov	dword [g_lg_cur],0
+	call	helper_close_sockets
 	seccomp_for filter_logger
 .loop:
 	mov	edi,[g_lg_ep]

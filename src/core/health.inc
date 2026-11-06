@@ -154,6 +154,7 @@ health_main:
 	inc	ebx
 	jmp	.resume
 .confine:
+	call	helper_close_sockets
 	seccomp_for filter_health
 .loop:
 	call	hc_clock

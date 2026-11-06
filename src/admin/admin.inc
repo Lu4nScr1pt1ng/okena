@@ -27,6 +27,13 @@ metrics_open:
 	mov	dword [g_metrics_fd],-1
 	cmp	dword [g_plan_metrics],0
 	je	.done
+	mov	eax,[g_up_metrics]		; (a new binary: the old one's)
+	test	eax,eax
+	jz	@f
+	dec	eax
+	mov	[g_metrics_fd],eax
+	jmp	.done
+@@:
 	movzx	edi,word [g_plan_metrics_sa]
 	mov	esi,SOCK_STREAM or SOCK_CLOEXEC
 	xor	edx,edx
@@ -130,6 +137,7 @@ admin_main:
 	mov	eax,SYS_mmap
 	syscall
 	mov	[g_admin_buf],rax
+	call	helper_close_sockets
 	seccomp_for filter_admin
 .loop:
 	mov	edi,[g_metrics_fd]
