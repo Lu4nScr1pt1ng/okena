@@ -3206,6 +3206,29 @@ pool_used:
 	ret
 ; rdi = node with a `to`: CF when it is `to pool` + this pool (r12)
 .uses:
+	push	rbx
+	mov	rbx,rdi
+	call	.uses_one
+	jc	.uses_out
+	mov	rbx,[rbx+N_CHILD]
+.uses_block:
+	test	rbx,rbx
+	jz	.uses_none
+	lea	rax,[dir_table + D_SIZE*DIR_MATCH]
+	cmp	[rbx+N_DEF],rax
+	jne	.uses_next
+	mov	rdi,rbx
+	call	.uses_one
+	jc	.uses_out
+.uses_next:
+	mov	rbx,[rbx+N_NEXT]
+	jmp	.uses_block
+.uses_none:
+	clc
+.uses_out:
+	pop	rbx
+	ret
+.uses_one:
 	push	rdi
 	call	.uses_to
 	pop	rdi

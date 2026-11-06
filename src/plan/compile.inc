@@ -62,6 +62,7 @@ RT_PREFIX	:= 12		; d: 1 for "/x/*" routes
 RT_METHODS	:= 16		; d: RM_* bits, 0 = any
 RT_POOL		:= 20		; d: -1 for a route that redirects
 RT_ACT		:= 24		; d: its action + 1 (redirect, header changes), 0 = none
+RT_MATCH	:= 28		; d: its first `match` block + 1, 0 = none
 RT_SIZE		:= 32
 
 ; Route actions: a redirect, and the header changes of requests and of
@@ -3116,6 +3117,7 @@ compile_routes:
 	jne	.route_pool
 	mov	r13d,[g_splits+rax+SL_P]
 .route_pool:
+	call	compile_matches
 	mov	rdi,rbx
 	call	route_methods
 	mov	r14d,eax
@@ -3150,6 +3152,7 @@ compile_routes:
 	mov	[rcx+RT_ACT],eax
 	push	rsi
 	push	rdi
+	call	match_entries
 	mov	edx,[g_plan_routes]
 	dec	edx
 	call	route_insert

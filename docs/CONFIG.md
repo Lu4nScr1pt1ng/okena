@@ -399,7 +399,16 @@ or `SIGUSR1` makes the logger reopen its files, so logrotate needs only
 A route matches on host, path, method, headers and query, in that order.
 Inside a route, `match` narrows further; its conditions use the same
 names as limit keys (`method`, `header:NAME`, `query:NAME`, `cookie:NAME`,
-`client.ip`), joined by AND.
+`client.ip`), joined by AND. `NAME=VALUE` is exact, `NAME=VALUE*` a prefix, `NAME`
+alone says it is there; `client.ip=` takes a CIDR, and is the client as
+`trusted_proxies` has it. The first block that fits, in the order written, is the
+one, and a route has 32 at most.
+
+A block is the route with some directives changed: what it has replaces what the
+route has under that name, all the rest stays, so an `auth` on the route holds in
+every block. `to`, `redirect` and `split` count as one. `limit` adds instead: a
+block's goes with the route's, as replacing it could loosen it unawares. A block has
+no `match` or `use` inside it.
 The most specific match wins (exact host over wildcard, static path over
 parameter over `*`); ties are an error at load time, not a surprise in
 production.

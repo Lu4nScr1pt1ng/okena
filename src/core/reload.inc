@@ -97,6 +97,11 @@ macro plan_regions action
 	action g_jsrc, JS_SIZE * MAX_JWKS
 	action g_cca, PK_SIZE * MAX_LISTENERS
 	action g_caches, CA_SIZE * MAX_CACHES
+	action g_mroutes, RT_SIZE * MAX_MATCH
+	action g_mblocks, MB_SIZE * MAX_MATCH
+	action g_mconds, MC_SIZE * MAX_MCOND
+	action g_plan_mroutes, 4
+	action g_plan_mconds, 4
 	action g_plan_caches, 4
 	action g_plan_cmem, 8
 	action g_plan_cca, 4

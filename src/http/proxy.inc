@@ -614,6 +614,11 @@ http_request:
 	je	.parse_error_400
 	imul	rcx,rax,RT_SIZE
 	lea	rcx,[g_routes+rcx]
+	cmp	dword [rcx+RT_MATCH],0
+	je	@f
+	call	match_pick
+	h_rec
+@@:
 	mov	edx,[rcx+RT_ACT]
 	mov	[r15+H_ACT],edx
 	test	dword [r15+H_FLAGS],HX_MIRROR

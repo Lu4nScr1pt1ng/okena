@@ -161,7 +161,7 @@ enumdef ctx_names, 'the top level', '`okena`', '`tcp`', '`pool`', '`limits`', '`
 enumdef future_names, 'udp', 'xdp', \
 	'addon', 'alerts', 'include', 'admin', 'log', 'reload', 'profile', \
 	'acme', 'discover', 'header', 'headers', \
-	'match', 'source', \
+	'source', \
 	'concurrency', 'retry_budget', 'retry', 'outlier', \
 	'files', 'compress', 'canonical', 'idempotency', 'hold', \
 	'body', 'early_hints', 'signed_urls', \
@@ -208,6 +208,7 @@ dirdef DIR_ISSUER, 'issuer',    M_AUTH,    0,           F_UNIQUE, 1, 1, T_ANY, T
 dirdef DIR_AUDIENCE, 'audience', M_AUTH,   0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
 dirdef DIR_LEEWAY, 'leeway',    M_AUTH,    0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
 dirdef DIR_CLAIMS, 'claims',    M_AUTH,    0,           F_UNIQUE, 3, 64, T_ANY, T_ANY, 0
+dirdef DIR_MATCH, 'match',      M_ROUTE,   CTX_ROUTE,   F_BLOCK_REQ or F_FREE_KEYS, 0, 16, T_ANY, T_ANY, 0
 dirdef DIR_CACHE, 'cache',      M_ROUTE,   0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, k_cache
 dirdef DIR_PRIORITY, 'priority', M_ROUTE,   0,           F_UNIQUE, 1, 1, e_priority, T_NONE, 0
 dirdef DIR_HEDGE, 'hedge',      M_ROUTE,   0,           F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_hedge
