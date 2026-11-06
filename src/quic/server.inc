@@ -199,6 +199,7 @@ QF_HDONE	:= 16				; HANDSHAKE_DONE to send
 QF_CLOSE	:= 32				; CONNECTION_CLOSE to send
 QF_APP_ERR	:= 64				; ... of the application (0x1d)
 QF_LINKED	:= 128				; in the list and the hash (until qc_closing)
+QF_PARKED	:= 1024				; a stream waits for QC_H3HB, its bytes in QC_RA
 QF_BBR		:= 512				; BBR's its congestion control (QB_*), not CUBIC
 QF_EARLY	:= 256				; 0-RTT taken: its keys at QC_K0, the streams ready
 

@@ -494,6 +494,34 @@ async def cases():
             await asyncio.sleep(0.01)
         # (two a request: this backend writes its head and its body apart)
         check("10 small answers, in about as many datagrams", got[0] <= 22, str(got[0]))
+    # HEADERS frames split across packets on several streams at once (quiche
+    # in 0-RTT): each answered, in turn, none refused
+    async with connect("127.0.0.1", LST, configuration=config(), create_protocol=Client) as c:
+        q = c._quic
+        ids, frames = [], []
+        for i in range(4):
+            sid = q.get_next_available_stream_id()
+            q._get_or_create_stream_for_send(sid)
+            c.ended[sid] = asyncio.get_running_loop().create_future()
+            path = b"/split%d" % i
+            block = bytes([0, 0, 0xD1, 0xD7, 0x50, 7]) + b"h3.test" + bytes([0x51, len(path)]) + path
+            ids.append(sid)
+            frames.append(bytes([1, len(block)]) + block)
+        for sid, f in zip(ids, frames):
+            q.send_stream_data(sid, f[:5])
+            c.transmit()
+            await asyncio.sleep(0.01)
+        for sid, f in reversed(list(zip(ids, frames))):
+            q.send_stream_data(sid, f[5:], end_stream=True)
+            c.transmit()
+            await asyncio.sleep(0.01)
+        await asyncio.wait([c.ended[s] for s in ids], timeout=3)
+        bodies = [c.res.get(s, {}).get("body") for s in ids]
+        check("4 heads split at once: all answered, none refused",
+              bodies == [b"hello /split%d h3.test\n" % i for i in range(4)],
+              str([(c.res.get(s, {}).get("reset"), c.res.get(s, {}).get("body")) for s in ids]))
+        r = await c.request("GET", "/after-split")
+        check("  and the connection goes on", r["body"].startswith(b"hello /after-split"), str(r)[:80])
     # an ACK of a packet never sent (an optimistic ACK): PROTOCOL_VIOLATION
     async with connect("127.0.0.1", LST, configuration=config(), create_protocol=Client) as c:
         await c.request("GET", "/ack")

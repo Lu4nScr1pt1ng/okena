@@ -125,6 +125,7 @@ the connection closed when its framing can no longer be trusted.
 | QPACK | a dynamic table of 2048 bytes for the client's inserts, no blocked streams; a reference outside it is QPACK_DECOMPRESSION_FAILED, a bad instruction QPACK_ENCODER_STREAM_ERROR; responses use the static table |
 | Rapid reset over HTTP/3 | more than 200 requests a second cancelled by the client (STOP_SENDING, RESET_STREAM): CONNECTION_CLOSE H3_EXCESSIVE_LOAD |
 | Slowloris over HTTP/3 (a request head that never ends, the connection kept alive with PINGs) | `timeout { header }` per stream: RESET_STREAM H3_REQUEST_INCOMPLETE; a stalled body: `body_idle`, 408 |
+| HEADERS frames split across packets on several streams at once | one gathered at a time, the others' bytes wait with the data held ahead of a gap and go on when it is done; refused (H3_REQUEST_REJECTED) only when that room is full |
 | ACK of a packet never sent (optimistic ACK) over QUIC | CONNECTION_CLOSE PROTOCOL_VIOLATION; ranges below the 128 packets remembered cost their parsing only |
 | PATH_CHALLENGE from another address, to reflect traffic at a third party | answered at 3x its datagram at most, nothing when that cannot carry it, 16 answers a second a connection; the rest dropped |
 | ECN | our datagrams ECT(0); the marks received counted per space and reported in ACK_ECN. Marks stop on a connection whose client acknowledges data without counts; a rise in the CE count is a congestion event |

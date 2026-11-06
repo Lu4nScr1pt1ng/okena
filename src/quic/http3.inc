@@ -684,6 +684,11 @@ qc_app_frame:
 	pop	r12
 	ret
 
+bss
+	g_h3_parked	dd ?			; h3_park: for qc_stream_one
+	g_h3_stop	dd ?			; and for qc_stream_in: not read again now
+end bss
+
 ; Stream data: r8 = id, r9 = offset, rsi = bytes, rcx = length, eax = FIN,
 ; rdi = the packet's frame. CF on an error (QC_ERR set).
 QI_PKT		:= 0
@@ -701,6 +706,11 @@ qc_stream_in:
 	call	qc_stream_one
 	jc	.out
 .drain:
+	cmp	dword [g_h3_stop],0		; (what just went back waits: it would
+	je	.draining			; come back at once, for ever)
+	mov	dword [g_h3_stop],0
+	jmp	.fine
+.draining:
 	; what was held and is now next goes in, one piece at a time
 	mov	rax,rbp
 	call	qst_find
@@ -733,8 +743,7 @@ qc_stream_in:
 	inc	ecx
 	cmp	ecx,RA_N
 	jb	.scan
-	clc
-	jmp	.out
+	jmp	.kick
 .gone:
 	lea	rdi,[r15+QC_RA]			; the stream is gone: its pieces too
 	mov	ecx,RA_N
@@ -746,6 +755,45 @@ qc_stream_in:
 	add	rdi,RA_ESIZE
 	dec	ecx
 	jnz	.free
+.kick:
+	; QC_H3HB free again: a stream that waited for it goes on
+	test	dword [r15+QC_FLAGS],QF_PARKED
+	jz	.fine
+	mov	rax,[r15+QC_HBOWN]
+	test	rax,rax
+	jz	.kick_scan
+	cmp	dword [rax+QST_KIND],QSK_REQ
+	jne	.kick_scan
+	cmp	dword [rax+QST_PHASE],0
+	jne	.kick_scan
+	cmp	dword [rax+QST_HBLEN],0
+	je	.kick_scan
+	mov	rdx,[rax+QST_ID]
+	cmp	rdx,[r15+QC_HBOWNID]
+	je	.fine				; still in use
+.kick_scan:
+	lea	rdi,[r15+QC_RA]
+	mov	r9d,RA_N
+.kick_next:
+	cmp	dword [rdi+RA_USED],0
+	je	.kick_skip
+	mov	rax,[rdi+RA_ID]
+	call	qst_find
+	test	r8,r8
+	jz	.kick_skip
+	cmp	dword [r8+QST_KIND],QSK_REQ
+	jne	.kick_skip
+	mov	rax,[rdi+RA_OFF]
+	cmp	rax,[r8+QST_RXOFF]
+	ja	.kick_skip
+	mov	rbp,[rdi+RA_ID]
+	jmp	.drain
+.kick_skip:
+	add	rdi,RA_ESIZE
+	dec	r9d
+	jnz	.kick_next
+	and	dword [r15+QC_FLAGS],not QF_PARKED
+.fine:
 	clc
 .out:
 	pop	r13
@@ -878,6 +926,11 @@ qc_stream_one:
 	mov	rcx,r14
 	call	h3_req_bytes			; CF: an error (QC_ERR set)
 	jc	.error
+	cmp	dword [g_h3_parked],0		; its bytes (and end) wait: h3_park
+	je	@f
+	mov	dword [g_h3_parked],0
+	jmp	.ok
+@@:
 	cmp	dword [r12+QST_KIND],QSK_REQ
 	jne	.ok				; refused meanwhile: its end is nothing
 	cmp	dword [rsp+QI_FIN],0
@@ -1051,7 +1104,7 @@ h3_req_bytes:
 	je	.skip				; trailers: their fields are not passed on
 	; whole in these bytes: into g_h3tmp, parsed right away; split
 	; across packets: gathered in the connection's QC_H3HB, one stream
-	; at a time (another is refused: H3_REQUEST_REJECTED)
+	; at a time (another waits its turn: h3_park)
 	mov	eax,[r12+QST_HBLEN]
 	test	eax,eax
 	jnz	.hb_more
@@ -1072,7 +1125,12 @@ h3_req_bytes:
 	rep	movsb
 	jmp	.check_end
 .hb_busy:
-	mov	rdi,r12
+	mov	rcx,r14				; (all it has: the frame goes on past it)
+	sub	rcx,r13
+	add	[r12+QST_FLEFT],rcx
+	call	h3_park
+	jnc	.done
+	mov	rdi,r12				; no room
 	mov	eax,H3E_REQ_REJECTED
 	call	qst_refuse
 	jmp	.done
@@ -1321,6 +1379,50 @@ qc_heads_expire:
 	pop	r13
 	pop	r12
 .none:
+	ret
+
+; r12 = a stream's entry, r13-r14 = its bytes from a split HEADERS' payload on:
+; QC_H3HB is another's, so they go back to wait in QC_RA, as data ahead of
+; what is missing would, and so does all that comes after them. Clients do
+; this (quiche in 0-RTT, a few bytes of many streams): refused, they would
+; have to send it again. qc_stream_in picks them up. CF: no room.
+h3_park:
+	mov	rcx,r14
+	sub	rcx,r13
+	cmp	rcx,RA_DCAP
+	ja	.full
+	lea	rdi,[r15+QC_RA]
+	xor	edx,edx
+.scan:
+	cmp	dword [rdi+RA_USED],0
+	je	.free
+	add	rdi,RA_ESIZE
+	inc	edx
+	cmp	edx,RA_N
+	jb	.scan
+.full:
+	stc
+	ret
+.free:
+	mov	rax,[r12+QST_RXOFF]
+	sub	rax,rcx
+	mov	[r12+QST_RXOFF],rax
+	mov	[rdi+RA_OFF],rax
+	mov	rax,[r12+QST_ID]
+	mov	[rdi+RA_ID],rax
+	mov	[rdi+RA_LEN],ecx
+	mov	eax,[r12+QST_FINHERE]
+	mov	[rdi+RA_FIN],eax
+	mov	dword [rdi+RA_USED],1
+	sub	[r15+QC_DRECV],rcx		; (counted when they come back)
+	imul	edi,edx,RA_DCAP
+	lea	rdi,[r15+QC_RAD+rdi]
+	mov	rsi,r13
+	rep	movsb
+	or	dword [r15+QC_FLAGS],QF_PARKED
+	mov	dword [g_h3_parked],1
+	mov	dword [g_h3_stop],1
+	clc
 	ret
 
 ; r12 = a stream's entry: QC_H3HB is its to gather in (CF: another's)
