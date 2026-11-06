@@ -88,7 +88,8 @@ RA_MPOOL	:= 92		; d: to this pool
 RA_HAFTER	:= 96		; q: hedge: µs before the second try, 0 = none
 RA_HPCT		:= 104		; d: or this percentile of the pool's answers
 RA_PRIO		:= 108		; d: RP_*
-RA_SIZE		:= 112
+RA_AUTH		:= 112		; d: its auth entry + 1
+RA_SIZE		:= 120
 MAX_ACTS	:= MAX_ROUTES
 HD_KIND		:= 0		; d: HOP_SET, HOP_ADD, HOP_DROP
 HD_PREFIX	:= 4		; d: 1 when the name ends with * (drop)
@@ -244,6 +245,10 @@ bss
 	g_plan_cors	dd ?
 	g_splits:	rb SL_SIZE * MAX_SPLITS
 	g_plan_splits	dd ?
+	g_auths:	rb AU_SIZE * MAX_AUTHS
+	g_plan_auths	dd ?
+	g_plan_akeys	dd ?
+	g_auth_tab:	rb AT_SIZE * AT_N
 	g_plan_hdrops	dd ?
 	g_hdrops:	rb HD_SIZE * MAX_HDROPS
 	g_cmp_act	dd ?
@@ -378,6 +383,16 @@ cstring str_key_delay, 'delay',0
 cstring str_key_wait, 'wait',0
 cstring str_key_key, 'key',0
 cstring str_key_abort, 'abort',0
+cstring str_key_keys, 'keys',0
+cstring str_key_users, 'users',0
+cstring str_key_realm, 'realm',0
+cstring str_key_identity, 'identity',0
+cstring str_key_forward, 'forward',0
+cstring str_key_header, 'header',0
+cstring str_word_on, 'on',0
+cstring str_x_user_id, 'x-user-id',0
+cstring str_authorization, 'authorization',0
+cstring str_realm_okena, 'okena',0
 cstring str_key_after, 'after',0
 cstring str_key_max, 'max',0
 cstring str_key_origins, 'origins',0
@@ -711,6 +726,9 @@ compile_route_action:
 	lea	rcx,[dir_table + D_SIZE*DIR_PRIORITY]
 	cmp	rax,rcx
 	je	@f
+	lea	rcx,[dir_table + D_SIZE*DIR_AUTH]
+	cmp	rax,rcx
+	je	@f
 	mov	rbx,[rbx+N_NEXT]
 	jmp	@b
 @@:
@@ -877,6 +895,15 @@ compile_route_action:
 .priority:
 	mov	[r13+RA_PRIO],edx
 .no_priority:
+	mov	rdi,r12
+	mov	ecx,DIR_AUTH
+	call	find_child
+	test	rax,rax
+	jz	.no_auth
+	mov	rdi,rax
+	call	compile_auth
+	mov	[r13+RA_AUTH],eax
+.no_auth:
 	mov	rdi,r12
 	mov	ecx,DIR_FAULT
 	call	find_child
@@ -1145,6 +1172,255 @@ timeout_secs:
 	ret
 .absent:
 	stc
+	ret
+
+plan_bad_auth:
+	call	log_begin
+	out_lit 'auth: api_key needs header= and keys=FILE, basic users=FILE; a file has `name:key` or `name:SALT:SHA256HEX` lines, names up to 20 bytes, keys all different, 4096 in all'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
+
+; rdi = an `auth` line: eax = its entry + 1. Its file is read here, once a
+; plan, and only hashes stay.
+compile_auth:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	mov	rbx,rdi
+	mov	eax,[g_plan_auths]
+	cmp	eax,MAX_AUTHS
+	jae	plan_too_many
+	inc	dword [g_plan_auths]
+	imul	r12,rax,AU_SIZE
+	lea	r12,[g_auths+r12]
+	mov	[r12+AU_ID],eax
+	mov	rax,[rbx+N_ARGS]
+	mov	rcx,[rax+A_VAL]
+	mov	edx,AK_APIKEY
+	cmp	byte [rcx],'a'
+	je	@f
+	mov	edx,AK_BASIC
+@@:
+	mov	[r12+AU_KIND],edx
+	; identity=
+	lea	rax,[str_x_user_id]
+	mov	[r12+AU_IDENT],rax
+	mov	dword [r12+AU_ILEN],9
+	mov	rdi,rbx
+	lea	rsi,[str_key_identity]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	mov	rcx,[rax+A_VAL]
+	mov	[r12+AU_IDENT],rcx
+	mov	ecx,[rax+A_VLEN]
+	mov	[r12+AU_ILEN],ecx
+@@:
+	mov	rdi,rbx
+	lea	rsi,[str_key_forward]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	lea	rdx,[str_word_on]
+	call	mem_eq_cstr
+	mov	[r12+AU_FWD],eax
+@@:
+	cmp	dword [r12+AU_KIND],AK_BASIC
+	je	.basic
+	mov	rdi,rbx
+	lea	rsi,[str_key_header]
+	call	node_option
+	test	rax,rax
+	jz	plan_bad_auth
+	mov	rcx,[rax+A_VAL]
+	mov	[r12+AU_HDR],rcx
+	mov	ecx,[rax+A_VLEN]
+	mov	[r12+AU_HLEN],ecx
+	lea	rsi,[str_key_keys]
+	jmp	.file
+.basic:
+	lea	rax,[str_authorization]
+	mov	[r12+AU_HDR],rax
+	mov	dword [r12+AU_HLEN],13
+	lea	rax,[str_realm_okena]
+	mov	[r12+AU_REALM],rax
+	mov	dword [r12+AU_RLEN],5
+	mov	rdi,rbx
+	lea	rsi,[str_key_realm]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	mov	rcx,[rax+A_VAL]
+	mov	[r12+AU_REALM],rcx
+	mov	ecx,[rax+A_VLEN]
+	mov	[r12+AU_RLEN],ecx
+@@:
+	lea	rsi,[str_key_users]
+.file:
+	mov	rdi,rbx
+	call	node_option
+	test	rax,rax
+	jz	plan_bad_auth
+	mov	rsi,[rax+A_VAL]
+	mov	ecx,[rax+A_VLEN]
+	cmp	ecx,1000
+	ja	plan_bad_auth
+	lea	rdi,[g_au_path]
+	rep	movsb
+	mov	byte [rdi],0
+	lea	rdi,[g_au_path]
+	lea	rsi,[g_ar_text]
+	call	read_file
+	test	rax,rax
+	js	plan_bad_auth
+	mov	r13,rax				; the line
+	lea	r14,[rax+rdx]			; the end
+.line:
+	cmp	r13,r14
+	jae	.done
+	mov	rsi,r13
+.eol:
+	cmp	r13,r14
+	jae	.got
+	cmp	byte [r13],10
+	je	.got
+	inc	r13
+	jmp	.eol
+.got:
+	mov	rdx,r13				; the line, from rsi to rdx
+	inc	r13
+	cmp	rdx,rsi
+	je	.line
+	cmp	byte [rdx-1],13
+	jne	@f
+	dec	rdx
+@@:
+	cmp	rdx,rsi
+	je	.line
+	cmp	byte [rsi],'#'
+	je	.line
+	call	auth_line
+	jmp	.line
+.done:
+	mov	eax,[r12+AU_ID]
+	inc	eax
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; r12 = the auth, rsi = a line, rdx = its end: one more in the table
+auth_line:
+	push	rbx
+	push	r13
+	push	r14
+	push	r15
+	mov	r13,rsi				; the name
+	mov	r14,rdx				; the end
+	inc	dword [g_plan_akeys]
+	cmp	dword [g_plan_akeys],AT_MAX
+	ja	plan_bad_auth
+	; name:
+	mov	rbx,r13
+.colon:
+	cmp	rbx,r14
+	jae	plan_bad_auth
+	cmp	byte [rbx],':'
+	je	.named
+	inc	rbx
+	jmp	.colon
+.named:
+	mov	r15,rbx
+	sub	r15,r13				; its length
+	jz	plan_bad_auth
+	cmp	r15,AUTH_NAME_MAX
+	ja	plan_bad_auth
+	inc	rbx
+	cmp	dword [r12+AU_KIND],AK_BASIC
+	je	.user
+	; a key
+	mov	rsi,rbx
+	mov	rdx,r14
+	sub	rdx,rbx
+	jz	plan_bad_auth
+	lea	rdi,[g_au_digest]
+	call	sha256
+	jmp	.place
+.user:
+	mov	rsi,r13
+	mov	rdx,r15
+	lea	rdi,[g_au_digest]
+	call	sha256
+.place:
+	lea	rsi,[g_au_digest]
+	mov	edx,[r12+AU_ID]
+	call	auth_slot
+	test	rax,rax
+	jnz	plan_bad_auth			; the same key twice
+	; its slot
+	mov	ecx,[g_au_digest]
+	imul	eax,[r12+AU_ID],0x9E3779B1
+	add	ecx,eax
+.free:
+	and	ecx,AT_N - 1
+	mov	eax,ecx
+	shl	rax,7
+	lea	r8,[g_auth_tab+rax]
+	cmp	dword [r8+AT_NLEN],0
+	je	.slot
+	inc	ecx
+	jmp	.free
+.slot:
+	mov	rdi,r8
+	lea	rsi,[g_au_digest]
+	mov	ecx,32
+	rep	movsb
+	mov	eax,[r12+AU_ID]
+	mov	[r8+AT_AU],eax
+	mov	[r8+AT_NLEN],r15d
+	lea	rdi,[r8+AT_NAME]
+	mov	rsi,r13
+	mov	rcx,r15
+	rep	movsb
+	cmp	dword [r12+AU_KIND],AK_BASIC
+	jne	.out
+	; SALT:HEX, of 64 digits
+	mov	rax,rbx
+.salt_end:
+	cmp	rax,r14
+	jae	plan_bad_auth
+	cmp	byte [rax],':'
+	je	.salted
+	inc	rax
+	jmp	.salt_end
+.salted:
+	mov	rcx,rax
+	sub	rcx,rbx
+	cmp	rcx,32
+	ja	plan_bad_auth
+	mov	[r8+AT_SLEN],ecx
+	lea	rdi,[r8+AT_SALT]
+	mov	rsi,rbx
+	rep	movsb
+	lea	rsi,[rax+1]
+	mov	rcx,r14
+	sub	rcx,rsi
+	cmp	rcx,64
+	jne	plan_bad_auth
+	mov	ecx,32
+	lea	rdi,[r8+AT_HASH]
+	call	hex_bytes
+	jc	plan_bad_auth
+.out:
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	rbx
 	ret
 
 plan_bad_hedge:
@@ -1539,6 +1815,13 @@ compile_limit:
 	mov	ecx,LK_METHOD
 	test	eax,eax
 	jnz	.kind
+	mov	rdi,r13
+	mov	esi,r14d
+	lea	rdx,[.auth_user]
+	call	mem_eq_cstr
+	mov	ecx,LK_AUTH
+	test	eax,eax
+	jnz	.kind
 	; PREFIX:NAME
 	xor	edx,edx
 .colon:
@@ -1588,6 +1871,7 @@ compile_limit:
 	ret
 .client_ip	db 'client.ip',0
 .method		db 'method',0
+.auth_user	db 'auth.user',0
 
 plan_bad_fault:
 	call	log_begin

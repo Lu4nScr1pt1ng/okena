@@ -33,6 +33,7 @@ LK_METHOD	:= 2
 LK_HEADER	:= 3
 LK_QUERY	:= 4
 LK_COOKIE	:= 5
+LK_AUTH		:= 6				; who `auth` proved
 
 LB_BITS		:= 18				; 256k keys, 16 MiB of address space
 LB_N		:= 1 shl LB_BITS
@@ -183,7 +184,14 @@ limit_key:
 	je	.cookie
 	cmp	eax,LK_QUERY
 	je	.query
+	cmp	eax,LK_AUTH
+	je	.authn
 	jmp	.mixed
+.authn:
+	mov	rax,[r15+H_BUF]
+	lea	rsi,[rax+HB_AUTHN]
+	mov	ecx,[rax+HB_AUTHL]
+	jmp	.mix
 .ip:
 	call	http_client_resolve
 	lea	rsi,[r15+H_CLIENT]

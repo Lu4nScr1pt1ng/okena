@@ -636,6 +636,20 @@ http_request:
 	jnz	cors_preflight
 	h_rec
 .no_cors:
+	cmp	dword [g_acts+rdx+RA_AUTH],0	; auth: who it is
+	je	.no_auth
+	push	rax
+	push	rcx
+	push	rdx
+	mov	edi,[g_acts+rdx+RA_AUTH]
+	dec	edi
+	call	auth_check
+	pop	rdx
+	pop	rcx
+	pop	rax
+	jc	auth_refuse
+	h_rec
+.no_auth:
 	cmp	dword [g_overload],3		; (a route with no action: below)
 	jb	.not_shed
 	mov	r8,rdx
@@ -1305,6 +1319,11 @@ http_write_request_head:
 	jnz	.skip
 	jmp	.copy
 .end_to_end:
+	push	rdi				; (what `auth` keeps from the backend)
+	mov	rdi,r14
+	call	auth_hides
+	pop	rdi
+	je	.skip
 	; the route's header changes: a field it sets or drops is not copied
 	mov	eax,[r15+H_ACT]
 	test	eax,eax
@@ -1393,6 +1412,7 @@ http_write_request_head:
 	inc	ebx
 	jmp	.field
 .own:
+	call	auth_emit
 	test	dword [r15+H_FLAGS],HX_RIDKEPT
 	jnz	@f
 	push	rdi

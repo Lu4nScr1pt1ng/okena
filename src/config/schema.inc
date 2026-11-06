@@ -126,6 +126,7 @@ enumdef e_pp_version, 'v1', 'v2'
 enumdef e_tls_mode, 'passthrough'
 enumdef e_onoff, 'on', 'off'
 enumdef e_cors_flags, 'credentials'
+enumdef e_auth, 'api_key', 'basic'
 enumdef e_priority, 'normal', 'critical', 'bulk'
 enumdef e_mirror_what, 'pool'
 enumdef e_quic_cc, 'cubic', 'bbr'
@@ -134,6 +135,7 @@ enumdef e_proto, 'h1', 'h2'
 
 keysdef k_drain, 'delay', T_DURATION, 'timeout', T_DURATION
 keysdef k_hs_budget, 'wait', T_DURATION
+keysdef k_auth, 'header', T_ANY, 'keys', T_ANY, 'users', T_ANY, 'realm', T_ANY, 'identity', T_ANY, 'forward', T_ANY
 keysdef k_hedge, 'after', T_ANY, 'max', T_COUNT
 keysdef k_cors, 'origins', T_ANY, 'methods', T_ANY, 'headers', T_ANY, 'expose', T_ANY, 'max_age', T_DURATION
 keysdef k_limit, 'burst', T_COUNT, 'key', T_ANY, 'instances', T_COUNT
@@ -154,7 +156,7 @@ enumdef ctx_names, 'the top level', '`okena`', '`tcp`', '`pool`', '`limits`', '`
 enumdef future_names, 'udp', 'xdp', 'policy', 'use', \
 	'addon', 'alerts', 'include', 'admin', 'log', 'reload', 'profile', \
 	'acme', 'discover', 'header', 'headers', 'cache', \
-	'auth', 'match', 'source', \
+	'match', 'source', \
 	'concurrency', 'retry_budget', 'retry', 'outlier', \
 	'files', 'compress', 'canonical', 'idempotency', 'hold', \
 	'body', 'early_hints', 'signed_urls', \
@@ -192,6 +194,7 @@ dirdef DIR_HTTP2, 'http2',       M_HTTP,    0,           F_UNIQUE, 1, 1, e_onoff
 dirdef DIR_HTTP3, 'http3',       M_HTTP,    0,           F_UNIQUE, 1, 1, e_h3,    T_NONE, 0
 dirdef DIR_PREFADDR, 'preferred_address', M_HTTP, 0,     F_UNIQUE, 1, 2, T_LISTEN, T_LISTEN, 0
 dirdef DIR_EARLY, 'early_data',  M_HTTP,    0,           F_UNIQUE, 1, 1, e_onoff, T_NONE, 0
+dirdef DIR_AUTH, 'auth',        M_ROUTE,   0,           F_UNIQUE or F_KEYS_BLOCK, 1, 1, e_auth, T_NONE, k_auth
 dirdef DIR_PRIORITY, 'priority', M_ROUTE,   0,           F_UNIQUE, 1, 1, e_priority, T_NONE, 0
 dirdef DIR_HEDGE, 'hedge',      M_ROUTE,   0,           F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_hedge
 dirdef DIR_MIRROR, 'mirror',    M_ROUTE,   0,           F_UNIQUE, 2, 3, e_mirror_what, T_ANY, 0

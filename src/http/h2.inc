@@ -148,7 +148,9 @@ SF_H2S		:= 8192				; S_FLAGS: a stream of one
 ; what a client may send before it has our SETTINGS) with its head
 HB_CORS		:= HB_TRAIL + CK_TRAIL_MAX	; d, then the Origin let in
 HB_SPLIT	:= HB_CORS + 4 + CORS_ORIGIN_MAX	; d: `split`: the number a client is given
-HB_MIRS		:= HB_SPLIT + 4		; d: `mirror`: the copy this body is teed to
+HB_AUTHL	:= HB_SPLIT + 4		; d: `auth`: who was proved: how long
+HB_AUTHN	:= HB_AUTHL + 4		; and the name
+HB_MIRS		:= HB_AUTHN + AUTH_NAME_MAX	; d: `mirror`: the copy this body is teed to
 HB_MIRG		:= HB_MIRS + 4		; d: (its generation)
 HB_HLIVE	:= HB_MIRG + 4		; d: `hedge`: the request has a copy
 HB_HPS		:= HB_HLIVE + 4		; d: a copy: its request

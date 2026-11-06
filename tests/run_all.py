@@ -100,6 +100,8 @@ SUITES = [
     ("hedge epoll", ["tests/gateway/hedge.py", "epoll"]),
     ("overload io_uring", ["tests/gateway/overload.py", "io_uring"]),
     ("overload epoll", ["tests/gateway/overload.py", "epoll"]),
+    ("auth io_uring", ["tests/gateway/auth.py", "io_uring"]),
+    ("auth epoll", ["tests/gateway/auth.py", "epoll"]),
 ]
 
 

@@ -100,6 +100,11 @@ mirror_new:
 	lea	rdi,[rbp+HB_IN]
 	mov	ecx,[rsp+8]
 	rep	movsb
+	mov	rsi,[r14+H_BUF]			; who the request proved, for the head
+	lea	rsi,[rsi+HB_AUTHL]
+	lea	rdi,[rbp+HB_AUTHL]
+	mov	ecx,4 + AUTH_NAME_MAX
+	rep	movsb
 	mov	eax,[rsp+32]
 	mov	[rbp+HB_MIRS],eax		; (a copy: its pool)
 	mov	dword [rbp+HB_H2Q+Q_LEN],0

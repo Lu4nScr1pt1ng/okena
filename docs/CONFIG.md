@@ -478,6 +478,26 @@ together), never per worker.
 
 ## Authentication
 
+Today, on a route: `auth api_key header=x-api-key keys=FILE` and `auth basic
+users=FILE realm=NAME`; both take `identity=NAME` and `forward=on`. What follows
+in the block below (`policy`, `jwt`, `mtls`, `forward`) is planned.
+
+A keys file has lines `name:key`, a users file `name:SALT:SHA256HEX`, the hash
+being of SALT and the password together, as in
+`printf '%s%s' "$salt" "$password" | sha256sum`. Names are up to 20 bytes, and
+lines starting with `#` are skipped. okena reads the file at load and keeps only
+hashes; a reload reads it again.
+
+Without a good credential the answer is 401 with `WWW-Authenticate`, and the
+backend is not asked. With one, the backend gets who it is in `x-user-id` (or
+`identity=`), and whatever the client sent under that name is dropped: it cannot
+claim to be someone else. The credential itself is not passed on, unless
+`forward=on`. `limit ... key=auth.user` gives each one their own limit.
+
+Basic uses a salted SHA-256 and not bcrypt, which would stop a worker for tens of
+milliseconds a try. It suits long random passwords, not ones people choose:
+should that file leak, weak ones fall quickly.
+
 ```
 policy authenticated {
     auth jwt {
