@@ -377,6 +377,13 @@ was cut by the time limit of the script and is not counted.
 8 µs less at p50 than going to the backend, about 10 µs over the backend answering
 by itself (table above). Bodies past one read are not measured here.
 
+## What compressing costs (2026-11-06)
+
+1 MiB of word-like text from `files`, one worker on core 1, one client on keep-alive,
+2 s each: 1819 answers/s as they are, 105/s with `compress gzip`, 472 KB each. So about
+105 MiB/s through the compressor, some 150 µs of the loop for each piece of 16 KiB. A
+text of 300 KB: ratio 2.23 against 3.13 for `gzip -1`.
+
 ## HTTP/2 against HTTP/1.1 through okena (2026-10-31)
 
 One worker on core 1, the backend `l4bench http` on 4-5, `okena bench`

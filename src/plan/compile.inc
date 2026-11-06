@@ -63,6 +63,7 @@ RT_METHODS	:= 16		; d: RM_* bits, 0 = any
 RT_POOL		:= 20		; d: -1 for a route that redirects
 RT_ACT		:= 24		; d: its action + 1 (redirect, header changes), 0 = none
 RA_FILES	:= 120		; d: its files entry + 1
+RA_ZMIN		:= 124		; d: `compress`: from this size, 0 = no
 RT_MATCH	:= 28		; d: its first `match` block + 1, 0 = none
 RT_SIZE		:= 32
 
@@ -711,7 +712,7 @@ compile_route_action:
 	mov	rbx,[r12+N_CHILD]
 @@:
 	test	rbx,rbx
-	jz	.none
+	jz	.listener_compress
 	mov	rax,[rbx+N_DEF]
 	lea	rcx,[dir_table + D_SIZE*DIR_REDIRECT]
 	cmp	rax,rcx
@@ -755,8 +756,23 @@ compile_route_action:
 	lea	rcx,[dir_table + D_SIZE*DIR_AUTH]
 	cmp	rax,rcx
 	je	@f
+	lea	rcx,[dir_table + D_SIZE*DIR_COMPRESS]
+	cmp	rax,rcx
+	je	@f
 	mov	rbx,[rbx+N_NEXT]
 	jmp	@b
+.listener_compress:
+	mov	rbx,[r12+N_PARENT]		; the listener's, or its host block's
+.up:
+	test	rbx,rbx
+	jz	.none
+	mov	rdi,rbx
+	mov	ecx,DIR_COMPRESS
+	call	find_child
+	test	rax,rax
+	jnz	@f
+	mov	rbx,[rbx+N_PARENT]
+	jmp	.up
 @@:
 	mov	ecx,[g_plan_acts]
 	cmp	ecx,MAX_ACTS
@@ -947,6 +963,7 @@ compile_route_action:
 	pop	rbx
 	pop	r12
 .no_files:
+	call	compile_compress
 	mov	rdi,r12
 	mov	ecx,DIR_AUTH
 	call	find_child

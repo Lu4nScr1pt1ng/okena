@@ -106,6 +106,8 @@ SUITES = [
     ("jwt epoll", ["tests/gateway/jwt.py", "epoll"]),
     ("jwks io_uring", ["tests/gateway/jwks.py", "io_uring"]),
     ("jwks epoll", ["tests/gateway/jwks.py", "epoll"]),
+    ("compress io_uring", ["tests/gateway/compress.py", "io_uring"]),
+    ("compress epoll", ["tests/gateway/compress.py", "epoll"]),
     ("files io_uring", ["tests/gateway/files.py", "io_uring"]),
     ("files epoll", ["tests/gateway/files.py", "epoll"]),
     ("match io_uring", ["tests/gateway/match.py", "io_uring"]),

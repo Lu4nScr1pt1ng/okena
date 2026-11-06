@@ -99,6 +99,7 @@ macro plan_regions action
 	action g_caches, CA_SIZE * MAX_CACHES
 	action g_files, FI_SIZE * MAX_FILES
 	action g_plan_files, 4
+	action g_plan_zip, 4
 	action g_mroutes, RT_SIZE * MAX_MATCH
 	action g_mblocks, MB_SIZE * MAX_MATCH
 	action g_mconds, MC_SIZE * MAX_MCOND

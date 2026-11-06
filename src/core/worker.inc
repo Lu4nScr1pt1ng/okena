@@ -74,6 +74,7 @@ worker_main:
 	js	.no_memory
 	call	cache_init
 	call	files_init
+	call	zip_init
 	call	groups_refresh
 	call	hs_init
 	cmp	dword [g_plan_engine],2

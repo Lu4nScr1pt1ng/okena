@@ -1472,6 +1472,12 @@ cache_tee:
 cache_finish:
 	call	session_ptr
 	mov	ecx,[rax+S_FLAGS]
+	test	ecx,SF_ZIP
+	jz	@f
+	call	zip_done
+	call	session_ptr
+	mov	ecx,[rax+S_FLAGS]
+@@:
 	test	ecx,SF_CACHED or SF_CFILL or SF_FILE
 	jz	.none
 	test	ecx,SF_FILE
@@ -1571,7 +1577,7 @@ cache_unpin:
 ; a session is closing, ebx = it, r12 = it: nothing of the cache stays with it. Keeps
 ; all.
 cache_gone:
-	test	dword [r12+S_FLAGS],SF_CACHED or SF_CFILL or SF_FILE
+	test	dword [r12+S_FLAGS],SF_CACHED or SF_CFILL or SF_FILE or SF_ZIP
 	jz	.none
 	push	rax
 	push	rcx
@@ -1584,6 +1590,12 @@ cache_gone:
 	push	r11
 	push	r15
 	h_rec
+	test	dword [r12+S_FLAGS],SF_ZIP
+	jz	@f
+	call	zip_done
+	test	dword [r12+S_FLAGS],SF_CACHED or SF_CFILL or SF_FILE
+	jz	.out
+@@:
 	test	dword [r12+S_FLAGS],SF_FILE
 	jz	@f
 	call	file_done

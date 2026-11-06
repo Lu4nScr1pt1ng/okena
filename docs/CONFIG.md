@@ -702,6 +702,21 @@ pool api {
 | `precompressed=br,zst,gz` | a `.br`, `.zst` or `.gz` next to the file, if the client takes it, in that order; the answer then varies on Accept-Encoding, with its own ETag, and has no ranges |
 | `cache=T` or `cache=immutable` | `Cache-Control: public, max-age=...` |
 
+`compress gzip min=1KiB`, on a listener, a host block or a route (`compress off`
+there undoes it), compresses answers on the way out: 200s of text, JSON, JavaScript,
+XML or SVG, from `min` up (256 B by default; an answer of unknown length always) to
+clients that say they take gzip. Not what is encoded already, `no-transform`, HEAD or
+HTTP/1.0. The answer loses its `ETag` and `Accept-Ranges`, and goes chunked. The cache
+keeps the original and compresses for each client.
+
+It is built for speed: about 100 MiB/s on one core, and for text about 0.7 of what
+`gzip -1` achieves; a worker is held for some 150 µs for each 16 KiB, which counts for
+a site made of large dynamic pages. A worker has 64 of these going at once, past
+that answers go as they are. zstd is refused at load: there is none yet.
+
+Compressing an answer that holds both a secret and something the client chose can
+leak the secret to someone who sees its length (BREACH): keep those routes out of it.
+
 GET and HEAD, with `ETag`, `Last-Modified`, `If-None-Match`, `If-Modified-Since`,
 `If-Range` and one byte range; several ranges in a request get the whole file. A name
 that begins with a dot is not served, but for `.well-known`. Only regular files are
@@ -721,7 +736,7 @@ http :443 {
     tls { cert auto }
     canonical example.com              # www -> apex, 301
     headers preset=secure              # HSTS, nosniff, frame and referrer policy
-    compress gzip zstd min=1KiB
+    compress gzip min=1KiB
 
     route /assets/* {
         files /srv/site precompressed=br,zst,gz cache=immutable

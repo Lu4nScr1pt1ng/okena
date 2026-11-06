@@ -735,6 +735,9 @@ http_request:
 	mov	r13d,[rcx+RT_POOL]
 	mov	[g_c_pool],r13d
 	push	rcx
+	call	zip_request
+	pop	rcx
+	push	rcx
 	call	cache_check
 	pop	rcx
 	test	eax,eax
@@ -1566,6 +1569,8 @@ http_write_request_head:
 	ret
 
 cstring hn_x_forwarded_for, 'x-forwarded-for',0
+cstring hn_accept_ranges, 'accept-ranges',0
+cstring hn_etag, 'etag',0
 cstring hn_x_forwarded_proto, 'x-forwarded-proto',0
 cstring hn_x_forwarded_host, 'x-forwarded-host',0
 cstring hn_forwarded, 'forwarded',0
@@ -1765,6 +1770,9 @@ http_recv_plain:
 	cmp	dword [r15+H_RBODY],BK_CLOSE
 	jne	.abort
 	mov	dword [r15+H_RBODY],BK_NONE
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_ZIP
+	jnz	http_last_chunk
 	test	dword [r15+H_FLAGS],HX_CHUNKOUT
 	jz	http_exchange_done
 	jmp	http_last_chunk
@@ -2304,11 +2312,16 @@ http_resp_head:
 	call	h_chunkout			; framed for the client
 .write:
 	call	cache_head
+	call	zip_head
 	call	http_write_response_head
+	mov	dword [g_zh],0
 	jc	.bad
 	or	dword [r15+H_FLAGS],HX_STARTED
 	cmp	dword [r15+H_RBODY],BK_LENGTH
 	jne	.send_head
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_ZIP
+	jnz	.send_head			; (http_resp_pump takes it from UP)
 	mov	ecx,[r15+H_UPLEN]
 	sub	ecx,[r15+H_UPOFF]
 	jz	.send_head
@@ -2385,6 +2398,28 @@ http_write_response_head:
 	pop	rdi
 	jnz	.skip
 .e2e:
+	cmp	dword [g_zh],0
+	je	.not_zipped
+	; compressed: its length is unknown, ranges are of something else
+	push	rdi
+	mov	rdi,r14
+	lea	rsi,[hn_content_length]
+	call	hf_is
+	pop	rdi
+	jz	.skip
+	push	rdi
+	mov	rdi,r14
+	lea	rsi,[hn_accept_ranges]
+	call	hf_is
+	pop	rdi
+	jz	.skip
+	push	rdi
+	mov	rdi,r14
+	lea	rsi,[hn_etag]
+	call	hf_is
+	pop	rdi
+	jz	.skip				; (of the bytes it had: these are others)
+.not_zipped:
 	; the route's response header changes (final heads only)
 	test	dword [r15+H_FLAGS],HX_INTERIM
 	jnz	.copy
@@ -2437,6 +2472,10 @@ http_write_response_head:
 	inc	ebx
 	jmp	.field
 .own:
+	cmp	dword [g_zh],0
+	je	.own_plain
+	memit_x 'Content-Encoding: gzip',13,10,'Vary: Accept-Encoding',13,10
+.own_plain:
 	test	dword [r15+H_FLAGS],HX_INTERIM
 	jz	@f
 	memit_x 13,10				; an interim head: no framing of its own
@@ -2556,12 +2595,21 @@ http_resp_pump:
 	call	cache_tee
 	mov	rdi,rsi
 	mov	esi,ecx
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_ZIP
+	jz	.send
+	mov	r8,rdi
+	mov	r9d,esi
+	jmp	.squeeze
 .send:
 	mov	dword [r15+H_STATE],HS_RESP_SEND
 	mov	ecx,SIDE_CLIENT
 	jmp	h_send
 .length_done:
 	mov	dword [r15+H_RBODY],BK_NONE
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_ZIP
+	jnz	http_last_chunk
 	jmp	http_exchange_done
 .read:
 	mov	dword [r15+H_UPLEN],0
@@ -2609,6 +2657,14 @@ http_resp_pump:
 	call	cache_tee
 	pop	rcx
 	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_ZIP
+	jz	.plain
+.squeeze:
+	call	zip_feed
+	test	esi,esi
+	jnz	.send
+	jmp	http_resp_pump
+.plain:
 	test	dword [rax+S_FLAGS],SF_H2S or SF_H3S or SF_HSTRM
 	jz	@f
 	mov	rdi,r8				; a stream: the bytes as they are, in DATA
@@ -2634,6 +2690,16 @@ h_chunkout:
 
 ; The final chunk to the client, then the exchange is over.
 http_last_chunk:
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_ZIP
+	jz	.not_zip
+	; the rest of it, the last chunk with it: what comes after the send is the end
+	h_rec
+	call	zip_finish
+	mov	dword [r15+H_STATE],HS_RESP_SEND
+	mov	ecx,SIDE_CLIENT
+	jmp	h_send
+.not_zip:
 	call	session_ptr
 	test	dword [rax+S_FLAGS],SF_H2S or SF_H3S or SF_HSTRM
 	jnz	http_exchange_done		; a stream ends with END_STREAM (and its trailers)
