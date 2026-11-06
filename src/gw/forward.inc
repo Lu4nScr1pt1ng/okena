@@ -382,6 +382,9 @@ fwd_answer:
 	mov	rcx,[r13+H_BUF]
 	cmp	dword [rcx+HB_FST],0
 	jne	.out
+	mov	eax,[rsp+24]			; (the copy)
+	cmp	[rcx+HB_MIRS],eax
+	jne	.out				; an earlier request's
 	mov	eax,[r13+H_ACT]
 	test	eax,eax
 	jz	.out
@@ -683,11 +686,13 @@ fwd_gone:
 	push	rdx
 	push	rdi
 	push	r8
+	push	r9
 	push	rbx
 	mov	eax,ebx
 	shl	rax,HB_SHIFT
 	add	rax,[g_hbuf_base]
 	mov	r8,rax
+	mov	r9d,ebx
 	mov	ebx,[r8+HB_HPS]
 	mov	ecx,[r8+HB_HPG]
 	call	hedge_alive
@@ -700,10 +705,13 @@ fwd_gone:
 	mov	rax,[rax+H_BUF]
 	cmp	dword [rax+HB_FST],0
 	jne	.out
+	cmp	[rax+HB_MIRS],r9d
+	jne	.out				; it decided an earlier request: its body came late
 	mov	edi,FR_FAIL
 	call	fwd_verdict
 .out:
 	pop	rbx
+	pop	r9
 	pop	r8
 	pop	rdi
 	pop	rdx

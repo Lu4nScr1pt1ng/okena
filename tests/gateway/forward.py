@@ -46,6 +46,11 @@ class Sso(http.server.BaseHTTPRequestHandler):
             extra = [("X-User-Id", "u" * 400)]
         elif c == "s=nofields":
             pass
+        elif c == "s=late":
+            extra = [("X-User-Id", "late")]
+        elif c == "s=after":
+            time.sleep(0.6)
+            st = 403
         elif c == "s=boom":
             st = 500
         elif c == "s=slow":
@@ -66,6 +71,8 @@ class Sso(http.server.BaseHTTPRequestHandler):
             self.send_header(k, v)
         self.send_header("Content-Length", "4")
         self.end_headers()
+        if c == "s=late":
+            time.sleep(0.3)
         self.wfile.write(b"body")
 
     def log_message(self, *a):
@@ -118,8 +125,9 @@ pool nobody {{ server 127.0.0.1:1 }}
 http 127.0.0.1:{lst} {{
     route /app/* {{ auth forward pool=sso path=/verify?x=1 copy=x-user-id,x-user-role timeout=500ms; to pool b }}
     route /short {{ auth forward pool=sso path=/v timeout=100ms; to pool b }}
+    route /seq/* {{ auth forward pool=sso path=/verify copy=x-user-id; to pool b }}
     route /named {{ auth forward pool=sso path=/v copy=x-user-id identity=x-who; to pool b }}
-    route /cached/* {{ auth forward pool=sso path=/v copy=x-user-id cache=1s; to pool b }}
+    route /cached/* {{ auth forward pool=sso path=/v copy=x-user-id cache=4s; to pool b }}
     route /down {{ auth forward pool=nobody path=/v; to pool b }}
     route /lim {{ auth forward pool=sso path=/v copy=x-user-id; limit 2/s burst=1 key=auth.user; to pool b }}
     route /fault {{ auth forward pool=sso path=/v; fault abort=418 percent=100; to pool b }}
@@ -187,8 +195,11 @@ def main():
         r = get("/app/x", "POST", body=b"payload", **A)
         check("a body goes on after the wait", r[0] == 200 and got[-1][3] == b"payload", got[-1:])
         c = http.client.HTTPConnection("127.0.0.1", LST, timeout=5)
-        seq = [get("/app/x", conn=c, Cookie=v)[0] for v in ("s=alice", "s=boom", "s=bob")] + [get("/app/x", conn=c)[0]]
+        seq = [get("/seq/x", conn=c, Cookie=v)[0] for v in ("s=alice", "s=boom", "s=bob")] + [get("/seq/x", conn=c)[0]]
         check("one connection, each request its own verdict", seq == [200, 503, 200, 302], seq)
+        # a verdict goes on at its head: that question is over while its body is on the way
+        seq = [get("/seq/x", conn=c, Cookie=v)[0] for v in ("s=late", "s=after")]
+        check("  the end of the last question is not the answer to this one", seq == [200, 403], seq)
         c.close()
         # a client that leaves while it waits
         for i in range(20):
@@ -218,7 +229,7 @@ def main():
         check("  nor for another path", hits(lambda: get("/cached/other", **A)) == 1)
         check("  nor for no credentials", get("/cached/a")[0] == 302)
         check("  what it told is kept too", get("/cached/a", **A)[:2] == (200, "alice"))
-        time.sleep(1.1)
+        time.sleep(4.1)
         check("  and it runs out", hits(lambda: get("/cached/a", **A)) == 1)
         for i in range(6):
             get("/cached/z", Cookie="s=forbidden")
