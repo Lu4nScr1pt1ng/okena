@@ -1343,6 +1343,8 @@ qst_refuse:
 ; come within the listener's `timeout { header }` go (a slow client holds an
 ; entry of QST_N each; no session yet: nothing else to free)
 qc_heads_expire:
+	test	dword [r15+QC_FLAGS],QF_DONE	; (before that its streams are not set up:
+	jz	.none				; a recycled buffer's bytes)
 	mov	eax,[g_tick]
 	cmp	eax,[r15+QC_HDR_TICK]
 	je	.none
