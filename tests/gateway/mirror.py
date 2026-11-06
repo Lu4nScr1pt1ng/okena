@@ -22,6 +22,7 @@ BIN = ROOT / "build" / "okena"
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
 BASE = 29000 + os.getpid() % 90 * 10 + (5 if ENGINE == "epoll" else 0)
 MAIN, SHADOW, SLOW, LST, TLS = BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4
+FAST, FEW = BASE + 1000, BASE + 1001
 failures = 0
 got = []
 lock = threading.Lock()
@@ -211,6 +212,38 @@ def main():
     finally:
         p.terminate()
         p.wait(10)
+    # a copy whose upstream goes back to its pool has nothing left to close: its
+    # session must still come free. With few sessions, a leak refuses real clients
+    subprocess.run(["gcc", "-O2", "-pthread", "-o", tmp / "l4bench", ROOT / "tests/bench/l4bench.c"], check=True)
+    fast = subprocess.Popen(["timeout", "--foreground", "20", str(tmp / "l4bench"), "http", str(FAST), "2"],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    few = tmp / "few.conf"
+    few.write_text(f"""okena {{ workers 2; io_engine {ENGINE} }}
+pool fast {{ server 127.0.0.1:{FAST} }}
+http 127.0.0.1:{FEW} {{
+    route /copied {{ to pool fast; mirror pool fast }}
+    route /plain {{ to pool fast }}
+}}
+""")
+    q = subprocess.Popen(["prlimit", "--nofile=1024:1024", "timeout", "--foreground", "15", str(BIN), "-c", str(few)],
+                         stderr=open(tmp / "few.log", "w"))
+    try:
+        time.sleep(0.5)
+        def load(path, rate):
+            r = subprocess.run(["timeout", "8", str(BIN), "bench", f"http://127.0.0.1:{FEW}{path}", "conns=16",
+                                "workers=2", f"rate={rate}", "duration=1s", "warmup=0s", "format=kv"],
+                               capture_output=True, text=True, stdin=subprocess.DEVNULL)
+            return dict(x.split("=", 1) for x in r.stdout.split() if "=" in x)
+        kv = load("/copied", 4000)
+        check("thousands of copies, on a few hundred sessions", kv.get("ok") == "4000" and kv.get("errors") == "0", str(kv)[:100])
+        kv = load("/copied", 4000)
+        check("  and as many again", kv.get("ok") == "4000" and kv.get("errors") == "0", str(kv)[:100])
+        kv = load("/plain", 1000)
+        check("  real clients still get sessions", kv.get("ok") == "1000" and kv.get("errors") == "0", str(kv)[:100])
+    finally:
+        q.terminate()
+        q.wait(10)
+        fast.terminate()
     t = (tmp / "log").read_text()
     check("no worker died", "killed" not in t and "restarting" not in t, t[-300:])
     for bad in ("mirror pool nosuch", "mirror pool shadow 0%", "mirror pool shadow 101%", "mirror pool shadow x", "mirror shadow"):

@@ -2468,7 +2468,7 @@ session_maybe_free:
 	jne	.done
 	test	dword [r12+S_FLAGS],SF_FDS_CLOSING
 	jnz	.free
-	test	dword [r12+S_FLAGS],SF_H2S or SF_H2U or SF_QC or SF_H3S
+	test	dword [r12+S_FLAGS],SF_H2S or SF_H2U or SF_QC or SF_H3S or SF_MIR
 	jz	@f
 	test	dword [r12+S_FLAGS],SF_UP_OPEN
 	jz	.free				; no client socket, nothing else to close
