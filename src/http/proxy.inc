@@ -654,6 +654,14 @@ http_request:
 .has_action:
 	dec	edx
 	imul	rdx,rdx,RA_SIZE
+	mov	eax,[g_acts+rdx+RA_ACL]		; who may ask at all
+	test	eax,eax
+	jz	.no_acl
+	call	acl_check
+	jnc	.no_acl
+	mov	edi,403
+	jmp	http_error
+.no_acl:
 	cmp	dword [g_acts+rdx+RA_CORS],0	; cors: a preflight costs nobody anything
 	je	.no_cors
 	push	rax

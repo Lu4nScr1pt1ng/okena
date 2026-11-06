@@ -735,7 +735,7 @@ Built in, in assembly, compiled into the route only where configured:
   caching for hashed assets, SPA fallback (`fallback /index.html` for
   client-side routes, never for missing assets), custom error pages.
 * **Webhooks:** routes that carry signed payloads (Stripe, payment and
-  e-mail providers) get `body raw`: the body is forwarded byte for byte,
+  e-mail providers) need nothing: the body is forwarded byte for byte,
   never re-encoded or decompressed, with source IP allowlists.
 
 ## Addons

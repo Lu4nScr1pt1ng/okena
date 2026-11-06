@@ -101,6 +101,8 @@ macro plan_regions action
 	action g_plan_files, 4
 	action g_rmaps, RM_SIZE * MAX_RMAPS
 	action g_plan_rmaps, 4
+	action g_acls, ACL_SIZE * MAX_ACLS
+	action g_plan_acls, 4
 	action g_idems, IC_SIZE * MAX_IDEMS
 	action g_plan_idems, 4
 	action g_plan_zip, 4

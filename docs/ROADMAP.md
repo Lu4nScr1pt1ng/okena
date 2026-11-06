@@ -409,7 +409,7 @@ the accepted connections' latency flat.
 ## Phase 6 — Gateway
 
 In progress. In: `fault abort= delay=`, `cors`, `split`, `mirror`, `hedge`, `policy` and `use`, `cache` in memory with coalescing and stale-while-revalidate, `files` with ranges, validators, precompressed variants and a fallback, `compress gzip`, `early_hints`, `headers preset=`, `okena route`, `redirects`, `hold`, `priority` with an overload manager, `auth api_key`,
-`basic`, `mtls` (`client_ca` over TCP), `forward` and `jwt` (a JWK set from a file or a URL), `match` blocks, `limit` (by rate, up to a day), `idempotency`.
+`basic`, `mtls` (`client_ca` over TCP), `forward` and `jwt` (a JWK set from a file or a URL), `match` blocks, `limit` (by rate, up to a day), `idempotency`, `allow` and `deny`.
 
 * JWT/JWKS (fetched by a process of its own, not the control process: a slow
   provider must not hold up DNS), verified-token cache, API
@@ -422,7 +422,7 @@ In progress. In: `fault abort= delay=`, `cors`, `split`, `mirror`, `hedge`, `pol
   on-the-fly gzip/zstd for text, 103 Early Hints.
 * Fault injection per route (`fault delay=`, `fault abort=`).
 * OIDC login, idempotency keys, GeoIP, redirect maps, security header
-  presets, `body raw` for signed webhooks, deploy hold.
+  presets, deploy hold.
 * `okena route` dry-run.
 
 Exit: each filter's added latency measured and documented; a route with

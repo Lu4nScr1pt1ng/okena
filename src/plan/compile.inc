@@ -99,7 +99,8 @@ RA_EHLEN	:= 136		; d
 RA_HOLD		:= 144		; q: `hold`: µs a request waits for a backend
 RA_RMAP		:= 152		; d: its `redirects` + 1
 RA_IDEM		:= 156		; d: its `idempotency` + 1
-RA_SIZE		:= 160
+RA_ACL		:= 160		; d: its `allow`, `deny` + 1
+RA_SIZE		:= 168
 MAX_ACTS	:= MAX_ROUTES
 HD_KIND		:= 0		; d: HOP_SET, HOP_ADD, HOP_DROP
 HD_PREFIX	:= 4		; d: 1 when the name ends with * (drop)
@@ -773,6 +774,12 @@ compile_route_action:
 	lea	rcx,[dir_table + D_SIZE*DIR_HOLD]
 	cmp	rax,rcx
 	je	@f
+	lea	rcx,[dir_table + D_SIZE*DIR_ALLOW]
+	cmp	rax,rcx
+	je	@f
+	lea	rcx,[dir_table + D_SIZE*DIR_DENY]
+	cmp	rax,rcx
+	je	@f
 	lea	rcx,[dir_table + D_SIZE*DIR_IDEMPOTENCY]
 	cmp	rax,rcx
 	je	@f
@@ -991,6 +998,7 @@ compile_route_action:
 	call	compile_compress
 	call	compile_hints
 	call	compile_hold
+	call	compile_acl
 	call	compile_idem
 	call	compile_rmap
 	mov	rdi,r12

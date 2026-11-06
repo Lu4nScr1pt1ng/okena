@@ -502,6 +502,14 @@ to, instead of a 502: for a pool that is restarting. Nothing has reached a backe
 so a POST can wait too. It tries every 100 ms, ejected servers included, so one that is
 back is found at once. It is about connections: a 503 from a backend is its answer.
 
+`allow 10.0.0.0/8 2001:db8::/32` and `deny ...` on a route look at the client as
+`trusted_proxies` has it, before anything else on the route: a 403. A deny wins, and with
+any `allow` what is not in one is refused. Either takes `file:PATH`, one address or
+range a line, `#` for comments: lists of thousands cost one step a bit.
+
+Request bodies reach the backend byte for byte, whatever the protocol: nothing in okena
+rewrites them, so signed webhooks need no setting.
+
 `idempotency header=idempotency-key ttl=24h lock=60s` on a route makes a request that
 changes something, sent twice with the same key, reach the backend once, whichever
 worker takes it. The second gets the first's answer with `Idempotency-Replayed: true`.
@@ -547,7 +555,6 @@ together), never per worker.
 
 Today, on a route: `auth api_key header=x-api-key keys=FILE`, `auth basic
 users=FILE realm=NAME` (both take `identity=NAME` and `forward=on`) and `auth jwt`.
-What else follows in the block below (`allow`) is planned.
 
 ```
 auth jwt {
@@ -788,7 +795,6 @@ http :443 {
         to pool api
     }
     route /webhooks/* {
-        body raw                       # forwarded byte for byte, for signatures
         allow file:/etc/okena/webhook-sources.list
         to pool api
     }
