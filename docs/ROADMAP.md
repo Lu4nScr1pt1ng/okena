@@ -348,7 +348,15 @@ header protection); each HTTP/3 request stream a session running the
 HTTP/1.1 exchange, as HTTP/2 streams do (src/http/h2.inc), so routing,
 pools and everything after them stay one code path.
 
-In progress (`http3 on`, off by default). In: packet protection (RFC
+**Done** (2026-11-05; `http3 on`, off by default). As built, against the plan
+below: steering is classic BPF on the reuseport group, not eBPF; 0-RTT goes by
+method (GET, HEAD, OPTIONS), not by route; BBR is there but CUBIC stays the
+default (`quic_cc bbr`: far better under loss, about 20% slower without). Of
+the exit, two measures are accepted as they stand and left open: quiet latency,
+ahead open loop but 10 to 40 µs behind at p50 under h2load, unexplained; and
+the flood, close to flat (p99 0.5 ms against 0.2) but p99.9 at 2 ms against 0.4.
+
+In: packet protection (RFC
 9001, 9369, with the RFC's test vectors), Version Negotiation, the
 handshake on a UDP socket per worker (TLS 1.3 in QUIC mode, X25519 and
 X25519MLKEM768), the 3x amplification limit, ACK ranges, PTO, CUBIC (RFC 9438)
