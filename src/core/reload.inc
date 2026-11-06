@@ -83,6 +83,8 @@ macro plan_regions action
 	action g_tls_store, TLS_STORE
 	action g_plan_acts, 4
 	action g_acts, RA_SIZE * MAX_ACTS
+	action g_limits, LM_SIZE * MAX_LIMITS
+	action g_plan_limits, 4
 	action g_plan_hdrops, 4
 	action g_hdrops, HD_SIZE * MAX_HDROPS
 	action g_plan_hosts, 4

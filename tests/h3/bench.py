@@ -24,7 +24,7 @@ sys.path.insert(0, str(HERE))
 import run as t  # noqa: E402
 
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
-BASE = 32000 + os.getpid() % 90 * 10 + (5 if ENGINE == "epoll" else 0)
+BASE = 24000 + os.getpid() % 90 * 10 + (5 if ENGINE == "epoll" else 0)
 t.BACK, t.LST, t.RELAY = BASE, BASE + 1, BASE + 2
 
 

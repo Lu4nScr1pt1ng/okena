@@ -576,6 +576,22 @@ http_request:
 	jz	@f
 	dec	edx
 	imul	rdx,rdx,RA_SIZE
+	cmp	dword [g_acts+rdx+RA_LCOUNT],0	; rate limits: the cheapest refusal first
+	je	.limited
+	test	dword [r15+H_FLAGS],HX_FAULTED	; (counted before it waited)
+	jnz	.limited
+	push	rax
+	push	rcx
+	push	rdx
+	mov	edi,[g_acts+rdx+RA_LFIRST]
+	mov	esi,[g_acts+rdx+RA_LCOUNT]
+	call	limit_request
+	pop	rdx
+	pop	rcx
+	pop	rax
+	jc	limit_refuse
+	h_rec
+.limited:
 	cmp	dword [g_acts+rdx+RA_CODE],0
 	jne	http_redirect
 	cmp	dword [g_acts+rdx+RA_FPCT],0	; fault: this share of the requests

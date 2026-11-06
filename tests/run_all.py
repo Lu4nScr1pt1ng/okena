@@ -88,6 +88,8 @@ SUITES = [
     ("h3 bench epoll", ["tests/h3/bench.py", "epoll"]),
     ("fault io_uring", ["tests/gateway/fault.py", "io_uring"]),
     ("fault epoll", ["tests/gateway/fault.py", "epoll"]),
+    ("limit io_uring", ["tests/gateway/limit.py", "io_uring"]),
+    ("limit epoll", ["tests/gateway/limit.py", "epoll"]),
 ]
 
 

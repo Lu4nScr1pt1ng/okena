@@ -130,6 +130,7 @@ enumdef e_proto, 'h1', 'h2'
 
 keysdef k_drain, 'delay', T_DURATION, 'timeout', T_DURATION
 keysdef k_hs_budget, 'wait', T_DURATION
+keysdef k_limit, 'burst', T_COUNT, 'key', T_ANY, 'instances', T_COUNT
 keysdef k_fault, 'abort', T_COUNT, 'percent', T_COUNT, 'delay', T_DURATION
 keysdef k_quic_sid, 'key', T_ANY, 'rotation', T_ANY
 keysdef k_server, 'weight', T_WEIGHT
@@ -147,7 +148,7 @@ enumdef ctx_names, 'the top level', '`okena`', '`tcp`', '`pool`', '`limits`', '`
 enumdef future_names, 'udp', 'xdp', 'policy', 'use', \
 	'addon', 'alerts', 'include', 'admin', 'log', 'reload', 'profile', \
 	'acme', 'discover', 'split', 'mirror', 'header', 'headers', 'cache', \
-	'cors', 'limit', 'auth', 'match', 'source', \
+	'cors', 'auth', 'match', 'source', \
 	'concurrency', 'retry_budget', 'retry', 'outlier', \
 	'files', 'compress', 'canonical', 'idempotency', 'hold', \
 	'body', 'early_hints', 'signed_urls', 'priority', 'hedge', \
@@ -185,6 +186,7 @@ dirdef DIR_HTTP2, 'http2',       M_HTTP,    0,           F_UNIQUE, 1, 1, e_onoff
 dirdef DIR_HTTP3, 'http3',       M_HTTP,    0,           F_UNIQUE, 1, 1, e_h3,    T_NONE, 0
 dirdef DIR_PREFADDR, 'preferred_address', M_HTTP, 0,     F_UNIQUE, 1, 2, T_LISTEN, T_LISTEN, 0
 dirdef DIR_EARLY, 'early_data',  M_HTTP,    0,           F_UNIQUE, 1, 1, e_onoff, T_NONE, 0
+dirdef DIR_RLIMIT, 'limit',      M_ROUTE,   0,           F_KEYS_BLOCK, 1, 1, T_ANY, T_NONE, k_limit
 dirdef DIR_FAULT, 'fault',      M_ROUTE,   0,           F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_fault
 dirdef DIR_REDIRECT, 'redirect',  M_ROUTE,   0,           F_UNIQUE, 2, 2, e_redirect_codes, T_ANY, 0
 dirdef DIR_REWRITE, 'rewrite',    M_ROUTE,   0,           F_UNIQUE, 4, 4, e_rewrite_what, T_ANY, 0

@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BIN = ROOT / "build" / "okena"
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
-BASE = 33000 + os.getpid() % 90 * 10 + (5 if ENGINE == "epoll" else 0)
+BASE = 25000 + os.getpid() % 90 * 10 + (5 if ENGINE == "epoll" else 0)
 BACK, LST, TLS = BASE, BASE + 1, BASE + 2
 failures = 0
 seen = [0]

@@ -408,7 +408,8 @@ do not stall a connection; under a flood of Initial packets retry keeps
 the accepted connections' latency flat.
 ## Phase 6 — Gateway
 
-In progress. In: `fault abort= delay=`.
+In progress. In: `fault abort= delay=`, `limit` (for now by rate; quotas, `match` blocks and
+`jwt.sub` as a key are to come).
 
 * JWT/JWKS (fetched by the control process), verified-token cache, API
   keys, Basic, mTLS identity, forward-auth with answer cache.

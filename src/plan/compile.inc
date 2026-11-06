@@ -79,6 +79,8 @@ RA_WTO		:= 48		; q: what replaces it
 RA_FCODE	:= 56		; d: fault: the status it answers, 0 = none
 RA_FPCT		:= 60		; d: of this many requests in 100
 RA_FDELAY	:= 64		; q: fault: µs they wait first, 0 = none
+RA_LFIRST	:= 72		; d: its rate limits, in g_limits
+RA_LCOUNT	:= 76		; d
 RA_SIZE		:= 80
 MAX_ACTS	:= MAX_ROUTES
 HD_KIND		:= 0		; d: HOP_SET, HOP_ADD, HOP_DROP
@@ -229,6 +231,8 @@ bss
 	g_rhash:	rq RHASH_SIZE
 	g_plan_acts	dd ?
 	g_acts:		rb RA_SIZE * MAX_ACTS
+	g_limits:	rb LM_SIZE * MAX_LIMITS
+	g_plan_limits	dd ?
 	g_plan_hdrops	dd ?
 	g_hdrops:	rb HD_SIZE * MAX_HDROPS
 	g_cmp_act	dd ?
@@ -363,6 +367,9 @@ cstring str_key_delay, 'delay',0
 cstring str_key_wait, 'wait',0
 cstring str_key_key, 'key',0
 cstring str_key_abort, 'abort',0
+cstring str_key_burst, 'burst',0
+cstring str_key_instances, 'instances',0
+cstring str_key_lkey, 'key',0
 cstring str_key_delay, 'delay',0
 cstring str_key_percent, 'percent',0
 cstring str_key_rotation, 'rotation',0
@@ -668,6 +675,9 @@ compile_route_action:
 	lea	rcx,[dir_table + D_SIZE*DIR_FAULT]
 	cmp	rax,rcx
 	je	@f
+	lea	rcx,[dir_table + D_SIZE*DIR_RLIMIT]
+	cmp	rax,rcx
+	je	@f
 	mov	rbx,[rbx+N_NEXT]
 	jmp	@b
 @@:
@@ -693,6 +703,22 @@ compile_route_action:
 	mov	eax,[rbx+A_SIZE+A_VLEN]
 	mov	[r13+RA_TLEN],eax
 .ops:
+	mov	eax,[g_plan_limits]
+	mov	[r13+RA_LFIRST],eax
+	mov	rbx,[r12+N_CHILD]
+.rate:
+	test	rbx,rbx
+	jz	.rates
+	lea	rcx,[dir_table + D_SIZE*DIR_RLIMIT]
+	cmp	[rbx+N_DEF],rcx
+	jne	.rate_next
+	mov	rdi,rbx
+	call	compile_limit
+	inc	dword [r13+RA_LCOUNT]
+.rate_next:
+	mov	rbx,[rbx+N_NEXT]
+	jmp	.rate
+.rates:
 	mov	rdi,r12
 	mov	ecx,DIR_FAULT
 	call	find_child
@@ -962,6 +988,197 @@ timeout_secs:
 .absent:
 	stc
 	ret
+
+plan_bad_limit:
+	call	log_begin
+	out_lit 'limit: RATE is N/s, N/m or N/h, of 1 to 1000000000; key= is client.ip, method, header:NAME, query:NAME or cookie:NAME; at most 256 limits'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
+
+; rdi = a `limit` line: one more in g_limits
+compile_limit:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	mov	rbx,rdi
+	mov	eax,[g_plan_limits]
+	cmp	eax,MAX_LIMITS
+	jae	plan_bad_limit
+	inc	dword [g_plan_limits]
+	imul	r12,rax,LM_SIZE
+	lea	r12,[g_limits+r12]
+	mov	[r12+LM_ID],eax
+	mov	dword [r12+LM_KIND],LK_ROUTE
+	mov	qword [r12+LM_NAME],0
+	mov	dword [r12+LM_NLEN],0
+	; the rate: N/s, N/m, N/h
+	mov	rax,[rbx+N_ARGS]
+	mov	rsi,[rax+A_VAL]
+	mov	ecx,[rax+A_VLEN]
+	xor	r13d,r13d			; N
+	xor	edx,edx
+.digit:
+	cmp	edx,ecx
+	jae	plan_bad_limit
+	movzx	eax,byte [rsi+rdx]
+	cmp	al,'/'
+	je	.unit
+	sub	eax,'0'
+	cmp	eax,9
+	ja	plan_bad_limit
+	imul	r13,r13,10
+	add	r13,rax
+	mov	rax,1000000000
+	cmp	r13,rax
+	ja	plan_bad_limit
+	inc	edx
+	jmp	.digit
+.unit:
+	test	r13,r13
+	jz	plan_bad_limit
+	lea	eax,[rdx+2]
+	cmp	eax,ecx
+	jne	plan_bad_limit
+	movzx	eax,byte [rsi+rdx+1]
+	mov	r14d,1				; seconds in the period
+	cmp	al,'s'
+	je	.period
+	mov	r14d,60
+	cmp	al,'m'
+	je	.period
+	mov	r14d,3600
+	cmp	al,'h'
+	jne	plan_bad_limit
+.period:
+	; instances=N: this instance's share of a fleet's limit
+	mov	rdi,rbx
+	lea	rsi,[str_key_instances]
+	call	node_option
+	mov	ecx,1
+	test	rax,rax
+	jz	.share
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_decimal
+	mov	ecx,eax
+.share:
+	; T = the period / N, the share made longer
+	mov	eax,r14d
+	imul	rax,rax,1000000000
+	imul	rax,rcx
+	xor	edx,edx
+	div	r13
+	test	rax,rax
+	jz	plan_bad_limit
+	mov	[r12+LM_T],rax
+	; burst: as given, else a second of the rate, at least 1
+	mov	rdi,rbx
+	lea	rsi,[str_key_burst]
+	call	node_option
+	test	rax,rax
+	jz	.second
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_decimal
+	jmp	.burst
+.second:
+	mov	rcx,[r12+LM_T]
+	mov	eax,1000000000
+	add	rax,rcx
+	dec	rax
+	xor	edx,edx
+	div	rcx
+.burst:
+	test	rax,rax
+	jnz	@f
+	mov	eax,1
+@@:
+	dec	rax
+	imul	rax,[r12+LM_T]
+	mov	[r12+LM_TOL],rax
+	; a batch: 20 ms of the rate, 1 to 64 tokens
+	mov	eax,20000000
+	xor	edx,edx
+	div	qword [r12+LM_T]
+	inc	rax
+	cmp	rax,64
+	jbe	@f
+	mov	eax,64
+@@:
+	mov	[r12+LM_CAP],eax
+	; key=
+	mov	rdi,rbx
+	lea	rsi,[str_key_lkey]
+	call	node_option
+	test	rax,rax
+	jz	.keyed
+	mov	r13,[rax+A_VAL]
+	mov	r14d,[rax+A_VLEN]
+	mov	rdi,r13
+	mov	esi,r14d
+	lea	rdx,[.client_ip]
+	call	mem_eq_cstr
+	mov	ecx,LK_IP
+	test	eax,eax
+	jnz	.kind
+	mov	rdi,r13
+	mov	esi,r14d
+	lea	rdx,[.method]
+	call	mem_eq_cstr
+	mov	ecx,LK_METHOD
+	test	eax,eax
+	jnz	.kind
+	; PREFIX:NAME
+	xor	edx,edx
+.colon:
+	cmp	edx,r14d
+	jae	plan_bad_limit
+	cmp	byte [r13+rdx],':'
+	je	.prefix
+	inc	edx
+	jmp	.colon
+.prefix:
+	lea	rax,[r13+rdx+1]
+	mov	[r12+LM_NAME],rax
+	mov	eax,r14d
+	sub	eax,edx
+	dec	eax
+	jz	plan_bad_limit
+	mov	[r12+LM_NLEN],eax
+	mov	ecx,LK_HEADER
+	cmp	edx,6
+	jne	@f
+	cmp	dword [r13],'head'
+	jne	.not_header
+	cmp	word [r13+4],'er'
+	je	.kind
+.not_header:
+	mov	ecx,LK_COOKIE
+	cmp	dword [r13],'cook'
+	jne	plan_bad_limit
+	cmp	word [r13+4],'ie'
+	je	.kind
+	jmp	plan_bad_limit
+@@:
+	mov	ecx,LK_QUERY
+	cmp	edx,5
+	jne	plan_bad_limit
+	cmp	dword [r13],'quer'
+	jne	plan_bad_limit
+	cmp	byte [r13+4],'y'
+	jne	plan_bad_limit
+.kind:
+	mov	[r12+LM_KIND],ecx
+.keyed:
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+.client_ip	db 'client.ip',0
+.method		db 'method',0
 
 plan_bad_fault:
 	call	log_begin

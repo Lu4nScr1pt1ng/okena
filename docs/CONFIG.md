@@ -64,6 +64,19 @@ requests in its first flight (RFC 9001 4.6), which can be replayed, so
 only GET, HEAD and OPTIONS go on (with `Early-Data: 1` to the backend, RFC
 8470) and anything else is refused with REQUEST_REJECTED, for the client to
 send again after the handshake. A connection stays in the QUIC version its client chose;
+On a route, `limit RATE burst=N key=K instances=N` refuses what goes past a
+rate: `100/s`, `3000/m` or `10000/h`, for the whole instance and never per
+worker. `burst=`, how many may come at once, is a second of the rate by
+default. `key=` gives each value its own limit: `client.ip`, `method`,
+`header:NAME`, `query:NAME` or `cookie:NAME`; without it the route has one. A
+request without that field counts as one key of its own, so leaving it out is
+no way around. `instances=4` takes a quarter of the rate, for a fleet of 4. A
+route may have several; each must let the request through. What is refused gets
+429 with `Retry-After`, on a connection that stays open, and the backend is not
+asked. The table holds about 256k keys and lives across reloads; when it is
+full, keys in use stay, idle ones are pushed out, and new keys share the
+limit's own bucket.
+
 On a route, `fault abort=STATUS delay=TIME percent=N` takes that share of its
 requests (all without `percent`): to see how clients take failure and slowness.
 `abort=` answers a status from 400 to 599 and never asks the backend; it closes
