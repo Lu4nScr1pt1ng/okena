@@ -274,6 +274,23 @@ quiche's sets `disable_active_migration`), and the download completes on the
 first path. The runner tells the client only "transfer" for this case, so it
 cannot answer "not supported" and the check finds a single path.
 
+## What a rate limit adds (2026-11-05)
+
+`okena bench`, open loop, HTTP/1.1, 20k requests/s on 64 connections through
+okena (2 workers on cores 1-2) to `l4bench http` (cores 4-5), three runs of
+5 s each, alternating; no request refused in these, all 100000 answered. In µs:
+
+| route | p50 | p99 | p99.9 |
+|---|---|---|---|
+| no limit | 32.5-32.8 | 46.6-50.2 | 72-215 |
+| `limit 900000/s key=client.ip` | 32.0-32.5 | 45.1-47.6 | 71-131 |
+| `limit 900000/s key=header:x-api-key` | 32.3-32.8 | 45.6-48.6 | 78-100 |
+| `limit 30000/s burst=100 key=client.ip` | 32.0-32.5 | 46.1-48.6 | 74-1278 |
+
+At p50 and p99 what it adds is below what this measures. The last row, at two
+thirds of the limit, shows 672 and 1278 µs at p99.9 in two runs of three: not
+enough runs to say whether that is the limit or the machine.
+
 ## HTTP/2 against HTTP/1.1 through okena (2026-10-31)
 
 One worker on core 1, the backend `l4bench http` on 4-5, `okena bench`
