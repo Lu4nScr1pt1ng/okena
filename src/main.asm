@@ -81,6 +81,7 @@ include 'gw/cache.inc'
 include 'gw/match.inc'
 include 'gw/files.inc'
 include 'gw/compress.inc'
+include 'gw/hints.inc'
 include 'http/engine.inc'
 include 'http/tls.inc'
 include 'http/hsbudget.inc'
@@ -94,6 +95,7 @@ include 'core/accesslog.inc'
 include 'bench/bench.inc'
 include 'bench/h3.inc'
 include 'cli.inc'
+include 'cli_route.inc'
 
 start:
 	; At entry: [rsp] = argc, then argv[], NULL, envp[], NULL.

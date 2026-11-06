@@ -736,6 +736,7 @@ http_request:
 	mov	[g_c_pool],r13d
 	push	rcx
 	call	zip_request
+	call	hints_request
 	pop	rcx
 	push	rcx
 	call	cache_check
@@ -835,15 +836,18 @@ http_request:
 ; prefix, a longer prefix beats a shorter one, methods must match.
 ; ebx = session. eax = pool or -1.
 http_route:
+	call	session_ptr
+	mov	eax,[rax+S_LST]
+	imul	rax,rax,LS_SIZE
+	lea	rax,[g_listeners+rax]
+; rax = the listener (okena route has no session)
+http_route_on:
 	push	rbx
 	push	r12
 	push	r13
 	push	r14
 	push	r15
-	call	session_ptr
-	mov	eax,[rax+S_LST]
-	imul	rax,rax,LS_SIZE
-	lea	r12,[g_listeners+rax]
+	mov	r12,rax
 	; the path: the target up to '?', after "http://host" in absolute form
 	lea	r13,[g_hm]
 	mov	rsi,[r13+HM_TARGET]
@@ -2173,6 +2177,9 @@ http_start_response:
 	mov	esi,PH_RESPONSE
 	call	ph_arm
 	h_rec
+	call	hints_inject
+	test	eax,eax
+	jnz	http_resp_head
 	mov	ecx,SIDE_UP
 	mov	rdi,[r15+H_BUF]
 	lea	rdi,[rdi+HB_UP]

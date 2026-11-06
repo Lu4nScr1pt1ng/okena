@@ -702,6 +702,15 @@ pool api {
 | `precompressed=br,zst,gz` | a `.br`, `.zst` or `.gz` next to the file, if the client takes it, in that order; the answer then varies on Accept-Encoding, with its own ETag, and has no ranges |
 | `cache=T` or `cache=immutable` | `Cache-Control: public, max-age=...` |
 
+`early_hints /a.css /b.js` on a route sends a 103 for GET requests as soon as the
+request is on its way to the backend, with `rel=preload` and an `as=` by the
+extension. A backend's own 103 goes through too. HTTP/1.0 clients get none.
+
+`headers preset=secure` sets `Strict-Transport-Security`, `X-Content-Type-Options`,
+`X-Frame-Options` and `Referrer-Policy` on what goes through a route, over what the
+backend said. A route's own `response header` of the same name stands. okena's own
+answers (401, 429, 502...) do not carry them.
+
 `compress gzip min=1KiB`, on a listener, a host block or a route (`compress off`
 there undoes it), compresses answers on the way out: 200s of text, JSON, JavaScript,
 XML or SVG, from `min` up (256 B by default; an answer of unknown length always) to
@@ -735,7 +744,8 @@ a file is still done in place; with epoll, reading too.
 http :443 {
     tls { cert auto }
     canonical example.com              # www -> apex, 301
-    headers preset=secure              # HSTS, nosniff, frame and referrer policy
+    headers preset=secure              # HSTS, nosniff, frame and referrer policy; on a
+                                       # listener, a host or a route; preset=none undoes it
     compress gzip min=1KiB
 
     route /assets/* {
@@ -839,9 +849,12 @@ for each request (corrected for coordinated omission), `service` from the
 actual send, and `sender`, how late the generator itself was. Requests the
 schedule asked for that never went out are reported as `behind`.
 
-`okena route` answers "where does this request go": listener, matched
-route and why, filters in order, pool, chosen backend and the limits that
-apply.
+`okena route 'GET https://api.example.com/v1/users/42 x-canary:yes' [-c FILE]` answers
+"where does this request go", without starting anything: listener, route, the `match`
+block that fits, filters, and the pool with its servers, or the redirect or the
+directory. It goes through the code that routes real requests. There is no client, so
+a `client.ip` condition counts as not met, and it says so. Which server of a pool, or
+which side of a split, depends on the moment, and it does not say.
 
 ## Docker Compose
 

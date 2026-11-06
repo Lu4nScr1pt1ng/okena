@@ -94,7 +94,9 @@ RA_HPCT		:= 104		; d: or this percentile of the pool's answers
 RA_PRIO		:= 108		; d: RP_*
 RA_AUTH		:= 112		; d: its auth entry + 1
 RA_CACHE	:= 116		; d: its cache entry + 1
-RA_SIZE		:= 128
+RA_EH		:= 128		; q: `early_hints`: the 103, ready
+RA_EHLEN	:= 136		; d
+RA_SIZE		:= 144
 MAX_ACTS	:= MAX_ROUTES
 HD_KIND		:= 0		; d: HOP_SET, HOP_ADD, HOP_DROP
 HD_PREFIX	:= 4		; d: 1 when the name ends with * (drop)
@@ -759,6 +761,12 @@ compile_route_action:
 	lea	rcx,[dir_table + D_SIZE*DIR_COMPRESS]
 	cmp	rax,rcx
 	je	@f
+	lea	rcx,[dir_table + D_SIZE*DIR_HEADERS]
+	cmp	rax,rcx
+	je	@f
+	lea	rcx,[dir_table + D_SIZE*DIR_EARLY_HINTS]
+	cmp	rax,rcx
+	je	@f
 	mov	rbx,[rbx+N_NEXT]
 	jmp	@b
 .listener_compress:
@@ -768,6 +776,11 @@ compile_route_action:
 	jz	.none
 	mov	rdi,rbx
 	mov	ecx,DIR_COMPRESS
+	call	find_child
+	test	rax,rax
+	jnz	@f
+	mov	rdi,rbx
+	mov	ecx,DIR_HEADERS
 	call	find_child
 	test	rax,rax
 	jnz	@f
@@ -964,6 +977,7 @@ compile_route_action:
 	pop	r12
 .no_files:
 	call	compile_compress
+	call	compile_hints
 	mov	rdi,r12
 	mov	ecx,DIR_AUTH
 	call	find_child
@@ -1050,6 +1064,7 @@ compile_route_action:
 	mov	[r13+RA_QCOUNT],eax
 	mov	eax,[g_plan_hdrops]
 	mov	[r13+RA_PFIRST],eax
+	call	compile_preset
 	mov	ecx,DIR_RRESPONSE
 	mov	edx,1				; after "header"
 	call	.collect

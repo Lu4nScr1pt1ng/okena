@@ -108,6 +108,11 @@ mc_holds:
 	cmp	eax,LK_QUERY
 	je	.query
 	; client.ip
+	cmp	dword [g_cr_dry],0
+	je	@f
+	mov	dword [g_cr_ip],1
+	jmp	.no
+@@:
 	call	http_client_resolve
 	lea	r8,[r12+MC_TR]
 	mov	eax,[r15+H_CKIND]
