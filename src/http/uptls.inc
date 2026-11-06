@@ -11,7 +11,7 @@
 ;
 ; The server certificate is verified: the CertificateVerify and the server
 ; Finished (tlsc_verify), the chain up to the pool's trust anchor
-; (cert_chain_verify), the validity window (cert_time_valid) and, when an
+; (cert_chain_verify), each one's validity window (cert_chain_times) and, when an
 ; SNI is configured, the host name (cert_match_host). Any failure answers
 ; the client 502 rather than proxying over an unverified connection.
 ;
@@ -179,10 +179,10 @@ http_uptls_flight_in:
 	inc	ecx
 	cmp	ecx,14
 	jb	.compact
-	mov	rsi,[r14+HB_UTC+TC_LEAF]
-	mov	edx,[r14+HB_UTC+TC_LEAFLEN]
+	mov	rsi,[r14+HB_UTC+TC_CLIST]
+	mov	edx,[r14+HB_UTC+TC_CLISTLEN]
 	lea	rdi,[r14+HB_UWORK+32]
-	call	cert_time_valid
+	call	cert_chain_times
 	test	eax,eax
 	jz	.badcert
 	call	session_ptr			; the host name, when an SNI is set
@@ -263,6 +263,7 @@ http_uptls_flight_in:
 	lea	rdi,[rcx+PL_TLS_ANCHOR]
 	lea	rsi,[r14+HB_UDEC+4096]
 	mov	edx,eax
+	mov	[r14+HB_UWORK+64],eax
 	call	cert_chain_verify
 	test	eax,eax
 	jz	.badcert
@@ -281,10 +282,10 @@ http_uptls_flight_in:
 	inc	ecx
 	cmp	ecx,14
 	jb	.compact12
-	mov	rsi,[r14+HB_UTC+TC_LEAF]
-	mov	edx,[r14+HB_UTC+TC_LEAFLEN]
+	lea	rsi,[r14+HB_UDEC+4096]		; (the list as reframed)
+	mov	edx,[r14+HB_UWORK+64]
 	lea	rdi,[r14+HB_UWORK+32]
-	call	cert_time_valid
+	call	cert_chain_times
 	test	eax,eax
 	jz	.badcert
 	call	session_ptr			; the host name, when an SNI is set

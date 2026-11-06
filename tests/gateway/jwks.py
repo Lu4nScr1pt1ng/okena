@@ -144,27 +144,40 @@ def cut_short(body):
     return go
 
 
-def certs(tmp, name, cn):
-    def make(subject, issuer, sk, signer, ca):
-        now = datetime.datetime.now(datetime.timezone.utc)
-        b = x509.CertificateBuilder().subject_name(subject).issuer_name(issuer).public_key(sk.public_key()) \
-            .serial_number(x509.random_serial_number()).not_valid_before(now - datetime.timedelta(days=1)) \
-            .not_valid_after(now + datetime.timedelta(days=2)) \
-            .add_extension(x509.BasicConstraints(ca=ca, path_length=None), critical=True)
-        if not ca:
-            b = b.add_extension(x509.SubjectAlternativeName([x509.DNSName(cn)]), critical=False)
-        return b.sign(signer, hashes.SHA256())
-    casub = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, name)])
-    leafsub = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, cn)])
-    cak, leafk = ec.generate_private_key(ec.SECP256R1()), ec.generate_private_key(ec.SECP256R1())
-    ca, leaf = make(casub, casub, cak, cak, True), make(leafsub, casub, leafk, cak, False)
-    (tmp / f"{name}.pem").write_bytes(ca.public_bytes(serialization.Encoding.PEM))
-    (tmp / f"{name}.leaf").write_bytes(leaf.public_bytes(serialization.Encoding.PEM))
-    (tmp / f"{name}.key").write_bytes(leafk.private_bytes(serialization.Encoding.PEM,
+def name_of(cn):
+    return x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, cn)])
+
+
+def make(cn, issuer, sk, signer, ca, days=2, usage=None):
+    """a certificate for `cn` and sk, by `signer`; ca as said, valid for days from now"""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    b = x509.CertificateBuilder().subject_name(name_of(cn)).issuer_name(name_of(issuer)).public_key(sk.public_key()) \
+        .serial_number(x509.random_serial_number()).not_valid_before(now - datetime.timedelta(days=3)) \
+        .not_valid_after(now + datetime.timedelta(days=days))
+    if ca is not None:
+        b = b.add_extension(x509.BasicConstraints(ca=ca, path_length=None), critical=True)
+    if not ca:
+        b = b.add_extension(x509.SubjectAlternativeName([x509.DNSName(cn)]), critical=False)
+    if usage == "no-sign":
+        b = b.add_extension(x509.KeyUsage(True, False, False, False, False, False, False, False, False), critical=True)
+    return b.sign(signer, hashes.SHA256())
+
+
+def serving(tmp, name, chain, sk):
+    """a server context that presents this chain, leaf first"""
+    (tmp / f"{name}.leaf").write_bytes(b"".join(c.public_bytes(serialization.Encoding.PEM) for c in chain))
+    (tmp / f"{name}.key").write_bytes(sk.private_bytes(serialization.Encoding.PEM,
                                       serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.load_cert_chain(tmp / f"{name}.leaf", tmp / f"{name}.key")
     return ctx
+
+
+def certs(tmp, name, cn):
+    cak, leafk = ec.generate_private_key(ec.SECP256R1()), ec.generate_private_key(ec.SECP256R1())
+    ca = make(name, name, cak, cak, True)
+    (tmp / f"{name}.pem").write_bytes(ca.public_bytes(serialization.Encoding.PEM))
+    return serving(tmp, name, [make(cn, name, leafk, cak, False)], leafk), cak
 
 
 class Back(http.server.BaseHTTPRequestHandler):
@@ -202,7 +215,19 @@ def until(f, secs):
 
 def main():
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-jwks."))
-    good_ctx, evil_ctx = certs(tmp, "ca", "localhost"), certs(tmp, "evil", "localhost")
+    (good_ctx, cak), (evil_ctx, _) = certs(tmp, "ca", "localhost"), certs(tmp, "evil", "localhost")
+    k = lambda: ec.generate_private_key(ec.SECP256R1())
+    # chains the authority never signed the end of. A holder of any leaf of it:
+    bob, fake, inter = k(), k(), k()
+    bobc = make("bob.example", "ca", bob, cak, False)
+    bobnone = make("bob.example", "ca", bob, cak, None)
+    bobca = make("bob.example", "ca", bob, cak, True, usage="no-sign")
+    forged = [("a leaf signing another leaf", [make("localhost", "bob.example", fake, bob, False), bobc], fake),
+              ("a certificate that says nothing of being a CA", [make("localhost", "bob.example", fake, bob, False), bobnone], fake),
+              ("a CA not allowed to sign certificates", [make("localhost", "bob.example", fake, bob, False), bobca], fake),
+              ("an intermediate that has expired", [make("localhost", "old", fake, inter, False),
+                                                    make("old", "ca", inter, cak, True, days=-1)], fake)]
+    honest = serving(tmp, "honest", [make("localhost", "mid", fake, inter, False), make("mid", "ca", inter, cak, True)], fake)
     b = http.server.ThreadingHTTPServer(("127.0.0.1", BACK), Back)
     threading.Thread(target=b.serve_forever, daemon=True).start()
     k1, k2, k3, stranger = Key("one"), Key("two"), Key("three"), Key("two")
@@ -223,7 +248,7 @@ def main():
         "short": f"https://localhost:{GOOD}/short {tr} refresh=1s stale=4s",
         "chunk": f"https://localhost:{GOOD}/chunk {tr}",
         "bad": f"https://localhost:{GOOD}/bad {tr} refresh=1s",
-        "evil": f"https://localhost:{EVIL}/x {tr}",
+        "evil": f"https://localhost:{EVIL}/x {tr} refresh=1s",
         "name": f"https://127.0.0.1:{GOOD}/name {tr}",
         "later": f"https://localhost:{LATER}/x {tr} refresh=1s",
     }
@@ -246,6 +271,18 @@ def main():
         check("  a body in chunks", status("/chunk", k1.token()) == 200)
         check("the wrong authority: no keys", status("/evil", k1.token()) == 401, log.read_text()[-300:])
         check("  and the log says why", "not trusted" in log.read_text(), log.read_text()[-300:])
+        evil.stop()
+        for i, (what, chain, sk) in enumerate(forged):
+            f = Provider(EVIL, serving(tmp, f"forged{i}", chain, sk))
+            f.paths["/x"] = jset(k1)
+            f.start()
+            time.sleep(1.6)
+            check(f"{what}: no keys", status("/evil", k1.token()) == 401, log.read_text()[-200:])
+            f.stop()
+        f = Provider(EVIL, honest)
+        f.paths["/x"] = jset(k1)
+        f.start()
+        check("  a real intermediate is fine", until(lambda: status("/evil", k1.token()) == 200, 4), log.read_text()[-200:])
         check("a certificate for another name: no keys", status("/name", k1.token()) == 401)
         check("a provider not up yet: refused meanwhile", status("/later", k1.token()) == 401)
 

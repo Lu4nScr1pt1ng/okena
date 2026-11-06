@@ -1093,10 +1093,10 @@ jf_tls:
 	inc	ecx
 	cmp	ecx,14
 	jb	.compact
-	mov	rsi,[g_jf_tc+TC_LEAF]
-	mov	edx,[g_jf_tc+TC_LEAFLEN]
+	mov	rsi,[g_jf_tc+TC_CLIST]
+	mov	edx,[g_jf_tc+TC_CLISTLEN]
 	lea	rdi,[g_jf_time+32]
-	call	cert_time_valid
+	call	cert_chain_times
 	test	eax,eax
 	jz	.cert
 	mov	rdi,[r13+JS_HOST]

@@ -106,6 +106,8 @@ SUITES = [
     ("jwt epoll", ["tests/gateway/jwt.py", "epoll"]),
     ("jwks io_uring", ["tests/gateway/jwks.py", "io_uring"]),
     ("jwks epoll", ["tests/gateway/jwks.py", "epoll"]),
+    ("chain io_uring", ["tests/gateway/chain.py", "io_uring"]),
+    ("chain epoll", ["tests/gateway/chain.py", "epoll"]),
     ("policy io_uring", ["tests/gateway/policy.py", "io_uring"]),
     ("policy epoll", ["tests/gateway/policy.py", "epoll"]),
     ("jwt fuzz io_uring", ["tests/gateway/jwtfuzz.py", "io_uring", "7", "15000"]),

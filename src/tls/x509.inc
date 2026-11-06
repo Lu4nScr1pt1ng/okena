@@ -9,9 +9,12 @@ rodata
 	oid_rsa_encryption	db 0x2A,0x86,0x48,0x86,0xF7,0x0D,0x01,0x01,0x01	; 1.2.840.113549.1.1.1
 	oid_ecdsa_sha256	db 0x2A,0x86,0x48,0xCE,0x3D,0x04,0x03,0x02	; 1.2.840.10045.4.3.2
 	oid_sha256_rsa		db 0x2A,0x86,0x48,0x86,0xF7,0x0D,0x01,0x01,0x0B	; 1.2.840.113549.1.1.11
+	X509_DEPTH_MAX		:= 8
 	oid_ed25519		db 0x2B,0x65,0x70				; 1.3.101.112 (key and signature)
 	oid_san			db 0x55,0x1D,0x11				; 2.5.29.17 subjectAltName
 	oid_cn			db 0x55,0x04,0x03				; 2.5.4.3 commonName
+	oid_bc			db 0x55,0x1D,0x13				; 2.5.29.19 basicConstraints
+	oid_ku			db 0x55,0x1D,0x0F				; 2.5.29.15 keyUsage
 	pem_begin		db '-----BEGIN CERTIFICATE-----'
 	PEM_BEGIN_LEN		:= $ - pem_begin
 	pem_end			db '-----END CERTIFICATE-----'
@@ -782,18 +785,25 @@ chain_entry:
 ; is signed by the next certificate's key, each in turn, and the last by
 ; the anchor. 0 on any signature or parse failure. The list is leaf first,
 ; as sent in the TLS Certificate message (the anchor itself is not in it).
+; Each certificate that signs another must be allowed to (cert_is_ca): whoever
+; holds a leaf of this authority could otherwise sign one for any name. Validity
+; is cert_chain_times'.
 cert_chain_verify:
 	push	rbx
 	push	r12
 	push	r13
 	push	r14
 	push	r15
+	push	rbp
+	mov	ebp,X509_DEPTH_MAX
 	mov	r14,rdi				; the anchor
 	lea	r13,[rsi+rdx]			; the list end
 	mov	r15,rsi				; the current entry
 	cmp	r15,r13
 	jae	.no				; an empty chain
 .loop:
+	dec	ebp
+	js	.no
 	mov	rsi,r15
 	mov	r8,r13
 	call	chain_entry
@@ -808,6 +818,16 @@ cert_chain_verify:
 	mov	r8,r13
 	call	chain_entry
 	jc	.no
+	push	rax
+	push	rcx
+	mov	rsi,rax
+	mov	edx,ecx
+	call	cert_is_ca
+	mov	r9d,eax
+	pop	rcx
+	pop	rax
+	test	r9d,r9d
+	jz	.no
 	lea	rdi,[g_x509_issuer]
 	mov	rsi,rax
 	mov	edx,ecx
@@ -831,8 +851,152 @@ cert_chain_verify:
 .no:
 	xor	eax,eax
 .out:
+	pop	rbp
 	pop	r15
 	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; rsi = the CertificateEntry list, edx = its length, rdi = now[14]: eax = 1 when
+; every certificate in it is within its validity window.
+cert_chain_times:
+	push	rbx
+	push	r12
+	push	r13
+	mov	r12,rdi
+	lea	r13,[rsi+rdx]
+	mov	rbx,rsi
+	cmp	rbx,r13
+	jae	.no
+.next:
+	mov	rsi,rbx
+	mov	r8,r13
+	call	chain_entry
+	jc	.no
+	mov	rbx,rdx
+	mov	rsi,rax
+	mov	edx,ecx
+	mov	rdi,r12
+	call	cert_time_valid
+	test	eax,eax
+	jz	.no
+	cmp	rbx,r13
+	jb	.next
+	mov	eax,1
+	jmp	.out
+.no:
+	xor	eax,eax
+.out:
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; rsi = certificate DER, edx = its length: eax = 1 when it may sign certificates:
+; basicConstraints says cA, and keyUsage, when it is there, has keyCertSign.
+cert_is_ca:
+	push	rbx
+	push	r12
+	push	r13
+	call	x509_locate
+	test	eax,eax
+	jz	.no
+	xor	r13d,r13d			; cA seen
+	mov	r12,[g_x509_ext]
+	test	r12,r12
+	jz	.no
+.ext:
+	cmp	r12,[g_x509_extend]
+	jae	.end
+	mov	rsi,r12
+	mov	rdx,[g_x509_extend]
+	call	der_read			; Extension SEQUENCE
+	jc	.no
+	cmp	al,0x30
+	jne	.no
+	mov	rbx,r8				; its end
+	mov	r12,r8
+	mov	rdx,r8
+	call	der_read			; extnID
+	jc	.no
+	cmp	al,6
+	jne	.no
+	push	rsi
+	push	rcx
+	push	r8
+	lea	rdi,[oid_bc]
+	mov	edx,3
+	call	der_oid_is
+	pop	r8
+	pop	rcx
+	pop	rsi
+	sete	r9b
+	push	r9
+	push	r8
+	lea	rdi,[oid_ku]
+	mov	edx,3
+	call	der_oid_is
+	pop	r8
+	pop	r9
+	sete	r10b
+	mov	al,r9b
+	or	al,r10b
+	jz	.ext
+	push	r9
+	mov	rsi,r8				; the critical BOOLEAN or the value
+	mov	rdx,rbx
+	call	der_read
+	jc	.no1
+	cmp	al,1
+	jne	@f
+	mov	rsi,r8
+	mov	rdx,rbx
+	call	der_read
+	jc	.no1
+@@:
+	pop	r9
+	cmp	al,4				; extnValue OCTET STRING
+	jne	.no
+	mov	rdx,r8
+	test	r9b,r9b
+	jz	.usage
+	cmp	rsi,r8
+	jae	.no
+	call	der_read			; BasicConstraints SEQUENCE
+	jc	.no
+	cmp	al,0x30
+	jne	.no
+	cmp	rsi,r8
+	jae	.no				; (cA defaults to false)
+	mov	rdx,r8
+	call	der_read
+	jc	.no
+	cmp	al,1
+	jne	.no
+	cmp	ecx,1
+	jne	.no
+	cmp	byte [rsi],0
+	je	.no
+	mov	r13d,1
+	jmp	.ext
+.usage:
+	call	der_read			; KeyUsage BIT STRING
+	jc	.no
+	cmp	al,3
+	jne	.no
+	cmp	ecx,2
+	jb	.no
+	test	byte [rsi+1],4			; keyCertSign
+	jz	.no
+	jmp	.ext
+.no1:
+	pop	r9
+.no:
+	xor	r13d,r13d
+.end:
+	mov	eax,r13d
 	pop	r13
 	pop	r12
 	pop	rbx

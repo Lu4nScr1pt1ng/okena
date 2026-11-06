@@ -586,7 +586,8 @@ pool api {
                                    # (planned: maglev key=... | ring-hash key=...)
     protocol h2                    # http1 (default) | h2 | h2c | grpc
     tls {                          # TLS to the backends (needs the kernel tls module)
-        trust /etc/okena/internal-ca.pem   # PEM of trust anchors; the chain is verified
+        trust /etc/okena/internal-ca.pem   # the first certificate is the anchor; the chain is
+                                           # verified: only a CA signs, and each link in date
         sni api.internal                   # SNI + the name checked against the certificate
     }
 
