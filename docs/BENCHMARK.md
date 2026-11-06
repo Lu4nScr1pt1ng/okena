@@ -305,6 +305,30 @@ the one matching a `*`.
 
 Up to 0.5 µs at p50; p99.9 here moves too much between runs of 5 s to say more.
 
+## What auth, split, mirror and hedge add (2026-11-06)
+
+`okena bench`, open loop, HTTP/1.1, 20k requests/s on 64 connections through
+okena (2 workers on cores 1-2) to `l4bench http` (cores 4-5), three runs of 2 s
+after 0.5 s, alternating; all 40000 answered in each, no error. Medians of the
+three runs, in µs, and the worst p99.9 of them:
+
+| route | p50 | p99 | p99.9 | worst p99.9 |
+|---|---|---|---|---|
+| no filter | 32.5 | 51.2 | 145 | 1327 |
+| `auth api_key` | 32.8 | 48.1 | 114 | 295 |
+| `auth api_key` + `limit key=auth.user` | 33.3 | 49.7 | 72 | 108 |
+| `auth jwt` HS256 | 33.3 | 49.7 | 234 | 934 |
+| `auth jwt` HS256 + `limit key=jwt.sub` | 33.8 | 49.2 | 234 | 1344 |
+| `split` 50/50 | 33.3 | 48.1 | 113 | 344 |
+| `mirror`, every request | 34.3 | 45.6 | 115 | 148 |
+| `hedge after=500ms`, none fired | 33.3 | 47.1 | 221 | 483 |
+
+Up to about 1.3 µs at p50 with auth and a limit, 1.8 µs for a mirror, which is a
+second request to a second pool; at p99 nothing above the noise. p99.9 at 2 s a
+run says little: the route with no filter has the worst value of the first five.
+One key and one token throughout, so the JWT rows are the token cache's hits,
+and no signature is verified in them. A new token costs a signature check.
+
 ## HTTP/2 against HTTP/1.1 through okena (2026-10-31)
 
 One worker on core 1, the backend `l4bench http` on 4-5, `okena bench`

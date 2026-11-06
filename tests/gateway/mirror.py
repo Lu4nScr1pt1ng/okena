@@ -22,7 +22,8 @@ BIN = ROOT / "build" / "okena"
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
 BASE = 29000 + os.getpid() % 90 * 10 + (5 if ENGINE == "epoll" else 0)
 MAIN, SHADOW, SLOW, LST, TLS = BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4
-FAST, FEW = BASE + 1000, BASE + 1001
+FAST = 29950 + (5 if ENGINE == "epoll" else 0)		# (above what BASE reaches)
+FEW = FAST + 1
 failures = 0
 got = []
 lock = threading.Lock()
