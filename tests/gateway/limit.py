@@ -7,6 +7,7 @@ import http.client
 import http.server
 import os
 import pathlib
+import signal
 import socket
 import subprocess
 import sys
@@ -19,7 +20,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 BIN = ROOT / "build" / "okena"
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
 BASE = 26000 + os.getpid() % 90 * 10 + (5 if ENGINE == "epoll" else 0)
-BACK, LST = BASE, BASE + 1
+BACK, LST, TLS = BASE, BASE + 1, BASE + 2
 failures = 0
 seen = [0]
 
@@ -59,6 +60,14 @@ def get(path, headers={}, conn=None):
 
 
 CONF = """okena {{ workers 4; io_engine {engine} }}
+http 127.0.0.1:{tls} {{
+    http2 on
+    http3 on
+    tls {{ cert {tmp}/c.pem; key {tmp}/k.pem }}
+    route /h1 {{ to 127.0.0.1:{back}; limit 1/h burst=20 }}
+    route /h2 {{ to 127.0.0.1:{back}; limit 1/h burst=20 }}
+    route /h3 {{ to 127.0.0.1:{back}; limit 1/h burst=20 }}
+}}
 http 127.0.0.1:{lst} {{
     route /all {{ to 127.0.0.1:{back}; limit 100/s burst=100 }}
     route /ip {{ to 127.0.0.1:{back}; limit 5/m burst=5 key=client.ip }}
@@ -119,7 +128,12 @@ def main():
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", BACK), H)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     conf = tmp / "okena.conf"
-    text = CONF.format(engine=ENGINE, lst=LST, back=BACK)
+    subprocess.run(["openssl", "ecparam", "-genkey", "-name", "prime256v1", "-noout", "-out", tmp / "k.pem"],
+                   check=True, capture_output=True)
+    subprocess.run(["openssl", "req", "-new", "-x509", "-key", tmp / "k.pem", "-subj", "/CN=l.test",
+                    "-addext", "subjectAltName=DNS:l.test", "-days", "2", "-out", tmp / "c.pem"],
+                   check=True, capture_output=True)
+    text = CONF.format(engine=ENGINE, lst=LST, back=BACK, tls=TLS, tmp=tmp)
     conf.write_text(text)
     p = subprocess.Popen(["timeout", "--foreground", "60", str(BIN), "-c", str(conf)], stderr=open(tmp / "log", "w"))
     try:
@@ -173,6 +187,21 @@ def main():
         d = get("/slow").status
         check("1/s: refused, then back after a second", (a, b, d) == (200, 429, 200), str((a, b, d)))
         check("a route without one untouched", all(get("/fine").status == 200 for _ in range(50)), "")
+        for proto in ("h1", "h2", "h3"):			# each way a request comes
+            q = subprocess.run(["timeout", "10", str(BIN), "bench", f"https://127.0.0.1:{TLS}/{proto}", f"proto={proto}",
+                                "conns=4", "duration=1s", "warmup=0s", "workers=2", "format=kv"],
+                               capture_output=True, text=True, stdin=subprocess.DEVNULL)
+            kv = dict(x.split("=", 1) for x in q.stdout.split() if "=" in x)
+            refused = int(kv.get("other", 0))
+            check(f"over {proto}: 20 through, then 429, on the same connections", kv.get("ok") == "20" and refused > 10
+                  and kv.get("errors") == "0" and kv.get("reconnects") == "0", q.stdout[:120])
+        # a reload starts new workers: what the keys have used stays
+        before = get("/hdr", {"x-api-key": "kept"}).status, get("/hdr", {"x-api-key": "kept"}).status
+        master = subprocess.run(["pgrep", "-P", str(p.pid)], capture_output=True, text=True).stdout.split()[0]
+        os.kill(int(master), signal.SIGHUP)
+        time.sleep(1)
+        r = [get("/hdr", {"x-api-key": "kept"}).status for _ in range(3)]
+        check("a reload: keys keep what they used", before == (200, 200) and r == [200, 429, 429], f"{before} {r}")
         # a flood of new keys, past what the table holds, answered without a
         # backend so that many can go: it stays up, and no key gets more
         v = {"x-k": "victim"}
