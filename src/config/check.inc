@@ -454,6 +454,9 @@ check_option:
 	mov	rbx,rdi
 	mov	r12,rsi
 	mov	r13,rdx
+	mov	rax,[r12+N_DEF]
+	test	dword [rax+D_FLAGS],F_FREE_KEYS
+	jnz	.out
 	test	r13,r13
 	jz	.none
 	mov	rdi,[rbx+A_KEY]
@@ -1733,6 +1736,27 @@ check_route_set:
 	call	check_redirect_target
 	jmp	.actions
 .forwards:
+	mov	rdi,rbx
+	mov	ecx,DIR_SPLIT
+	call	find_child
+	test	rax,rax
+	jz	.its_to
+	push	rax
+	mov	rdi,rbx
+	mov	ecx,DIR_TO
+	call	find_child
+	pop	rdi
+	test	rax,rax
+	jz	.actions
+	mov	rdi,[rax+N_NAME]
+	mov	esi,[rax+N_NLEN]
+	mov	edx,[rax+N_LINE]
+	call	cfg_error
+	out_lit 'a route has `to` or `split`, not both'
+	call	cfg_diag_end
+	call	cfg_error_limit
+	jmp	.actions
+.its_to:
 	mov	rdi,rbx
 	call	check_listener			; its `to`
 .actions:

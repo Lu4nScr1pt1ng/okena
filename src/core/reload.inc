@@ -87,6 +87,8 @@ macro plan_regions action
 	action g_plan_limits, 4
 	action g_cors, CO_SIZE * MAX_CORS
 	action g_plan_cors, 4
+	action g_splits, SL_SIZE * MAX_SPLITS
+	action g_plan_splits, 4
 	action g_plan_hdrops, 4
 	action g_hdrops, HD_SIZE * MAX_HDROPS
 	action g_plan_hosts, 4

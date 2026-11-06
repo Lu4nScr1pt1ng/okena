@@ -64,6 +64,14 @@ requests in its first flight (RFC 9001 4.6), which can be replayed, so
 only GET, HEAD and OPTIONS go on (with `Early-Data: 1` to the backend, RFC
 8470) and anything else is refused with REQUEST_REJECTED, for the client to
 send again after the handshake. A connection stays in the QUIC version its client chose;
+On a route, `split api=95% canary=5% sticky=cookie:NAME` shares the traffic
+between pools, in place of `to`: 2 to 8 of them, adding up to 100%. Without
+`sticky=` each request is drawn. With `sticky=cookie:NAME` a new client is given
+a number from 0 to 99 in that cookie, and the number picks the pool: raising a
+canary from 5% to 10% leaves those in it where they are and moves only the next
+5%. `sticky=header:NAME` hashes the value. A client can choose its pool with the
+cookie: this is for releases, not for security.
+
 On a route, `cors origins=LIST methods=LIST headers=LIST expose=LIST
 max_age=TIME credentials` answers browsers. `origins=` is needed: whole origins
 (`https://app.example.com,https://b.test:8443`), matched exactly, one of them

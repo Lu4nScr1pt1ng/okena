@@ -22,6 +22,7 @@ CTX_TLS		:= 10
 F_BLOCK_REQ	:= 1		; must have a block
 F_UNIQUE	:= 2		; at most once per block
 F_KEYS_BLOCK	:= 4		; options may be written as a block
+F_FREE_KEYS	:= 8		; its name=value have names of its own (`split`)
 
 ; Value types. Values of 4096 and above are pointers to enum lists.
 T_NONE		:= 0
@@ -149,7 +150,7 @@ enumdef ctx_names, 'the top level', '`okena`', '`tcp`', '`pool`', '`limits`', '`
 ; Directives of the language that this version does not implement yet.
 enumdef future_names, 'udp', 'xdp', 'policy', 'use', \
 	'addon', 'alerts', 'include', 'admin', 'log', 'reload', 'profile', \
-	'acme', 'discover', 'split', 'mirror', 'header', 'headers', 'cache', \
+	'acme', 'discover', 'mirror', 'header', 'headers', 'cache', \
 	'auth', 'match', 'source', \
 	'concurrency', 'retry_budget', 'retry', 'outlier', \
 	'files', 'compress', 'canonical', 'idempotency', 'hold', \
@@ -188,6 +189,7 @@ dirdef DIR_HTTP2, 'http2',       M_HTTP,    0,           F_UNIQUE, 1, 1, e_onoff
 dirdef DIR_HTTP3, 'http3',       M_HTTP,    0,           F_UNIQUE, 1, 1, e_h3,    T_NONE, 0
 dirdef DIR_PREFADDR, 'preferred_address', M_HTTP, 0,     F_UNIQUE, 1, 2, T_LISTEN, T_LISTEN, 0
 dirdef DIR_EARLY, 'early_data',  M_HTTP,    0,           F_UNIQUE, 1, 1, e_onoff, T_NONE, 0
+dirdef DIR_SPLIT, 'split',      M_ROUTE,   0,           F_UNIQUE or F_FREE_KEYS, 0, 0, T_NONE, T_NONE, 0
 dirdef DIR_CORS, 'cors',        M_ROUTE,   0,           F_UNIQUE or F_KEYS_BLOCK, 0, 1, e_cors_flags, T_NONE, k_cors
 dirdef DIR_RLIMIT, 'limit',      M_ROUTE,   0,           F_KEYS_BLOCK, 1, 1, T_ANY, T_NONE, k_limit
 dirdef DIR_FAULT, 'fault',      M_ROUTE,   0,           F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_fault

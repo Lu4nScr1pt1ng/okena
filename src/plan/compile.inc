@@ -82,6 +82,7 @@ RA_FDELAY	:= 64		; q: fault: µs they wait first, 0 = none
 RA_LFIRST	:= 72		; d: its rate limits, in g_limits
 RA_LCOUNT	:= 76		; d
 RA_CORS		:= 80		; d: its cors entry + 1
+RA_SPLIT	:= 84		; d: its split entry + 1
 RA_SIZE		:= 88
 MAX_ACTS	:= MAX_ROUTES
 HD_KIND		:= 0		; d: HOP_SET, HOP_ADD, HOP_DROP
@@ -236,6 +237,8 @@ bss
 	g_plan_limits	dd ?
 	g_cors:		rb CO_SIZE * MAX_CORS
 	g_plan_cors	dd ?
+	g_splits:	rb SL_SIZE * MAX_SPLITS
+	g_plan_splits	dd ?
 	g_plan_hdrops	dd ?
 	g_hdrops:	rb HD_SIZE * MAX_HDROPS
 	g_cmp_act	dd ?
@@ -689,6 +692,9 @@ compile_route_action:
 	lea	rcx,[dir_table + D_SIZE*DIR_CORS]
 	cmp	rax,rcx
 	je	@f
+	lea	rcx,[dir_table + D_SIZE*DIR_SPLIT]
+	cmp	rax,rcx
+	je	@f
 	mov	rbx,[rbx+N_NEXT]
 	jmp	@b
 @@:
@@ -739,6 +745,15 @@ compile_route_action:
 	call	compile_cors
 	mov	[r13+RA_CORS],eax
 .no_cors:
+	mov	rdi,r12
+	mov	ecx,DIR_SPLIT
+	call	find_child
+	test	rax,rax
+	jz	.no_split
+	mov	rdi,rax
+	call	compile_split
+	mov	[r13+RA_SPLIT],eax
+.no_split:
 	mov	rdi,r12
 	mov	ecx,DIR_FAULT
 	call	find_child
@@ -1008,6 +1023,123 @@ timeout_secs:
 .absent:
 	stc
 	ret
+
+plan_bad_split:
+	call	log_begin
+	out_lit 'split: pools as NAME=N%, 2 to 8 of them, adding up to 100%; sticky= is cookie:NAME or header:NAME'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
+
+; rdi = a `split` line: eax = its entry + 1
+compile_split:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	mov	rbx,rdi
+	mov	eax,[g_plan_splits]
+	cmp	eax,MAX_SPLITS
+	jae	plan_too_many
+	inc	dword [g_plan_splits]
+	imul	r12,rax,SL_SIZE
+	lea	r12,[g_splits+r12]
+	mov	r13,[rbx+N_ARGS]
+	mov	r14d,[rbx+N_ARGC]
+	xor	ebx,ebx				; shares so far
+.arg:
+	test	r14d,r14d
+	jz	.args_done
+	cmp	dword [r13+A_KIND],ARG_KV
+	jne	plan_bad_split
+	mov	rdi,[r13+A_KEY]
+	mov	esi,[r13+A_KLEN]
+	lea	rdx,[.sticky]
+	call	mem_eq_cstr
+	test	eax,eax
+	jnz	.is_sticky
+	mov	eax,[r12+SL_N]
+	cmp	eax,SL_MAX
+	jae	plan_bad_split
+	mov	rdi,[r13+A_KEY]
+	mov	esi,[r13+A_KLEN]
+	call	plan_pool_index
+	cmp	eax,-1
+	je	plan_bad_split
+	mov	ecx,[r12+SL_N]
+	mov	[r12+SL_P+rcx*8],eax
+	; N%
+	mov	rsi,[r13+A_VAL]
+	mov	ecx,[r13+A_VLEN]
+	cmp	ecx,2
+	jb	plan_bad_split
+	dec	ecx
+	cmp	byte [rsi+rcx],'%'
+	jne	plan_bad_split
+	xor	eax,eax
+	xor	edx,edx
+.digit:
+	movzx	r8d,byte [rsi+rdx]
+	sub	r8d,'0'
+	cmp	r8d,9
+	ja	plan_bad_split
+	imul	eax,eax,10
+	add	eax,r8d
+	cmp	eax,100
+	ja	plan_bad_split
+	inc	edx
+	cmp	edx,ecx
+	jb	.digit
+	test	eax,eax
+	jz	plan_bad_split
+	add	ebx,eax
+	mov	ecx,[r12+SL_N]
+	mov	[r12+SL_P+rcx*8+4],ebx
+	inc	dword [r12+SL_N]
+	jmp	.next
+.is_sticky:
+	mov	rsi,[r13+A_VAL]
+	mov	ecx,[r13+A_VLEN]
+	cmp	ecx,8
+	jb	plan_bad_split
+	mov	edx,SK_COOKIE
+	lea	rax,[rsi+7]
+	cmp	dword [rsi],'cook'
+	jne	@f
+	cmp	word [rsi+4],'ie'
+	jne	plan_bad_split
+	cmp	byte [rsi+6],':'
+	je	.sticky_name
+	jmp	plan_bad_split
+@@:
+	mov	edx,SK_HEADER
+	cmp	dword [rsi],'head'
+	jne	plan_bad_split
+	cmp	word [rsi+4],'er'
+	jne	plan_bad_split
+	cmp	byte [rsi+6],':'
+	jne	plan_bad_split
+.sticky_name:
+	mov	[r12+SL_KIND],edx
+	mov	[r12+SL_NAME],rax
+	sub	ecx,7
+	mov	[r12+SL_NLEN],ecx
+.next:
+	add	r13,A_SIZE
+	dec	r14d
+	jmp	.arg
+.args_done:
+	cmp	ebx,100
+	jne	plan_bad_split
+	cmp	dword [r12+SL_N],2
+	jb	plan_bad_split
+	mov	eax,[g_plan_splits]
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+.sticky	db 'sticky',0
 
 plan_bad_cors:
 	call	log_begin
@@ -2472,12 +2604,30 @@ compile_routes:
 	test	rax,rax
 	jnz	@f
 	mov	rdi,rbx
+	mov	ecx,DIR_SPLIT
+	call	find_child
+	test	rax,rax
+	jnz	@f				; (its first pool: below)
+	mov	rdi,rbx
 	call	compile_target
 	mov	r13d,eax			; pool
 @@:
 	mov	rdi,rbx
 	call	compile_route_action
 	mov	[g_cmp_act],eax
+	test	eax,eax
+	jz	.route_pool
+	dec	eax
+	imul	rax,rax,RA_SIZE
+	mov	eax,[g_acts+rax+RA_SPLIT]
+	test	eax,eax
+	jz	.route_pool
+	dec	eax
+	imul	rax,rax,SL_SIZE
+	cmp	r13d,-1
+	jne	.route_pool
+	mov	r13d,[g_splits+rax+SL_P]
+.route_pool:
 	mov	rdi,rbx
 	call	route_methods
 	mov	r14d,eax
@@ -2559,7 +2709,7 @@ plan_pool_index:
 	mov	eax,ebx
 	jmp	.out
 .none:
-	xor	eax,eax
+	mov	eax,-1
 .out:
 	pop	r13
 	pop	r12

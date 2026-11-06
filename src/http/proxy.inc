@@ -131,6 +131,7 @@ HX_SELF		:= 524288	; okena answers this request itself (a redirect)
 HX_GRPC		:= 1048576	; a gRPC request: okena's own errors answer as gRPC
 HX_DUPLEX	:= 2097152	; HTTP/2 both ends: the body goes on beside the response
 HX_H2TUN	:= 4194304	; WebSocket over an HTTP/2 stream: bytes both ways
+HX_SPLIT	:= 67108864	; `split`: this response gives the client its cookie
 HX_CORS		:= 33554432	; its Origin was let in: HB_CORS
 HX_FAULTED	:= 16777216	; fault: this request was picked, and has waited
 HX_TSEND	:= 8388608	; its bytes to the backend: a send in flight, or the
@@ -636,6 +637,17 @@ http_request:
 	jnz	http_error
 @@:
 	mov	r13d,[rcx+RT_POOL]
+	mov	eax,[r15+H_ACT]			; split: another pool, perhaps
+	test	eax,eax
+	jz	.its_pool
+	dec	eax
+	imul	rax,rax,RA_SIZE
+	mov	edi,[g_acts+rax+RA_SPLIT]
+	test	edi,edi
+	jz	.its_pool
+	call	split_pick
+	mov	r13d,eax
+.its_pool:
 	add	dword [g_retry_tokens+r13*4],RETRY_PER_REQ	; the pool's budget grows with its traffic
 	cmp	dword [g_retry_tokens+r13*4],RETRY_CAP
 	jbe	@f
@@ -2277,6 +2289,7 @@ http_write_response_head:
 	test	dword [r15+H_FLAGS],HX_INTERIM
 	jnz	@f
 	call	cors_emit
+	call	split_emit
 @@:
 	; `http3 on`: HTTP/3 on the same port (RFC 7838), but on HTTP/3 itself
 	mov	eax,[rsp+24]			; the session
