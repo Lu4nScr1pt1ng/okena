@@ -130,7 +130,7 @@ enumdef e_proto, 'h1', 'h2'
 
 keysdef k_drain, 'delay', T_DURATION, 'timeout', T_DURATION
 keysdef k_hs_budget, 'wait', T_DURATION
-keysdef k_fault, 'abort', T_COUNT, 'percent', T_COUNT, 'delay', T_FUTURE
+keysdef k_fault, 'abort', T_COUNT, 'percent', T_COUNT, 'delay', T_DURATION
 keysdef k_quic_sid, 'key', T_ANY, 'rotation', T_ANY
 keysdef k_server, 'weight', T_WEIGHT
 keysdef k_cert, 'key', T_ANY

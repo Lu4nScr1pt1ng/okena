@@ -78,7 +78,8 @@ RA_WTLEN	:= 44		; d
 RA_WTO		:= 48		; q: what replaces it
 RA_FCODE	:= 56		; d: fault: the status it answers, 0 = none
 RA_FPCT		:= 60		; d: of this many requests in 100
-RA_SIZE		:= 64
+RA_FDELAY	:= 64		; q: fault: µs they wait first, 0 = none
+RA_SIZE		:= 80
 MAX_ACTS	:= MAX_ROUTES
 HD_KIND		:= 0		; d: HOP_SET, HOP_ADD, HOP_DROP
 HD_PREFIX	:= 4		; d: 1 when the name ends with * (drop)
@@ -362,6 +363,7 @@ cstring str_key_delay, 'delay',0
 cstring str_key_wait, 'wait',0
 cstring str_key_key, 'key',0
 cstring str_key_abort, 'abort',0
+cstring str_key_delay, 'delay',0
 cstring str_key_percent, 'percent',0
 cstring str_key_rotation, 'rotation',0
 cstring str_key_timeout, 'timeout',0
@@ -697,11 +699,26 @@ compile_route_action:
 	test	rax,rax
 	jz	.no_fault
 	mov	rbx,rax
-	mov	rdi,rbx				; fault abort=STATUS percent=N
+	mov	rdi,rbx				; fault abort=STATUS delay=T percent=N
+	lea	rsi,[str_key_delay]
+	call	node_option
+	test	rax,rax
+	jz	.fault_abort
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_duration
+	test	rax,rax
+	jz	plan_bad_fault
+	mov	rcx,600000000			; (a request held 10 minutes is a mistake)
+	cmp	rax,rcx
+	ja	plan_bad_fault
+	mov	[r13+RA_FDELAY],rax
+.fault_abort:
+	mov	rdi,rbx
 	lea	rsi,[str_key_abort]
 	call	node_option
 	test	rax,rax
-	jz	plan_bad_fault
+	jz	.fault_only_delay
 	mov	rdi,[rax+A_VAL]
 	mov	esi,[rax+A_VLEN]
 	call	parse_decimal
@@ -709,6 +726,11 @@ compile_route_action:
 	sub	eax,400
 	cmp	eax,199
 	ja	plan_bad_fault
+	jmp	.fault_share
+.fault_only_delay:
+	cmp	qword [r13+RA_FDELAY],0
+	je	plan_bad_fault
+.fault_share:
 	mov	dword [r13+RA_FPCT],100
 	mov	rdi,rbx
 	lea	rsi,[str_key_percent]
@@ -943,7 +965,7 @@ timeout_secs:
 
 plan_bad_fault:
 	call	log_begin
-	out_lit 'fault: abort= is a status from 400 to 599; percent= at most 100'
+	out_lit 'fault: abort= is a status from 400 to 599, delay= more than 0 and at most 10m, one of them given; percent= at most 100'
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process

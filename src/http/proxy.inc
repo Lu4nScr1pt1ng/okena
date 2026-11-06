@@ -100,6 +100,7 @@ HS_TUNNEL_UP	:= 11		; 101 sent: bytes the backend sent early go to the client
 HS_TUNNEL_IN	:= 12		; then bytes the client sent early go to the backend
 HS_INTERIM_SEND	:= 13		; writing a 1xx (103 Early Hints...) before the final response
 HS_SELF_SEND	:= 14		; writing okena's own answer (a redirect), connection kept
+HS_FAULT	:= 42		; held by fault delay=: its head waits in IN, nothing reads
 HS_H2TUN	:= 41		; WebSocket over an HTTP/2 stream (http_h2tun_*)
 
 BK_NONE		:= 0
@@ -130,6 +131,7 @@ HX_SELF		:= 524288	; okena answers this request itself (a redirect)
 HX_GRPC		:= 1048576	; a gRPC request: okena's own errors answer as gRPC
 HX_DUPLEX	:= 2097152	; HTTP/2 both ends: the body goes on beside the response
 HX_H2TUN	:= 4194304	; WebSocket over an HTTP/2 stream: bytes both ways
+HX_FAULTED	:= 16777216	; fault: this request was picked, and has waited
 HX_TSEND	:= 8388608	; its bytes to the backend: a send in flight, or the
 				; socket full (epoll: EPOLLOUT resumes it)
 
@@ -291,6 +293,150 @@ http_next_request:
 	mov	edi,431
 	jmp	http_error
 
+; fault delay=: requests held, a table a worker, looked through when one is
+; due (few, and only on routes that ask for this). Their heads wait where they
+; were read, so they are parsed again; no read is posted meanwhile: a client
+; that goes is seen after.
+FD_MAX		:= 1024
+FD_AT		:= 0				; q: µs
+FD_SESS		:= 8				; d
+FD_GEN		:= 12				; d
+FD_SIZE		:= 16
+bss
+	g_fd_n		dd ?
+	align 8
+	g_fd_armed	dq ?			; µs the io_uring timer wakes us, 0 none
+	g_fd_next	dq ?			; µs the earliest is due, 0 none
+	g_fd_ts		rq 2
+	g_fd:		rb FD_MAX * FD_SIZE
+end bss
+
+; ebx = session, r15 = its record, rax = µs: it waits
+fault_hold:
+	push	rax
+	call	qs_clock
+	pop	rax
+	add	rax,[g_qnow]
+	mov	ecx,[g_fd_n]
+	inc	dword [g_fd_n]
+	shl	rcx,4
+	mov	[g_fd+rcx+FD_AT],rax
+	mov	[g_fd+rcx+FD_SESS],ebx
+	mov	rdx,[g_fd_next]
+	test	rdx,rdx
+	jz	.first
+	cmp	rax,rdx
+	jae	.kept
+.first:
+	mov	[g_fd_next],rax
+.kept:
+	push	rcx
+	call	session_ptr
+	pop	rcx
+	mov	eax,[rax+S_GEN]
+	mov	[g_fd+rcx+FD_GEN],eax
+	or	dword [r15+H_FLAGS],HX_FAULTED
+	mov	dword [r15+H_STATE],HS_FAULT
+	ret
+
+; every turn of the loop: those whose time has come go on
+fault_flush:
+	cmp	dword [g_fd_n],0
+	je	.none
+	call	qs_clock
+	mov	rax,[g_fd_next]
+	cmp	rax,[g_qnow]
+	ja	.timer
+	push	rbx
+	push	r12
+	push	r13
+	xor	r12d,r12d			; i
+	xor	r13d,r13d			; the earliest left
+.next:
+	cmp	r12d,[g_fd_n]
+	jae	.looked
+	mov	rcx,r12
+	shl	rcx,4
+	mov	rax,[g_fd+rcx+FD_AT]
+	cmp	rax,[g_qnow]
+	jbe	.due
+	inc	r12d
+	test	r13,r13
+	jz	.earliest
+	cmp	rax,r13
+	jae	.next
+.earliest:
+	mov	r13,rax
+	jmp	.next
+.due:
+	mov	ebx,[g_fd+rcx+FD_SESS]
+	mov	r8d,[g_fd+rcx+FD_GEN]
+	dec	dword [g_fd_n]			; the last takes its place
+	mov	edx,[g_fd_n]
+	shl	rdx,4
+	mov	rax,[g_fd+rdx+FD_AT]
+	mov	[g_fd+rcx+FD_AT],rax
+	mov	rax,[g_fd+rdx+FD_SESS]
+	mov	[g_fd+rcx+FD_SESS],rax
+	push	r8
+	call	session_ptr
+	pop	r8
+	cmp	[rax+S_GEN],r8d
+	jne	.next				; it went meanwhile
+	cmp	dword [rax+S_STATE],ST_OPEN
+	jne	.next
+	h_rec
+	cmp	dword [r15+H_STATE],HS_FAULT
+	jne	.next
+	mov	eax,[r15+H_INOFF]
+	call	http_request
+	jmp	.next
+.looked:
+	mov	[g_fd_next],r13
+	pop	r13
+	pop	r12
+	pop	rbx
+	cmp	dword [g_fd_n],0
+	je	.none
+.timer:
+	; io_uring: a timer for the next (epoll's wait takes it: ep_wait_timeout)
+	cmp	dword [g_engine],ENGINE_EPOLL
+	je	.none
+	mov	rax,[g_fd_next]
+	mov	rcx,[g_fd_armed]		; (one set for later is no use: another)
+	test	rcx,rcx
+	jz	.arm
+	cmp	rcx,rax
+	jbe	.none
+.arm:
+	mov	[g_fd_armed],rax
+	sub	rax,[g_qnow]
+	cmp	rax,100
+	jge	@f
+	mov	eax,100
+@@:
+	imul	rax,rax,1000			; ns
+	xor	edx,edx
+	mov	ecx,1000000000
+	div	rcx
+	mov	[g_fd_ts],rax
+	mov	[g_fd_ts+8],rdx
+	call	ring_get_sqe
+	mov	byte [rax+SQE_OPCODE],IORING_OP_TIMEOUT
+	lea	rcx,[g_fd_ts]
+	mov	[rax+SQE_ADDR],rcx
+	mov	dword [rax+SQE_LEN],1
+	mov	dword [rax+SQE_OP_FLAGS],0
+	mov	rcx,OP_FDELAY shl 56
+	mov	[rax+SQE_USER_DATA],rcx
+.none:
+	ret
+
+; io_uring: fault_flush's timer; the turn of the loop does the rest
+on_fdelay:
+	mov	qword [g_fd_armed],0
+	ret
+
 ; ebx = session, eax = length of the head at the start of IN.
 http_request:
 	cmp	eax,18				; "PRI * HTTP/2.0\r\n\r\n": HTTP/2 by prior
@@ -339,7 +485,10 @@ http_request:
 	jz	@f
 	or	dword [r15+H_FLAGS],HX_IDEMPOTENT
 @@:
+	test	dword [r15+H_FLAGS],HX_FAULTED	; (its clock started before it waited)
+	jnz	@f
 	call	alog_request
+@@:
 	h_rec
 	lea	r14,[g_hm]
 	mov	eax,[r14+HM_FLAGS]
@@ -429,10 +578,12 @@ http_request:
 	imul	rdx,rdx,RA_SIZE
 	cmp	dword [g_acts+rdx+RA_CODE],0
 	jne	http_redirect
-	cmp	dword [g_acts+rdx+RA_FCODE],0	; fault: this share of the requests
+	cmp	dword [g_acts+rdx+RA_FPCT],0	; fault: this share of the requests
 	je	@f
 	mov	r8,rdx
 	mov	r9,rcx
+	test	dword [r15+H_FLAGS],HX_FAULTED
+	jnz	.fault_answer			; (it is back from waiting)
 	rdtsc
 	imul	eax,eax,0x9E3779B1
 	mov	ecx,100
@@ -440,8 +591,16 @@ http_request:
 	mov	rcx,r9
 	cmp	edx,[g_acts+r8+RA_FPCT]
 	jae	@f
+	mov	rax,[g_acts+r8+RA_FDELAY]
+	test	rax,rax
+	jz	.fault_answer
+	cmp	dword [g_fd_n],FD_MAX
+	jb	fault_hold			; (all held already: it goes on at once)
+.fault_answer:
+	mov	rcx,r9
 	mov	edi,[g_acts+r8+RA_FCODE]
-	jmp	http_error
+	test	edi,edi
+	jnz	http_error
 @@:
 	mov	r13d,[rcx+RT_POOL]
 	add	dword [g_retry_tokens+r13*4],RETRY_PER_REQ	; the pool's budget grows with its traffic

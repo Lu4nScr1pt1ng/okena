@@ -64,10 +64,13 @@ requests in its first flight (RFC 9001 4.6), which can be replayed, so
 only GET, HEAD and OPTIONS go on (with `Early-Data: 1` to the backend, RFC
 8470) and anything else is refused with REQUEST_REJECTED, for the client to
 send again after the handshake. A connection stays in the QUIC version its client chose;
-On a route, `fault abort=STATUS percent=N` answers that share of its requests
-(all without `percent`) with that status, 400 to 599, and never asks the
-backend: to see how clients take failure. It closes the connection, as okena's
-own errors do. `delay=` is not there yet.
+On a route, `fault abort=STATUS delay=TIME percent=N` takes that share of its
+requests (all without `percent`): to see how clients take failure and slowness.
+`abort=` answers a status from 400 to 599 and never asks the backend; it closes
+the connection, as okena's own errors do. `delay=`, up to 10 minutes, holds the
+request first, and without `abort=` it then goes on as usual. Up to 1024
+requests a worker are held; past that they are not delayed. A client that goes
+while held is only noticed afterwards. A reload takes effect for new requests.
 
 `okena { quic_cc bbr }` sets the congestion control of new QUIC connections (default `cubic`; measured with `bbr`: 3 MB at 30 ms RTT in 1.48 s against 6.07 s at 1% loss, 1.06 s against 0.87 s with none).
 

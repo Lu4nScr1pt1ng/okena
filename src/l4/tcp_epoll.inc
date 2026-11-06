@@ -124,6 +124,7 @@ ep_main:
 	jmp	.event
 .timers:
 	call	ep_http_ready
+	call	fault_flush			; requests held by fault delay=
 	call	h2_flush			; HTTP/2: one send a connection an iteration
 	call	qs_tick				; QUIC: timers, then what connections send
 	call	qs_flush
@@ -201,6 +202,16 @@ ep_wait_timeout:
 @@:
 	inc	eax				; round up: never wake before a deadline
 	mov	rcx,[g_qpace_next]		; QUIC: data pacing holds
+	mov	rdx,[g_fd_next]			; or a request fault delay= holds
+	test	rdx,rdx
+	jz	.one_clock
+	test	rcx,rcx
+	jz	.fault_clock
+	cmp	rdx,rcx
+	jae	.one_clock
+.fault_clock:
+	mov	rcx,rdx
+.one_clock:
 	test	rcx,rcx
 	jz	@f
 	sub	rcx,[g_qnow]
