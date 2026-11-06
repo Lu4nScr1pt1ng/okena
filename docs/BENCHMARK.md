@@ -291,6 +291,20 @@ At p50 and p99 what it adds is below what this measures. The last row, at two
 thirds of the limit, shows 672 and 1278 µs at p99.9 in two runs of three: not
 enough runs to say whether that is the limit or the machine.
 
+## What CORS adds (2026-11-05)
+
+As for the rate limit above: 20k requests/s on 64 connections, HTTP/1.1, 2
+workers, three runs of 5 s each, alternating, in µs. Three origins in the list,
+the one matching a `*`.
+
+| route | p50 | p99 | p99.9 |
+|---|---|---|---|
+| no cors | 32.3 | 47-58 | 95-438 |
+| `cors`, a request with an Origin | 32.3-32.8 | 51-64 | 105-2752 |
+| `cors`, a preflight, answered by okena | 16.6-17.4 | 28-32 | 211-1573 |
+
+Up to 0.5 µs at p50; p99.9 here moves too much between runs of 5 s to say more.
+
 ## HTTP/2 against HTTP/1.1 through okena (2026-10-31)
 
 One worker on core 1, the backend `l4bench http` on 4-5, `okena bench`
