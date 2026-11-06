@@ -131,6 +131,7 @@ HX_SELF		:= 524288	; okena answers this request itself (a redirect)
 HX_GRPC		:= 1048576	; a gRPC request: okena's own errors answer as gRPC
 HX_DUPLEX	:= 2097152	; HTTP/2 both ends: the body goes on beside the response
 HX_H2TUN	:= 4194304	; WebSocket over an HTTP/2 stream: bytes both ways
+HX_CORS		:= 33554432	; its Origin was let in: HB_CORS
 HX_FAULTED	:= 16777216	; fault: this request was picked, and has waited
 HX_TSEND	:= 8388608	; its bytes to the backend: a send in flight, or the
 				; socket full (epoll: EPOLLOUT resumes it)
@@ -576,6 +577,22 @@ http_request:
 	jz	@f
 	dec	edx
 	imul	rdx,rdx,RA_SIZE
+	cmp	dword [g_acts+rdx+RA_CORS],0	; cors: a preflight costs nobody anything
+	je	.no_cors
+	push	rax
+	push	rcx
+	push	rdx
+	mov	edi,[g_acts+rdx+RA_CORS]
+	dec	edi
+	call	cors_request
+	mov	edi,eax
+	pop	rdx
+	pop	rcx
+	pop	rax
+	test	edi,edi
+	jnz	cors_preflight
+	h_rec
+.no_cors:
 	cmp	dword [g_acts+rdx+RA_LCOUNT],0	; rate limits: the cheapest refusal first
 	je	.limited
 	test	dword [r15+H_FLAGS],HX_FAULTED	; (counted before it waited)
@@ -2188,6 +2205,20 @@ http_write_response_head:
 	; the route's response header changes (final heads only)
 	test	dword [r15+H_FLAGS],HX_INTERIM
 	jnz	.copy
+	cors_of_h				; cors here: the backend's say nothing
+	jz	.no_cors_fields
+	cmp	dword [r14+HF_NLEN],15
+	jb	.no_cors_fields
+	push	rdi
+	mov	rdi,[r14+HF_NAME]
+	cstring str_acf, 'access-control-'
+	lea	rsi,[str_acf]
+	mov	edx,15
+	call	mem_eq_nocase
+	pop	rdi
+	test	eax,eax
+	jnz	.skip
+.no_cors_fields:
 	mov	eax,[r15+H_ACT]
 	test	eax,eax
 	jz	.copy
@@ -2242,6 +2273,10 @@ http_write_response_head:
 	mov	edx,[g_acts+rax+RA_PCOUNT]
 	call	hdrop_emit
 	jc	.full
+@@:
+	test	dword [r15+H_FLAGS],HX_INTERIM
+	jnz	@f
+	call	cors_emit
 @@:
 	; `http3 on`: HTTP/3 on the same port (RFC 7838), but on HTTP/3 itself
 	mov	eax,[rsp+24]			; the session
@@ -3236,7 +3271,9 @@ http_redirect:
 .copy_q:
 	rep	movsb
 .headers:
-	memit_x 13,10,'Content-Length: 0',13,10,'X-Request-Id: '
+	memit_x 13,10
+	call	cors_emit
+	memit_x 'Content-Length: 0',13,10,'X-Request-Id: '
 	lea	rsi,[r15+H_RID]
 	mov	ecx,[r15+H_RIDLEN]
 	rep	movsb
@@ -3810,7 +3847,9 @@ http_error:
 	lea	rsi,[r15+H_RID]
 	mov	ecx,[r15+H_RIDLEN]
 	rep	movsb
-	memit_x 13,10,'Content-Length: '
+	memit_x 13,10
+	call	cors_emit
+	memit_x 'Content-Length: '
 	mov	rsi,[rsp]
 	xor	eax,eax
 @@:

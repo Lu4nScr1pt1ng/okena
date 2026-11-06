@@ -196,12 +196,12 @@ limit_key:
 .header:
 	mov	rdi,[r12+LM_NAME]
 	mov	esi,[r12+LM_NLEN]
-	call	.find
+	call	limit_find
 	jmp	.mix
 .cookie:
 	lea	rdi,[.cookie_name]
 	mov	esi,6
-	call	.find
+	call	limit_find
 	test	ecx,ecx
 	jz	.mixed
 	lea	rdx,[rsi+rcx]
@@ -241,42 +241,43 @@ limit_key:
 	inc	rax
 @@:
 	ret
+.cookie_name	db 'cookie'
+
 ; rdi = a name, esi = its length: rsi = that header's value, ecx = its length
-.find:
+limit_find:
 	push	r13
 	push	r14
 	lea	r13,[g_hm+HM_HDRS]
 	mov	r14d,[g_hm+HM_NHDR]
 	push	rsi
 	push	rdi
-.h_next:
+.next:
 	test	r14d,r14d
-	jz	.h_none
+	jz	.none
 	dec	r14d
 	mov	eax,[rsp+8]
 	cmp	eax,[r13+HF_NLEN]
-	jne	.h_skip
+	jne	.skip
 	mov	rdi,[r13+HF_NAME]
 	mov	rsi,[rsp]
 	mov	edx,eax
 	call	mem_eq_nocase
 	test	eax,eax
-	jnz	.h_found
-.h_skip:
+	jnz	.found
+.skip:
 	add	r13,HF_SIZE
-	jmp	.h_next
-.h_found:
+	jmp	.next
+.found:
 	mov	rsi,[r13+HF_VALUE]
 	mov	ecx,[r13+HF_VLEN]
-	jmp	.h_out
-.h_none:
+	jmp	.out
+.none:
 	xor	ecx,ecx
-.h_out:
+.out:
 	add	rsp,16
 	pop	r14
 	pop	r13
 	ret
-.cookie_name	db 'cookie'
 
 ; r13 = the key, r14 = now (ns), r12 = the limit: r8 = its bucket
 limit_bucket:
@@ -490,7 +491,9 @@ limit_refuse:
 	memit_x 'HTTP/1.1 429 Too Many Requests',13,10,'Retry-After: '
 	mov	rax,[g_lim_retry]
 	call	fmt_u64
-	memit_x 13,10,'Content-Length: 0',13,10,'X-Request-Id: '
+	memit_x 13,10
+	call	cors_emit
+	memit_x 'Content-Length: 0',13,10,'X-Request-Id: '
 	lea	rsi,[r15+H_RID]
 	mov	ecx,[r15+H_RIDLEN]
 	rep	movsb

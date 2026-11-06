@@ -117,6 +117,8 @@ test-serial: $(BIN) $(HTTPH) $(KAT) $(TLSH)
 	python3 -I tests/gateway/fault.py epoll
 	python3 -I tests/gateway/limit.py io_uring
 	python3 -I tests/gateway/limit.py epoll
+	python3 -I tests/gateway/cors.py io_uring
+	python3 -I tests/gateway/cors.py epoll
 
 image:
 	docker build -t okena .

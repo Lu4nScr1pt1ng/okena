@@ -64,6 +64,18 @@ requests in its first flight (RFC 9001 4.6), which can be replayed, so
 only GET, HEAD and OPTIONS go on (with `Early-Data: 1` to the backend, RFC
 8470) and anything else is refused with REQUEST_REJECTED, for the client to
 send again after the handshake. A connection stays in the QUIC version its client chose;
+On a route, `cors origins=LIST methods=LIST headers=LIST expose=LIST
+max_age=TIME credentials` answers browsers. `origins=` is needed: whole origins
+(`https://app.example.com,https://b.test:8443`), matched exactly, one of them
+may have a `*` for the host's labels (`https://*.example.com`), or `*` alone for
+any, which cannot go with `credentials`. Preflights (OPTIONS with Origin and
+Access-Control-Request-Method) are answered with 204 by okena: the backend is
+not asked and no `limit` is spent, so the route must accept OPTIONS. `methods=`
+defaults to GET, HEAD, POST; without `headers=` a preflight is told yes to what
+it asks. The headers go on every answer of the route, a 429 and okena's own
+errors too, and the backend's `Access-Control-*` are dropped. Without `*` answers
+say `Vary: Origin`, so that a cache does not serve one origin another's.
+
 On a route, `limit RATE burst=N key=K instances=N` refuses what goes past a
 rate: `100/s`, `3000/m` or `10000/h`, for the whole instance and never per
 worker. `burst=`, how many may come at once, is a second of the rate by

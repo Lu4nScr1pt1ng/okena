@@ -146,7 +146,8 @@ SF_H2S		:= 8192				; S_FLAGS: a stream of one
 ; a stream's request queue: past the HTTP buffers, over the TLS area (a
 ; stream has no TLS of its own), room for a whole default window (65535,
 ; what a client may send before it has our SETTINGS) with its head
-HB_H2Q		:= (HB_TRAIL + CK_TRAIL_MAX + 63) and not 63
+HB_CORS		:= HB_TRAIL + CK_TRAIL_MAX	; d, then the Origin let in
+HB_H2Q		:= (HB_CORS + 4 + CORS_ORIGIN_MAX + 63) and not 63
 Q_LEN		:= 0
 Q_OFF		:= 4
 Q_DST		:= 8				; q: a receive parked here

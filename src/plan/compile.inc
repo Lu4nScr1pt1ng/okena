@@ -81,7 +81,8 @@ RA_FPCT		:= 60		; d: of this many requests in 100
 RA_FDELAY	:= 64		; q: fault: µs they wait first, 0 = none
 RA_LFIRST	:= 72		; d: its rate limits, in g_limits
 RA_LCOUNT	:= 76		; d
-RA_SIZE		:= 80
+RA_CORS		:= 80		; d: its cors entry + 1
+RA_SIZE		:= 88
 MAX_ACTS	:= MAX_ROUTES
 HD_KIND		:= 0		; d: HOP_SET, HOP_ADD, HOP_DROP
 HD_PREFIX	:= 4		; d: 1 when the name ends with * (drop)
@@ -233,6 +234,8 @@ bss
 	g_acts:		rb RA_SIZE * MAX_ACTS
 	g_limits:	rb LM_SIZE * MAX_LIMITS
 	g_plan_limits	dd ?
+	g_cors:		rb CO_SIZE * MAX_CORS
+	g_plan_cors	dd ?
 	g_plan_hdrops	dd ?
 	g_hdrops:	rb HD_SIZE * MAX_HDROPS
 	g_cmp_act	dd ?
@@ -367,6 +370,11 @@ cstring str_key_delay, 'delay',0
 cstring str_key_wait, 'wait',0
 cstring str_key_key, 'key',0
 cstring str_key_abort, 'abort',0
+cstring str_key_origins, 'origins',0
+cstring str_key_methods, 'methods',0
+cstring str_key_headers, 'headers',0
+cstring str_key_expose, 'expose',0
+cstring str_key_max_age, 'max_age',0
 cstring str_key_burst, 'burst',0
 cstring str_key_instances, 'instances',0
 cstring str_key_lkey, 'key',0
@@ -678,6 +686,9 @@ compile_route_action:
 	lea	rcx,[dir_table + D_SIZE*DIR_RLIMIT]
 	cmp	rax,rcx
 	je	@f
+	lea	rcx,[dir_table + D_SIZE*DIR_CORS]
+	cmp	rax,rcx
+	je	@f
 	mov	rbx,[rbx+N_NEXT]
 	jmp	@b
 @@:
@@ -719,6 +730,15 @@ compile_route_action:
 	mov	rbx,[rbx+N_NEXT]
 	jmp	.rate
 .rates:
+	mov	rdi,r12
+	mov	ecx,DIR_CORS
+	call	find_child
+	test	rax,rax
+	jz	.no_cors
+	mov	rdi,rax
+	call	compile_cors
+	mov	[r13+RA_CORS],eax
+.no_cors:
 	mov	rdi,r12
 	mov	ecx,DIR_FAULT
 	call	find_child
@@ -987,6 +1007,126 @@ timeout_secs:
 	ret
 .absent:
 	stc
+	ret
+
+plan_bad_cors:
+	call	log_begin
+	out_lit 'cors: origins= is needed: a list of origins, each with at most one *, or * alone, and * cannot go with credentials'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
+
+; rdi = a `cors` line: eax = its entry + 1
+compile_cors:
+	push	rbx
+	push	r12
+	mov	rbx,rdi
+	mov	eax,[g_plan_cors]
+	cmp	eax,MAX_CORS
+	jae	plan_too_many
+	inc	dword [g_plan_cors]
+	imul	r12,rax,CO_SIZE
+	lea	r12,[g_cors+r12]
+	mov	rdi,rbx
+	lea	rsi,[str_key_origins]
+	call	node_option
+	test	rax,rax
+	jz	plan_bad_cors
+	mov	rcx,[rax+A_VAL]
+	mov	edx,[rax+A_VLEN]
+	test	edx,edx
+	jz	plan_bad_cors
+	mov	[r12+CO_ORIG],rcx
+	mov	[r12+CO_OLEN],edx
+	cmp	edx,1
+	jne	.stars
+	cmp	byte [rcx],'*'
+	jne	.stars
+	mov	dword [r12+CO_ANY],1
+	jmp	.lists
+.stars:
+	; at most one * an origin
+	xor	r8d,r8d
+	xor	r9d,r9d
+.star:
+	cmp	r8d,edx
+	jae	.lists
+	mov	al,[rcx+r8]
+	inc	r8d
+	cmp	al,','
+	jne	@f
+	xor	r9d,r9d
+	jmp	.star
+@@:
+	cmp	al,'*'
+	jne	.star
+	inc	r9d
+	cmp	r9d,1
+	ja	plan_bad_cors
+	jmp	.star
+.lists:
+	mov	rdi,rbx
+	lea	rsi,[str_key_methods]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	mov	rcx,[rax+A_VAL]
+	mov	[r12+CO_METH],rcx
+	mov	ecx,[rax+A_VLEN]
+	mov	[r12+CO_MLEN],ecx
+@@:
+	mov	rdi,rbx
+	lea	rsi,[str_key_headers]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	mov	rcx,[rax+A_VAL]
+	mov	[r12+CO_HDRS],rcx
+	mov	ecx,[rax+A_VLEN]
+	mov	[r12+CO_HLEN],ecx
+@@:
+	mov	rdi,rbx
+	lea	rsi,[str_key_expose]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	mov	rcx,[rax+A_VAL]
+	mov	[r12+CO_EXP],rcx
+	mov	ecx,[rax+A_VLEN]
+	mov	[r12+CO_ELEN],ecx
+@@:
+	mov	rdi,rbx
+	lea	rsi,[str_key_max_age]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_duration			; µs
+	xor	edx,edx
+	mov	ecx,1000000
+	div	rcx
+	mov	[r12+CO_AGE],eax
+@@:
+	; credentials, a word of its own
+	mov	rax,[rbx+N_ARGS]
+	mov	ecx,[rbx+N_ARGC]
+.word:
+	test	ecx,ecx
+	jz	.worded
+	cmp	dword [rax+A_KIND],ARG_KV
+	je	.next_word
+	mov	dword [r12+CO_CRED],1
+	cmp	dword [r12+CO_ANY],0
+	jne	plan_bad_cors
+.next_word:
+	add	rax,A_SIZE
+	dec	ecx
+	jmp	.word
+.worded:
+	mov	eax,[g_plan_cors]
+	pop	r12
+	pop	rbx
 	ret
 
 plan_bad_limit:

@@ -90,6 +90,8 @@ SUITES = [
     ("fault epoll", ["tests/gateway/fault.py", "epoll"]),
     ("limit io_uring", ["tests/gateway/limit.py", "io_uring"]),
     ("limit epoll", ["tests/gateway/limit.py", "epoll"]),
+    ("cors io_uring", ["tests/gateway/cors.py", "io_uring"]),
+    ("cors epoll", ["tests/gateway/cors.py", "epoll"]),
 ]
 
 
