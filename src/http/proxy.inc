@@ -429,6 +429,19 @@ http_request:
 	imul	rdx,rdx,RA_SIZE
 	cmp	dword [g_acts+rdx+RA_CODE],0
 	jne	http_redirect
+	cmp	dword [g_acts+rdx+RA_FCODE],0	; fault: this share of the requests
+	je	@f
+	mov	r8,rdx
+	mov	r9,rcx
+	rdtsc
+	imul	eax,eax,0x9E3779B1
+	mov	ecx,100
+	mul	ecx				; edx: 0 .. 99
+	mov	rcx,r9
+	cmp	edx,[g_acts+r8+RA_FPCT]
+	jae	@f
+	mov	edi,[g_acts+r8+RA_FCODE]
+	jmp	http_error
 @@:
 	mov	r13d,[rcx+RT_POOL]
 	add	dword [g_retry_tokens+r13*4],RETRY_PER_REQ	; the pool's budget grows with its traffic
@@ -3716,7 +3729,7 @@ macro reasons pairs&
 	end rodata
 end macro
 reasons 301,'Moved Permanently', 302,'Found', 303,'See Other', 307,'Temporary Redirect', \
-	308,'Permanent Redirect', 400,'Bad Request', 404,'Not Found', 405,'Method Not Allowed', 408,'Request Timeout', \
+	308,'Permanent Redirect', 400,'Bad Request', 429,'Too Many Requests', 403,'Forbidden', 401,'Unauthorized', 404,'Not Found', 405,'Method Not Allowed', 408,'Request Timeout', \
 	421,'Misdirected Request', \
 	431,'Request Header Fields Too Large', 501,'Not Implemented', 502,'Bad Gateway', \
 	503,'Service Unavailable', 504,'Gateway Timeout', 505,'HTTP Version Not Supported'

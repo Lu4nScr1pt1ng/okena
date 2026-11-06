@@ -76,6 +76,8 @@ RA_WFROM	:= 32		; q: rewrite: the prefix it replaces (FROM without {*}), 0 = non
 RA_WFLEN	:= 40		; d
 RA_WTLEN	:= 44		; d
 RA_WTO		:= 48		; q: what replaces it
+RA_FCODE	:= 56		; d: fault: the status it answers, 0 = none
+RA_FPCT		:= 60		; d: of this many requests in 100
 RA_SIZE		:= 64
 MAX_ACTS	:= MAX_ROUTES
 HD_KIND		:= 0		; d: HOP_SET, HOP_ADD, HOP_DROP
@@ -359,6 +361,8 @@ node_option:
 cstring str_key_delay, 'delay',0
 cstring str_key_wait, 'wait',0
 cstring str_key_key, 'key',0
+cstring str_key_abort, 'abort',0
+cstring str_key_percent, 'percent',0
 cstring str_key_rotation, 'rotation',0
 cstring str_key_timeout, 'timeout',0
 cstring str_key_weight, 'weight',0
@@ -659,6 +663,9 @@ compile_route_action:
 	lea	rcx,[dir_table + D_SIZE*DIR_REWRITE]
 	cmp	rax,rcx
 	je	@f
+	lea	rcx,[dir_table + D_SIZE*DIR_FAULT]
+	cmp	rax,rcx
+	je	@f
 	mov	rbx,[rbx+N_NEXT]
 	jmp	@b
 @@:
@@ -684,6 +691,37 @@ compile_route_action:
 	mov	eax,[rbx+A_SIZE+A_VLEN]
 	mov	[r13+RA_TLEN],eax
 .ops:
+	mov	rdi,r12
+	mov	ecx,DIR_FAULT
+	call	find_child
+	test	rax,rax
+	jz	.no_fault
+	mov	rbx,rax
+	mov	rdi,rbx				; fault abort=STATUS percent=N
+	lea	rsi,[str_key_abort]
+	call	node_option
+	test	rax,rax
+	jz	plan_bad_fault
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_decimal
+	mov	[r13+RA_FCODE],eax
+	sub	eax,400
+	cmp	eax,199
+	ja	plan_bad_fault
+	mov	dword [r13+RA_FPCT],100
+	mov	rdi,rbx
+	lea	rsi,[str_key_percent]
+	call	node_option
+	test	rax,rax
+	jz	.no_fault
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_decimal
+	cmp	eax,100
+	ja	plan_bad_fault
+	mov	[r13+RA_FPCT],eax
+.no_fault:
 	mov	rdi,r12
 	mov	ecx,DIR_REWRITE
 	call	find_child
@@ -902,6 +940,13 @@ timeout_secs:
 .absent:
 	stc
 	ret
+
+plan_bad_fault:
+	call	log_begin
+	out_lit 'fault: abort= is a status from 400 to 599; percent= at most 100'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
 
 plan_bad_quic_sid:
 	call	log_begin

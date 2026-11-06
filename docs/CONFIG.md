@@ -40,7 +40,7 @@ stream is proxied like an HTTP/1.1 request (routes, pools, retries,
 rewrites, logs all apply; backends still get HTTP/1.1): up to 100 streams
 a connection, flow control both ways, malformed requests reset, and a
 client resetting more than 200 streams a second gets GOAWAY
-ENHANCE_YOUR_CALM. Off by default while phase 4 is in progress.
+ENHANCE_YOUR_CALM. Off by default.
 
 `http3 on` adds HTTP/3 on the same port over UDP: QUIC v1 and v2, the
 listener's `tls { }` certificate (it is required), one UDP socket a
@@ -64,6 +64,11 @@ requests in its first flight (RFC 9001 4.6), which can be replayed, so
 only GET, HEAD and OPTIONS go on (with `Early-Data: 1` to the backend, RFC
 8470) and anything else is refused with REQUEST_REJECTED, for the client to
 send again after the handshake. A connection stays in the QUIC version its client chose;
+On a route, `fault abort=STATUS percent=N` answers that share of its requests
+(all without `percent`) with that status, 400 to 599, and never asks the
+backend: to see how clients take failure. It closes the connection, as okena's
+own errors do. `delay=` is not there yet.
+
 `okena { quic_cc bbr }` sets the congestion control of new QUIC connections (default `cubic`; measured with `bbr`: 3 MB at 30 ms RTT in 1.48 s against 6.07 s at 1% loss, 1.06 s against 0.87 s with none).
 
 `http3 v2` moves a v1 client that offers v2 to it (RFC 9368). `okena { quic_server_id HEX key=HEX rotation=N }`: with `key=` (16 bytes) the IDs are encrypted, QUIC-LB's four-pass cipher (draft-ietf-quic-load-balancers 5.4.2) with `rotation=` (0 to 6) in their first three bits; the other five bits stay in the clear for the kernel's steering, random but for their value modulo the workers, so the worker is visible to anyone and at most 32 workers take QUIC. A malformed value stops the configuration. Adding or removing a key, or the ID itself, takes a restart: steering is built when the sockets open. `okena { quic_server_id HEX }` (1 or 2 bytes) puts this instance's ID in
@@ -75,7 +80,7 @@ somewhere to move to after the handshake (RFC 9000 9.6): okena listens
 there too and the connection follows the client. A client
 that offers only ALPN hq-interop (the QUIC
 interop runner's HTTP/0.9: `GET /path`, the body back alone) gets it,
-proxied as a GET. Off by default while phase 5 is in progress.
+proxied as a GET. Off by default.
 
 `protocol h2` in a pool speaks HTTP/2 to its backends: prior knowledge,
 or ALPN h2 under the pool's `tls { }`. Requests share a few connections a
