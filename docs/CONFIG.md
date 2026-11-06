@@ -46,7 +46,15 @@ ENHANCE_YOUR_CALM. Off by default while phase 4 is in progress.
 listener's `tls { }` certificate (it is required), one UDP socket a
 worker. Requests are proxied like HTTP/2 streams (backends get
 HTTP/1.1); HTTP/1.1 and HTTP/2 answers on that listener announce it
-(`Alt-Svc: h3=":PORT"; ma=86400`). A worker holding 64 connections whose
+(`Alt-Svc: h3=":PORT"; ma=86400`), which a client only sees after a first
+request over TCP. To be found before that, publish an HTTPS record (RFC 9460)
+in your DNS, okena has no part in it:
+
+```
+example.com. 3600 IN HTTPS 1 . alpn="h3,h2"
+```
+
+with `port=N` when it is not 443. A worker holding 64 connections whose
 address is not validated yet answers new ones with a Retry first (a
 token sealed with a key the workers share, good for 10 s); `http3 retry`
 does so for every new connection. On a drain each connection gets

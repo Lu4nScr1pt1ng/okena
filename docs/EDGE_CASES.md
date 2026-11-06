@@ -127,6 +127,7 @@ the connection closed when its framing can no longer be trusted.
 | Slowloris over HTTP/3 (a request head that never ends, the connection kept alive with PINGs) | `timeout { header }` per stream: RESET_STREAM H3_REQUEST_INCOMPLETE; a stalled body: `body_idle`, 408 |
 | HEADERS frames split across packets on several streams at once | one gathered at a time, the others' bytes wait with the data held ahead of a gap and go on when it is done; refused (H3_REQUEST_REJECTED) only when that room is full |
 | ACK of a packet never sent (optimistic ACK) over QUIC | CONNECTION_CLOSE PROTOCOL_VIOLATION; ranges below the 128 packets remembered cost their parsing only |
+| CRYPTO frames after the handshake | their bounds checked, their bytes ignored: nothing kept, nothing sent but the ACK any packet gets |
 | PATH_CHALLENGE from another address, to reflect traffic at a third party | answered at 3x its datagram at most, nothing when that cannot carry it, 16 answers a second a connection; the rest dropped |
 | ECN | our datagrams ECT(0); the marks received counted per space and reported in ACK_ECN. Marks stop on a connection whose client acknowledges data without counts; a rise in the CE count is a congestion event |
 | The client's hello again before the handshake is done | our Initial and Handshake data go again at once, not at the probe timer |

@@ -232,8 +232,7 @@ in µs, p50 / p99 / p99.9, the range of the runs:
 * Quiet: the two generators disagree. Open loop okena is ahead at p50 and
   p99, its p99.9 less steady than theirs; under h2load it is 10 to 40 µs
   behind at p50. Which is the truth for a browser is not settled: the
-  difference between them is not explained yet (h2load uses QPACK's dynamic
-  table, `okena bench` does not).
+  difference between them is not explained yet.
 * An answer used to cost 3 datagrams out and 4 in: an ACK alone, the answer,
   MAX_STREAMS alone, and the client's ACK of each. Now about 1 and 2. Old
   and new binary alternated: `okena bench` p50 at 18k/s 46 -> 39 µs, h2load
