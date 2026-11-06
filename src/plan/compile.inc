@@ -90,6 +90,7 @@ RA_HAFTER	:= 96		; q: hedge: µs before the second try, 0 = none
 RA_HPCT		:= 104		; d: or this percentile of the pool's answers
 RA_PRIO		:= 108		; d: RP_*
 RA_AUTH		:= 112		; d: its auth entry + 1
+RA_CACHE	:= 116		; d: its cache entry + 1
 RA_SIZE		:= 120
 MAX_ACTS	:= MAX_ROUTES
 HD_KIND		:= 0		; d: HOP_SET, HOP_ADD, HOP_DROP
@@ -442,6 +443,9 @@ compile_settings:
 	lea	rcx,[dir_table + D_SIZE*DIR_WATCHDOG]
 	cmp	rax,rcx
 	je	.watchdog
+	lea	rcx,[dir_table + D_SIZE*DIR_CACHE_MEM]
+	cmp	rax,rcx
+	je	.cache_memory
 	lea	rcx,[dir_table + D_SIZE*DIR_DRAIN]
 	cmp	rax,rcx
 	je	.drain
@@ -567,6 +571,13 @@ compile_settings:
 	lea	rdx,[e_io_engine]
 	call	list_index
 	mov	[g_plan_engine],eax
+	jmp	.advance
+.cache_memory:
+	mov	rax,[rbx+N_ARGS]
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_size
+	mov	[g_plan_cmem],rax
 	jmp	.advance
 .watchdog:
 	mov	rdi,rbx
@@ -731,6 +742,9 @@ compile_route_action:
 	cmp	rax,rcx
 	je	@f
 	lea	rcx,[dir_table + D_SIZE*DIR_PRIORITY]
+	cmp	rax,rcx
+	je	@f
+	lea	rcx,[dir_table + D_SIZE*DIR_CACHE]
 	cmp	rax,rcx
 	je	@f
 	lea	rcx,[dir_table + D_SIZE*DIR_AUTH]
@@ -902,6 +916,19 @@ compile_route_action:
 .priority:
 	mov	[r13+RA_PRIO],edx
 .no_priority:
+	mov	rdi,r12
+	mov	ecx,DIR_CACHE
+	call	find_child
+	test	rax,rax
+	jz	.no_cache
+	push	r12
+	push	rbx
+	mov	rbx,rax
+	mov	r12,r13
+	call	compile_cache
+	pop	rbx
+	pop	r12
+.no_cache:
 	mov	rdi,r12
 	mov	ecx,DIR_AUTH
 	call	find_child

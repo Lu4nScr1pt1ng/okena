@@ -26,6 +26,8 @@ h_recv:
 ; the upstream side: a socket, or a stream on an HTTP/2 connection
 h_recv_up:
 	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_CACHED
+	jnz	cache_recv			; the backend is a block of memory
 	test	dword [rax+S_FLAGS],SF_UPH2
 	jnz	h2u_recv
 ; the socket itself, whatever TLS is above it

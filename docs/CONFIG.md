@@ -448,7 +448,7 @@ priority critical                # critical | normal | bulk (shedding order)
 timeout total=5s try=2s          # whole request incl. retries / one attempt
 retry 2 on=connect,reset,503 idempotent-only
 hedge after=p95 max=1            # tail cutting for idempotent requests
-cache 30s stale-while-revalidate=5m vary=accept-encoding
+cache 30s stale-while-revalidate=5m vary=accept-encoding max=1MiB
 cors origins=https://app.example.com methods=GET,POST credentials
 
 match method=POST header:content-type=application/json {
@@ -457,6 +457,31 @@ match method=POST header:content-type=application/json {
 limit 100/s burst=200 key=client.ip
 limit 10000/m key=header:x-api-key instances=4   # share of a fleet-wide limit
 ```
+
+`cache` keeps answers in memory, in each worker: `okena { cache_memory 64MiB }` is
+for each one, and a reload starts empty. Each worker fetches on its own, and the
+answers it has are not seen by the others. When many ask at once for what is not
+there, one goes to the backend and the rest wait for it.
+
+| Option | Meaning |
+|---|---|
+| the time | how long an answer is good, unless the backend's `s-maxage` or `max-age` says otherwise |
+| `stale-while-revalidate=T` | past that, serve it at once for T while it is fetched again; `must-revalidate` takes this away |
+| `vary=a,b` | up to 4 request fields that are part of the key, with host and target |
+| `max=SIZE` | the largest answer kept, 1 MiB by default |
+| `shared=on` | the answer is the same for everyone: see below |
+
+Kept: GET answers of 200, 301, 308, 404 and 410 with a length or chunked. HEAD reads
+them. Not kept: `Cache-Control` no-store, private or no-cache, `Set-Cookie`, `Vary`
+naming a field not in `vary=`, or a body with no length, as a cut would look like
+its end. A request's `Range`, or a body, goes to the backend; a conditional one reads
+what is kept and gets a 200, and on a miss is not kept. A client's own `Cache-Control`
+is not obeyed.
+
+Unless `shared=on`, a request with Cookie or Authorization, or that an `auth` let in,
+neither reads nor fills: an answer for one person must not reach another. A hit says
+`Age` and `Cache-Status: okena; hit; ttl=N`, negative when stale, and runs behind
+what the route has for clients: auth, limits, CORS and `response` rules.
 
 A route either forwards (`to`) or redirects (`redirect CODE TARGET`, with
 301, 302, 303, 307 or 308; TARGET a path or an `http(s)://` URL). A

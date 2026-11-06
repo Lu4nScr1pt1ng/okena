@@ -38,7 +38,7 @@ except ImportError:
 
 BIN = HERE.parents[1] / "build" / "okena"
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
-BASE = 31950 + os.getpid() % 3 * 12 + (6 if ENGINE == "epoll" else 0)
+BASE = 15000 + os.getpid() % 50 * 12 + (6 if ENGINE == "epoll" else 0)	# ports 15000-15599: this suite's own
 BACK, SHADOW, REQ, OPT, KT, OPEN = (BASE + i for i in range(6))
 fails = 0
 

@@ -2349,6 +2349,7 @@ session_close:
 	cmp	dword [r12+S_STATE],ST_FREE
 	je	.done
 	mov	dword [r12+S_STATE],ST_CLOSING
+	call	cache_gone
 	mov	edi,ebx
 	call	idle_remove
 	mov	edi,ebx

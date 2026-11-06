@@ -72,6 +72,7 @@ worker_main:
 	call	sessions_init
 	test	eax,eax
 	js	.no_memory
+	call	cache_init
 	call	groups_refresh
 	call	hs_init
 	cmp	dword [g_plan_engine],2

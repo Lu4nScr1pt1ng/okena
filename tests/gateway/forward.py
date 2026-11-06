@@ -17,7 +17,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 BIN = ROOT / "build" / "okena"
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
-BASE = 31000 + 960 + os.getpid() % 2 * 14 + (7 if ENGINE == "epoll" else 0)
+BASE = 14000 + os.getpid() % 50 * 14 + (7 if ENGINE == "epoll" else 0)	# ports 14000-14699: this suite's own
 BACK, SSO, LST, FAST, FEW, TLS = (BASE + i for i in range(6))
 fails = 0
 asked = []

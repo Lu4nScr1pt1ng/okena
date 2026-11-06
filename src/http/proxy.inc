@@ -388,7 +388,7 @@ fault_flush:
 	mov	rax,[g_fd+rdx+FD_SESS]
 	mov	[g_fd+rcx+FD_SESS],rax
 	mov	r10d,ebx
-	and	ebx,not (FD_HEDGE or FD_FWD)
+	and	ebx,not (FD_HEDGE or FD_FWD or FD_CACHE)
 	push	r8
 	push	r9
 	push	r10
@@ -407,8 +407,13 @@ fault_flush:
 	jmp	.next
 .not_hedge:
 	test	r10d,FD_FWD
-	jz	.held
+	jz	.not_fwd
 	call	fwd_timeout
+	jmp	.next
+.not_fwd:
+	test	r10d,FD_CACHE
+	jz	.held
+	call	cache_poll
 	jmp	.next
 .held:
 	cmp	dword [r15+H_STATE],HS_FAULT
@@ -615,6 +620,10 @@ http_request:
 	jz	.not_copy
 	mov	rax,[r15+H_BUF]
 	mov	r13d,[rax+HB_MIRS]
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_CREF
+	jz	.pool_chosen
+	call	cache_refetch
 	jmp	.pool_chosen
 .not_copy:
 	test	edx,edx
@@ -719,6 +728,14 @@ http_request:
 .chosen_none:
 @@:
 	mov	r13d,[rcx+RT_POOL]
+	mov	[g_c_pool],r13d
+	push	rcx
+	call	cache_check
+	pop	rcx
+	test	eax,eax
+	jz	@f
+	ret
+@@:
 	mov	eax,[r15+H_ACT]			; split: another pool, perhaps
 	test	eax,eax
 	jz	.its_pool
@@ -2274,6 +2291,7 @@ http_resp_head:
 	mov	dword [r15+H_RBODY],BK_CLOSE
 	call	h_chunkout			; framed for the client
 .write:
+	call	cache_head
 	call	http_write_response_head
 	jc	.bad
 	or	dword [r15+H_FLAGS],HX_STARTED
@@ -2301,6 +2319,7 @@ http_resp_head:
 	mov	eax,[r15+H_UPOFF]
 	mov	rsi,[r15+H_BUF]
 	lea	rsi,[rsi+rax+HB_UP]
+	call	cache_tee
 	add	[r15+H_UPOFF],ecx
 	sub	[r15+H_RREMAIN],rcx
 	add	[r15+H_OUTLEN],ecx
@@ -2520,9 +2539,11 @@ http_resp_pump:
 	sub	[r15+H_RREMAIN],rcx
 	mov	eax,[r15+H_UPOFF]
 	add	[r15+H_UPOFF],ecx
-	mov	esi,ecx
 	mov	rdi,[r15+H_BUF]
-	lea	rdi,[rdi+HB_UP+rax]
+	lea	rsi,[rdi+HB_UP+rax]
+	call	cache_tee
+	mov	rdi,rsi
+	mov	esi,ecx
 .send:
 	mov	dword [r15+H_STATE],HS_RESP_SEND
 	mov	ecx,SIDE_CLIENT
@@ -2570,6 +2591,11 @@ http_resp_pump:
 	mov	r9d,ecx
 	add	[r15+H_UPOFF],ecx
 .framed:
+	push	rcx
+	mov	rsi,r8
+	mov	ecx,r9d
+	call	cache_tee
+	pop	rcx
 	call	session_ptr
 	test	dword [rax+S_FLAGS],SF_H2S or SF_H3S or SF_HSTRM
 	jz	@f
@@ -3899,6 +3925,8 @@ on_h2t_send:
 ; One exchange is over: drop the upstream connection, then the next
 ; request on the client connection, or close it.
 http_exchange_done:
+	h_rec
+	call	cache_finish
 	h_rec
 	and	dword [r15+H_FLAGS],not (HX_DUPLEX or HX_H2TUN)
 	test	dword [r15+H_FLAGS],HX_MIRROR	; (a copy is nobody's request: not logged)
