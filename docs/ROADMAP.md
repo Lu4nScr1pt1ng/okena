@@ -454,7 +454,15 @@ discovery, JWKS, ACME, control process, logger, disk) failed in turn.
 Exit: hit path serves from page cache at line rate with zero copies;
 origin load stays flat during a purge-and-refill storm.
 
-## Phase 9 — Kernel fast paths
+## Phase 9 — Breadth
+
+* TLS 1.2, RSA certificates (signing), client-certificate auth at scale.
+* Brotli on the fly.
+* Consul discovery, Kubernetes Gateway API.
+* Certificate compression, Encrypted Client Hello.
+* AVX-512 paths where they pay.
+
+## Phase 10 — Kernel fast paths
 
 * `xdp` listener: Maglev in eBPF, IPIP/GUE encapsulation, DSR,
   connection tracking table, backend health from user space.
@@ -462,14 +470,6 @@ origin load stays flat during a purge-and-refill storm.
 * zcrx zero-copy receive on supported NICs; NIC TLS offload.
 
 Exit: packets/s per core comparable to Katran.
-
-## Phase 10 — Breadth
-
-* TLS 1.2, RSA certificates (signing), client-certificate auth at scale.
-* Brotli on the fly.
-* Consul discovery, Kubernetes Gateway API.
-* Certificate compression, Encrypted Client Hello.
-* AVX-512 paths where they pay.
 
 ## Phase 11 — Addons
 
