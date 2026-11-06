@@ -482,6 +482,13 @@ async def cases():
               (rb.get("headers") or {}).get(b":status") == b"408", str(rb)[:80])
         r = await c.request("GET", "/after-slow")
         check("  and the connection goes on", r["body"].startswith(b"hello /after-slow"), str(r)[:80])
+    # okena's own answer has no pool: a redirect used to take the worker down
+    async with connect("127.0.0.1", LST, configuration=config(), create_protocol=Client) as c:
+        r = await c.request("GET", "/away")
+        h = r["headers"] or {}
+        check("a redirect: answered, the connection goes on",
+              h.get(b":status") == b"302" and h.get(b"location") == b"/elsewhere"
+              and (await c.request("GET", "/after-away"))["body"].startswith(b"hello /after-away"), str(r)[:100])
     # a small answer is one datagram: its ACK goes with it, MAX_STREAMS only
     # when the client is running out
     async with connect("127.0.0.1", LST, configuration=config(), create_protocol=Client) as c:
@@ -814,6 +821,7 @@ http 127.0.0.1:{LST} {{
     http3 on
     tls {{ cert {tmp / 'c.pem'}; key {tmp / 'k.pem'} }}
     access_log {tmp / 'access.log'}
+    route /away {{ redirect 302 /elsewhere }}
     route /viah2/* {{ to pool viah2 }}
     route /viatls/* {{ to pool viatls }}
     route /* {{ to 127.0.0.1:{BACK} }}

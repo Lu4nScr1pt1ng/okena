@@ -2861,6 +2861,8 @@ h3s_push:
 	jne	.ring_sized
 	call	session_ptr
 	mov	eax,[rax+S_POOL]
+	cmp	eax,[g_plan_pools]		; (okena's own answer has no pool)
+	jae	.ring_sized
 	imul	rax,rax,PL_SIZE
 	lea	rcx,[g_pools]
 	mov	edx,[rcx+rax+PL_TLS]
