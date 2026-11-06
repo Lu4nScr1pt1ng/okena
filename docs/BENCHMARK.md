@@ -363,6 +363,20 @@ preempted as often but stalls 0.9 ms at most, so this does not explain it all.
 Open: on a desktop with no isolated cores, finding what takes the core needs
 scheduler tracing as root.
 
+## What a cache hit costs (2026-11-06)
+
+The same load, 20k requests/s on 64 connections, HTTP/1.1, 2 workers pinned as a
+set to cores 1-2, two runs of 5 s after 1 s, in µs; a body of 2 bytes. A third run
+was cut by the time limit of the script and is not counted.
+
+| route | p50 | p99 | p99.9 |
+|---|---|---|---|
+| to the backend | 33.8 | 51.7-57.3 | 244-827 |
+| `cache`, a hit | 25.6 | 38.4-39.4 | 176-236 |
+
+8 µs less at p50 than going to the backend, about 10 µs over the backend answering
+by itself (table above). Bodies past one read are not measured here.
+
 ## HTTP/2 against HTTP/1.1 through okena (2026-10-31)
 
 One worker on core 1, the backend `l4bench http` on 4-5, `okena bench`
