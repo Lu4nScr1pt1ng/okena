@@ -138,13 +138,15 @@ def main():
         check("canary 5% to 10%: who was in it stays, the next 5% join, the rest do not move",
               g(99) == {b"two"} and g(95) == {b"two"} and g(92) == {b"two"} and g(89) == {b"one"} and g(3) == {b"one"},
               str((g(99), g(92), g(89))))
-        for proto in ("h1", "h2", "h3"):
-            q = subprocess.run(["timeout", "10", str(BIN), "bench", f"https://127.0.0.1:{TLS}/x", f"proto={proto}",
-                                "conns=2", "duration=1s", "warmup=0s", "workers=1", "format=kv"],
+        for proto, flag in (("h1", "--http1.1"), ("h2", "--http2"), ("h3", "--http3-only")):
+            q = subprocess.run(["timeout", "8", "curl", "-sk", flag, "-D", "-", "-o", "/dev/null",
+                                "--resolve", f"s.test:{TLS}:127.0.0.1", f"https://s.test:{TLS}/x"],
                                capture_output=True, text=True, stdin=subprocess.DEVNULL)
-            kv = dict(x.split("=", 1) for x in q.stdout.split() if "=" in x)
-            check(f"over {proto}, its cookie among the head", int(kv.get("ok", 0)) >= 10 and kv.get("errors") == "0",
-                  q.stdout[:100])
+            if q.returncode == 1 or "not support" in q.stderr or q.returncode == 2:
+                print(f"skip {proto}: this curl does not speak it")
+                continue
+            head = q.stdout.lower()
+            check(f"over {proto}: the cookie goes out", " 200" in head.split("\n")[0] and "set-cookie: s=" in head, q.stdout[:200])
     finally:
         p.terminate()
         p.wait(10)
