@@ -25,10 +25,20 @@ AU_IDENT	:= 24				; q: the field that says who
 AU_REALM	:= 32				; q
 AU_RLEN		:= 40				; d
 AU_FWD		:= 44				; d: the credential goes on to the backend
-AU_SIZE		:= 48
+AU_ISS		:= 48				; q: jwt: the issuer
+AU_AUD		:= 56				; q: the audience
+AU_ILEN2	:= 64				; d
+AU_ALEN		:= 68				; d
+AU_LEEWAY	:= 72				; d: seconds
+AU_JFIRST	:= 76				; d: its keys
+AU_JN		:= 80				; d
+AU_CFIRST	:= 84				; d: its claims told
+AU_CN		:= 88				; d
+AU_SIZE		:= 96
 MAX_AUTHS	:= 256
 AK_APIKEY	:= 1
 AK_BASIC	:= 2
+AK_JWT		:= 3
 
 ; the table of keys and users, all routes': open addressing on the hash
 AT_KEY		:= 0				; 32: SHA-256 of the key, or of the name
@@ -99,11 +109,14 @@ auth_check:
 	lea	r12,[g_auths+r12]
 	mov	rax,[r15+H_BUF]
 	mov	dword [rax+HB_AUTHL],0
+	mov	dword [rax+HB_JHLEN],0
 	mov	rdi,[r12+AU_HDR]
 	mov	esi,[r12+AU_HLEN]
 	call	limit_find
 	test	ecx,ecx
 	jz	.refused
+	cmp	dword [r12+AU_KIND],AK_JWT
+	je	.jwt
 	cmp	dword [r12+AU_KIND],AK_BASIC
 	je	.basic
 	lea	rdi,[g_au_digest]
@@ -115,6 +128,9 @@ auth_check:
 	test	rax,rax
 	jz	.refused
 	jmp	.who
+.jwt:
+	call	jwt_check
+	jmp	.out
 .basic:
 	; Basic base64(name:password)
 	cmp	ecx,7
@@ -234,10 +250,39 @@ auth_hides:
 	push	r12
 	lea	r12,[g_auths+rax]
 	push	rdi
+	cmp	dword [r12+AU_KIND],AK_JWT
+	jne	.one_name
+	; what the claims say: only okena says it
+	push	r13
+	push	r14
+	mov	r13d,[r12+AU_CN]
+	mov	eax,[r12+AU_CFIRST]
+	imul	rax,rax,CM_SIZE
+	lea	r14,[g_claims+rax]
+.told:
+	test	r13d,r13d
+	jz	.told_none
+	dec	r13d
+	mov	rdi,[rsp+16]
+	mov	rsi,[r14+CM_HDR]
+	mov	edx,[r14+CM_HLEN]
+	call	.same
+	lea	r14,[r14+CM_SIZE]
+	jne	.told
+	pop	r14
+	pop	r13
+	xor	eax,eax
+	jmp	.yes
+.told_none:
+	pop	r14
+	pop	r13
+	jmp	.credential
+.one_name:
 	mov	rsi,[r12+AU_IDENT]
 	mov	edx,[r12+AU_ILEN]
 	call	.same
 	je	.yes
+.credential:
 	cmp	dword [r12+AU_FWD],0
 	jne	.other
 	mov	rdi,[rsp]
@@ -284,6 +329,13 @@ auth_emit:
 	imul	rax,rax,AU_SIZE
 	lea	r8,[g_auths+rax]
 	mov	rax,[r15+H_BUF]
+	cmp	dword [r8+AU_KIND],AK_JWT
+	jne	.one
+	lea	rsi,[rax+HB_JHDR]		; rendered when it was verified
+	mov	ecx,[rax+HB_JHLEN]
+	rep	movsb
+	ret
+.one:
 	mov	edx,[rax+HB_AUTHL]
 	test	edx,edx
 	jz	.out
@@ -333,6 +385,11 @@ auth_refuse:
 	lea	r12,[g_auths+rax]
 	cmp	dword [r12+AU_KIND],AK_BASIC
 	je	.basic
+	cmp	dword [r12+AU_KIND],AK_JWT
+	jne	.key
+	memit_x 'Bearer'
+	jmp	.challenged
+.key:
 	memit_x 'ApiKey'
 	jmp	.challenged
 .basic:

@@ -296,6 +296,7 @@ tick_work:
 	call	idle_expire
 	call	ph_expire
 	call	overload_tick
+	call	jwt_tick
 	call	retry_budget_tick
 	call	alog_tick
 	cmp	dword [g_draining],0

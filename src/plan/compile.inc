@@ -248,6 +248,10 @@ bss
 	g_auths:	rb AU_SIZE * MAX_AUTHS
 	g_plan_auths	dd ?
 	g_plan_akeys	dd ?
+	g_jwk:		rb JK_SIZE * MAX_JWK
+	g_plan_jwk	dd ?
+	g_claims:	rb CM_SIZE * MAX_CLAIMS
+	g_plan_claims	dd ?
 	g_auth_tab:	rb AT_SIZE * AT_N
 	g_plan_hdrops	dd ?
 	g_hdrops:	rb HD_SIZE * MAX_HDROPS
@@ -1202,6 +1206,9 @@ compile_auth:
 	cmp	byte [rcx],'a'
 	je	@f
 	mov	edx,AK_BASIC
+	cmp	byte [rcx],'b'
+	je	@f
+	mov	edx,AK_JWT
 @@:
 	mov	[r12+AU_KIND],edx
 	; identity=
@@ -1229,6 +1236,11 @@ compile_auth:
 	call	mem_eq_cstr
 	mov	[r12+AU_FWD],eax
 @@:
+	cmp	dword [r12+AU_KIND],AK_JWT
+	jne	.not_jwt
+	call	compile_jwt
+	jmp	.done
+.not_jwt:
 	cmp	dword [r12+AU_KIND],AK_BASIC
 	je	.basic
 	mov	rdi,rbx
@@ -1822,6 +1834,13 @@ compile_limit:
 	mov	ecx,LK_AUTH
 	test	eax,eax
 	jnz	.kind
+	mov	rdi,r13
+	mov	esi,r14d
+	lea	rdx,[.jwt_sub]
+	call	mem_eq_cstr
+	mov	ecx,LK_AUTH
+	test	eax,eax
+	jnz	.kind
 	; PREFIX:NAME
 	xor	edx,edx
 .colon:
@@ -1872,6 +1891,7 @@ compile_limit:
 .client_ip	db 'client.ip',0
 .method		db 'method',0
 .auth_user	db 'auth.user',0
+.jwt_sub	db 'jwt.sub',0
 
 plan_bad_fault:
 	call	log_begin

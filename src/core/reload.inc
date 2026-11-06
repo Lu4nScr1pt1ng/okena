@@ -92,6 +92,10 @@ macro plan_regions action
 	action g_auths, AU_SIZE * MAX_AUTHS
 	action g_plan_auths, 4
 	action g_plan_akeys, 4
+	action g_jwk, JK_SIZE * MAX_JWK
+	action g_plan_jwk, 4
+	action g_claims, CM_SIZE * MAX_CLAIMS
+	action g_plan_claims, 4
 	action g_auth_tab, AT_SIZE * AT_N
 	action g_plan_hdrops, 4
 	action g_hdrops, HD_SIZE * MAX_HDROPS

@@ -102,6 +102,8 @@ SUITES = [
     ("overload epoll", ["tests/gateway/overload.py", "epoll"]),
     ("auth io_uring", ["tests/gateway/auth.py", "io_uring"]),
     ("auth epoll", ["tests/gateway/auth.py", "epoll"]),
+    ("jwt io_uring", ["tests/gateway/jwt.py", "io_uring"]),
+    ("jwt epoll", ["tests/gateway/jwt.py", "epoll"]),
 ]
 
 

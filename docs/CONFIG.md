@@ -478,9 +478,31 @@ together), never per worker.
 
 ## Authentication
 
-Today, on a route: `auth api_key header=x-api-key keys=FILE` and `auth basic
-users=FILE realm=NAME`; both take `identity=NAME` and `forward=on`. What follows
-in the block below (`policy`, `jwt`, `mtls`, `forward`) is planned.
+Today, on a route: `auth api_key header=x-api-key keys=FILE`, `auth basic
+users=FILE realm=NAME` (both take `identity=NAME` and `forward=on`) and `auth jwt`.
+What else follows in the block below (`policy`, a `jwks` by URL, `mtls`,
+`forward`) is planned.
+
+```
+auth jwt {
+    jwks /etc/okena/jwks.json      # a JWK set, read at load and on a reload
+    issuer https://auth.example.com
+    audience api
+    leeway 30s                     # the default
+    claims sub -> x-user-id, scope -> x-user-scope
+}
+```
+
+ES256, RS256, PS256, EdDSA and HS256. A bearer token must have `exp`; `issuer`
+and `audience` are checked when given, and a route with no `issuer` takes
+whoever holds a key. The algorithm must fit the key: an `oct` key needs its
+`alg`, and 32 bytes at least; RSA 2048 bits at least. `alg: none` and a `crit`
+header are refused, as is a name given twice in the token's JSON. A failure is 401 with
+`WWW-Authenticate: Bearer`. A token is verified once and kept by each worker until
+it expires. The claims named are told to the backend, in fields whose client
+values are dropped, 256 bytes in all; a token that does not fit is refused, as is
+one with a control byte in such a claim. The first one is also what `limit
+key=jwt.sub` counts by.
 
 A keys file has lines `name:key`, a users file `name:SALT:SHA256HEX`, the hash
 being of SALT and the password together, as in

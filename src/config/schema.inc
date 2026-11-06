@@ -17,6 +17,7 @@ CTX_HTTP	:= 7
 CTX_ROUTE	:= 8
 CTX_HOST	:= 9
 CTX_TLS		:= 10
+CTX_AUTH	:= 11
 
 ; Flags
 F_BLOCK_REQ	:= 1		; must have a block
@@ -112,6 +113,7 @@ M_HTTP		:= 1 shl CTX_HTTP
 M_ROUTE		:= 1 shl CTX_ROUTE
 M_HOST		:= 1 shl CTX_HOST
 M_TLS		:= 1 shl CTX_TLS
+M_AUTH		:= 1 shl CTX_AUTH
 
 enumdef e_io_engine, 'auto', 'io_uring', 'epoll'
 enumdef e_balance, 'round-robin', 'least-conn', 'random', 'least-request', 'peak-ewma'
@@ -126,7 +128,7 @@ enumdef e_pp_version, 'v1', 'v2'
 enumdef e_tls_mode, 'passthrough'
 enumdef e_onoff, 'on', 'off'
 enumdef e_cors_flags, 'credentials'
-enumdef e_auth, 'api_key', 'basic'
+enumdef e_auth, 'api_key', 'basic', 'jwt'
 enumdef e_priority, 'normal', 'critical', 'bulk'
 enumdef e_mirror_what, 'pool'
 enumdef e_quic_cc, 'cubic', 'bbr'
@@ -150,7 +152,7 @@ keysdef k_connect, 'timeout', T_DURATION, 'max', T_FUTURE, 'idle', T_FUTURE, \
 	'warm', T_FUTURE, 'rate', T_FUTURE
 
 ; Names of the contexts, for messages, in CTX_* order starting at 1.
-enumdef ctx_names, 'the top level', '`okena`', '`tcp`', '`pool`', '`limits`', '`timeout`', '`http`', '`route`', '`host`', '`tls`'
+enumdef ctx_names, 'the top level', '`okena`', '`tcp`', '`pool`', '`limits`', '`timeout`', '`http`', '`route`', '`host`', '`tls`', '`auth`'
 
 ; Directives of the language that this version does not implement yet.
 enumdef future_names, 'udp', 'xdp', 'policy', 'use', \
@@ -194,7 +196,12 @@ dirdef DIR_HTTP2, 'http2',       M_HTTP,    0,           F_UNIQUE, 1, 1, e_onoff
 dirdef DIR_HTTP3, 'http3',       M_HTTP,    0,           F_UNIQUE, 1, 1, e_h3,    T_NONE, 0
 dirdef DIR_PREFADDR, 'preferred_address', M_HTTP, 0,     F_UNIQUE, 1, 2, T_LISTEN, T_LISTEN, 0
 dirdef DIR_EARLY, 'early_data',  M_HTTP,    0,           F_UNIQUE, 1, 1, e_onoff, T_NONE, 0
-dirdef DIR_AUTH, 'auth',        M_ROUTE,   0,           F_UNIQUE or F_KEYS_BLOCK, 1, 1, e_auth, T_NONE, k_auth
+dirdef DIR_AUTH, 'auth',        M_ROUTE,   CTX_AUTH,    F_UNIQUE, 1, 1, e_auth, T_NONE, k_auth
+dirdef DIR_JWKS, 'jwks',        M_AUTH,    0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
+dirdef DIR_ISSUER, 'issuer',    M_AUTH,    0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
+dirdef DIR_AUDIENCE, 'audience', M_AUTH,   0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
+dirdef DIR_LEEWAY, 'leeway',    M_AUTH,    0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
+dirdef DIR_CLAIMS, 'claims',    M_AUTH,    0,           F_UNIQUE, 3, 64, T_ANY, T_ANY, 0
 dirdef DIR_PRIORITY, 'priority', M_ROUTE,   0,           F_UNIQUE, 1, 1, e_priority, T_NONE, 0
 dirdef DIR_HEDGE, 'hedge',      M_ROUTE,   0,           F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_hedge
 dirdef DIR_MIRROR, 'mirror',    M_ROUTE,   0,           F_UNIQUE, 2, 3, e_mirror_what, T_ANY, 0
