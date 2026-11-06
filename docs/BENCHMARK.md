@@ -325,9 +325,28 @@ three runs, in µs, and the worst p99.9 of them:
 
 Up to about 1.3 µs at p50 with auth and a limit, 1.8 µs for a mirror, which is a
 second request to a second pool; at p99 nothing above the noise. p99.9 at 2 s a
-run says little: the route with no filter has the worst value of the first five.
-One key and one token throughout, so the JWT rows are the token cache's hits,
-and no signature is verified in them. A new token costs a signature check.
+run says little: the route with no filter reaches 1327 µs, as far as any.
+One key and one token throughout, so the JWT rows are nearly all the token
+cache's hits: only each worker's first request verifies a signature.
+
+Against the budget in ARCHITECTURE.md, which counts what is added on top of the
+backend: the same load straight at `l4bench`, then through okena, three runs, in
+µs. TLS is 1.3 with ECDSA P-256, on connections opened once; whether kTLS was on
+for these runs was not checked.
+
+| route | p50 | p99 | p99.9 |
+|---|---|---|---|
+| straight to the backend | 14.6-15.1 | 24.6-27.1 | 42-44 |
+| through okena, no filter | 32.3-33.3 | 48.6-50.7 | 78-256 |
+| TLS, no filter | 33.3-33.8 | 47.6-56.8 | 69-442 |
+| TLS, `auth api_key` + `limit` | 33.3-33.8 | 48.6-59.9 | 71-1311 |
+| TLS, `auth jwt` + `limit` | 34.3 (33.8 once) | 49.7-59.9 | 114-1360 |
+
+TLS, auth and limit add at most 19 µs at p50 and 35 µs at p99, inside the budget
+of 20 and 50. p99.9 is not: the budget says 150 µs, and two runs of three pass
+it, by up to 1.3 ms. Runs of 2 s are too short to say whether that is the filters
+or the machine. With no filter, 18 µs at p50 and 25 µs at p99 against a budget of
+10 and 30: p50 is over it.
 
 ## HTTP/2 against HTTP/1.1 through okena (2026-10-31)
 
