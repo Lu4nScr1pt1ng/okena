@@ -367,12 +367,15 @@ answer 3x what came at most), packets steered to the worker their connection ID 
 (tests/interop). tests/h3/run.py drives
 it with aioquic and curl (ngtcp2) on both engines, through a relay that
 loses a tenth of the datagrams each way. Measured against HAProxy 3.2
-and nginx 1.27 (docs/BENCHMARK.md, h2load with HTTP/3): ahead on many
-streams (156k/s against 130k and 102k), on handshakes (10k/s on two
-cores, none failing past it, against about 1.2k) and under an Initial
-flood (18k/s kept, p99 3 ms; they fall to 2.6k and 4.1k/s); behind them
-on quiet keep-alive p50/p99. BBR behind `quic_cc bbr`. Open: latency under
-the flood not flat yet, quiet p99. `okena bench proto=h3` is in. QUIC-LB IDs in the clear or encrypted
+and nginx 1.27 (docs/BENCHMARK.md, h2load with HTTP/3 and `okena bench
+proto=h3`): ahead on many streams (196k/s against 132k and 95k), on
+handshakes (10k/s on two cores, none failing, against about 1.2k) and under
+an Initial flood (18k/s kept, p99 0.5 ms; they fall to 2.1k and 4.1k/s). Quiet:
+ahead open loop at p50 and p99, 10 to 40 µs behind at p50 under h2load. The
+interop runner: 22 of 22 with ngtcp2, neqo, picoquic; only client limits left
+on the others. BBR behind `quic_cc bbr`. Open: why the two generators disagree
+on quiet latency, the flood's p99.9 (2 ms against 0.4). `okena bench proto=h3`
+is in. QUIC-LB IDs in the clear or encrypted
 (`quic_server_id`), budgets on rapid reset, probes and ACKs, the header
 deadline per stream.
 
