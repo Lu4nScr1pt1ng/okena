@@ -1,0 +1,4 @@
+exit: 0
+--- stdout
+policy_good.conf: ok (1 listener, 1 pool, 1 server)
+--- stderr

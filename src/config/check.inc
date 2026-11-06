@@ -12,6 +12,7 @@ end bss
 
 ; Walk the whole tree.
 cfg_check:
+	call	policies_expand
 	mov	rdi,[g_cfg_root]
 	mov	esi,CTX_TOP
 	call	check_children

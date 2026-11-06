@@ -218,7 +218,9 @@ directive arg arg key=value {
   directive may drop its braces, and a directive may follow a `}` on the
   same line (`okena { workers 4 } tcp :5432 to db1:5432`).
 * `policy NAME { ... }` defines a reusable set of route directives; `use
-  NAME` applies it. Directives written in the route override the policy.
+  NAME` applies it. Directives written in the route override the policy, all
+  of that name (a route's `limit` replaces the policy's), and with two `use`,
+  the first overrides the second. A policy cannot use another.
 
 ## Layers
 
@@ -480,7 +482,7 @@ together), never per worker.
 
 Today, on a route: `auth api_key header=x-api-key keys=FILE`, `auth basic
 users=FILE realm=NAME` (both take `identity=NAME` and `forward=on`) and `auth jwt`.
-What else follows in the block below (`policy`, `mtls`, `forward`) is planned.
+What else follows in the block below (`mtls`, `forward`, `allow`) is planned.
 
 ```
 auth jwt {

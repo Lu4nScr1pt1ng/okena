@@ -1,0 +1,16 @@
+exit: 2
+--- stdout
+--- stderr
+policy_errors.conf:2:1: error: this policy is defined twice
+     2 | policy a { cors origins=* }
+       | ^^^^^^
+policy_errors.conf:7:16: error: no policy of that name: define it with `policy NAME { ... }` at the top level
+     7 |     route /x { use missing; to pool p }
+       |                ^^^
+policy_errors.conf:3:17: error: a policy cannot use another
+     3 | policy nested { use a }
+       |                 ^^^
+policy_errors.conf:4:15: error: unknown directive `nosuch`
+     4 | policy typo { nosuch 1 }
+       |               ^^^^^^
+4 errors in policy_errors.conf

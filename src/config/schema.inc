@@ -156,7 +156,7 @@ keysdef k_connect, 'timeout', T_DURATION, 'max', T_FUTURE, 'idle', T_FUTURE, \
 enumdef ctx_names, 'the top level', '`okena`', '`tcp`', '`pool`', '`limits`', '`timeout`', '`http`', '`route`', '`host`', '`tls`', '`auth`'
 
 ; Directives of the language that this version does not implement yet.
-enumdef future_names, 'udp', 'xdp', 'policy', 'use', \
+enumdef future_names, 'udp', 'xdp', \
 	'addon', 'alerts', 'include', 'admin', 'log', 'reload', 'profile', \
 	'acme', 'discover', 'header', 'headers', 'cache', \
 	'match', 'source', \
@@ -198,6 +198,8 @@ dirdef DIR_HTTP3, 'http3',       M_HTTP,    0,           F_UNIQUE, 1, 1, e_h3,  
 dirdef DIR_PREFADDR, 'preferred_address', M_HTTP, 0,     F_UNIQUE, 1, 2, T_LISTEN, T_LISTEN, 0
 dirdef DIR_EARLY, 'early_data',  M_HTTP,    0,           F_UNIQUE, 1, 1, e_onoff, T_NONE, 0
 dirdef DIR_AUTH, 'auth',        M_ROUTE,   CTX_AUTH,    F_UNIQUE, 1, 1, e_auth, T_NONE, k_auth
+dirdef DIR_POLICY, 'policy',    M_TOP,     CTX_ROUTE,   F_BLOCK_REQ, 1, 1, T_NAME, T_NONE, 0
+dirdef DIR_USE, 'use',          M_ROUTE,   0,           0, 1, 1, T_NAME, T_NONE, 0
 dirdef DIR_JWKS, 'jwks',        M_AUTH,    0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, k_jwks
 dirdef DIR_ISSUER, 'issuer',    M_AUTH,    0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
 dirdef DIR_AUDIENCE, 'audience', M_AUTH,   0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, 0

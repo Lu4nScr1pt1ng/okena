@@ -133,6 +133,8 @@ test-serial: $(BIN) $(HTTPH) $(KAT) $(TLSH)
 	python3 -I tests/gateway/jwt.py epoll
 	python3 -I tests/gateway/jwks.py io_uring
 	python3 -I tests/gateway/jwks.py epoll
+	python3 -I tests/gateway/policy.py io_uring
+	python3 -I tests/gateway/policy.py epoll
 	python3 -I tests/gateway/jwtfuzz.py io_uring 7 15000
 	python3 -I tests/gateway/jwtfuzz.py epoll 8 15000
 
