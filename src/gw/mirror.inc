@@ -103,7 +103,7 @@ mirror_new:
 	mov	rsi,[r14+H_BUF]			; who the request proved, for the head
 	lea	rsi,[rsi+HB_AUTHL]
 	lea	rdi,[rbp+HB_AUTHL]
-	mov	ecx,4 + AUTH_NAME_MAX
+	mov	ecx,HB_JHDR + JWT_HDR_MAX - HB_AUTHL	; (the field for the backend too)
 	rep	movsb
 	mov	eax,[rsp+32]
 	mov	[rbp+HB_MIRS],eax		; (a copy: its pool)
