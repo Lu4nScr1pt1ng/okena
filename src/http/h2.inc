@@ -28,7 +28,10 @@ H2_MAX_OPEN	:= 100				; SETTINGS_MAX_CONCURRENT_STREAMS
 H2_INIT_WIN	:= 32768			; our SETTINGS_INITIAL_WINDOW_SIZE
 H2_CONN_WIN	:= 1048576			; our connection window
 H2_MAX_HLIST	:= 16384			; SETTINGS_MAX_HEADER_LIST_SIZE
-H2_INCAP	:= 32768
+H2_INCAP	:= 33280
+assert H2_INCAP >= 16384 + 9 + TLS_RECORD_MAX + 256	; a frame not yet whole, and the record
+							; that ends it: with less, neither
+							; ever moves and the worker spins
 H2_OUTCAP	:= 32768
 H2_HBCAP	:= 16384			; a header block (HEADERS + CONTINUATION)
 H2_STRCAP	:= 16384
@@ -817,11 +820,20 @@ h2_received:
 	c2_regs
 	cmp	dword [r15+H_UTLS],0
 	je	@f
-	cmp	dword [r13+C2_RXC],0		; records that waited for room in IN
-	je	@f
-	mov	eax,[r13+C2_INLEN]
-	cmp	eax,H2_INCAP / 2
-	jae	@f
+	; a record that waited for room in IN, whole and fitting now. Not otherwise:
+	; only a read can bring what is missing, and this must not go round without one
+	mov	edx,[r13+C2_RXC]
+	cmp	edx,5
+	jb	@f
+	movzx	ecx,word [r14+HB_RXC+3]
+	rol	cx,8
+	lea	eax,[rcx+5]
+	cmp	eax,edx
+	ja	@f
+	mov	eax,H2_INCAP
+	sub	eax,[r13+C2_INLEN]
+	cmp	ecx,eax
+	ja	@f
 	xor	eax,eax
 	jmp	.records
 @@:
