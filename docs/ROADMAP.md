@@ -409,10 +409,11 @@ the accepted connections' latency flat.
 ## Phase 6 — Gateway
 
 In progress. In: `fault abort= delay=`, `cors`, `split`, `mirror`, `hedge`, `priority` with an overload manager, `auth api_key`,
-`basic` and `jwt` (a local JWK set so far), `limit` (for now by rate; quotas, `match` blocks and
-`jwt.sub` as a key are to come).
+`basic` and `jwt` (a JWK set from a file or a URL), `limit` (for now by rate; quotas and `match`
+blocks are to come).
 
-* JWT/JWKS (fetched by the control process), verified-token cache, API
+* JWT/JWKS (fetched by a process of its own, not the control process: a slow
+  provider must not hold up DNS), verified-token cache, API
   keys, Basic, mTLS identity, forward-auth with answer cache.
 * Rate limits: GCRA per instance through leases, bounded key table with
   eviction under key floods; quotas.

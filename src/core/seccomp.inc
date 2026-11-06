@@ -5,7 +5,7 @@
 ;   supervisor  before the first fork: what it needs from then on (reload
 ;               included), plus what every child needs to start
 ;   worker      once set up: the I/O of its engine
-;   control     DNS and read-only access to resolv.conf and hosts
+;   control     DNS and read-only access to resolv.conf and hosts (okena-keys too)
 ;   health      check connections
 ;   compiler    the reload's configuration compiler: almost nothing
 ; Never allowed anywhere: execve, ptrace, clone/clone3/vfork (fork only),

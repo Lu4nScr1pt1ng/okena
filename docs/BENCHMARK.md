@@ -274,6 +274,11 @@ quiche's sets `disable_active_migration`), and the download completes on the
 first path. The runner tells the client only "transfer" for this case, so it
 cannot answer "not supported" and the check finds a single path.
 
+On 2026-11-06, after the fixes to HTTP/3 answers, the short set again: handshake,
+transfer, retry, resumption, zerortt, http3, multiplexing, rebind-port. 8 of 8
+with each of ngtcp2, quic-go, quiche, neqo, picoquic and aioquic. The full matrix
+of that day ran out of its time limit and left no result: it is not counted.
+
 ## What a rate limit adds (2026-11-05)
 
 `okena bench`, open loop, HTTP/1.1, 20k requests/s on 64 connections through

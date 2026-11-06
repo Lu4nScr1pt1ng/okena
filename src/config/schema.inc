@@ -140,6 +140,7 @@ keysdef k_hs_budget, 'wait', T_DURATION
 keysdef k_auth, 'header', T_ANY, 'keys', T_ANY, 'users', T_ANY, 'realm', T_ANY, 'identity', T_ANY, 'forward', T_ANY
 keysdef k_hedge, 'after', T_ANY, 'max', T_COUNT
 keysdef k_cors, 'origins', T_ANY, 'methods', T_ANY, 'headers', T_ANY, 'expose', T_ANY, 'max_age', T_DURATION
+keysdef k_jwks, 'trust', T_ANY, 'refresh', T_DURATION, 'stale', T_DURATION
 keysdef k_limit, 'burst', T_COUNT, 'key', T_ANY, 'instances', T_COUNT
 keysdef k_fault, 'abort', T_COUNT, 'percent', T_COUNT, 'delay', T_DURATION
 keysdef k_quic_sid, 'key', T_ANY, 'rotation', T_ANY
@@ -197,7 +198,7 @@ dirdef DIR_HTTP3, 'http3',       M_HTTP,    0,           F_UNIQUE, 1, 1, e_h3,  
 dirdef DIR_PREFADDR, 'preferred_address', M_HTTP, 0,     F_UNIQUE, 1, 2, T_LISTEN, T_LISTEN, 0
 dirdef DIR_EARLY, 'early_data',  M_HTTP,    0,           F_UNIQUE, 1, 1, e_onoff, T_NONE, 0
 dirdef DIR_AUTH, 'auth',        M_ROUTE,   CTX_AUTH,    F_UNIQUE, 1, 1, e_auth, T_NONE, k_auth
-dirdef DIR_JWKS, 'jwks',        M_AUTH,    0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
+dirdef DIR_JWKS, 'jwks',        M_AUTH,    0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, k_jwks
 dirdef DIR_ISSUER, 'issuer',    M_AUTH,    0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
 dirdef DIR_AUDIENCE, 'audience', M_AUTH,   0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
 dirdef DIR_LEEWAY, 'leeway',    M_AUTH,    0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0

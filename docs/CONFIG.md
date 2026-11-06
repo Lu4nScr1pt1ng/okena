@@ -480,8 +480,7 @@ together), never per worker.
 
 Today, on a route: `auth api_key header=x-api-key keys=FILE`, `auth basic
 users=FILE realm=NAME` (both take `identity=NAME` and `forward=on`) and `auth jwt`.
-What else follows in the block below (`policy`, a `jwks` by URL, `mtls`,
-`forward`) is planned.
+What else follows in the block below (`policy`, `mtls`, `forward`) is planned.
 
 ```
 auth jwt {
@@ -492,6 +491,30 @@ auth jwt {
     claims sub -> x-user-id, scope -> x-user-scope
 }
 ```
+
+Or by URL, kept up to date by a process of its own, `okena-keys`:
+
+```
+jwks https://auth.example.com/.well-known/jwks.json trust=/etc/okena/idp-ca.pem refresh=10m stale=24h
+```
+
+`trust` is required with `https`: a PEM file whose first certificate is the
+anchor. The chain up to it, the validity window and the host name in the URL are
+always checked. `http://` is accepted for `localhost` and `127.0.0.x` only.
+`refresh` (10 min by default) is how often it is fetched, and `stale` (24 h) how
+long the keys hold after the last good fetch; past that they are dropped and
+tokens are refused.
+
+A failed fetch, a body that is not a set, or a set with no key usable here changes
+nothing, and is retried within 30 s; a change of keys makes every worker forget
+the tokens it verified. A reload keeps the keys of the URLs that stay. At start,
+okena waits up to 3 s for the first keys, and until they come tokens get a 401. A
+token with a `kid` not here asks for a fetch at once, 10 s apart at most. Sets with
+the same URL and `trust` are one set, with the times of the first. Shared secrets
+(`oct`) in a set by URL are left out: anyone who can read it could sign.
+
+Limits: TLS 1.3 with AES-128-GCM towards the provider, one anchor, a response of
+256 KB, 32 keys in a set, 8 sets. Redirects are not followed.
 
 ES256, RS256, PS256, EdDSA and HS256. A bearer token must have `exp`; `issuer`
 and `audience` are checked when given, and a route with no `issuer` takes

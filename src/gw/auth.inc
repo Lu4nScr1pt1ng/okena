@@ -34,6 +34,7 @@ AU_JFIRST	:= 76				; d: its keys
 AU_JN		:= 80				; d
 AU_CFIRST	:= 84				; d: its claims told
 AU_CN		:= 88				; d
+AU_JSRC		:= 92				; d: the set by URL + 1, 0 a file
 AU_SIZE		:= 96
 MAX_AUTHS	:= 256
 AK_APIKEY	:= 1

@@ -94,6 +94,8 @@ macro plan_regions action
 	action g_plan_akeys, 4
 	action g_jwk, JK_SIZE * MAX_JWK
 	action g_plan_jwk, 4
+	action g_jsrc, JS_SIZE * MAX_JWKS
+	action g_plan_jsrc, 4
 	action g_claims, CM_SIZE * MAX_CLAIMS
 	action g_plan_claims, 4
 	action g_auth_tab, AT_SIZE * AT_N
@@ -288,6 +290,17 @@ supervisor_reload:
 	call	dns_table_init			; a new table: the old workers keep theirs
 	call	groups_resolve_all
 	call	spawn_control
+	mov	edi,[g_keys_pid]
+	test	edi,edi
+	jz	@f
+	mov	dword [g_keys_pid],0
+	mov	esi,SIGKILL
+	mov	eax,SYS_kill
+	syscall
+@@:
+	call	jwks_table_init
+	call	spawn_keys
+	call	jwks_wait
 	mov	edi,[g_health_pid]
 	test	edi,edi
 	jz	@f

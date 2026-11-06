@@ -209,13 +209,22 @@ jwt_key:
 	test	ebx,ebx
 	jz	.none
 .search:
+	mov	eax,[r12+AU_JSRC]
+	test	eax,eax
+	jnz	.by_url
 	mov	eax,[r12+AU_JFIRST]
 	imul	rax,rax,JK_SIZE
 	lea	r9,[g_jwk+rax]
 	mov	r13d,[r12+AU_JN]
+	jmp	.key
+.by_url:
+	dec	eax
+	mov	r13d,[g_jl_n+rax*4]
+	imul	rax,rax,JK_PER_SET * JK_SIZE
+	lea	r9,[g_jl_keys+rax]
 .key:
 	test	r13d,r13d
-	jz	.none
+	jz	.not_here
 	dec	r13d
 	; what kind of key it needs
 	mov	eax,[r9+JK_KIND]
@@ -247,6 +256,14 @@ jwt_key:
 .found:
 	clc
 	jmp	.out
+.not_here:
+	mov	eax,[r12+AU_JSRC]		; (from a set by URL: maybe a new key)
+	test	eax,eax
+	jz	.none
+	dec	eax
+	imul	rax,rax,KT_SIZE
+	add	rax,[g_jwks_tbl]
+	mov	dword [rax+KT_WANT],1
 .none:
 	stc
 .out:
@@ -593,6 +610,7 @@ jwt_check:
 	cmp	qword [g_jwt_now],0
 	jne	@f
 	call	jwt_tick
+	call	jwks_tick
 @@:
 	lea	rdi,[g_jt_dig]
 	mov	rsi,r13
@@ -836,8 +854,19 @@ compile_jwt:
 	call	find_child
 	test	rax,rax
 	jz	plan_bad_jwt
-	mov	rax,[rax+N_ARGS]
-	mov	rsi,[rax+A_VAL]
+	mov	rcx,[rax+N_ARGS]
+	mov	rsi,[rcx+A_VAL]
+	cmp	dword [rcx+A_VLEN],5
+	jb	.file
+	cmp	dword [rsi],'http'
+	jne	.file
+	call	jwks_source
+	pop	r15
+	pop	r14
+	pop	r13
+	ret
+.file:
+	mov	rax,rcx
 	mov	ecx,[rax+A_VLEN]
 	cmp	ecx,1000
 	ja	plan_bad_jwt
@@ -1180,6 +1209,8 @@ jwk_load:
 .k	db 'k'
 
 plan_bad_jwt:
+	cmp	qword [g_jf_sp],0
+	jne	jf_parse_bad
 	call	log_begin
 	out_lit 'auth jwt: jwks FILE is needed, a JWK set with a key this can use: EC P-256, RSA of 2048 bits and up, Ed25519, or oct of 32 bytes and up with its alg; claims as a -> b, c -> d'
 	call	log_end

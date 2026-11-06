@@ -104,6 +104,8 @@ SUITES = [
     ("auth epoll", ["tests/gateway/auth.py", "epoll"]),
     ("jwt io_uring", ["tests/gateway/jwt.py", "io_uring"]),
     ("jwt epoll", ["tests/gateway/jwt.py", "epoll"]),
+    ("jwks io_uring", ["tests/gateway/jwks.py", "io_uring"]),
+    ("jwks epoll", ["tests/gateway/jwks.py", "epoll"]),
     ("jwt fuzz io_uring", ["tests/gateway/jwtfuzz.py", "io_uring", "7", "15000"]),
     ("jwt fuzz epoll", ["tests/gateway/jwtfuzz.py", "epoll", "8", "15000"]),
 ]

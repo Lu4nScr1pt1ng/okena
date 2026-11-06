@@ -75,6 +75,7 @@ supervisor_main:
 @@:
 	mov	[g_watchdog_s],eax
 	call	dns_table_init
+	call	jwks_table_init
 	call	groups_resolve_all
 	call	health_table_init
 	call	peer_global_init		; per_source table: lives across reloads
@@ -156,6 +157,8 @@ supervisor_main:
 	call	tsc_calibrate			; once, for every worker (busy_poll, access log)
 	; from here on the supervisor and everything it forks are confined
 	call	seccomp_supervisor
+	call	spawn_keys
+	call	jwks_wait
 	xor	ebx,ebx
 .spawn_all:
 	mov	edi,ebx
@@ -761,6 +764,22 @@ reap_workers:
 	call	spawn_control
 	jmp	.next
 .worker:
+	cmp	r12d,[g_keys_pid]
+	jne	.a_worker
+	; the keys: workers keep what is published, for `stale`
+	mov	dword [g_keys_pid],0
+	cmp	dword [g_shutdown],0
+	jne	.next
+	call	log_begin
+	out_lit 'keys process exited, restarting it'
+	call	log_end
+	lea	rdi,[ts_respawn_delay]
+	xor	esi,esi
+	mov	eax,SYS_nanosleep
+	syscall
+	call	spawn_keys
+	jmp	.next
+.a_worker:
 	mov	edi,r12d
 	call	reap_old
 	jnc	.current
@@ -863,6 +882,13 @@ reap_workers:
 	test	edi,edi
 	jz	@f
 	mov	esi,SIGKILL			; nothing to drain there
+	mov	eax,SYS_kill
+	syscall
+@@:
+	mov	edi,[g_keys_pid]
+	test	edi,edi
+	jz	@f
+	mov	esi,SIGKILL
 	mov	eax,SYS_kill
 	syscall
 @@:
