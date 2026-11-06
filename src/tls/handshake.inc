@@ -38,8 +38,7 @@
 ; HelloRetryRequest (RFC 8446 4.1.4) naming x25519, or
 ; secp256r1 when that is the only one it offered; one that offers neither,
 ; a handshake_failure alert.
-; No resumption and no 0-RTT: no tickets are issued, so no client sends
-; early data.
+; Client certificates are in clientauth.inc.
 
 ; a traffic key is 16 bytes (AES-128-GCM) or 32 (ChaCha20-Poly1305), its
 ; IV (12) TS_IVOFF after it
@@ -61,7 +60,12 @@ TS_TX_GCM	:= TS_RX_GCM + AEAD_SIZE
 TS_HRR_SHA	:= TS_TX_GCM + AEAD_SIZE	; after a HelloRetryRequest: the transcript so far
 TS_CERT		:= TS_HRR_SHA + SHA256_CTX_SIZE	; q: the entry SNI chose, 0 = the default
 TS_QT		:= TS_CERT + 8			; q: QUIC (TF_QUIC): its QT block
-TS_SIZE		:= TS_QT + 8
+TS_ANCHOR	:= TS_QT + 8			; q: `client_ca`: its public key
+TS_MCFK		:= TS_ANCHOR + 8		; the client's finished key (32)
+TS_MSHA		:= TS_MCFK + 32			; the transcript through the server Finished
+TS_PEERL	:= TS_MSHA + SHA256_CTX_SIZE	; d: who the client's certificate says, 0 none
+TS_PEER		:= TS_PEERL + 4			; (MTLS_NAME_MAX)
+TS_SIZE		:= TS_PEER + MTLS_NAME_MAX + 4
 
 ; QUIC (RFC 9001): the handshake without records. The caller sets TF_QUIC
 ; and TS_QT; tls_hello then takes the ClientHello message itself (from
@@ -97,6 +101,9 @@ TF_ALPN_H2	:= 8				; set by the caller: h2 may be chosen (preferred)
 TF_GOT_H2	:= 16				; h2 was chosen
 TF_QUIC		:= 32				; set by the caller: QUIC (TS_QT)
 TF_0RTT		:= 64				; set by the caller: QUIC early data may be taken
+MTLS_NAME_MAX	:= 64				; a client certificate's name
+TF_CCA		:= 128				; set by the caller: ask for a client certificate
+TF_CCA_REQ	:= 256				; and with none, refuse
 
 TH_MORE		:= 0
 TH_SEND		:= 1
@@ -892,6 +899,8 @@ tls_hello:
 	call	tls_now_s
 	mov	[rbp+HL_NOW],eax
 .psk_check:
+	test	dword [rbx+TS_FLAGS],TF_CCA	; (see clientauth.inc)
+	jnz	.full
 	mov	eax,[rbp+HL_GOT]
 	and	eax,G_PSK or G_PSKDHE
 	cmp	eax,G_PSK or G_PSKDHE
@@ -1330,6 +1339,17 @@ tls_hello:
 	th_snapshot
 	jmp	.finished
 .certificate:
+	test	dword [rbx+TS_FLAGS],TF_CCA
+	jz	.no_request
+	; CertificateRequest: empty context, signature_algorithms
+	mov	dword [r14],0x0F00000D
+	mov	byte [r14+4],0
+	mov	word [r14+5],0x0C00
+	mov	dword [r14+7],0x08000D00
+	mov	dword [r14+11],0x03040600
+	mov	dword [r14+15],0x07080408
+	add	r14,19
+.no_request:
 	; Certificate: empty context, the certificate_list as loaded
 	mov	byte [r14],11
 	mov	ecx,[r15+TL_CLEN]
@@ -1460,6 +1480,18 @@ tls_hello:
 	mov	ecx,32
 	rep	movsb
 @@:
+	test	dword [rbx+TS_FLAGS],TF_CCA
+	jz	.no_cca
+	lea	rsi,[rbp+HL_CFK]
+	lea	rdi,[rbx+TS_MCFK]
+	mov	ecx,32
+	rep	movsb
+	lea	rsi,[rbp+HL_SHA]
+	lea	rdi,[rbx+TS_MSHA]
+	mov	ecx,SHA256_CTX_SIZE
+	rep	movsb
+	jmp	.no_ticket
+.no_cca:
 	cmp	qword [g_tks],0
 	je	.no_ticket
 	; the ticket: resumption_master_secret over the transcript through the
@@ -1794,6 +1826,8 @@ FN_NONCE	:= AEAD_SIZE
 FN_SIZE		:= AEAD_SIZE + 16 + 8		; rsp 16-aligned at calls
 
 tls_finished:
+	test	dword [rdi+TS_FLAGS],TF_CCA
+	jnz	tls_client_flight
 	push	rbx
 	push	r12
 	push	r13

@@ -35,6 +35,9 @@ include '../../src/tls/layout.inc'
 include '../../src/tls/keyschedule.inc'
 include '../../src/tls/x509.inc'
 include '../../src/tls/handshake.inc'
+tls_client_flight:				; (no client certificates are asked for here)
+	mov	eax,TH_FAIL
+	ret
 
 BUF		:= 1 shl 16
 SOL_TLS		:= 282

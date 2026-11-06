@@ -143,6 +143,22 @@ http_tls_start:
 	mov	rax,[r15+H_BUF]
 	or	dword [rax+HB_TS+TS_FLAGS],TF_ALPN_H2
 @@:
+	call	session_ptr			; `client_ca`
+	mov	eax,[rax+S_LST]
+	imul	rax,rax,LS_SIZE
+	mov	ecx,[g_listeners+rax+LS_CCA]
+	mov	eax,[g_listeners+rax+LS_FLAGS]
+	test	eax,LSF_CCA
+	jz	@f
+	mov	r8,[r15+H_BUF]
+	or	dword [r8+HB_TS+TS_FLAGS],TF_CCA
+	imul	rcx,rcx,PK_SIZE
+	lea	rcx,[g_cca+rcx]
+	mov	[r8+HB_TS+TS_ANCHOR],rcx
+	test	eax,LSF_CCA_REQ
+	jz	@f
+	or	dword [r8+HB_TS+TS_FLAGS],TF_CCA_REQ
+@@:
 	mov	dword [r15+H_STATE],HS_TLS_HELLO
 ; read more of the ClientHello
 http_tls_read:
@@ -182,7 +198,12 @@ http_tls_hello_go:
 	cmp	eax,TH_MORE
 	je	http_tls_read
 	cmp	eax,TH_TLS12
-	je	http_tls12_hello
+	jne	@f
+	mov	rax,[r15+H_BUF]
+	test	dword [rax+HB_TS+TS_FLAGS],TF_CCA
+	jnz	http_tls_close			; (see clientauth.inc)
+	jmp	http_tls12_hello
+@@:
 	mov	ecx,HS_TLS_FLIGHT
 	cmp	eax,TH_SEND
 	je	@f
@@ -247,8 +268,11 @@ http_tls_fin_peeked:
 	lea	eax,[rcx+rax+5]			; its end
 	cmp	eax,H_IN_CAP
 	ja	http_tls_close
+	cmp	eax,[r15+H_INLEN]		; (a client certificate takes several: taken already)
+	jbe	.past
 	cmp	byte [rsi+rcx],20
 	jne	.finished
+.past:
 	mov	ecx,eax
 	cmp	ecx,edx
 	jb	.record
@@ -517,7 +541,11 @@ http_tls_established:
 	mov	rdi,[r15+H_BUF]
 	push	qword [rdi+HB_TS+TS_FLAGS]	; (h2 or not, before the wipe)
 	add	rdi,HB_TS			; the kernel has the keys: none kept here
-	mov	ecx,TS_SIZE + 2 * KTLS_SLOT
+	mov	ecx,TS_PEERL			; (who the client is stays: routes ask)
+	call	secure_zero
+	mov	rdi,[r15+H_BUF]
+	lea	rdi,[rdi+HB_KTLS]
+	mov	ecx,2 * KTLS_SLOT
 	call	secure_zero
 	pop	rcx
 	call	session_ptr

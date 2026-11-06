@@ -15,6 +15,9 @@ rodata
 	oid_cn			db 0x55,0x04,0x03				; 2.5.4.3 commonName
 	oid_bc			db 0x55,0x1D,0x13				; 2.5.29.19 basicConstraints
 	oid_ku			db 0x55,0x1D,0x0F				; 2.5.29.15 keyUsage
+	oid_eku			db 0x55,0x1D,0x25				; 2.5.29.37 extKeyUsage
+	oid_clientauth		db 0x2B,0x06,0x01,0x05,0x05,0x07,0x03,0x02	; 1.3.6.1.5.5.7.3.2
+	oid_anyeku		db 0x55,0x1D,0x25,0x00				; 2.5.29.37.0
 	pem_begin		db '-----BEGIN CERTIFICATE-----'
 	PEM_BEGIN_LEN		:= $ - pem_begin
 	pem_end			db '-----END CERTIFICATE-----'
@@ -890,6 +893,141 @@ cert_chain_times:
 	xor	eax,eax
 .out:
 	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; rsi = certificate DER, edx = its length: eax = 1 when it has no extended key
+; usage, or one that allows client authentication.
+cert_client_usage:
+	push	rbx
+	push	r12
+	call	x509_locate
+	test	eax,eax
+	jz	.no
+	mov	r12,[g_x509_ext]
+	test	r12,r12
+	jz	.yes
+.ext:
+	cmp	r12,[g_x509_extend]
+	jae	.yes
+	mov	rsi,r12
+	mov	rdx,[g_x509_extend]
+	call	der_read
+	jc	.no
+	cmp	al,0x30
+	jne	.no
+	mov	rbx,r8
+	mov	r12,r8
+	mov	rdx,r8
+	call	der_read
+	jc	.no
+	cmp	al,6
+	jne	.no
+	lea	rdi,[oid_eku]
+	mov	edx,3
+	push	r8
+	call	der_oid_is
+	pop	r8
+	jne	.ext
+	mov	rsi,r8
+	mov	rdx,rbx
+	call	der_read
+	jc	.no
+	cmp	al,1
+	jne	@f
+	mov	rsi,r8
+	mov	rdx,rbx
+	call	der_read
+	jc	.no
+@@:
+	cmp	al,4
+	jne	.no
+	mov	rdx,r8
+	call	der_read			; the SEQUENCE of purposes
+	jc	.no
+	cmp	al,0x30
+	jne	.no
+	mov	rbx,r8
+.purpose:
+	cmp	rsi,rbx
+	jae	.no				; none of them
+	mov	rdx,rbx
+	call	der_read
+	jc	.no
+	cmp	al,6
+	jne	.no
+	push	r8
+	lea	rdi,[oid_clientauth]
+	mov	edx,8
+	call	der_oid_is
+	pop	r8
+	je	.yes
+	push	r8
+	lea	rdi,[oid_anyeku]
+	mov	edx,4
+	call	der_oid_is
+	pop	r8
+	je	.yes
+	mov	rsi,r8
+	jmp	.purpose
+.yes:
+	mov	eax,1
+	jmp	.out
+.no:
+	xor	eax,eax
+.out:
+	pop	r12
+	pop	rbx
+	ret
+
+; rsi = certificate DER, edx = its length: rax = the subject's commonName, ecx = its
+; length, 0 none.
+cert_common_name:
+	push	rbx
+	push	r12
+	call	x509_locate
+	test	eax,eax
+	jz	.none
+	mov	rsi,[g_x509_subj]
+	mov	r12,[g_x509_subjend]
+.rdn:
+	cmp	rsi,r12
+	jae	.none
+	mov	rdx,r12
+	call	der_read
+	jc	.none
+	mov	rbx,r8
+	cmp	al,0x31
+	jne	.next
+	mov	rdx,r8
+	call	der_read
+	jc	.next
+	cmp	al,0x30
+	jne	.next
+	mov	rdx,r8
+	call	der_read
+	jc	.next
+	cmp	al,6
+	jne	.next
+	lea	rdi,[oid_cn]
+	mov	edx,3
+	push	r8
+	call	der_oid_is
+	pop	r8
+	jne	.next
+	mov	rsi,r8
+	mov	rdx,rbx
+	call	der_read
+	jc	.next
+	mov	rax,rsi
+	jmp	.out
+.next:
+	mov	rsi,rbx
+	jmp	.rdn
+.none:
+	xor	ecx,ecx
+.out:
 	pop	r12
 	pop	rbx
 	ret

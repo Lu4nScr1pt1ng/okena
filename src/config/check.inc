@@ -1339,6 +1339,8 @@ check_tls:
 	call	cfg_error_limit
 .h3_ok:
 	mov	rdi,r12
+	call	check_client_ca
+	mov	rdi,r12
 	mov	ecx,DIR_TLS
 	call	find_child
 	test	rax,rax
@@ -1648,6 +1650,8 @@ check_http:
 	mov	rdi,r12
 	call	check_route_set
 	add	r13d,eax
+	mov	rdi,r12
+	call	check_mtls_routes
 	mov	rbx,[r12+N_CHILD]
 .host:
 	test	rbx,rbx

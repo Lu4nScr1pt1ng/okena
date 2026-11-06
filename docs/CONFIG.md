@@ -482,7 +482,7 @@ together), never per worker.
 
 Today, on a route: `auth api_key header=x-api-key keys=FILE`, `auth basic
 users=FILE realm=NAME` (both take `identity=NAME` and `forward=on`) and `auth jwt`.
-What else follows in the block below (`mtls`, `forward`, `allow`) is planned.
+What else follows in the block below (`forward`, `allow`) is planned.
 
 ```
 auth jwt {
@@ -531,6 +531,35 @@ values are dropped, 256 bytes in all; a token that does not fit is refused, as i
 one with a control byte in such a claim. The first one is also what `limit
 key=jwt.sub` counts by.
 
+`auth mtls` asks for what the listener's `client_ca` proved: the handshake comes
+before any route, so the authority is the listener's, and a route with `auth mtls`
+on a listener with none is refused at load. The backend is told the subject's
+commonName, in `x-user-id` or `identity=`, up to 64 bytes; `limit key=auth.user`
+counts by it, or by a hash of it past 20 bytes.
+
+```
+http :443 {
+    tls {
+        cert /etc/okena/server.pem
+        key /etc/okena/server.key
+        client_ca /etc/okena/clients.pem required    # or optional
+    }
+    route /admin/* { auth mtls identity=x-admin; to pool admin }
+}
+```
+
+`required`, the default, refuses a connection with no good certificate in the
+handshake, whatever the route. With `optional` a client may send none, and a
+route with `auth mtls` answers 401. A certificate sent must be good in both cases.
+The chain must reach the first certificate in the file, with only CAs signing and
+each link in date; an extended key usage, if there is one, must allow client
+authentication; the commonName must be there, with no control byte.
+
+On such a listener: TLS 1.3 only, no tickets, in either direction: a resumed session
+has no certificate to look at. Not on a `tcp` listener, and not with `http3`: it is
+refused at load, because QUIC would be a way around it. A client's chain must fit
+in 16 KB. Revocation (CRL, OCSP) is not checked.
+
 A keys file has lines `name:key`, a users file `name:SALT:SHA256HEX`, the hash
 being of SALT and the password together, as in
 `printf '%s%s' "$salt" "$password" | sha256sum`. Names are up to 20 bytes, and
@@ -563,7 +592,7 @@ policy partners {
 }
 
 policy admin {
-    auth mtls ca=/etc/okena/admin-ca.pem
+    auth mtls
     allow 10.0.0.0/8
 }
 

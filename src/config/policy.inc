@@ -253,3 +253,104 @@ policy_route:
 	pop	r12
 	pop	rbx
 	ret
+
+; rdi = a listener with its tls checked: `client_ca` where it can work. A tcp
+; listener's bytes go to the kernel with no one to ask who the client is; QUIC's
+; handshake is another path, with no client certificates yet.
+check_client_ca:
+	push	rbx
+	push	r12
+	mov	r12,rdi
+	mov	ecx,DIR_TLS
+	call	find_child
+	test	rax,rax
+	jz	.out
+	mov	rdi,rax
+	mov	ecx,DIR_CLIENT_CA
+	call	find_child
+	test	rax,rax
+	jz	.out
+	mov	rbx,rax
+	lea	rax,[dir_table + D_SIZE*DIR_HTTP]
+	cmp	[r12+N_DEF],rax
+	je	@f
+	mov	rdi,rbx
+	call	policy_error
+	out_lit 'client_ca is for `http` listeners'
+	call	cfg_diag_end
+	call	cfg_error_limit
+	jmp	.out
+@@:
+	mov	rdi,r12
+	mov	ecx,DIR_HTTP3
+	call	find_child
+	test	rax,rax
+	jz	.out
+	mov	rax,[rax+N_ARGS]
+	mov	rax,[rax+A_VAL]
+	cmp	byte [rax+1],'f'		; `off`
+	je	.out
+	mov	rdi,rbx
+	call	policy_error
+	out_lit 'client_ca does not work with http3 yet: a client could go around it over QUIC'
+	call	cfg_diag_end
+	call	cfg_error_limit
+.out:
+	pop	r12
+	pop	rbx
+	ret
+
+; rdi = an http listener: `auth mtls` needs its `client_ca`
+check_mtls_routes:
+	push	rbx
+	mov	rbx,rdi
+	mov	ecx,DIR_TLS
+	call	find_child
+	test	rax,rax
+	jz	.walk
+	mov	rdi,rax
+	mov	ecx,DIR_CLIENT_CA
+	call	find_child
+	test	rax,rax
+	jnz	.out
+.walk:
+	mov	rdi,rbx
+	call	mtls_walk
+.out:
+	pop	rbx
+	ret
+
+; rdi = a node: the routes under it have no `auth mtls`
+mtls_walk:
+	push	rbx
+	mov	rbx,[rdi+N_CHILD]
+.next:
+	test	rbx,rbx
+	jz	.done
+	mov	rdi,rbx
+	lea	rsi,[str_auth]
+	call	node_is
+	jne	.down
+	cmp	dword [rbx+N_ARGC],1
+	jb	.sibling
+	mov	rax,[rbx+N_ARGS]
+	mov	rax,[rax+A_VAL]
+	cmp	dword [rax],'mtls'
+	jne	.sibling
+	mov	rdi,rbx
+	call	policy_error
+	out_lit 'auth mtls needs `client_ca` in the tls block of this listener'
+	call	cfg_diag_end
+	call	cfg_error_limit
+	jmp	.sibling
+.down:
+	mov	rdi,rbx
+	call	mtls_walk
+.sibling:
+	mov	rbx,[rbx+N_NEXT]
+	jmp	.next
+.done:
+	pop	rbx
+	ret
+
+cstring str_auth, 'auth',0

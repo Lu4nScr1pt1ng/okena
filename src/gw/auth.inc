@@ -40,6 +40,7 @@ MAX_AUTHS	:= 256
 AK_APIKEY	:= 1
 AK_BASIC	:= 2
 AK_JWT		:= 3
+AK_MTLS		:= 4
 
 ; the table of keys and users, all routes': open addressing on the hash
 AT_KEY		:= 0				; 32: SHA-256 of the key, or of the name
@@ -111,6 +112,11 @@ auth_check:
 	mov	rax,[r15+H_BUF]
 	mov	dword [rax+HB_AUTHL],0
 	mov	dword [rax+HB_JHLEN],0
+	cmp	dword [r12+AU_KIND],AK_MTLS
+	jne	@f
+	call	mtls_check
+	jmp	.out
+@@:
 	mov	rdi,[r12+AU_HDR]
 	mov	esi,[r12+AU_HLEN]
 	call	limit_find
@@ -331,7 +337,10 @@ auth_emit:
 	lea	r8,[g_auths+rax]
 	mov	rax,[r15+H_BUF]
 	cmp	dword [r8+AU_KIND],AK_JWT
+	je	.rendered
+	cmp	dword [r8+AU_KIND],AK_MTLS
 	jne	.one
+.rendered:
 	lea	rsi,[rax+HB_JHDR]		; rendered when it was verified
 	mov	ecx,[rax+HB_JHLEN]
 	rep	movsb
@@ -351,6 +360,86 @@ auth_emit:
 	mov	word [rdi],0x0A0D
 	add	rdi,2
 .out:
+	ret
+
+; r12 = the auth, r15 = record: CF when the connection has no client certificate.
+; The head's field carries the whole name; `limit key=auth.user`, with room for
+; AUTH_NAME_MAX, a hash of it when it does not fit: two names must not become one.
+; Keeps rbx, r12-r15.
+mtls_check:
+	push	r13
+	mov	r13,[r15+H_BUF]
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_H2S
+	jz	@f
+	mov	r13d,[r15+H_H2C]		; a stream: its connection's
+	shl	r13,HB_SHIFT
+	add	r13,[g_hbuf_base]
+@@:
+	lea	r13,[r13+HB_TS]
+	cmp	dword [r13+TS_PEERL],0
+	je	.none
+	mov	rdx,[r15+H_BUF]
+	lea	rdi,[rdx+HB_JHDR]
+	mov	rsi,[r12+AU_IDENT]
+	mov	ecx,[r12+AU_ILEN]
+	rep	movsb
+	mov	word [rdi],': '
+	add	rdi,2
+	lea	rsi,[r13+TS_PEER]
+	mov	ecx,[r13+TS_PEERL]
+	rep	movsb
+	mov	word [rdi],0x0A0D
+	add	rdi,2
+	mov	rax,rdi
+	lea	rcx,[rdx+HB_JHDR]
+	sub	rax,rcx
+	mov	[rdx+HB_JHLEN],eax
+	mov	ecx,[r13+TS_PEERL]
+	cmp	ecx,AUTH_NAME_MAX
+	ja	.long
+	mov	[rdx+HB_AUTHL],ecx
+	lea	rdi,[rdx+HB_AUTHN]
+	lea	rsi,[r13+TS_PEER]
+	rep	movsb
+	jmp	.good
+.long:
+	lea	rdi,[g_au_digest]
+	lea	rsi,[r13+TS_PEER]
+	mov	edx,ecx
+	call	sha256
+	mov	rdx,[r15+H_BUF]
+	mov	dword [rdx+HB_AUTHL],AUTH_NAME_MAX
+	lea	rdi,[rdx+HB_AUTHN]
+	lea	rsi,[g_au_digest]
+	mov	ecx,AUTH_NAME_MAX / 2
+.hex:
+	movzx	eax,byte [rsi]
+	inc	rsi
+	mov	r8d,eax
+	shr	eax,4
+	and	r8d,15
+	add	eax,'0'
+	cmp	eax,'9'
+	jbe	@f
+	add	eax,'a' - '0' - 10
+@@:
+	stosb
+	lea	eax,[r8+'0']
+	cmp	eax,'9'
+	jbe	@f
+	add	eax,'a' - '0' - 10
+@@:
+	stosb
+	dec	ecx
+	jnz	.hex
+.good:
+	clc
+	jmp	.out
+.none:
+	stc
+.out:
+	pop	r13
 	ret
 
 ; refused: 401, and how to prove it. The connection stays, as for a 429.
@@ -387,8 +476,13 @@ auth_refuse:
 	cmp	dword [r12+AU_KIND],AK_BASIC
 	je	.basic
 	cmp	dword [r12+AU_KIND],AK_JWT
-	jne	.key
+	jne	@f
 	memit_x 'Bearer'
+	jmp	.challenged
+@@:
+	cmp	dword [r12+AU_KIND],AK_MTLS
+	jne	.key
+	memit_x 'Certificate'
 	jmp	.challenged
 .key:
 	memit_x 'ApiKey'

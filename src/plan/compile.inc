@@ -31,6 +31,7 @@ LS_TCOUNT	:= 108		; d
 LS_T_BODY	:= 112		; d: http: seconds between bytes of a request body
 LS_PT		:= 116		; d: tls passthrough: names group | (default pool + 1) << 16, 0 = none
 LS_TLS		:= 120		; d: its tls entry + 1 (certificate, key), 0 = none
+LS_CCA		:= 124		; d: `client_ca`: its place in g_cca (LSF_CCA)
 LS_PA4		:= 128		; http3: `preferred_address`'s IPv4 one (sockaddr_in), family 0 none
 LS_PA6		:= 144		; and IPv6 one (sockaddr_in6)
 LS_SIZE		:= 176
@@ -120,6 +121,8 @@ LSF_H2		:= 32		; http: HTTP/2 (`http2 on`): ALPN h2, prior knowledge without TLS
 LSF_H3		:= 64		; http: HTTP/3 (`http3 on`): QUIC on the same port, UDP
 LSF_H3RETRY	:= 128		; http: `http3 retry`: every new QUIC connection proves its address first
 LSF_H3V2	:= 256		; http: `http3 v2`: a v1 client that offers v2 is moved to it
+LSF_CCA		:= 1024		; http: `client_ca`: ask for a certificate
+LSF_CCA_REQ	:= 2048		; and refuse the connection with none
 LSF_0RTT	:= 512		; http: `early_data on`: QUIC 0-RTT for safe requests
 
 ; Pool
@@ -1208,6 +1211,9 @@ compile_auth:
 	mov	edx,AK_BASIC
 	cmp	byte [rcx],'b'
 	je	@f
+	mov	edx,AK_MTLS
+	cmp	byte [rcx],'m'
+	je	@f
 	mov	edx,AK_JWT
 @@:
 	mov	[r12+AU_KIND],edx
@@ -1241,6 +1247,8 @@ compile_auth:
 	call	compile_jwt
 	jmp	.done
 .not_jwt:
+	cmp	dword [r12+AU_KIND],AK_MTLS
+	je	.done
 	cmp	dword [r12+AU_KIND],AK_BASIC
 	je	.basic
 	mov	rdi,rbx
@@ -2534,6 +2542,8 @@ compile_listener:
 	jnz	@f
 	or	dword [g_cmp_flags],LSF_KTLS
 @@:
+	mov	rdi,r12				; `client_ca`
+	call	compile_client_ca
 	mov	rdi,r12				; `http2 on`
 	mov	ecx,DIR_HTTP2
 	call	find_child
@@ -2731,6 +2741,8 @@ compile_listener:
 	mov	[rcx+LS_PT],eax
 	mov	eax,[g_cmp_tfirst]
 	mov	[rcx+LS_TFIRST],eax
+	mov	eax,[g_cmp_cca]
+	mov	[rcx+LS_CCA],eax
 	mov	eax,[g_cmp_tcount]
 	mov	[rcx+LS_TCOUNT],eax
 	push	rcx

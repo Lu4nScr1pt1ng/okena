@@ -95,6 +95,8 @@ macro plan_regions action
 	action g_jwk, JK_SIZE * MAX_JWK
 	action g_plan_jwk, 4
 	action g_jsrc, JS_SIZE * MAX_JWKS
+	action g_cca, PK_SIZE * MAX_LISTENERS
+	action g_plan_cca, 4
 	action g_plan_jsrc, 4
 	action g_claims, CM_SIZE * MAX_CLAIMS
 	action g_plan_claims, 4
