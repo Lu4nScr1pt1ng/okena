@@ -123,6 +123,10 @@ jwt_key:
 	lea	rdx,[g_jt_h+rdx]
 	mov	r13,rsi
 	mov	r14,rdx
+	call	json_valid
+	jc	.none
+	mov	rsi,r13
+	mov	rdx,r14
 	; crit: not understood
 	lea	rdi,[.n_crit]
 	mov	ecx,4
@@ -323,6 +327,10 @@ jwt_claims:
 	push	r15
 	lea	r13,[g_jt_p]
 	lea	r14,[g_jt_p+rdx]
+	mov	rsi,r13
+	mov	rdx,r14
+	call	json_valid
+	jc	.bad
 	mov	r15d,[r12+AU_LEEWAY]
 	mov	rsi,r13
 	mov	rdx,r14
@@ -858,6 +866,11 @@ jwks_load:
 	push	r13
 	push	r14
 	mov	r14,rdx
+	mov	r13,rsi
+	call	json_valid
+	jc	plan_bad_jwt
+	mov	rsi,r13
+	mov	rdx,r14
 	lea	rdi,[.n_keys]
 	mov	ecx,4
 	call	json_get

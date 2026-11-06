@@ -497,7 +497,9 @@ ES256, RS256, PS256, EdDSA and HS256. A bearer token must have `exp`; `issuer`
 and `audience` are checked when given, and a route with no `issuer` takes
 whoever holds a key. The algorithm must fit the key: an `oct` key needs its
 `alg`, and 32 bytes at least; RSA 2048 bits at least. `alg: none` and a `crit`
-header are refused, as is a name given twice in the token's JSON. A failure is 401 with
+header are refused, as is JSON a strict parser would not take: its grammar is
+checked whole, UTF-8 included, and a name given twice or with an escape at the
+top of the document is refused. A failure is 401 with
 `WWW-Authenticate: Bearer`. A token is verified once and kept by each worker until
 it expires. The claims named are told to the backend, in fields whose client
 values are dropped, 256 bytes in all; a token that does not fit is refused, as is

@@ -4,6 +4,13 @@
 ; (two readers of one document must not see two values), and builds nothing.
 
 JSON_DEPTH	:= 32
+JSON_NAMES	:= 128				; of the outermost object: more is refused
+
+bss
+	g_js_n		dd ?
+	align 8
+	g_js_names	rq JSON_NAMES * 2	; where each starts, its length
+end bss
 
 ; rsi = cursor, rdx = end: rsi past white space. Keeps all else.
 json_ws:
@@ -300,3 +307,352 @@ json_string:
 	pop	rdx
 	stc
 	ret
+
+; rsi = a document, rdx = its end: CF unless it is one JSON value by the grammar
+; (RFC 8259), in valid UTF-8, no deeper than JSON_DEPTH. Run first, so that the
+; lookups above never read what another parser would refuse: two readers of one
+; token must not disagree. Keeps rdx, rdi.
+json_valid:
+	push	r8
+	xor	r8d,r8d
+	mov	dword [g_js_n],0
+	call	.value
+	jc	.out
+	call	json_ws
+	cmp	rsi,rdx				; (anything after it: CF)
+	jb	.trailing
+	clc
+	jmp	.out
+.trailing:
+	stc
+.out:
+	pop	r8
+	ret
+.value:
+	call	json_ws
+	cmp	rsi,rdx
+	jae	.bad
+	mov	al,[rsi]
+	cmp	al,'"'
+	je	json_valid_string
+	cmp	al,'{'
+	je	.object
+	cmp	al,'['
+	je	.array
+	cmp	al,'-'
+	je	json_valid_number
+	cmp	al,'0'
+	jb	.word
+	cmp	al,'9'
+	jbe	json_valid_number
+.word:
+	lea	rcx,[rsi+4]
+	cmp	rcx,rdx
+	ja	.five
+	mov	ecx,[rsi]
+	cmp	ecx,'true'
+	je	.four
+	cmp	ecx,'null'
+	je	.four
+.five:
+	lea	rcx,[rsi+5]
+	cmp	rcx,rdx
+	ja	.bad
+	cmp	dword [rsi],'fals'
+	jne	.bad
+	cmp	byte [rsi+4],'e'
+	jne	.bad
+	inc	rsi
+.four:
+	add	rsi,4
+	clc
+	ret
+.array:
+	inc	r8d
+	cmp	r8d,JSON_DEPTH
+	ja	.bad
+	inc	rsi
+	call	json_ws
+	cmp	rsi,rdx
+	jae	.bad
+	cmp	byte [rsi],']'
+	je	.closed
+.element:
+	call	.value
+	jc	.bad
+	call	json_ws
+	cmp	rsi,rdx
+	jae	.bad
+	cmp	byte [rsi],']'
+	je	.closed
+	cmp	byte [rsi],','
+	jne	.bad
+	inc	rsi
+	jmp	.element
+.closed:
+	inc	rsi
+	dec	r8d
+	clc
+	ret
+.object:
+	inc	r8d
+	cmp	r8d,JSON_DEPTH
+	ja	.bad
+	inc	rsi
+	call	json_ws
+	cmp	rsi,rdx
+	jae	.bad
+	cmp	byte [rsi],'}'
+	je	.closed
+.member:
+	call	json_ws
+	cmp	rsi,rdx
+	jae	.bad
+	cmp	byte [rsi],'"'
+	jne	.bad
+	lea	r11,[rsi+1]
+	call	json_valid_string
+	jc	.bad
+	cmp	r8d,1
+	jne	.named
+	call	.name_new
+	jc	.bad
+.named:
+	call	json_ws
+	cmp	rsi,rdx
+	jae	.bad
+	cmp	byte [rsi],':'
+	jne	.bad
+	inc	rsi
+	call	.value
+	jc	.bad
+	call	json_ws
+	cmp	rsi,rdx
+	jae	.bad
+	cmp	byte [rsi],'}'
+	je	.closed
+	cmp	byte [rsi],','
+	jne	.bad
+	inc	rsi
+	jmp	.member
+; the outermost object: r11 = a name, rsi past its closing quote. CF: it has an
+; escape, which would hide what it is, or came before.
+.name_new:
+	push	rdi
+	lea	rcx,[rsi-1]
+	sub	rcx,r11				; its length
+	mov	r9,rcx
+	mov	rdi,r11
+	mov	al,'\'
+	test	rcx,rcx
+	jz	@f
+	repne	scasb
+	je	.name_bad
+@@:
+	mov	ecx,[g_js_n]
+	cmp	ecx,JSON_NAMES
+	jae	.name_bad
+	lea	r10,[g_js_names]
+.earlier:
+	test	ecx,ecx
+	jz	.first
+	dec	ecx
+	cmp	[r10+8],r9
+	jne	.other
+	push	rcx
+	push	rsi
+	mov	rdi,[r10]
+	mov	rsi,r11
+	mov	rcx,r9
+	repe	cmpsb
+	pop	rsi
+	pop	rcx
+	je	.name_bad
+.other:
+	add	r10,16
+	jmp	.earlier
+.first:
+	mov	[r10],r11
+	mov	[r10+8],r9
+	inc	dword [g_js_n]
+	pop	rdi
+	clc
+	ret
+.name_bad:
+	pop	rdi
+	stc
+	ret
+.bad:
+	stc
+	ret
+
+; rsi at '"': past the closing one. CF: an escape not in the grammar, a control
+; byte, or bad UTF-8 (overlong forms and surrogates too). Keeps rdx, rdi, r8.
+json_valid_string:
+	inc	rsi
+.next:
+	cmp	rsi,rdx
+	jae	.bad
+	movzx	eax,byte [rsi]
+	inc	rsi
+	cmp	al,'"'
+	je	.ok
+	cmp	al,0x20
+	jb	.bad
+	cmp	al,'\'
+	je	.escape
+	cmp	al,0x80
+	jb	.next
+	; UTF-8: how many more, and what the next may be
+	mov	ecx,1
+	mov	r9d,0x80
+	mov	r10d,0xBF
+	cmp	al,0xC2
+	jb	.bad
+	cmp	al,0xDF
+	jbe	.more
+	inc	ecx
+	cmp	al,0xE0
+	jne	@f
+	mov	r9d,0xA0
+	jmp	.more
+@@:
+	cmp	al,0xED
+	jne	@f
+	mov	r10d,0x9F
+	jmp	.more
+@@:
+	cmp	al,0xEF
+	jbe	.more
+	inc	ecx
+	cmp	al,0xF0
+	jne	@f
+	mov	r9d,0x90
+	jmp	.more
+@@:
+	cmp	al,0xF4
+	ja	.bad
+	jne	.more
+	mov	r10d,0x8F
+.more:
+	cmp	rsi,rdx
+	jae	.bad
+	movzx	eax,byte [rsi]
+	inc	rsi
+	cmp	eax,r9d
+	jb	.bad
+	cmp	eax,r10d
+	ja	.bad
+	mov	r9d,0x80
+	mov	r10d,0xBF
+	dec	ecx
+	jnz	.more
+	jmp	.next
+.escape:
+	cmp	rsi,rdx
+	jae	.bad
+	movzx	eax,byte [rsi]
+	inc	rsi
+	cmp	al,'u'
+	je	.hex
+	mov	ecx,8
+	lea	r9,[.single]
+.one:
+	cmp	al,[r9]
+	je	.next
+	inc	r9
+	dec	ecx
+	jnz	.one
+	jmp	.bad
+.hex:
+	mov	ecx,4
+.digit:
+	cmp	rsi,rdx
+	jae	.bad
+	movzx	eax,byte [rsi]
+	inc	rsi
+	sub	eax,'0'
+	cmp	eax,9
+	jbe	.fine
+	or	eax,0x20
+	sub	eax,'a' - '0'
+	cmp	eax,5
+	ja	.bad
+.fine:
+	dec	ecx
+	jnz	.digit
+	jmp	.next
+.ok:
+	clc
+	ret
+.bad:
+	stc
+	ret
+.single	db '"\/bfnrt'
+
+; rsi at a number: past it. CF: not one, by the grammar.
+json_valid_number:
+	cmp	byte [rsi],'-'
+	jne	@f
+	inc	rsi
+@@:
+	cmp	rsi,rdx
+	jae	.bad
+	cmp	byte [rsi],'0'
+	jne	.int
+	inc	rsi
+	jmp	.frac
+.int:
+	call	.digits
+	jc	.bad
+.frac:
+	cmp	rsi,rdx
+	jae	.ok
+	cmp	byte [rsi],'.'
+	jne	.exp
+	inc	rsi
+	call	.digits
+	jc	.bad
+.exp:
+	cmp	rsi,rdx
+	jae	.ok
+	mov	al,[rsi]
+	or	al,0x20
+	cmp	al,'e'
+	jne	.ok
+	inc	rsi
+	cmp	rsi,rdx
+	jae	.bad
+	mov	al,[rsi]
+	cmp	al,'+'
+	je	.sign
+	cmp	al,'-'
+	jne	.after_sign
+.sign:
+	inc	rsi
+.after_sign:
+	call	.digits
+	jc	.bad
+.ok:
+	clc
+	ret
+.bad:
+	stc
+	ret
+; one digit at least
+.digits:
+	cmp	rsi,rdx
+	jae	.bad
+	movzx	eax,byte [rsi]
+	sub	eax,'0'
+	cmp	eax,9
+	ja	.bad
+.digit:
+	inc	rsi
+	cmp	rsi,rdx
+	jae	.ok
+	movzx	eax,byte [rsi]
+	sub	eax,'0'
+	cmp	eax,9
+	jbe	.digit
+	jmp	.ok
