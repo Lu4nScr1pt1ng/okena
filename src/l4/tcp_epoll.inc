@@ -74,7 +74,12 @@ ep_main:
 	mov	rax,[g_now_ms]
 	add	rax,1000
 	mov	[g_next_tick_ms],rax
+	cmp	dword [g_plan_files],0
+	jne	.with_files
 	seccomp_for filter_worker_epoll
+	jmp	.loop
+.with_files:
+	seccomp_for filter_worker_epoll_f
 .loop:
 	cmp	dword [g_draining],2
 	jne	@f

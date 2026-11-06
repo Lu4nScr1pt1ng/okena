@@ -143,6 +143,7 @@ keysdef k_hedge, 'after', T_ANY, 'max', T_COUNT
 keysdef k_cors, 'origins', T_ANY, 'methods', T_ANY, 'headers', T_ANY, 'expose', T_ANY, 'max_age', T_DURATION
 keysdef k_jwks, 'trust', T_ANY, 'refresh', T_DURATION, 'stale', T_DURATION
 keysdef k_cache, 'stale-while-revalidate', T_DURATION, 'vary', T_ANY, 'max', T_SIZE, 'shared', T_ANY
+keysdef k_files, 'index', T_ANY, 'fallback', T_ANY, 'precompressed', T_ANY, 'cache', T_ANY
 keysdef k_limit, 'burst', T_COUNT, 'key', T_ANY, 'instances', T_COUNT
 keysdef k_fault, 'abort', T_COUNT, 'percent', T_COUNT, 'delay', T_DURATION
 keysdef k_quic_sid, 'key', T_ANY, 'rotation', T_ANY
@@ -163,7 +164,7 @@ enumdef future_names, 'udp', 'xdp', \
 	'acme', 'discover', 'header', 'headers', \
 	'source', \
 	'concurrency', 'retry_budget', 'retry', 'outlier', \
-	'files', 'compress', 'canonical', 'idempotency', 'hold', \
+	'compress', 'canonical', 'idempotency', 'hold', \
 	'body', 'early_hints', 'signed_urls', \
 	'response', 'alpn', 'cert', 'warm'
 
@@ -208,6 +209,7 @@ dirdef DIR_ISSUER, 'issuer',    M_AUTH,    0,           F_UNIQUE, 1, 1, T_ANY, T
 dirdef DIR_AUDIENCE, 'audience', M_AUTH,   0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
 dirdef DIR_LEEWAY, 'leeway',    M_AUTH,    0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
 dirdef DIR_CLAIMS, 'claims',    M_AUTH,    0,           F_UNIQUE, 3, 64, T_ANY, T_ANY, 0
+dirdef DIR_FILES, 'files',      M_ROUTE,   0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, k_files
 dirdef DIR_MATCH, 'match',      M_ROUTE,   CTX_ROUTE,   F_BLOCK_REQ or F_FREE_KEYS, 0, 16, T_ANY, T_ANY, 0
 dirdef DIR_CACHE, 'cache',      M_ROUTE,   0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, k_cache
 dirdef DIR_PRIORITY, 'priority', M_ROUTE,   0,           F_UNIQUE, 1, 1, e_priority, T_NONE, 0

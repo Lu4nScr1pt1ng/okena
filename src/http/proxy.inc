@@ -741,6 +741,13 @@ http_request:
 	jz	@f
 	ret
 @@:
+	push	rcx
+	call	files_check
+	pop	rcx
+	test	eax,eax
+	jz	@f
+	ret
+@@:
 	mov	eax,[r15+H_ACT]			; split: another pool, perhaps
 	test	eax,eax
 	jz	.its_pool

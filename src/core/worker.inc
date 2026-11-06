@@ -73,6 +73,7 @@ worker_main:
 	test	eax,eax
 	js	.no_memory
 	call	cache_init
+	call	files_init
 	call	groups_refresh
 	call	hs_init
 	cmp	dword [g_plan_engine],2
@@ -109,7 +110,13 @@ worker_main:
 	mov	[g_spin_ticks],rax
 .confine:
 	; set up: from here on only what serving needs
+	cmp	dword [g_plan_files],0
+	jne	.with_files
 	seccomp_for filter_worker_uring
+	jmp	.confined
+.with_files:
+	seccomp_for filter_worker_uring_f
+.confined:
 
 	; With busy_poll set, keep polling the ring for that long after the
 	; last completion instead of sleeping: a sleep and a wakeup per

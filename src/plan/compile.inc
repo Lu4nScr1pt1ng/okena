@@ -62,6 +62,7 @@ RT_PREFIX	:= 12		; d: 1 for "/x/*" routes
 RT_METHODS	:= 16		; d: RM_* bits, 0 = any
 RT_POOL		:= 20		; d: -1 for a route that redirects
 RT_ACT		:= 24		; d: its action + 1 (redirect, header changes), 0 = none
+RA_FILES	:= 120		; d: its files entry + 1
 RT_MATCH	:= 28		; d: its first `match` block + 1, 0 = none
 RT_SIZE		:= 32
 
@@ -92,7 +93,7 @@ RA_HPCT		:= 104		; d: or this percentile of the pool's answers
 RA_PRIO		:= 108		; d: RP_*
 RA_AUTH		:= 112		; d: its auth entry + 1
 RA_CACHE	:= 116		; d: its cache entry + 1
-RA_SIZE		:= 120
+RA_SIZE		:= 128
 MAX_ACTS	:= MAX_ROUTES
 HD_KIND		:= 0		; d: HOP_SET, HOP_ADD, HOP_DROP
 HD_PREFIX	:= 4		; d: 1 when the name ends with * (drop)
@@ -748,6 +749,9 @@ compile_route_action:
 	lea	rcx,[dir_table + D_SIZE*DIR_CACHE]
 	cmp	rax,rcx
 	je	@f
+	lea	rcx,[dir_table + D_SIZE*DIR_FILES]
+	cmp	rax,rcx
+	je	@f
 	lea	rcx,[dir_table + D_SIZE*DIR_AUTH]
 	cmp	rax,rcx
 	je	@f
@@ -930,6 +934,19 @@ compile_route_action:
 	pop	rbx
 	pop	r12
 .no_cache:
+	mov	rdi,r12
+	mov	ecx,DIR_FILES
+	call	find_child
+	test	rax,rax
+	jz	.no_files
+	push	r12
+	push	rbx
+	mov	rbx,rax
+	mov	r12,r13
+	call	compile_files
+	pop	rbx
+	pop	r12
+.no_files:
 	mov	rdi,r12
 	mov	ecx,DIR_AUTH
 	call	find_child
@@ -3086,9 +3103,14 @@ compile_routes:
 	lea	rax,[dir_table + D_SIZE*DIR_ROUTE]
 	cmp	[rbx+N_DEF],rax
 	jne	.next
-	mov	r13d,-1				; a redirect has no pool
+	mov	r13d,-1				; a redirect has no pool, nor files
 	mov	rdi,rbx
 	mov	ecx,DIR_REDIRECT
+	call	find_child
+	test	rax,rax
+	jnz	@f
+	mov	rdi,rbx
+	mov	ecx,DIR_FILES
 	call	find_child
 	test	rax,rax
 	jnz	@f

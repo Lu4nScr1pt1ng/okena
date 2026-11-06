@@ -692,6 +692,30 @@ pool api {
 
 ## Sites, caching and the edge
 
+`files DIR` answers a route from a directory, by the request's whole path:
+`route /assets/* { files /srv/site }` serves `/srv/site/assets/...`.
+
+| Option | Meaning |
+|---|---|
+| `index=NAME` | what a directory answers with, `index.html` by default; a directory with no slash is redirected to one with it |
+| `fallback=/PATH` | what answers instead of a 404: `/index.html` for a single-page app |
+| `precompressed=br,zst,gz` | a `.br`, `.zst` or `.gz` next to the file, if the client takes it, in that order; the answer then varies on Accept-Encoding, with its own ETag, and has no ranges |
+| `cache=T` or `cache=immutable` | `Cache-Control: public, max-age=...` |
+
+GET and HEAD, with `ETag`, `Last-Modified`, `If-None-Match`, `If-Modified-Since`,
+`If-Range` and one byte range; several ranges in a request get the whole file. A name
+that begins with a dot is not served, but for `.well-known`. Only regular files are
+served.
+
+A link may lead anywhere inside the directory, and nowhere outside it. That is the
+kernel's doing (`openat2`, `RESOLVE_BENEATH`), and on top of it each worker confines
+itself with Landlock to reading those directories: it could not read a private key
+even with a bug in okena. Where the kernel has no Landlock okena says so at the
+start. Workers with no `files` route cannot open a file at all.
+
+With io_uring a slow disk does not hold up the worker's other connections, but opening
+a file is still done in place; with epoll, reading too.
+
 ```
 http :443 {
     tls { cert auto }

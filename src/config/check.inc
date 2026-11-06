@@ -1741,6 +1741,11 @@ check_route_set:
 	call	check_redirect_target
 	jmp	.actions
 .forwards:
+	mov	rdi,rbx				; `files` is where it goes, as `to` is
+	mov	ecx,DIR_FILES
+	call	find_child
+	test	rax,rax
+	jnz	.actions
 	mov	rdi,rbx
 	mov	ecx,DIR_SPLIT
 	call	find_child

@@ -167,6 +167,12 @@ rodata
 	sc_allow filter_supervisor, SYS_getppid
 	sc_allow filter_supervisor, SYS_sched_setaffinity
 	sc_allow filter_supervisor, SYS_signalfd4
+	sc_allow filter_supervisor, SYS_ll_create	; a worker confines itself (files.inc)
+	sc_allow filter_supervisor, SYS_ll_add
+	sc_allow filter_supervisor, SYS_ll_restrict
+	sc_allow filter_supervisor, SYS_openat2
+	sc_allow filter_supervisor, SYS_fstat
+	sc_allow filter_supervisor, SYS_lseek_
 	sc_allow filter_supervisor, SYS_io_uring_setup
 	sc_allow filter_supervisor, SYS_io_uring_register
 	sc_allow filter_supervisor, SYS_io_uring_enter
@@ -215,6 +221,47 @@ rodata
 	sc_allow filter_worker_epoll, SYS_sendmmsg
 	sc_allow filter_worker_epoll, SYS_recvmsg	; kTLS upstream: control records (tickets)
 	sc_end filter_worker_epoll
+
+	; workers with `files` routes: they open beneath their roots (files.inc)
+	sc_begin filter_worker_uring_f
+	sc_common filter_worker_uring_f
+	sc_allow filter_worker_uring_f, SYS_io_uring_enter
+	sc_allow filter_worker_uring_f, SYS_madvise
+	sc_allow filter_worker_uring_f, SYS_getsockname
+	sc_allow filter_worker_uring_f, SYS_clock_gettime
+	sc_allow filter_worker_uring_f, SYS_getrandom
+	sc_allow filter_worker_uring_f, SYS_recvmmsg
+	sc_allow filter_worker_uring_f, SYS_sendmmsg
+	sc_allow filter_worker_uring_f, SYS_openat2
+	sc_allow filter_worker_uring_f, SYS_fstat
+	sc_allow filter_worker_uring_f, SYS_lseek_
+	sc_allow filter_worker_uring_f, SYS_close
+	sc_end filter_worker_uring_f
+
+	sc_begin filter_worker_epoll_f
+	sc_common filter_worker_epoll_f
+	sc_allow filter_worker_epoll_f, SYS_epoll_wait
+	sc_allow filter_worker_epoll_f, SYS_epoll_ctl
+	sc_allow filter_worker_epoll_f, SYS_read
+	sc_allow filter_worker_epoll_f, SYS_accept4
+	sc_allow filter_worker_epoll_f, SYS_close
+	sc_check filter_worker_epoll_f, SYS_socket, socket
+	sc_allow filter_worker_epoll_f, SYS_connect
+	sc_allow filter_worker_epoll_f, SYS_setsockopt
+	sc_allow filter_worker_epoll_f, SYS_getsockopt
+	sc_allow filter_worker_epoll_f, SYS_shutdown
+	sc_allow filter_worker_epoll_f, SYS_clock_gettime
+	sc_allow filter_worker_epoll_f, SYS_madvise
+	sc_allow filter_worker_epoll_f, SYS_getsockname
+	sc_allow filter_worker_epoll_f, SYS_recvfrom
+	sc_allow filter_worker_epoll_f, SYS_getrandom
+	sc_allow filter_worker_epoll_f, SYS_recvmmsg
+	sc_allow filter_worker_epoll_f, SYS_sendmmsg
+	sc_allow filter_worker_epoll_f, SYS_recvmsg
+	sc_allow filter_worker_epoll_f, SYS_openat2
+	sc_allow filter_worker_epoll_f, SYS_fstat
+	sc_allow filter_worker_epoll_f, SYS_lseek_
+	sc_end filter_worker_epoll_f
 
 	; control process: DNS over UDP, resolv.conf and hosts read-only
 	sc_begin filter_control

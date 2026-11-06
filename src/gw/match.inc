@@ -258,6 +258,12 @@ compile_matches:
 	jz	@f
 	mov	r15d,-1
 @@:
+	mov	ecx,DIR_FILES
+	call	match_child
+	test	rax,rax
+	jz	@f
+	mov	r15d,-1
+@@:
 	pop	rdi
 	call	compile_route_action
 	mov	[r14+CV_ACT],eax
@@ -548,6 +554,9 @@ match_replaces:
 	cmp	rax,rcx
 	je	.is
 	lea	rcx,[dir_table + D_SIZE*DIR_SPLIT]
+	cmp	rax,rcx
+	je	.is
+	lea	rcx,[dir_table + D_SIZE*DIR_FILES]
 	cmp	rax,rcx
 	je	.is
 	xor	eax,eax

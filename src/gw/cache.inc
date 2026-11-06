@@ -1472,8 +1472,10 @@ cache_tee:
 cache_finish:
 	call	session_ptr
 	mov	ecx,[rax+S_FLAGS]
-	test	ecx,SF_CACHED or SF_CFILL
+	test	ecx,SF_CACHED or SF_CFILL or SF_FILE
 	jz	.none
+	test	ecx,SF_FILE
+	jnz	file_done
 	test	ecx,SF_CACHED
 	jz	.filled
 	and	dword [rax+S_FLAGS],not SF_CACHED
@@ -1554,6 +1556,8 @@ cache_finish:
 cache_unpin:
 	mov	rax,[r15+H_BUF]
 	mov	edi,[rax+HB_CE]
+	cmp	edi,NIL
+	je	.out				; (okena's own head, no entry)
 	mov	eax,edi
 	ce_ptr
 	dec	dword [rax+CE_PIN]
@@ -1567,7 +1571,7 @@ cache_unpin:
 ; a session is closing, ebx = it, r12 = it: nothing of the cache stays with it. Keeps
 ; all.
 cache_gone:
-	test	dword [r12+S_FLAGS],SF_CACHED or SF_CFILL
+	test	dword [r12+S_FLAGS],SF_CACHED or SF_CFILL or SF_FILE
 	jz	.none
 	push	rax
 	push	rcx
@@ -1580,6 +1584,11 @@ cache_gone:
 	push	r11
 	push	r15
 	h_rec
+	test	dword [r12+S_FLAGS],SF_FILE
+	jz	@f
+	call	file_done
+	jmp	.out
+@@:
 	test	dword [r12+S_FLAGS],SF_CACHED
 	jz	.filling
 	and	dword [r12+S_FLAGS],not SF_CACHED
