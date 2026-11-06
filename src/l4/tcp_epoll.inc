@@ -1167,6 +1167,11 @@ ep_close:
 	call	h3s_closing			; an HTTP/3 stream: no socket either
 	jmp	.client_closed
 @@:
+	test	dword [r12+S_FLAGS],SF_MIR
+	jz	@f
+	dec	dword [g_mir_n]			; a mirrored request: no client at all
+	jmp	.client_closed
+@@:
 	mov	edi,[r12+S_CLIENT]
 	mov	eax,SYS_close
 	syscall
@@ -1194,12 +1199,16 @@ ep_close:
 	jz	@f
 	call	src_release
 @@:
+	mov	ecx,[r12+S_FLAGS]
 	and	dword [r12+S_FLAGS],0
 	mov	dword [r12+S_STATE],ST_FREE
 	inc	dword [r12+S_GEN]
+	test	ecx,SF_MIR			; (a copy was not counted)
+	jnz	@f
 	mov	eax,[r12+S_LST]
 	dec	dword [g_ls_active+rax*4]
 	dec	dword [g_active]
+@@:
 	mov	eax,[g_sess_free]
 	mov	[r12+S_NEXT],eax
 	mov	[g_sess_free],ebx

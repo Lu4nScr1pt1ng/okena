@@ -94,6 +94,8 @@ SUITES = [
     ("cors epoll", ["tests/gateway/cors.py", "epoll"]),
     ("split io_uring", ["tests/gateway/split.py", "io_uring"]),
     ("split epoll", ["tests/gateway/split.py", "epoll"]),
+    ("mirror io_uring", ["tests/gateway/mirror.py", "io_uring"]),
+    ("mirror epoll", ["tests/gateway/mirror.py", "epoll"]),
 ]
 
 

@@ -2376,6 +2376,11 @@ session_close:
 	call	h3s_closing			; an HTTP/3 stream: no socket either
 	jmp	.noclient
 @@:
+	test	dword [r12+S_FLAGS],SF_MIR
+	jz	@f
+	dec	dword [g_mir_n]			; a mirrored request: no client at all
+	jmp	.noclient
+@@:
 	test	dword [r12+S_FLAGS],SF_H2S
 	jz	.client
 	call	h2s_closing			; a stream: no socket of its own
@@ -2419,7 +2424,7 @@ session_close:
 ; descriptors (nothing of the session is in flight any more).
 session_close_fds:
 	or	dword [r12+S_FLAGS],SF_FDS_CLOSING
-	test	dword [r12+S_FLAGS],SF_H2S or SF_H2U or SF_QC or SF_H3S
+	test	dword [r12+S_FLAGS],SF_H2S or SF_H2U or SF_QC or SF_H3S or SF_MIR
 	jnz	.client_closed			; no client socket
 	mov	edi,OP_S_CLOSE
 	mov	esi,ebx
@@ -2493,12 +2498,16 @@ session_maybe_free:
 	jz	@f
 	call	src_release
 @@:
+	mov	ecx,[r12+S_FLAGS]
 	and	dword [r12+S_FLAGS],not (SF_C_WAIT or SF_U_WAIT or SF_FDS_CLOSING)
 	mov	dword [r12+S_STATE],ST_FREE
 	inc	dword [r12+S_GEN]
+	test	ecx,SF_MIR			; (a copy was not counted)
+	jnz	@f
 	mov	eax,[r12+S_LST]
 	dec	dword [g_ls_active+rax*4]
 	dec	dword [g_active]
+@@:
 	mov	eax,[g_sess_free]
 	mov	[r12+S_NEXT],eax
 	mov	[g_sess_free],ebx

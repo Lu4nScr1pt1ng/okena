@@ -15,6 +15,8 @@ h_recv:
 	jnz	h2s_recv			; an HTTP/2 stream: its connection serves it
 	test	dword [rax+S_FLAGS],SF_H3S
 	jnz	h3s_recv			; an HTTP/3 stream
+	test	dword [rax+S_FLAGS],SF_MIR
+	jnz	mirror_recv			; a copy: what the request's body tees
 	mov	eax,ebx
 	shl	rax,H_SHIFT
 	add	rax,[g_http_base]
@@ -72,6 +74,8 @@ h_send:
 	call	session_ptr
 	test	dword [rax+S_FLAGS],SF_H3S
 	jnz	.h3
+	test	dword [rax+S_FLAGS],SF_MIR
+	jnz	.copy
 	test	dword [rax+S_FLAGS],SF_H2S
 	pop	rax
 	jnz	h2s_send			; an HTTP/2 stream: frames on its connection
@@ -81,6 +85,12 @@ h_send:
 .h3:
 	pop	rax
 	jmp	h3s_send			; an HTTP/3 stream: frames on its connection
+.copy:
+	pop	rax				; a copy's answer: as if sent
+	xor	eax,eax
+	mov	edx,2
+	xor	ecx,ecx
+	jmp	hep_queue
 ; the upstream side: a socket, or a stream on an HTTP/2 connection
 h_send_up:
 	call	session_ptr

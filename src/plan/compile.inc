@@ -83,7 +83,9 @@ RA_LFIRST	:= 72		; d: its rate limits, in g_limits
 RA_LCOUNT	:= 76		; d
 RA_CORS		:= 80		; d: its cors entry + 1
 RA_SPLIT	:= 84		; d: its split entry + 1
-RA_SIZE		:= 88
+RA_MPCT		:= 88		; d: mirror: this share, 0 = none
+RA_MPOOL	:= 92		; d: to this pool
+RA_SIZE		:= 96
 MAX_ACTS	:= MAX_ROUTES
 HD_KIND		:= 0		; d: HOP_SET, HOP_ADD, HOP_DROP
 HD_PREFIX	:= 4		; d: 1 when the name ends with * (drop)
@@ -695,6 +697,9 @@ compile_route_action:
 	lea	rcx,[dir_table + D_SIZE*DIR_SPLIT]
 	cmp	rax,rcx
 	je	@f
+	lea	rcx,[dir_table + D_SIZE*DIR_MIRROR]
+	cmp	rax,rcx
+	je	@f
 	mov	rbx,[rbx+N_NEXT]
 	jmp	@b
 @@:
@@ -754,6 +759,48 @@ compile_route_action:
 	call	compile_split
 	mov	[r13+RA_SPLIT],eax
 .no_split:
+	mov	rdi,r12
+	mov	ecx,DIR_MIRROR
+	call	find_child
+	test	rax,rax
+	jz	.no_mirror
+	mov	rbx,[rax+N_ARGS]
+	mov	ecx,[rax+N_ARGC]
+	mov	dword [r13+RA_MPCT],100
+	cmp	ecx,3
+	jb	.mirror_pool
+	mov	rsi,[rbx+2*A_SIZE+A_VAL]	; N%
+	mov	ecx,[rbx+2*A_SIZE+A_VLEN]
+	cmp	ecx,2
+	jb	plan_bad_mirror
+	dec	ecx
+	cmp	byte [rsi+rcx],'%'
+	jne	plan_bad_mirror
+	xor	eax,eax
+	xor	edx,edx
+.mirror_digit:
+	movzx	r8d,byte [rsi+rdx]
+	sub	r8d,'0'
+	cmp	r8d,9
+	ja	plan_bad_mirror
+	imul	eax,eax,10
+	add	eax,r8d
+	cmp	eax,100
+	ja	plan_bad_mirror
+	inc	edx
+	cmp	edx,ecx
+	jb	.mirror_digit
+	test	eax,eax
+	jz	plan_bad_mirror
+	mov	[r13+RA_MPCT],eax
+.mirror_pool:
+	mov	rdi,[rbx+A_SIZE+A_VAL]
+	mov	esi,[rbx+A_SIZE+A_VLEN]
+	call	plan_pool_index
+	cmp	eax,-1
+	je	plan_bad_mirror
+	mov	[r13+RA_MPOOL],eax
+.no_mirror:
 	mov	rdi,r12
 	mov	ecx,DIR_FAULT
 	call	find_child
@@ -1023,6 +1070,13 @@ timeout_secs:
 .absent:
 	stc
 	ret
+
+plan_bad_mirror:
+	call	log_begin
+	out_lit 'mirror: pool NAME, of a pool that exists, then N% from 1 to 100 if not all'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
 
 plan_bad_split:
 	call	log_begin

@@ -64,6 +64,15 @@ requests in its first flight (RFC 9001 4.6), which can be replayed, so
 only GET, HEAD and OPTIONS go on (with `Early-Data: 1` to the backend, RFC
 8470) and anything else is refused with REQUEST_REJECTED, for the client to
 send again after the handshake. A connection stays in the QUIC version its client chose;
+On a route, `mirror pool NAME N%` sends a copy of that share of its requests
+(all without `N%`) to another pool and throws away what it answers. The client
+never waits for it: a shadow slow, down or failing is not noticed. A body is
+copied as it is read; if the shadow falls about 64 KiB behind, that copy is
+dropped, the backend seeing it cut short. At most 256 copies run at once in a
+worker: past that, requests are not copied. Copies are not in the access log or
+the metrics. Rewrites and header changes of the route apply to them. Do not
+mirror requests a backend cannot take twice to anything that acts on them.
+
 On a route, `split api=95% canary=5% sticky=cookie:NAME` shares the traffic
 between pools, in place of `to`: 2 to 8 of them, adding up to 100%. Without
 `sticky=` each request is drawn. With `sticky=cookie:NAME` a new client is given

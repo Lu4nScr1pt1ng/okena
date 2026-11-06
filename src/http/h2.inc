@@ -148,7 +148,9 @@ SF_H2S		:= 8192				; S_FLAGS: a stream of one
 ; what a client may send before it has our SETTINGS) with its head
 HB_CORS		:= HB_TRAIL + CK_TRAIL_MAX	; d, then the Origin let in
 HB_SPLIT	:= HB_CORS + 4 + CORS_ORIGIN_MAX	; d: `split`: the number a client is given
-HB_H2Q		:= (HB_SPLIT + 4 + 63) and not 63
+HB_MIRS		:= HB_SPLIT + 4		; d: `mirror`: the copy this body is teed to
+HB_MIRG		:= HB_MIRS + 4		; d: (its generation)
+HB_H2Q		:= (HB_MIRG + 4 + 63) and not 63
 Q_LEN		:= 0
 Q_OFF		:= 4
 Q_DST		:= 8				; q: a receive parked here

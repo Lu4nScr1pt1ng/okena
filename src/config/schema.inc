@@ -126,6 +126,7 @@ enumdef e_pp_version, 'v1', 'v2'
 enumdef e_tls_mode, 'passthrough'
 enumdef e_onoff, 'on', 'off'
 enumdef e_cors_flags, 'credentials'
+enumdef e_mirror_what, 'pool'
 enumdef e_quic_cc, 'cubic', 'bbr'
 enumdef e_h3, 'on', 'off', 'retry', 'v2'
 enumdef e_proto, 'h1', 'h2'
@@ -150,7 +151,7 @@ enumdef ctx_names, 'the top level', '`okena`', '`tcp`', '`pool`', '`limits`', '`
 ; Directives of the language that this version does not implement yet.
 enumdef future_names, 'udp', 'xdp', 'policy', 'use', \
 	'addon', 'alerts', 'include', 'admin', 'log', 'reload', 'profile', \
-	'acme', 'discover', 'mirror', 'header', 'headers', 'cache', \
+	'acme', 'discover', 'header', 'headers', 'cache', \
 	'auth', 'match', 'source', \
 	'concurrency', 'retry_budget', 'retry', 'outlier', \
 	'files', 'compress', 'canonical', 'idempotency', 'hold', \
@@ -189,6 +190,7 @@ dirdef DIR_HTTP2, 'http2',       M_HTTP,    0,           F_UNIQUE, 1, 1, e_onoff
 dirdef DIR_HTTP3, 'http3',       M_HTTP,    0,           F_UNIQUE, 1, 1, e_h3,    T_NONE, 0
 dirdef DIR_PREFADDR, 'preferred_address', M_HTTP, 0,     F_UNIQUE, 1, 2, T_LISTEN, T_LISTEN, 0
 dirdef DIR_EARLY, 'early_data',  M_HTTP,    0,           F_UNIQUE, 1, 1, e_onoff, T_NONE, 0
+dirdef DIR_MIRROR, 'mirror',    M_ROUTE,   0,           F_UNIQUE, 2, 3, e_mirror_what, T_ANY, 0
 dirdef DIR_SPLIT, 'split',      M_ROUTE,   0,           F_UNIQUE or F_FREE_KEYS, 0, 0, T_NONE, T_NONE, 0
 dirdef DIR_CORS, 'cors',        M_ROUTE,   0,           F_UNIQUE or F_KEYS_BLOCK, 0, 1, e_cors_flags, T_NONE, k_cors
 dirdef DIR_RLIMIT, 'limit',      M_ROUTE,   0,           F_KEYS_BLOCK, 1, 1, T_ANY, T_NONE, k_limit

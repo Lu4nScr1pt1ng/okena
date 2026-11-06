@@ -131,6 +131,8 @@ HX_SELF		:= 524288	; okena answers this request itself (a redirect)
 HX_GRPC		:= 1048576	; a gRPC request: okena's own errors answer as gRPC
 HX_DUPLEX	:= 2097152	; HTTP/2 both ends: the body goes on beside the response
 HX_H2TUN	:= 4194304	; WebSocket over an HTTP/2 stream: bytes both ways
+HX_TEE		:= 268435456	; its body goes to a copy too: HB_MIRS
+HX_MIRROR	:= 134217728	; a copy (`mirror`): its pool in HB_SPLIT, no filters
 HX_SPLIT	:= 67108864	; `split`: this response gives the client its cookie
 HX_CORS		:= 33554432	; its Origin was let in: HB_CORS
 HX_FAULTED	:= 16777216	; fault: this request was picked, and has waited
@@ -574,6 +576,12 @@ http_request:
 	lea	rcx,[g_routes+rcx]
 	mov	edx,[rcx+RT_ACT]
 	mov	[r15+H_ACT],edx
+	test	dword [r15+H_FLAGS],HX_MIRROR
+	jz	.not_copy
+	mov	rax,[r15+H_BUF]
+	mov	r13d,[rax+HB_SPLIT]
+	jmp	.pool_chosen
+.not_copy:
 	test	edx,edx
 	jz	@f
 	dec	edx
@@ -648,6 +656,17 @@ http_request:
 	call	split_pick
 	mov	r13d,eax
 .its_pool:
+	mov	eax,[r15+H_ACT]			; mirror: a copy to another pool
+	test	eax,eax
+	jz	.pool_chosen
+	dec	eax
+	imul	rax,rax,RA_SIZE
+	cmp	dword [g_acts+rax+RA_MPCT],0
+	je	.pool_chosen
+	lea	rdi,[g_acts+rax]
+	call	mirror_spawn
+	h_rec
+.pool_chosen:
 	add	dword [g_retry_tokens+r13*4],RETRY_PER_REQ	; the pool's budget grows with its traffic
 	cmp	dword [g_retry_tokens+r13*4],RETRY_CAP
 	jbe	@f
@@ -1576,6 +1595,15 @@ http_recv_plain:
 	test	rax,rax
 	jle	.client_gone			; went away in the middle of its body
 	add	[r15+H_INLEN],eax
+	test	dword [r15+H_FLAGS],HX_TEE
+	jz	.body_kept
+	mov	ecx,eax
+	mov	esi,[r15+H_INLEN]
+	sub	esi,eax
+	add	rsi,[r15+H_BUF]
+	add	rsi,HB_IN
+	call	mirror_tee
+.body_kept:
 	mov	edi,ebx
 	call	idle_touch
 	jmp	http_req_pump
@@ -2926,6 +2954,13 @@ parse_xff_ip:
 ; session. Keeps everything but rcx, rdx.
 http_count:
 	push	rax
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_MIR	; (a copy answers nobody)
+	pop	rax
+	jz	.counted
+	ret
+.counted:
+	push	rax
 	mov	eax,edi
 	xor	edx,edx
 	mov	ecx,100
@@ -3754,10 +3789,13 @@ on_h2t_send:
 http_exchange_done:
 	h_rec
 	and	dword [r15+H_FLAGS],not (HX_DUPLEX or HX_H2TUN)
+	test	dword [r15+H_FLAGS],HX_MIRROR	; (a copy is nobody's request: not logged)
+	jnz	.logged
 	xor	esi,esi
 	test	dword [r15+H_FLAGS],HX_SELF
 	setnz	sil				; okena's own answer, or the backend's
 	call	alog_exchange
+.logged:
 	h_rec
 	and	dword [r15+H_FLAGS],not HX_LASTCHUNK
 	test	dword [r15+H_FLAGS],HX_UPKEEP
@@ -3768,6 +3806,8 @@ http_exchange_done:
 	call	h_upclose
 .next:
 	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_MIR
+	jnz	.close				; a copy: nothing comes after it
 	test	dword [rax+S_FLAGS],SF_H3S
 	jnz	h3s_finish			; an HTTP/3 stream: FIN, then it goes
 	test	dword [rax+S_FLAGS],SF_H2S
