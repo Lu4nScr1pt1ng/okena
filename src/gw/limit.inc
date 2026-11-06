@@ -34,6 +34,7 @@ LK_HEADER	:= 3
 LK_QUERY	:= 4
 LK_COOKIE	:= 5
 LK_AUTH		:= 6				; who `auth` proved
+LK_COUNTRY	:= 7				; (`match`: client.country)
 
 LB_BITS		:= 18				; 256k keys, 16 MiB of address space
 LB_N		:= 1 shl LB_BITS

@@ -4,12 +4,17 @@
 ; thousands, so each is a binary trie by family: a lookup is one step a bit, at most.
 
 MAX_ACLS	:= 256
+ACL_CMAX	:= 64
 ACL_V4		:= 0				; q: root
 ACL_V6		:= 8				; q
 ACL_DENY4	:= 16				; q
 ACL_DENY6	:= 24				; q
 ACL_ALLOWS	:= 32				; d: it has an allow
-ACL_SIZE		:= 40
+ACL_CN		:= 40				; d: countries allowed
+ACL_DN		:= 44				; d: denied
+ACL_C		:= 48				; w each
+ACL_D		:= ACL_C + 2 * ACL_CMAX
+ACL_SIZE	:= ACL_D + 2 * ACL_CMAX
 TRN_ZERO		:= 0				; q: child, 0 none
 TRN_ONE		:= 8				; q
 TRN_END		:= 16				; d: a prefix ends here
@@ -61,6 +66,7 @@ acl_check:
 	push	rcx
 	push	rdx
 	push	r12
+	push	r13
 	dec	eax
 	imul	r12,rax,ACL_SIZE
 	lea	r12,[g_acls+r12]
@@ -79,8 +85,48 @@ acl_check:
 	call	tn_has
 	pop	rcx
 	jc	.refused
+	; by country, when there is any to look at
+	xor	r13d,r13d
+	mov	eax,[r12+ACL_CN]
+	or	eax,[r12+ACL_DN]
+	jz	.ranges
+	push	rcx
+	push	rsi
+	push	r11
+	mov	edx,r11d
+	call	geo_country
+	pop	r11
+	pop	rsi
+	pop	rcx
+	mov	r13d,eax
+	test	eax,eax
+	jz	.ranges
+	lea	r8,[r12+ACL_D]
+	mov	r9d,[r12+ACL_DN]
+.deny:
+	test	r9d,r9d
+	jz	.ranges
+	cmp	ax,[r8]
+	je	.refused
+	add	r8,2
+	dec	r9d
+	jmp	.deny
+.ranges:
 	cmp	dword [r12+ACL_ALLOWS],0
 	je	.fine
+	test	r13d,r13d
+	jz	.by_range
+	lea	r8,[r12+ACL_C]
+	mov	r9d,[r12+ACL_CN]
+.allow:
+	test	r9d,r9d
+	jz	.by_range
+	cmp	r13w,[r8]
+	je	.fine
+	add	r8,2
+	dec	r9d
+	jmp	.allow
+.by_range:
 	mov	rax,[r12+ACL_V4]
 	cmp	r11d,6
 	cmove	rax,[r12+ACL_V6]
@@ -92,6 +138,7 @@ acl_check:
 .refused:
 	stc
 .out:
+	pop	r13
 	pop	r12
 	pop	rdx
 	pop	rcx
@@ -161,6 +208,17 @@ compile_acl:
 	call	acl_file
 	jmp	.done_arg
 .one:
+	cmp	ecx,10
+	jb	.range
+	mov	rax,[rsi]
+	mov	rdx,'country:'
+	cmp	rax,rdx
+	jne	.range
+	add	rsi,8
+	sub	ecx,8
+	call	acl_countries
+	jmp	.done_arg
+.range:
 	mov	rdi,rsi
 	mov	esi,ecx
 	call	acl_add
@@ -176,6 +234,36 @@ compile_acl:
 	pop	r15
 	pop	r14
 	pop	rbx
+	ret
+
+; rsi = BR,PT, ecx = its length, r14 = the acl, r15d = deny
+acl_countries:
+	cmp	qword [g_geo_base],0
+	je	plan_bad_acl
+.code:
+	cmp	ecx,2
+	jb	plan_bad_acl
+	movzx	eax,word [rsi]
+	lea	r8,[r14+ACL_C]
+	lea	r9,[r14+ACL_CN]
+	test	r15d,r15d
+	jz	@f
+	lea	r8,[r14+ACL_D]
+	lea	r9,[r14+ACL_DN]
+@@:
+	mov	edx,[r9]
+	cmp	edx,ACL_CMAX
+	jae	plan_bad_acl
+	mov	[r8+rdx*2],ax
+	inc	dword [r9]
+	sub	ecx,2
+	jz	.out
+	cmp	byte [rsi+2],','
+	jne	plan_bad_acl
+	add	rsi,3
+	dec	ecx
+	jmp	.code
+.out:
 	ret
 
 ; rsi = a path, ecx = its length, r14 = the acl, r15d = deny: each line a CIDR
@@ -295,7 +383,7 @@ acl_add:
 
 plan_bad_acl:
 	call	log_begin
-	out_lit 'allow and deny take addresses, ranges or file:PATH with one a line'
+	out_lit 'allow and deny take addresses, ranges, file:PATH with one a line, or country:BR,PT with a `geoip` file'
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process

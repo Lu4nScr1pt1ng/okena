@@ -455,6 +455,9 @@ compile_settings:
 	lea	rcx,[dir_table + D_SIZE*DIR_CACHE_MEM]
 	cmp	rax,rcx
 	je	.cache_memory
+	lea	rcx,[dir_table + D_SIZE*DIR_GEOIP]
+	cmp	rax,rcx
+	je	.geoip
 	lea	rcx,[dir_table + D_SIZE*DIR_DRAIN]
 	cmp	rax,rcx
 	je	.drain
@@ -580,6 +583,10 @@ compile_settings:
 	lea	rdx,[e_io_engine]
 	call	list_index
 	mov	[g_plan_engine],eax
+	jmp	.advance
+.geoip:
+	mov	rdi,rbx
+	call	compile_geoip
 	jmp	.advance
 .cache_memory:
 	mov	rax,[rbx+N_ARGS]

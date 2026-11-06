@@ -114,6 +114,26 @@ mc_holds:
 	jmp	.no
 @@:
 	call	http_client_resolve
+	cmp	dword [r12+MC_KIND],LK_COUNTRY
+	jne	.by_range
+	lea	rsi,[r15+H_CLIENT]
+	mov	edx,[r15+H_CKIND]
+	call	geo_country
+	test	eax,eax
+	jz	.no
+	; BR or BR,PT,AR
+	mov	rsi,[r12+MC_VAL]
+	mov	ecx,[r12+MC_VLEN]
+.code:
+	cmp	ecx,2
+	jb	.no
+	cmp	ax,[rsi]
+	je	.yes
+	add	rsi,3
+	sub	ecx,3
+	jg	.code
+	jmp	.no
+.by_range:
 	lea	r8,[r12+MC_TR]
 	mov	eax,[r15+H_CKIND]
 	cmp	[r8+TR_KIND],eax
@@ -372,6 +392,23 @@ match_conditions:
 	mov	dword [rbx+MC_KIND],LK_METHOD
 	jmp	.taken
 @@:
+	cmp	ecx,14
+	jne	.not_country
+	cmp	dword [rsi],'clie'
+	jne	.named
+	cmp	dword [rsi+4],'nt.c'
+	jne	.named
+	cmp	dword [rsi+8],'ount'
+	jne	.named
+	cmp	word [rsi+12],'ry'
+	jne	.named
+	cmp	dword [rbx+MC_MODE],MM_EQ
+	jne	plan_bad_match
+	cmp	qword [g_geo_base],0
+	je	plan_bad_match
+	mov	dword [rbx+MC_KIND],LK_COUNTRY
+	jmp	.taken
+.not_country:
 	cmp	ecx,9
 	jne	.named
 	cmp	dword [rsi],'clie'

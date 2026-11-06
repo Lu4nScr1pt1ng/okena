@@ -507,6 +507,13 @@ back is found at once. It is about connections: a 503 from a backend is its answ
 any `allow` what is not in one is refused. Either takes `file:PATH`, one address or
 range a line, `#` for comments: lists of thousands cost one step a bit.
 
+`okena { geoip /etc/okena/GeoLite2-Country.mmdb }` loads a MaxMind country database, up
+to 64 MiB, read at start and on a reload. Then `allow country:BR,PT` and `deny country:RU`
+go on a route, and `match client.country=BR,PT` in a block; a route that names a country
+with no file is refused at load. An address in no network has no country: it is not in
+any list, so `deny` lets it by and `allow` does not. It is the client as `trusted_proxies`
+has it. A broken file gives no country, and does not stop a worker.
+
 Request bodies reach the backend byte for byte, whatever the protocol: nothing in okena
 rewrites them, so signed webhooks need no setting.
 

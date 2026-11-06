@@ -101,6 +101,14 @@ macro plan_regions action
 	action g_plan_files, 4
 	action g_rmaps, RM_SIZE * MAX_RMAPS
 	action g_plan_rmaps, 4
+	action g_geo_base, 8
+	action g_geo_end, 8
+	action g_geo_data, 8
+	action g_geo_tree, 8
+	action g_geo_nodes, 4
+	action g_geo_rec, 4
+	action g_geo_ver, 4
+	action g_geo_v4, 4
 	action g_acls, ACL_SIZE * MAX_ACLS
 	action g_plan_acls, 4
 	action g_idems, IC_SIZE * MAX_IDEMS

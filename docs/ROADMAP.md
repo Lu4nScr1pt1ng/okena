@@ -409,7 +409,7 @@ the accepted connections' latency flat.
 ## Phase 6 — Gateway
 
 In progress. In: `fault abort= delay=`, `cors`, `split`, `mirror`, `hedge`, `policy` and `use`, `cache` in memory with coalescing and stale-while-revalidate, `files` with ranges, validators, precompressed variants and a fallback, `compress gzip`, `early_hints`, `headers preset=`, `okena route`, `redirects`, `hold`, `priority` with an overload manager, `auth api_key`,
-`basic`, `mtls` (`client_ca` over TCP), `forward` and `jwt` (a JWK set from a file or a URL), `match` blocks, `limit` (by rate, up to a day), `idempotency`, `allow` and `deny`.
+`basic`, `mtls` (`client_ca` over TCP), `forward` and `jwt` (a JWK set from a file or a URL), `match` blocks, `limit` (by rate, up to a day), `idempotency`, `allow` and `deny`, GeoIP by country.
 
 * JWT/JWKS (fetched by a process of its own, not the control process: a slow
   provider must not hold up DNS), verified-token cache, API
@@ -421,7 +421,7 @@ In progress. In: `fault abort= delay=`, `cors`, `split`, `mirror`, `hedge`, `pol
 * Static files and SPAs (fallback, ranges, ETag), precompressed variants,
   on-the-fly gzip/zstd for text, 103 Early Hints.
 * Fault injection per route (`fault delay=`, `fault abort=`).
-* OIDC login, idempotency keys, GeoIP, redirect maps, security header
+* OIDC login, idempotency keys, GeoIP (country), redirect maps, security header
   presets, deploy hold.
 * `okena route` dry-run.
 
