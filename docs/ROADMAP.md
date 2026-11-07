@@ -439,7 +439,15 @@ auth + limit stays within the latency budget in ARCHITECTURE.md. Met with `busy_
   EndpointSlices.
 * Shared ticket keys and drain API for fleets.
 * Alerts (webhook, Telegram, Slack) from the control process.
-* OTLP tracing; `okena top`.
+* OTLP tracing; access logs out over OTLP and syslog (RFC 5424, UDP, TCP and
+  TLS) besides files, through the logger process.
+* `okena top`; a read-only dashboard from the admin process (listeners, routes,
+  pools and servers with their health, drains and limits), behind the admin
+  socket or an address with its own auth.
+* Error pages of one's own (`errors 502 503 504 file=/srv/down.html`, by status
+  and by route, also for errors a backend sent) and a maintenance mode
+  (`okena maintenance on [route]`: a page and a Retry-After, health checks
+  and allowed addresses still let in).
 * Landlock, privilege drop, systemd socket activation, container image.
 
 Exit: a week-long soak with reloads and upgrades every minute under load
@@ -454,6 +462,9 @@ discovery, JWKS, control process, logger, disk) failed in turn.
   URL/prefix/tag with fleet fan-out, `Cache-Status`.
 * Shield tier, signed URLs, CDN provider ranges, authenticated origin
   pulls, health-driven BGP announcement (through BIRD).
+* A floating address for a pair of instances without BGP: VRRP v3 (RFC 9568),
+  with health deciding who holds it and gratuitous ARP / unsolicited NA on a
+  change, as keepalived beside HAProxy does it.
 
 Exit: hit path serves from page cache at line rate with zero copies;
 origin load stays flat during a purge-and-refill storm.
@@ -486,6 +497,13 @@ origin load stays flat during a purge-and-refill storm.
   minute; a CA down, rate-limited or answering wrongly never takes a served
   certificate away; `make chaos` with the CA failed in turn passes.
 * TLS 1.2, RSA certificates (signing), client-certificate auth at scale.
+* FastCGI to PHP-FPM and others (`php` on a route: index files, the script
+  path checked against the root, try-files), as nginx and Caddy do it.
+* Regular expressions in routes, `match` and `rewrite`, compiled to an
+  automaton that runs in linear time (no backtracking, so no ReDoS), with
+  captures for the rewrite.
+* gRPC-Web for browsers, and gRPC to JSON transcoding from the service's
+  descriptors.
 * Brotli on the fly.
 * Consul discovery, Kubernetes Gateway API.
 * Certificate compression, Encrypted Client Hello.
@@ -504,6 +522,8 @@ Exit: packets/s per core comparable to Katran.
 
 * Shared-memory addon protocol, supervision, deadlines, circuit breakers.
 * SDKs (C, Rust, Go, Python); a reference WAF addon on Coraza.
+* proxy-wasm plugins (the ABI Envoy, nginx and Traefik run), in a process of
+  their own like the other addons.
 * `ext_authz` / `ext_proc` adapter.
 
 Exit: an addon that answers immediately adds under 5 us at p99; a crashing
