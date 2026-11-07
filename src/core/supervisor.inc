@@ -544,7 +544,17 @@ listener_open:
 @@:
 	jmp	.bind
 .udp:
-	; a burst must not be lost to a default that assumes one reader at a time
+	; a burst must not be lost to a default that assumes one reader at a time;
+	; past net.core.rmem_max when okena may (CAP_NET_ADMIN), else up to it
+	mov	edi,r12d
+	mov	esi,SOL_SOCKET
+	mov	edx,SO_RCVBUFFORCE
+	lea	r10,[ud_rcvbuf]
+	mov	r8d,4
+	mov	eax,SYS_setsockopt
+	syscall
+	test	eax,eax
+	jns	@f
 	mov	edi,r12d
 	mov	esi,SOL_SOCKET
 	mov	edx,SO_RCVBUF
@@ -552,6 +562,7 @@ listener_open:
 	mov	r8d,4
 	mov	eax,SYS_setsockopt
 	syscall
+@@:
 	test	dword [rbx+LS_FLAGS],LSF_WILDCARD
 	jz	.bind
 	; bound to every address: answers must come from the one written to

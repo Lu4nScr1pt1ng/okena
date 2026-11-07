@@ -415,13 +415,20 @@ udp_flush:
 	test	edx,edx
 	jz	.none
 	mov	dword [g_ud_tn],0
+	push	rdx
 	mov	edi,[g_ud_tfd]
 	lea	rsi,[g_ud_tm]
 	mov	r10d,MSG_DONTWAIT
 	mov	eax,SYS_sendmmsg
 	syscall
+	pop	rdx
 	test	eax,eax
-	jns	.none
+	js	@f
+	sub	edx,eax				; those a full buffer did not take: lost, and counted
+	add	[g_st_ud_drops],rdx
+	jmp	.none
+@@:
+	add	[g_st_ud_drops],rdx
 	mov	rdi,[g_ud_tflow]
 	test	rdi,rdi
 	jz	.none				; to clients: nothing to learn
@@ -855,7 +862,16 @@ udp_socket:
 	test	eax,eax
 	js	.out
 	push	rax
+	; room for a burst while the backend's side is slow to take it: a full
+	; send buffer drops datagrams (it costs memory only when it fills)
 	mov	edi,eax
+	mov	esi,SOL_SOCKET
+	mov	edx,SO_SNDBUF
+	lea	r10,[ud_rcvbuf]
+	mov	r8d,4
+	mov	eax,SYS_setsockopt
+	syscall
+	mov	edi,[rsp]
 	imul	rcx,rbp,SV_SIZE
 	lea	rsi,[g_servers+rcx+SV_SA]
 	mov	edx,[g_servers+rcx+SV_SALEN]

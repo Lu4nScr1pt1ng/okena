@@ -185,6 +185,8 @@ tcp 127.0.0.1:{DNS} {{ to pool game }}
         s = client()
         for i in range(2000):
             s.sendto(b"<13>line %d" % i, ("127.0.0.1", LOG))
+            if i % 100 == 99:
+                time.sleep(0.005)               # (the test's own receiver, in Python, under load)
         for i in range(100):
             if len(l1.got) == 2000:
                 break

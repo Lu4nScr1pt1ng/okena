@@ -217,6 +217,7 @@ rodata
 	sc_allow filter_worker_uring_u, SYS_recvfrom
 	sc_check filter_worker_uring_u, SYS_socket, socket
 	sc_allow filter_worker_uring_u, SYS_connect
+	sc_allow filter_worker_uring_u, SYS_setsockopt
 	sc_allow filter_worker_uring_u, SYS_epoll_ctl
 	sc_allow filter_worker_uring_u, SYS_epoll_wait
 	sc_allow filter_worker_uring_u, SYS_openat2
