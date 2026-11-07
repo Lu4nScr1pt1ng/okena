@@ -710,6 +710,16 @@ wall_ns:
 
 ; rdi = output: the wall clock now, 2026-10-29T12:34:56.789Z.
 alog_fmt_time:
+	cmp	qword [g_tsc_per_us],0
+	jne	.tsc
+	; (a process that has not calibrated the TSC, as the supervisor and the
+	; control process: the clock itself)
+	push	rdi
+	call	alog_clock
+	pop	rdi
+	mov	rax,[g_alog_base_ns]
+	jmp	.ns
+.tsc:
 	cmp	qword [g_alog_base_ns],0
 	jne	@f
 	push	rdi
@@ -724,6 +734,7 @@ alog_fmt_time:
 	xor	edx,edx
 	div	qword [g_tsc_per_us]		; ns since the tick
 	add	rax,[g_alog_base_ns]
+.ns:
 	xor	edx,edx
 	mov	ecx,1000000000
 	div	rcx
