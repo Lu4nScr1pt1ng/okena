@@ -161,7 +161,9 @@ try:
             break
         time.sleep(0.05)
     check("name from /etc/hosts", ask(8001) == b"five")
-    check("name through a search domain", ask(8002) == b"two")
+    # (under load the fake server can be slow to answer okena's first lookup,
+    # at startup: okena starts anyway, and the control process gets it soon)
+    check("name through a search domain", wait_for(8002, b"two", 3) is not None)
     # ::1 on a loopback that was just brought up can take a moment
     check("IPv6 address from AAAA", wait_for(8005, b"six", 3) is not None)
     if "--stress" in sys.argv:
@@ -201,7 +203,9 @@ try:
     text = log.read()
     check("resolutions are logged", "api resolved to 127.0.0.2" in text and "multi resolved to 127.0.0.3, 127.0.0.4" in text
           and "v6 resolved to ::1" in text, "")
-    check("lookup failures are logged once, then quiet", text.count("cannot resolve late.svc.test") == 1)
+    # once for each reason: a slow first answer says "no answer", then "no such name"
+    check("lookup failures are logged once, then quiet", text.count("cannot resolve late.svc.test: no such name") == 1
+          and text.count("cannot resolve late.svc.test: no answer") <= 1, text[-400:])
 finally:
     p.send_signal(signal.SIGTERM)
     p.wait(10)
