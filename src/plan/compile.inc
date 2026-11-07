@@ -170,7 +170,11 @@ PL_HKEY		:= 676		; d: maglev, ring-hash: HK_*
 PL_HNLEN	:= 680		; d: the header's or cookie's name
 PL_HNAME	:= 688		; q
 PL_HTAB		:= 696		; q: a worker's table for it
-PL_SIZE		:= 704		; room for PL_TLS_ANCHOR + a PK blob (16 + 528), then PL_H2
+PL_SNAME	:= 704		; q: `sticky`: the cookie's name, 0 none
+PL_SNLEN	:= 712		; d
+PL_STTL		:= 716		; d: seconds, 0 for the session
+PL_SSAME	:= 720		; d: SS_*
+PL_SIZE		:= 768		; room for PL_TLS_ANCHOR + a PK blob (16 + 528), then PL_H2
 assert PL_TLS_ANCHOR + PK_SIZE <= PL_H2
 
 ; Server
@@ -2155,6 +2159,9 @@ compile_pool:
 	lea	rcx,[dir_table + D_SIZE*DIR_SLOW_START]
 	cmp	rax,rcx
 	je	.slow_start
+	lea	rcx,[dir_table + D_SIZE*DIR_STICKY]
+	cmp	rax,rcx
+	je	.sticky
 	lea	rcx,[dir_table + D_SIZE*DIR_CONNECT]
 	cmp	rax,rcx
 	je	.connect
@@ -2298,6 +2305,69 @@ compile_pool:
 	mov	rdi,r13
 	mov	rsi,rbx
 	call	compile_server
+	jmp	.advance
+.sticky:
+	mov	rdi,rbx
+	lea	rsi,[str_key_cookie]
+	call	node_option
+	test	rax,rax
+	jz	plan_bad_sticky
+	mov	rsi,[rax+A_VAL]
+	mov	ecx,[rax+A_VLEN]
+	test	ecx,ecx
+	jz	plan_bad_sticky
+	cmp	ecx,64
+	ja	plan_bad_sticky
+	mov	[r13+PL_SNAME],rsi
+	mov	[r13+PL_SNLEN],ecx
+@@:
+	movzx	eax,byte [rsi]			; a token (RFC 6265): no separators
+	inc	rsi
+	cmp	eax,'!'
+	jb	plan_bad_sticky
+	cmp	eax,'~'
+	ja	plan_bad_sticky
+	cmp	al,'='
+	je	plan_bad_sticky
+	cmp	al,';'
+	je	plan_bad_sticky
+	cmp	al,','
+	je	plan_bad_sticky
+	cmp	al,'"'
+	je	plan_bad_sticky
+	cmp	al,'\'
+	je	plan_bad_sticky
+	dec	ecx
+	jnz	@b
+	mov	dword [r13+PL_STTL],0
+	mov	rdi,rbx
+	lea	rsi,[str_key_ttl]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_duration
+	xor	edx,edx
+	mov	ecx,1000000
+	div	rcx
+	test	rax,rax
+	jz	plan_bad_sticky
+	mov	[r13+PL_STTL],eax
+@@:
+	mov	dword [r13+PL_SSAME],SS_LAX
+	mov	rdi,rbx
+	lea	rsi,[str_key_samesite]
+	call	node_option
+	test	rax,rax
+	jz	.advance
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	lea	rdx,[e_samesite]
+	call	list_index
+	test	eax,eax
+	js	plan_bad_sticky
+	mov	[r13+PL_SSAME],eax
 	jmp	.advance
 .slow_start:
 	mov	rax,[rbx+N_ARGS]
@@ -3122,6 +3192,17 @@ compile_udp:
 	mov	[g_cmp_resp],eax
 .none:
 	ret
+
+plan_bad_sticky:
+	call	log_begin
+	out_lit 'sticky takes cookie=NAME (a cookie name), and may take ttl= and samesite=lax|strict|none'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
+
+cstring str_key_cookie, 'cookie',0
+cstring str_key_ttl, 'ttl',0
+cstring str_key_samesite, 'samesite',0
 
 plan_bad_key:
 	call	log_begin

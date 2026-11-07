@@ -105,8 +105,11 @@ pool_hashes_source:
 	clc
 	ret
 
-; a tcp session's first connect: ebx = it, r12 = its record
+; a session that the balance is to place (its first connect, or a retry): ebx
+; = it, r12 = its record
 pick_key_l4:
+	and	dword [r12+S_FLAGS],not SF_STKOK	; the balance picks: a sticky cookie
+						; no longer names the server (a retry)
 	cmp	dword [g_pick_hashed],0
 	jne	.none				; http said which (trusted proxies apply)
 	cmp	dword [r12+S_TRIES],1

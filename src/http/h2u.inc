@@ -103,6 +103,9 @@ h2u_connect:
 	mov	r12,rax
 	h_rec
 	call	pick_key_http
+	call	sticky_pick
+	cmp	eax,NIL
+	jne	.picked
 	mov	edi,[r12+S_POOL]
 	mov	esi,NIL
 	h_rec
@@ -112,6 +115,7 @@ h2u_connect:
 	mov	esi,[r12+S_SERVER]		; a retry: another server if there is one
 @@:
 	call	server_pick
+.picked:
 	cmp	eax,NIL
 	je	.failed
 	mov	r13d,eax

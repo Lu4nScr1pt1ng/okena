@@ -175,6 +175,14 @@ h_connect:
 	h_rec
 	mov	dword [r15+H_UPKTLS],0
 	call	pick_key_http
+	call	sticky_pick			; a client kept on its server
+	cmp	eax,NIL
+	je	.balanced
+	test	dword [r15+H_FLAGS],HX_NOPOOL
+	jz	.picked
+	mov	[g_force_server],eax		; (an upgrade, say: its own connection)
+	jmp	.connect
+.balanced:
 	test	dword [r15+H_FLAGS],HX_NOPOOL
 	jnz	.connect
 	mov	edi,[r12+S_POOL]
@@ -185,6 +193,7 @@ h_connect:
 	mov	esi,[r12+S_SERVER]		; a retry: another server if there is one
 @@:
 	call	server_pick
+.picked:
 	cmp	eax,NIL
 	je	.connect
 	mov	r13d,eax

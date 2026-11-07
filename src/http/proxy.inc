@@ -2522,6 +2522,8 @@ http_write_response_head:
 @@:
 	test	dword [r15+H_FLAGS],HX_UPGRADE
 	jz	@f
+	mov	eax,[rsp+24]			; a WebSocket that only upgrades is kept too
+	call	sticky_emit_for
 	memit_x 'Connection: upgrade',13,10,13,10
 	jmp	.done
 @@:
@@ -2539,6 +2541,8 @@ http_write_response_head:
 	jnz	@f
 	call	cors_emit
 	call	split_emit
+	mov	eax,[rsp+24]			; the session
+	call	sticky_emit_for
 @@:
 	; `http3 on`: HTTP/3 on the same port (RFC 7838), but on HTTP/3 itself
 	mov	eax,[rsp+24]			; the session
