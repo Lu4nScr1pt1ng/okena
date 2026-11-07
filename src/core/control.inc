@@ -342,6 +342,8 @@ group_look:
 	imul	rax,rbx,GR_SIZE
 	cmp	dword [g_groups+rax+GR_KIND],GK_FILE
 	je	disc_file_poll
+	cmp	dword [g_groups+rax+GR_KIND],GK_SRV
+	je	disc_srv_poll
 	jmp	group_resolve
 
 ; Supervisor: start the control process (only when there are names).
@@ -424,8 +426,8 @@ groups_refresh:
 	add	r12,[g_dns_table]
 .read:
 	imul	rax,rbx,GR_SIZE
-	cmp	dword [g_groups+rax+GR_KIND],GK_FILE
-	jne	@f
+	cmp	dword [g_groups+rax+GR_KIND],GK_DNS
+	je	@f
 	call	disc_refresh
 	jmp	.next
 @@:
@@ -517,6 +519,9 @@ group_apply:
 	mov	dword [g_sv_fails+r14*4],0
 	mov	dword [g_sv_down+r14*4],0
 	mov	dword [rbx+SV_ACTIVE],1
+	inc	dword [g_sv_gen+r14*4]		; (its kept connections are another address's)
+	mov	edi,r14d
+	call	pool_flush
 .same:
 	add	rsp,112 + AD_SIZE
 	inc	r13d

@@ -3310,7 +3310,12 @@ compile_discover:
 	mov	dword [rbx+GR_KIND],GK_FILE
 	mov	[rbx+GR_DISC],edx
 	mov	rax,[r13+N_ARGS]
-	add	rax,A_SIZE			; the path
+	mov	rcx,[rax+A_VAL]
+	cmp	byte [rcx],'s'			; `srv`
+	jne	@f
+	mov	dword [rbx+GR_KIND],GK_SRV
+@@:
+	add	rax,A_SIZE			; the path, or the name
 	mov	rcx,[rax+A_VAL]
 	mov	[rbx+GR_NAME],rcx
 	mov	ecx,[rax+A_VLEN]
@@ -3318,9 +3323,26 @@ compile_discover:
 	jae	plan_bad_discover
 	mov	[rbx+GR_NLEN],ecx
 	mov	rcx,[rbx+GR_NAME]
+	mov	dword [rbx+GR_PORT],0
+	cmp	dword [rbx+GR_KIND],GK_SRV
+	jne	.file_path
+	; a name: no trailing dot, at most 253, a port of its own in each record
+	mov	edx,[rbx+GR_NLEN]
+	cmp	edx,253
+	ja	plan_bad_discover
+	cmp	byte [rcx+rdx-1],'.'
+	jne	@f
+	dec	dword [rbx+GR_NLEN]
+@@:
+	mov	rdi,r13
+	lea	rsi,[str_key_port]
+	call	node_option
+	test	rax,rax
+	jnz	plan_bad_discover
+	jmp	.max
+.file_path:
 	cmp	byte [rcx],'/'
 	jne	plan_bad_discover		; a path from the root: the control process has no cwd of note
-	mov	dword [rbx+GR_PORT],0
 	mov	rdi,r13
 	lea	rsi,[str_key_port]
 	call	node_option
@@ -3335,6 +3357,7 @@ compile_discover:
 	ja	plan_bad_discover
 	mov	[rbx+GR_PORT],eax
 @@:
+.max:
 	mov	dword [rbx+GR_SLOTS],DISC_DEFAULT
 	mov	rdi,r13
 	lea	rsi,[str_key_max]
@@ -3378,7 +3401,7 @@ compile_discover:
 
 plan_bad_discover:
 	call	log_begin
-	out_lit 'discover file takes a path from / and may take port= (1..65535) and max= (1..256)'
+	out_lit 'discover file takes a path from / and may take port= (1..65535) and max= (1..256); discover srv takes a full name and max='
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process

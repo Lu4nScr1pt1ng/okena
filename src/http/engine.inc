@@ -209,6 +209,7 @@ h_connect:
 	jmp	.fresh
 .reuse:
 	mov	[r12+S_SERVER],r13d
+	call	h_stamp_gen
 	or	dword [r12+S_FLAGS],SF_COUNTED or SF_UP_OPEN
 	mov	dword [r12+S_STATE],ST_OPEN
 	h_rec
@@ -239,6 +240,7 @@ h_connect:
 	jmp	http_connected
 .fresh:
 	mov	[g_force_server],r13d		; the server just picked, not another
+	call	h_stamp_gen
 .connect:
 	h_rec
 	and	dword [r15+H_FLAGS],not HX_REUSED
@@ -266,6 +268,12 @@ h_park:
 	mov	esi,[r12+S_UPFD]
 @@:
 	mov	edi,[r12+S_SERVER]
+	mov	eax,ebx
+	shl	rax,HB_SHIFT
+	add	rax,[g_hbuf_base]
+	mov	eax,[rax+HB_SVGEN]
+	cmp	eax,[g_sv_gen+rdi*4]
+	jne	.full				; its slot has another address now: not kept
 	call	pool_put
 	jc	.full
 	and	dword [r12+S_FLAGS],not SF_UP_OPEN
@@ -276,6 +284,21 @@ h_park:
 .full:
 	pop	r12
 	jmp	h_upclose
+
+; ebx = session, r13d = the server its upstream is for: the slot's
+; generation, so that a connection made for an address its slot no longer has
+; is never kept for reuse. Keeps all.
+h_stamp_gen:
+	push	rcx
+	push	rdx
+	mov	ecx,[g_sv_gen+r13*4]
+	mov	edx,ebx
+	shl	rdx,HB_SHIFT
+	add	rdx,[g_hbuf_base]
+	mov	[rdx+HB_SVGEN],ecx
+	pop	rdx
+	pop	rcx
+	ret
 
 ; ebx = session: close its upstream connection (nothing in flight on it).
 ; Keeps rbx.

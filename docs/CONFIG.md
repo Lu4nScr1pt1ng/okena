@@ -933,7 +933,7 @@ alerts {
 pool users {
     server users:8080                        # a name: resolved, re-resolved by TTL
     discover file /etc/okena/users.list      # one address per line, watched
-    discover srv _users._tcp.service.consul  # planned
+    discover srv _users._tcp.service.consul
     discover docker label=okena.pool=users port=8080   # planned
 }
 ```
@@ -953,6 +953,16 @@ turns up empty after having servers is believed once it has stayed empty for
 three seconds, as an editor may truncate before it writes; writing a new file and
 renaming it over the old one never shows half a file. The supervisor reads it
 before the workers start. `okena backend drain POOL PATH` drains all of them.
+
+`discover srv NAME [max=64]` takes them from DNS SRV records (RFC 2782), as
+Consul and Kubernetes headless services give them: each record's target is
+resolved (A and AAAA, /etc/hosts first) and each address served on the record's
+port, with its weight (0 is the least, not none). The lowest priority are the
+servers; those of higher ones are backups, used only when none of those is up.
+NAME is a full name, not completed with search domains. It is looked up again
+when the shortest TTL runs out (1 to 60 s), with EDNS0 so that answers past 512
+bytes come whole. A lookup that fails, or gives nothing that resolves, keeps the
+servers known so far and is said once: DNS going away never empties a pool.
 
 The admin API changes the running state without editing files, given
 `admin unix:PATH` in the `okena` block:

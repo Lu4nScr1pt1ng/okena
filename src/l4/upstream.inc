@@ -23,6 +23,7 @@ bss
 	g_us_top	dd ?
 	g_us_hwm	dd ?
 	g_pool_n	rd MAX_SERVERS		; idle connections per server
+	g_sv_gen	rd MAX_SERVERS		; a slot's address changes: what it was made for is old
 	g_pool_h	rd MAX_SERVERS * POOL_MAX	; their slots or descriptors
 	g_pool_t	rd MAX_SERVERS * POOL_MAX	; tick each was parked at
 	g_us_wgen	rd UPSLOT_MAX		; io_uring: watch generation per slot

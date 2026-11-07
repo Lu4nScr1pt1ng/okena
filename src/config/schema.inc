@@ -157,7 +157,7 @@ keysdef k_quic_sid, 'key', T_ANY, 'rotation', T_ANY
 keysdef k_server, 'weight', T_WEIGHT, 'max', T_COUNT
 keysdef k_queue, 'timeout', T_DURATION
 keysdef k_discover, 'port', T_COUNT, 'max', T_COUNT
-enumdef e_discover, 'file'
+enumdef e_discover, 'file', 'srv'
 keysdef k_balance, 'key', T_ANY, 'bound', T_ANY
 keysdef k_sticky, 'cookie', T_ANY, 'ttl', T_DURATION, 'samesite', T_ANY
 keysdef k_cert, 'key', T_ANY

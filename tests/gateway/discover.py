@@ -35,6 +35,8 @@ class H(http.server.BaseHTTPRequestHandler):
         self.server.accepted += 1               # a new connection from okena
 
     def do_GET(self):
+        if "s=" in self.path:
+            time.sleep(float(self.path.split("s=")[1]))
         b = self.server.name.encode()
         self.send_response(200)
         self.send_header("Content-Length", str(len(b)))
@@ -57,10 +59,10 @@ def backend(name):
     return s
 
 
-def get(port=LST):
+def get(port=LST, path="/"):
     try:
-        c = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
-        c.request("GET", "/")
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=4)
+        c.request("GET", path)
         r = c.getresponse()
         b = r.read().decode()
         c.close()
@@ -170,6 +172,23 @@ http 127.0.0.1:{CAP} {{ route /* {{ to pool q }} }}
             pass
         t = until(lambda: get()[0] != 200, 7)
         check("empty for good: no servers, after 3 s", t is not None and t > 2.5, t)
+
+        # a request in flight on a server that goes: its connection is not kept
+        # for the address that takes its slot
+        write(lst, f"127.0.0.1:{port['a']}\n")
+        until(lambda: set(spread(10)) == {"a"})
+        slow = []
+        ts = [threading.Thread(target=lambda: slow.append(get(LST, "/?s=2.5"))) for i in range(4)]
+        for x in ts:
+            x.start()
+        time.sleep(0.3)
+        write(lst, f"127.0.0.1:{port['d']}\n")
+        time.sleep(1.6)
+        for x in ts:
+            x.join()
+        after = spread(30)
+        check("an address replaced while its requests run: none of its connections serves the new one",
+              after == {"d": 30} and [r[1] for r in slow] == ["a"] * 4, (after, slow))
 
         # the source's port for lines without one
         conf.write_text(conf.read_text().replace(f"discover file {lst} }}", f"discover file {lst} port={port['b']} }}"))

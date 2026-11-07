@@ -40,7 +40,17 @@ bss
 	g_rs_result:	rb RR_SIZE
 	g_rs_file:	rb 65536 + 64
 	g_rs_id		dw ?
+	align 4
+	g_srv_n		dd ?				; SRV records of the last SRV answer
+	g_srv:		rb SRV_SIZE * SRV_MAX
 end bss
+
+SRV_MAX		:= 64
+SRV_PRIO	:= 0		; d
+SRV_WEIGHT	:= 4		; d
+SRV_PORT	:= 8		; d
+SRV_NAME	:= 12		; the target, NUL-terminated
+SRV_SIZE	:= 12 + 256
 
 cstring str_resolv_conf, '/etc/resolv.conf',0
 cstring str_etc_hosts, '/etc/hosts',0
@@ -521,6 +531,16 @@ rs_query:
 	mov	[rdi],ax			; qtype
 	mov	word [rdi+2],0x0100		; qclass IN
 	add	rdi,4
+	cmp	r12d,33
+	jne	@f
+	; SRV: an OPT record (RFC 6891) for answers up to 1232 bytes
+	mov	word [g_rs_query+10],0x0100	; arcount 1
+	mov	byte [rdi],0			; root
+	mov	dword [rdi+1],0xD0042900	; type 41, class (payload) 1232
+	mov	dword [rdi+5],0			; extended rcode, version, flags
+	mov	word [rdi+9],0			; no options
+	add	rdi,11
+@@:
 	lea	rax,[g_rs_query]
 	sub	rdi,rax
 	mov	r14d,edi			; query length
@@ -742,6 +762,8 @@ dns_parse:
 	jne	.skip_rr
 	cmp	ecx,r12d
 	jne	.skip_rr
+	cmp	ecx,33
+	je	.srv
 	mov	eax,[g_rs_result+RR_COUNT]
 	cmp	eax,DNS_MAX_ADDRS
 	jae	.skip_rr
@@ -775,6 +797,43 @@ dns_parse:
 	add	rsi,r9
 	dec	r15d
 	jmp	.answers
+; priority, weight, port, target: kept in g_srv
+.srv:
+	cmp	r9d,7
+	jb	.skip_rr
+	mov	eax,[g_srv_n]
+	cmp	eax,SRV_MAX
+	jae	.skip_rr
+	imul	rdi,rax,SRV_SIZE
+	lea	rdi,[g_srv+rdi]
+	movzx	eax,word [rsi]
+	xchg	al,ah
+	mov	[rdi+SRV_PRIO],eax
+	movzx	eax,word [rsi+2]
+	xchg	al,ah
+	mov	[rdi+SRV_WEIGHT],eax
+	movzx	eax,word [rsi+4]
+	xchg	al,ah
+	test	eax,eax
+	jz	.skip_rr			; port 0: no service there
+	mov	[rdi+SRV_PORT],eax
+	push	rsi
+	push	r8
+	push	r9
+	add	rsi,6
+	add	rdi,SRV_NAME
+	call	dns_read_name
+	pop	r9
+	pop	r8
+	pop	rsi
+	jc	.skip_rr
+	mov	eax,[g_srv_n]			; a "." target means no service
+	imul	rax,rax,SRV_SIZE
+	cmp	byte [g_srv+rax+SRV_NAME],0
+	je	.skip_rr
+	inc	dword [g_srv_n]
+	inc	dword [g_rs_result+RR_COUNT]
+	jmp	.stored
 .done:
 	cmp	dword [g_rs_result+RR_COUNT],0
 	jne	.ok
@@ -794,6 +853,69 @@ dns_parse:
 	pop	r13
 	pop	r12
 	pop	rbx
+	ret
+
+; rsi = a name in the message at rbx (r13 its end), compressed or not; rdi
+; = where it goes as text, NUL-terminated, without the last dot. CF when it is
+; not one: past the end, a loop of pointers, longer than 253.
+dns_read_name:
+	mov	r8,rdi
+	lea	r9,[rdi+253]
+	mov	r10d,64				; pointers followed, at most
+.label:
+	cmp	rsi,r13
+	jae	.bad
+	movzx	eax,byte [rsi]
+	test	eax,eax
+	jz	.end
+	mov	ecx,eax
+	and	ecx,0xC0
+	cmp	ecx,0xC0
+	je	.pointer
+	test	ecx,ecx
+	jnz	.bad
+	inc	rsi
+	lea	rdx,[rsi+rax]
+	cmp	rdx,r13
+	ja	.bad
+	cmp	rdi,r8
+	je	@f
+	mov	byte [rdi],'.'
+	inc	rdi
+@@:
+	lea	rdx,[rdi+rax]
+	cmp	rdx,r9
+	ja	.bad
+	mov	ecx,eax
+@@:
+	mov	dl,[rsi]
+	cmp	dl,'.'
+	je	.bad				; (a dot inside a label: not a host name)
+	cmp	dl,' '
+	jbe	.bad
+	mov	[rdi],dl
+	inc	rsi
+	inc	rdi
+	dec	ecx
+	jnz	@b
+	jmp	.label
+.pointer:
+	dec	r10d
+	jz	.bad
+	lea	rdx,[rsi+1]
+	cmp	rdx,r13
+	jae	.bad
+	movzx	eax,word [rsi]
+	xchg	al,ah
+	and	eax,0x3FFF
+	lea	rsi,[rbx+rax]
+	jmp	.label
+.end:
+	mov	byte [rdi],0
+	clc
+	ret
+.bad:
+	stc
 	ret
 
 ; rsi = name in a message (labels or a compression pointer), r13 = end.

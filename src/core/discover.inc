@@ -20,6 +20,7 @@
 
 GK_DNS		:= 0
 GK_FILE		:= 1
+GK_SRV		:= 2
 
 DISC_MAX	:= 256			; servers a source may have
 DISC_SOURCES	:= 32
@@ -29,6 +30,7 @@ DE_ADDR		:= 0			; 16 bytes
 DE_FAMILY	:= 16			; d: 4 or 6
 DE_PORT		:= 20			; d
 DE_WEIGHT	:= 24			; d
+DE_BACKUP	:= 28			; d: srv: a priority past the lowest
 DE_SIZE		:= 32
 DX_SEQ		:= 0			; q
 DX_COUNT	:= 8			; d
@@ -367,6 +369,7 @@ disc_parse:
 	mov	eax,[g_disc_ad+AD_PORT]
 	mov	[rdi+DE_PORT],eax
 	mov	[rdi+DE_WEIGHT],r15d
+	mov	dword [rdi+DE_BACKUP],0
 .skip_line:
 	cmp	rbx,r13
 	jae	.done
@@ -517,7 +520,13 @@ disc_publish:
 	pop	rdi
 	inc	qword [rdi+DX_SEQ]		; even: done
 	call	log_begin
+	cmp	dword [r12+GR_KIND],GK_SRV
+	je	@f
 	out_lit 'discover file '
+	jmp	.named
+@@:
+	out_lit 'discover srv '
+.named:
 	mov	rsi,[r12+GR_NAME]
 	mov	edx,[r12+GR_NLEN]
 	call	out_str
@@ -616,11 +625,14 @@ disc_apply:
 	imul	rax,r15,DS_SIZE
 	mov	dword [g_disc_sa+rax+DS_USED],1
 	imul	rax,r15,DE_SIZE
-	mov	eax,[g_disc_copy+DX_E+rax+DE_WEIGHT]
-	mov	[rbx+SV_WEIGHT],eax
+	mov	ecx,[g_disc_copy+DX_E+rax+DE_WEIGHT]
+	mov	[rbx+SV_WEIGHT],ecx
+	mov	ecx,[g_disc_copy+DX_E+rax+DE_BACKUP]
+	mov	[rbx+SV_BACKUP],ecx
 	jmp	.keep_next
 .free:
 	mov	dword [rbx+SV_ACTIVE],0
+	inc	dword [g_sv_gen+r14*4]
 	mov	edi,r14d
 	call	pool_flush
 .keep_next:
@@ -657,10 +669,13 @@ disc_apply:
 	mov	ecx,[g_disc_sa+rax+DS_FAMILY]
 	mov	[rbx+SV_FAMILY],ecx
 	imul	rax,r15,DE_SIZE
-	mov	eax,[g_disc_copy+DX_E+rax+DE_WEIGHT]
-	mov	[rbx+SV_WEIGHT],eax
+	mov	ecx,[g_disc_copy+DX_E+rax+DE_WEIGHT]
+	mov	[rbx+SV_WEIGHT],ecx
+	mov	ecx,[g_disc_copy+DX_E+rax+DE_BACKUP]
+	mov	[rbx+SV_BACKUP],ecx
 	mov	dword [g_sv_fails+r14*4],0
 	mov	dword [g_sv_down+r14*4],0
+	inc	dword [g_sv_gen+r14*4]
 	mov	edi,r14d
 	call	pool_flush			; (another address's, from before)
 	mov	dword [rbx+SV_ACTIVE],1
@@ -722,6 +737,182 @@ pool_flush:
 	call	pool_close_handle
 	jmp	.next
 .done:
+	pop	r12
+	pop	rbx
+	ret
+
+; ------------------------------------------------------------ srv
+
+; ebx = group of `discover srv NAME`: its records, then their targets'
+; addresses. eax = seconds to the next look (the shortest TTL, as for names).
+; A lookup that fails, or gives nothing, keeps the servers known so far, as
+; DNS going away must never empty a pool.
+disc_srv_poll:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	imul	r12,rbx,GR_SIZE
+	lea	r12,[g_groups+r12]
+	mov	r13d,[r12+GR_DISC]
+	call	rs_load
+	; the name, as given (a full name: no search domains)
+	mov	ecx,[r12+GR_NLEN]
+	mov	rsi,[r12+GR_NAME]
+	lea	rdi,[g_rs_name]
+	rep	movsb
+	mov	byte [rdi],0
+	lea	rdi,[g_rs_result]
+	xor	eax,eax
+	mov	ecx,RR_SIZE
+	rep	stosb
+	mov	dword [g_rs_result+RR_TTL],DNS_TTL_MAX
+	mov	dword [g_srv_n],0
+	mov	edi,33
+	mov	esi,[r12+GR_NLEN]
+	call	rs_query
+	cmp	eax,RS_OK
+	jne	.failed
+	mov	r15d,[g_rs_result+RR_TTL]	; the records' TTL
+	; the lowest priority: the others are backups
+	mov	r14d,0x10000
+	xor	ecx,ecx
+@@:
+	cmp	ecx,[g_srv_n]
+	jae	@f
+	imul	rax,rcx,SRV_SIZE
+	mov	eax,[g_srv+rax+SRV_PRIO]
+	cmp	eax,r14d
+	cmovb	r14d,eax
+	inc	ecx
+	jmp	@b
+@@:
+	; every target's addresses (the lowest priority first: those fill the slots)
+	mov	dword [g_disc_new+DX_COUNT],0
+	xor	ebx,ebx				; pass: 0 the lowest priority, 1 the rest
+.pass:
+	xor	ecx,ecx
+.record:
+	cmp	ecx,[g_srv_n]
+	jae	.passed
+	imul	rax,rcx,SRV_SIZE
+	lea	rsi,[g_srv+rax]
+	mov	eax,[rsi+SRV_PRIO]
+	cmp	eax,r14d
+	sete	al
+	movzx	eax,al
+	xor	eax,1				; 1 for a backup
+	cmp	eax,ebx
+	jne	.next_record
+	push	rcx
+	push	rsi
+	lea	rdi,[rsi+SRV_NAME]
+	xor	esi,esi
+@@:
+	cmp	byte [rdi+rsi],0
+	je	@f
+	inc	esi
+	jmp	@b
+@@:
+	call	rs_lookup			; g_rs_result: its addresses
+	pop	rsi
+	pop	rcx
+	cmp	eax,RS_OK
+	jne	.next_record			; a target that does not resolve: left out
+	mov	eax,[g_rs_result+RR_TTL]
+	cmp	eax,r15d
+	cmovb	r15d,eax
+	push	rcx
+	xor	ecx,ecx
+.address:
+	cmp	ecx,[g_rs_result+RR_COUNT]
+	jae	.addressed
+	mov	eax,[g_disc_new+DX_COUNT]
+	cmp	eax,[r12+GR_SLOTS]
+	jae	.addressed
+	inc	dword [g_disc_new+DX_COUNT]
+	imul	rax,rax,DE_SIZE
+	lea	rdi,[g_disc_new+DX_E+rax]
+	mov	eax,ecx
+	shl	eax,4
+	mov	rdx,[g_rs_result+RR_ADDRS+rax]
+	mov	[rdi+DE_ADDR],rdx
+	mov	rdx,[g_rs_result+RR_ADDRS+rax+8]
+	mov	[rdi+DE_ADDR+8],rdx
+	movzx	eax,byte [g_rs_result+RR_FAMILY+rcx]
+	mov	[rdi+DE_FAMILY],eax
+	mov	eax,[rsi+SRV_PORT]
+	mov	[rdi+DE_PORT],eax
+	mov	eax,[rsi+SRV_WEIGHT]		; 0 is the least, not none
+	test	eax,eax
+	jnz	@f
+	inc	eax
+@@:
+	mov	[rdi+DE_WEIGHT],eax
+	mov	[rdi+DE_BACKUP],ebx
+	inc	ecx
+	jmp	.address
+.addressed:
+	pop	rcx
+.next_record:
+	inc	ecx
+	jmp	.record
+.passed:
+	inc	ebx
+	cmp	ebx,2
+	jb	.pass
+	cmp	dword [g_disc_new+DX_COUNT],0
+	je	.no_address
+	call	disc_publish
+	mov	dword [g_disc_said+r13*4],0
+	mov	eax,r15d
+	cmp	eax,DNS_TTL_MIN
+	jae	@f
+	mov	eax,DNS_TTL_MIN
+@@:
+	cmp	eax,DNS_TTL_MAX
+	jbe	.out
+	mov	eax,DNS_TTL_MAX
+	jmp	.out
+.no_address:
+	mov	eax,RS_NODATA + 10		; (its own reason: no target resolved)
+.failed:
+	cmp	[g_disc_said+r13*4],eax
+	je	.retry
+	mov	[g_disc_said+r13*4],eax
+	push	rax
+	call	log_begin
+	out_lit 'discover srv '
+	mov	rsi,[r12+GR_NAME]
+	mov	edx,[r12+GR_NLEN]
+	call	out_str
+	pop	rax
+	cmp	eax,RS_NXDOMAIN
+	jne	@f
+	out_lit ': no such name'
+	jmp	.said
+@@:
+	cmp	eax,RS_NODATA
+	jne	@f
+	out_lit ': no SRV records'
+	jmp	.said
+@@:
+	cmp	eax,RS_FAILED
+	jne	@f
+	out_lit ': no answer from the DNS servers'
+	jmp	.said
+@@:
+	out_lit ': none of its targets resolves'
+.said:
+	out_lit '; keeping the servers known so far'
+	call	log_end
+.retry:
+	mov	eax,DNS_RETRY_S
+.out:
+	pop	r15
+	pop	r14
+	pop	r13
 	pop	r12
 	pop	rbx
 	ret

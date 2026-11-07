@@ -34,6 +34,13 @@ for name in ("resolv.conf", "hosts"):
 
 # name -> list of addresses ("127.0.0.2" or "::1"); TTL 1 s
 records = {}
+# name -> list of (priority, weight, port, target): SRV, TTL 1 s
+srv = {}
+asked_edns = []
+
+
+def dns_name(n):
+    return b"".join(bytes([len(x)]) + x.encode() for x in n.split(".")) + b"\0"
 dns_up = threading.Event()
 dns_up.set()
 
@@ -56,6 +63,20 @@ def dns_server():
         addrs = records.get(name)
         answers = b""
         count = 0
+        if qtype == 33:
+            arcount, = struct.unpack("!H", q[10:12])
+            asked_edns.append(arcount == 1)
+            for prio, weight, port, target in srv.get(name, []):
+                rdata = struct.pack("!HHH", prio, weight, port) + dns_name(target)
+                answers += b"\xc0\x0c" + struct.pack("!HHIH", 33, 1, 1, len(rdata)) + rdata
+                count += 1
+            rcode = 0 if name in srv else 3
+            hdr = struct.pack("!HHHHHH", qid, 0x8180 | rcode, 1, count, 0, 0)
+            reply = hdr + question + answers
+            if len(reply) > 512 and arcount == 0:
+                reply = hdr[:2] + struct.pack("!H", 0x8380) + hdr[4:6] + b"\0\0" + hdr[8:] + question   # TC, no answers
+            s.sendto(reply, peer)
+            continue
         for a in addrs or []:
             fam = socket.AF_INET6 if ":" in a else socket.AF_INET
             t = 28 if fam == socket.AF_INET6 else 1
@@ -104,6 +125,8 @@ def echo_backend(addr, port, tag):
 for addr, tag in (("127.0.0.2", b"two"), ("127.0.0.3", b"three"), ("127.0.0.4", b"four"),
                   ("127.0.0.5", b"five"), ("::1", b"six")):
     echo_backend(addr, 7000, tag)
+for addr, port, tag in (("127.0.0.2", 7101, b"srv-a"), ("127.0.0.3", 7102, b"srv-b"), ("127.0.0.4", 7103, b"srv-c")):
+    echo_backend(addr, port, tag)
 
 
 def ask(port):
@@ -117,6 +140,16 @@ def ask(port):
         if "--stress" in sys.argv:
             return repr(e).encode()
         return b""
+
+
+def wait_all(port, want, seconds):
+    """Until ten answers in a row are want."""
+    t0 = time.time()
+    while time.time() - t0 < seconds:
+        if all(ask(port) == want for _ in range(10)):
+            return time.time() - t0
+        time.sleep(0.1)
+    return None
 
 
 def wait_for(port, want, seconds):
@@ -140,6 +173,13 @@ def check(name, ok, detail=""):
 records["api.svc.test"] = ["127.0.0.2"]
 records["multi.svc.test"] = ["127.0.0.3", "127.0.0.4"]
 records["v6.svc.test"] = ["::1"]
+records["a.srv.test"] = ["127.0.0.2"]
+records["b.srv.test"] = ["127.0.0.3"]
+records["c.srv.test"] = ["127.0.0.4"]
+for i in range(40):
+    records[f"n{i}.srv.test"] = [f"127.0.1.{i + 1}"]
+srv["_web._tcp.srv.test"] = [(10, 5, 7101, "a.srv.test"), (10, 5, 7102, "b.srv.test"), (20, 5, 7103, "c.srv.test")]
+srv["_many._tcp.srv.test"] = [(10, 1, 7000, f"n{i}.srv.test") for i in range(40)]
 conf = tmp / "okena.conf"
 conf.write_text("""
 okena {
@@ -151,6 +191,10 @@ tcp 127.0.0.1:8002 { to api:7000 }
 tcp 127.0.0.1:8003 { to late.svc.test:7000 }
 tcp 127.0.0.1:8004 { to multi:7000 }
 tcp 127.0.0.1:8005 { to v6:7000 }
+pool web { discover srv _web._tcp.srv.test }
+pool many { discover srv _many._tcp.srv.test. }
+tcp 127.0.0.1:8010 { to pool web }
+tcp 127.0.0.1:8011 { to pool many }
 """)
 log = open(tmp / "log", "w+")
 p = subprocess.Popen([str(BIN), "-c", str(conf)], stderr=log)
@@ -192,12 +236,29 @@ try:
     records["api.svc.test"] = ["127.0.0.3"]
     t = wait_for(8002, b"three", 6)
     check("a changed address is followed", t is not None, f"{t:.1f}s" if t else "never")
+    # SRV: the records' ports, the lowest priority, backups behind
+    seen = {ask(8010) for _ in range(30)}
+    check("discover srv: each record's target and port", seen == {b"srv-a", b"srv-b"}, str(seen))
+    check("  asked with EDNS0", asked_edns and all(asked_edns), str(asked_edns[:4]))
+    log.seek(0)
+    check("  40 records past 512 bytes, all taken", "discover srv _many._tcp.srv.test: 40 servers" in log.read())
+    srv["_web._tcp.srv.test"] = [(10, 5, 7102, "b.srv.test"), (20, 5, 7103, "c.srv.test")]
+    t = wait_all(8010, b"srv-b", 4)
+    check("  a record taken out: no more there", t is not None, f"{t}")
+    srv["_web._tcp.srv.test"] = [(20, 5, 7103, "c.srv.test")]
+    t = wait_for(8010, b"srv-c", 4)
+    check("  only a higher priority left: it serves", t is not None, f"{t}")
+    srv["_web._tcp.srv.test"] = [(10, 5, 7101, "a.srv.test"), (20, 5, 7103, "c.srv.test")]
+    t = wait_all(8010, b"srv-a", 4)
+    check("  the lower one back: the higher is a backup again", t is not None, f"{t}")
     # DNS goes away: the last known addresses keep serving
     dns_up.clear()
     time.sleep(3)
     answers = [ask(8002) for _ in range(20)]
     ok = answers.count(b"three")
     check("DNS down: last known addresses keep serving", ok == 20, f"{ok}/20 {sorted(set(answers))}")
+    ok = sum(ask(8010) == b"srv-a" for _ in range(20))
+    check("  and the SRV servers too", ok == 20, f"{ok}/20")
     dns_up.set()
     log.seek(0)
     text = log.read()
