@@ -67,6 +67,7 @@ ep_main:
 	call	ep_add_listeners
 	call	qs_worker_init			; http3: the UDP sockets
 	call	udp_worker_init
+	call	hash_tables_init
 	mov	edi,[g_sigfd]
 	mov	esi,EPOLLIN
 	mov	rdx,EK_SIGNAL shl 56
@@ -520,6 +521,7 @@ ep_connect:
 	cmp	eax,NIL
 	jne	@f
 	call	pick_avoid_tried
+	call	pick_key_l4
 	mov	edi,[r12+S_POOL]
 	mov	esi,[r12+S_SERVER]
 	call	server_pick

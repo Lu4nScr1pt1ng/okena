@@ -102,6 +102,7 @@ worker_main:
 	call	arm_signal
 	call	qs_worker_init			; http3: the UDP sockets
 	call	udp_worker_init
+	call	hash_tables_init
 	mov	rax,[g_plan_busy_poll]
 	test	rax,rax
 	jz	.confine
@@ -307,6 +308,7 @@ tick_work:
 	inc	dword [g_tick]
 	call	groups_refresh
 	call	health_follow
+	call	hash_tick
 	call	pool_expire
 	call	stats_publish
 	call	udp_tick

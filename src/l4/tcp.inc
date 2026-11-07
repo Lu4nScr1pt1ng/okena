@@ -1264,6 +1264,18 @@ server_pick:
 	lea	rbx,[g_pools+rbx]
 	mov	ebp,esi
 	xor	r13d,r13d			; pass
+	cmp	dword [rbx+PL_BALANCE],BAL_MAGLEV
+	jb	.not_hashed
+	xor	eax,eax
+	xchg	eax,[g_pick_hashed]
+	test	eax,eax
+	jz	.pass				; no key: as random, below
+	call	hash_pick
+	cmp	eax,NIL
+	jne	.out
+	jmp	.pass
+.not_hashed:
+	mov	dword [g_pick_hashed],0		; (a key is for one pick only)
 	; least-request: two random servers, the one with fewer requests in
 	; flight per weight. O(1) whatever the pool size; the passes below
 	; (backups, panic, avoidance with one server left) only when the
@@ -1325,7 +1337,7 @@ server_pick:
 	cmp	eax,BAL_PEAK_EWMA
 	je	.least
 	cmp	eax,BAL_RANDOM
-	je	.random
+	jae	.random				; (and the hashing ones, when their key gave nothing)
 	; smooth weighted round robin
 	xor	r15d,r15d			; total weight
 	mov	r12d,NIL			; best
@@ -1655,6 +1667,7 @@ session_connect:
 	cmp	eax,NIL
 	jne	@f
 	call	pick_avoid_tried
+	call	pick_key_l4
 	mov	edi,[r12+S_POOL]
 	mov	esi,[r12+S_SERVER]
 	call	server_pick

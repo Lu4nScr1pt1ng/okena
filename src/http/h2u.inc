@@ -101,6 +101,8 @@ h2u_connect:
 	push	r13
 	call	session_ptr
 	mov	r12,rax
+	h_rec
+	call	pick_key_http
 	mov	edi,[r12+S_POOL]
 	mov	esi,NIL
 	h_rec

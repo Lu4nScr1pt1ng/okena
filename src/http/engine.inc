@@ -174,6 +174,7 @@ h_connect:
 	mov	dword [r12+S_STATE],ST_CONNECTING
 	h_rec
 	mov	dword [r15+H_UPKTLS],0
+	call	pick_key_http
 	test	dword [r15+H_FLAGS],HX_NOPOOL
 	jnz	.connect
 	mov	edi,[r12+S_POOL]

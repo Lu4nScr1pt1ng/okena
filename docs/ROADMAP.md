@@ -49,7 +49,8 @@ okena profile (io_uring), and the startup line says which.
 ## Phase 1 — L4
 
 * `tcp` and `udp` listeners, pools, `round-robin`, `least-conn`,
-  `source-hash`, `maglev`, `random`.
+  `source-hash`, `maglev`, `random` (and `ring-hash`; the hashing ones done on
+  2026-11-07, with `udp`).
 * Data path: copy through provided buffers, splice through a pipe pool,
   and sockmap via an eBPF program assembled by fasm2 — measured against
   each other, default chosen per message size; half-close handled.

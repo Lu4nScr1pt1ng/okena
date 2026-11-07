@@ -166,6 +166,10 @@ PL_TLS_SNILEN	:= 120		; d
 PL_TLS_HASANCHOR := 124		; d: 1 when an anchor key was loaded
 PL_TLS_ANCHOR	:= 128		; the trust anchor's public key, a PK blob (EC or RSA)
 PL_H2		:= 672		; d: 1 when this pool's backends speak HTTP/2 (`protocol h2`)
+PL_HKEY		:= 676		; d: maglev, ring-hash: HK_*
+PL_HNLEN	:= 680		; d: the header's or cookie's name
+PL_HNAME	:= 688		; q
+PL_HTAB		:= 696		; q: a worker's table for it
 PL_SIZE		:= 704		; room for PL_TLS_ANCHOR + a PK blob (16 + 528), then PL_H2
 assert PL_TLS_ANCHOR + PK_SIZE <= PL_H2
 
@@ -186,6 +190,9 @@ BAL_LEAST_CONN	:= 1
 BAL_RANDOM	:= 2
 BAL_LEAST_REQ	:= 3		; the default: power of two choices
 BAL_PEAK_EWMA	:= 4		; power of two choices on latency x load
+BAL_MAGLEV	:= 5		; from here on a key picks (src/l4/hash.inc)
+BAL_RING	:= 6
+BAL_SOURCE	:= 7		; (written so; kept as maglev on the client's address)
 
 DEFAULT_CONNECTIONS	:= 65536		; per listener, whole instance
 DEFAULT_IDLE_SECS	:= 3600
@@ -220,6 +227,7 @@ bss
 	g_plan_hs_wait		dq ?		; microseconds a queued hello may wait
 	g_plan_health		dd ?		; pools with active checks
 	g_cmp_resp		dd ?
+	g_cmp_hpeer		dd ?
 	g_plan_metrics		dd ?		; 1 when an admin address is set
 	g_plan_metrics_salen	dd ?
 	g_plan_metrics_text	dq ?
@@ -2311,8 +2319,105 @@ compile_pool:
 	mov	esi,[rax+A_VLEN]
 	lea	rdx,[e_balance]
 	call	list_index
+	mov	dword [r13+PL_HKEY],HK_SOURCE
+	cmp	eax,BAL_SOURCE
+	jne	@f
+	mov	eax,BAL_MAGLEV
+@@:
 	mov	[r13+PL_BALANCE],eax
-	jmp	.advance
+	mov	rdi,rbx
+	lea	rsi,[str_key_key]
+	call	node_option
+	test	rax,rax
+	jz	.advance
+	cmp	dword [r13+PL_BALANCE],BAL_MAGLEV
+	jb	plan_bad_key
+	mov	rsi,[rax+A_VAL]
+	mov	ecx,[rax+A_VLEN]
+	mov	rdx,'source'
+	call	.balance_is
+	je	.advance
+	mov	dword [r13+PL_HKEY],HK_PATH
+	mov	rdx,'path'
+	call	.balance_is
+	je	.advance
+	mov	dword [r13+PL_HKEY],HK_HEADER
+	mov	rdx,'header:'
+	call	.balance_named
+	je	.advance
+	mov	dword [r13+PL_HKEY],HK_COOKIE
+	mov	rdx,'cookie:'
+	call	.balance_named
+	je	.advance
+	jmp	plan_bad_key
+; rsi/ecx = the key, rdx = up to 8 bytes: ZF when they are all of it
+.balance_is:
+	xor	eax,eax
+	mov	r8,rdx
+@@:
+	test	r8,r8
+	jz	@f
+	shr	r8,8
+	inc	eax
+	jmp	@b
+@@:
+	cmp	eax,ecx
+	jne	.balance_ne
+	push	rsi
+	xor	r8d,r8d
+@@:
+	cmp	r8d,ecx
+	jae	@f
+	cmp	byte [rsi+r8],dl
+	jne	.balance_pop
+	shr	rdx,8
+	inc	r8d
+	jmp	@b
+@@:
+	pop	rsi
+	xor	eax,eax				; ZF
+	ret
+.balance_pop:
+	pop	rsi
+.balance_ne:
+	or	eax,1
+	ret
+; the same for a prefix and a name after it, which goes to the pool
+.balance_named:
+	xor	eax,eax
+	mov	r8,rdx
+@@:
+	test	r8,r8
+	jz	@f
+	shr	r8,8
+	inc	eax
+	jmp	@b
+@@:
+	cmp	ecx,eax
+	jbe	.balance_ne
+	push	rcx
+	mov	ecx,eax
+	call	.balance_is
+	pop	rcx
+	jne	.balance_ne
+	mov	r9d,eax				; (0)
+	xor	eax,eax
+	mov	r8,rdx
+	lea	rdi,[rsi]
+	; length of the prefix again
+@@:
+	cmp	byte [rdi],':'
+	je	@f
+	inc	rdi
+	jmp	@b
+@@:
+	inc	rdi
+	mov	[r13+PL_HNAME],rdi
+	sub	rdi,rsi
+	sub	ecx,edi
+	mov	[r13+PL_HNLEN],ecx
+	xor	eax,eax
+	ret
 .connect:
 	mov	rdi,rbx
 	lea	rsi,[str_key_timeout]
@@ -2593,6 +2698,7 @@ compile_listener:
 	mov	r12,rdi
 	mov	r14d,-1				; http: routes choose the pool
 	mov	dword [g_cmp_pt],0
+	mov	dword [g_cmp_hpeer],0
 	call	compile_udp
 	lea	rax,[dir_table + D_SIZE*DIR_HTTP]
 	cmp	[r12+N_DEF],rax
@@ -2609,6 +2715,10 @@ compile_listener:
 	mov	rdi,r12
 	call	compile_target
 	mov	r14d,eax
+	mov	edi,eax
+	call	pool_hashes_source
+	jnc	.settings
+	mov	dword [g_cmp_hpeer],LSF_PEER	; (its address picks the server)
 	jmp	.settings
 .http:
 	mov	rdi,r12
@@ -2633,8 +2743,9 @@ compile_listener:
 	mov	r15d,eax
 @@:
 	; client address features
-	xor	eax,eax
+	mov	eax,[g_cmp_hpeer]
 	mov	[g_cmp_flags],eax
+	xor	eax,eax
 	mov	[g_cmp_per_source],eax
 	mov	rdi,r12
 	mov	ecx,DIR_LIMITS
@@ -3011,6 +3122,15 @@ compile_udp:
 	mov	[g_cmp_resp],eax
 .none:
 	ret
+
+plan_bad_key:
+	call	log_begin
+	out_lit 'balance key= is for maglev and ring-hash: source, path, header:NAME or cookie:NAME'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
+
+cstring str_key_key, 'key',0
 
 plan_bad_responses:
 	call	log_begin

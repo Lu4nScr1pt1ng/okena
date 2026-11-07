@@ -638,6 +638,19 @@ udp_new:
 	jz	.full
 .room:
 	mov	edi,[r14+LS_POOL]
+	call	pool_hashes_source
+	jnc	@f
+	mov	rax,rbx				; the client's address picks
+	shl	rax,5
+	lea	rsi,[g_ud_rsa+rax]
+	sub	rsp,16
+	mov	rdi,rsp
+	call	peer_normalize
+	mov	rdi,rsp
+	call	pick_key_ip
+	add	rsp,16
+@@:
+	mov	edi,[r14+LS_POOL]
 	mov	esi,NIL
 	call	server_pick
 	cmp	eax,NIL
