@@ -360,6 +360,7 @@ fault_flush:
 	push	r13
 	xor	r12d,r12d			; i
 	xor	r13d,r13d			; the earliest left
+	mov	qword [g_fd_next],0		; (what is made due meanwhile says so here)
 .next:
 	cmp	r12d,[g_fd_n]
 	jae	.looked
@@ -432,7 +433,18 @@ fault_flush:
 	call	http_request
 	jmp	.next
 .looked:
+	; the earliest of those left, and of what was made due or added meanwhile
+	; (an entry made due behind i is not looked at again in this turn)
+	mov	rax,[g_fd_next]
+	test	rax,rax
+	jz	@f
+	test	r13,r13
+	jz	.keep
+	cmp	rax,r13
+	jb	.keep
+@@:
 	mov	[g_fd_next],r13
+.keep:
 	pop	r13
 	pop	r12
 	pop	rbx

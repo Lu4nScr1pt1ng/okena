@@ -165,6 +165,7 @@ HB_HDUE		:= HB_HT0 + 8		; q: µs of its hedge
 HB_FST		:= HB_HDUE + 8		; d: `auth forward`: what was decided, FR_*
 HB_FGEN		:= HB_FST + 4		; d: for which generation of the session
 HB_FSTAT	:= HB_FGEN + 4		; d: the status it answered
+HB_WOKEN	:= HB_FSTAT + 4		; d: its turn in a queue came: it passes those still waiting
 HB_FDUE		:= HB_FSTAT + 8		; q: the time it was given (see below)
 HB_FKEYP	:= HB_FDUE + 8		; q: its place in the cache, 0 not kept
 HB_FKEY		:= HB_FKEYP + 8		; 32

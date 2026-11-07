@@ -12,14 +12,26 @@
 ; have more than its max. Idle connections kept in the pool do not count.
 ;
 ; A full server is not chosen, by any pass, not even when all else is down.
-; With all of them full an http request queues: first in, first out in each
-; worker. One that leaves a server lets the first one waiting in that worker
-; go at once; places given back in other workers are looked for every
-; millisecond while anyone waits, and as many go as there are places. Waiting longer than the queue's time is a
-; 503. A tcp connection does not queue: it is closed, as when no server is up.
+; With all of them full an http request queues, first in, first out across
+; all workers, as a ticket lock: it takes the pool's next ticket from a counter
+; the generation's workers share, and a place goes to the ticket being served,
+; whichever worker has it. While anyone waits, a new request may not take a
+; place: it queues too, behind them. A place freed in a worker goes to its own
+; line at once when that holds the ticket being served; else the worker that
+; holds it, which looks every millisecond while it waits, takes it. A ticket
+; whose request gave up (its time ran out, its client went) is passed over when
+; its turn comes. Should the turn not move for 50 ms while there is room (a
+; worker that holds it gone, say), it moves on. Waiting longer than the
+; queue's time is a 503. A tcp connection does not queue: it is closed, as when
+; no server is up.
 
 SQ_CAP		:= 1024			; waiting requests a pool can have, in a worker
 SQ_POLL_US	:= 1000
+SQ_STUCK_US	:= 50000		; a turn that does not move, with room: it moves on
+WT_NEXT		:= 0			; q: the next ticket
+WT_SERV		:= 8			; q: the ticket being served
+WT_AT		:= 16			; q: µs when it last moved
+WT_SIZE		:= 32
 QPOLL_SESS	:= 0x0FFFFFFF		; FD_SESS of the queue's own clock
 
 bss
@@ -27,6 +39,10 @@ bss
 	g_sv_live	dq ?		; shared: MAX_WORKERS rows of MAX_SERVERS dwords
 	g_sv_row	dq ?		; this worker's row
 	g_wq		dq ?		; the queues: MAX_POOLS rings of SQ_CAP entries
+	g_wq_tk		dq ?		; and each one's ticket
+	g_wq_turn	dq ?		; shared: WT_SIZE per pool
+	g_pick_adm	dd ?		; the next pick is a new http request's: it may not pass
+					; those who wait
 	g_pick_full	dd ?		; the last pick skipped a server for being full
 	g_wq_waiting	dd ?
 	g_wq_polling	dd ?
@@ -47,6 +63,15 @@ sv_live_init:
 	mov	eax,SYS_mmap
 	syscall
 	mov	[g_sv_live],rax
+	xor	edi,edi
+	mov	esi,MAX_POOLS * WT_SIZE
+	mov	edx,PROT_READ or PROT_WRITE
+	mov	r10d,MAP_SHARED or MAP_ANONYMOUS
+	mov	r8,-1
+	xor	r9d,r9d
+	mov	eax,SYS_mmap
+	syscall
+	mov	[g_wq_turn],rax
 	ret
 
 ; a worker, starting: its row, from nothing; its queues
@@ -98,6 +123,17 @@ sv_live_worker:
 	cmp	rax,-4096
 	ja	.fatal
 	mov	[g_wq],rax
+	xor	edi,edi
+	mov	esi,MAX_POOLS * SQ_CAP * 8
+	mov	edx,PROT_READ or PROT_WRITE
+	mov	r10d,MAP_PRIVATE or MAP_ANONYMOUS or MAP_NORESERVE
+	mov	r8,-1
+	xor	r9d,r9d
+	mov	eax,SYS_mmap
+	syscall
+	cmp	rax,-4096
+	ja	.fatal
+	mov	[g_wq_tk],rax
 	ret
 .fatal:
 	mov	edi,EXIT_FATAL
@@ -197,7 +233,38 @@ sv_unclaim:
 
 ; ------------------------------------------------------------ the queue
 
-; ebx = session, r15 = record: no server had room. CF when it waits.
+; edi = pool: rax = its turn's record (shared). Keeps all but rax.
+queue_turn_ptr:
+	mov	eax,edi
+	shl	rax,5				; WT_SIZE
+	add	rax,[g_wq_turn]
+	ret
+
+; rbx = pool: CF when someone waits for it, anywhere. Keeps all but rax.
+queue_anyone:
+	push	rcx
+	mov	rax,rbx
+	lea	rcx,[g_pools]
+	sub	rax,rcx
+	push	rdx
+	xor	edx,edx
+	mov	ecx,PL_SIZE
+	div	rcx
+	pop	rdx
+	shl	rax,5
+	add	rax,[g_wq_turn]
+	mov	rcx,[rax+WT_NEXT]
+	cmp	rcx,[rax+WT_SERV]
+	pop	rcx
+	jbe	.no
+	stc
+	ret
+.no:
+	clc
+	ret
+
+; ebx = session, r15 = record: no server had room, or others wait. CF when it
+; waits.
 queue_wait:
 	cmp	dword [g_pick_full],0
 	je	.no
@@ -239,12 +306,28 @@ queue_wait:
 	mov	r10,rax
 	sub	r10,[g_qnow]
 	jbe	.no				; it has waited all it may
-	; at the end of its pool's line
+	; room in its pool's line?
 	mov	eax,[g_wq_tail+r8*4]
-	mov	ecx,eax
-	sub	ecx,[g_wq_head+r8*4]
-	cmp	ecx,SQ_CAP
+	sub	eax,[g_wq_head+r8*4]
+	cmp	eax,SQ_CAP
 	jae	.no
+	; what the try left goes first, and it is seen to wait, before it is in
+	; line: closing that may free a place, and the line is looked at then
+	push	r8
+	push	r9
+	push	r10
+	call	h_upclose
+	h_rec
+	call	session_ptr
+	mov	dword [rax+S_STATE],ST_OPEN
+	mov	rax,[rsp]
+	call	fault_hold			; until its time is up, if nothing comes
+	or	dword [g_fd+rcx+FD_SESS],FD_HOLD
+	pop	r10
+	pop	r9
+	pop	r8
+	; at the end of its pool's line, with the next ticket
+	mov	eax,[g_wq_tail+r8*4]
 	mov	ecx,eax
 	and	ecx,SQ_CAP - 1
 	mov	rdx,r8
@@ -254,66 +337,221 @@ queue_wait:
 	shl	r11,32
 	or	r11,rbx
 	mov	[rdx+rcx*8],r11
+	mov	edi,r8d
+	call	queue_turn_ptr
+	mov	r11d,1
+	lock xadd [rax+WT_NEXT],r11
+	mov	rdx,r8
+	imul	rdx,rdx,SQ_CAP * 8
+	add	rdx,[g_wq_tk]
+	mov	[rdx+rcx*8],r11
 	inc	dword [g_wq_tail+r8*4]
 	inc	dword [g_wq_waiting]
-	push	r10
-	call	h_upclose			; (what the try left)
-	h_rec
-	call	session_ptr
-	mov	dword [rax+S_STATE],ST_OPEN
-	pop	rax
-	call	fault_hold			; until its time is up, if nothing comes
-	or	dword [g_fd+rcx+FD_SESS],FD_HOLD
+	push	r8
 	call	queue_poll_arm
+	pop	rdi
+	call	queue_places			; (room already: its turn may be now)
+	call	queue_serve
 	stc
 	ret
 .no:
 	clc
 	ret
 
-; edi = pool: its first waiting request goes now. Keeps all.
-queue_wake:
+; edi = pool: as many of its line go as the turn allows and there are places
+; (esi). Keeps all.
+queue_serve:
 	push	rax
 	push	rcx
 	push	rdx
+	push	rbx
 	push	r8
 	push	r9
-	push	r10
-.next:
+	push	r15
+	call	queue_turn_ptr
+	mov	r9,rax				; the turn
+.head:
 	mov	eax,[g_wq_head+rdi*4]
 	cmp	eax,[g_wq_tail+rdi*4]
-	je	.out
-	inc	dword [g_wq_head+rdi*4]
-	dec	dword [g_wq_waiting]
+	je	.out				; nobody waits here
 	and	eax,SQ_CAP - 1
 	mov	rdx,rdi
 	imul	rdx,rdx,SQ_CAP * 8
+	mov	r8,rdx
 	add	rdx,[g_wq]
-	mov	r8,[rdx+rax*8]
-	mov	r9,r8
-	shr	r9,32				; its generation
-	or	r8d,FD_HOLD			; and its wait
-	; its place on the clock, made due
+	add	r8,[g_wq_tk]
+	mov	r8,[r8+rax*8]			; its ticket
+	mov	rdx,[rdx+rax*8]			; gen << 32 | session
+	mov	rcx,[r9+WT_SERV]
+	cmp	r8,rcx
+	jb	.passed				; its turn went by
+	ja	.not_yet
+	; its turn: alive?
+	call	.alive
+	jnc	.pass
+	test	esi,esi
+	jz	.out				; no room: it waits on
+	lock inc qword [r9+WT_SERV]
+	call	.moved
+	call	.go
+	dec	esi
+	jmp	.head
+.passed:
+	; moved on while it waited (its worker was slow to look): it is still
+	; first in its line, and goes as soon as there is room
+	call	.alive
+	jnc	.drop
+	test	esi,esi
+	jz	.out
+	call	.go
+	dec	esi
+	jmp	.head
+.pass:
+	; gave up: its turn goes to the next ticket
+	lea	rax,[r8+1]
+	xchg	rax,r8
+	lock cmpxchg [r9+WT_SERV],r8
+	call	.moved
+.drop:
+	inc	dword [g_wq_head+rdi*4]
+	dec	dword [g_wq_waiting]
+	jmp	.head
+.not_yet:
+	; another worker's ticket is served before this one; if it does not move
+	; while there is room, it is moved on
+	test	esi,esi
+	jz	.out
+	mov	rax,[g_qnow]
+	sub	rax,[r9+WT_AT]
+	cmp	rax,SQ_STUCK_US
+	jb	.out
+	mov	rax,rcx
+	lea	r8,[rcx+1]
+	lock cmpxchg [r9+WT_SERV],r8
+	call	.moved
+	jmp	.head
+.out:
+	pop	r15
+	pop	r9
+	pop	r8
+	pop	rbx
+	pop	rdx
+	pop	rcx
+	pop	rax
+	ret
+.moved:
+	mov	rax,[g_qnow]
+	mov	[r9+WT_AT],rax
+	ret
+; rdx = an entry: CF when its request still waits for this
+.alive:
+	mov	ebx,edx
+	mov	r8,rdx
+	shr	r8,32
+	push	rax
+	call	session_ptr
+	cmp	[rax+S_GEN],r8d
+	jne	.dead
+	cmp	dword [rax+S_STATE],ST_OPEN
+	jne	.dead
+	h_rec
+	cmp	dword [r15+H_STATE],HS_FAULT
+	jne	.dead
+	pop	rax
+	stc
+	ret
+.dead:
+	pop	rax
+	clc
+	ret
+; rdx = the entry being served: it goes now
+.go:
+	inc	dword [g_wq_head+rdi*4]
+	dec	dword [g_wq_waiting]
+	mov	ebx,edx				; (the session)
+	h_rec
+	mov	rax,[r15+H_BUF]
+	mov	dword [rax+HB_WOKEN],1		; it passes those still waiting
+	mov	r8,rdx
+	shr	r8,32				; its generation
+	mov	eax,edx
+	or	eax,FD_HOLD			; and its wait
 	mov	ecx,[g_fd_n]
-	xor	eax,eax
+	xor	edx,edx
 .find:
 	test	ecx,ecx
-	jz	.next				; gone, or its time came: the next one
-	cmp	[g_fd+rax+FD_SESS],r8d
+	jz	.found
+	cmp	[g_fd+rdx+FD_SESS],eax
 	jne	.other
-	cmp	[g_fd+rax+FD_GEN],r9d
+	cmp	[g_fd+rdx+FD_GEN],r8d
 	je	.due
 .other:
-	add	rax,FD_SIZE
+	add	rdx,FD_SIZE
 	dec	ecx
 	jmp	.find
 .due:
-	mov	qword [g_fd+rax+FD_AT],1
+	mov	qword [g_fd+rdx+FD_AT],1
 	mov	qword [g_fd_next],1
-.out:
-	pop	r10
+.found:
+	ret
+
+; a place left a server of pool edi in this worker. Keeps all.
+queue_wake:
+	push	rsi
+	call	queue_places
+	call	queue_serve
+	pop	rsi
+	ret
+
+; edi = pool: esi = the places its servers have now (SQ_CAP when one of
+; them has no max). Keeps all but rsi.
+queue_places:
+	push	rax
+	push	rcx
+	push	rdx
+	push	rbx
+	push	r8
+	push	r9
+	push	rdi
+	imul	rbx,rdi,PL_SIZE
+	lea	rbx,[g_pools+rbx]
+	mov	ecx,[rbx+PL_FIRST]
+	mov	edx,ecx
+	add	edx,[rbx+PL_COUNT]
+	xor	r8d,r8d
+.server:
+	cmp	ecx,edx
+	jae	.counted
+	push	rcx
+	push	rdx
+	push	r8
+	mov	edi,ecx
+	mov	esi,2
+	call	server_eligible
+	pop	r8
+	pop	rdx
+	pop	rcx
+	jnc	.full
+	imul	rax,rcx,SV_SIZE
+	mov	r9d,[g_servers+rax+SV_MAX]
+	test	r9d,r9d
+	jz	.all				; a server with no max: room for all
+	mov	edi,ecx
+	call	sv_has_room			; eax = in use
+	sub	r9d,eax
+	jbe	.full
+	add	r8d,r9d
+.full:
+	inc	ecx
+	jmp	.server
+.all:
+	mov	r8d,SQ_CAP
+.counted:
+	mov	esi,r8d
+	pop	rdi
 	pop	r9
 	pop	r8
+	pop	rbx
 	pop	rdx
 	pop	rcx
 	pop	rax
@@ -344,13 +582,13 @@ queue_poll_arm:
 .out:
 	ret
 
-; its time: places other workers gave back, for those who wait here
+; its time: the turns, and places other workers gave back
 queue_poll:
 	mov	dword [g_wq_polling],0
 	cmp	dword [g_wq_waiting],0
 	je	.none
-	push	rbx
 	push	r12
+	call	qs_clock
 	xor	r12d,r12d
 .pool:
 	cmp	r12d,[g_plan_pools]
@@ -358,59 +596,16 @@ queue_poll:
 	mov	eax,[g_wq_head+r12*4]
 	cmp	eax,[g_wq_tail+r12*4]
 	je	.next
-	; how many places there are now: as many go
-	imul	rbx,r12,PL_SIZE
-	lea	rbx,[g_pools+rbx]
-	mov	ecx,[rbx+PL_FIRST]
-	mov	edx,ecx
-	add	edx,[rbx+PL_COUNT]
-	xor	r8d,r8d				; places
-.server:
-	cmp	ecx,edx
-	jae	.counted
-	push	rcx
-	push	rdx
-	push	r8
-	mov	edi,ecx
-	mov	esi,2
-	call	server_eligible
-	pop	r8
-	pop	rdx
-	pop	rcx
-	jnc	.full
-	imul	rax,rcx,SV_SIZE
-	mov	r9d,[g_servers+rax+SV_MAX]
-	test	r9d,r9d
-	jz	.all				; a server with no max: room for all
-	mov	edi,ecx
-	call	sv_has_room			; eax = in use
-	sub	r9d,eax
-	jbe	.full
-	add	r8d,r9d
-.full:
-	inc	ecx
-	jmp	.server
-.all:
-	mov	r8d,SQ_CAP
-.counted:
-	test	r8d,r8d
-	jz	.next				; full everywhere: they wait on
-	mov	eax,[g_wq_tail+r12*4]
-	cmp	eax,[g_wq_head+r12*4]
-	je	.next
 	mov	edi,r12d
-	call	queue_wake
-	dec	r8d
-	jmp	.counted
+	call	queue_places
+	call	queue_serve
 .next:
 	inc	r12d
 	jmp	.pool
 .done:
 	pop	r12
-	pop	rbx
 	cmp	dword [g_wq_waiting],0
 	je	.none
-	call	qs_clock
 	jmp	queue_poll_arm
 .none:
 	ret

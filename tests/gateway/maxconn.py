@@ -20,7 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BIN = ROOT / "build" / "okena"
-LIM, SHORT, FIRST, TCP = 18670, 18671, 18672, 18673
+LIM, SHORT, FIRST, TCP, FAIR = 18670, 18671, 18672, 18673, 18674
 fails = 0
 
 
@@ -97,10 +97,12 @@ pool lim {{ server {a[1]} max=2; server {b[1]} max=2 }}
 pool short {{ queue timeout=300ms; server {a[1]} max=1 }}
 pool fst {{ balance first; {''.join(f'server {x[1]} max=2; ' for x in f)}}}
 pool tl {{ server 127.0.0.1:{t.getsockname()[1]} max=1 }}
+pool fair {{ queue timeout=30s; server {a[1]} max=2; server {b[1]} max=2 }}
 http 127.0.0.1:{LIM} {{ route /* {{ to pool lim }} }}
 http 127.0.0.1:{SHORT} {{ route /* {{ to pool short }} }}
 http 127.0.0.1:{FIRST} {{ route /* {{ to pool fst }} }}
 tcp 127.0.0.1:{TCP} {{ to pool tl }}
+http 127.0.0.1:{FAIR} {{ route /* {{ to pool fair }} }}
 """)
     log = tmp / "log"
     p = subprocess.Popen([str(BIN), "-c", str(conf)], stderr=open(log, "w"))
@@ -123,6 +125,18 @@ tcp 127.0.0.1:{TCP} {{ to pool tl }}
             r = list(ex.map(lambda i: get(LIM, "/?s=0.01"), range(800)))
         check("800 short ones, 96 at a time: all served, never past the max", r.count((200, "a")) + r.count((200, "b")) == 800 and a[0].most <= 2 and b[0].most <= 2,
               (collections.Counter(x[0] for x in r), a[0].most, b[0].most))
+
+        # first in, first out across workers: 96 at once on 4 places of 10 ms
+        # wait about 240 ms each; nobody waits it out (the queue's 30 s)
+        def timed(i):
+            t = time.time()
+            return get(FAIR, "/?s=0.01")[0], time.time() - t
+        with ThreadPoolExecutor(96) as ex:
+            r = list(ex.map(timed, range(1200)))
+        w = sorted(x[1] for x in r)
+        check("a queue across workers is fair: none waits much longer than the rest",
+              all(x[0] == 200 for x in r) and w[-1] < 8 * max(w[len(w) // 2], 0.05) and w[-1] < 3,   # (a lost turn: 10 s and more)
+              (collections.Counter(x[0] for x in r), round(w[len(w) // 2], 3), round(w[-1], 3)))
 
         # waiting longer than the queue lets: 503
         reset(a, b)

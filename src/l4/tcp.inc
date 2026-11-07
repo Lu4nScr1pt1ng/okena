@@ -1271,6 +1271,18 @@ server_pick:
 	mov	ebp,esi
 	xor	r13d,r13d			; pass
 	mov	dword [g_pick_full],0
+	xor	eax,eax
+	xchg	eax,[g_pick_adm]
+	test	eax,eax
+	jz	@f
+	cmp	dword [rbx+PL_HASMAX],0
+	je	@f
+	call	queue_anyone
+	jnc	@f
+	mov	dword [g_pick_full],1		; others wait: behind them
+	mov	eax,NIL
+	jmp	.out
+@@:
 	cmp	dword [rbx+PL_BALANCE],BAL_MAGLEV
 	jb	.not_hashed
 	cmp	dword [rbx+PL_BALANCE],BAL_RING

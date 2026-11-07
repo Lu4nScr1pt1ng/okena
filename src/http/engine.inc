@@ -195,11 +195,18 @@ h_connect:
 	call	server_pick
 .picked:
 	cmp	eax,NIL
-	je	.connect
+	je	.none
 	mov	r13d,eax
 	mov	edi,eax
-	call	sv_claim			; (full since chosen: the connect path finds out why)
-	jnc	.connect
+	call	sv_claim			; full since chosen: it waits its turn
+	jc	.claimed
+.none:
+	cmp	dword [g_pick_full],0
+	je	.connect			; (no address yet: the connect path says why)
+	pop	r13				; full, or others wait first: in line
+	pop	r12
+	jmp	http_connect_failed
+.claimed:
 	mov	edi,r13d
 	call	pool_take
 	cmp	eax,NIL

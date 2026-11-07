@@ -136,6 +136,13 @@ pick_key_l4:
 ; an http request's connect: ebx = session, r15 = record, r12 = its session
 ; record. The key, if the head parsed last is this request's.
 pick_key_http:
+	; a request new to the pool queues behind those who wait; one whose turn
+	; came does not
+	mov	rax,[r15+H_BUF]
+	xor	ecx,ecx
+	xchg	ecx,[rax+HB_WOKEN]
+	xor	ecx,1
+	mov	[g_pick_adm],ecx
 	test	dword [r15+H_FLAGS],HX_AVOID or HX_MIRROR
 	jnz	.none
 	mov	eax,[r12+S_POOL]

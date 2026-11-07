@@ -176,6 +176,7 @@ PL_STTL		:= 716		; d: seconds, 0 for the session
 PL_SSAME	:= 720		; d: SS_*
 PL_QTIMEOUT	:= 728		; q: µs a request may wait for a place, 0: the connect timeout
 PL_HBOUND	:= 736		; d: maglev, ring-hash: a server's load at most this % of the mean, 0 none
+PL_HASMAX	:= 740		; d: a server of it has a max
 PL_SIZE		:= 768		; room for PL_TLS_ANCHOR + a PK blob (16 + 528), then PL_H2
 assert PL_TLS_ANCHOR + PK_SIZE <= PL_H2
 
@@ -2668,6 +2669,7 @@ compile_server:
 	mov	esi,[rax+A_VLEN]
 	call	parse_decimal
 	mov	[rbx+SV_MAX],eax
+	mov	dword [r12+PL_HASMAX],1
 @@:
 	cmp	dword [rbx+SV_BACKUP],0
 	jne	@f
