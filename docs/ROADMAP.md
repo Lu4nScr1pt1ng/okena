@@ -14,7 +14,9 @@ open-loop load, p50/p99/p99.9 reported. A phase that loses on latency to
 the reference is not finished.
 
 References used for comparison: HAProxy 3.x (L4 and HTTP/1), nginx
-(HTTP/1, static), Envoy (h2, gRPC, gateway features), Katran (XDP).
+(HTTP/1, static), Envoy (h2, gRPC, gateway features), Katran (XDP); phase 11
+adds Caddy, Traefik, Pingora, Kong, APISIX, IPVS and dnsdist, and compares
+okena as a whole.
 
 ## Phase 0 — Foundation
 
@@ -518,7 +520,97 @@ origin load stays flat during a purge-and-refill storm.
 
 Exit: packets/s per core comparable to Katran.
 
-## Phase 11 — Addons
+## Phase 11 — Proof at scale: benchmarks, performance, no needless limits
+
+Every phase so far met its own exit against one reference. This one measures
+okena as a whole against the best of each field, makes it faster where it
+loses, removes every limit that exists only because it was simpler, and shows,
+with numbers and not claims, how far it goes: from one core to a fleet that
+carries a large CDN's traffic. Nothing is added here that is not measured, and
+nothing measured is left worse than before.
+
+**The bench lab.** A reproducible setup, in the repository: two to four hosts
+(and one-host netns topologies for CI), cores pinned, IRQs and RSS queues
+placed, CPU frequency fixed, SMT noted, kernel and NIC firmware recorded. Open
+loop throughout (`okena bench`, wrk2-style corrected latency, and h2load,
+k6 or Gatling where a second generator settles a doubt), p50 to p99.99 and
+the maximum, and every run kept with its raw histograms, so that a regression
+in any later commit is seen by CI against the last release.
+
+**Against whom.** On the same hardware and with each one tuned by its own
+documentation, not left at defaults:
+
+* L4 TCP and UDP: HAProxy, nginx stream, Envoy, IPVS, Katran (XDP).
+* HTTP/1.1 and HTTP/2, plain and TLS: HAProxy, nginx, Envoy, Caddy, Traefik,
+  Pingora; gRPC: Envoy, HAProxy.
+* HTTP/3: nginx, Caddy, HAProxy, Envoy where each supports it.
+* Gateway features (auth, JWT, rate limits, cache, compression): Envoy, Kong,
+  APISIX, nginx; static files: nginx.
+* DNS load balancing: dnsdist; game-style UDP: a tuned HAProxy/nginx stream
+  setup and a bare C relay as the floor.
+
+**What is measured.** Requests and packets per second per core and per host;
+latency at fixed loads from 10% to past saturation, and how it degrades past
+it (it must degrade, not collapse); connections per second and TLS handshakes
+per second (full and resumed, P-256, Ed25519, X25519MLKEM768); idle connection
+cost (memory per connection at 1M and 10M); reload, upgrade and drain under
+load (requests lost: none); behaviour under abuse (slowloris, rapid reset,
+floods) while measuring the legitimate traffic's latency; tail under noisy
+neighbours and CPU quota in containers.
+
+**Performance work.** Profiles (perf, eBPF off-CPU and wake-up tracing, TSC
+counters in the hot paths) decide, not guesses. Already known to look at: the
+worker wake-up that makes the p99.9 tail (adaptive busy polling instead of
+all or nothing, NAPI busy poll, `SO_PREFER_BUSY_POLL`); batching of sends and
+receives on every path; zero-copy (`SEND_ZC`, splice, sockmap, kTLS with
+`sendfile`) chosen per size by measurement; GSO/GRO for UDP and QUIC; cache
+lines shared between cores (none on the hot path, proven by perf c2c);
+branch layout and AVX-512 where it pays; the cost of each gateway feature per
+request, so that a route pays only for what it uses.
+
+**Memory.** Every structure accounted for and exported (`okena_memory_bytes`
+by kind): pools that grow and shrink with the load and give pages back
+(`MADV_FREE`) when it falls, never on the request path; bounded everything,
+with a clear behaviour when a bound is reached (shed, queue or refuse, never
+crash or swap); huge pages for the big tables where they help the TLB;
+NUMA-local allocation per worker; a steady state that does not grow over a
+week of churn (checked by the soak). Memory must never be the reason a
+request waits.
+
+**Limits that need not be.** Each fixed limit in the code is listed (servers,
+pools, listeners, routes, flows, header sizes, queue lengths, discovered
+servers, ...) and either removed (sized from the configuration, or growing),
+or kept with the reason written next to it and a number high enough that no
+real deployment meets it. A configuration that grows tenfold must work without
+a rebuild.
+
+**A review of everything.** Each subsystem read again with the measurements in
+hand: is this the fastest correct way, does it do work it need not, does it
+take a lock, a syscall or a copy it could avoid, does its worst case have a
+bound. Findings fixed, and the ones not fixed written down with why.
+
+**How far it scales.** The question, answered with measurements and a model:
+what it takes to carry millions of requests per second, and a traffic of the
+order of Cloudflare's (tens of millions of HTTP requests per second, and DNS
+at the same order), and where okena would stop first. Per core, per host
+(cores, NIC queues, memory bandwidth), and across a fleet (ECMP or anycast in
+front, QUIC-LB connection IDs, shared ticket keys, fleet-wide rate limits,
+cache shield): what grows linearly, what does not, and what is changed so that
+it does. The same for the extremes of latency: DNS (answers in microseconds,
+millions of queries per second per host, behind `udp` or in front of an
+authoritative server) and online games (UDP flows whose jitter matters more
+than their mean, measured as a distribution per flow, with busy polling and
+core isolation).
+
+Exit: published results, reproducible from the repository, in which okena
+equals or beats the best compared on latency (p50, p99, p99.9) in every
+category above, and on throughput per core in all but those where a
+kernel-only path (IPVS, Katran) is the reference, where it comes within 10%
+with `xdp`; memory per idle connection at or under the best; no fixed limit
+that a real deployment can reach; and a written, measured path to a fleet that
+carries tens of millions of requests per second.
+
+## Phase 12 — Addons
 
 * Shared-memory addon protocol, supervision, deadlines, circuit breakers.
 * SDKs (C, Rust, Go, Python); a reference WAF addon on Coraza.
