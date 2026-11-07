@@ -529,6 +529,22 @@ with numbers and not claims, how far it goes: from one core to a fleet that
 carries a large CDN's traffic. Nothing is added here that is not measured, and
 nothing measured is left worse than before.
 
+**First, the two documents everything rests on.** Before any measurement,
+[EDGE_CASES.md](EDGE_CASES.md) and [ARCHITECTURE.md](ARCHITECTURE.md) are
+read again against the code as it is and against what the best proxies have
+learned since they were written. For the edge cases: is each one handled the
+best way and not only a way (the RFC's behaviour, what HAProxy, nginx and
+Envoy do, and why okena differs where it does), does every line have a test
+that would fail without its handling, and what is missing: the smuggling,
+desync, protocol-confusion, resource-exhaustion and timing cases published
+since, each protocol okena gained after the list was made (HTTP/2, HTTP/3,
+QUIC, `udp`, discovery, the admin API), and the cases only a fleet meets. For
+the architecture: does each decision still hold with what was built and
+measured (processes, engines, the shared tables, where state lives, how a
+worker is confined), is there a better structure now that the whole is
+known, and is what the document says what the code does. Both come out of it
+corrected and complete, and the rest of the phase measures against them.
+
 **The bench lab.** A reproducible setup, in the repository: two to four hosts
 (and one-host netns topologies for CI), cores pinned, IRQs and RSS queues
 placed, CPU frequency fixed, SMT noted, kernel and NIC firmware recorded. Open
@@ -629,6 +645,42 @@ do too, as well or better, written down and checked off:
 * DNS at the scale of a public resolver and of an authoritative service: rate
   limiting, response rate limiting, DNSSEC passing through untouched, and
   answers in microseconds.
+
+**A real case to prove it on: an online game.** okena is a balancer, not a
+matchmaker, and the point is to show that in the busiest kind of game service it
+helps everywhere it sits and never stands in the way. A competitive shooter's
+platform, end to end:
+
+* The lobby and matchmaking: millions of players at once searching for a
+  match or browsing servers, over HTTPS, gRPC and WebSocket. okena in front of
+  the matchmakers sends each player to the nearest region (GeoIP, latency to
+  each region measured by the health checks, not guessed), keeps a player's
+  session on its matchmaker (`sticky`, `maglev`), absorbs the surge when a
+  season starts (queues with `max=`, rate limits per player, cache for the
+  server list), and shows which servers are up and how loaded through its
+  metrics and admin API. Measured: requests per second per host, p99 at the
+  peak, and that no matchmaker is overloaded while another is idle.
+* The match itself: once placed, a player's UDP traffic goes to one game
+  server and stays there for the whole match. With okena in that path (to
+  hide the servers' addresses and take attacks, as a game-oriented DDoS
+  service does), a flow never moves while its server is up: not on a reload,
+  an upgrade, a change in the number of workers, nor on another site taking
+  over the address (flows keyed so that any okena sends them to the same
+  server). What it adds is measured per flow as a distribution, mean and
+  jitter (p99 minus p50) at 64 to 1200 bytes and 20 to 128 packets a second
+  per player, with busy polling and isolated cores: the target is tens of
+  microseconds added, and jitter no larger than the network's own. A player
+  whose server dies is not silently moved to one that knows nothing of the
+  match: the flow ends and the game's own reconnect decides.
+* Where okena should not be: the case where players connect straight to the
+  game server's address is said plainly, with what okena still does around it
+  (the lobby, the server list, attack filtering in front of the servers' own
+  addresses with `xdp`).
+
+The exit for this case: a simulated platform of millions of players (the
+lobby load and the match traffic generated together) runs through okena with
+no player moved off a match, no p99 latency target missed, and nothing in
+okena that the game's design would have to work around.
 
 Each of these is shown on the lab first and in the model of a fleet next:
 how many hosts, of which kind, carry a given share of a global load, and that
