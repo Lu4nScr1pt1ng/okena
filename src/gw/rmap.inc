@@ -356,6 +356,11 @@ plan_bad_rmap:
 ; ebx: no backend could be connected to. CF: it waits, and will try again.
 hold_wait:
 	h_rec
+	call	queue_wait			; every server full: a place in the line
+	jnc	@f
+	ret
+@@:
+	h_rec
 	mov	eax,[r15+H_ACT]
 	test	eax,eax
 	jz	.no

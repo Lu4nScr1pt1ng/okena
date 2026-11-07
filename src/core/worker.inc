@@ -103,6 +103,7 @@ worker_main:
 	call	qs_worker_init			; http3: the UDP sockets
 	call	udp_worker_init
 	call	hash_tables_init
+	call	sv_live_worker
 	mov	rax,[g_plan_busy_poll]
 	test	rax,rax
 	jz	.confine

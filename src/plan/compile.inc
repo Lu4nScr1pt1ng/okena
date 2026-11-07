@@ -174,6 +174,7 @@ PL_SNAME	:= 704		; q: `sticky`: the cookie's name, 0 none
 PL_SNLEN	:= 712		; d
 PL_STTL		:= 716		; d: seconds, 0 for the session
 PL_SSAME	:= 720		; d: SS_*
+PL_QTIMEOUT	:= 728		; q: µs a request may wait for a place, 0: the connect timeout
 PL_SIZE		:= 768		; room for PL_TLS_ANCHOR + a PK blob (16 + 528), then PL_H2
 assert PL_TLS_ANCHOR + PK_SIZE <= PL_H2
 
@@ -186,6 +187,7 @@ SV_BACKUP	:= 124		; d
 SV_TEXT		:= 128		; q
 SV_TLEN		:= 136		; d
 SV_ACTIVE	:= 140		; d: holds an address (names: once resolved)
+SV_MAX		:= 148		; d: connections in use at most, 0 = no limit
 SV_GROUP	:= 144		; d: name group + 1, or 0 for an address
 SV_SIZE		:= 160
 
@@ -197,6 +199,7 @@ BAL_PEAK_EWMA	:= 4		; power of two choices on latency x load
 BAL_MAGLEV	:= 5		; from here on a key picks (src/l4/hash.inc)
 BAL_RING	:= 6
 BAL_SOURCE	:= 7		; (written so; kept as maglev on the client's address)
+BAL_FIRST	:= 8		; the first with room (src/l4/maxconn.inc)
 
 DEFAULT_CONNECTIONS	:= 65536		; per listener, whole instance
 DEFAULT_IDLE_SECS	:= 3600
@@ -2162,6 +2165,9 @@ compile_pool:
 	lea	rcx,[dir_table + D_SIZE*DIR_STICKY]
 	cmp	rax,rcx
 	je	.sticky
+	lea	rcx,[dir_table + D_SIZE*DIR_QUEUE]
+	cmp	rax,rcx
+	je	.queue
 	lea	rcx,[dir_table + D_SIZE*DIR_CONNECT]
 	cmp	rax,rcx
 	je	.connect
@@ -2306,6 +2312,17 @@ compile_pool:
 	mov	rsi,rbx
 	call	compile_server
 	jmp	.advance
+.queue:
+	mov	rdi,rbx
+	lea	rsi,[str_key_timeout]
+	call	node_option
+	test	rax,rax
+	jz	.advance
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_duration
+	mov	[r13+PL_QTIMEOUT],rax
+	jmp	.advance
 .sticky:
 	mov	rdi,rbx
 	lea	rsi,[str_key_cookie]
@@ -2402,6 +2419,8 @@ compile_pool:
 	jz	.advance
 	cmp	dword [r13+PL_BALANCE],BAL_MAGLEV
 	jb	plan_bad_key
+	cmp	dword [r13+PL_BALANCE],BAL_RING
+	ja	plan_bad_key
 	mov	rsi,[rax+A_VAL]
 	mov	ecx,[rax+A_VLEN]
 	mov	rdx,'source'
@@ -2591,6 +2610,16 @@ compile_server:
 	call	parse_decimal
 	mov	[rbx+SV_WEIGHT],eax
 .counted:
+	mov	rdi,r13
+	lea	rsi,[str_key_max]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_decimal
+	mov	[rbx+SV_MAX],eax
+@@:
 	cmp	dword [rbx+SV_BACKUP],0
 	jne	@f
 	inc	dword [r12+PL_PRIMARY]
@@ -2600,11 +2629,13 @@ compile_server:
 	je	.out
 	mov	eax,[rbx+SV_WEIGHT]
 	mov	ecx,[rbx+SV_BACKUP]
+	mov	r9d,[rbx+SV_MAX]
 	mov	edx,DNS_MAX_ADDRS - 1
 	lea	r8,[rbx+SV_SIZE]
 @@:
 	mov	[r8+SV_WEIGHT],eax
 	mov	[r8+SV_BACKUP],ecx
+	mov	[r8+SV_MAX],r9d			; (each address of a name its own max)
 	add	r8,SV_SIZE
 	dec	edx
 	jnz	@b
@@ -3201,6 +3232,7 @@ plan_bad_sticky:
 	jmp	exit_process
 
 cstring str_key_cookie, 'cookie',0
+cstring str_key_max, 'max',0
 cstring str_key_ttl, 'ttl',0
 cstring str_key_samesite, 'samesite',0
 

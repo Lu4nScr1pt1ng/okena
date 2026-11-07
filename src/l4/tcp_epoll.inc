@@ -68,6 +68,7 @@ ep_main:
 	call	qs_worker_init			; http3: the UDP sockets
 	call	udp_worker_init
 	call	hash_tables_init
+	call	sv_live_worker
 	mov	edi,[g_sigfd]
 	mov	esi,EPOLLIN
 	mov	rdx,EK_SIGNAL shl 56
@@ -528,11 +529,13 @@ ep_connect:
 @@:
 	cmp	eax,NIL
 	je	.no_socket			; nowhere to go: close
+	mov	edi,eax
+	call	sv_claim			; full since it was chosen: wait, or go
+	jnc	.no_socket
 	mov	ecx,[r12+S_SERVER]
 	mov	[r12+S_SERVER2],ecx
 	mov	[r12+S_SERVER],eax
 	call	sv_connect_start
-	inc	dword [g_sv_active+rax*4]
 	or	dword [r12+S_FLAGS],SF_COUNTED
 	imul	r13,rax,SV_SIZE
 	lea	r13,[g_servers+r13]

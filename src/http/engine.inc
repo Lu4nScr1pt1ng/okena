@@ -198,12 +198,17 @@ h_connect:
 	je	.connect
 	mov	r13d,eax
 	mov	edi,eax
+	call	sv_claim			; (full since chosen: the connect path finds out why)
+	jnc	.connect
+	mov	edi,r13d
 	call	pool_take
 	cmp	eax,NIL
-	je	.fresh
-	; reuse it
+	jne	.reuse
+	mov	edi,r13d
+	call	sv_unclaim			; a new connection claims its own
+	jmp	.fresh
+.reuse:
 	mov	[r12+S_SERVER],r13d
-	inc	dword [g_sv_active+r13*4]
 	or	dword [r12+S_FLAGS],SF_COUNTED or SF_UP_OPEN
 	mov	dword [r12+S_STATE],ST_OPEN
 	h_rec

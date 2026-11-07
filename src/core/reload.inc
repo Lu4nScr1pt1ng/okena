@@ -343,6 +343,7 @@ supervisor_reload:
 @@:
 	call	health_table_init
 	call	api_table_init
+	call	sv_live_init
 	call	spawn_health
 	call	stats_table_init		; the old workers keep their pages
 	mov	edi,[g_admin_pid]

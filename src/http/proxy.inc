@@ -387,6 +387,11 @@ fault_flush:
 	mov	[g_fd+rcx+FD_AT],rax
 	mov	rax,[g_fd+rdx+FD_SESS]
 	mov	[g_fd+rcx+FD_SESS],rax
+	cmp	ebx,QPOLL_SESS
+	jne	@f
+	call	queue_poll			; the queue's clock: no session
+	jmp	.next
+@@:
 	mov	r10d,ebx
 	and	ebx,not (FD_HEDGE or FD_FWD or FD_CACHE or FD_HOLD)
 	push	r8
@@ -1702,6 +1707,10 @@ http_connect_failed:
 	h_rec
 	call	idem_release			; nothing reached a backend
 	mov	edi,502
+	cmp	dword [g_pick_full],0
+	je	@f
+	mov	edi,503				; there are servers, all full
+@@:
 	jmp	http_error
 
 ; ebx = session, ecx = side, rax = bytes read (0 = end, < 0 = error).

@@ -656,6 +656,9 @@ udp_new:
 	cmp	eax,NIL
 	je	.no_server
 	mov	ebp,eax
+	mov	edi,eax
+	call	sv_claim
+	jnc	.no_server
 	; an entry
 	mov	eax,[g_ud_free]
 	test	eax,eax
@@ -669,7 +672,7 @@ udp_new:
 .fresh:
 	mov	eax,[g_ud_bump]
 	cmp	eax,[g_ud_cap]
-	jae	.full
+	jae	.full_claimed
 	inc	dword [g_ud_bump]
 	imul	r15,rax,FL_SIZE
 	add	r15,[g_ud_tab]
@@ -775,13 +778,14 @@ udp_new:
 	inc	dword [g_ls_active+r13*4]
 	inc	qword [g_st_l_accepted+r13*8]
 	inc	qword [g_st_s_connects+rbp*8]
-	inc	dword [g_sv_active+rbp*4]
 	mov	rdi,r15
 	pop	rbp
 	pop	r15
 	pop	r14
 	ret
 .give_back:
+	mov	edi,ebp
+	call	sv_unclaim
 	mov	rax,r15
 	sub	rax,[g_ud_tab]
 	xor	edx,edx
@@ -792,6 +796,9 @@ udp_new:
 	mov	[r15+FL_NEXT],ecx
 	mov	[g_ud_free],eax
 	jmp	.none
+.full_claimed:
+	mov	edi,ebp
+	call	sv_unclaim
 .no_server:
 .full:
 	inc	qword [g_st_l_full+r13*8]
@@ -1075,7 +1082,7 @@ udp_close:
 	call	udp_unqueue
 	dec	dword [g_ls_active+rdi*4]
 	mov	eax,[rbx+FL_SERVER]
-	dec	dword [g_sv_active+rax*4]
+	sv_count_dec rax
 	cmp	dword [rbx+FL_WAITS],0
 	je	@f
 	dec	dword [g_active]

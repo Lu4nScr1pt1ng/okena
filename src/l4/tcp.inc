@@ -1205,6 +1205,12 @@ server_eligible:
 	cmp	dword [rax+rdi*8],0
 	jne	.no				; drained: not even when all else is down
 	imul	rax,rdi,SV_SIZE
+	cmp	dword [g_servers+rax+SV_MAX],0
+	je	@f
+	call	sv_has_room			; full: not by any pass
+	jnc	.no
+	imul	rax,rdi,SV_SIZE
+@@:
 	cmp	dword [g_servers+rax+SV_ACTIVE],0
 	je	.no				; a name slot without an address
 	mov	ecx,[g_servers+rax+SV_BACKUP]
@@ -1264,8 +1270,11 @@ server_pick:
 	lea	rbx,[g_pools+rbx]
 	mov	ebp,esi
 	xor	r13d,r13d			; pass
+	mov	dword [g_pick_full],0
 	cmp	dword [rbx+PL_BALANCE],BAL_MAGLEV
 	jb	.not_hashed
+	cmp	dword [rbx+PL_BALANCE],BAL_RING
+	ja	.not_hashed
 	xor	eax,eax
 	xchg	eax,[g_pick_hashed]
 	test	eax,eax
@@ -1336,6 +1345,8 @@ server_pick:
 	je	.least				; the draws failed: scan this pass
 	cmp	eax,BAL_PEAK_EWMA
 	je	.least
+	cmp	eax,BAL_FIRST
+	je	.first
 	cmp	eax,BAL_RANDOM
 	jae	.random				; (and the hashing ones, when their key gave nothing)
 	; smooth weighted round robin
@@ -1426,6 +1437,29 @@ server_pick:
 .lc_done:
 	mov	eax,r12d
 	jmp	.out
+.first:
+	; the first in the file's order that has room
+	mov	ecx,[rbx+PL_FIRST]
+	mov	r8d,ecx
+	add	r8d,[rbx+PL_COUNT]
+.fi:
+	cmp	ecx,r8d
+	jae	.next_pass
+	cmp	ecx,r14d
+	je	.fi_next
+	mov	edi,ecx
+	mov	esi,r13d
+	push	rcx
+	push	r8
+	call	.eligible
+	pop	r8
+	pop	rcx
+	jnc	.fi_next
+	mov	eax,ecx
+	jmp	.out
+.fi_next:
+	inc	ecx
+	jmp	.fi
 .random:
 	; weighted: pick r in [0, total) and walk
 	xor	r15d,r15d
@@ -1674,11 +1708,13 @@ session_connect:
 	cmp	eax,NIL
 	je	.nowhere
 @@:
+	mov	edi,eax
+	call	sv_claim			; full since it was chosen: wait, or go
+	jnc	.nowhere
 	mov	ecx,[r12+S_SERVER]
 	mov	[r12+S_SERVER2],ecx
 	mov	[r12+S_SERVER],eax
 	call	sv_connect_start
-	inc	dword [g_sv_active+rax*4]
 	or	dword [r12+S_FLAGS],SF_COUNTED
 	imul	r13,rax,SV_SIZE
 	lea	r13,[g_servers+r13]
@@ -1885,7 +1921,16 @@ session_uncount:
 	jz	.done
 	and	dword [r12+S_FLAGS],not SF_COUNTED
 	mov	eax,[r12+S_SERVER]
-	dec	dword [g_sv_active+rax*4]
+	sv_count_dec rax
+	cmp	dword [g_wq_waiting],0
+	je	.done
+	imul	rax,rax,SV_SIZE
+	cmp	dword [g_servers+rax+SV_MAX],0
+	je	.done
+	push	rdi
+	mov	edi,[r12+S_POOL]
+	call	queue_wake			; a place: the first one waiting here
+	pop	rdi
 .done:
 	ret
 

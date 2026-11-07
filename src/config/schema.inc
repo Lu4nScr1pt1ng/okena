@@ -119,7 +119,7 @@ M_UDP		:= 1 shl CTX_UDP
 
 enumdef e_io_engine, 'auto', 'io_uring', 'epoll'
 enumdef e_samesite, 'lax', 'strict', 'none'
-enumdef e_balance, 'round-robin', 'least-conn', 'random', 'least-request', 'peak-ewma', 'maglev', 'ring-hash', 'source-hash'
+enumdef e_balance, 'round-robin', 'least-conn', 'random', 'least-request', 'peak-ewma', 'maglev', 'ring-hash', 'source-hash', 'first'
 enumdef e_server_flags, 'backup'
 enumdef e_health, 'tcp', 'http', 'grpc'
 enumdef e_pp_mode, 'send'
@@ -154,7 +154,8 @@ keysdef k_idem, 'header', T_ANY, 'ttl', T_DURATION, 'lock', T_DURATION
 keysdef k_limit, 'burst', T_COUNT, 'key', T_ANY, 'instances', T_COUNT
 keysdef k_fault, 'abort', T_COUNT, 'percent', T_COUNT, 'delay', T_DURATION
 keysdef k_quic_sid, 'key', T_ANY, 'rotation', T_ANY
-keysdef k_server, 'weight', T_WEIGHT
+keysdef k_server, 'weight', T_WEIGHT, 'max', T_COUNT
+keysdef k_queue, 'timeout', T_DURATION
 keysdef k_balance, 'key', T_ANY
 keysdef k_sticky, 'cookie', T_ANY, 'ttl', T_DURATION, 'samesite', T_ANY
 keysdef k_cert, 'key', T_ANY
@@ -257,6 +258,7 @@ dirdef DIR_HEADER, 'header',      M_TIMEOUT, 0,           F_UNIQUE, 1, 1, T_DURA
 dirdef DIR_RESPONSE, 'response',  M_TIMEOUT, 0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
 dirdef DIR_BODY_IDLE, 'body_idle', M_TIMEOUT, 0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
 dirdef DIR_SERVER, 'server',      M_POOL,    0,           0, 1, 2, T_BACKEND, e_server_flags, k_server
+dirdef DIR_QUEUE, 'queue',       M_POOL,    0,           F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_queue
 dirdef DIR_STICKY, 'sticky',     M_POOL,    0,           F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_sticky
 dirdef DIR_SLOW_START, 'slow_start', M_POOL,   0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
 dirdef DIR_BALANCE, 'balance',     M_POOL,    0,           F_UNIQUE, 1, 1, e_balance, T_NONE, k_balance

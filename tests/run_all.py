@@ -116,6 +116,8 @@ SUITES = [
     ("hash epoll", ["tests/gateway/hash.py", "epoll"]),
     ("sticky io_uring", ["tests/gateway/sticky.py", "io_uring"]),
     ("sticky epoll", ["tests/gateway/sticky.py", "epoll"]),
+    ("maxconn io_uring", ["tests/gateway/maxconn.py", "io_uring"]),
+    ("maxconn epoll", ["tests/gateway/maxconn.py", "epoll"]),
     ("geoip io_uring", ["tests/gateway/geoip.py", "io_uring"]),
     ("geoip epoll", ["tests/gateway/geoip.py", "epoll"]),
     ("acl io_uring", ["tests/gateway/acl.py", "io_uring"]),

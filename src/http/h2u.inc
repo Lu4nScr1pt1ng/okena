@@ -118,9 +118,11 @@ h2u_connect:
 .picked:
 	cmp	eax,NIL
 	je	.failed
+	mov	edi,eax
+	call	sv_claim
+	jnc	.failed
 	mov	r13d,eax
 	mov	[r12+S_SERVER],eax
-	inc	dword [g_sv_active+rax*4]
 	or	dword [r12+S_FLAGS],SF_COUNTED or SF_UPH2
 	h_rec
 	and	dword [r15+H_FLAGS],not HX_REUSED

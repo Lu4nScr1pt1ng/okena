@@ -97,6 +97,8 @@ pool_hashes_source:
 	imul	rax,rdi,PL_SIZE
 	cmp	dword [g_pools+rax+PL_BALANCE],BAL_MAGLEV
 	jb	.no
+	cmp	dword [g_pools+rax+PL_BALANCE],BAL_RING
+	ja	.no
 	cmp	dword [g_pools+rax+PL_HKEY],HK_SOURCE
 	jne	.no
 	stc
@@ -140,6 +142,8 @@ pick_key_http:
 	lea	r8,[g_pools+rax]
 	cmp	dword [r8+PL_BALANCE],BAL_MAGLEV
 	jb	.none
+	cmp	dword [r8+PL_BALANCE],BAL_RING
+	ja	.none
 	mov	rax,[g_hm+HM_TARGET]
 	mov	rcx,[r15+H_BUF]
 	cmp	rax,rcx
@@ -205,6 +209,8 @@ hash_tables_init:
 	mov	qword [g_pools+rax+PL_HTAB],0
 	cmp	dword [g_pools+rax+PL_BALANCE],BAL_MAGLEV
 	jb	.next
+	cmp	dword [g_pools+rax+PL_BALANCE],BAL_RING
+	ja	.next
 	xor	edi,edi
 	mov	esi,HT_BYTES
 	mov	edx,PROT_READ or PROT_WRITE

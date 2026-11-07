@@ -55,11 +55,22 @@ def back(name):
     return s, f"127.0.0.1:{s.server_address[1]}"
 
 
+STALLS = []
+
+
 def get(c=None):
     k = c or http.client.HTTPConnection("127.0.0.1", LST, timeout=5)
-    k.request("GET", "/")
-    r = k.getresponse()
-    b = r.read().decode()
+    try:
+        k.request("GET", "/")
+        r = k.getresponse()
+        b = r.read().decode()
+    except TimeoutError:
+        # (rare, under load, after a reload on io_uring: what the sockets say)
+        port = k.sock.getsockname()[1] if k.sock else None
+        ss = subprocess.run(["ss", "-tanpi"], capture_output=True, text=True).stdout
+        STALLS.append((time.strftime("%T"), port, "\n".join(l for l in ss.splitlines() if str(port) in l or f":{LST}" in l)[-3000:]))
+        k.close()
+        return 0, "stalled"
     if not c:
         k.close()
     return r.status, b
@@ -239,6 +250,9 @@ http 127.0.0.1:{LST} {{
                 x.terminate()
                 x.wait(10)
     text = log.read_text()
+    for t, port, ss in STALLS:
+        print(f"stalled at {t} from port {port}; the log:\n{text[-600:]}\nsockets:\n{ss}", flush=True)
+    check("no request stalled", not STALLS, len(STALLS))
     check("no process died", "killed" not in text.replace("okena-admin", ""), text[-300:])
     bad = tmp / "bad.conf"
     bad.write_text(f"okena {{ admin /tmp/x.sock }}\npool p {{ server {A} }}\nhttp 127.0.0.1:{LST} {{ route /* {{ to pool p }} }}\n")

@@ -13,7 +13,7 @@ not built yet. A directive that is not built is refused by `okena check`
 | `udp ADDR...` | `to`, `responses N`, `limits { connections }` (flows), `timeout { idle }` |
 | `http ADDR...` | `host`, `route`, `limits`, `timeout { idle; header; body_idle; response }`, `trusted_proxies`, `access_log`, `http2 on\|off`, `http3 on\|off\|retry\|v2`, `preferred_address`, `early_data on\|off`, `tls { cert; key; ktls on\|off }` |
 | `route PATH... [METHOD...]` | `to`, `redirect`, `rewrite path`, `header set\|add\|drop`, `response header set\|add\|drop` |
-| `pool NAME` | `server ADDR [weight=N] [backup]`, `balance least-request\|peak-ewma\|round-robin\|least-conn\|random\|maglev\|ring-hash\|source-hash [key=]`, `sticky cookie= [ttl=] [samesite=]`, `connect timeout=`, `health tcp\|http\|grpc ...`, `slow_start`, `tls { trust FILE; sni NAME }` (TLS to the backends), `protocol h1\|h2` |
+| `pool NAME` | `server ADDR [weight=N] [max=N] [backup]`, `queue timeout=`, `balance least-request\|peak-ewma\|round-robin\|least-conn\|random\|maglev\|ring-hash\|source-hash [key=]\|first`, `sticky cookie= [ttl=] [samesite=]`, `connect timeout=`, `health tcp\|http\|grpc ...`, `slow_start`, `tls { trust FILE; sni NAME }` (TLS to the backends), `protocol h1\|h2` |
 
 `tls { cert FILE; key FILE }` on an `http` listener makes it HTTPS: TLS
 1.3 with a certificate chain (leaf first) and its key: EC P-256 (SEC 1 or
@@ -792,6 +792,21 @@ Path=/, HttpOnly, SameSite (Lax unless told), Max-Age for a ttl, and Secure on
 a TLS listener or with SameSite=None. okena's own answers (errors, cache hits,
 files) set none. A WebSocket upgrade follows the cookie too. A `tcp` or `udp`
 listener has no cookies: `source-hash` keeps those clients in place.
+
+`server ADDR max=N` gives a server no more than N connections in use at once,
+for the whole instance; each address of a name has its own. A full server is not
+chosen, not even when all else is down. With every server full an http request
+waits its turn (first in, first out in each worker) for `queue timeout=` (the
+pool's connect timeout unless told), then gets a 503; one that leaves a server
+lets the first waiting one go at once, and places freed in another worker are
+seen within a millisecond. A `tcp` connection does not wait: it is closed.
+Workers count in a table they share, each in its own row, and a place is taken
+before the count is read (a locked add), so two workers racing for the last
+place cannot both have it. A worker that is replaced gives its places back. A
+reload's draining connections are not counted by the new workers, so during a
+drain a server can have more. `balance first` takes the servers in the file's
+order, each up to its max, so that the last ones can be stopped while traffic
+is low; idle connections kept for reuse do not count.
 
 ## Sites, caching and the edge
 
