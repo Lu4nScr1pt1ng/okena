@@ -592,6 +592,7 @@ ep_connect:
 	call	ep_connect_failed
 	jmp	.out
 .no_socket:
+	if_http .http_nowhere
 	mov	edi,ebx
 	call	ep_close
 .out:
@@ -599,6 +600,9 @@ ep_connect:
 	pop	r12
 	pop	rbx
 	ret
+.http_nowhere:
+	call	http_connect_failed		; as with the rings: an answer, not a close
+	jmp	.out
 
 ; edi = session, esi = pool: append to the pool's connect list.
 connect_list_append:
