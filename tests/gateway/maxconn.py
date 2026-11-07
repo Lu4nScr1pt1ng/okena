@@ -176,7 +176,8 @@ http 127.0.0.1:{FAIR} {{ route /* {{ to pool fair }} }}
 
         # a worker killed with connections in use gives its places back
         reset(a, b)
-        kids = subprocess.run(["pgrep", "-P", str(p.pid), "-x", "okena"], capture_output=True, text=True).stdout.split()
+        kids = subprocess.run(["pgrep", "-P", str(p.pid), "-x", "okena-worker"], capture_output=True, text=True).stdout.split()
+        check("  (the workers are found, to be killed)", len(kids) == 4, kids)
         with ThreadPoolExecutor(4) as ex:
             futs = [ex.submit(get, LIM, "/?s=1.5") for i in range(4)]
             time.sleep(0.4)
