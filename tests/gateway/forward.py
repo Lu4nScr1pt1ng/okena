@@ -216,14 +216,19 @@ def main():
         check("  and neither before who it is", get("/fault")[0] == 302)
 
         # cache: per worker, so every worker is fed first
+        # (only asks for these routes: a late one from clients that left above
+        # must not count)
         def hits(f):
             n = len(asked)
             f()
-            return len(asked) - n
+            mine = [x for x in asked[n:] if x[1].get("x-forwarded-uri", "").startswith("/cached/")]
+            return len(mine)
         B = dict(Cookie="s=bob")
         for i in range(12):
             get("/cached/a", **A)
-        check("cache: a yes is kept", hits(lambda: [get("/cached/a", **A) for i in range(8)]) == 0)
+        n = len(asked)
+        h = hits(lambda: [get("/cached/a", **A) for i in range(8)])
+        check("cache: a yes is kept", h == 0, (h, [(x[0], x[1].get("x-forwarded-uri")) for x in asked[n:]]))
         r = get("/cached/a", **B)
         check("  not for someone else", r[:2] == (200, "bob"), r[:2])
         check("  nor for another path", hits(lambda: get("/cached/other", **A)) == 1)

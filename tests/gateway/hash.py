@@ -217,8 +217,8 @@ http 127.0.0.1:{COLD} {{ route /* {{ to pool cold }} }}
         most_c = max(SERVERS[k].most for k in SERVERS if k[:2] in ("c0", "c1", "c2", "c3"))
         check("  40 at once on one key: it spills, only as far as it must", len(h) >= 3 and most_h <= 20, (h, most_h))
         check("  where without bound it all goes to one", len(c) == 1 and most_c >= 30, (c, most_c))
-        w = collections.Counter(users(RW, 400).values())
-        check("weights: 3 to 1", 2.0 <= w["w3"] / max(w["w1"], 1) <= 4.5, w)
+        w = collections.Counter(users(RW, 2000).values())     # (400 left it to chance, 1 run in 300)
+        check("weights: 3 to 1", 2.6 <= w["w3"] / max(w["w1"], 1) <= 3.5, w)
 
         # source-hash, on stream and datagrams: the client's address
         def tcp_from(ip):
