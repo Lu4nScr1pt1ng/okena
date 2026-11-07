@@ -7,7 +7,8 @@
 ; proto=h3 (https:// URLs) goes over QUIC: src/bench/h3.inc.
 ;
 ; URL is http://ADDR[:PORT]/PATH, https://ADDR[:PORT]/PATH (TLS 1.3, its
-; records sealed and opened in user space) or tcp://ADDR:PORT (echo: `size` bytes out, as many back). ADDR is
+; records sealed and opened in user space), udp://ADDR:PORT (echo: a datagram of `size`
+; bytes and the same back; one lost holds its socket, and shows as behind) or tcp://ADDR:PORT (echo: `size` bytes out, as many back). ADDR is
 ; an IP address ([::1] for IPv6) or localhost. rate takes k and M (200k).
 ;
 ; Every connection has a schedule: with rate=N in all, one request every
@@ -113,7 +114,8 @@ PR_SET_TIMERSLACK := 29
 
 bss
 	align 8
-	g_b_mode	dd ?			; 0 http, 1 https, 2 tcp
+	g_b_mode	dd ?			; 0 http, 1 https, 2 tcp (and udp)
+	g_b_udp		dd ?			; udp://: mode 2, in datagrams
 	g_b_conns	dd ?
 	g_b_workers	dd ?
 	g_b_fmt		dd ?			; 0 text, 1 key=value
@@ -451,6 +453,15 @@ cli_bench:
 	out_lit 'bench: proto=h3 takes a request that fits a packet'
 	jmp	.fail
 .not_h3:
+	cmp	dword [g_b_udp],0
+	je	.not_udp
+	mov	eax,[g_b_new]
+	or	eax,[g_b_h2]
+	jz	.not_udp
+	call	log_begin
+	out_lit 'bench: udp:// keeps its sockets, one datagram at a time (no new=on, no proto=h2)'
+	jmp	.fail
+.not_udp:
 	cmp	dword [g_b_h2],0
 	je	@f
 	cmp	dword [g_b_new],0		; one stream a connection, kept open
@@ -495,7 +506,7 @@ cli_bench:
 	jmp	.fail
 .badurl:
 	call	log_begin
-	out_lit 'bench: the URL must be http://, https:// or tcp:// and an IP address or localhost with a port'
+	out_lit 'bench: the URL must be http://, https://, tcp:// or udp:// and an IP address or localhost with a port'
 	jmp	.fail
 .h2new:
 	call	log_begin
@@ -572,8 +583,14 @@ bench_parse_url:
 	mov	r14d,443
 	jmp	.auth
 .tcp:
+	cmp	dword [rbx],'udp:'
+	jne	@f
+	mov	dword [g_b_udp],1
+	jmp	.l4
+@@:
 	cmp	dword [rbx],'tcp:'
 	jne	.bad
+.l4:
 	cmp	word [rbx+4],'//'
 	jne	.bad
 	mov	dword [g_b_mode],2
@@ -1057,8 +1074,9 @@ bench_open:
 	push	r12
 	mov	edi,[g_b_family]
 	mov	esi,SOCK_STREAM or SOCK_CLOEXEC
-	cmp	dword [g_b_h3],0
-	je	@f
+	mov	eax,[g_b_h3]
+	or	eax,[g_b_udp]
+	jz	@f
 	mov	esi,SOCK_DGRAM or SOCK_CLOEXEC
 @@:
 	xor	edx,edx
@@ -1068,6 +1086,8 @@ bench_open:
 	js	.fail
 	mov	[rbx+BC_FD],eax
 	cmp	dword [g_b_h3],0
+	jne	.nodelay_done
+	cmp	dword [g_b_udp],0
 	jne	.nodelay_done
 	sub	rsp,16
 	mov	dword [rsp],1

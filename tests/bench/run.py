@@ -218,6 +218,20 @@ def main():
     rc, kv, err = bench(f"tcp://127.0.0.1:{ECHO}", "rate=1000", "duration=500ms", "warmup=0s", "conns=2", "size=64")
     check("tcp echo at a rate", rc == 0 and kv["requests"] == 500 and kv["errors"] == 0, str(kv))
 
+    # udp: a datagram and the same back, on the echo's port (udp and tcp are apart)
+    u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    u.bind(("127.0.0.1", ECHO))
+
+    def uecho():
+        while True:
+            m, a = u.recvfrom(2048)
+            u.sendto(m, a)
+    threading.Thread(target=uecho, daemon=True).start()
+    rc, kv, err = bench(f"udp://127.0.0.1:{ECHO}", "rate=1000", "duration=500ms", "warmup=0s", "conns=2", "size=64")
+    check("udp echo at a rate", rc == 0 and kv["requests"] == 500 and kv["errors"] == 0, str(kv))
+    rc, kv, err = bench(f"udp://127.0.0.1:{ECHO}", "new=on", "duration=200ms")
+    check("udp and new=on: refused", rc != 0 and "udp://" in err, (rc, err))
+
     # https: neither okena nor the bench needs the kernel's TLS
     subprocess.run(["openssl", "ecparam", "-genkey", "-name", "prime256v1", "-noout", "-out",
                     tmp / "k.pem"], check=True, capture_output=True)
