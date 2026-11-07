@@ -118,6 +118,8 @@ SUITES = [
     ("sticky epoll", ["tests/gateway/sticky.py", "epoll"]),
     ("maxconn io_uring", ["tests/gateway/maxconn.py", "io_uring"]),
     ("maxconn epoll", ["tests/gateway/maxconn.py", "epoll"]),
+    ("discover io_uring", ["tests/gateway/discover.py", "io_uring"]),
+    ("discover epoll", ["tests/gateway/discover.py", "epoll"]),
     ("geoip io_uring", ["tests/gateway/geoip.py", "io_uring"]),
     ("geoip epoll", ["tests/gateway/geoip.py", "epoll"]),
     ("acl io_uring", ["tests/gateway/acl.py", "io_uring"]),

@@ -43,6 +43,7 @@ macro plan_regions action
 	action g_plan_pools, 4
 	action g_plan_servers, 4
 	action g_plan_groups, 4
+	action g_plan_discs, 4
 	action g_plan_workers, 4
 	action g_plan_engine, 4
 	action g_plan_drain_delay, 8
@@ -318,6 +319,7 @@ supervisor_reload:
 	mov	eax,SYS_kill
 	syscall
 @@:
+	call	disc_table_init
 	call	dns_table_init			; a new table: the old workers keep theirs
 	call	groups_resolve_all
 	call	spawn_control

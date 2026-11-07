@@ -2169,6 +2169,9 @@ compile_pool:
 	lea	rcx,[dir_table + D_SIZE*DIR_QUEUE]
 	cmp	rax,rcx
 	je	.queue
+	lea	rcx,[dir_table + D_SIZE*DIR_DISCOVER]
+	cmp	rax,rcx
+	je	.discover
 	lea	rcx,[dir_table + D_SIZE*DIR_CONNECT]
 	cmp	rax,rcx
 	je	.connect
@@ -2312,6 +2315,11 @@ compile_pool:
 	mov	rdi,r13
 	mov	rsi,rbx
 	call	compile_server
+	jmp	.advance
+.discover:
+	mov	rdi,r13
+	mov	rsi,rbx
+	call	compile_discover
 	jmp	.advance
 .queue:
 	mov	rdi,rbx
@@ -2750,6 +2758,8 @@ server_new:
 	mov	[rax+GR_NLEN],edx
 	mov	edx,[g_cmp_addr+AD_PORT]
 	mov	[rax+GR_PORT],edx
+	mov	dword [rax+GR_KIND],GK_DNS
+	mov	dword [rax+GR_SLOTS],DNS_MAX_ADDRS
 	mov	edx,[g_plan_servers]
 	dec	edx				; this slot is the first
 	mov	[rax+GR_FIRST],edx
@@ -3273,9 +3283,107 @@ plan_bad_sticky:
 	jmp	exit_process
 
 cstring str_key_cookie, 'cookie',0
+DISC_DEFAULT	:= 64
 cstring str_key_max, 'max',0
 cstring str_key_ttl, 'ttl',0
 cstring str_key_samesite, 'samesite',0
+
+; rdi = pool, rsi = a `discover` node: a source, and its slots
+compile_discover:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	mov	r12,rdi
+	mov	r13,rsi
+	mov	ecx,[g_plan_groups]
+	cmp	ecx,MAX_GROUPS
+	jae	plan_too_many
+	mov	edx,[g_plan_discs]
+	cmp	edx,DISC_SOURCES
+	jae	plan_too_many
+	inc	dword [g_plan_discs]
+	inc	dword [g_plan_groups]
+	imul	rbx,rcx,GR_SIZE
+	lea	rbx,[g_groups+rbx]
+	mov	r14d,ecx			; the group
+	mov	dword [rbx+GR_KIND],GK_FILE
+	mov	[rbx+GR_DISC],edx
+	mov	rax,[r13+N_ARGS]
+	add	rax,A_SIZE			; the path
+	mov	rcx,[rax+A_VAL]
+	mov	[rbx+GR_NAME],rcx
+	mov	ecx,[rax+A_VLEN]
+	cmp	ecx,4096
+	jae	plan_bad_discover
+	mov	[rbx+GR_NLEN],ecx
+	mov	rcx,[rbx+GR_NAME]
+	cmp	byte [rcx],'/'
+	jne	plan_bad_discover		; a path from the root: the control process has no cwd of note
+	mov	dword [rbx+GR_PORT],0
+	mov	rdi,r13
+	lea	rsi,[str_key_port]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_decimal
+	test	eax,eax
+	jz	plan_bad_discover
+	cmp	eax,65535
+	ja	plan_bad_discover
+	mov	[rbx+GR_PORT],eax
+@@:
+	mov	dword [rbx+GR_SLOTS],DISC_DEFAULT
+	mov	rdi,r13
+	lea	rsi,[str_key_max]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_decimal
+	cmp	eax,DISC_MAX
+	ja	plan_bad_discover
+	mov	[rbx+GR_SLOTS],eax
+@@:
+	mov	eax,[g_plan_servers]
+	mov	[rbx+GR_FIRST],eax
+	mov	r8d,[rbx+GR_SLOTS]
+.slot:
+	mov	edx,[g_plan_servers]
+	cmp	edx,MAX_SERVERS
+	jae	plan_too_many
+	inc	dword [g_plan_servers]
+	inc	dword [r12+PL_COUNT]
+	imul	rdx,rdx,SV_SIZE
+	lea	rdx,[g_servers+rdx]
+	mov	dword [rdx+SV_WEIGHT],1
+	mov	rax,[rbx+GR_NAME]
+	mov	[rdx+SV_TEXT],rax
+	mov	eax,[rbx+GR_NLEN]
+	mov	[rdx+SV_TLEN],eax
+	lea	eax,[r14+1]
+	mov	[rdx+SV_GROUP],eax
+	mov	dword [rdx+SV_ACTIVE],0
+	dec	r8d
+	jnz	.slot
+	inc	dword [r12+PL_PRIMARY]
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+plan_bad_discover:
+	call	log_begin
+	out_lit 'discover file takes a path from / and may take port= (1..65535) and max= (1..256)'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
+
+cstring str_key_port, 'port',0
 
 plan_bad_bound:
 	call	log_begin

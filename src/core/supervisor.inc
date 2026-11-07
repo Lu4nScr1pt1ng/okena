@@ -76,6 +76,7 @@ supervisor_main:
 @@:
 	mov	[g_watchdog_s],eax
 	call	dns_table_init
+	call	disc_table_init
 	call	jwks_table_init
 	call	groups_resolve_all
 	call	health_table_init

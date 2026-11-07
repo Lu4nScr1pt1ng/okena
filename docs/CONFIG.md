@@ -933,10 +933,26 @@ alerts {
 pool users {
     server users:8080                        # a name: resolved, re-resolved by TTL
     discover file /etc/okena/users.list      # one address per line, watched
-    discover srv _users._tcp.service.consul
-    discover docker label=okena.pool=users port=8080
+    discover srv _users._tcp.service.consul  # planned
+    discover docker label=okena.pool=users port=8080   # planned
 }
 ```
+
+`discover file PATH [port=N] [max=64]` takes a pool's servers from a file, one
+`ADDRESS[:PORT] [weight=N]` a line (`#` starts a comment; `port=` for lines
+without one), so anything that can write a file can place backends:
+consul-template, a script, a CI job. It may stand beside `server` lines, or alone.
+The control process looks at the file once a second (a stat: nothing more when it
+did not change), and workers have what it read within another: a line added is
+served within two seconds. An address that stays keeps its slot, its health and
+its connections whatever the order of the lines; one taken out has its idle
+connections closed; a weight changes in place. Up to `max` servers (1 to 256),
+the first lines. A file that cannot be read, or has a line that is not an
+address, changes nothing: the servers known go on, and it is said once. One that
+turns up empty after having servers is believed once it has stayed empty for
+three seconds, as an editor may truncate before it writes; writing a new file and
+renaming it over the old one never shows half a file. The supervisor reads it
+before the workers start. `okena backend drain POOL PATH` drains all of them.
 
 The admin API changes the running state without editing files, given
 `admin unix:PATH` in the `okena` block:

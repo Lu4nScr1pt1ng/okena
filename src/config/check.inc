@@ -2323,6 +2323,11 @@ check_pool:
 .server:
 	test	rbx,rbx
 	jz	.counted
+	lea	rax,[dir_table + D_SIZE*DIR_DISCOVER]
+	cmp	[rbx+N_DEF],rax
+	jne	@f
+	inc	r13d				; (its servers come from elsewhere)
+@@:
 	lea	rax,[dir_table + D_SIZE*DIR_SERVER]
 	cmp	[rbx+N_DEF],rax
 	jne	@f
@@ -2357,7 +2362,7 @@ check_pool:
 	mov	esi,[r12+N_NLEN]
 	mov	edx,[r12+N_LINE]
 	call	cfg_error
-	out_lit 'this pool has no `server`'
+	out_lit 'this pool has no `server` (nor `discover`)'
 	call	cfg_diag_end
 	call	cfg_error_limit
 .out:

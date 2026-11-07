@@ -26,6 +26,9 @@ GR_NAME		:= 0		; q
 GR_NLEN		:= 8		; d
 GR_PORT		:= 12		; d
 GR_FIRST	:= 16		; d: first server slot
+GR_KIND		:= 20		; d: GK_*
+GR_SLOTS	:= 24		; d: server slots it has
+GR_DISC		:= 28		; d: discovery: its source
 GR_SIZE		:= 32
 
 CONTROL_POLL_NS	:= 250000000	; refresh requests are noticed within 250 ms
@@ -321,7 +324,7 @@ groups_resolve_all:
 .next:
 	cmp	ebx,[g_plan_groups]
 	jae	.done
-	call	group_resolve
+	call	group_look
 	push	rax
 	call	monotonic_seconds
 	pop	rcx
@@ -332,6 +335,14 @@ groups_resolve_all:
 .done:
 	pop	rbx
 	ret
+
+; ebx = group: a name to resolve, or a source to look at. eax = seconds to
+; the next look.
+group_look:
+	imul	rax,rbx,GR_SIZE
+	cmp	dword [g_groups+rax+GR_KIND],GK_FILE
+	je	disc_file_poll
+	jmp	group_resolve
 
 ; Supervisor: start the control process (only when there are names).
 spawn_control:
@@ -384,7 +395,7 @@ control_main:
 .resolve:
 	mov	rax,[g_dns_table]
 	mov	dword [rax+DT_WANT_OFF+rbx*4],0
-	call	group_resolve
+	call	group_look
 	add	rax,r12
 	mov	[g_grp_due+rbx*8],rax
 .next:
@@ -412,6 +423,12 @@ groups_refresh:
 	shl	r12,8
 	add	r12,[g_dns_table]
 .read:
+	imul	rax,rbx,GR_SIZE
+	cmp	dword [g_groups+rax+GR_KIND],GK_FILE
+	jne	@f
+	call	disc_refresh
+	jmp	.next
+@@:
 	mov	r13,[r12+DT_SEQ]
 	cmp	r13,[g_grp_seen+rbx*8]
 	je	.next				; unchanged

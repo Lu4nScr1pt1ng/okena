@@ -294,6 +294,7 @@ rodata
 	sc_common filter_control
 	sc_check filter_control, SYS_openat, read_only
 	sc_allow filter_control, SYS_read
+	sc_allow filter_control, SYS_fstat		; `discover file`: did it change
 	sc_allow filter_control, SYS_close
 	sc_check filter_control, SYS_socket, socket
 	sc_allow filter_control, SYS_connect
