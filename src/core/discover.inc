@@ -21,6 +21,7 @@
 GK_DNS		:= 0
 GK_FILE		:= 1
 GK_SRV		:= 2
+GK_DOCKER	:= 3
 
 DISC_MAX	:= 256			; servers a source may have
 DISC_SOURCES	:= 32
@@ -520,6 +521,8 @@ disc_publish:
 	pop	rdi
 	inc	qword [rdi+DX_SEQ]		; even: done
 	call	log_begin
+	cmp	dword [r12+GR_KIND],GK_DOCKER
+	je	.docker
 	cmp	dword [r12+GR_KIND],GK_SRV
 	je	@f
 	out_lit 'discover file '
@@ -530,6 +533,14 @@ disc_publish:
 	mov	rsi,[r12+GR_NAME]
 	mov	edx,[r12+GR_NLEN]
 	call	out_str
+	jmp	.told
+.docker:
+	out_lit 'discover docker '
+	imul	rax,r13,DK_SIZE
+	mov	rsi,[g_plan_dk+rax+DK_LABEL]
+	mov	edx,[g_plan_dk+rax+DK_LLEN]
+	call	out_str
+.told:
 	out_lit ': '
 	mov	eax,[g_disc_new+DX_COUNT]
 	call	out_u64

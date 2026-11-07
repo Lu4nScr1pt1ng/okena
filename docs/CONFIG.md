@@ -934,7 +934,7 @@ pool users {
     server users:8080                        # a name: resolved, re-resolved by TTL
     discover file /etc/okena/users.list      # one address per line, watched
     discover srv _users._tcp.service.consul
-    discover docker label=okena.pool=users port=8080   # planned
+    discover docker label=okena.pool=users port=8080
 }
 ```
 
@@ -963,6 +963,29 @@ NAME is a full name, not completed with search domains. It is looked up again
 when the shortest TTL runs out (1 to 60 s), with EDNS0 so that answers past 512
 bytes come whole. A lookup that fails, or gives nothing that resolves, keeps the
 servers known so far and is said once: DNS going away never empties a pool.
+
+`discover docker label=KEY[=VALUE] [port=N] [network=NAME]
+[socket=/var/run/docker.sock] [max=64]` takes them from the running containers
+that have the label, as Docker's Engine API lists them, asked once a second
+over its unix socket. A container is served at its address on `network` (or its
+first network), on the port of its `okena.port` label, else `port=`, else the one
+TCP port it exposes; `okena.weight` gives a weight. One with a health check is
+served only while it is healthy, so traffic waits for it to start. One that
+cannot be placed (no address, more than one port and no `okena.port`) is left
+out (`okena backend list` shows what is served); the others are served. Docker not answering, or answering what
+cannot be read, changes nothing; an empty list is believed. In Compose:
+
+```
+services:
+  okena:
+    volumes: ["/var/run/docker.sock:/var/run/docker.sock:ro"]
+  api:
+    labels: { okena.pool: api, okena.port: "8080" }
+```
+
+The socket is root on the host to whoever can write to it. okena only reads it,
+but a read-only proxy (Tecnativa's docker-socket-proxy with `CONTAINERS=1`, and
+`socket=` pointed at it) gives okena no more than it needs.
 
 The admin API changes the running state without editing files, given
 `admin unix:PATH` in the `okena` block:

@@ -3313,10 +3313,16 @@ compile_discover:
 	mov	[rbx+GR_DISC],edx
 	mov	rax,[r13+N_ARGS]
 	mov	rcx,[rax+A_VAL]
+	cmp	byte [rcx],'d'			; `docker`
+	je	.docker
 	cmp	byte [rcx],'s'			; `srv`
 	jne	@f
 	mov	dword [rbx+GR_KIND],GK_SRV
 @@:
+	cmp	dword [r13+N_ARGC],2
+	jb	plan_bad_discover
+	cmp	dword [rax+A_SIZE+A_KIND],ARG_KV
+	je	plan_bad_discover		; (a path or a name, not key=value)
 	add	rax,A_SIZE			; the path, or the name
 	mov	rcx,[rax+A_VAL]
 	mov	[rbx+GR_NAME],rcx
@@ -3345,6 +3351,80 @@ compile_discover:
 .file_path:
 	cmp	byte [rcx],'/'
 	jne	plan_bad_discover		; a path from the root: the control process has no cwd of note
+	jmp	.port
+	; docker: the socket, the label, the network
+.docker:
+	mov	dword [rbx+GR_KIND],GK_DOCKER
+	lea	rcx,[str_docker_sock]
+	mov	[rbx+GR_NAME],rcx
+	mov	dword [rbx+GR_NLEN],str_docker_sock.len
+	mov	dword [rbx+GR_PORT],0
+	mov	rdi,r13
+	lea	rsi,[str_key_socket]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	mov	rcx,[rax+A_VAL]
+	mov	edx,[rax+A_VLEN]
+	cmp	edx,107
+	ja	plan_bad_discover
+	cmp	byte [rcx],'/'
+	jne	plan_bad_discover
+	mov	[rbx+GR_NAME],rcx
+	mov	[rbx+GR_NLEN],edx
+@@:
+	mov	eax,[rbx+GR_DISC]
+	imul	r10,rax,DK_SIZE
+	lea	r10,[g_plan_dk+r10]
+	mov	qword [r10+DK_NET],0
+	mov	rdi,r13
+	lea	rsi,[str_key_label]
+	push	r10
+	call	node_option
+	pop	r10
+	test	rax,rax
+	jz	plan_bad_discover
+	mov	rcx,[rax+A_VAL]
+	mov	edx,[rax+A_VLEN]
+	call	.printable
+	mov	[r10+DK_LABEL],rcx
+	mov	[r10+DK_LLEN],edx
+	mov	rdi,r13
+	lea	rsi,[str_key_network]
+	push	r10
+	call	node_option
+	pop	r10
+	test	rax,rax
+	jz	.port
+	mov	rcx,[rax+A_VAL]
+	mov	edx,[rax+A_VLEN]
+	call	.printable
+	mov	[r10+DK_NET],rcx
+	mov	[r10+DK_NLEN],edx
+	jmp	.port
+; rcx/edx = a label or a network name: 1 to 200 printable bytes, no quote
+; nor backslash (it goes into a URL, and is compared with JSON as it is)
+.printable:
+	test	edx,edx
+	jz	plan_bad_discover
+	cmp	edx,200
+	ja	plan_bad_discover
+	xor	eax,eax
+@@:
+	movzx	r8d,byte [rcx+rax]
+	cmp	r8d,'!'
+	jb	plan_bad_discover
+	cmp	r8d,'~'
+	ja	plan_bad_discover
+	cmp	r8d,'"'
+	je	plan_bad_discover
+	cmp	r8d,'\'
+	je	plan_bad_discover
+	inc	eax
+	cmp	eax,edx
+	jb	@b
+	ret
+.port:
 	mov	rdi,r13
 	lea	rsi,[str_key_port]
 	call	node_option
@@ -3403,12 +3483,16 @@ compile_discover:
 
 plan_bad_discover:
 	call	log_begin
-	out_lit 'discover file takes a path from / and may take port= (1..65535) and max= (1..256); discover srv takes a full name and max='
+	out_lit 'discover file takes a path from / and may take port= (1..65535) and max= (1..256); discover srv takes a full name and max=; discover docker takes label=, and may take port=, network=, socket=/PATH and max='
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process
 
 cstring str_key_port, 'port',0
+cstring str_key_label, 'label',0
+cstring str_key_network, 'network',0
+cstring str_key_socket, 'socket',0
+cstring str_docker_sock, '/var/run/docker.sock'
 
 plan_bad_bound:
 	call	log_begin

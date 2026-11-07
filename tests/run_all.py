@@ -120,6 +120,8 @@ SUITES = [
     ("maxconn epoll", ["tests/gateway/maxconn.py", "epoll"]),
     ("discover io_uring", ["tests/gateway/discover.py", "io_uring"]),
     ("discover epoll", ["tests/gateway/discover.py", "epoll"]),
+    ("docker io_uring", ["tests/gateway/docker.py", "io_uring"]),
+    ("docker epoll", ["tests/gateway/docker.py", "epoll"]),
     ("geoip io_uring", ["tests/gateway/geoip.py", "io_uring"]),
     ("geoip epoll", ["tests/gateway/geoip.py", "epoll"]),
     ("acl io_uring", ["tests/gateway/acl.py", "io_uring"]),
