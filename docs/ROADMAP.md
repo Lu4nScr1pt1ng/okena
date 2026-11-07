@@ -602,13 +602,47 @@ authoritative server) and online games (UDP flows whose jitter matters more
 than their mean, measured as a distribution per flow, with busy polling and
 core isolation).
 
+**What runs the largest edges, replaced.** The aim is not to be fast in a lab
+but to be able to take the place of what carries the world's traffic today:
+Cloudflare's (Pingora for HTTP, Unimog for L4, its DNS), AWS's (ELB/ALB/NLB,
+Hyperplane, CloudFront, Route 53), Google's (Maglev, the GFE), Meta's (Katran,
+Proxygen), Fastly's and Akamai's edges. For each, what it does that okena must
+do too, as well or better, written down and checked off:
+
+* Many tenants on one fleet: millions of host names and certificates loaded
+  and changed without a reload that costs anything (configuration as data,
+  pushed by API and applied per tenant), each tenant isolated in its limits,
+  its memory and its share of CPU, so that one tenant's surge or attack never
+  touches another's latency.
+* Global anycast: the same addresses everywhere, BGP announced by health
+  (phase 8), consistent hashing that survives a site joining or leaving,
+  QUIC and TCP connections that keep their backend when the path moves.
+* Attack traffic as a normal load: millions of packets per second of SYN, UDP
+  and HTTP floods absorbed at the edge (XDP pre-filter, SYN cookies, per-source
+  and per-tenant budgets, challenge responses) while real users keep their
+  latency; layer 7 attacks told apart by behaviour, not only by rate.
+* Change without fear: upgrades, reloads and configuration pushes to a whole
+  fleet in stages, with automatic rollback when error rates or latency move;
+  no global outage from one bad push.
+* Observability at that size: metrics, logs and traces sampled and aggregated
+  so that seeing the traffic never costs what serving it does.
+* DNS at the scale of a public resolver and of an authoritative service: rate
+  limiting, response rate limiting, DNSSEC passing through untouched, and
+  answers in microseconds.
+
+Each of these is shown on the lab first and in the model of a fleet next:
+how many hosts, of which kind, carry a given share of a global load, and that
+the cost per request falls, not rises, as the fleet grows.
+
 Exit: published results, reproducible from the repository, in which okena
 equals or beats the best compared on latency (p50, p99, p99.9) in every
 category above, and on throughput per core in all but those where a
 kernel-only path (IPVS, Katran) is the reference, where it comes within 10%
 with `xdp`; memory per idle connection at or under the best; no fixed limit
-that a real deployment can reach; and a written, measured path to a fleet that
-carries tens of millions of requests per second.
+that a real deployment can reach; a written, measured path to a fleet that
+carries tens of millions of requests per second; and, for each of the large
+edges named above, the list of what it does with okena's answer to each item,
+measured, so that the claim that okena can replace it stands on numbers.
 
 ## Phase 12 — Addons
 
