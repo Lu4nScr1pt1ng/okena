@@ -31,6 +31,8 @@ bss
 	g_wq_waiting	dd ?
 	g_wq_polling	dd ?
 	g_wq_head	rd MAX_POOLS
+	g_pl_active	rd MAX_POOLS	; this worker's connections in use, by pool
+	g_sv_pool	rd MAX_SERVERS	; each server's pool
 	g_wq_tail	rd MAX_POOLS
 end bss
 
@@ -59,6 +61,29 @@ sv_live_worker:
 	rep	stosd
 	mov	dword [g_wq_waiting],0
 	mov	dword [g_wq_polling],0
+	; each server's pool
+	xor	ecx,ecx
+.pool:
+	cmp	ecx,[g_plan_pools]
+	jae	.pools
+	imul	rax,rcx,PL_SIZE
+	mov	edx,[g_pools+rax+PL_FIRST]
+	mov	r8d,edx
+	add	r8d,[g_pools+rax+PL_COUNT]
+@@:
+	cmp	edx,r8d
+	jae	@f
+	mov	[g_sv_pool+rdx*4],ecx
+	inc	edx
+	jmp	@b
+@@:
+	inc	ecx
+	jmp	.pool
+.pools:
+	lea	rdi,[g_pl_active]
+	mov	ecx,MAX_POOLS
+	xor	eax,eax
+	rep	stosd
 	lea	rdi,[g_wq_head]
 	mov	ecx,MAX_POOLS * 2
 	rep	stosd
@@ -83,6 +108,8 @@ macro sv_count_dec r*
 	push	rsi
 	mov	rsi,[g_sv_row]
 	dec	dword [rsi+r*4]
+	mov	esi,[g_sv_pool+r*4]
+	dec	dword [g_pl_active+rsi*4]
 	pop	rsi
 end macro
 
@@ -150,6 +177,8 @@ sv_claim:
 	ret
 .counted:
 	inc	dword [g_sv_active+rdi*4]
+	mov	esi,[g_sv_pool+rdi*4]
+	inc	dword [g_pl_active+rsi*4]
 	pop	rsi
 	pop	rax
 	stc
@@ -161,6 +190,8 @@ sv_unclaim:
 	mov	rsi,[g_sv_row]
 	lock dec dword [rsi+rdi*4]
 	dec	dword [g_sv_active+rdi*4]
+	mov	esi,[g_sv_pool+rdi*4]
+	dec	dword [g_pl_active+rsi*4]
 	pop	rsi
 	ret
 

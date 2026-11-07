@@ -175,6 +175,7 @@ PL_SNLEN	:= 712		; d
 PL_STTL		:= 716		; d: seconds, 0 for the session
 PL_SSAME	:= 720		; d: SS_*
 PL_QTIMEOUT	:= 728		; q: µs a request may wait for a place, 0: the connect timeout
+PL_HBOUND	:= 736		; d: maglev, ring-hash: a server's load at most this % of the mean, 0 none
 PL_SIZE		:= 768		; room for PL_TLS_ANCHOR + a PK blob (16 + 528), then PL_H2
 assert PL_TLS_ANCHOR + PK_SIZE <= PL_H2
 
@@ -2412,6 +2413,42 @@ compile_pool:
 	mov	eax,BAL_MAGLEV
 @@:
 	mov	[r13+PL_BALANCE],eax
+	mov	dword [r13+PL_HBOUND],0
+	mov	rdi,rbx
+	lea	rsi,[str_key_bound]
+	call	node_option
+	test	rax,rax
+	jz	.no_bound
+	cmp	dword [r13+PL_BALANCE],BAL_MAGLEV
+	jb	plan_bad_bound
+	cmp	dword [r13+PL_BALANCE],BAL_RING
+	ja	plan_bad_bound
+	mov	rsi,[rax+A_VAL]
+	mov	ecx,[rax+A_VLEN]
+	cmp	ecx,2
+	jb	plan_bad_bound
+	cmp	byte [rsi+rcx-1],'%'
+	jne	plan_bad_bound
+	dec	ecx
+	cmp	ecx,4
+	ja	plan_bad_bound
+	xor	eax,eax
+@@:
+	movzx	edx,byte [rsi]
+	inc	rsi
+	sub	edx,'0'
+	cmp	edx,9
+	ja	plan_bad_bound
+	imul	eax,eax,10
+	add	eax,edx
+	dec	ecx
+	jnz	@b
+	cmp	eax,101
+	jb	plan_bad_bound
+	cmp	eax,1000
+	ja	plan_bad_bound
+	mov	[r13+PL_HBOUND],eax
+.no_bound:
 	mov	rdi,rbx
 	lea	rsi,[str_key_key]
 	call	node_option
@@ -2436,6 +2473,10 @@ compile_pool:
 	je	.advance
 	mov	dword [r13+PL_HKEY],HK_COOKIE
 	mov	rdx,'cookie:'
+	call	.balance_named
+	je	.advance
+	mov	dword [r13+PL_HKEY],HK_QUERY
+	mov	rdx,'query:'
 	call	.balance_named
 	je	.advance
 	jmp	plan_bad_key
@@ -3236,9 +3277,18 @@ cstring str_key_max, 'max',0
 cstring str_key_ttl, 'ttl',0
 cstring str_key_samesite, 'samesite',0
 
+plan_bad_bound:
+	call	log_begin
+	out_lit 'balance bound= is for maglev and ring-hash: a server at most this share of the mean load, 101% to 1000%'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
+
+cstring str_key_bound, 'bound',0
+
 plan_bad_key:
 	call	log_begin
-	out_lit 'balance key= is for maglev and ring-hash: source, path, header:NAME or cookie:NAME'
+	out_lit 'balance key= is for maglev and ring-hash: source, path, header:NAME, cookie:NAME or query:NAME'
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process

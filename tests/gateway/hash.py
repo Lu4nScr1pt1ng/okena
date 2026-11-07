@@ -17,7 +17,7 @@ import time
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BIN = ROOT / "build" / "okena"
-MAG, RING, PATHS, COOK, TCP, UDP, RW = 18620, 18621, 18622, 18623, 18624, 18625, 18626
+MAG, RING, PATHS, COOK, TCP, UDP, RW, QRY, HOT, COLD = 18620, 18621, 18622, 18623, 18624, 18625, 18626, 18627, 18628, 18629
 fails = 0
 
 
@@ -32,6 +32,14 @@ class H(http.server.BaseHTTPRequestHandler):
     disable_nagle_algorithm = True
 
     def do_GET(self):
+        sv = self.server
+        with sv.lock:
+            sv.now += 1
+            sv.most = max(sv.most, sv.now)
+        if "s=" in self.path:
+            time.sleep(float(self.path.split("s=")[1].split("&")[0]))
+        with sv.lock:
+            sv.now -= 1
         b = self.server.name.encode()
         self.send_response(200)
         self.send_header("Content-Length", str(len(b)))
@@ -49,9 +57,13 @@ class S(http.server.ThreadingHTTPServer):
 
 def backend(name):
     s = S(("127.0.0.1", 0), H)
-    s.name = name
+    s.name, s.now, s.most, s.lock = name, 0, 0, threading.Lock()
+    SERVERS[name + str(s.server_address[1])] = s
     threading.Thread(target=s.serve_forever, daemon=True).start()
     return f"127.0.0.1:{s.server_address[1]}"
+
+
+SERVERS = {}
 
 
 def tcp_backend(name):
@@ -100,6 +112,8 @@ def main():
     heavy = {n: backend(n) for n in ("w3", "w1")}
     tcp = {n: tcp_backend(n) for n in names[:4]}
     udp = {n: udp_backend(n) for n in names[:4]}
+    hot = {n: backend(n) for n in ("h0", "h1", "h2", "h3")}
+    cold = {n: backend(n) for n in ("c0", "c1", "c2", "c3")}
 
     def text(skip=()):
         lines = lambda d: "".join(f" server {a};" for n, a in d.items() if n not in skip)
@@ -111,6 +125,9 @@ pool cook {{ balance maglev key=cookie:sid;{lines(web)} }}
 pool heavy {{ balance maglev key=header:x-user; server {heavy['w3']} weight=3; server {heavy['w1']} }}
 pool t {{ balance source-hash;{lines(tcp)} }}
 pool u {{ balance source-hash;{lines(udp)} }}
+pool qry {{ balance maglev key=query:id;{lines(web)} }}
+pool hot {{ balance maglev key=header:x-user bound=125%;{lines(hot)} }}
+pool cold {{ balance maglev key=header:x-user;{lines(cold)} }}
 http 127.0.0.1:{MAG} {{ route /* {{ to pool mag }} }}
 http 127.0.0.1:{RING} {{ route /* {{ to pool ring }} }}
 http 127.0.0.1:{PATHS} {{ route /* {{ to pool paths }} }}
@@ -118,6 +135,9 @@ http 127.0.0.1:{COOK} {{ route /* {{ to pool cook }} }}
 http 127.0.0.1:{RW} {{ route /* {{ to pool heavy }} }}
 tcp 127.0.0.1:{TCP} {{ to pool t }}
 udp 127.0.0.1:{UDP} {{ to pool u; responses 1 }}
+http 127.0.0.1:{QRY} {{ route /* {{ to pool qry }} }}
+http 127.0.0.1:{HOT} {{ route /* {{ to pool hot }} }}
+http 127.0.0.1:{COLD} {{ route /* {{ to pool cold }} }}
 """
     conf.write_text(text())
     log = tmp / "log"
@@ -178,6 +198,25 @@ udp 127.0.0.1:{UDP} {{ to pool u; responses 1 }}
         check("key=path: the path, not the query", same and len(set(n.values())) >= 4, collections.Counter(n.values()))
         c = {s: get(COOK, cookie=f"theme=dark; sid={s}; x=1")[1] for s in ("a", "b", "c", "d", "e", "f", "g", "h")}
         check("key=cookie:sid: that cookie only", all(get(COOK, cookie=f"sid={s}")[1] == c[s] for s in c), c)
+        q = {i: get(QRY, f"/x?a=1&id={i}&b=2")[1] for i in range(60)}
+        check("key=query:id: that parameter only", all(get(QRY, f"/y?id={i}")[1] == q[i] for i in range(30)) and len(set(q.values())) >= 4,
+              collections.Counter(q.values()))
+        st, w0 = get(QRY, "/x?a=1")
+        check("  a request without it: served", st == 200 and w0 in names, (st, w0))
+
+        # a hot key: bounded, it spills; unbounded, it does not
+        one = {get(HOT, x_user="hot")[1] for i in range(20)}
+        check("bound=125%: light, a key stays on its server", len(one) == 1, one)
+        from concurrent.futures import ThreadPoolExecutor
+
+        def burst(port):
+            with ThreadPoolExecutor(40) as ex:
+                return collections.Counter(ex.map(lambda i: get(port, "/?s=0.5", x_user="hot")[1], range(40)))
+        h, c = burst(HOT), burst(COLD)
+        most_h = max(SERVERS[k].most for k in SERVERS if k[:2] in ("h0", "h1", "h2", "h3"))
+        most_c = max(SERVERS[k].most for k in SERVERS if k[:2] in ("c0", "c1", "c2", "c3"))
+        check("  40 at once on one key: it spills, only as far as it must", len(h) >= 3 and most_h <= 20, (h, most_h))
+        check("  where without bound it all goes to one", len(c) == 1 and most_c >= 30, (c, most_c))
         w = collections.Counter(users(RW, 400).values())
         check("weights: 3 to 1", 2.0 <= w["w3"] / max(w["w1"], 1) <= 4.5, w)
 
@@ -219,6 +258,9 @@ udp 127.0.0.1:{UDP} {{ to pool u; responses 1 }}
     bad("a key that is no key", "balance maglev key=nothing", "key")
     bad("a key for round-robin", "balance round-robin key=source", "key")
     bad("a header with no name", "balance maglev key=header:", "key")
+    bad("bound for round-robin", "balance round-robin bound=125%", "bound")
+    bad("bound of 100%", "balance maglev bound=100%", "bound")
+    bad("bound with no %", "balance maglev bound=125", "bound")
     shutil.rmtree(tmp, ignore_errors=True)
     print(f"hash {ENGINE}: " + ("all passed" if not fails else f"{fails} failed"), flush=True)
     sys.exit(1 if fails else 0)

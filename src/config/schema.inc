@@ -156,7 +156,7 @@ keysdef k_fault, 'abort', T_COUNT, 'percent', T_COUNT, 'delay', T_DURATION
 keysdef k_quic_sid, 'key', T_ANY, 'rotation', T_ANY
 keysdef k_server, 'weight', T_WEIGHT, 'max', T_COUNT
 keysdef k_queue, 'timeout', T_DURATION
-keysdef k_balance, 'key', T_ANY
+keysdef k_balance, 'key', T_ANY, 'bound', T_ANY
 keysdef k_sticky, 'cookie', T_ANY, 'ttl', T_DURATION, 'samesite', T_ANY
 keysdef k_cert, 'key', T_ANY
 keysdef k_health, 'every', T_DURATION, 'timeout', T_DURATION, 'rise', T_COUNT, 'fall', T_COUNT, \

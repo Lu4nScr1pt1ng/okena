@@ -13,7 +13,7 @@ not built yet. A directive that is not built is refused by `okena check`
 | `udp ADDR...` | `to`, `responses N`, `limits { connections }` (flows), `timeout { idle }` |
 | `http ADDR...` | `host`, `route`, `limits`, `timeout { idle; header; body_idle; response }`, `trusted_proxies`, `access_log`, `http2 on\|off`, `http3 on\|off\|retry\|v2`, `preferred_address`, `early_data on\|off`, `tls { cert; key; ktls on\|off }` |
 | `route PATH... [METHOD...]` | `to`, `redirect`, `rewrite path`, `header set\|add\|drop`, `response header set\|add\|drop` |
-| `pool NAME` | `server ADDR [weight=N] [max=N] [backup]`, `queue timeout=`, `balance least-request\|peak-ewma\|round-robin\|least-conn\|random\|maglev\|ring-hash\|source-hash [key=]\|first`, `sticky cookie= [ttl=] [samesite=]`, `connect timeout=`, `health tcp\|http\|grpc ...`, `slow_start`, `tls { trust FILE; sni NAME }` (TLS to the backends), `protocol h1\|h2` |
+| `pool NAME` | `server ADDR [weight=N] [max=N] [backup]`, `queue timeout=`, `balance least-request\|peak-ewma\|round-robin\|least-conn\|random\|maglev\|ring-hash\|source-hash [key=] [bound=]\|first`, `sticky cookie= [ttl=] [samesite=]`, `connect timeout=`, `health tcp\|http\|grpc ...`, `slow_start`, `tls { trust FILE; sni NAME }` (TLS to the backends), `protocol h1\|h2` |
 
 `tls { cert FILE; key FILE }` on an `http` listener makes it HTTPS: TLS
 1.3 with a certificate chain (leaf first) and its key: EC P-256 (SEC 1 or
@@ -770,7 +770,7 @@ pool api {
 after a reload, and on every okena with the same servers, which is what a cache, a
 shard or a session kept in memory wants. The key is `key=source` (the client's
 address, the default; for `http` the one trusted proxies give), `header:NAME`,
-`cookie:NAME` or `path` (without the query); `source-hash` is `maglev` on the
+`cookie:NAME`, `query:NAME` (a parameter) or `path` (without the query); `source-hash` is `maglev` on the
 client's address, which is all a `tcp` or `udp` listener can hash on. A request
 without its key is drawn at random, as is a retry. `maglev` shares out evenly and
 looks up in one step; `ring-hash` (160 points per unit of weight) moves the fewest
@@ -779,6 +779,14 @@ others, 0.1% with maglev and none with ring-hash. A server that is down, drained
 or ejected keeps its place: its keys go to others, the same others everywhere,
 and no other key moves. They take the weights in the file, not `okena backend
 weight`, and an address a name resolves to anew is taken in within a second.
+
+`bound=125%` (101% to 1000%) bounds the load (Mirrokni et al., 2017; HAProxy's
+`hash-balance-factor`): a server takes a key while its connections in use are
+under that share of the pool's mean, counted in each worker; past it the key
+goes to the next server the key itself gives, the same everywhere. A hot key
+spills only as far as it must and comes back when the load falls; every other
+key stays. Forty requests at once on one key went to three of four servers, at
+most fifteen on one, where without a bound they all went to one.
 
 `sticky cookie=NAME [ttl=1h] [samesite=lax|strict|none]` keeps an http client on
 the server it got, by a cookie that names it: 16 hex digits of a hash of its

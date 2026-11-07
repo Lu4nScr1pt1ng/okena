@@ -25,6 +25,7 @@ HK_SOURCE	:= 0
 HK_HEADER	:= 1
 HK_COOKIE	:= 2
 HK_PATH		:= 3
+HK_QUERY	:= 4
 
 HT_M		:= 0			; d: maglev: entries; ring: points
 HT_SIG		:= 8			; q: the servers it was built for
@@ -160,6 +161,8 @@ pick_key_http:
 	je	.cookie
 	cmp	eax,HK_PATH
 	je	.path
+	cmp	eax,HK_QUERY
+	je	.query
 	call	http_client_resolve
 	pop	r12
 	lea	rdi,[r15+H_CLIENT]
@@ -185,6 +188,24 @@ pick_key_http:
 .path:
 	mov	rsi,[g_hm+HM_TARGET]
 	mov	ecx,[g_hm+HM_PLEN]
+	jmp	.value
+.query:
+	mov	rsi,[g_hm+HM_TARGET]
+	mov	ecx,[g_hm+HM_TLEN]
+	mov	edx,[g_hm+HM_PLEN]
+	sub	ecx,edx
+	jbe	.empty				; no query
+	add	rsi,rdx
+	inc	rsi				; past '?'
+	dec	ecx
+	lea	rdx,[rsi+rcx]
+	mov	rdi,[r12+PL_HNAME]
+	mov	ecx,[r12+PL_HNLEN]
+	mov	r8b,'&'
+	call	limit_field
+	jmp	.value
+.empty:
+	xor	ecx,ecx
 .value:
 	pop	r12
 	test	ecx,ecx
@@ -648,6 +669,33 @@ hash_pick:
 	xor	esi,esi
 	call	server_eligible
 	pop	rdi
+	jnc	.not
+	mov	eax,[rbx+PL_HBOUND]
+	test	eax,eax
+	jz	.yes
+	; bounded load (Mirrokni et al., 2017): a server takes one more while
+	; active < bound% * (all active + 1) / servers, all in this worker
+	push	rdx
+	mov	ecx,eax
+	mov	rax,rbx
+	lea	rsi,[g_pools]
+	sub	rax,rsi
+	xor	edx,edx
+	push	rcx
+	mov	ecx,PL_SIZE
+	div	rcx
+	pop	rcx
+	mov	eax,[g_pl_active+rax*4]
+	inc	eax
+	imul	rax,rcx				; bound * (all + 1)
+	mov	ecx,[g_sv_active+rdi*4]
+	imul	ecx,[rbx+PL_PRIMARY]
+	imul	rcx,rcx,100
+	cmp	rcx,rax
+	pop	rdx
+	jae	.not
+.yes:
+	stc
 	ret
 .not:
 	clc
