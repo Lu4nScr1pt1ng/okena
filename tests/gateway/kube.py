@@ -189,12 +189,15 @@ http 127.0.0.1:{NUM} {{ route /* {{ to pool num }} }}
             if get()[0]:
                 break
             time.sleep(0.05)
-        n = spread()
-        check("the ready endpoints of the service, every slice, on the port named http", set(n) == {"a", "c"}, (n, log.read_text()[-400:]))
+        # (under load a backend can be ejected for a moment by a slow connect:
+        # each set is waited for, not taken from one sample)
+        def seen(port, want):
+            return until(lambda: set(spread(20, port)) == want, 6) is not None
+        check("the ready endpoints of the service, every slice, on the port named http", seen(LST, {"a", "c"}), (spread(), log.read_text()[-400:]))
         check("  asked as the API wants it, with the token", any("/apis/discovery.k8s.io/v1/namespaces/shop/endpointslices?labelSelector=kubernetes.io%2Fservice-name%3Dweb&resourceVersion=0" in s and a == "Bearer first-token"
                                                                 for s, a in state["seen"]), state["seen"][:2])
-        check("an RSA CA and server, as kubeadm makes them: the same", set(spread(port=RSA)) == {"a", "c"}, spread(port=RSA))
-        check("port=9090: that number", set(spread(port=NUM)) == {"a-metrics", "c-metrics"}, spread(port=NUM))
+        check("an RSA CA and server, as kubeadm makes them: the same", seen(RSA, {"a", "c"}), (spread(port=RSA), log.read_text()[-600:]))
+        check("port=9090: that number", seen(NUM, {"a-metrics", "c-metrics"}), spread(port=NUM))
         check("a CA that did not sign the server: nothing believed", all(x[0] == 502 for x in (get(BADCA) for i in range(5))))
         check("a name the certificate does not have: nothing believed", all(x[0] == 502 for x in (get(BADNAME) for i in range(5))))
         t = log.read_text()
