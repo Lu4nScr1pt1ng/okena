@@ -1153,8 +1153,13 @@ sv_connect_start:
 ; edi = server, rbx = its pool. eax = its weight, scaled down while it
 ; slow-starts. Keeps every register but rax.
 sv_weight:
+	mov	rax,[g_api_tbl]
+	mov	eax,[rax+rdi*8+4]		; `okena backend weight`
+	test	eax,eax
+	jnz	@f
 	imul	eax,edi,SV_SIZE
 	mov	eax,[g_servers+rax+SV_WEIGHT]
+@@:
 	cmp	dword [g_sv_since+rdi*4],0
 	jne	.ramp
 	ret
@@ -1185,6 +1190,9 @@ sv_weight:
 ; edi = server index. CF when it may be chosen in pass esi
 ; (0 = healthy primaries, 1 = healthy backups, 2 = every primary).
 server_eligible:
+	mov	rax,[g_api_tbl]
+	cmp	dword [rax+rdi*8],0
+	jne	.no				; drained: not even when all else is down
 	imul	rax,rdi,SV_SIZE
 	cmp	dword [g_servers+rax+SV_ACTIVE],0
 	je	.no				; a name slot without an address

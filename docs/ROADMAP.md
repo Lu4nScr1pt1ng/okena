@@ -432,7 +432,8 @@ auth + limit stays within the latency budget in ARCHITECTURE.md. Met with `busy_
 
 ## Phase 7 — Operations
 
-* Binary upgrade with socket handoff (`okena upgrade`: done); admin API and CLI.
+* Binary upgrade with socket handoff (`okena upgrade`: done); admin API and CLI
+  (`okena backend`, `okena reload`: done).
 * SRV/file discovery, Docker discovery by labels, Kubernetes
   EndpointSlices.
 * Shared ticket keys and drain API for fleets.

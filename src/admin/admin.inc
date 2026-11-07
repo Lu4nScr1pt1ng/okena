@@ -100,7 +100,10 @@ metrics_open:
 ; Supervisor: start the admin process when there is a metrics socket.
 spawn_admin:
 	cmp	dword [g_metrics_fd],0
+	jge	@f
+	cmp	dword [g_api_fd],0
 	jl	.none
+@@:
 	mov	eax,SYS_fork
 	syscall
 	test	rax,rax
@@ -138,16 +141,48 @@ admin_main:
 	syscall
 	mov	[g_admin_buf],rax
 	call	helper_close_sockets
+	mov	eax,SYS_getuid_
+	syscall
+	mov	[g_api_uid],eax
+	call	api_apply			; (what came in while it was gone)
 	seccomp_for filter_admin
+	mov	eax,[g_metrics_fd]
+	mov	[g_admin_pfd],eax
+	mov	word [g_admin_pfd+4],POLLIN_
+	mov	eax,[g_api_fd]
+	mov	[g_admin_pfd+8],eax
+	mov	word [g_admin_pfd+12],POLLIN_
 .loop:
+	lea	rdi,[g_admin_pfd]
+	mov	esi,2
+	xor	edx,edx
+	xor	r10d,r10d
+	xor	r8d,r8d
+	mov	eax,SYS_ppoll_
+	syscall
+	test	eax,eax
+	jle	.loop
+	cmp	word [g_admin_pfd+6],0
+	je	@f
 	mov	edi,[g_metrics_fd]
+	lea	r12,[admin_serve]
+	call	.one
+@@:
+	cmp	word [g_admin_pfd+14],0
+	je	.loop
+	mov	edi,[g_api_fd]
+	lea	r12,[api_serve]
+	call	.one
+	jmp	.loop
+; edi = a listening socket, r12 = who serves what came
+.one:
 	xor	esi,esi
 	xor	edx,edx
 	mov	r10d,SOCK_CLOEXEC
 	mov	eax,SYS_accept4
 	syscall
 	test	eax,eax
-	js	.loop
+	js	.none_came
 	mov	ebx,eax
 	mov	edi,ebx
 	mov	esi,SOL_SOCKET
@@ -164,11 +199,12 @@ admin_main:
 	mov	eax,SYS_setsockopt
 	syscall
 	mov	edi,ebx
-	call	admin_serve
+	call	r12
 	mov	edi,ebx
 	mov	eax,SYS_close
 	syscall
-	jmp	.loop
+.none_came:
+	ret
 
 ; edi = connection: read one request, answer it.
 admin_serve:

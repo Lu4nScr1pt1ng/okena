@@ -108,6 +108,8 @@ SUITES = [
     ("jwks epoll", ["tests/gateway/jwks.py", "epoll"]),
     ("upgrade io_uring", ["tests/gateway/upgrade.py", "io_uring"]),
     ("upgrade epoll", ["tests/gateway/upgrade.py", "epoll"]),
+    ("admin io_uring", ["tests/gateway/admin.py", "io_uring"]),
+    ("admin epoll", ["tests/gateway/admin.py", "epoll"]),
     ("geoip io_uring", ["tests/gateway/geoip.py", "io_uring"]),
     ("geoip epoll", ["tests/gateway/geoip.py", "epoll"]),
     ("acl io_uring", ["tests/gateway/acl.py", "io_uring"]),

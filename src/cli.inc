@@ -18,6 +18,8 @@ cstring str_cmd_run, 'run',0
 cstring str_cmd_version, 'version',0
 cstring str_cmd_help, 'help',0
 cstring str_cmd_health, 'health',0
+cstring str_cmd_reload, 'reload',0
+cstring str_cmd_backend, 'backend',0
 cstring str_cmd_bench, 'bench',0
 cstring str_flag_help, '--help',0
 cstring str_flag_version, '--version',0
@@ -62,6 +64,18 @@ cli_main:
 	mov	dword [g_up_mode],1
 	jmp	.run
 @@:
+	mov	rax,[g_argv]
+	mov	rdi,[rax+8]
+	lea	rsi,[str_cmd_reload]
+	call	cstr_eq
+	test	eax,eax
+	jnz	cli_reload
+	mov	rax,[g_argv]
+	mov	rdi,[rax+8]
+	lea	rsi,[str_cmd_backend]
+	call	cstr_eq
+	test	eax,eax
+	jnz	cli_backend
 	mov	rax,[g_argv]
 	mov	rdi,[rax+8]
 	lea	rsi,[str_cmd_health]
@@ -320,6 +334,8 @@ cli_help:
 	out_lit '  okena [run] [-c FILE]        serve (default /etc/okena/okena.conf)', 10
 	out_lit '  okena check [FILE]           validate a configuration and exit', 10
 	out_lit '  okena tcp :5432 to db:5432   configuration given on the command line', 10
+	out_lit '  okena reload [-c FILE]       reload the running instance, and say how it went', 10
+	out_lit '  okena backend list|drain|up|weight [POOL SERVER [N]] [-c FILE]', 10
 	out_lit '  okena health [FILE]          exit 0 when the running instance is ready (/ready)', 10
 	out_lit '  okena bench URL [rate=N] ... open-loop load: latency corrected for coordinated omission', 10
 	out_lit '  okena version', 10, 10

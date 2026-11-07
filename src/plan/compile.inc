@@ -461,6 +461,9 @@ compile_settings:
 	lea	rcx,[dir_table + D_SIZE*DIR_UPGRADE]
 	cmp	rax,rcx
 	je	.upgrade
+	lea	rcx,[dir_table + D_SIZE*DIR_ADMIN]
+	cmp	rax,rcx
+	je	.admin
 	lea	rcx,[dir_table + D_SIZE*DIR_DRAIN]
 	cmp	rax,rcx
 	je	.drain
@@ -597,6 +600,21 @@ compile_settings:
 	mov	[g_plan_up],rcx
 	mov	ecx,[rax+A_VLEN]
 	mov	[g_plan_uplen],ecx
+	jmp	.advance
+.admin:
+	mov	rax,[rbx+N_ARGS]
+	mov	rcx,[rax+A_VAL]
+	mov	edx,[rax+A_VLEN]
+	cmp	edx,6
+	jb	plan_bad_admin
+	cmp	dword [rcx],'unix'
+	jne	plan_bad_admin
+	cmp	byte [rcx+4],':'
+	jne	plan_bad_admin
+	add	rcx,5
+	sub	edx,5
+	mov	[g_plan_api],rcx
+	mov	[g_plan_apilen],edx
 	jmp	.advance
 .cache_memory:
 	mov	rax,[rbx+N_ARGS]

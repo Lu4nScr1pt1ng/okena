@@ -163,6 +163,7 @@ rodata
 	sc_allow filter_supervisor, SYS_sendmsg_	; an upgrade: sockets to the new binary
 	sc_allow filter_supervisor, SYS_rename_
 	sc_allow filter_supervisor, SYS_getuid_
+	sc_allow filter_supervisor, SYS_ppoll_		; (the admin process)
 	sc_allow filter_supervisor, SYS_connect
 	sc_allow filter_supervisor, SYS_setsockopt
 	; children starting
@@ -300,6 +301,8 @@ rodata
 	sc_allow filter_admin, SYS_read
 	sc_allow filter_admin, SYS_close
 	sc_allow filter_admin, SYS_setsockopt
+	sc_allow filter_admin, SYS_getsockopt
+	sc_allow filter_admin, SYS_ppoll_
 	sc_end filter_admin
 
 	; logger: access log lines from the pipe to their files

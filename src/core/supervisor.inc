@@ -79,11 +79,13 @@ supervisor_main:
 	call	jwks_table_init
 	call	groups_resolve_all
 	call	health_table_init
+	call	api_table_init
 	call	peer_global_init		; per_source table: lives across reloads
 	call	limit_global_init		; and rate limits'
 	call	stats_table_init
 	call	upgrade_receive
 	call	upgrade_listen
+	call	api_listen
 	call	metrics_open
 
 	; TERM, INT, CHLD and ALRM (the watchdog) arrive through a signalfd.
@@ -181,6 +183,7 @@ supervisor_main:
 	call	spawn_admin
 	call	spawn_logger
 	call	upgrade_ready
+	call	api_ready
 
 	; check the heartbeats once a second
 	sub	rsp,32
@@ -221,6 +224,7 @@ supervisor_main:
 	jmp	.wait_signal
 .watchdog:
 	call	upgrade_tick
+	call	api_tick
 	call	watchdog_check
 	call	old_workers_check
 	call	tls_tickets_tick		; the ticket key, once a period

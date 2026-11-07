@@ -309,12 +309,12 @@ okena {
     watchdog 2s               # a worker stuck this long is replaced
     drain delay=2s timeout=7s # fits inside docker stop's 10 s
     metrics :9464             # /metrics, /live, /ready
+    admin unix:/run/okena/admin.sock  # `okena reload`, `okena backend`
     handshake_budget 100us wait=1s  # TLS hello crypto per loop iteration (0us: off);
                               # past it hellos queue, and those older than wait close
     # planned:
     profile balanced          # balanced | latency | throughput | memory-lean
-    reload on-change          # watch the config directory (today: SIGHUP)
-    admin unix:/run/okena/admin.sock
+    reload on-change          # watch the config directory (today: SIGHUP, `okena reload`)
     acme email=ops@example.com
 }
 ```
@@ -857,13 +857,23 @@ pool users {
 }
 ```
 
-The admin API changes the running state without editing files:
+The admin API changes the running state without editing files, given
+`admin unix:PATH` in the `okena` block:
 
 ```
-okena backend drain api 10.0.1.10:8080
-okena backend weight api 10.0.1.11:8080 3
-okena reload
+okena backend list                         # pool, server, weight, active, up|drain|down
+okena backend drain api 10.0.1.10:8080     # no new connection; those it has go on
+okena backend up api 10.0.1.10:8080        # takes the drain back
+okena backend weight api 10.0.1.11:8080 3  # 1..65535, 0 for the weight in the file
+okena reload                               # and says how it went; 1 when it did not take
 ```
+
+Each takes `-c FILE` to find the socket. A server is named as in the file, so a name
+means all its addresses. A drained server is not chosen even when every other is down:
+with none left a request gets a 502. A reload keeps drains and weights, by pool and
+server, and forgets those of a server that left the file; an upgrade or a restart starts
+from the file. The socket is the owner's only, by mode and by a look at the caller. It
+is opened when okena starts, so adding or moving `admin` takes a restart.
 
 ## Tooling
 

@@ -103,6 +103,8 @@ macro plan_regions action
 	action g_plan_rmaps, 4
 	action g_plan_up, 8
 	action g_plan_uplen, 4
+	action g_plan_api, 8
+	action g_plan_apilen, 4
 	action g_geo_base, 8
 	action g_geo_end, 8
 	action g_geo_data, 8
@@ -340,6 +342,7 @@ supervisor_reload:
 	syscall
 @@:
 	call	health_table_init
+	call	api_table_init
 	call	spawn_health
 	call	stats_table_init		; the old workers keep their pages
 	mov	edi,[g_admin_pid]
@@ -354,6 +357,7 @@ supervisor_reload:
 	call	logger_restart			; destinations may have changed
 	mov	edi,SG_RELOADS
 	call	stats_global_inc
+	call	api_reloaded
 	inc	dword [g_gen]
 	xor	ebx,ebx
 .spawn:

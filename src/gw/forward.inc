@@ -832,6 +832,13 @@ compile_forward:
 	pop	r13
 	ret
 
+plan_bad_admin:
+	call	log_begin
+	out_lit 'admin takes unix:PATH'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
+
 plan_bad_forward:
 	call	log_begin
 	out_lit 'auth forward needs pool=NAME of a pool that exists and path=/PATH; timeout= and cache= are times; copy= is a list of up to 64 fields'
