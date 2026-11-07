@@ -66,6 +66,7 @@ ep_main:
 	mov	[g_epfd],eax
 	call	ep_add_listeners
 	call	qs_worker_init			; http3: the UDP sockets
+	call	udp_worker_init
 	mov	edi,[g_sigfd]
 	mov	esi,EPOLLIN
 	mov	rdx,EK_SIGNAL shl 56
@@ -293,6 +294,8 @@ ep_dispatch:
 	mov	edi,esi				; a QUIC socket is readable
 	jmp	qs_readable
 @@:
+	cmp	eax,EK_UDP
+	je	udp_ready
 	; a session side: check the generation
 	mov	r8d,eax				; side
 	mov	r9,rsi

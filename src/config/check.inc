@@ -1265,6 +1265,9 @@ check_semantics:
 	lea	rcx,[dir_table + D_SIZE*DIR_TCP]
 	cmp	rax,rcx
 	je	.listener
+	lea	rcx,[dir_table + D_SIZE*DIR_UDP]
+	cmp	rax,rcx
+	je	.udp
 	lea	rcx,[dir_table + D_SIZE*DIR_POOL]
 	cmp	rax,rcx
 	je	.pool
@@ -1278,6 +1281,29 @@ check_semantics:
 	call	check_http
 	mov	rdi,rbx
 	call	check_tls
+	jmp	.advance
+.udp:
+	inc	dword [g_chk_listeners]
+	mov	rdi,rbx
+	call	check_listener
+	mov	rdi,rbx
+	call	check_tcp_timeouts
+	mov	rdi,rbx
+	mov	ecx,DIR_LIMITS
+	call	find_child
+	test	rax,rax
+	jz	.advance
+	mov	rdi,rax
+	mov	ecx,DIR_PER_SOURCE
+	call	find_child
+	test	rax,rax
+	jz	.advance
+	mov	rdi,[rax+N_NAME]
+	mov	esi,[rax+N_NLEN]
+	mov	edx,[rax+N_LINE]
+	call	cfg_error
+	out_lit 'a udp listener has flows, not connections, and no per_source yet'
+	call	cfg_diag_end
 	jmp	.advance
 .listener:
 	inc	dword [g_chk_listeners]
@@ -1627,6 +1653,9 @@ check_listener:
 is_listener:
 	mov	rax,[rdi+N_DEF]
 	lea	rcx,[dir_table + D_SIZE*DIR_TCP]
+	cmp	rax,rcx
+	je	.yes
+	lea	rcx,[dir_table + D_SIZE*DIR_UDP]
 	cmp	rax,rcx
 	je	.yes
 	lea	rcx,[dir_table + D_SIZE*DIR_HTTP]
@@ -2076,6 +2105,24 @@ check_listen_addresses:
 	call	is_listener
 	pop	rdi
 	jnc	.other_next
+	; tcp and udp have ports of their own, but http3 is udp
+	lea	rax,[dir_table + D_SIZE*DIR_UDP]
+	cmp	[r12+N_DEF],rax
+	sete	cl
+	cmp	[r14+N_DEF],rax
+	sete	dl
+	cmp	cl,dl
+	je	.same_protocol
+	push	rdi
+	mov	rdi,r12
+	test	cl,cl
+	cmovnz	rdi,r14
+	mov	ecx,DIR_HTTP3
+	call	find_child
+	pop	rdi
+	test	rax,rax
+	jz	.other_next
+.same_protocol:
 	xor	r15d,r15d
 .other_arg:
 	cmp	r14,r12
@@ -3136,9 +3183,13 @@ pool_used:
 	lea	rax,[dir_table + D_SIZE*DIR_HTTP]
 	cmp	[rbx+N_DEF],rax
 	je	.http
+	lea	rax,[dir_table + D_SIZE*DIR_UDP]
+	cmp	[rbx+N_DEF],rax
+	je	.l4
 	lea	rax,[dir_table + D_SIZE*DIR_TCP]
 	cmp	[rbx+N_DEF],rax
 	jne	.skip
+.l4:
 	mov	rdi,rbx
 	call	.uses
 	jc	.yes
@@ -3332,6 +3383,9 @@ check_passthrough:
 	mov	r12,rdi
 	mov	rbx,rsi
 	lea	rax,[dir_table + D_SIZE*DIR_TCP]
+	cmp	[r12+N_DEF],rax
+	je	@f
+	lea	rax,[dir_table + D_SIZE*DIR_UDP]
 	cmp	[r12+N_DEF],rax
 	je	@f
 	mov	rdi,rbx

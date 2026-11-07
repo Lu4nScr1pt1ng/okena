@@ -10,6 +10,7 @@ not built yet. A directive that is not built is refused by `okena check`
 |---|---|
 | `okena` | `workers`, `io_engine`, `busy_poll`, `watchdog`, `drain delay= timeout=`, `metrics`, `ticket_keys`, `handshake_budget wait=`, `quic_server_id HEX` |
 | `tcp ADDR...` | `to`, `limits { connections; per_source }`, `timeout { idle }`, `proxy_protocol send v1\|v2`, `tls { cert; key }`, `tls passthrough { sni NAME... to pool P; default reject\|to pool P }` |
+| `udp ADDR...` | `to`, `responses N`, `limits { connections }` (flows), `timeout { idle }` |
 | `http ADDR...` | `host`, `route`, `limits`, `timeout { idle; header; body_idle; response }`, `trusted_proxies`, `access_log`, `http2 on\|off`, `http3 on\|off\|retry\|v2`, `preferred_address`, `early_data on\|off`, `tls { cert; key; ktls on\|off }` |
 | `route PATH... [METHOD...]` | `to`, `redirect`, `rewrite path`, `header set\|add\|drop`, `response header set\|add\|drop` |
 | `pool NAME` | `server ADDR [weight=N] [backup]`, `balance least-request\|peak-ewma\|round-robin\|least-conn\|random`, `connect timeout=`, `health tcp\|http\|grpc ...`, `slow_start`, `tls { trust FILE; sni NAME }` (TLS to the backends), `protocol h1\|h2` |
@@ -171,8 +172,8 @@ server_name, picks the pool from the `sni` lines (exact names, `*.parent`
 wildcards), else `default` (`reject` when absent), and moves the bytes
 untouched, the ClientHello first (after a PROXY header when configured).
 
-Everything else below (the rest of TLS, `udp`, policies, auth, limits on requests,
-caching, files, addons, discovery, the admin API and most tooling) is the
+Everything else below (the rest of TLS, policies, auth, limits on requests,
+caching, files, addons, discovery and most tooling) is the
 design the code is heading for.
 
 One file, `okena.conf`, read top to bottom. The smallest useful config is
@@ -331,6 +332,37 @@ tcp     ADDR...   { ... }   # L4 stream proxy; with tls { } it terminates or rou
 udp     ADDR...   { ... }   # L4 datagrams (DNS, games, syslog)
 http    ADDR...   { ... }   # L7; with tls { } it is HTTPS (and HTTP/2, HTTP/3)
 ```
+
+`udp` forwards datagrams. A client on a listener is a flow, pinned to the
+server it got until it goes quiet for `timeout { idle }` (30 s), then
+forgotten; `limits { connections N }` is how many flows it holds (the default
+as for `tcp`), and when it is full an idle one makes room or the new
+client's datagrams are dropped: flows in use are never pushed out by new
+ones. `responses N` ends a flow at its Nth answer, at once (DNS: `responses
+1`); `responses 0` expects none (syslog, metrics), and its flows take no
+socket of their own. Without it a flow lasts as long as it is used (games,
+VoIP, QUIC to a backend that speaks it):
+
+```
+udp :53 { to pool dns; responses 1; timeout { idle 5s } }
+udp :514 { to pool logs; responses 0 }
+udp :27015 { to pool game; timeout { idle 2m } }
+```
+
+A flow that expects answers has its own connected socket: answers come only
+from its backend, and an ICMP "port unreachable" from it counts as a failed
+connect (three take it out for 10 s, as for `tcp`). A flow whose server goes
+down, by health checks or passively, moves on its next datagram, within a
+second; `okena backend drain` keeps the flows a server has and gives it no
+new ones. Bound to every address (`udp :53`), answers leave from the
+address the client wrote to. The same port can be `tcp` and `udp` at once,
+but not `udp` and an `http3` listener. A reload hands the sockets on with
+the datagrams queued in them; an answer an old worker waits for still
+reaches its client, within the drain timeout. An upgrade does the same.
+Each worker has its own socket, so a client stays on one worker; a reload
+that changes the number of workers moves some flows, which start again on
+their next datagram (to the same server only by chance, until `balance`
+learns hashing).
 
 `xdp` (L4 in the kernel, direct server return) is a mode of `tcp` and
 `udp` listeners: `tcp 203.0.113.10:80 { mode xdp; to pool web }`.
@@ -890,7 +922,7 @@ okena check --host                 # kernel features, limits, sysctls, container
 ```
 
 `okena bench URL [key=value...]` is an open-loop load generator (http://,
-https:// over TLS 1.3 and kTLS, tcp:// for echo). Options: `rate=N`
+https:// over TLS 1.3 and kTLS, tcp:// and udp:// for echo). Options: `rate=N`
 (requests/s in all, `k` and `M` allowed; without it the run is closed
 loop), `conns=64`, `duration=10s`, `warmup=1s`, `workers=1` (processes),
 `method=GET`, `header='Name: value'` (repeatable), `body=TEXT`,

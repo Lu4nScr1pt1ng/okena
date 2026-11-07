@@ -152,7 +152,11 @@ sessions_init:
 	inc	eax
 @@:
 	mov	[g_ls_cap+rbx*4],eax
+	imul	rcx,rbx,LS_SIZE
+	cmp	dword [g_listeners+rcx+LS_KIND],LK_UDP
+	je	@f				; (flows are not sessions)
 	add	r12d,eax
+@@:
 	mov	dword [g_ls_head+rbx*4],NIL
 	mov	dword [g_ls_tail+rbx*4],NIL
 	imul	ecx,ebx,PH_KINDS
@@ -167,6 +171,10 @@ sessions_init:
 	inc	ebx
 	jmp	.listener
 .sized:
+	test	r12d,r12d			; (only `udp`: no sessions, but they are mapped)
+	jnz	@f
+	inc	r12d
+@@:
 	; three direct descriptors per session (client, upstream, pooled),
 	; within RLIMIT_NOFILE, and within the slot tables
 	mov	rax,[g_nofile]
@@ -465,6 +473,9 @@ for_each_socket:
 .socket:
 	cmp	r12d,[g_lsocks+rbx*4]
 	jae	.next
+	imul	rax,rbx,LS_SIZE
+	cmp	dword [g_listeners+rax+LS_KIND],LK_UDP
+	je	.next				; (not for accepting: see udp_each_socket)
 	mov	edi,r12d
 	shl	edi,8
 	or	edi,ebx

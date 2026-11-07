@@ -602,6 +602,10 @@ previous_listener:
 	mov	eax,[rsi+LS_FAMILY]
 	cmp	eax,[r12+LS_FAMILY]
 	jne	.skip
+	mov	eax,[rsi+LS_KIND]		; (tcp and http are the same socket)
+	xor	eax,[r12+LS_KIND]
+	cmp	eax,LK_UDP
+	jae	.skip
 	mov	edx,[rsi+LS_SALEN]
 	cmp	edx,[r12+LS_SALEN]
 	jne	.skip

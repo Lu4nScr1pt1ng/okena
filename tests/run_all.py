@@ -110,6 +110,8 @@ SUITES = [
     ("upgrade epoll", ["tests/gateway/upgrade.py", "epoll"]),
     ("admin io_uring", ["tests/gateway/admin.py", "io_uring"]),
     ("admin epoll", ["tests/gateway/admin.py", "epoll"]),
+    ("udp io_uring", ["tests/gateway/udp.py", "io_uring"]),
+    ("udp epoll", ["tests/gateway/udp.py", "epoll"]),
     ("geoip io_uring", ["tests/gateway/geoip.py", "io_uring"]),
     ("geoip epoll", ["tests/gateway/geoip.py", "epoll"]),
     ("acl io_uring", ["tests/gateway/acl.py", "io_uring"]),

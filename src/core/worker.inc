@@ -101,6 +101,7 @@ worker_main:
 	call	arm_timer
 	call	arm_signal
 	call	qs_worker_init			; http3: the UDP sockets
+	call	udp_worker_init
 	mov	rax,[g_plan_busy_poll]
 	test	rax,rax
 	jz	.confine
@@ -111,9 +112,14 @@ worker_main:
 	mov	[g_spin_ticks],rax
 .confine:
 	; set up: from here on only what serving needs
+	cmp	dword [g_ud_on],0
+	jne	.with_udp
 	cmp	dword [g_plan_files],0
 	jne	.with_files
 	seccomp_for filter_worker_uring
+	jmp	.confined
+.with_udp:
+	seccomp_for filter_worker_uring_u
 	jmp	.confined
 .with_files:
 	seccomp_for filter_worker_uring_f
@@ -145,6 +151,7 @@ worker_main:
 	call	fault_flush			; requests held by fault delay=
 	call	h2_flush			; HTTP/2: one send a connection an iteration
 	call	qs_resume			; QUIC: datagrams left from the last turn
+	call	udp_resume
 	call	qs_flush			; QUIC: what connections send
 	call	hs_drain			; hellos that waited for the budget
 	mov	eax,[g_reaped]
@@ -166,6 +173,8 @@ worker_main:
 	jne	@f
 	cmp	dword [g_qs_pend],0		; nor datagrams left to read
 	jne	@f
+	cmp	dword [g_ud_pend],0
+	jne	@f
 	mov	edi,1
 @@:
 	call	ring_enter
@@ -174,6 +183,7 @@ worker_main:
 	call	fault_flush			; requests held by fault delay=
 	call	h2_flush			; HTTP/2: one send a connection an iteration
 	call	qs_resume			; QUIC: datagrams left from the last turn
+	call	udp_resume
 	call	qs_flush			; QUIC: what connections send
 	call	hs_drain			; hellos that waited for the budget
 	jmp	.loop
@@ -299,6 +309,7 @@ tick_work:
 	call	health_follow
 	call	pool_expire
 	call	stats_publish
+	call	udp_tick
 	mov	eax,[g_hb_slot]
 	add	rax,[g_hb]
 	inc	qword [rax]
@@ -368,6 +379,7 @@ us_to_ticks:
 	ret
 
 stop_accepting:
+	call	udp_stop
 	mov	dword [g_draining],2
 	mov	rax,[g_plan_drain_timeout]
 	call	us_to_ticks

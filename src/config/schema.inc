@@ -18,6 +18,7 @@ CTX_ROUTE	:= 8
 CTX_HOST	:= 9
 CTX_TLS		:= 10
 CTX_AUTH	:= 11
+CTX_UDP		:= 12
 
 ; Flags
 F_BLOCK_REQ	:= 1		; must have a block
@@ -114,6 +115,7 @@ M_ROUTE		:= 1 shl CTX_ROUTE
 M_HOST		:= 1 shl CTX_HOST
 M_TLS		:= 1 shl CTX_TLS
 M_AUTH		:= 1 shl CTX_AUTH
+M_UDP		:= 1 shl CTX_UDP
 
 enumdef e_io_engine, 'auto', 'io_uring', 'epoll'
 enumdef e_balance, 'round-robin', 'least-conn', 'random', 'least-request', 'peak-ewma'
@@ -160,10 +162,10 @@ keysdef k_connect, 'timeout', T_DURATION, 'max', T_FUTURE, 'idle', T_FUTURE, \
 	'warm', T_FUTURE, 'rate', T_FUTURE
 
 ; Names of the contexts, for messages, in CTX_* order starting at 1.
-enumdef ctx_names, 'the top level', '`okena`', '`tcp`', '`pool`', '`limits`', '`timeout`', '`http`', '`route`', '`host`', '`tls`', '`auth`'
+enumdef ctx_names, 'the top level', '`okena`', '`tcp`', '`pool`', '`limits`', '`timeout`', '`http`', '`route`', '`host`', '`tls`', '`auth`', '`udp`'
 
 ; Directives of the language that this version does not implement yet.
-enumdef future_names, 'udp', 'xdp', \
+enumdef future_names, 'xdp', \
 	'addon', 'alerts', 'include', 'log', 'reload', 'profile', \
 	'acme', 'discover', 'header', \
 	'source', \
@@ -191,17 +193,19 @@ dirdef DIR_QUIC_SID, 'quic_server_id', M_OKENA, 0,      F_UNIQUE or F_KEYS_BLOCK
 dirdef DIR_QUIC_CC, 'quic_cc',     M_OKENA,   0,           F_UNIQUE, 1, 1, e_quic_cc, T_NONE, 0
 dirdef DIR_DRAIN, 'drain',       M_OKENA,   0,           F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_drain
 dirdef DIR_HS_BUDGET, 'handshake_budget', M_OKENA, 0,    F_UNIQUE or F_KEYS_BLOCK, 1, 1, T_DURATION, T_NONE, k_hs_budget
+dirdef DIR_UDP, 'udp',         M_TOP,     CTX_UDP,     F_BLOCK_REQ, 1, 16, T_LISTEN, T_LISTEN, 0
+dirdef DIR_RESPONSES, 'responses', M_UDP,   0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
 dirdef DIR_TCP, 'tcp',         M_TOP,     CTX_TCP,     F_BLOCK_REQ, 1, 16, T_LISTEN, T_LISTEN, 0
 dirdef DIR_HTTP, 'http',        M_TOP,     CTX_HTTP,    F_BLOCK_REQ, 1, 16, T_LISTEN, T_LISTEN, 0
 dirdef DIR_HOST, 'host',        M_HTTP,    CTX_HOST,    F_BLOCK_REQ, 1, 64, T_HOSTNAME, T_HOSTNAME, 0
 dirdef DIR_ROUTE, 'route',      M_HTTP or M_HOST,    CTX_ROUTE,   F_BLOCK_REQ, 1, 32, T_ROUTE, T_ROUTE, 0
 dirdef DIR_POOL, 'pool',        M_TOP,     CTX_POOL,    F_BLOCK_REQ, 1, 1, T_NAME, T_NONE, 0
-dirdef DIR_TO, 'to',          M_TCP or M_ROUTE, 0,           F_UNIQUE, 1, 64, T_TARGET, T_TARGET, 0
+dirdef DIR_TO, 'to',          M_TCP or M_UDP or M_ROUTE, 0,           F_UNIQUE, 1, 64, T_TARGET, T_TARGET, 0
 dirdef DIR_PROXY_PROTOCOL, 'proxy_protocol', M_TCP, 0,      F_UNIQUE, 2, 2, e_pp_mode, e_pp_version, 0
-dirdef DIR_LIMITS, 'limits',      M_TCP or M_HTTP,     CTX_LIMITS,  F_BLOCK_REQ or F_UNIQUE, 0, 0, T_NONE, T_NONE, 0
+dirdef DIR_LIMITS, 'limits',      M_TCP or M_UDP or M_HTTP,     CTX_LIMITS,  F_BLOCK_REQ or F_UNIQUE, 0, 0, T_NONE, T_NONE, 0
 dirdef DIR_CONNECTIONS, 'connections', M_LIMITS,  0,           F_UNIQUE, 1, 1, T_COUNT, T_NONE, 0
 dirdef DIR_PER_SOURCE, 'per_source', M_LIMITS,  0,           F_UNIQUE, 1, 1, T_COUNT, T_NONE, 0
-dirdef DIR_TIMEOUT, 'timeout',     M_TCP or M_HTTP,     CTX_TIMEOUT, F_BLOCK_REQ or F_UNIQUE, 0, 0, T_NONE, T_NONE, 0
+dirdef DIR_TIMEOUT, 'timeout',     M_TCP or M_UDP or M_HTTP,     CTX_TIMEOUT, F_BLOCK_REQ or F_UNIQUE, 0, 0, T_NONE, T_NONE, 0
 dirdef DIR_IDLE, 'idle',        M_TIMEOUT, 0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
 dirdef DIR_TRUSTED, 'trusted_proxies', M_HTTP, 0,         F_UNIQUE, 1, 64, T_CIDR, T_CIDR, 0
 dirdef DIR_HTTP2, 'http2',       M_HTTP,    0,           F_UNIQUE, 1, 1, e_onoff, T_NONE, 0

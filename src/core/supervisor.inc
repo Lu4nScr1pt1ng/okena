@@ -260,6 +260,20 @@ supervisor_main:
 	mov	edi,EXIT_FAILURE
 	jmp	exit_process
 
+; rbx = a listener: esi = its sockets' type
+listener_type:
+	mov	esi,SOCK_STREAM or SOCK_CLOEXEC or SOCK_NONBLOCK
+	cmp	dword [rbx+LS_KIND],LK_UDP
+	jne	.out
+	mov	esi,SOCK_DGRAM or SOCK_CLOEXEC or SOCK_NONBLOCK
+.out:
+	ret
+
+rodata
+	align 4
+	ud_rcvbuf	dd UD_RCVBUF
+end rodata
+
 ; "listening on :5432 (tcp, to pool pg: 3 servers)"
 log_listener:
 	push	rbx
@@ -287,7 +301,13 @@ log_listener:
 	pop	rbx
 	ret
 .tcp:
+	cmp	dword [rbx+LS_KIND],LK_UDP
+	jne	@f
+	out_lit ' (udp, to '
+	jmp	.proto
+@@:
 	out_lit ' (tcp, to '
+.proto:
 	mov	eax,[rbx+LS_POOL]
 	imul	rax,rax,PL_SIZE
 	lea	rcx,[g_pools+rax]
@@ -338,6 +358,10 @@ listener_probe:
 .again:
 	mov	edi,r13d
 	mov	esi,SOCK_STREAM or SOCK_CLOEXEC
+	cmp	dword [rbx+LS_KIND],LK_UDP
+	jne	@f
+	mov	esi,SOCK_DGRAM or SOCK_CLOEXEC
+@@:
 	xor	edx,edx
 	mov	eax,SYS_socket
 	syscall
@@ -458,7 +482,7 @@ listener_open:
 	mov	r13d,AF_INET6
 @@:
 	mov	edi,r13d
-	mov	esi,SOCK_STREAM or SOCK_CLOEXEC or SOCK_NONBLOCK
+	call	listener_type
 	xor	edx,edx
 	mov	eax,SYS_socket
 	syscall
@@ -472,7 +496,7 @@ listener_open:
 	mov	dword [rbx+LS_SA+4],0
 	mov	dword [rbx+LS_SALEN],16
 	mov	edi,AF_INET
-	mov	esi,SOCK_STREAM or SOCK_CLOEXEC or SOCK_NONBLOCK
+	call	listener_type
 	xor	edx,edx
 	mov	eax,SYS_socket
 	syscall
@@ -500,6 +524,8 @@ listener_open:
 	mov	edx,SO_REUSEPORT
 	lea	r10,[one_int]
 	call	.setsockopt
+	cmp	dword [rbx+LS_KIND],LK_UDP
+	je	.udp
 	; accepted sockets inherit TCP_NODELAY from the listener
 	mov	esi,IPPROTO_TCP
 	mov	edx,TCP_NODELAY
@@ -514,6 +540,33 @@ listener_open:
 	lea	r10,[rbx+LS_T_HEADER]		; seconds, as the header clock
 	call	.setsockopt
 @@:
+	jmp	.bind
+.udp:
+	; a burst must not be lost to a default that assumes one reader at a time
+	mov	edi,r12d
+	mov	esi,SOL_SOCKET
+	mov	edx,SO_RCVBUF
+	lea	r10,[ud_rcvbuf]
+	mov	r8d,4
+	mov	eax,SYS_setsockopt
+	syscall
+	test	dword [rbx+LS_FLAGS],LSF_WILDCARD
+	jz	.bind
+	; bound to every address: answers must come from the one written to
+	mov	edi,r12d
+	mov	esi,IPPROTO_IP
+	mov	edx,IP_PKTINFO_
+	lea	r10,[one_int]
+	mov	r8d,4
+	mov	eax,SYS_setsockopt
+	syscall
+	cmp	r13d,AF_INET6
+	jne	.bind
+	mov	esi,IPPROTO_IPV6
+	mov	edx,IPV6_RECVPKTINFO_
+	lea	r10,[one_int]
+	call	.setsockopt
+.bind:
 	mov	edi,r12d
 	lea	rsi,[rbx+LS_SA]
 	mov	edx,[rbx+LS_SALEN]
@@ -521,12 +574,15 @@ listener_open:
 	syscall
 	test	eax,eax
 	js	.failed
+	cmp	dword [rbx+LS_KIND],LK_UDP
+	je	.bound
 	mov	edi,r12d
 	mov	esi,LISTEN_BACKLOG
 	mov	eax,SYS_listen
 	syscall
 	test	eax,eax
 	js	.failed
+.bound:
 	mov	eax,r12d
 	pop	r14
 	pop	r13

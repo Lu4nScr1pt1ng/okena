@@ -46,6 +46,7 @@ bss
 	g_up_msg:	rq 8
 	g_up_iov:	rq 2
 	g_up_text:	rb UP_TEXT
+	g_up_name:	rb UP_TEXT
 end bss
 
 rodata
@@ -53,6 +54,26 @@ rodata
 	up_metrics	db 'metrics'
 	up_ready	db 'R'
 end rodata
+
+; r12d = a listener, rsi/edx = its address as written: what names it between
+; two okenas. The same address can be tcp and udp.
+up_name:
+	imul	rax,r12,LS_SIZE
+	cmp	dword [g_listeners+rax+LS_KIND],LK_UDP
+	jne	.out
+	lea	rdi,[g_up_name]
+	mov	dword [rdi],'udp '
+	add	rdi,4
+	mov	ecx,edx
+	cmp	ecx,UP_TEXT - 4
+	jbe	@f
+	mov	ecx,UP_TEXT - 4
+@@:
+	lea	edx,[rcx+4]
+	rep	movsb
+	lea	rsi,[g_up_name]
+.out:
+	ret
 
 ; a helper, starting: the listening sockets are no business of its own, and if it holds
 ; one past the supervisor's end a connection can land on it, to be reset as it dies
@@ -260,6 +281,7 @@ up_send_all:
 	imul	rax,r12,LS_SIZE
 	mov	rsi,[g_listeners+rax+LS_TEXT]
 	mov	edx,[g_listeners+rax+LS_TLEN]
+	call	up_name
 	mov	eax,r12d
 	imul	eax,eax,MAX_WORKERS
 	lea	rdi,[g_lfd+rax*4]
@@ -434,8 +456,11 @@ upgrade_taken:
 	push	r12
 	mov	r12d,edi
 	imul	rax,r12,LS_SIZE
-	mov	r8,[g_listeners+rax+LS_TEXT]
-	mov	r9d,[g_listeners+rax+LS_TLEN]
+	mov	rsi,[g_listeners+rax+LS_TEXT]
+	mov	edx,[g_listeners+rax+LS_TLEN]
+	call	up_name
+	mov	r8,rsi
+	mov	r9d,edx
 	xor	r10d,r10d
 .next:
 	cmp	r10d,[g_up_n]

@@ -36,6 +36,7 @@ QH_BITS		:= 17				; connection ID hash: 131072 entries
 QH_N		:= 1 shl QH_BITS
 QDIRTY_MAX	:= 512
 EK_QUIC		:= 5				; epoll data: a QUIC socket (slot in the low bits)
+EK_UDP		:= 6				; epoll data: udp's epoll
 IORING_POLL_ADD_MULTI := 1
 SF_QC		:= 65536			; S_FLAGS: a QUIC connection
 

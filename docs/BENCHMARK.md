@@ -378,6 +378,28 @@ traffic keeps coming, so it is a choice: without it p50 and p99 are still in bud
 p99.9 is not. Which part of the kernel's wake-up it is was not found: that needs tracing
 as root. What is left at p99.99 was not looked into.
 
+## UDP against TCP, through okena (2026-11-07)
+
+`okena bench udp://` and `tcp://`, 20k requests/s on 64 sockets of 64 bytes, 4 s,
+to an echo in C (recvmmsg and sendmmsg) and its TCP twin, 2 workers not pinned, on a
+laptop with other work; three runs each, in µs. Straight to the UDP echo: p50 8, p99
+14-16, p99.9 20-31.
+
+| through okena | p50 | p99 | p99.9 |
+|---|---|---|---|
+| `udp`, io_uring | 21.2-21.5 | 41.5-43.0 | 860-1671 |
+| `tcp`, io_uring | 22.5-23.0 | 47.6-48.1 | 1081-1671 |
+| `udp`, epoll | 22.0-23.0 | 38.9-51.2 | 307-1720 |
+| `tcp`, epoll | 23.6-27.4 | 43.0-46.6 | 332-1360 |
+| `udp`, io_uring, `busy_poll 200us` | 16.4 | 25.1 | 38.4 |
+| `tcp`, io_uring, `busy_poll 200us` | 17.4 | 27.6 | 41.0 |
+
+A datagram costs what a TCP message does, a little less: about 14 µs over the echo
+alone at p50, the two extra trips through the kernel. Its tail is the same as TCP's,
+the worker waking up (above); with busy polling it goes. At 100k/s the p50 stays at 24
+and nothing is behind. The flows were made before the clock started; what a new flow
+costs (a socket, a connect, an epoll entry) is not in these numbers.
+
 ## What a cache hit costs (2026-11-06)
 
 The same load, 20k requests/s on 64 connections, HTTP/1.1, 2 workers pinned as a

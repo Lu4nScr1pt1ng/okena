@@ -203,6 +203,28 @@ rodata
 	sc_allow filter_worker_uring, SYS_sendmmsg
 	sc_end filter_worker_uring
 
+	; io_uring worker with `udp` listeners (and whatever `files` needs): their
+	; flows' sockets are opened, and forgotten, at the speed of a datagram
+	sc_begin filter_worker_uring_u
+	sc_common filter_worker_uring_u
+	sc_allow filter_worker_uring_u, SYS_io_uring_enter
+	sc_allow filter_worker_uring_u, SYS_madvise
+	sc_allow filter_worker_uring_u, SYS_getsockname
+	sc_allow filter_worker_uring_u, SYS_clock_gettime
+	sc_allow filter_worker_uring_u, SYS_getrandom
+	sc_allow filter_worker_uring_u, SYS_recvmmsg
+	sc_allow filter_worker_uring_u, SYS_sendmmsg
+	sc_allow filter_worker_uring_u, SYS_recvfrom
+	sc_check filter_worker_uring_u, SYS_socket, socket
+	sc_allow filter_worker_uring_u, SYS_connect
+	sc_allow filter_worker_uring_u, SYS_epoll_ctl
+	sc_allow filter_worker_uring_u, SYS_epoll_wait
+	sc_allow filter_worker_uring_u, SYS_openat2
+	sc_allow filter_worker_uring_u, SYS_fstat
+	sc_allow filter_worker_uring_u, SYS_lseek_
+	sc_allow filter_worker_uring_u, SYS_close
+	sc_end filter_worker_uring_u
+
 	; epoll worker
 	sc_begin filter_worker_epoll
 	sc_common filter_worker_epoll

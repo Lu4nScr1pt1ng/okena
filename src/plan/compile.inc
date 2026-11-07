@@ -34,7 +34,9 @@ LS_TLS		:= 120		; d: its tls entry + 1 (certificate, key), 0 = none
 LS_CCA		:= 124		; d: `client_ca`: its place in g_cca (LSF_CCA)
 LS_PA4		:= 128		; http3: `preferred_address`'s IPv4 one (sockaddr_in), family 0 none
 LS_PA6		:= 144		; and IPv6 one (sockaddr_in6)
+LS_RESP		:= 172		; d: udp: answers a flow gets, 0 none, -1 no limit
 LS_SIZE		:= 176
+assert LS_PA6 + 28 <= LS_RESP
 
 ; Host block name (http): routes for requests to that host
 HO_NAME		:= 0		; q: the name; for "*.example.com", ".example.com"
@@ -54,6 +56,7 @@ MAX_TRUST	:= 1024		; trusted_proxies ranges, all listeners
 
 LK_TCP		:= 0
 LK_HTTP		:= 1
+LK_UDP		:= 2
 
 ; Route (http)
 RT_PATH		:= 0		; q: path; for a prefix route, without the "*"
@@ -186,6 +189,7 @@ BAL_PEAK_EWMA	:= 4		; power of two choices on latency x load
 
 DEFAULT_CONNECTIONS	:= 65536		; per listener, whole instance
 DEFAULT_IDLE_SECS	:= 3600
+DEFAULT_UDP_IDLE_SECS	:= 30
 DEFAULT_HTTP_IDLE_SECS	:= 60
 DEFAULT_HEADER_SECS	:= 10		; slow clients (slowloris) get 408
 DEFAULT_RESPONSE_SECS	:= 30		; slow backends get 504
@@ -215,6 +219,7 @@ bss
 	g_plan_hs_budget	dq ?		; microseconds per loop iteration, 0 = off
 	g_plan_hs_wait		dq ?		; microseconds a queued hello may wait
 	g_plan_health		dd ?		; pools with active checks
+	g_cmp_resp		dd ?
 	g_plan_metrics		dd ?		; 1 when an admin address is set
 	g_plan_metrics_salen	dd ?
 	g_plan_metrics_text	dq ?
@@ -313,6 +318,9 @@ plan_compile:
 	jz	.done
 	mov	rax,[rbx+N_DEF]
 	lea	rcx,[dir_table + D_SIZE*DIR_TCP]
+	cmp	rax,rcx
+	je	.listener
+	lea	rcx,[dir_table + D_SIZE*DIR_UDP]
 	cmp	rax,rcx
 	je	.listener
 	lea	rcx,[dir_table + D_SIZE*DIR_HTTP]
@@ -2585,6 +2593,7 @@ compile_listener:
 	mov	r12,rdi
 	mov	r14d,-1				; http: routes choose the pool
 	mov	dword [g_cmp_pt],0
+	call	compile_udp
 	lea	rax,[dir_table + D_SIZE*DIR_HTTP]
 	cmp	[r12+N_DEF],rax
 	je	.http
@@ -2665,6 +2674,11 @@ compile_listener:
 	cmp	[r12+N_DEF],rax
 	jne	@f
 	mov	ebx,DEFAULT_HTTP_IDLE_SECS	; keep-alive clients
+@@:
+	lea	rax,[dir_table + D_SIZE*DIR_UDP]
+	cmp	[r12+N_DEF],rax
+	jne	@f
+	mov	ebx,DEFAULT_UDP_IDLE_SECS	; nothing tells a flow is over
 @@:
 	mov	rdi,r12
 	call	compile_tls			; reads and checks the files
@@ -2923,6 +2937,8 @@ compile_listener:
 @@:
 	mov	eax,[g_cmp_addr+AD_PORT]
 	mov	[rcx+LS_PORT],eax
+	mov	eax,[g_cmp_resp]
+	mov	[rcx+LS_RESP],eax
 	mov	eax,[g_cmp_flags]
 	cmp	dword [g_cmp_addr+AD_KIND],ADDR_ANY
 	je	.wild
@@ -2942,12 +2958,14 @@ compile_listener:
 	cmp	[r12+N_DEF],rdx
 	jne	@f
 	inc	eax
-@@:
-	mov	[rcx+LS_KIND],eax
-	test	eax,eax
-	jz	@f
 	or	dword [rcx+LS_FLAGS],LSF_PEER	; X-Forwarded-For needs the client
 @@:
+	lea	rdx,[dir_table + D_SIZE*DIR_UDP]
+	cmp	[r12+N_DEF],rdx
+	jne	@f
+	mov	eax,LK_UDP
+@@:
+	mov	[rcx+LS_KIND],eax
 	mov	eax,[g_cmp_rfirst]
 	mov	[rcx+LS_RFIRST],eax
 	mov	eax,[g_cmp_rcount]
@@ -2965,6 +2983,41 @@ compile_listener:
 	pop	r12
 	pop	rbx
 	ret
+
+; r12 = a listener: g_cmp_resp, from `responses`
+compile_udp:
+	mov	dword [g_cmp_resp],-1
+	mov	rdi,r12
+	mov	ecx,DIR_RESPONSES
+	call	find_child
+	test	rax,rax
+	jz	.none
+	mov	rax,[rax+N_ARGS]
+	mov	rsi,[rax+A_VAL]
+	mov	ecx,[rax+A_VLEN]
+	cmp	ecx,9
+	ja	plan_bad_responses
+	xor	eax,eax
+@@:
+	movzx	edx,byte [rsi]
+	inc	rsi
+	sub	edx,'0'
+	cmp	edx,9
+	ja	plan_bad_responses
+	imul	eax,eax,10
+	add	eax,edx
+	dec	ecx
+	jnz	@b
+	mov	[g_cmp_resp],eax
+.none:
+	ret
+
+plan_bad_responses:
+	call	log_begin
+	out_lit 'responses takes how many answers a flow gets: a number, 0 for none'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
 
 ; rdi = 16 address bytes (IPv4 in the first 4). CF when all zero.
 ; Keeps rax.
