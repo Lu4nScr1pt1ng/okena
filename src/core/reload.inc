@@ -78,6 +78,8 @@ macro plan_regions action
 	action g_rhash, 8 * RHASH_SIZE
 	action g_plan_tls, 4
 	action g_plan_tkeys, TKF_SIZE
+	action g_plan_tkpath, 8
+	action g_plan_tkplen, 4
 	action g_tls_ntab, TN_CAP * TN_SIZE
 	action g_tls_nstore, TN_STORE
 	action g_tls_nused, 8

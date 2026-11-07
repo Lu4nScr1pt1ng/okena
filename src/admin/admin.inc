@@ -268,6 +268,9 @@ admin_serve:
 	mov	rax,[g_stats_tbl]
 	cmp	qword [rax+SG_OFF+SG_DRAINING],0
 	jne	.draining
+	mov	rax,[g_api_ov]
+	cmp	dword [rax+AP_DRAIN],0
+	jne	.draining			; `okena drain`
 	cstring str_ready, 'HTTP/1.1 200 OK',13,10,'Content-Length: 6',13,10,'Connection: close',13,10,13,10,'ready',10
 	lea	rsi,[str_ready]
 	mov	edx,str_ready.len

@@ -899,18 +899,65 @@ TKF_SIZE	:= TKF_KEYS + 2 * TKF_KEY
 bss
 	align 8
 	g_plan_tkeys:	rb TKF_SIZE		; d: how many, then the keys
+	align 8
+	g_plan_tkpath	dq ?			; the file, 0 none
+	g_plan_tkplen	dd ?
+	g_tk_wsaid	dd ?
+	g_tk_wsig	dq ?
+	g_tk_wst:	rb 144
+	g_tk_wpath:	rb 1008
+	g_tk_wbuf:	rb 4096 + 64
+	g_tk_wnew:	rb TKF_SIZE
 end bss
 
 ; rdi = the ticket_keys directive.
 compile_ticket_keys:
 	push	rbx
+	mov	rbx,rdi
+	mov	rax,[rbx+N_ARGS]		; (kept, to be looked at again)
+	mov	rcx,[rax+A_VAL]
+	mov	[g_plan_tkpath],rcx
+	mov	ecx,[rax+A_VLEN]
+	mov	[g_plan_tkplen],ecx
+	call	tls_read_arg			; rax = text, rdx = its end
+	mov	rsi,rax
+	lea	rdi,[g_plan_tkeys]
+	call	tk_parse
+	jnc	.out
+	cmp	eax,1
+	je	.bad
+	cmp	eax,2
+	je	.too_many
+	mov	rdi,rbx
+	call	tls_error_at
+	out_lit 'no key in this file (one a line: openssl rand -base64 32)'
+	jmp	tls_error_end
+.bad:
+	mov	rdi,rbx
+	call	tls_error_at
+	out_lit 'a line of this file is not 32 bytes of base64 (make one with: openssl rand -base64 32)'
+	jmp	tls_error_end
+.too_many:
+	mov	rdi,rbx
+	call	tls_error_at
+	out_lit 'at most two keys: the one that seals new tickets, then the previous one'
+	jmp	tls_error_end
+.out:
+	pop	rbx
+	ret
+
+; rsi = a keys file's text, rdx = its end, rdi = a TKF_SIZE out: its keys,
+; each as (sha256 of it)[0..16] and an id [16..20]. CF on error, eax = 1 a
+; line that is not a key, 2 more than two, 3 none.
+tk_parse:
+	push	rbx
 	push	r12
 	push	r13
 	push	r14
 	sub	rsp,40
-	mov	rbx,rdi
-	call	tls_read_arg			; rax = text, rdx = its end
-	mov	r12,rax
+	mov	r14,rdi
+	mov	dword [r14],0
+	mov	r12,rsi
 	mov	r13,rdx
 .line:
 	cmp	r12,r13
@@ -927,27 +974,30 @@ compile_ticket_keys:
 	inc	r12
 	jmp	.scan
 .got:
-	cmp	dword [g_plan_tkeys],2
-	jae	.too_many
+	mov	eax,2
+	cmp	dword [r14],2
+	jae	.error
 	mov	edx,r12d
 	sub	edx,esi
+	mov	eax,1
 	cmp	edx,64
-	ja	.bad
+	ja	.error
 	lea	rdi,[g_tls_kder]
 	call	base64_decode
 	cmp	rax,32
-	jne	.bad
+	mov	eax,1
+	jne	.error
 	mov	rdi,rsp
 	lea	rsi,[g_tls_kder]
 	mov	edx,32
 	call	sha256
-	mov	eax,[g_plan_tkeys]
+	mov	eax,[r14]
 	imul	eax,eax,TKF_KEY
-	lea	rdi,[g_plan_tkeys+TKF_KEYS+rax]
+	lea	rdi,[r14+TKF_KEYS+rax]
 	mov	rsi,rsp
 	mov	ecx,TKF_KEY			; key = H[0..16], id = H[16..20]
 	rep	movsb
-	inc	dword [g_plan_tkeys]
+	inc	dword [r14]
 	mov	rdi,rsp
 	mov	ecx,32
 	call	secure_zero
@@ -959,29 +1009,152 @@ compile_ticket_keys:
 	inc	r12
 	jmp	.line
 .done:
-	cmp	dword [g_plan_tkeys],0
-	je	.empty
-	add	rsp,40
+	mov	eax,3
+	cmp	dword [r14],0
+	je	.error
+	clc
+	jmp	.out
+.error:
+	stc
+.out:
+	lea	rsp,[rsp+40]			; (not add: the carry is the answer)
 	pop	r14
 	pop	r13
 	pop	r12
 	pop	rbx
 	ret
+
+; Supervisor, once a second: the keys file, when it changed (a stat, nothing
+; more when it did not), read again and put in place as on a reload: a fleet
+; rotates by writing the file, and every okena takes the new key within a
+; second. A file that cannot be read or is not keys changes nothing, and is
+; said once.
+tk_watch:
+	cmp	qword [g_plan_tkpath],0
+	je	.none
+	cmp	qword [g_tks],0
+	je	.none
+	push	rbx
+	mov	ecx,[g_plan_tkplen]
+	cmp	ecx,1000
+	ja	.out
+	mov	rsi,[g_plan_tkpath]
+	lea	rdi,[g_tk_wpath]
+	rep	movsb
+	mov	byte [rdi],0
+	mov	edi,AT_FDCWD
+	lea	rsi,[g_tk_wpath]
+	mov	edx,O_RDONLY or O_CLOEXEC
+	xor	r10d,r10d
+	mov	eax,SYS_openat
+	syscall
+	test	eax,eax
+	js	.unreadable
+	mov	ebx,eax
+	mov	edi,ebx
+	lea	rsi,[g_tk_wst]
+	mov	eax,SYS_fstat
+	syscall
+	test	eax,eax
+	js	.unreadable_close
+	mov	rax,[g_tk_wst+8]		; inode, size, time
+	xor	rax,[g_tk_wst+48]
+	xor	rax,[g_tk_wst+88]
+	xor	rax,[g_tk_wst+96]
+	cmp	rax,[g_tk_wsig]
+	je	.same
+	mov	[g_tk_wsig],rax
+	xor	ecx,ecx
+.read:
+	mov	edi,ebx
+	lea	rsi,[g_tk_wbuf+rcx]
+	mov	edx,4096
+	sub	edx,ecx
+	jz	.read_done
+	push	rcx
+	xor	eax,eax
+	syscall
+	pop	rcx
+	test	rax,rax
+	jle	.read_done
+	add	ecx,eax
+	jmp	.read
+.read_done:
+	push	rcx
+	mov	edi,ebx
+	mov	eax,SYS_close
+	syscall
+	pop	rcx
+	lea	rsi,[g_tk_wbuf]
+	lea	rdx,[g_tk_wbuf+rcx]
+	lea	rdi,[g_tk_wnew]
+	call	tk_parse
+	jc	.bad
+	lea	rsi,[g_tk_wnew]
+	lea	rdi,[g_plan_tkeys]
+	mov	ecx,TKF_SIZE
+	repe	cmpsb
+	je	.told
+	lea	rsi,[g_tk_wnew]
+	lea	rdi,[g_plan_tkeys]
+	mov	ecx,TKF_SIZE
+	rep	movsb
+	call	tls_tickets_apply
+	call	log_begin
+	out_lit 'ticket keys taken again from '
+	lea	rsi,[g_tk_wpath]
+	call	out_cstr
+	call	log_end
+.told:
+	mov	dword [g_tk_wsaid],0
+	jmp	.wipe
+.same:
+	mov	edi,ebx
+	mov	eax,SYS_close
+	syscall
+	jmp	.out
 .bad:
-	mov	rdi,rbx
-	call	tls_error_at
-	out_lit 'a line of this file is not 32 bytes of base64 (make one with: openssl rand -base64 32)'
-	jmp	tls_error_end
-.too_many:
-	mov	rdi,rbx
-	call	tls_error_at
-	out_lit 'at most two keys: the one that seals new tickets, then the previous one'
-	jmp	tls_error_end
-.empty:
-	mov	rdi,rbx
-	call	tls_error_at
-	out_lit 'no key in this file (one a line: openssl rand -base64 32)'
-	jmp	tls_error_end
+	mov	eax,2
+	jmp	.tell
+.unreadable_close:
+	mov	edi,ebx
+	mov	eax,SYS_close
+	syscall
+.unreadable:
+	mov	eax,1
+	mov	qword [g_tk_wsig],0		; (back the same: read again)
+.tell:
+	cmp	[g_tk_wsaid],eax
+	je	.wipe
+	mov	[g_tk_wsaid],eax
+	push	rax
+	call	log_begin
+	out_lit 'ticket keys: '
+	lea	rsi,[g_tk_wpath]
+	call	out_cstr
+	pop	rax
+	cmp	eax,1
+	jne	@f
+	out_lit ' cannot be read'
+	jmp	@f
+@@:
+	cmp	eax,2
+	jne	@f
+	out_lit ' does not hold keys as it should'
+@@:
+	out_lit '; the keys in use stay'
+	call	log_end
+.wipe:
+	lea	rdi,[g_tk_wbuf]
+	mov	ecx,4096
+	call	secure_zero
+	lea	rdi,[g_tk_wnew]
+	mov	ecx,TKF_SIZE
+	call	secure_zero
+.out:
+	pop	rbx
+.none:
+	ret
 
 ; Supervisor, with the plan in place (the start, each reload): the file's
 ; keys into the shared slots, the current and the previous; without a

@@ -230,6 +230,7 @@ supervisor_main:
 	call	watchdog_check
 	call	old_workers_check
 	call	tls_tickets_tick		; the ticket key, once a period
+	call	tk_watch			; a fleet's keys file, changed
 	jmp	.wait_signal
 .reload:
 	call	supervisor_reload

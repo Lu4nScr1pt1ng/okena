@@ -26,6 +26,7 @@
 AP_WANT		:= 0		; d: a reload was asked for
 AP_TRIED	:= 4		; d
 AP_DONE		:= 8		; d: of those, or by signal, that went well
+AP_DRAIN	:= 12		; d: `okena drain`: out of rotation
 AP_ENT		:= 64
 AO_USED		:= 0		; d
 AO_DRAIN	:= 4		; d
@@ -58,6 +59,7 @@ bss
 	g_admin_pfd:	rq 2
 	g_cli_t0	dd ?
 	g_cli_d0	dd ?
+	g_cli_dwait	dd ?
 end bss
 
 rodata
@@ -370,6 +372,8 @@ api_serve:
 	api_cmd 'list', .list
 	api_cmd 'state', .state
 	api_cmd 'reload', .reload
+	api_cmd 'drain', .drain_instance
+	api_cmd 'resume', .resume
 	api_cmd 'drain', .names
 	api_cmd 'up', .names
 	api_cmd 'weight', .names
@@ -391,11 +395,37 @@ api_serve:
 	mov	rax,[g_api_ov]
 	mov	eax,[rax+AP_DONE]
 	call	fmt_u64
+	memit ' '
+	mov	rax,[g_api_ov]
+	mov	eax,[rax+AP_DRAIN]
+	call	fmt_u64
+	call	api_active
 	memit 10
 	jmp	.send
 .reload:
 	mov	rax,[g_api_ov]
 	mov	dword [rax+AP_WANT],1
+	pop	rdi
+	memit 'ok',10
+	jmp	.send
+.drain_instance:
+	; (alone: `drain POOL SERVER` is the server's)
+	push	r13
+	call	api_word
+	pop	r13
+	test	ecx,ecx
+	jnz	.names
+	mov	rax,[g_api_ov]
+	mov	dword [rax+AP_DRAIN],1
+	pop	rdi
+	memit 'ok',10
+	jmp	.send
+.resume:
+	call	api_word
+	test	ecx,ecx
+	jnz	.usage
+	mov	rax,[g_api_ov]
+	mov	dword [rax+AP_DRAIN],0
 	pop	rdi
 	memit 'ok',10
 	jmp	.send
@@ -635,6 +665,131 @@ api_list:
 	pop	r12
 	pop	rbx
 	ret
+
+; rdi = output: " CONNECTIONS", what every worker of now has open (the stats
+; pages, at most a second old)
+api_active:
+	push	rbx
+	push	rdi
+	xor	eax,eax
+	xor	ebx,ebx
+.listener:
+	cmp	ebx,[g_plan_listeners]
+	jae	.done
+	push	rax
+	lea	rcx,[STP_LACTIVE+rbx*4]
+	call	stats_sum_d
+	mov	ecx,eax
+	pop	rax
+	add	eax,ecx
+	inc	ebx
+	jmp	.listener
+.done:
+	pop	rdi
+	push	rax
+	memit ' '
+	pop	rax
+	call	fmt_u64
+	pop	rbx
+	ret
+
+; `okena drain`, `okena resume`: the instance out of rotation and back, for
+; a fleet behind a balancer that asks /ready. Drained, /ready answers 503 and
+; HTTP/1 connections close after the answer they carry, so that clients come
+; back through the balancer to another instance; nothing in flight is cut,
+; and new connections are still served (the balancer may take a moment to
+; see it). `okena drain wait` returns once nothing is left open, or after
+; 60 s. A reload keeps it; a restart or an upgrade starts in rotation.
+cli_drain:
+	mov	rcx,[g_argc]
+	mov	edi,2
+	mov	dword [g_cli_dwait],0
+	cmp	rcx,3
+	jb	.args
+	mov	rax,[g_argv]
+	mov	rdi,[rax+16]
+	cstring str_drain_wait, 'wait',0
+	lea	rsi,[str_drain_wait]
+	call	cstr_eq
+	mov	edi,2
+	test	eax,eax
+	jz	.args
+	mov	dword [g_cli_dwait],1
+	mov	edi,3
+.args:
+	call	cli_source_from_args
+	call	api_cli_open
+	cstring str_api_drain_l, 'drain',10
+	lea	rsi,[str_api_drain_l]
+	mov	edx,str_api_drain_l.len
+	call	api_call
+	cmp	dword [g_cli_dwait],0
+	je	.said
+	mov	r12d,600			; 60 s
+.wait:
+	lea	rsi,[str_api_state_l]
+	mov	edx,str_api_state_l.len
+	call	api_try
+	test	eax,eax
+	jz	.again
+	mov	rsi,[g_admin_buf]		; "ok TRIED DONE DRAIN ACTIVE"
+	add	rsi,3
+	call	.skip_word
+	call	.skip_word
+	call	.skip_word
+	cmp	byte [rsi],'0'
+	jne	.again
+	cmp	byte [rsi+1],' '
+	jbe	.empty
+.again:
+	lea	rdi,[ts_api_poll]
+	xor	esi,esi
+	mov	eax,SYS_nanosleep
+	syscall
+	dec	r12d
+	jnz	.wait
+	call	log_begin
+	out_lit 'drained, with connections still open after 60 s'
+	call	log_end
+	mov	edi,1
+	jmp	exit_process
+.empty:
+	mov	edi,1
+	call	out_select
+	out_lit 'drained: nothing left open',10
+	xor	edi,edi
+	jmp	exit_process
+.said:
+	mov	edi,1
+	call	out_select
+	out_lit 'drained: /ready answers 503',10
+	xor	edi,edi
+	jmp	exit_process
+.skip_word:
+	cmp	byte [rsi],' '
+	je	@f
+	cmp	byte [rsi],0
+	je	.skipped
+	inc	rsi
+	jmp	.skip_word
+@@:
+	inc	rsi
+.skipped:
+	ret
+
+cli_resume:
+	mov	edi,2
+	call	cli_source_from_args
+	call	api_cli_open
+	cstring str_api_resume_l, 'resume',10
+	lea	rsi,[str_api_resume_l]
+	mov	edx,str_api_resume_l.len
+	call	api_call
+	mov	edi,1
+	call	out_select
+	out_lit 'in rotation: /ready answers 200',10
+	xor	edi,edi
+	jmp	exit_process
 
 ; ------------------------------------------------------------ the commands
 

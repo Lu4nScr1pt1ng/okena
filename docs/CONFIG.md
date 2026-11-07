@@ -161,8 +161,11 @@ status.
 `okena { ticket_keys FILE }` takes the keys from a file every instance
 reads: one a line, 32 bytes of base64 (`openssl rand -base64 32`), the
 first sealing new tickets, an optional second (the previous) still
-opening them. Rotating is then a new first line and a reload (SIGHUP) on
-each instance; okena does not rotate them itself. The header timeout covers
+opening them. okena looks at the file once a second and takes what changed,
+with no reload: a fleet rotates by writing a new first line, the old one
+second, to every instance (a file written whole and renamed over the old one
+is never read half done). A file that cannot be read or does not hold keys
+leaves the keys in use, and is said once; okena does not rotate them itself. The header timeout covers
 the handshake. Backends get `X-Forwarded-Proto: https`. On a `tcp`
 listener `tls` terminates TLS and moves plaintext to the backend; there
 it needs kTLS (okena refuses to start without the module), and the
@@ -1013,7 +1016,20 @@ okena backend drain api 10.0.1.10:8080     # no new connection; those it has go 
 okena backend up api 10.0.1.10:8080        # takes the drain back
 okena backend weight api 10.0.1.11:8080 3  # 1..65535, 0 for the weight in the file
 okena reload                               # and says how it went; 1 when it did not take
+okena drain [wait]                         # the instance out of rotation
+okena resume                               # and back
 ```
+
+`okena drain` takes the whole instance out of a fleet's rotation without cutting
+anything: `/ready` answers 503, so the balancer in front stops sending, and
+HTTP/1 connections close after the answer they carry, so that their clients
+come back through it to another instance. Requests in flight finish, and new
+connections are still served for as long as the balancer takes to notice.
+`okena drain wait` returns once nothing is left open (60 s at most), the moment
+to stop or upgrade it; `okena resume` puts it back. A reload keeps a drain; a
+restart or an upgrade starts in rotation. HTTP/2 and HTTP/3 connections are
+not told to go yet (a GOAWAY on a drain is to come): they end as their clients
+end them.
 
 Each takes `-c FILE` to find the socket. A server is named as in the file, so a name
 means all its addresses. A drained server is not chosen even when every other is down:

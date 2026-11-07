@@ -124,6 +124,8 @@ SUITES = [
     ("docker epoll", ["tests/gateway/docker.py", "epoll"]),
     ("kube io_uring", ["tests/gateway/kube.py", "io_uring"]),
     ("kube epoll", ["tests/gateway/kube.py", "epoll"]),
+    ("fleet io_uring", ["tests/gateway/fleet.py", "io_uring"]),
+    ("fleet epoll", ["tests/gateway/fleet.py", "epoll"]),
     ("geoip io_uring", ["tests/gateway/geoip.py", "io_uring"]),
     ("geoip epoll", ["tests/gateway/geoip.py", "epoll"]),
     ("acl io_uring", ["tests/gateway/acl.py", "io_uring"]),

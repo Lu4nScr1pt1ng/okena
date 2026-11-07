@@ -552,6 +552,11 @@ http_request:
 	jb	@f
 	or	dword [r15+H_FLAGS],HX_CLOSE
 @@:
+	mov	rax,[g_api_ov]			; `okena drain`: clients go elsewhere
+	cmp	dword [rax+AP_DRAIN],0
+	je	@f
+	or	dword [r15+H_FLAGS],HX_CLOSE
+@@:
 	cmp	dword [r14+HM_VERSION],10
 	jne	@f
 	or	dword [r15+H_FLAGS],HX_CLOSE or HX_HTTP10	; HTTP/1.0 clients: one exchange
