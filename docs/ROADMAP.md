@@ -438,14 +438,13 @@ auth + limit stays within the latency budget in ARCHITECTURE.md. Met with `busy_
 * SRV/file discovery, Docker discovery by labels, Kubernetes
   EndpointSlices.
 * Shared ticket keys and drain API for fleets.
-* ACME (HTTP-01, TLS-ALPN-01, DNS-01 for wildcards) in its own process.
 * Alerts (webhook, Telegram, Slack) from the control process.
 * OTLP tracing; `okena top`.
 * Landlock, privilege drop, systemd socket activation, container image.
 
 Exit: a week-long soak with reloads and upgrades every minute under load
 loses no request; `make chaos` passes with every dependency (DNS,
-discovery, JWKS, ACME, control process, logger, disk) failed in turn.
+discovery, JWKS, control process, logger, disk) failed in turn.
 
 ## Phase 8 — Edge and CDN
 
@@ -461,6 +460,31 @@ origin load stays flat during a purge-and-refill storm.
 
 ## Phase 9 — Breadth
 
+* Automatic HTTPS, as Caddy does it: `tls auto` (or a listener on :443 with host
+  names and no certificate) and okena does the rest. ACME (RFC 8555) in a process
+  of its own, the only one that talks to a CA and writes keys, out of the
+  workers' seccomp and Landlock: HTTP-01 answered by the :80 listener,
+  TLS-ALPN-01 by the :443 one (no port 80 needed), DNS-01 through a provider
+  (Cloudflare, Route 53, RFC 2136) for wildcards. Let's Encrypt by default,
+  ZeroSSL and any ACME CA (an internal step-ca) as fallbacks when one fails or
+  rate-limits; External Account Binding. ECDSA P-256 keys, renewal at two
+  thirds of the lifetime with jitter, and earlier when ARI (RFC 9773) says so;
+  backoff that respects the CA's limits, and the staging CA first when a name
+  has failed. Certificates reach the workers as a reload of keys only, with no
+  connection dropped; until a name has one it is served a short-lived
+  self-signed certificate, never a refused handshake. OCSP stapling, with the
+  staple refreshed before it ends and a revoked certificate replaced at once.
+  Plain http redirected to https for those names (`redirect off` to keep it).
+  On-demand certificates for names not in the file, behind a check (`ask` URL
+  or an allow list) so a stranger's name cannot make okena ask for one. Storage
+  in a directory (0700, keys 0600) that a fleet can share, with a lock so one
+  instance orders and the others take its result; `okena certs` lists them with
+  their expiry and what was last tried. A local CA for development names
+  (`localhost`, `*.test`), trusted with one command. Metrics and alerts for
+  certificates near their end.
+  Exit: a fresh install with `tls auto` serves a valid certificate within a
+  minute; a CA down, rate-limited or answering wrongly never takes a served
+  certificate away; `make chaos` with the CA failed in turn passes.
 * TLS 1.2, RSA certificates (signing), client-certificate auth at scale.
 * Brotli on the fly.
 * Consul discovery, Kubernetes Gateway API.
