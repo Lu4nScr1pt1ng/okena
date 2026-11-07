@@ -146,7 +146,8 @@ group_resolve:
 @@:
 	out_lit '; retrying'
 .said:
-	call	log_end
+	mov	edi,AL_DISCOVERY
+	call	log_end_alert
 .retry:
 	mov	eax,DNS_RETRY_S
 .out:
@@ -352,8 +353,9 @@ group_look:
 
 ; Supervisor: start the control process (only when there are names).
 spawn_control:
-	cmp	dword [g_plan_groups],0
-	je	.none
+	mov	eax,[g_plan_groups]
+	or	eax,[g_plan_al_n]
+	jz	.none
 	mov	eax,SYS_fork
 	syscall
 	test	rax,rax
@@ -382,8 +384,10 @@ control_main:
 	mov	eax,SYS_prctl
 	syscall
 	call	helper_close_sockets
+	call	alerts_init
 	seccomp_for filter_control
 .loop:
+	call	alerts_tick
 	call	monotonic_seconds
 	mov	r12,rax
 	xor	ebx,ebx

@@ -239,7 +239,8 @@ disc_file_poll:
 	pop	rdx
 	pop	rsi
 	call	out_str
-	call	log_end
+	mov	edi,AL_DISCOVERY
+	call	log_end_alert
 	; a file that comes back the same must still be read
 	xor	eax,eax
 	mov	[r15],rax
@@ -933,7 +934,8 @@ disc_srv_poll:
 	out_lit ': none of its targets resolves'
 .said:
 	out_lit '; keeping the servers known so far'
-	call	log_end
+	mov	edi,AL_DISCOVERY
+	call	log_end_alert
 .retry:
 	mov	eax,DNS_RETRY_S
 .out:

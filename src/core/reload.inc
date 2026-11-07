@@ -46,6 +46,12 @@ macro plan_regions action
 	action g_plan_discs, 4
 	action g_plan_dk, DK_SIZE * DISC_SOURCES
 	action g_plan_kb, KB_SIZE * DISC_SOURCES
+	action g_plan_al_n, 4
+	action g_plan_al_on, 4
+	action g_plan_al_every, 4
+	action g_plan_al_nlen, 4
+	action g_plan_al_name, 8
+	action g_plan_al, ATG_SIZE * AL_TARGETS
 	action g_plan_workers, 4
 	action g_plan_engine, 4
 	action g_plan_drain_delay, 8
@@ -325,6 +331,7 @@ supervisor_reload:
 @@:
 	call	disc_table_init
 	call	dns_table_init			; a new table: the old workers keep theirs
+	call	alerts_prepare
 	call	groups_resolve_all
 	call	spawn_control
 	mov	edi,[g_keys_pid]
@@ -404,12 +411,14 @@ supervisor_reload:
 	neg	rax
 	call	out_u64
 	out_lit '); keeping the running configuration'
-	call	log_end
+	mov	edi,AL_RELOAD
+	call	log_end_alert
 	jmp	.undo_arenas
 .fork_failed:
 	call	log_begin
 	out_lit 'reload failed: fork failed; keeping the running configuration'
-	call	log_end
+	mov	edi,AL_RELOAD
+	call	log_end_alert
 	jmp	.undo_arenas
 .child_crashed:
 	call	log_begin
@@ -417,17 +426,20 @@ supervisor_reload:
 	mov	eax,[g_siginfo+SI_STATUS]
 	call	out_u64
 	out_lit '); keeping the running configuration'
-	call	log_end
+	mov	edi,AL_RELOAD
+	call	log_end_alert
 	jmp	.undo_arenas
 .rejected:
 	call	log_begin
 	out_lit 'reload rejected (errors above); keeping the running configuration'
-	call	log_end
+	mov	edi,AL_RELOAD
+	call	log_end_alert
 	jmp	.undo_arenas
 .sockets_failed:
 	call	log_begin
 	out_lit 'reload rejected (cannot listen, see above); keeping the running configuration'
-	call	log_end
+	mov	edi,AL_RELOAD
+	call	log_end_alert
 	call	plan_restore
 .undo_arenas:
 	call	arenas_swap

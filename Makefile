@@ -153,6 +153,8 @@ test-serial: $(BIN) $(HTTPH) $(KAT) $(TLSH)
 	python3 -I tests/gateway/kube.py epoll
 	python3 -I tests/gateway/fleet.py io_uring
 	python3 -I tests/gateway/fleet.py epoll
+	python3 -I tests/gateway/alerts.py io_uring
+	python3 -I tests/gateway/alerts.py epoll
 	python3 -I tests/gateway/geoip.py io_uring
 	python3 -I tests/gateway/geoip.py epoll
 	python3 -I tests/gateway/acl.py io_uring

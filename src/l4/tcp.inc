@@ -2036,7 +2036,8 @@ server_ok:
 	push	rdi
 	call	log_server
 	out_lit ' is reachable again'
-	call	log_end
+	mov	edi,AL_BACKEND
+	call	log_end_alert
 	pop	rdi
 @@:
 	mov	dword [g_sv_fails+rdi*4],0
@@ -2074,7 +2075,8 @@ server_failed:
 	neg	rax
 	call	errno_text
 	out_lit ')'
-	call	log_end
+	mov	edi,AL_BACKEND
+	call	log_end_alert
 	pop	rdi
 .done:
 	ret

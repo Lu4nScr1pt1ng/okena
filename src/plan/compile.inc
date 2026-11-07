@@ -313,6 +313,13 @@ plan_compile:
 	test	rbx,rbx
 	jz	.pools_done
 	mov	rax,[rbx+N_DEF]
+	lea	rcx,[dir_table + D_SIZE*DIR_ALERTS]
+	cmp	rax,rcx
+	jne	.not_alerts
+	mov	rdi,rbx
+	call	compile_alerts
+	jmp	@f
+.not_alerts:
 	lea	rcx,[dir_table + D_SIZE*DIR_POOL]
 	cmp	rax,rcx
 	jne	@f

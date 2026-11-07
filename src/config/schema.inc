@@ -19,6 +19,7 @@ CTX_HOST	:= 9
 CTX_TLS		:= 10
 CTX_AUTH	:= 11
 CTX_UDP		:= 12
+CTX_ALERTS	:= 13
 
 ; Flags
 F_BLOCK_REQ	:= 1		; must have a block
@@ -116,6 +117,7 @@ M_HOST		:= 1 shl CTX_HOST
 M_TLS		:= 1 shl CTX_TLS
 M_AUTH		:= 1 shl CTX_AUTH
 M_UDP		:= 1 shl CTX_UDP
+M_ALERTS	:= 1 shl CTX_ALERTS
 
 enumdef e_io_engine, 'auto', 'io_uring', 'epoll'
 enumdef e_samesite, 'lax', 'strict', 'none'
@@ -156,6 +158,9 @@ keysdef k_fault, 'abort', T_COUNT, 'percent', T_COUNT, 'delay', T_DURATION
 keysdef k_quic_sid, 'key', T_ANY, 'rotation', T_ANY
 keysdef k_server, 'weight', T_WEIGHT, 'max', T_COUNT
 keysdef k_queue, 'timeout', T_DURATION
+keysdef k_alert, 'trust', T_ANY
+keysdef k_telegram, 'token', T_ANY, 'chat', T_ANY, 'api', T_ANY, 'trust', T_ANY
+enumdef e_alert_on, 'backend', 'worker', 'reload', 'discovery'
 keysdef k_discover, 'port', T_ANY, 'max', T_COUNT, 'label', T_ANY, 'network', T_ANY, 'socket', T_ANY, \
 	'service', T_ANY, 'api', T_ANY, 'token', T_ANY, 'ca', T_ANY, 'name', T_ANY
 enumdef e_discover, 'file', 'srv', 'docker', 'kubernetes'
@@ -169,11 +174,11 @@ keysdef k_connect, 'timeout', T_DURATION, 'max', T_FUTURE, 'idle', T_FUTURE, \
 	'warm', T_FUTURE, 'rate', T_FUTURE
 
 ; Names of the contexts, for messages, in CTX_* order starting at 1.
-enumdef ctx_names, 'the top level', '`okena`', '`tcp`', '`pool`', '`limits`', '`timeout`', '`http`', '`route`', '`host`', '`tls`', '`auth`', '`udp`'
+enumdef ctx_names, 'the top level', '`okena`', '`tcp`', '`pool`', '`limits`', '`timeout`', '`http`', '`route`', '`host`', '`tls`', '`auth`', '`udp`', '`alerts`'
 
 ; Directives of the language that this version does not implement yet.
 enumdef future_names, 'xdp', \
-	'addon', 'alerts', 'include', 'log', 'reload', 'profile', \
+	'addon', 'include', 'log', 'reload', 'profile', \
 	'acme', 'header', \
 	'source', \
 	'concurrency', 'retry_budget', 'retry', 'outlier', \
@@ -206,6 +211,13 @@ dirdef DIR_TCP, 'tcp',         M_TOP,     CTX_TCP,     F_BLOCK_REQ, 1, 16, T_LIS
 dirdef DIR_HTTP, 'http',        M_TOP,     CTX_HTTP,    F_BLOCK_REQ, 1, 16, T_LISTEN, T_LISTEN, 0
 dirdef DIR_HOST, 'host',        M_HTTP,    CTX_HOST,    F_BLOCK_REQ, 1, 64, T_HOSTNAME, T_HOSTNAME, 0
 dirdef DIR_ROUTE, 'route',      M_HTTP or M_HOST,    CTX_ROUTE,   F_BLOCK_REQ, 1, 32, T_ROUTE, T_ROUTE, 0
+dirdef DIR_ALERTS, 'alerts',    M_TOP,     CTX_ALERTS,  F_BLOCK_REQ or F_UNIQUE, 0, 0, T_NONE, T_NONE, 0
+dirdef DIR_WEBHOOK, 'webhook',  M_ALERTS,  0,           0, 1, 1, T_ANY, T_NONE, k_alert
+dirdef DIR_SLACK, 'slack',      M_ALERTS,  0,           0, 1, 1, T_ANY, T_NONE, k_alert
+dirdef DIR_TELEGRAM, 'telegram', M_ALERTS, 0,           F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_telegram
+dirdef DIR_ALERT_ON, 'on',      M_ALERTS,  0,           F_UNIQUE, 1, 4, e_alert_on, e_alert_on, 0
+dirdef DIR_EVERY, 'every',      M_ALERTS,  0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
+dirdef DIR_ALERT_NAME, 'name',  M_ALERTS,  0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
 dirdef DIR_POOL, 'pool',        M_TOP,     CTX_POOL,    F_BLOCK_REQ, 1, 1, T_NAME, T_NONE, 0
 dirdef DIR_TO, 'to',          M_TCP or M_UDP or M_ROUTE, 0,           F_UNIQUE, 1, 64, T_TARGET, T_TARGET, 0
 dirdef DIR_PROXY_PROTOCOL, 'proxy_protocol', M_TCP, 0,      F_UNIQUE, 2, 2, e_pp_mode, e_pp_version, 0

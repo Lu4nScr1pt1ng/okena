@@ -201,7 +201,8 @@ disc_docker_poll:
 	pop	rsi
 	call	out_str
 	out_lit '; keeping the servers known so far'
-	call	log_end
+	mov	edi,AL_DISCOVERY
+	call	log_end_alert
 .out:
 	mov	eax,1
 	pop	r15

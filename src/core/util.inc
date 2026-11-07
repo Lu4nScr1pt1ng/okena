@@ -18,6 +18,7 @@ bss
 	g_worker_id	dd ?
 	g_out_fd	dd ?
 	g_out_len	dd ?
+	g_log_body	dd ?		; where a log line's own words start in g_out_buf
 	g_out_buf:	rb OUT_CAP
 end bss
 
@@ -180,6 +181,8 @@ log_begin:
 	call	out_u64
 	out_lit ': '
 .done:
+	mov	eax,[g_out_len]			; (an alert takes the line from here)
+	mov	[g_log_body],eax
 	ret
 
 log_str = out_str

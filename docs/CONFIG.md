@@ -1038,6 +1038,33 @@ server, and forgets those of a server that left the file; an upgrade or a restar
 from the file. The socket is the owner's only, by mode and by a look at the caller. It
 is opened when okena starts, so adding or moving `admin` takes a restart.
 
+## Alerts
+
+```
+alerts {
+    webhook https://hooks.example.com/okena       # POST of JSON
+    slack https://hooks.slack.com/services/T/B/X  # an incoming webhook
+    telegram token=123:ABC chat=-100123            # the Bot API's sendMessage
+    on backend reload worker discovery             # the default: all of them
+    every 10s                                      # a message a window, at most
+    name edge-1                                    # the default: the host's name
+}
+```
+
+What goes wrong, and what comes back, told to people: a backend ejected or
+back (passively or by health checks), a worker restarted, a reload refused,
+discovery that cannot be done. Any process of okena puts such a line in a ring
+of shared memory as it logs it, with no lock, and the control process sends
+what came over each `every` window: the same line from several workers (each
+ejects a backend on its own) once, with how many times, at most 32 lines a
+message and the count of the rest. A webhook gets
+`{"source":"okena","name":...,"events":[{"kind":...,"text":...,"count":N}],"more":N}`;
+Slack and Telegram a text. A send that fails keeps what it had for the next
+window and is said once in the log; an alert never makes another. HTTPS is
+verified against the system's roots (SSL_CERT_FILE when set, else the usual
+bundles), or `trust=FILE`'s first certificate; `http://` is for a private
+network. Up to 8 targets; Telegram's `api=URL` points it elsewhere.
+
 ## Tooling
 
 ```

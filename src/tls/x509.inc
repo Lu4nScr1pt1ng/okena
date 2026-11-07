@@ -129,6 +129,8 @@ bss
 	g_x509_valend	dq ?
 	g_x509_subj	dq ?			; subject Name: content start / end
 	g_x509_subjend	dq ?
+	g_x509_iss	dq ?			; issuer Name: content start / end
+	g_x509_issend	dq ?
 	g_x509_ext	dq ?			; extensions SEQUENCE: content / end (0 if none)
 	g_x509_extend	dq ?
 	g_time_a	rb 14			; normalised YYYYMMDDHHMMSS scratch
@@ -417,6 +419,8 @@ x509_locate:
 	mov	rdx,r13
 	call	der_read			; issuer
 	jc	.no
+	mov	[g_x509_iss],rsi
+	mov	[g_x509_issend],r8
 	mov	rsi,r8
 	mov	rdx,r13
 	call	der_read			; validity SEQUENCE

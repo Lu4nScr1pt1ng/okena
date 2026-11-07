@@ -889,7 +889,8 @@ hc_result:
 	mov	eax,[r12+PL_H_RISE]
 	call	out_u64
 	out_lit ' times)'
-	call	log_end
+	mov	edi,AL_BACKEND
+	call	log_end_alert
 	jmp	.out
 .bad:
 	mov	dword [g_hc_ok+rbx*4],0
@@ -936,7 +937,8 @@ hc_result:
 	mov	eax,[r12+PL_H_FALL]
 	call	out_u64
 	out_lit ' times)'
-	call	log_end
+	mov	edi,AL_BACKEND
+	call	log_end_alert
 .out:
 	pop	r13
 	pop	r12

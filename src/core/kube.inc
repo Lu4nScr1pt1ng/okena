@@ -41,18 +41,9 @@ KB_TOKEN_MAX	:= 8192
 bss
 	align 8
 	g_plan_kb:	rb KB_SIZE * DISC_SOURCES	; per source (plan)
-	g_kb_tc:	rb TC_FULL
-	g_kb_snap:	rb SHA256_CTX_SIZE
-	g_kb_out:	rb 20480
-	g_kb_in:	rb KB_IN_CAP
-	g_kb_dec:	rb KB_IN_CAP
 	g_kb_tok:	rb KB_TOKEN_MAX + 8
 	g_kb_req:	rb KB_TOKEN_MAX + 1024
 	g_kb_path:	rb 4096 + 8
-	g_kb_now:	rb 64
-	g_kb_fd		dd ?
-	g_kb_inlen	dd ?
-	g_kb_plain	dd ?		; plaintext so far in g_dk_buf
 end bss
 
 cstring str_kb_token, '/var/run/secrets/kubernetes.io/serviceaccount/token'
@@ -89,40 +80,28 @@ disc_kube_poll:
 	test	eax,eax
 	jz	.no_token
 	mov	r15d,eax
-	call	kb_connect			; g_kb_fd; CF when not
+	lea	rsi,[r14+KB_SA]
+	mov	edx,[r14+KB_SALEN]
+	call	cx_connect			; g_cx_fd; CF when not
 	jc	.no_answer
-	call	kb_handshake			; CF: refused, or not who it should be
+	lea	rdi,[r14+KB_ANCHOR]
+	mov	rsi,[r14+KB_SNI]
+	mov	edx,[r14+KB_SNILEN]
+	call	cx_handshake			; CF: refused, or not who it should be
 	jc	.not_verified
 	mov	edx,r15d
 	call	kb_request			; sealed and sent; CF when not
 	jc	.no_answer_close
-	call	kb_answer			; g_dk_buf, g_kb_plain bytes; CF when cut
+	call	cx_answer			; g_dk_buf, g_cx_plain bytes; CF when cut
 	jc	.no_answer_close
-	mov	edi,[g_kb_fd]
-	mov	eax,SYS_close
-	syscall
+	call	cx_close
 	; 200, then the body
-	mov	rsi,[g_dk_buf]
-	mov	ecx,[g_kb_plain]
-	cmp	ecx,16
-	jb	.unreadable
-	cmp	dword [rsi+8],' 200'
+	call	cx_status
+	jc	.unreadable
+	cmp	eax,200
 	jne	.status
-	mov	rdi,rsi
-.head:
-	cmp	ecx,4
-	jb	.unreadable
-	cmp	dword [rdi],0x0A0D0A0D
-	je	.body
-	inc	rdi
-	dec	ecx
-	jmp	.head
-.body:
 	push	r13
-	mov	r13,[g_dk_buf]
-	mov	eax,[g_kb_plain]
-	add	r13,rax				; (the parser's end)
-	lea	rsi,[rdi+4]
+	lea	r13,[rsi+rcx]			; (the parser's end)
 	call	kb_parse
 	pop	r13
 	jc	.unreadable
@@ -142,9 +121,9 @@ disc_kube_poll:
 	mov	edx,str_kb_bad.len
 	jmp	.tell
 .not_verified:
-	mov	edi,[g_kb_fd]
-	mov	eax,SYS_close
-	syscall
+	cmp	eax,4
+	jne	.no_answer_close		; (it failed, it did not lie)
+	call	cx_close
 	mov	eax,4
 	cstring str_kb_cert, ': the API server is not who it should be (its certificate, or its name)'
 	lea	rsi,[str_kb_cert]
@@ -157,9 +136,7 @@ disc_kube_poll:
 	mov	edx,str_kb_tok.len
 	jmp	.tell
 .no_answer_close:
-	mov	edi,[g_kb_fd]
-	mov	eax,SYS_close
-	syscall
+	call	cx_close
 .no_answer:
 	mov	eax,1
 	cstring str_kb_gone, ': no answer from the API server'
@@ -184,7 +161,8 @@ disc_kube_poll:
 	pop	rsi
 	call	out_str
 	out_lit '; keeping the servers known so far'
-	call	log_end
+	mov	edi,AL_DISCOVERY
+	call	log_end_alert
 .out:
 	mov	eax,1
 	pop	r15
@@ -258,197 +236,8 @@ kb_token:
 	xor	eax,eax
 	ret
 
-; r14 = source: a connection to the API server in g_kb_fd. CF when not.
-kb_connect:
-	movzx	edi,word [r14+KB_SA]
-	mov	esi,SOCK_STREAM or SOCK_CLOEXEC
-	xor	edx,edx
-	mov	eax,SYS_socket
-	syscall
-	test	eax,eax
-	js	.bad
-	mov	[g_kb_fd],eax
-	mov	edi,eax
-	mov	esi,SOL_SOCKET
-	mov	edx,SO_RCVTIMEO
-	lea	r10,[ts_dk_io]
-	mov	r8d,16
-	mov	eax,SYS_setsockopt
-	syscall
-	mov	edi,[g_kb_fd]
-	mov	esi,SOL_SOCKET
-	mov	edx,SO_SNDTIMEO
-	lea	r10,[ts_dk_io]
-	mov	r8d,16
-	mov	eax,SYS_setsockopt
-	syscall
-	mov	edi,[g_kb_fd]
-	lea	rsi,[r14+KB_SA]
-	mov	edx,[r14+KB_SALEN]
-	mov	eax,SYS_connect
-	syscall
-	test	eax,eax
-	js	.close
-	clc
-	ret
-.close:
-	mov	edi,[g_kb_fd]
-	mov	eax,SYS_close
-	syscall
-.bad:
-	stc
-	ret
-
-; r14 = source, g_kb_fd connected: the TLS 1.3 handshake, the server
-; verified. CF when it is not, or it failed.
-kb_handshake:
-	push	rbx
-	push	r12
-	push	r13
-	push	r15
-	lea	rdi,[g_kb_tc]
-	lea	rsi,[g_kb_out]
-	mov	rdx,[r14+KB_SNI]
-	mov	ecx,[r14+KB_SNILEN]
-	call	tlsc_client_hello
-	test	eax,eax
-	jz	.fail
-	mov	edx,eax
-	lea	rsi,[g_kb_out]
-	mov	edi,[g_kb_fd]
-	call	dk_write_all
-	jc	.fail
-	lea	rsi,[g_kb_tc+TC_SHA]		; the transcript through the ClientHello
-	lea	rdi,[g_kb_snap]
-	mov	ecx,SHA256_CTX_SIZE
-	rep	movsb
-	xor	r12d,r12d			; bytes received
-	xor	r13d,r13d			; the records tried end here
-.read:
-	call	kb_recv
-	jc	.fail
-.rec:
-	lea	eax,[r13+5]
-	cmp	eax,r12d
-	ja	.read
-	movzx	eax,word [g_kb_in+r13+3]
-	xchg	al,ah
-	lea	eax,[r13+rax+5]
-	cmp	eax,r12d
-	ja	.read
-	mov	r13d,eax
-	lea	rsi,[g_kb_in]
-	mov	edx,r13d
-	call	tlsc_is_tls12
-	test	eax,eax
-	jnz	.fail				; (an API server speaks 1.3)
-	lea	rsi,[g_kb_snap]
-	lea	rdi,[g_kb_tc+TC_SHA]
-	mov	ecx,SHA256_CTX_SIZE
-	rep	movsb
-	lea	rdi,[g_kb_tc]
-	lea	rsi,[g_kb_in]
-	mov	edx,r13d
-	lea	rcx,[g_kb_dec]
-	call	tlsc_server_flight
-	test	eax,eax
-	jz	.rec
-	mov	r15d,eax
-	lea	rsi,[g_kb_dec]
-	mov	edx,eax
-	call	tlsc_flight_complete
-	test	eax,eax
-	jz	.rec
-	lea	rdi,[g_kb_tc]
-	lea	rsi,[g_kb_dec]
-	mov	edx,r15d
-	call	tlsc_verify
-	test	eax,eax
-	jz	.refused
-	; the chain to the CA, each one in date, the name
-	lea	rdi,[r14+KB_ANCHOR]
-	mov	rsi,[g_kb_tc+TC_CLIST]
-	mov	edx,[g_kb_tc+TC_CLISTLEN]
-	call	cert_chain_verify
-	test	eax,eax
-	jz	.refused
-	lea	rdi,[g_kb_now]
-	call	alog_fmt_time
-	lea	rsi,[g_kb_now]
-	lea	rdi,[g_kb_now+32]
-	lea	r9,[uptls_tdig]
-	xor	ecx,ecx
-@@:
-	movzx	eax,byte [r9+rcx]
-	mov	al,[rsi+rax]
-	mov	[rdi+rcx],al
-	inc	ecx
-	cmp	ecx,14
-	jb	@b
-	mov	rsi,[g_kb_tc+TC_CLIST]
-	mov	edx,[g_kb_tc+TC_CLISTLEN]
-	lea	rdi,[g_kb_now+32]
-	call	cert_chain_times
-	test	eax,eax
-	jz	.refused
-	mov	rdi,[r14+KB_SNI]
-	mov	ecx,[r14+KB_SNILEN]
-	mov	rsi,[g_kb_tc+TC_LEAF]
-	mov	edx,[g_kb_tc+TC_LEAFLEN]
-	call	cert_match_host
-	test	eax,eax
-	jz	.refused
-	lea	rdi,[g_kb_tc]
-	lea	rsi,[g_kb_out]
-	call	tlsc_finish
-	mov	edx,eax
-	lea	rsi,[g_kb_out]
-	mov	edi,[g_kb_fd]
-	call	dk_write_all
-	jc	.fail
-	; what came after the flight's last record is the answer's start
-	mov	eax,r13d
-	mov	ecx,r12d
-	sub	ecx,eax
-	lea	rsi,[g_kb_in+rax]
-	lea	rdi,[g_kb_in]
-	mov	[g_kb_inlen],ecx
-	rep	movsb
-	clc
-	jmp	.out
-.refused:
-.fail:
-	stc
-.out:
-	pop	r15
-	pop	r13
-	pop	r12
-	pop	rbx
-	ret
-
-; r12d = bytes in g_kb_in: more. CF when it closed, failed, or is full.
-kb_recv:
-	mov	edx,KB_IN_CAP
-	sub	edx,r12d
-	jz	.bad
-	mov	edi,[g_kb_fd]
-	lea	rsi,[g_kb_in+r12]
-	xor	eax,eax
-	syscall
-	cmp	rax,-EINTR
-	je	kb_recv
-	test	rax,rax
-	jle	.bad
-	add	r12d,eax
-	clc
-	ret
-.bad:
-	stc
-	ret
-
-; r14 = source, edx = token length: the question, sealed. CF when not sent.
+; r14 = source, edx = token length: the question, sent. CF when not.
 kb_request:
-	push	r12
 	lea	rdi,[g_kb_req]
 	cstring str_kb_get1, 'GET /apis/discovery.k8s.io/v1/namespaces/'
 	lea	rsi,[str_kb_get1]
@@ -480,102 +269,10 @@ kb_request:
 	rep	movsb
 	mov	dword [rdi],0x0A0D0A0D
 	add	rdi,4
-	lea	rax,[g_kb_req]
-	sub	rdi,rax
-	mov	r12d,edi			; to go
-	lea	rdx,[g_kb_req]
-.record:
-	test	r12d,r12d
-	jz	.sent
-	mov	ecx,r12d
-	cmp	ecx,16000
-	jbe	@f
-	mov	ecx,16000
-@@:
-	sub	r12d,ecx
-	push	rdx
-	push	rcx
-	lea	rdi,[g_kb_tc]
-	lea	rsi,[g_kb_out]
-	call	tlsc_seal
-	mov	edx,eax
-	lea	rsi,[g_kb_out]
-	mov	edi,[g_kb_fd]
-	call	dk_write_all
-	pop	rcx
-	pop	rdx
-	jc	.bad
-	add	rdx,rcx
-	jmp	.record
-.sent:
-	clc
-	pop	r12
-	ret
-.bad:
-	stc
-	pop	r12
-	ret
-
-; the answer's records, opened, into g_dk_buf (g_kb_plain bytes) until the
-; server closes. CF when it is cut short or does not open.
-kb_answer:
-	push	r12
-	push	r13
-	mov	dword [g_kb_plain],0
-	mov	r12d,[g_kb_inlen]
-	xor	r13d,r13d			; where the next record starts
-.rec:
-	lea	eax,[r13+5]
-	cmp	eax,r12d
-	ja	.more
-	movzx	eax,word [g_kb_in+r13+3]
-	xchg	al,ah
-	lea	eax,[r13+rax+5]
-	cmp	eax,r12d
-	ja	.more
-	push	rax
-	lea	rdi,[g_kb_tc]
-	lea	rsi,[g_kb_in+r13]
-	call	tlsc_open
-	pop	r13				; (the next record)
-	test	eax,eax
-	jz	.bad
-	cmp	r8d,21
-	je	.done				; an alert: close_notify, it is over
-	cmp	r8d,23
-	jne	.rec				; (a ticket)
-	mov	eax,[g_kb_plain]
-	lea	edx,[rax+rcx]
-	cmp	edx,DK_BUF - 1
-	ja	.bad
-	mov	rdi,[g_dk_buf]
-	add	rdi,rax
-	mov	[g_kb_plain],edx
-	rep	movsb
-	jmp	.rec
-.more:
-	; the rest to the front, then more
-	mov	ecx,r12d
-	sub	ecx,r13d
-	lea	rsi,[g_kb_in+r13]
-	lea	rdi,[g_kb_in]
-	mov	r12d,ecx
-	rep	movsb
-	xor	r13d,r13d
-	call	kb_recv
-	jnc	.rec
-	; closed: a whole answer if nothing was cut
-	test	r12d,r12d
-	jnz	.bad
-.done:
-	clc
-	jmp	.out
-.bad:
-	stc
-.out:
-	pop	r13
-	pop	r12
-	ret
+	lea	rsi,[g_kb_req]
+	mov	rdx,rdi
+	sub	rdx,rsi
+	jmp	cx_send
 
 ; ------------------------------------------------------------ the list
 

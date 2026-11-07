@@ -78,6 +78,8 @@ supervisor_main:
 	call	dns_table_init
 	call	disc_table_init
 	call	jwks_table_init
+	call	alerts_ring_init
+	call	alerts_prepare
 	call	groups_resolve_all
 	call	health_table_init
 	call	api_table_init
@@ -974,7 +976,8 @@ reap_workers:
 	mov	eax,[g_siginfo+SI_STATUS]
 	call	out_u64
 	out_lit ', restarting'
-	call	log_end
+	mov	edi,AL_WORKER
+	call	log_end_alert
 	mov	edi,SG_RESTARTS
 	call	stats_global_inc
 	; A worker that dies right after starting is crash-looping; slow the
