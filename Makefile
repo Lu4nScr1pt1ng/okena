@@ -149,6 +149,8 @@ test-serial: $(BIN) $(HTTPH) $(KAT) $(TLSH)
 	python3 -I tests/gateway/discover.py epoll
 	python3 -I tests/gateway/docker.py io_uring
 	python3 -I tests/gateway/docker.py epoll
+	python3 -I tests/gateway/kube.py io_uring
+	python3 -I tests/gateway/kube.py epoll
 	python3 -I tests/gateway/geoip.py io_uring
 	python3 -I tests/gateway/geoip.py epoll
 	python3 -I tests/gateway/acl.py io_uring

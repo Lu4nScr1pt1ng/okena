@@ -156,8 +156,9 @@ keysdef k_fault, 'abort', T_COUNT, 'percent', T_COUNT, 'delay', T_DURATION
 keysdef k_quic_sid, 'key', T_ANY, 'rotation', T_ANY
 keysdef k_server, 'weight', T_WEIGHT, 'max', T_COUNT
 keysdef k_queue, 'timeout', T_DURATION
-keysdef k_discover, 'port', T_COUNT, 'max', T_COUNT, 'label', T_ANY, 'network', T_ANY, 'socket', T_ANY
-enumdef e_discover, 'file', 'srv', 'docker'
+keysdef k_discover, 'port', T_ANY, 'max', T_COUNT, 'label', T_ANY, 'network', T_ANY, 'socket', T_ANY, \
+	'service', T_ANY, 'api', T_ANY, 'token', T_ANY, 'ca', T_ANY, 'name', T_ANY
+enumdef e_discover, 'file', 'srv', 'docker', 'kubernetes'
 keysdef k_balance, 'key', T_ANY, 'bound', T_ANY
 keysdef k_sticky, 'cookie', T_ANY, 'ttl', T_DURATION, 'samesite', T_ANY
 keysdef k_cert, 'key', T_ANY

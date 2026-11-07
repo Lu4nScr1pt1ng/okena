@@ -935,6 +935,7 @@ pool users {
     discover file /etc/okena/users.list      # one address per line, watched
     discover srv _users._tcp.service.consul
     discover docker label=okena.pool=users port=8080
+    discover kubernetes service=shop/users port=http
 }
 ```
 
@@ -986,6 +987,22 @@ services:
 The socket is root on the host to whoever can write to it. okena only reads it,
 but a read-only proxy (Tecnativa's docker-socket-proxy with `CONTAINERS=1`, and
 `socket=` pointed at it) gives okena no more than it needs.
+
+`discover kubernetes service=NAMESPACE/NAME [port=NAME|N] [api=HOST:PORT]
+[token=PATH] [ca=PATH] [name=HOST] [max=64]` takes them from the Service's
+EndpointSlices, asked of the API server once a second over TLS 1.3 that okena
+verifies (the chain to `ca`, each certificate in date, the name `name`), with
+the service account's token, read again each time as it is rotated, and with
+resourceVersion=0 so that the API server answers from its cache. Inside a pod
+the defaults are all it needs: the API at KUBERNETES_SERVICE_HOST and _PORT,
+the token and ca.crt of the service account, the name kubernetes.default.svc;
+EC and RSA certificates both verify. An endpoint is served while it is ready;
+when none is, those that still serve while they terminate are, as kube-proxy
+does, so that a rollout never leaves the pool empty. Its port is the slice's
+port of that name, or the number given, or the slice's only port. An API
+server that does not answer, refuses (403: the service account needs `get` and
+`list` on `endpointslices` in the namespace) or is not the one it should be
+changes nothing, and is said once.
 
 The admin API changes the running state without editing files, given
 `admin unix:PATH` in the `okena` block:

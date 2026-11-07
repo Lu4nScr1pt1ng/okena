@@ -22,6 +22,7 @@ GK_DNS		:= 0
 GK_FILE		:= 1
 GK_SRV		:= 2
 GK_DOCKER	:= 3
+GK_KUBE		:= 4
 
 DISC_MAX	:= 256			; servers a source may have
 DISC_SOURCES	:= 32
@@ -522,7 +523,7 @@ disc_publish:
 	inc	qword [rdi+DX_SEQ]		; even: done
 	call	log_begin
 	cmp	dword [r12+GR_KIND],GK_DOCKER
-	je	.docker
+	jae	.docker
 	cmp	dword [r12+GR_KIND],GK_SRV
 	je	@f
 	out_lit 'discover file '
@@ -535,10 +536,25 @@ disc_publish:
 	call	out_str
 	jmp	.told
 .docker:
+	cmp	dword [r12+GR_KIND],GK_KUBE
+	je	.kube
 	out_lit 'discover docker '
 	imul	rax,r13,DK_SIZE
 	mov	rsi,[g_plan_dk+rax+DK_LABEL]
 	mov	edx,[g_plan_dk+rax+DK_LLEN]
+	call	out_str
+	jmp	.told
+.kube:
+	out_lit 'discover kubernetes '
+	imul	rax,r13,KB_SIZE
+	push	rax
+	mov	rsi,[g_plan_kb+rax+KB_NS]
+	mov	edx,[g_plan_kb+rax+KB_NSLEN]
+	call	out_str
+	out_lit '/'
+	pop	rax
+	mov	rsi,[g_plan_kb+rax+KB_SVC]
+	mov	edx,[g_plan_kb+rax+KB_SVCLEN]
 	call	out_str
 .told:
 	out_lit ': '

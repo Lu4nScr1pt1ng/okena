@@ -3315,6 +3315,8 @@ compile_discover:
 	mov	rcx,[rax+A_VAL]
 	cmp	byte [rcx],'d'			; `docker`
 	je	.docker
+	cmp	byte [rcx],'k'			; `kubernetes`
+	je	.kube
 	cmp	byte [rcx],'s'			; `srv`
 	jne	@f
 	mov	dword [rbx+GR_KIND],GK_SRV
@@ -3402,6 +3404,283 @@ compile_discover:
 	mov	[r10+DK_NET],rcx
 	mov	[r10+DK_NLEN],edx
 	jmp	.port
+	; kubernetes: the service, the API, the credentials
+.kube:
+	mov	dword [rbx+GR_KIND],GK_KUBE
+	mov	dword [rbx+GR_PORT],0
+	mov	eax,[rbx+GR_DISC]
+	imul	r10,rax,KB_SIZE
+	lea	r10,[g_plan_kb+r10]
+	mov	qword [r10+KB_PNAME],0
+	mov	dword [r10+KB_PNLEN],0
+	mov	dword [r10+KB_PNUM],0
+	; service=NAMESPACE/NAME: DNS labels, lower case
+	mov	rdi,r13
+	lea	rsi,[str_key_service]
+	push	r10
+	call	node_option
+	pop	r10
+	test	rax,rax
+	jz	plan_bad_kube
+	mov	rcx,[rax+A_VAL]
+	mov	edx,[rax+A_VLEN]
+	xor	r8d,r8d
+@@:
+	cmp	r8d,edx
+	jae	plan_bad_kube
+	cmp	byte [rcx+r8],'/'
+	je	@f
+	inc	r8d
+	jmp	@b
+@@:
+	test	r8d,r8d
+	jz	plan_bad_kube
+	mov	[r10+KB_NS],rcx
+	mov	[r10+KB_NSLEN],r8d
+	lea	r9,[rcx+r8+1]
+	mov	[r10+KB_SVC],r9
+	sub	edx,r8d
+	dec	edx
+	jz	plan_bad_kube
+	mov	[r10+KB_SVCLEN],edx
+	mov	[rbx+GR_NAME],rcx		; (named by it in logs, slots and `okena backend`)
+	mov	eax,[rax+A_VLEN]
+	mov	[rbx+GR_NLEN],eax
+	mov	rcx,[r10+KB_NS]
+	mov	edx,[r10+KB_NSLEN]
+	call	.dns_label
+	mov	rcx,[r10+KB_SVC]
+	mov	edx,[r10+KB_SVCLEN]
+	call	.dns_label
+	; port=: a number, or a port's name
+	mov	rdi,r13
+	lea	rsi,[str_key_port]
+	push	r10
+	call	node_option
+	pop	r10
+	test	rax,rax
+	jz	.kube_api
+	mov	rcx,[rax+A_VAL]
+	mov	edx,[rax+A_VLEN]
+	movzx	r8d,byte [rcx]
+	sub	r8d,'0'
+	cmp	r8d,9
+	ja	.port_name
+	push	r10
+	mov	rdi,rcx
+	mov	esi,edx
+	call	parse_decimal
+	pop	r10
+	test	eax,eax
+	jz	plan_bad_kube
+	cmp	eax,65535
+	ja	plan_bad_kube
+	mov	[r10+KB_PNUM],eax
+	jmp	.kube_api
+.port_name:
+	call	.dns_label
+	mov	[r10+KB_PNAME],rcx
+	mov	[r10+KB_PNLEN],edx
+.kube_api:
+	; api=HOST:PORT, else the pod's KUBERNETES_SERVICE_HOST and _PORT
+	mov	rdi,r13
+	lea	rsi,[str_key_api]
+	push	r10
+	call	node_option
+	pop	r10
+	test	rax,rax
+	jz	.api_env
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	jmp	.api_parse
+.api_env:
+	push	r10
+	lea	rdi,[str_env_kube_host]
+	mov	esi,str_env_kube_host.len
+	call	getenv
+	pop	r10
+	test	rax,rax
+	jz	plan_no_kube_api
+	lea	rdi,[g_trust_path]		; (a scratch: "[host]:port")
+	mov	rsi,rax
+	xor	r8d,r8d				; a colon: IPv6
+	xor	ecx,ecx
+@@:
+	mov	dl,[rsi+rcx]
+	test	dl,dl
+	jz	@f
+	cmp	dl,':'
+	sete	r9b
+	or	r8b,r9b
+	inc	ecx
+	cmp	ecx,64
+	ja	plan_no_kube_api
+	jmp	@b
+@@:
+	test	r8b,r8b
+	jz	@f
+	mov	byte [rdi],'['
+	inc	rdi
+@@:
+	rep	movsb
+	test	r8b,r8b
+	jz	@f
+	mov	byte [rdi],']'
+	inc	rdi
+@@:
+	mov	byte [rdi],':'
+	inc	rdi
+	push	rdi
+	push	r10
+	lea	rdi,[str_env_kube_port]
+	mov	esi,str_env_kube_port.len
+	call	getenv
+	pop	r10
+	pop	rdi
+	lea	rsi,[str_kube_443]
+	test	rax,rax
+	cmovnz	rsi,rax
+@@:
+	mov	dl,[rsi]
+	test	dl,dl
+	jz	@f
+	mov	[rdi],dl
+	inc	rsi
+	inc	rdi
+	jmp	@b
+@@:
+	lea	rsi,[g_trust_path]
+	sub	rdi,rsi
+	mov	esi,edi
+	lea	rdi,[g_trust_path]
+.api_parse:
+	push	r10
+	lea	rdx,[g_cmp_addr]
+	xor	ecx,ecx
+	call	parse_address
+	pop	r10
+	jc	plan_bad_kube
+	mov	eax,[g_cmp_addr+AD_KIND]
+	cmp	eax,ADDR_V4
+	je	@f
+	cmp	eax,ADDR_V6
+	jne	plan_bad_kube
+@@:
+	push	r10
+	lea	rdi,[r10+KB_SA]
+	lea	rsi,[g_cmp_addr]
+	call	sockaddr_build
+	pop	r10
+	mov	[r10+KB_SALEN],eax
+	; the name its certificate must have
+	lea	rcx,[str_kb_sni]
+	mov	[r10+KB_SNI],rcx
+	mov	dword [r10+KB_SNILEN],str_kb_sni.len
+	mov	rdi,r13
+	lea	rsi,[str_key_name]
+	push	r10
+	call	node_option
+	pop	r10
+	test	rax,rax
+	jz	@f
+	mov	rcx,[rax+A_VAL]
+	mov	edx,[rax+A_VLEN]
+	call	.printable
+	mov	[r10+KB_SNI],rcx
+	mov	[r10+KB_SNILEN],edx
+@@:
+	; the token's path
+	lea	rcx,[str_kb_token]
+	mov	[r10+KB_TOKEN],rcx
+	mov	dword [r10+KB_TOKLEN],str_kb_token.len
+	mov	rdi,r13
+	lea	rsi,[str_key_token]
+	push	r10
+	call	node_option
+	pop	r10
+	test	rax,rax
+	jz	@f
+	mov	rcx,[rax+A_VAL]
+	mov	edx,[rax+A_VLEN]
+	cmp	byte [rcx],'/'
+	jne	plan_bad_kube
+	cmp	edx,4096
+	jae	plan_bad_kube
+	mov	[r10+KB_TOKEN],rcx
+	mov	[r10+KB_TOKLEN],edx
+@@:
+	; the CA, read now: its key is the anchor
+	lea	rsi,[str_kb_ca]
+	mov	ecx,str_kb_ca.len
+	mov	rdi,r13
+	push	rsi
+	push	rcx
+	push	r10
+	lea	rsi,[str_key_ca]
+	call	node_option
+	pop	r10
+	pop	rcx
+	pop	rsi
+	test	rax,rax
+	jz	@f
+	mov	rsi,[rax+A_VAL]
+	mov	ecx,[rax+A_VLEN]
+	cmp	ecx,4096
+	jae	plan_bad_kube
+@@:
+	lea	rdi,[g_trust_path]
+	push	rcx
+	rep	movsb
+	pop	rcx
+	mov	byte [g_trust_path+rcx],0
+	push	r10
+	lea	rdi,[g_trust_path]
+	lea	rsi,[g_ar_text]
+	call	read_file
+	test	rax,rax
+	js	plan_kube_ca
+	mov	rsi,rax
+	mov	edx,edx
+	lea	rdi,[g_trust_der]
+	call	pem_first_cert
+	test	eax,eax
+	jz	plan_kube_ca
+	mov	r10,[rsp]
+	lea	rsi,[g_trust_der]
+	mov	edx,eax
+	lea	rdi,[r10+KB_ANCHOR]
+	call	cert_pubkey
+	test	eax,eax
+	jz	plan_kube_ca
+	pop	r10
+	jmp	.port
+; rcx/edx = a DNS label: 1 to 63 of a-z, 0-9 and -, no - at an end
+.dns_label:
+	test	edx,edx
+	jz	plan_bad_kube
+	cmp	edx,63
+	ja	plan_bad_kube
+	cmp	byte [rcx],'-'
+	je	plan_bad_kube
+	cmp	byte [rcx+rdx-1],'-'
+	je	plan_bad_kube
+	xor	eax,eax
+@@:
+	movzx	r8d,byte [rcx+rax]
+	cmp	r8d,'-'
+	je	.label_ok
+	sub	r8d,'0'
+	cmp	r8d,9
+	jbe	.label_ok
+	movzx	r8d,byte [rcx+rax]
+	sub	r8d,'a'
+	cmp	r8d,25
+	ja	plan_bad_kube
+.label_ok:
+	inc	eax
+	cmp	eax,edx
+	jb	@b
+	ret
 ; rcx/edx = a label or a network name: 1 to 200 printable bytes, no quote
 ; nor backslash (it goes into a URL, and is compared with JSON as it is)
 .printable:
@@ -3425,6 +3704,8 @@ compile_discover:
 	jb	@b
 	ret
 .port:
+	cmp	dword [rbx+GR_KIND],GK_KUBE
+	je	.max				; (its port= was read with the rest)
 	mov	rdi,r13
 	lea	rsi,[str_key_port]
 	call	node_option
@@ -3480,6 +3761,37 @@ compile_discover:
 	pop	r12
 	pop	rbx
 	ret
+
+plan_bad_kube:
+	call	log_begin
+	out_lit 'discover kubernetes takes service=NAMESPACE/NAME (DNS labels), and may take port=NAME|N, api=HOST:PORT (an IP address), token=/PATH, ca=PATH, name=HOST and max='
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
+
+plan_no_kube_api:
+	call	log_begin
+	out_lit 'discover kubernetes: not in a pod (no KUBERNETES_SERVICE_HOST): give api=HOST:PORT'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
+
+plan_kube_ca:
+	call	log_begin
+	out_lit 'discover kubernetes: its CA (ca=, or the service account'
+	out_lit "'s ca.crt) cannot be read as a certificate"
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
+
+cstring str_key_service, 'service',0
+cstring str_key_api, 'api',0
+cstring str_key_token, 'token',0
+cstring str_key_ca, 'ca',0
+cstring str_key_name, 'name',0
+cstring str_env_kube_host, 'KUBERNETES_SERVICE_HOST='
+cstring str_env_kube_port, 'KUBERNETES_SERVICE_PORT='
+cstring str_kube_443, '443',0
 
 plan_bad_discover:
 	call	log_begin

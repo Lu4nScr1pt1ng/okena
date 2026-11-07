@@ -45,6 +45,7 @@ macro plan_regions action
 	action g_plan_groups, 4
 	action g_plan_discs, 4
 	action g_plan_dk, DK_SIZE * DISC_SOURCES
+	action g_plan_kb, KB_SIZE * DISC_SOURCES
 	action g_plan_workers, 4
 	action g_plan_engine, 4
 	action g_plan_drain_delay, 8
