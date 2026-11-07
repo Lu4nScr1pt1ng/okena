@@ -21,6 +21,7 @@ bss
 	g_spawn_delay	rd MAX_WORKERS		; current retry delay (ms)
 	g_hb_seen	rq MAX_WORKERS		; heartbeat at the last check
 	g_hb_stale	rd MAX_WORKERS		; checks without progress
+	g_hb_last	dq ?			; ms of the last check
 	g_hb		dq ?			; shared page: one cache line per worker
 	g_watchdog_s	dd ?
 	g_lfd		rd MAX_LISTENERS * MAX_WORKERS	; [listener * MAX_WORKERS + socket]
@@ -374,6 +375,8 @@ listener_probe:
 	jne	.done
 	; a process that has just left can hold the address for a moment: a ring's
 	; sockets go when the kernel gets round to it, after the process is gone
+	cmp	dword [g_reloading],0
+	jne	.taken				; (and workers are waiting for this one)
 	inc	dword [g_probe_tries]
 	cmp	dword [g_probe_tries],40
 	ja	.taken
@@ -588,8 +591,26 @@ listener_open:
 ; (a loop, a syscall that never returns, SIGSTOP): kill it, and the reaper
 ; starts a replacement. Its tick moves the heartbeat every second even
 ; when idle, so silence means stuck, not quiet.
+; A second is counted by the clock: after a stall here (a reload, on this
+; same path) the alarm that waited comes on top of the next, and workers
+; that tick once a second would seem to have missed some.
 watchdog_check:
 	push	rbx
+	sub	rsp,16
+	mov	edi,CLOCK_MONOTONIC
+	mov	rsi,rsp
+	mov	eax,SYS_clock_gettime
+	syscall
+	imul	rax,[rsp],1000
+	mov	rcx,[rsp+8]
+	shr	rcx,20				; ms, near enough
+	add	rax,rcx
+	add	rsp,16
+	mov	rcx,rax
+	sub	rcx,[g_hb_last]
+	cmp	rcx,900
+	jb	.early
+	mov	[g_hb_last],rax
 	xor	ebx,ebx
 .next:
 	cmp	ebx,[g_workers]
@@ -629,6 +650,7 @@ watchdog_check:
 	inc	ebx
 	jmp	.next
 .done:
+.early:
 	pop	rbx
 	ret
 
