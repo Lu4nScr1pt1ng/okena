@@ -38,6 +38,7 @@ def check(what, ok, more=""):
 def backend(port, status, delay=0, keep=False):
     class H(http.server.BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
+        disable_nagle_algorithm = True
 
         def answer(self):
             body = b""
