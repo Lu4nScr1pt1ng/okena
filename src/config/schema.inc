@@ -143,6 +143,7 @@ enumdef e_proto, 'h1', 'h2'
 
 keysdef k_alog, 'trust', T_ANY
 keysdef k_errors, 'file', T_ANY
+keysdef k_maint, 'file', T_ANY, 'retry', T_DURATION, 'allow', T_ANY, 'except', T_ANY
 keysdef k_metrics, 'token', T_ANY
 keysdef k_tracing, 'sample', T_PERCENT, 'trust', T_ANY
 keysdef k_drain, 'delay', T_DURATION, 'timeout', T_DURATION
@@ -251,6 +252,7 @@ dirdef DIR_ALLOW, 'allow',      M_ROUTE,   0,           0, 1, 64, T_ANY, T_ANY, 
 dirdef DIR_DENY, 'deny',        M_ROUTE,   0,           0, 1, 64, T_ANY, T_ANY, 0
 dirdef DIR_HOLD, 'hold',        M_ROUTE,   0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
 dirdef DIR_ERRORS, 'errors',    M_HTTP or M_ROUTE, 0,  0, 1, 32, T_ANY, T_ANY, k_errors
+dirdef DIR_MAINTENANCE, 'maintenance', M_HTTP, 0,     F_UNIQUE, 0, 0, T_NONE, T_NONE, k_maint
 dirdef DIR_REDIRECTS, 'redirects', M_ROUTE, 0,         F_UNIQUE, 1, 1, T_ANY, T_NONE, k_rmap
 dirdef DIR_FILES, 'files',      M_ROUTE,   0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, k_files
 dirdef DIR_MATCH, 'match',      M_ROUTE,   CTX_ROUTE,   F_BLOCK_REQ or F_FREE_KEYS, 0, 16, T_ANY, T_ANY, 0

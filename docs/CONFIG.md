@@ -11,7 +11,7 @@ not built yet. A directive that is not built is refused by `okena check`
 | `okena` | `workers`, `io_engine`, `busy_poll`, `watchdog`, `drain delay= timeout=`, `metrics [token=]`, `ticket_keys`, `handshake_budget wait=`, `quic_server_id HEX` |
 | `tcp ADDR...` | `to`, `limits { connections; per_source }`, `timeout { idle }`, `proxy_protocol send v1\|v2`, `tls { cert; key }`, `tls passthrough { sni NAME... to pool P; default reject\|to pool P }` |
 | `udp ADDR...` | `to`, `responses N`, `limits { connections }` (flows), `timeout { idle }` |
-| `http ADDR...` | `host`, `route`, `errors CODES file= [backend]`, `limits`, `timeout { idle; header; body_idle; response }`, `trusted_proxies`, `access_log`, `tracing`, `http2 on\|off`, `http3 on\|off\|retry\|v2`, `preferred_address`, `early_data on\|off`, `tls { cert; key; ktls on\|off }` |
+| `http ADDR...` | `host`, `route`, `errors CODES file= [backend]`, `maintenance file= retry= allow= except=`, `limits`, `timeout { idle; header; body_idle; response }`, `trusted_proxies`, `access_log`, `tracing`, `http2 on\|off`, `http3 on\|off\|retry\|v2`, `preferred_address`, `early_data on\|off`, `tls { cert; key; ktls on\|off }` |
 | `route PATH... [METHOD...]` | `to`, `redirect`, `rewrite path`, `header set\|add\|drop`, `response header set\|add\|drop` |
 | `pool NAME` | `server ADDR [weight=N] [max=N] [backup]`, `queue timeout=`, `balance least-request\|peak-ewma\|round-robin\|least-conn\|random\|maglev\|ring-hash\|source-hash [key=] [bound=]\|first`, `sticky cookie= [ttl=] [samesite=]`, `connect timeout=`, `health tcp\|http\|grpc ...`, `slow_start`, `tls { trust FILE; sni NAME }` (TLS to the backends), `protocol h1\|h2` |
 
@@ -566,6 +566,31 @@ application/json, `.txt` text/plain, anything else HTML. In it, `{status}`,
 also in `X-Request-Id`, so a user can give it and the access log finds it.
 The answer is never cached and closes the connection, as okena's errors do.
 gRPC requests keep their own errors (grpc-status), not a page.
+
+### Maintenance
+
+```
+okena maintenance on                  # every request: 503, Retry-After, the page
+okena maintenance on /api/*           # or a route's, named as written
+okena maintenance off /api/*          # that route back; `off` alone: everything
+okena maintenance                     # how it is: "on" or "off", and the routes
+```
+
+and, in an http listener, how it goes there (each key may be left out):
+
+```
+maintenance file=/srv/maint.html retry=2m allow=10.0.0.0/8,192.0.2.7 except=/healthz,/status/*
+```
+
+In maintenance a request gets 503 with `Retry-After` (`retry`, 30 s unless
+said) and the page: `file` (read as an error page is, with its
+placeholders), or a short text with the request id. `allow` lets clients
+in (as `trusted_proxies` has them: the team that checks the work), and
+`except` paths (exact, or a prefix with a trailing `*`: the balancer's
+health check) are still served. `/ready` does not change: the instance is
+up and the page is its answer. The state lives in the admin API, so a
+reload keeps it and a restart or an upgrade starts out of it; `/status`
+and the dashboard show it. Sixteen routes may be in maintenance at once.
 
 ## HTTP routes
 
@@ -1157,6 +1182,7 @@ okena backend weight api 10.0.1.11:8080 3  # 1..65535, 0 for the weight in the f
 okena reload                               # and says how it went; 1 when it did not take
 okena drain [wait]                         # the instance out of rotation
 okena resume                               # and back
+okena maintenance [on|off [ROUTE]]         # 503 and the maintenance page (### Maintenance)
 ```
 
 `okena drain` takes the whole instance out of a fleet's rotation without cutting

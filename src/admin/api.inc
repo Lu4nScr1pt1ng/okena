@@ -72,7 +72,7 @@ api_table_init:
 	cmp	qword [g_api_ov],0
 	jne	.list_there
 	xor	edi,edi
-	mov	esi,AP_ENT + AO_N * AO_SIZE
+	mov	esi,AP_SIZE			; (and maintenance's routes, maint.inc)
 	mov	edx,PROT_READ or PROT_WRITE
 	mov	r10d,MAP_SHARED or MAP_ANONYMOUS
 	mov	r8,-1
@@ -371,6 +371,7 @@ api_serve:
 	push	rdi
 	api_cmd 'list', .list
 	api_cmd 'status', .status
+	api_cmd 'maintenance', .maintenance
 	api_cmd 'top', .top
 	api_cmd 'state', .state
 	api_cmd 'reload', .reload
@@ -391,6 +392,10 @@ api_serve:
 	pop	rdi
 	memit 'ok',10
 	call	status_json
+	jmp	.send
+.maintenance:
+	pop	rdi
+	call	api_maintenance			; rdi = after its answer
 	jmp	.send
 .top:
 	pop	rdi
@@ -677,6 +682,235 @@ api_list:
 	pop	r12
 	pop	rbx
 	ret
+
+; r13 = the rest of a `maintenance` line, rdi = output: `on|off [ROUTE]`
+; changes it (the route as written: "/api/*"); with nothing, how it is.
+; Workers read the list as it is written: an entry's text first, then the
+; count; one leaves by the last taking its place.
+api_maintenance:
+	push	rbx
+	push	r12
+	push	r14
+	push	r15
+	mov	rbx,[g_api_ov]
+	push	rdi
+	call	api_word
+	mov	r14,rsi
+	mov	r15d,ecx
+	call	api_word			; the route, if any
+	mov	r12,rsi
+	mov	r8d,ecx
+	pop	rdi
+	test	r15d,r15d
+	jz	.show
+	; a route as a listener's routes write it
+	test	r8d,r8d
+	jz	@f
+	cmp	r8d,MP_SIZE - 4
+	jae	.bad
+	cmp	byte [r12],'/'
+	jne	.bad
+@@:
+	push	rdi
+	push	r8
+	cstring str_mt_on, 'on'
+	lea	rdi,[str_mt_on]
+	mov	edx,str_mt_on.len
+	call	api_is
+	pop	r8
+	pop	rdi
+	je	.on
+	push	rdi
+	push	r8
+	cstring str_mt_off, 'off'
+	lea	rdi,[str_mt_off]
+	mov	edx,str_mt_off.len
+	call	api_is
+	pop	r8
+	pop	rdi
+	jne	.bad
+	; off
+	test	r8d,r8d
+	jnz	.off_route
+	mov	dword [rbx+AP_MNUM],0		; all of it, and every route
+	mov	dword [rbx+AP_MAINT],0
+	jmp	.show
+.off_route:
+	call	.find
+	jc	.show				; (not in it)
+	mov	eax,[rbx+AP_MNUM]
+	dec	eax
+	imul	rsi,rax,MP_SIZE
+	lea	rsi,[rbx+AP_MPATHS+rsi]		; the last into its place
+	push	rdi
+	mov	rdi,r9
+	mov	ecx,MP_SIZE
+	rep	movsb
+	pop	rdi
+	dec	dword [rbx+AP_MNUM]
+	jmp	.show
+.on:
+	test	r8d,r8d
+	jnz	.on_route
+	mov	dword [rbx+AP_MAINT],1
+	jmp	.show
+.on_route:
+	call	.find
+	jnc	.show				; (in it already)
+	mov	eax,[rbx+AP_MNUM]
+	cmp	eax,MAINT_ROUTES
+	jae	.full
+	imul	r9,rax,MP_SIZE
+	lea	r9,[rbx+AP_MPATHS+r9]
+	mov	[r9],r8d
+	push	rdi
+	lea	rdi,[r9+4]
+	mov	rsi,r12
+	mov	ecx,r8d
+	rep	movsb
+	pop	rdi
+	inc	dword [rbx+AP_MNUM]		; (after its text)
+.show:
+	memit 'ok '
+	cmp	dword [rbx+AP_MAINT],0
+	jne	@f
+	memit 'off'
+	jmp	.routes
+@@:
+	memit 'on'
+.routes:
+	xor	ecx,ecx
+.r:
+	cmp	ecx,[rbx+AP_MNUM]
+	jae	.shown
+	imul	rsi,rcx,MP_SIZE
+	lea	rsi,[rbx+AP_MPATHS+rsi]
+	mov	byte [rdi],' '
+	inc	rdi
+	push	rcx
+	mov	ecx,[rsi]
+	add	rsi,4
+	rep	movsb
+	pop	rcx
+	inc	ecx
+	jmp	.r
+.shown:
+	mov	byte [rdi],10
+	inc	rdi
+	jmp	.out
+.full:
+	memit 'err: 16 routes in maintenance at most',10
+	jmp	.out
+.bad:
+	memit 'err: maintenance [on|off [ROUTE]], a route as written: /api/*',10
+.out:
+	pop	r15
+	pop	r14
+	pop	r12
+	pop	rbx
+	ret
+; r12/r8d = a route: r9 = its entry, or CF
+.find:
+	xor	ecx,ecx
+.f:
+	cmp	ecx,[rbx+AP_MNUM]
+	jae	.not_there
+	imul	r9,rcx,MP_SIZE
+	lea	r9,[rbx+AP_MPATHS+r9]
+	inc	ecx
+	cmp	[r9],r8d
+	jne	.f
+	push	rcx
+	push	rdi
+	lea	rdi,[r9+4]
+	mov	rsi,r12
+	mov	ecx,r8d
+	repe	cmpsb
+	pop	rdi
+	pop	rcx
+	jne	.f
+	clc
+	ret
+.not_there:
+	stc
+	ret
+
+; `okena maintenance [on|off [ROUTE]]`: 503 and the maintenance page for all
+; of it, or a route, until off; with nothing, how it is
+cli_maintenance:
+	mov	edi,2
+	mov	rcx,[g_argc]
+	; the words that are not -c FILE
+	lea	rdi,[g_admin_req]
+	cstring str_api_maint_w, 'maintenance'
+	lea	rsi,[str_api_maint_w]
+	mov	ecx,str_api_maint_w.len
+	rep	movsb
+	mov	r12d,2
+	mov	r13d,2				; where -c's file name would be
+.word:
+	cmp	r12,[g_argc]
+	jae	.line
+	mov	rax,[g_argv]
+	mov	rsi,[rax+r12*8]
+	cmp	word [rsi],'-c'
+	jne	@f
+	cmp	byte [rsi+2],0
+	jne	@f
+	add	r12d,2				; (-c FILE: for cli_source_from_args)
+	jmp	.word
+@@:
+	cmp	r12d,4
+	jae	.next				; two words at most
+	mov	byte [rdi],' '
+	inc	rdi
+@@:
+	lodsb
+	test	al,al
+	jz	.next
+	stosb
+	jmp	@b
+.next:
+	inc	r12d
+	inc	r13d
+	jmp	.word
+.line:
+	mov	byte [rdi],10
+	inc	rdi
+	lea	rax,[g_admin_req]
+	sub	rdi,rax
+	push	rdi
+	; -c FILE, wherever it was
+	mov	edi,2
+	mov	rcx,[g_argc]
+	mov	rax,[g_argv]
+	xor	r8d,r8d
+.c:
+	cmp	r8,rcx
+	jae	.no_c
+	mov	rsi,[rax+r8*8]
+	inc	r8d
+	cmp	word [rsi],'-c'
+	jne	.c
+	cmp	byte [rsi+2],0
+	jne	.c
+	lea	edi,[r8-1]
+	jmp	.c_found
+.no_c:
+	mov	rdi,rcx				; no -c: the default or OKENA_CONFIG
+.c_found:
+	call	cli_source_from_args
+	call	api_cli_open
+	pop	rdx
+	lea	rsi,[g_admin_req]
+	call	api_call
+	mov	rsi,[g_admin_buf]
+	lea	rdx,[rax-3]
+	add	rsi,3
+	mov	edi,1
+	call	write_all
+	xor	edi,edi
+	jmp	exit_process
 
 ; rdi = output: " CONNECTIONS", what every worker of now has open (the stats
 ; pages, at most a second old)

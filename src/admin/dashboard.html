@@ -16,7 +16,8 @@ header{display:flex;flex-wrap:wrap;gap:4px 16px;align-items:baseline;margin-bott
 h1{font-size:18px;margin:0;letter-spacing:-.01em}
 .dim{color:var(--dim)}
 #err{color:var(--down);font-weight:600}
-.badge{display:inline-block;padding:1px 8px;border-radius:99px;font-size:12px;font-weight:600;background:var(--warn);color:#fff}
+.badge{display:inline-block;padding:1px 8px;border-radius:99px;font-size:12px;font-weight:600;background:var(--warn);color:#fff;margin-right:6px}
+.badge.red-bg{background:var(--down)}
 .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:22px}
 .kpi{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 12px}
 .kpi b{display:block;font-size:22px;font-variant-numeric:tabular-nums;font-family:ui-monospace,Menlo,Consolas,monospace}
@@ -107,6 +108,7 @@ function table(heads, rows) {
   return add(el("div", "wrap"), add(t, b));
 }
 const poolsById = {};
+let maint = {on: false, routes: []};
 function poolLink(name) {
   const p = poolsById[name], a = el("a", "", "pool " + name);
   a.href = "#pool-" + encodeURIComponent(name);
@@ -144,6 +146,8 @@ function listenerBox(l) {
   if (l.proxy_protocol) add(top, chip("PROXY " + l.proxy_protocol));
   if (l.access_log) add(top, chip("access log"));
   if (l.tracing) add(top, chip("tracing"));
+  if (l.maintenance) add(top, chip("maintenance: retry " + l.maintenance.retry_s + "s" + (l.maintenance.allow ? ", some clients let in" : "") +
+    (l.maintenance.except.length ? ", still served: " + l.maintenance.except.join(" ") : "") + (l.maintenance.page ? ", own page" : "")));
   box.appendChild(top);
   const st = el("div", "stats");
   if (l.kind === "udp") {
@@ -192,6 +196,7 @@ function listenerBox(l) {
     else box.appendChild(table([["route", 1], ["methods", 1], ["passes through", 1], ["goes to", 1]],
       l.routes.map(r => {
         const to = el("span");
+        if (maint.on || maint.routes.includes(r.path)) add(to, chip("in maintenance: 503", "bad"), " ");
         if (r.pool) add(to, poolLink(r.pool));
         else add(to, el("span", "dim", "okena answers: "), el("span", "mono", r.answer || "itself"));
         const f = el("span");
@@ -252,7 +257,12 @@ async function tick() {
     $("sum").textContent = s.engine + " · " + s.workers + " workers · up " + since(s.uptime_s) + " · " +
       s.reloads + " reloads (" + s.reload_failures + " refused) · " + s.restarts + " restarts" +
       (s.udp_dropped ? " · " + s.udp_dropped + " UDP datagrams dropped" : "");
-    $("drained").replaceChildren(...(s.draining ? [el("span", "badge", "DRAINED: /ready answers 503")] : []));
+    const badges = [];
+    if (s.draining) badges.push(el("span", "badge", "DRAINED: /ready answers 503"));
+    if (s.maintenance.on) badges.push(el("span", "badge red-bg", "MAINTENANCE: every request gets 503"));
+    else if (s.maintenance.routes.length) badges.push(el("span", "badge red-bg", "MAINTENANCE: " + s.maintenance.routes.join(", ")));
+    $("drained").replaceChildren(...badges);
+    maint = s.maintenance;
     let req = 0, err = 0, act = 0, up = 0, all = 0, dg = 0, worst = null;
     for (const l of s.listeners) {
       req += l.req_rate; err += l.err_rate; act += l.active;

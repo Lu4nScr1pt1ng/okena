@@ -450,7 +450,7 @@ auth + limit stays within the latency budget in ARCHITECTURE.md. Met with `busy_
   `metrics ... token=`; bytes by HTTP listener and passive ejections are not
   counted yet).
 * Error pages of one's own (`errors 502 503 504 file=/srv/down.html`, by status
-  and by route, also for errors a backend sent: done) and a maintenance mode
+  and by route, also for errors a backend sent: done) and a maintenance mode (done)
   (`okena maintenance on [route]`: a page and a Retry-After, health checks
   and allowed addresses still let in).
 * Landlock, privilege drop, systemd socket activation, container image.

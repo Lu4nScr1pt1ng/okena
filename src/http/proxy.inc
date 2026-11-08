@@ -659,6 +659,8 @@ http_request:
 	call	cache_refetch
 	jmp	.pool_chosen
 .not_copy:
+	call	maint_check			; `okena maintenance on`: 503, unless let through
+	jc	.maintenance
 	test	edx,edx
 	jnz	.has_action
 	cmp	dword [g_overload],3		; no action: normal
@@ -670,6 +672,9 @@ http_request:
 	jc	.shed
 .no_action:
 	jmp	.chosen_none
+.maintenance:
+	mov	edi,503
+	jmp	http_error
 .shed:
 	mov	qword [g_lim_retry],1
 	mov	dword [g_lim_status],503
@@ -4322,6 +4327,8 @@ http_error_backend:
 ; 504 and 408 DEADLINE_EXCEEDED, ...). The log and the counters keep the
 ; HTTP status.
 http_error_grpc:
+	mov	qword [g_ep_force],0		; (no page for gRPC: maintenance's is let go)
+	mov	dword [g_ep_retry],0
 	push	rax
 	mov	rdi,[r15+H_BUF]
 	lea	rdi,[rdi+HB_OUT]

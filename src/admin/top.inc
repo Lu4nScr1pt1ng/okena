@@ -493,6 +493,37 @@ status_json:
 	mov	rax,[g_stats_tbl]
 	mov	rax,[rax+SG_OFF+SG_RESTARTS]
 	call	fmt_u64
+	memit ',"maintenance":{"on":'
+	mov	rax,[g_api_ov]
+	cmp	dword [rax+AP_MAINT],0
+	call	status_bool
+	memit ',"routes":['
+	push	rbx
+	xor	ebx,ebx
+.mroute:
+	mov	rax,[g_api_ov]
+	cmp	ebx,[rax+AP_MNUM]
+	jae	.mroutes
+	test	ebx,ebx
+	jz	@f
+	mov	byte [rdi],','
+	inc	rdi
+@@:
+	mov	byte [rdi],'"'
+	inc	rdi
+	imul	rsi,rbx,MP_SIZE
+	lea	rsi,[rax+AP_MPATHS+rsi]
+	mov	edx,[rsi]
+	add	rsi,4
+	mov	ecx,MP_SIZE
+	call	json_text
+	mov	byte [rdi],'"'
+	inc	rdi
+	inc	ebx
+	jmp	.mroute
+.mroutes:
+	pop	rbx
+	memit ']}'
 	memit ',"udp_dropped":'
 	mov	ecx,OFF_UD_DROPS
 	call	stats_sum_q
@@ -1018,6 +1049,58 @@ status_listener:
 	inc	rdi
 	jmp	.out
 .http_more:
+	memit ',"maintenance":'
+	mov	eax,[r12+LS_MAINT]
+	test	eax,eax
+	jnz	@f
+	memit 'null'
+	jmp	.alog
+@@:
+	dec	eax
+	imul	rax,rax,MT_SIZE
+	lea	r8,[g_maints+rax]
+	push	r8
+	memit '{"retry_s":'
+	mov	r8,[rsp]
+	mov	eax,[r8+MT_RETRY]
+	call	fmt_u64
+	memit ',"page":'
+	mov	r8,[rsp]
+	cmp	dword [r8+MT_PAGE],0
+	call	status_bool
+	memit ',"allow":'
+	mov	r8,[rsp]
+	cmp	dword [r8+MT_ACL],0
+	call	status_bool
+	memit ',"except":['
+	xor	ecx,ecx
+.mx:
+	mov	r8,[rsp]
+	cmp	ecx,[r8+MT_XN]
+	jae	.mx_done
+	test	ecx,ecx
+	jz	@f
+	mov	byte [rdi],','
+	inc	rdi
+@@:
+	push	rcx
+	imul	rsi,rcx,MP_SIZE
+	lea	rsi,[r8+MT_X+rsi]
+	mov	byte [rdi],'"'
+	inc	rdi
+	mov	edx,[rsi]
+	add	rsi,4
+	mov	ecx,MP_SIZE
+	call	json_text
+	mov	byte [rdi],'"'
+	inc	rdi
+	pop	rcx
+	inc	ecx
+	jmp	.mx
+.mx_done:
+	pop	r8
+	memit ']}'
+.alog:
 	memit ',"access_log":'
 	cmp	dword [r12+LS_ALOG],0
 	call	status_bool

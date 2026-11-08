@@ -53,53 +53,7 @@ compile_errors:
 	jz	.no_file
 	mov	rsi,[rax+A_VAL]
 	mov	ecx,[rax+A_VLEN]
-	cmp	ecx,4096
-	jae	.no_file
-	lea	rdi,[g_trust_path]
-	push	rsi
-	push	rcx
-	rep	movsb
-	mov	byte [rdi],0
-	pop	rcx
-	pop	rsi
-	; its type, by its extension
-	xor	r15d,r15d
-	cmp	ecx,5
-	jb	.read
-	mov	eax,[rsi+rcx-5]
-	or	eax,0x20202000
-	cmp	eax,'.jso'
-	jne	@f
-	cmp	byte [rsi+rcx-1],'n'
-	jne	@f
-	mov	r15d,1
-	jmp	.read
-@@:
-	mov	eax,[rsi+rcx-4]
-	or	eax,0x20202000
-	cmp	eax,'.txt'
-	jne	.read
-	mov	r15d,2
-.read:
-	lea	rdi,[g_trust_path]
-	lea	rsi,[g_ar_text]
-	call	read_file
-	test	rax,rax
-	js	.no_file
-	cmp	rdx,EP_PAGE_MAX
-	ja	.too_big
-	mov	ecx,[g_ep_used]
-	lea	r8,[rcx+rdx]
-	cmp	r8,EP_STORE
-	ja	.too_big
-	mov	r14d,ecx			; its place
-	mov	[g_ep_used],r8d
-	mov	rsi,rax
-	lea	rdi,[g_ep_store+rcx]
-	mov	r8,rdx
-	mov	rcx,rdx
-	rep	movsb
-	mov	r9,r8				; its length
+	call	ep_read				; r14d, r9d, r15d
 	; a backend's errors too?
 	xor	r10d,r10d
 	mov	rdx,[rbx+N_ARGS]
@@ -230,12 +184,90 @@ compile_errors:
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process
 
+; rsi/ecx = a page's path: it, read into g_ep_store. r14d = its place, r9d =
+; its length, r15d = its type. Refuses the configuration when it cannot.
+ep_read:
+	cmp	ecx,4096
+	jae	compile_errors.no_file
+	lea	rdi,[g_trust_path]
+	push	rsi
+	push	rcx
+	rep	movsb
+	mov	byte [rdi],0
+	pop	rcx
+	pop	rsi
+	; its type, by its extension
+	xor	r15d,r15d
+	cmp	ecx,5
+	jb	.read
+	mov	eax,[rsi+rcx-5]
+	or	eax,0x20202000
+	cmp	eax,'.jso'
+	jne	@f
+	cmp	byte [rsi+rcx-1],'n'
+	jne	@f
+	mov	r15d,1
+	jmp	.read
+@@:
+	mov	eax,[rsi+rcx-4]
+	or	eax,0x20202000
+	cmp	eax,'.txt'
+	jne	.read
+	mov	r15d,2
+.read:
+	lea	rdi,[g_trust_path]
+	lea	rsi,[g_ar_text]
+	call	read_file
+	test	rax,rax
+	js	compile_errors.no_file
+	cmp	rdx,EP_PAGE_MAX
+	ja	compile_errors.too_big
+	mov	ecx,[g_ep_used]
+	lea	r8,[rcx+rdx]
+	cmp	r8,EP_STORE
+	ja	compile_errors.too_big
+	mov	r14d,ecx
+	mov	[g_ep_used],r8d
+	mov	rsi,rax
+	lea	rdi,[g_ep_store+rcx]
+	mov	r9,rdx
+	mov	rcx,rdx
+	rep	movsb
+	ret
+
+; rsi/ecx = a page's path: eax = a new entry of no status range for it
+errpage_load:
+	push	r14
+	push	r15
+	call	ep_read
+	mov	eax,[g_plan_eps]
+	cmp	eax,MAX_EPS
+	jae	compile_errors.too_many
+	inc	dword [g_plan_eps]
+	imul	rdx,rax,EP_SIZE
+	lea	rdx,[g_eps+rdx]
+	mov	dword [rdx+EP_LO],0
+	mov	dword [rdx+EP_HI],0
+	mov	[rdx+EP_OFF],r14d
+	mov	[rdx+EP_LEN],r9d
+	mov	[rdx+EP_TYPE],r15d
+	mov	dword [rdx+EP_BACKEND],0
+	pop	r15
+	pop	r14
+	ret
+
 ; ------------------------------------------------------------------ serving
 
 ; ebx = session, r15 = record, eax = a status, ecx = 1 when a backend sent
 ; it: rsi = its page entry (the route's first, then the listener's), or 0.
 ; Keeps rax, rbx, rdi, r12-r15.
 errpage_find:
+	mov	rsi,[g_ep_force]		; (maintenance: its page, once)
+	test	rsi,rsi
+	jz	@f
+	mov	qword [g_ep_force],0
+	ret
+@@:
 	push	rdi
 	push	rax
 	mov	r9d,ecx
@@ -329,6 +361,7 @@ http_error_page:
 	pop	rax
 	call	fmt_u64
 	memit_x 13,10
+	mov	dword [g_ep_retry],0
 @@:
 	memit_x 'Content-Length: '
 	xor	ecx,ecx				; measure, then write
@@ -455,4 +488,6 @@ http_error_page:
 bss
 	g_ep_tmp	rb 24
 	g_ep_retry	dd ?		; seconds for a Retry-After (maintenance), 0 none
+	align 8
+	g_ep_force	dq ?		; a page that comes first (maintenance), 0 none
 end bss

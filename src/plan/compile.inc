@@ -39,7 +39,8 @@ LS_TRACE	:= 176		; d: http: `tracing` destination + 1, 0 = none
 LS_TSAMPLE	:= 180		; d: and the share of new traces kept, in millionths
 LS_EFIRST	:= 184		; d: http: its error pages (g_eps), first
 LS_ECOUNT	:= 188		; d: and how many
-LS_SIZE		:= 192
+LS_MAINT	:= 192		; d: http: its `maintenance` (g_maints) + 1, 0 none
+LS_SIZE		:= 200
 assert LS_PA6 + 28 <= LS_RESP
 
 ; Host block name (http): routes for requests to that host
@@ -265,6 +266,7 @@ bss
 	g_cmp_trace	dd ?
 	g_cmp_efirst	dd ?
 	g_cmp_ecount	dd ?
+	g_cmp_maint	dd ?
 	g_cmp_tsample	dd ?
 	g_cmp_pa4:	rb 16			; `preferred_address`, IPv4 and IPv6
 	g_cmp_pa6:	rb 28
@@ -314,6 +316,7 @@ end bss
 plan_compile:
 	push	rbx
 	push	r12
+	call	errpage_plan_init		; (g_eps[0]: maintenance's text)
 	mov	qword [g_plan_drain_timeout],DEFAULT_DRAIN_US
 	mov	qword [g_plan_watchdog],2000000
 	mov	qword [g_plan_hs_budget],DEFAULT_HS_BUDGET_US
@@ -3327,6 +3330,9 @@ compile_listener:
 	call	compile_errors
 	mov	[g_cmp_efirst],eax
 	mov	[g_cmp_ecount],edx
+	mov	rdi,r12
+	call	compile_maintenance
+	mov	[g_cmp_maint],eax
 	mov	dword [g_cmp_trace],0
 	mov	rdi,r12
 	mov	ecx,DIR_TRACING
@@ -3431,6 +3437,8 @@ compile_listener:
 	mov	[rcx+LS_EFIRST],eax
 	mov	eax,[g_cmp_ecount]
 	mov	[rcx+LS_ECOUNT],eax
+	mov	eax,[g_cmp_maint]
+	mov	[rcx+LS_MAINT],eax
 	mov	eax,[g_cmp_tsample]
 	mov	[rcx+LS_TSAMPLE],eax
 	mov	eax,[g_cmp_tlsi]

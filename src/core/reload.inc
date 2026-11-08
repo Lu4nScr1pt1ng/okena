@@ -99,6 +99,8 @@ macro plan_regions action
 	action g_ep_used, 4
 	action g_eps, EP_SIZE * MAX_EPS
 	action g_ep_store, EP_STORE
+	action g_plan_maints, 4
+	action g_maints, MT_SIZE * MAX_MAINTS
 	action g_acts, RA_SIZE * MAX_ACTS
 	action g_limits, LM_SIZE * MAX_LIMITS
 	action g_plan_limits, 4
