@@ -40,6 +40,7 @@ SG_RESTARTS	:= 0
 SG_RELOADS	:= 8
 SG_RELOAD_FAILS	:= 16
 SG_DRAINING	:= 24
+SG_STARTED	:= 32			; wall clock seconds when okena started
 SG_OFF		:= STP_SIZE * MAX_WORKERS
 
 ; Before forking a generation: a fresh table (old workers keep theirs).
@@ -64,7 +65,22 @@ stats_table_init:
 	mov	[rax+SG_OFF+SG_RELOADS],rcx
 	mov	rcx,[rbx+SG_OFF+SG_RELOAD_FAILS]
 	mov	[rax+SG_OFF+SG_RELOAD_FAILS],rcx
+	mov	rcx,[rbx+SG_OFF+SG_STARTED]
+	mov	[rax+SG_OFF+SG_STARTED],rcx
+	jmp	.out
 .done:
+	; the first: when it started
+	push	rax
+	sub	rsp,16
+	mov	edi,CLOCK_REALTIME
+	mov	rsi,rsp
+	mov	eax,SYS_clock_gettime
+	syscall
+	mov	rcx,[rsp]
+	add	rsp,16
+	pop	rax
+	mov	[rax+SG_OFF+SG_STARTED],rcx
+.out:
 	pop	rbx
 	ret
 

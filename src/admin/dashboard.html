@@ -5,76 +5,230 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>okena</title>
 <style>
-:root{--bg:#fbfbfa;--fg:#1d1d1b;--dim:#6b6b66;--line:#e4e3df;--up:#1f7a3f;--down:#b42318;--drain:#a15c00;--head:#f1f0ec}
-@media (prefers-color-scheme:dark){:root{--bg:#161615;--fg:#e8e7e3;--dim:#9a9993;--line:#2c2c2a;--up:#5ac47f;--down:#f0715f;--drain:#e3a542;--head:#1f1f1d}}
+:root{--bg:#f7f7f5;--card:#fff;--fg:#1c1c1a;--dim:#6d6c66;--line:#e3e2dd;--soft:#f0efeb;
+--up:#1d7a3e;--down:#b42318;--warn:#9a5b00;--accent:#2f5bd3;--chip:#eceae4}
+@media (prefers-color-scheme:dark){:root{--bg:#141413;--card:#1c1c1a;--fg:#e9e8e3;--dim:#9b9a93;--line:#2d2d2a;--soft:#232321;
+--up:#5cc483;--down:#f07261;--warn:#e2a646;--accent:#8aa8ff;--chip:#2a2a27}}
 *{box-sizing:border-box}
-body{margin:0;padding:16px;background:var(--bg);color:var(--fg);font:14px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-header{display:flex;flex-wrap:wrap;gap:6px 20px;align-items:baseline;margin-bottom:16px}
-h1{font-size:16px;margin:0}
+body{margin:0;padding:16px;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
+.mono,td,th,.chip,.num{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+header{display:flex;flex-wrap:wrap;gap:4px 16px;align-items:baseline;margin-bottom:14px}
+h1{font-size:18px;margin:0;letter-spacing:-.01em}
 .dim{color:var(--dim)}
-h2{font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);margin:20px 0 6px}
-.wrap{overflow-x:auto;border:1px solid var(--line);border-radius:6px}
-table{border-collapse:collapse;width:100%;min-width:640px}
-th,td{padding:6px 10px;text-align:right;white-space:nowrap;border-bottom:1px solid var(--line)}
-th{background:var(--head);font-weight:600;font-size:12px;color:var(--dim)}
+#err{color:var(--down);font-weight:600}
+.badge{display:inline-block;padding:1px 8px;border-radius:99px;font-size:12px;font-weight:600;background:var(--warn);color:#fff}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:22px}
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 12px}
+.kpi b{display:block;font-size:22px;font-variant-numeric:tabular-nums;font-family:ui-monospace,Menlo,Consolas,monospace}
+.kpi span{font-size:12px;color:var(--dim)}
+h2{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);margin:22px 0 8px}
+.box{background:var(--card);border:1px solid var(--line);border-radius:8px;margin-bottom:12px;overflow:hidden}
+.top{padding:10px 12px;display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;border-bottom:1px solid var(--line)}
+.top .name{font-weight:700;font-size:15px}
+.chip{display:inline-block;padding:1px 7px;border-radius:5px;background:var(--chip);font-size:12px;color:var(--fg)}
+.chip.on{background:color-mix(in srgb,var(--accent) 18%,transparent);color:var(--accent)}
+.chip.bad{background:color-mix(in srgb,var(--down) 16%,transparent);color:var(--down)}
+.chip.warn{background:color-mix(in srgb,var(--warn) 18%,transparent);color:var(--warn)}
+.chip.ok{background:color-mix(in srgb,var(--up) 16%,transparent);color:var(--up)}
+.stats{display:flex;flex-wrap:wrap;gap:4px 18px;padding:8px 12px;font-size:13px;border-bottom:1px solid var(--line);background:var(--soft)}
+.stats .num{font-weight:600}
+.info{padding:8px 12px;font-size:13px;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:3px}
+.wrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{padding:6px 12px;text-align:right;white-space:nowrap;border-bottom:1px solid var(--line)}
+th{font-weight:600;font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.04em}
 tr:last-child td{border-bottom:0}
-th:first-child,td:first-child,th.l,td.l{text-align:left}
-.up{color:var(--up)}.down{color:var(--down);font-weight:600}.drain{color:var(--drain)}
-#err{color:var(--down)}
+.l{text-align:left}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:1px}
+.st-up{color:var(--up)}.st-up .dot{background:var(--up)}
+.st-down{color:var(--down);font-weight:600}.st-down .dot{background:var(--down)}
+.st-drain{color:var(--warn)}.st-drain .dot{background:var(--warn)}
+.red{color:var(--down);font-weight:600}
+a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+.empty{padding:10px 12px;color:var(--dim)}
+:target{outline:2px solid var(--accent);outline-offset:2px}
 </style>
 </head>
 <body>
 <header>
-<h1>okena <span id="ver" class="dim"></span></h1>
+<h1>okena <span id="ver" class="dim mono"></span></h1>
 <span id="sum" class="dim"></span>
+<span id="drained"></span>
 <span id="err"></span>
 </header>
-<h2>Listeners</h2>
-<div class="wrap"><table>
-<thead><tr><th>listener</th><th class="l">kind</th><th>routes</th><th>active</th><th>limit</th><th>conn/s</th><th>req/s</th><th>5xx/s</th><th>in/s</th><th>out/s</th><th>requests</th><th>refused</th></tr></thead>
-<tbody id="listeners"></tbody>
-</table></div>
-<h2>Pools</h2>
-<div class="wrap"><table>
-<thead><tr><th>pool</th><th class="l">server</th><th class="l">state</th><th>weight</th><th>active</th><th>max</th><th>conn/s</th><th>fail/s</th><th>connects</th><th>failures</th></tr></thead>
-<tbody id="pools"></tbody>
-</table></div>
+<div class="cards" id="kpis"></div>
+<h2>Listeners: where traffic comes in, and where it goes</h2>
+<div id="listeners"></div>
+<h2>Pools: who serves it</h2>
+<div id="pools"></div>
 <script>
 "use strict";
 const $ = id => document.getElementById(id);
-function bytes(n) {
-  if (n >= 1e9) return (n / 1e9).toFixed(1) + " G";
-  if (n >= 1e6) return (n / 1e6).toFixed(1) + " M";
-  if (n >= 1e3) return (n / 1e3).toFixed(1) + " k";
-  return n.toFixed(0) + " ";
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
 }
-function row(cells) {
-  const tr = document.createElement("tr");
-  for (const c of cells) {
-    const td = document.createElement("td");
-    if (typeof c === "object") { td.textContent = c.t; if (c.c) td.className = c.c; } else td.textContent = c;
-    tr.appendChild(td);
+function add(parent, ...kids) { for (const k of kids) if (k) parent.appendChild(typeof k === "string" ? document.createTextNode(k) : k); return parent; }
+const chip = (text, cls) => el("span", "chip" + (cls ? " " + cls : ""), text);
+const rate = n => n >= 1000 ? (n / 1000).toFixed(1) + "k" : n.toFixed(1);
+function bytes(n) {
+  if (n >= 1e9) return (n / 1e9).toFixed(1) + " GB/s";
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + " MB/s";
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + " kB/s";
+  return n.toFixed(0) + " B/s";
+}
+function since(s) {
+  const d = Math.floor(s / 86400), h = Math.floor(s / 3600) % 24, m = Math.floor(s / 60) % 60;
+  return d ? d + "d " + h + "h" : h ? h + "h " + m + "m" : m ? m + "m " + (s % 60) + "s" : s + "s";
+}
+function stat(label, value, cls) {
+  const s = el("span");
+  add(s, el("span", "dim", label + " "), el("span", "num" + (cls ? " " + cls : ""), String(value)));
+  return s;
+}
+function table(heads, rows) {
+  const t = el("table"), h = el("tr");
+  for (const [text, left] of heads) h.appendChild(el("th", left ? "l" : "", text));
+  add(t, add(el("thead"), h));
+  const b = el("tbody");
+  for (const r of rows) {
+    const tr = el("tr");
+    for (const c of r) {
+      const td = el("td", c.left ? "l" : "");
+      if (c.node) td.appendChild(c.node); else td.textContent = c.t;
+      if (c.cls) td.className += " " + c.cls;
+      tr.appendChild(td);
+    }
+    b.appendChild(tr);
   }
-  return tr;
+  return add(el("div", "wrap"), add(t, b));
+}
+const poolsById = {};
+function poolLink(name) {
+  const p = poolsById[name], a = el("a", "", "pool " + name);
+  a.href = "#pool-" + encodeURIComponent(name);
+  const span = el("span");
+  add(span, a);
+  if (p) {
+    const up = p.servers.filter(v => v.state === "up").length;
+    add(span, " ", chip(up + "/" + p.servers.length + " up", up === 0 ? "bad" : up < p.servers.length ? "warn" : "ok"));
+  }
+  return span;
+}
+function certLine(c) {
+  const line = el("div");
+  const d = c.days_left;
+  add(line, el("span", "dim", "certificate "), el("span", "mono", c.names.join(", ") || "(no names)"), " ",
+    chip(c.key), " ",
+    chip(d === null ? "expiry unknown" : d < 0 ? "expired" : "expires in " + d + " d", d === null ? "" : d < 3 ? "bad" : d < 14 ? "warn" : "ok"));
+  return line;
+}
+function listenerBox(l) {
+  const box = el("div", "box");
+  const top = el("div", "top");
+  add(top, el("span", "name mono", l.address), chip(l.kind.toUpperCase(), "on"));
+  for (const p of l.protocols) if (p !== l.kind) add(top, chip(p === "h3" ? "HTTP/3 (QUIC)" : p === "h2" ? "HTTP/2" : p.toUpperCase()));
+  if (l.tls) {
+    add(top, chip("TLS " + l.tls.versions.join(" / "), "on"));
+    if (l.tls.ktls) add(top, chip("kTLS", "on"));
+    if (l.tls.client_cert !== "off") add(top, chip("mTLS " + l.tls.client_cert, "on"));
+  }
+  if (l.quic) {
+    if (l.quic.retry) add(top, chip("QUIC retry"));
+    if (l.quic.v2) add(top, chip("QUIC v2"));
+    if (l.quic.early_data) add(top, chip("0-RTT"));
+  }
+  if (l.proxy_protocol) add(top, chip("PROXY " + l.proxy_protocol));
+  if (l.access_log) add(top, chip("access log"));
+  if (l.tracing) add(top, chip("tracing"));
+  box.appendChild(top);
+  const st = el("div", "stats");
+  add(st, stat("active", l.active + (l.limit ? " / " + l.limit : "")), stat("conn/s", rate(l.conn_rate)));
+  if (l.kind === "http") add(st, stat("req/s", rate(l.req_rate)), stat("5xx/s", rate(l.err_rate), l.err_rate > 0 ? "red" : ""),
+    stat("requests", l.requests), stat("5xx", l.errors, l.errors > 0 ? "red" : ""));
+  else add(st, stat("in", bytes(l.in_rate)), stat("out", bytes(l.out_rate)));
+  add(st, stat("refused", l.refused, l.refused > 0 ? "red" : ""), stat("idle timeout", l.idle_s + "s"));
+  if (l.per_source) add(st, stat("per client", l.per_source));
+  box.appendChild(st);
+  if (l.tls && l.tls.certificates.length) {
+    const info = el("div", "info");
+    for (const c of l.tls.certificates) info.appendChild(certLine(c));
+    box.appendChild(info);
+  }
+  if (l.kind === "http") {
+    if (!l.routes.length) box.appendChild(el("div", "empty", "no routes"));
+    else box.appendChild(table([["route", 1], ["methods", 1], ["passes through", 1], ["goes to", 1]],
+      l.routes.map(r => {
+        const to = el("span");
+        if (r.pool) add(to, poolLink(r.pool));
+        else add(to, el("span", "dim", "okena answers: "), el("span", "mono", r.answer || "itself"));
+        const f = el("span");
+        for (const x of r.filters) add(f, chip(x), " ");
+        if (!r.filters.length) add(f, el("span", "dim", "–"));
+        return [{t: r.path, left: 1}, {t: r.methods.length ? r.methods.join(" ") : "any", left: 1}, {node: f, left: 1}, {node: to, left: 1}];
+      })));
+  } else {
+    const info = el("div", "info");
+    add(info, add(el("div"), el("span", "dim", "every connection goes to "), poolLink(l.pool)));
+    box.appendChild(info);
+  }
+  return box;
+}
+function poolBox(p) {
+  const box = el("div", "box");
+  box.id = "pool-" + encodeURIComponent(p.name);
+  const top = el("div", "top");
+  add(top, el("span", "name mono", p.name), chip(p.balance + (p.key ? " by " + p.key : "") + (p.bound_pct ? " (bound " + p.bound_pct + "%)" : ""), "on"));
+  if (p.health) add(top, chip("health " + p.health.kind + (p.health.path ? " " + p.health.path : "") + " every " + p.health.every_ms / 1000 + "s, " +
+    "down after " + p.health.fall + ", up after " + p.health.rise));
+  else add(top, chip("no active health check", "warn"));
+  if (p.tls) add(top, chip("TLS to servers", "on"));
+  if (p.sticky) add(top, chip("sticky cookie " + p.sticky));
+  if (p.slow_start_s) add(top, chip("slow start " + p.slow_start_s + "s"));
+  box.appendChild(top);
+  const info = el("div", "info");
+  const used = el("div");
+  add(used, el("span", "dim", "used by "));
+  if (!p.used_by.length) add(used, el("span", "dim", "nothing (no route or listener sends here)"));
+  for (const u of p.used_by) add(used, chip(u.listener + (u.route ? " " + u.route : "") + (u.as ? " (" + u.as + ")" : "")), " ");
+  info.appendChild(used);
+  box.appendChild(info);
+  if (!p.servers.length) box.appendChild(el("div", "empty", "no server yet (discovery found none)"));
+  else box.appendChild(table([["server", 1], ["state", 1], ["weight"], ["active / max"], ["conn/s"], ["fail/s"], ["connects"], ["failures"]],
+    p.servers.map(v => {
+      const s = el("span", "st-" + v.state);
+      add(s, el("span", "dot"), v.state === "drain" ? "drained" : v.state);
+      const name = el("span");
+      add(name, v.server, v.address ? el("span", "dim", " → " + v.address) : null, v.backup ? " " : null, v.backup ? chip("backup") : null);
+      return [{node: name, left: 1}, {node: s, left: 1}, {t: v.weight}, {t: v.active + " / " + (v.max || "∞")},
+        {t: rate(v.conn_rate)}, {t: rate(v.fail_rate), cls: v.fail_rate > 0 ? "red" : ""}, {t: v.connects}, {t: v.failures, cls: v.failures > 0 ? "red" : ""}];
+    })));
+  return box;
+}
+function kpi(value, label, cls) {
+  const k = el("div", "kpi");
+  add(k, el("b", cls || "", value), el("span", "", label));
+  return k;
 }
 async function tick() {
   try {
     const r = await fetch("/status", {cache: "no-store"});
     if (!r.ok) throw new Error("status " + r.status);
     const s = await r.json();
+    for (const p of s.pools) poolsById[p.name] = p;
     $("ver").textContent = s.version;
-    $("sum").textContent = s.workers + " workers · " + s.reloads + " reloads (" + s.reload_failures + " refused) · " +
-      s.restarts + " restarts" + (s.draining ? " · DRAINED" : "");
-    const L = $("listeners"); L.replaceChildren();
-    for (const l of s.listeners)
-      L.appendChild(row([l.address, {t: l.kind, c: "l"}, l.kind === "http" ? l.routes : "\u2013", l.active, l.limit || "–", l.conn_rate.toFixed(1), l.req_rate.toFixed(1),
-        {t: l.err_rate.toFixed(1), c: l.err_rate > 0 ? "down" : ""}, bytes(l.in_rate), bytes(l.out_rate), l.requests, l.refused]));
-    const P = $("pools"); P.replaceChildren();
-    for (const p of s.pools)
-      for (const v of p.servers)
-        P.appendChild(row([p.name, {t: v.server + (v.address ? " (" + v.address + ")" : ""), c: "l"},
-          {t: v.state, c: "l " + v.state}, v.weight, v.active, v.max || "–", v.conn_rate.toFixed(1),
-          {t: v.fail_rate.toFixed(1), c: v.fail_rate > 0 ? "down" : ""}, v.connects, v.failures]));
+    $("sum").textContent = s.engine + " · " + s.workers + " workers · up " + since(s.uptime_s) + " · " +
+      s.reloads + " reloads (" + s.reload_failures + " refused) · " + s.restarts + " restarts";
+    $("drained").replaceChildren(...(s.draining ? [el("span", "badge", "DRAINED: /ready answers 503")] : []));
+    let req = 0, err = 0, act = 0, up = 0, all = 0;
+    for (const l of s.listeners) { req += l.req_rate; err += l.err_rate; act += l.active; }
+    for (const p of s.pools) for (const v of p.servers) { all++; if (v.state === "up") up++; }
+    $("kpis").replaceChildren(kpi(rate(req), "requests / s"), kpi(rate(err), "5xx / s", err > 0 ? "red" : ""),
+      kpi(String(act), "connections open"), kpi(up + " / " + all, "servers up", up < all ? "red" : ""));
+    $("listeners").replaceChildren(...s.listeners.map(listenerBox));
+    $("pools").replaceChildren(...s.pools.map(poolBox));
     $("err").textContent = "";
   } catch (e) {
     $("err").textContent = "not answering (" + e.message + ")";

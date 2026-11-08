@@ -325,11 +325,22 @@ okena {
 ```
 
 The metrics address also serves `/status`, the instance now as JSON, and
-`/dashboard` (and `/`), a page that reads `/status` once a second:
-listeners with their routes, connections, limits and rates (connections,
-requests, 5xx and bytes a second), and every pool's servers with their
-state (`up`, `down` by health, `drain` by the API), weight, connections,
-`max=` and rates. The rates come from samples the admin process takes once
+`/dashboard` (and `/`), a page that reads `/status` once a second and
+follows the traffic's way through: each listener, with its protocols
+(HTTP/1.1, HTTP/2, HTTP/3 and QUIC's retry, v2 and 0-RTT; TLS, kTLS,
+client certificates; PROXY protocol), its certificates (names, key, days
+until they expire, in colour as the day nears), its limits and timeouts,
+and its rates (connections, requests, 5xx and bytes a second); each route,
+with its methods, what it passes through (limit, auth, cache, cors,
+compress, rewrite, headers, hedge, mirror, split, fault, priority) and
+where it goes: a pool, with how many of its servers are up, or okena itself
+(a redirect, files). Then each pool, with how it balances (and on what
+key), its health check, TLS to its servers, sticky sessions and slow
+start, who uses it (the listeners and routes that send to it, mirrors
+included), and its servers with their state (`up`, `down` by health,
+`drain` by the API), weight, backup, connections against `max=`, and
+rates. At the top: version, engine, workers, uptime, reloads, restarts,
+a drain, and the totals. The rates come from samples the admin process takes once
 a second, so they are the same for everyone who looks and cost the workers
 nothing. `okena top [-c FILE]` shows the same as a table, over the admin
 socket, a fresh frame a second; `okena top once` prints it one time, for

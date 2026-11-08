@@ -22,7 +22,7 @@ ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BIN = ROOT / "build" / "okena"
 BASE = 35000 + os.getpid() % 90 * 20 + (10 if ENGINE == "epoll" else 0)
-LST, TCPL, METRICS, BACK = BASE, BASE + 1, BASE + 2, BASE + 3
+LST, TCPL, METRICS, BACK, TLSL = BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4
 TOKEN = "s3cret-token-of-32-bytes-ok-1234"
 fails = 0
 
@@ -82,6 +82,9 @@ def main():
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-top-", dir="/tmp"))
     (tmp / "token").write_text(TOKEN + "\n")
     (tmp / "found.list").write_text(f"127.0.0.1:{BACK}\n")
+    subprocess.run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes", "-keyout", tmp / "k.pem",
+                    "-out", tmp / "c.pem", "-subj", "/CN=top.test", "-addext", "subjectAltName=DNS:top.test,DNS:www.top.test", "-days", "30"],
+                   check=True, capture_output=True)
     threading.Thread(target=S(("127.0.0.1", BACK), H).serve_forever, daemon=True).start()
     dead = socket.socket()
     dead.bind(("127.0.0.1", 0))
@@ -94,6 +97,13 @@ pool api {{ health tcp every=200ms fall=1 rise=1; server 127.0.0.1:{BACK}; serve
 pool found {{ discover file {tmp}/found.list }}
 http 127.0.0.1:{LST} {{ route /* {{ to pool api }}; route /f/* {{ to pool found }} }}
 tcp 127.0.0.1:{TCPL} {{ to pool api }}
+http 127.0.0.1:{TLSL} {{
+    tls {{ cert {tmp}/c.pem; key {tmp}/k.pem }}
+    http2 on
+    http3 retry
+    route /old {{ redirect 301 /new }}
+    route /api/* GET POST {{ limit 100/s; mirror pool found 10%; to pool api }}
+}}
 """)
     log = tmp / "log"
     p = subprocess.Popen([str(BIN), "-c", str(conf)], stderr=open(log, "w"))
@@ -142,10 +152,32 @@ tcp 127.0.0.1:{TCPL} {{ to pool api }}
         s = status()
         hl = {l["address"]: l for l in s["listeners"]}[f"127.0.0.1:{LST}"]
         check("  and the totals: every request counted, kinds named", hl["requests"] == sent[0] and hl["kind"] == "http"
-              and hl["routes"] == 2 and {l["address"]: l for l in s["listeners"]}[f"127.0.0.1:{TCPL}"]["kind"] == "tcp", (hl["requests"], sent[0]))
+              and len(hl["routes"]) == 2 and {l["address"]: l for l in s["listeners"]}[f"127.0.0.1:{TCPL}"]["kind"] == "tcp", (hl["requests"], sent[0]))
         time.sleep(2.2)
         hl = {l["address"]: l for l in status()["listeners"]}[f"127.0.0.1:{LST}"]
         check("  rates fall back to 0 when it stops", hl["req_rate"] == 0, hl["req_rate"])
+
+        # what it is set up to do: where each listener goes, who uses each pool
+        tl = {l["address"]: l for l in s["listeners"]}[f"127.0.0.1:{TCPL}"]
+        pools = {pl["name"]: pl for pl in s["pools"]}
+        check("where a listener goes: its routes to their pools, an L4 one to its pool",
+              [(r["path"], r["pool"]) for r in hl["routes"]] == [("/*", "api"), ("/f/*", "found")] and tl["pool"] == "api"
+              and hl["protocols"] == ["http/1.1"] and hl["tls"] is None, (hl["routes"], tl.get("pool")))
+        check("  and who uses a pool", sorted((u["listener"], u.get("route")) for u in pools["api"]["used_by"])
+              == sorted([(f"127.0.0.1:{LST}", "/*"), (f"127.0.0.1:{TCPL}", None), (f"127.0.0.1:{TLSL}", "/api/*")]), pools["api"]["used_by"])
+        check("  a pool's balancing and health check", pools["api"]["balance"] == "least-request"
+              and pools["api"]["health"] == {"kind": "tcp", "every_ms": 200, "timeout_ms": pools["api"]["health"]["timeout_ms"], "rise": 1, "fall": 1},
+              (pools["api"]["balance"], pools["api"]["health"]))
+        sl = {l["address"]: l for l in s["listeners"]}[f"127.0.0.1:{TLSL}"]
+        cert = sl["tls"]["certificates"][0] if sl.get("tls") else {}
+        check("TLS: its certificate's names, key and days left", cert.get("names") == ["top.test", "www.top.test"] and cert.get("key") == "P-256"
+              and cert.get("days_left") in (29, 30) and sl["protocols"] == ["http/1.1", "h2", "h3"] and sl["quic"]["retry"] is True, sl.get("tls"))
+        rt = {r["path"]: r for r in sl["routes"]}
+        check("  routes: what answers them, what they pass through", rt["/old"]["pool"] is None and rt["/old"]["answer"] == "redirect 301 /new"
+              and rt["/api/*"]["methods"] == ["GET", "POST"] and rt["/api/*"]["filters"] == ["limit", "mirror found 10%"], rt)
+        check("  a mirror counts as a use", {"listener": f"127.0.0.1:{TLSL}", "route": "/api/*", "as": "mirror"} in pools["found"]["used_by"],
+              pools["found"]["used_by"])
+        check("  the instance: engine and uptime", s["engine"] == ("epoll" if ENGINE == "epoll" else "io_uring") and s["uptime_s"] >= 1, (s["engine"], s["uptime_s"]))
 
         # servers: up, down (health), drained (the API)
         until(lambda: any(v["state"] == "down" for v in status()["pools"][0]["servers"]))
