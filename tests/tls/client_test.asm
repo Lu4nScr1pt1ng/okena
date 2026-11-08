@@ -254,16 +254,44 @@ start:
 	lea	rsi,[.get]
 	mov	edx,.get.len
 	sys	SYS_write
-	mov	edi,[g_fd]			; plaintext response; the kernel opens it
-	lea	rsi,[g_in]
+	; plaintext response; the kernel opens it, a record a read: read on
+	; until its first four bytes are there (a loaded server may cut it)
+	xor	ebx,ebx
+.kread:
+	mov	edi,[g_fd]
+	lea	rsi,[g_in+rbx]
 	mov	edx,SBUF
+	sub	edx,ebx
 	xor	eax,eax
 	syscall
-	cmp	rax,4
-	jb	.no
+	cmp	rax,-EINTR
+	je	.kread
+	test	rax,rax
+	jle	.kfailed
+	add	ebx,eax
+	cmp	ebx,4
+	jb	.kread
 	cmp	dword [g_in],'HTTP'
 	jne	.no
 	jmp	.yes
+.kfailed:
+	; why, for the test to say: "0 rRESULT nGOT"
+	mov	byte [g_pair],'0'
+	mov	edi,[g_out_fd]
+	lea	rsi,[g_pair]
+	mov	edx,1
+	push	rax
+	call	out_str
+	out_lit ' r'
+	pop	rax
+	neg	rax
+	call	out_u64
+	out_lit ' n'
+	mov	eax,ebx
+	call	out_u64
+	call	out_flush
+	xor	edi,edi
+	sys	SYS_exit
 .yes:
 	mov	byte [g_pair],'1'
 	jmp	.print

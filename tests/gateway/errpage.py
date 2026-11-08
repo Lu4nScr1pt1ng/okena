@@ -133,7 +133,8 @@ http 127.0.0.1:{TLSL} {{
         check("a backend's 500 under `backend`: its status, our page", st == 500 and h.get("content-type") == "application/json"
               and doc == {"error": 500, "reason": "Internal Server Error", "id": h.get("x-request-id")}, (st, b))
         check("  its body never reaches the client", b"SECRET" not in b)
-        check("  and the next request goes on (the upstream connection was not kept)", req("/api/fine") == (200, req("/api/fine")[1], b"fine"))
+        nxt = req("/api/fine")
+        check("  and the next request goes on (the upstream connection was not kept)", (nxt[0], nxt[2]) == (200, b"fine"), nxt)
         st, h, b = req("/web/deny")
         check("  a class: 4xx, a 403 too", st == 403 and b == b"<p>client error 403</p>\n", (st, b))
         st, h, b = req("/other/boom")

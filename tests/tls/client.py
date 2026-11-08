@@ -25,8 +25,12 @@ atexit.register(shutil.rmtree, tmp, True)
 failures = 0
 
 
+last = [""]                         # what the client said last: a failure shows it
+
+
 def check(name, ok, detail=""):
     global failures
+    detail = detail or (f"the client said {last[0]!r}" if not ok else "")
     print(("ok   " if ok else "FAIL ") + name + (f": {detail}" if detail and not ok else ""))
     failures += not ok
 
@@ -65,6 +69,7 @@ def run_against(groups, port, ktls=False, cert="s.pem", key="s.key"):
                            capture_output=True, timeout=10)
     finally:
         sp.kill()
+    last[0] = r.stdout.decode().strip() + (" / " + r.stderr.decode()[-200:] if r.stderr else "")
     return r.stdout.decode().strip()
 
 
