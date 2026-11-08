@@ -60,8 +60,15 @@ def backend(port, name, delay=0, status=200):
 
         def log_message(self, *a):
             pass
-    http.server.ThreadingHTTPServer.request_queue_size = 256
-    srv = http.server.ThreadingHTTPServer(("127.0.0.1", port), H)
+    class S(http.server.ThreadingHTTPServer):
+        request_queue_size = 256
+        daemon_threads = True
+
+        def handle_error(self, *a):
+            # a hedge that won closes the loser's connection: its resets are
+            # expected, and tracebacks from daemon threads at exit abort Python
+            pass
+    srv = S(("127.0.0.1", port), H)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
 
 

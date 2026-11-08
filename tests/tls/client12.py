@@ -8,7 +8,9 @@ decrypted. This exercises the ClientHello's 1.2 offer, the ServerKeyExchange
 signature verification (ECDSA and RSA), the ECDHE key exchange and the 1.2
 PRF key schedule, over user-space records and kTLS."""
 import atexit
+import os
 import pathlib
+import select
 import shutil
 import struct
 import subprocess
@@ -45,9 +47,18 @@ def run_against(port, cipher, cert="s.pem", key="s.key", ktls=False, tickets=Tru
            "-key", str(tmp / key), "-tls1_2", "-cipher", cipher, "-naccept", "1", "-www"]
     if not tickets:
         cmd += ["-no_ticket"]
-    sp = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    sp = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     try:
-        time.sleep(0.7)
+        # it says ACCEPT once it listens (a fixed sleep lost the race under
+        # load; a probe connection would take its one accept)
+        end, said = time.time() + 15, b""
+        while b"ACCEPT" not in said and select.select([sp.stdout], [], [], max(end - time.time(), 0))[0]:
+            more = os.read(sp.stdout.fileno(), 4096)    # (not readline: its buffer hides lines from select)
+            if not more:
+                break
+            said += more
+        if b"ACCEPT" not in said:
+            return "s_server did not start"
         r = subprocess.run([str(CLIENT)], input=struct.pack(">H", port) + bytes([1 if ktls else 0]),
                            capture_output=True, timeout=10)
     finally:

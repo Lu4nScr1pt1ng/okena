@@ -103,6 +103,9 @@ def backend():
         daemon_threads = True
         allow_reuse_address = True
         request_queue_size = 256
+
+        def handle_error(self, *a):
+            pass                    # (tracebacks from daemon threads at exit abort Python)
     T(("127.0.0.1", BACK), H).serve_forever()
 
 

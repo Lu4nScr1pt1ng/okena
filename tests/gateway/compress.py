@@ -158,7 +158,9 @@ http 127.0.0.1:{LST} {{
     route /small/* {{ compress gzip min=100KiB; to pool b }}
     route /cached/* {{ cache 60s; to pool b }}
     route /f/* {{ files {tmp}/site }}
-    route /* {{ to pool b }}
+    # (critical: under a full `make test` the storm below can make a tick a
+    # second late, and shedding is not what is tested here)
+    route /* {{ priority critical; to pool b }}
 }}
 http 127.0.0.1:{BASE + 2} {{
     tls {{ cert {tmp}/c.pem; key {tmp}/k.pem }}

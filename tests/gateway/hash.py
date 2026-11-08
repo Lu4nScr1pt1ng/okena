@@ -3,6 +3,7 @@
 the same key to the same server on every worker, shares by weight, and few
 keys moving when a server goes."""
 import collections
+from concurrent.futures import ThreadPoolExecutor
 import http.client
 import http.server
 import pathlib
@@ -207,7 +208,6 @@ http 127.0.0.1:{COLD} {{ route /* {{ to pool cold }} }}
         # a hot key: bounded, it spills; unbounded, it does not
         one = {get(HOT, x_user="hot")[1] for i in range(20)}
         check("bound=125%: light, a key stays on its server", len(one) == 1, one)
-        from concurrent.futures import ThreadPoolExecutor
 
         def burst(port):
             with ThreadPoolExecutor(40) as ex:
@@ -217,7 +217,10 @@ http 127.0.0.1:{COLD} {{ route /* {{ to pool cold }} }}
         most_c = max(SERVERS[k].most for k in SERVERS if k[:2] in ("c0", "c1", "c2", "c3"))
         check("  40 at once on one key: it spills, only as far as it must", len(h) >= 3 and most_h <= 20, (h, most_h))
         check("  where without bound it all goes to one", len(c) == 1 and most_c >= 30, (c, most_c))
-        w = collections.Counter(users(RW, 2000).values())     # (400 left it to chance, 1 run in 300)
+        # 6000 keys: w3's share is 0.75 with sd 0.0056, and 2.6 .. 3.5 is 5 sd
+        # either way (2000 put it at 2.9 sd: one run in 250 failed by chance)
+        with ThreadPoolExecutor(16) as ex:
+            w = collections.Counter(ex.map(lambda i: get(RW, x_user=f"user{i}")[1], range(6000)))
         check("weights: 3 to 1", 2.6 <= w["w3"] / max(w["w1"], 1) <= 3.5, w)
 
         # source-hash, on stream and datagrams: the client's address
