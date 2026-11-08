@@ -2340,6 +2340,17 @@ http_resp_head:
 	call	http_count
 	and	dword [r15+H_FLAGS],not HX_UPGRADE	; the backend did not switch
 	mov	[r15+H_STATUS],eax
+	; an error of the backend's, with a page of one's own for it (`errors
+	; ... backend`): its status stays, its body goes
+	cmp	eax,400
+	jb	@f
+	test	dword [r15+H_FLAGS],HX_GRPC
+	jnz	@f
+	mov	ecx,1
+	call	errpage_find
+	test	rsi,rsi
+	jnz	http_error_backend
+@@:
 	cmp	dword [r14+HM_VERSION],11
 	jne	@f
 	test	dword [r14+HM_FLAGS],HMF_CLOSE
@@ -4231,6 +4242,10 @@ http_error:
 @@:
 	test	dword [r15+H_FLAGS],HX_GRPC
 	jnz	http_error_grpc
+	xor	ecx,ecx				; a page of one's own for it?
+	call	errpage_find
+	test	rsi,rsi
+	jnz	http_error_page
 	mov	rdi,[r15+H_BUF]
 	lea	rdi,[rdi+HB_OUT]
 	push	rax
@@ -4282,6 +4297,24 @@ http_error:
 .close:
 	mov	edi,ebx
 	jmp	session_close
+
+; A backend's error answered with a page: eax = its status, rsi = the page.
+; The upstream connection goes (its body is not read), the client's closes
+; after the page as with okena's own errors.
+http_error_backend:
+	push	rsi
+	push	rax
+	call	h_upclose
+	h_rec
+	or	dword [r15+H_FLAGS],HX_CLOSE or HX_STARTED
+	mov	dword [r15+H_STATE],HS_ERROR_SEND
+	cmp	dword [r15+H_RIDLEN],0
+	jne	@f
+	call	rid_new
+@@:
+	pop	rax
+	pop	rsi
+	jmp	http_error_page
 
 ; http_error for a gRPC request, eax = the HTTP status: a "Trailers-Only"
 ; answer (gRPC over HTTP/2: status 200, no body, grpc-status in the head),
@@ -4345,7 +4378,8 @@ end macro
 reasons 409,'Conflict', 422,'Unprocessable Content', 301,'Moved Permanently', 302,'Found', 303,'See Other', 307,'Temporary Redirect', \
 	308,'Permanent Redirect', 400,'Bad Request', 429,'Too Many Requests', 403,'Forbidden', 401,'Unauthorized', 404,'Not Found', 405,'Method Not Allowed', 408,'Request Timeout', \
 	421,'Misdirected Request', \
-	431,'Request Header Fields Too Large', 501,'Not Implemented', 502,'Bad Gateway', \
+	410,'Gone', 411,'Length Required', 413,'Content Too Large', 414,'URI Too Long', 415,'Unsupported Media Type', \
+	431,'Request Header Fields Too Large', 500,'Internal Server Error', 501,'Not Implemented', 502,'Bad Gateway', \
 	503,'Service Unavailable', 504,'Gateway Timeout', 505,'HTTP Version Not Supported'
 
 http_reason:

@@ -37,7 +37,9 @@ LS_PA6		:= 144		; and IPv6 one (sockaddr_in6)
 LS_RESP		:= 172		; d: udp: answers a flow gets, 0 none, -1 no limit
 LS_TRACE	:= 176		; d: http: `tracing` destination + 1, 0 = none
 LS_TSAMPLE	:= 180		; d: and the share of new traces kept, in millionths
-LS_SIZE		:= 184
+LS_EFIRST	:= 184		; d: http: its error pages (g_eps), first
+LS_ECOUNT	:= 188		; d: and how many
+LS_SIZE		:= 192
 assert LS_PA6 + 28 <= LS_RESP
 
 ; Host block name (http): routes for requests to that host
@@ -105,7 +107,9 @@ RA_HOLD		:= 144		; q: `hold`: µs a request waits for a backend
 RA_RMAP		:= 152		; d: its `redirects` + 1
 RA_IDEM		:= 156		; d: its `idempotency` + 1
 RA_ACL		:= 160		; d: its `allow`, `deny` + 1
-RA_SIZE		:= 168
+RA_EFIRST	:= 164		; d: its error pages (g_eps), first
+RA_ECOUNT	:= 168		; d: and how many
+RA_SIZE		:= 176
 MAX_ACTS	:= MAX_ROUTES
 HD_KIND		:= 0		; d: HOP_SET, HOP_ADD, HOP_DROP
 HD_PREFIX	:= 4		; d: 1 when the name ends with * (drop)
@@ -259,6 +263,8 @@ bss
 	g_cmp_pt	dd ?
 	g_cmp_alog	dd ?
 	g_cmp_trace	dd ?
+	g_cmp_efirst	dd ?
+	g_cmp_ecount	dd ?
 	g_cmp_tsample	dd ?
 	g_cmp_pa4:	rb 16			; `preferred_address`, IPv4 and IPv6
 	g_cmp_pa6:	rb 28
@@ -1083,6 +1089,9 @@ compile_route_action:
 	lea	rcx,[dir_table + D_SIZE*DIR_REDIRECTS]
 	cmp	rax,rcx
 	je	@f
+	lea	rcx,[dir_table + D_SIZE*DIR_ERRORS]
+	cmp	rax,rcx
+	je	@f
 	mov	rbx,[rbx+N_NEXT]
 	jmp	@b
 .listener_compress:
@@ -1141,6 +1150,11 @@ compile_route_action:
 	mov	rbx,[rbx+N_NEXT]
 	jmp	.rate
 .rates:
+	mov	rdi,r12
+	mov	rdi,r12				; its error pages
+	call	compile_errors
+	mov	[r13+RA_EFIRST],eax
+	mov	[r13+RA_ECOUNT],edx
 	mov	rdi,r12
 	mov	ecx,DIR_CORS
 	call	find_child
@@ -3309,6 +3323,10 @@ compile_listener:
 	call	alog_dest_id
 	mov	[g_cmp_alog],eax
 @@:
+	mov	rdi,r12				; the listener's error pages
+	call	compile_errors
+	mov	[g_cmp_efirst],eax
+	mov	[g_cmp_ecount],edx
 	mov	dword [g_cmp_trace],0
 	mov	rdi,r12
 	mov	ecx,DIR_TRACING
@@ -3409,6 +3427,10 @@ compile_listener:
 	mov	[rcx+LS_ALOG],eax
 	mov	eax,[g_cmp_trace]
 	mov	[rcx+LS_TRACE],eax
+	mov	eax,[g_cmp_efirst]
+	mov	[rcx+LS_EFIRST],eax
+	mov	eax,[g_cmp_ecount]
+	mov	[rcx+LS_ECOUNT],eax
 	mov	eax,[g_cmp_tsample]
 	mov	[rcx+LS_TSAMPLE],eax
 	mov	eax,[g_cmp_tlsi]

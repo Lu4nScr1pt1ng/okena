@@ -134,6 +134,8 @@ SUITES = [
     ("tracing epoll", ["tests/gateway/tracing.py", "epoll"]),
     ("top io_uring", ["tests/gateway/top.py", "io_uring"]),
     ("top epoll", ["tests/gateway/top.py", "epoll"]),
+    ("errpage io_uring", ["tests/gateway/errpage.py", "io_uring"]),
+    ("errpage epoll", ["tests/gateway/errpage.py", "epoll"]),
     ("geoip io_uring", ["tests/gateway/geoip.py", "io_uring"]),
     ("geoip epoll", ["tests/gateway/geoip.py", "epoll"]),
     ("acl io_uring", ["tests/gateway/acl.py", "io_uring"]),

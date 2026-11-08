@@ -11,7 +11,7 @@ not built yet. A directive that is not built is refused by `okena check`
 | `okena` | `workers`, `io_engine`, `busy_poll`, `watchdog`, `drain delay= timeout=`, `metrics [token=]`, `ticket_keys`, `handshake_budget wait=`, `quic_server_id HEX` |
 | `tcp ADDR...` | `to`, `limits { connections; per_source }`, `timeout { idle }`, `proxy_protocol send v1\|v2`, `tls { cert; key }`, `tls passthrough { sni NAME... to pool P; default reject\|to pool P }` |
 | `udp ADDR...` | `to`, `responses N`, `limits { connections }` (flows), `timeout { idle }` |
-| `http ADDR...` | `host`, `route`, `limits`, `timeout { idle; header; body_idle; response }`, `trusted_proxies`, `access_log`, `tracing`, `http2 on\|off`, `http3 on\|off\|retry\|v2`, `preferred_address`, `early_data on\|off`, `tls { cert; key; ktls on\|off }` |
+| `http ADDR...` | `host`, `route`, `errors CODES file= [backend]`, `limits`, `timeout { idle; header; body_idle; response }`, `trusted_proxies`, `access_log`, `tracing`, `http2 on\|off`, `http3 on\|off\|retry\|v2`, `preferred_address`, `early_data on\|off`, `tls { cert; key; ktls on\|off }` |
 | `route PATH... [METHOD...]` | `to`, `redirect`, `rewrite path`, `header set\|add\|drop`, `response header set\|add\|drop` |
 | `pool NAME` | `server ADDR [weight=N] [max=N] [backup]`, `queue timeout=`, `balance least-request\|peak-ewma\|round-robin\|least-conn\|random\|maglev\|ring-hash\|source-hash [key=] [bound=]\|first`, `sticky cookie= [ttl=] [samesite=]`, `connect timeout=`, `health tcp\|http\|grpc ...`, `slow_start`, `tls { trust FILE; sni NAME }` (TLS to the backends), `protocol h1\|h2` |
 
@@ -542,6 +542,30 @@ records their `traceId` and `spanId`, so logs and traces meet. Copies
 (`mirror`, `hedge`) carry the same `traceparent` and send no span of their
 own. Spans to a collector that is away are kept and retried as OTLP log
 records are.
+
+### Error pages
+
+```
+errors 502 503 504 file=/srv/errors/down.html     # in an http listener, or a route
+errors 404 file=/srv/errors/404.html
+route /api/* { errors 5xx backend file=/srv/errors/api.json; to pool api }
+```
+
+`errors` answers okena's own errors (a backend that cannot be reached, a
+timeout, a request it refuses, no route) with a page of one's own instead
+of its short text. A code is a status from 400 to 599 or a class (`4xx`,
+`5xx`). A route's pages are looked at before its listener's; an error that
+comes before a route is chosen (a request okena cannot read, no route)
+takes the listener's. With `backend`, the errors a backend answers are
+replaced too: their status stays and their body never reaches the client
+(so a stack trace does not leak), and the connection to that backend is not
+kept. The file is read with the configuration, a reload reads it again; a
+page is at most 16 KiB. Its type comes from its extension: `.json`
+application/json, `.txt` text/plain, anything else HTML. In it, `{status}`,
+`{reason}` and `{request_id}` become the answer's own; the request id is
+also in `X-Request-Id`, so a user can give it and the access log finds it.
+The answer is never cached and closes the connection, as okena's errors do.
+gRPC requests keep their own errors (grpc-status), not a page.
 
 ## HTTP routes
 

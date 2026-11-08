@@ -95,6 +95,10 @@ macro plan_regions action
 	action g_tls, TL_SIZE * MAX_TLS
 	action g_tls_store, TLS_STORE
 	action g_plan_acts, 4
+	action g_plan_eps, 4
+	action g_ep_used, 4
+	action g_eps, EP_SIZE * MAX_EPS
+	action g_ep_store, EP_STORE
 	action g_acts, RA_SIZE * MAX_ACTS
 	action g_limits, LM_SIZE * MAX_LIMITS
 	action g_plan_limits, 4
