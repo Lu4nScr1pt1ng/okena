@@ -142,6 +142,7 @@ enumdef e_h3, 'on', 'off', 'retry', 'v2'
 enumdef e_proto, 'h1', 'h2'
 
 keysdef k_alog, 'trust', T_ANY
+keysdef k_metrics, 'token', T_ANY
 keysdef k_tracing, 'sample', T_PERCENT, 'trust', T_ANY
 keysdef k_drain, 'delay', T_DURATION, 'timeout', T_DURATION
 keysdef k_hs_budget, 'wait', T_DURATION
@@ -200,7 +201,7 @@ dirdef DIR_ADMIN, 'admin',      M_OKENA,   0,           F_UNIQUE, 1, 1, T_ANY, T
 dirdef DIR_GEOIP, 'geoip',      M_OKENA,   0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
 dirdef DIR_CACHE_MEM, 'cache_memory', M_OKENA, 0,       F_UNIQUE, 1, 1, T_SIZE, T_NONE, 0
 dirdef DIR_WATCHDOG, 'watchdog',    M_OKENA,   0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
-dirdef DIR_METRICS, 'metrics',     M_OKENA,   0,           F_UNIQUE, 1, 1, T_LISTEN, T_NONE, 0
+dirdef DIR_METRICS, 'metrics',     M_OKENA,   0,           F_UNIQUE, 1, 1, T_LISTEN, T_NONE, k_metrics
 dirdef DIR_BUSY_POLL, 'busy_poll',   M_OKENA,   0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
 dirdef DIR_TICKET_KEYS, 'ticket_keys', M_OKENA, 0,       F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
 dirdef DIR_QUIC_SID, 'quic_server_id', M_OKENA, 0,      F_UNIQUE or F_KEYS_BLOCK, 1, 1, T_NAME, T_NONE, k_quic_sid

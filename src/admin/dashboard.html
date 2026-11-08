@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>okena</title>
+<style>
+:root{--bg:#fbfbfa;--fg:#1d1d1b;--dim:#6b6b66;--line:#e4e3df;--up:#1f7a3f;--down:#b42318;--drain:#a15c00;--head:#f1f0ec}
+@media (prefers-color-scheme:dark){:root{--bg:#161615;--fg:#e8e7e3;--dim:#9a9993;--line:#2c2c2a;--up:#5ac47f;--down:#f0715f;--drain:#e3a542;--head:#1f1f1d}}
+*{box-sizing:border-box}
+body{margin:0;padding:16px;background:var(--bg);color:var(--fg);font:14px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+header{display:flex;flex-wrap:wrap;gap:6px 20px;align-items:baseline;margin-bottom:16px}
+h1{font-size:16px;margin:0}
+.dim{color:var(--dim)}
+h2{font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);margin:20px 0 6px}
+.wrap{overflow-x:auto;border:1px solid var(--line);border-radius:6px}
+table{border-collapse:collapse;width:100%;min-width:640px}
+th,td{padding:6px 10px;text-align:right;white-space:nowrap;border-bottom:1px solid var(--line)}
+th{background:var(--head);font-weight:600;font-size:12px;color:var(--dim)}
+tr:last-child td{border-bottom:0}
+th:first-child,td:first-child,th.l,td.l{text-align:left}
+.up{color:var(--up)}.down{color:var(--down);font-weight:600}.drain{color:var(--drain)}
+#err{color:var(--down)}
+</style>
+</head>
+<body>
+<header>
+<h1>okena <span id="ver" class="dim"></span></h1>
+<span id="sum" class="dim"></span>
+<span id="err"></span>
+</header>
+<h2>Listeners</h2>
+<div class="wrap"><table>
+<thead><tr><th>listener</th><th class="l">kind</th><th>routes</th><th>active</th><th>limit</th><th>conn/s</th><th>req/s</th><th>5xx/s</th><th>in/s</th><th>out/s</th><th>requests</th><th>refused</th></tr></thead>
+<tbody id="listeners"></tbody>
+</table></div>
+<h2>Pools</h2>
+<div class="wrap"><table>
+<thead><tr><th>pool</th><th class="l">server</th><th class="l">state</th><th>weight</th><th>active</th><th>max</th><th>conn/s</th><th>fail/s</th><th>connects</th><th>failures</th></tr></thead>
+<tbody id="pools"></tbody>
+</table></div>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+function bytes(n) {
+  if (n >= 1e9) return (n / 1e9).toFixed(1) + " G";
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + " M";
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + " k";
+  return n.toFixed(0) + " ";
+}
+function row(cells) {
+  const tr = document.createElement("tr");
+  for (const c of cells) {
+    const td = document.createElement("td");
+    if (typeof c === "object") { td.textContent = c.t; if (c.c) td.className = c.c; } else td.textContent = c;
+    tr.appendChild(td);
+  }
+  return tr;
+}
+async function tick() {
+  try {
+    const r = await fetch("/status", {cache: "no-store"});
+    if (!r.ok) throw new Error("status " + r.status);
+    const s = await r.json();
+    $("ver").textContent = s.version;
+    $("sum").textContent = s.workers + " workers · " + s.reloads + " reloads (" + s.reload_failures + " refused) · " +
+      s.restarts + " restarts" + (s.draining ? " · DRAINED" : "");
+    const L = $("listeners"); L.replaceChildren();
+    for (const l of s.listeners)
+      L.appendChild(row([l.address, {t: l.kind, c: "l"}, l.kind === "http" ? l.routes : "\u2013", l.active, l.limit || "–", l.conn_rate.toFixed(1), l.req_rate.toFixed(1),
+        {t: l.err_rate.toFixed(1), c: l.err_rate > 0 ? "down" : ""}, bytes(l.in_rate), bytes(l.out_rate), l.requests, l.refused]));
+    const P = $("pools"); P.replaceChildren();
+    for (const p of s.pools)
+      for (const v of p.servers)
+        P.appendChild(row([p.name, {t: v.server + (v.address ? " (" + v.address + ")" : ""), c: "l"},
+          {t: v.state, c: "l " + v.state}, v.weight, v.active, v.max || "–", v.conn_rate.toFixed(1),
+          {t: v.fail_rate.toFixed(1), c: v.fail_rate > 0 ? "down" : ""}, v.connects, v.failures]));
+    $("err").textContent = "";
+  } catch (e) {
+    $("err").textContent = "not answering (" + e.message + ")";
+  }
+}
+tick();
+setInterval(tick, 1000);
+</script>
+</body>
+</html>

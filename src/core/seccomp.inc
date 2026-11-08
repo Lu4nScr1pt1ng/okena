@@ -327,6 +327,7 @@ rodata
 	sc_allow filter_admin, SYS_setsockopt
 	sc_allow filter_admin, SYS_getsockopt
 	sc_allow filter_admin, SYS_ppoll_
+	sc_allow filter_admin, SYS_clock_gettime	; (`top`: a sample a second)
 	sc_end filter_admin
 
 	; logger: access log lines from the pipe to their files

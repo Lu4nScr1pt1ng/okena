@@ -244,6 +244,8 @@ bss
 	g_plan_metrics_text	dq ?
 	g_plan_metrics_tlen	dd ?
 	g_plan_metrics_sa:	rb 28
+	g_plan_mtlen		dd ?		; `metrics ... token=FILE`: its token, 0 none
+	g_plan_mtoken:		rb 256
 	g_listeners:	rb LS_SIZE * MAX_LISTENERS
 	g_pools:	rb PL_SIZE * MAX_POOLS
 	g_trust_path:	rb 4096			; a trust file's path, NUL-terminated
@@ -592,6 +594,8 @@ compile_settings:
 	call	sockaddr_build
 	mov	[g_plan_metrics_salen],eax
 	mov	dword [g_plan_metrics],1
+	mov	rdi,rbx
+	call	compile_metrics_token
 	jmp	.advance
 .busy_poll:
 	mov	rdi,rbx
@@ -800,6 +804,78 @@ alog_dest_node:
 .bad_trust:
 	call	log_begin
 	out_lit 'access_log: a trust= file that cannot be read as a certificate'
+.fail:
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
+
+; rdi = the `metrics` node: its token=FILE read (the file's first line, 16 to
+; 255 bytes of it), or none
+compile_metrics_token:
+	mov	dword [g_plan_mtlen],0
+	cstring str_key_token, 'token',0
+	lea	rsi,[str_key_token]
+	call	node_option
+	test	rax,rax
+	jz	.none
+	mov	rsi,[rax+A_VAL]
+	mov	ecx,[rax+A_VLEN]
+	cmp	ecx,4096
+	jae	.bad
+	lea	rdi,[g_trust_path]
+	rep	movsb
+	mov	byte [rdi],0
+	lea	rdi,[g_trust_path]
+	lea	rsi,[g_ar_text]
+	call	read_file
+	test	rax,rax
+	js	.bad
+	; up to the line's end, without trailing spaces
+	xor	ecx,ecx
+@@:
+	cmp	rcx,rdx
+	jae	@f
+	cmp	byte [rax+rcx],10
+	je	@f
+	cmp	byte [rax+rcx],13
+	je	@f
+	inc	ecx
+	jmp	@b
+@@:
+	test	ecx,ecx
+	jz	.bad
+	cmp	byte [rax+rcx-1],' '
+	ja	@f
+	dec	ecx
+	jmp	@b
+@@:
+	cmp	ecx,16
+	jb	.short
+	cmp	ecx,255
+	ja	.bad
+	; printable, no space: it travels in a header
+	xor	edx,edx
+@@:
+	cmp	byte [rax+rdx],' '
+	jbe	.bad
+	cmp	byte [rax+rdx],0x7F
+	jae	.bad
+	inc	edx
+	cmp	edx,ecx
+	jb	@b
+	mov	[g_plan_mtlen],ecx
+	mov	rsi,rax
+	lea	rdi,[g_plan_mtoken]
+	rep	movsb
+.none:
+	ret
+.short:
+	call	log_begin
+	out_lit 'metrics: a token= shorter than 16 bytes guards nothing'
+	jmp	.fail
+.bad:
+	call	log_begin
+	out_lit 'metrics: token= names a file whose first line is the token (16 to 255 printable bytes)'
 .fail:
 	call	log_end
 	mov	edi,EXIT_CONFIG

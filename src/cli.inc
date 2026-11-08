@@ -23,6 +23,7 @@ cstring str_cmd_backend, 'backend',0
 cstring str_cmd_drain, 'drain',0
 cstring str_cmd_resume, 'resume',0
 cstring str_cmd_bench, 'bench',0
+cstring str_cmd_top, 'top',0
 cstring str_flag_help, '--help',0
 cstring str_flag_version, '--version',0
 cstring str_flag_c, '-c',0
@@ -90,6 +91,12 @@ cli_main:
 	call	cstr_eq
 	test	eax,eax
 	jnz	cli_resume
+	mov	rax,[g_argv]
+	mov	rdi,[rax+8]
+	lea	rsi,[str_cmd_top]
+	call	cstr_eq
+	test	eax,eax
+	jnz	cli_top
 	mov	rax,[g_argv]
 	mov	rdi,[rax+8]
 	lea	rsi,[str_cmd_health]
@@ -351,6 +358,7 @@ cli_help:
 	out_lit '  okena reload [-c FILE]       reload the running instance, and say how it went', 10
 	out_lit '  okena backend list|drain|up|weight [POOL SERVER [N]] [-c FILE]', 10
 	out_lit '  okena drain [wait] | resume [-c FILE]  the instance out of rotation (/ready 503) and back', 10
+	out_lit '  okena top [once] [-c FILE]   listeners, pools and servers now, with their rates', 10
 	out_lit '  okena health [FILE]          exit 0 when the running instance is ready (/ready)', 10
 	out_lit '  okena bench URL [rate=N] ... open-loop load: latency corrected for coordinated omission', 10
 	out_lit '  okena version', 10, 10

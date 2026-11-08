@@ -8,7 +8,7 @@ not built yet. A directive that is not built is refused by `okena check`
 
 | Block | Directives |
 |---|---|
-| `okena` | `workers`, `io_engine`, `busy_poll`, `watchdog`, `drain delay= timeout=`, `metrics`, `ticket_keys`, `handshake_budget wait=`, `quic_server_id HEX` |
+| `okena` | `workers`, `io_engine`, `busy_poll`, `watchdog`, `drain delay= timeout=`, `metrics [token=]`, `ticket_keys`, `handshake_budget wait=`, `quic_server_id HEX` |
 | `tcp ADDR...` | `to`, `limits { connections; per_source }`, `timeout { idle }`, `proxy_protocol send v1\|v2`, `tls { cert; key }`, `tls passthrough { sni NAME... to pool P; default reject\|to pool P }` |
 | `udp ADDR...` | `to`, `responses N`, `limits { connections }` (flows), `timeout { idle }` |
 | `http ADDR...` | `host`, `route`, `limits`, `timeout { idle; header; body_idle; response }`, `trusted_proxies`, `access_log`, `tracing`, `http2 on\|off`, `http3 on\|off\|retry\|v2`, `preferred_address`, `early_data on\|off`, `tls { cert; key; ktls on\|off }` |
@@ -312,7 +312,8 @@ okena {
     busy_poll 50us            # poll this long after activity instead of sleeping
     watchdog 2s               # a worker stuck this long is replaced
     drain delay=2s timeout=7s # fits inside docker stop's 10 s
-    metrics :9464             # /metrics, /live, /ready
+    metrics :9464             # /metrics, /status, /dashboard, /live, /ready
+    # metrics :9464 token=/etc/okena/metrics.token   # all but /live and /ready behind it
     admin unix:/run/okena/admin.sock  # `okena reload`, `okena backend`
     handshake_budget 100us wait=1s  # TLS hello crypto per loop iteration (0us: off);
                               # past it hellos queue, and those older than wait close
@@ -322,6 +323,26 @@ okena {
     acme email=ops@example.com
 }
 ```
+
+The metrics address also serves `/status`, the instance now as JSON, and
+`/dashboard` (and `/`), a page that reads `/status` once a second:
+listeners with their routes, connections, limits and rates (connections,
+requests, 5xx and bytes a second), and every pool's servers with their
+state (`up`, `down` by health, `drain` by the API), weight, connections,
+`max=` and rates. The rates come from samples the admin process takes once
+a second, so they are the same for everyone who looks and cost the workers
+nothing. `okena top [-c FILE]` shows the same as a table, over the admin
+socket, a fresh frame a second; `okena top once` prints it one time, for
+scripts.
+
+`token=FILE` puts everything on that address but `/live` and `/ready` (the
+probes) behind a token, the file's first line, 16 to 255 printable bytes. It
+is accepted as `Authorization: Bearer TOKEN`, as Prometheus' `authorization`
+sends it, or as the password of Basic authentication, any user name, so a
+browser can open the dashboard; without it the answer is 401 asking for
+Basic. It is compared in constant time. The token travels as written:
+without TLS on that address, keep it on a trusted network or behind a
+proxy that adds TLS.
 
 Profiles set groups of defaults: `latency` enables busy polling, NAPI
 polling and smaller batches; `throughput` larger batches and `SEND_ZC`

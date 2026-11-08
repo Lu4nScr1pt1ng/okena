@@ -370,6 +370,8 @@ api_serve:
 	mov	rdi,[g_admin_buf]
 	push	rdi
 	api_cmd 'list', .list
+	api_cmd 'status', .status
+	api_cmd 'top', .top
 	api_cmd 'state', .state
 	api_cmd 'reload', .reload
 	api_cmd 'drain', .drain_instance
@@ -384,6 +386,16 @@ api_serve:
 .list:
 	pop	rdi
 	call	api_list
+	jmp	.send
+.status:
+	pop	rdi
+	memit 'ok',10
+	call	status_json
+	jmp	.send
+.top:
+	pop	rdi
+	memit 'ok',10
+	call	top_table
 	jmp	.send
 .state:
 	pop	rdi
@@ -776,6 +788,58 @@ cli_drain:
 	inc	rsi
 .skipped:
 	ret
+
+; `okena top [once]`: what the instance does now, a table a second (rates
+; from the admin process's own samples); `once` prints it one time, plain
+cli_top:
+	mov	rcx,[g_argc]
+	mov	edi,2
+	xor	r12d,r12d
+	cmp	rcx,3
+	jb	.args
+	mov	rax,[g_argv]
+	mov	rdi,[rax+16]
+	cstring str_top_once, 'once',0
+	lea	rsi,[str_top_once]
+	call	cstr_eq
+	mov	edi,2
+	test	eax,eax
+	jz	.args
+	mov	r12d,1
+	mov	edi,3
+.args:
+	call	cli_source_from_args
+	call	api_cli_open
+.frame:
+	cstring str_api_top_l, 'top',10
+	lea	rsi,[str_api_top_l]
+	mov	edx,str_api_top_l.len
+	call	api_call
+	push	rax
+	test	r12d,r12d
+	jnz	@f
+	cstring str_top_clear, 27,'[H',27,'[2J'
+	mov	edi,1
+	lea	rsi,[str_top_clear]
+	mov	edx,str_top_clear.len
+	call	write_all
+@@:
+	pop	rdx
+	mov	rsi,[g_admin_buf]
+	add	rsi,3				; past its "ok"
+	sub	edx,3
+	mov	edi,1
+	call	write_all
+	test	r12d,r12d
+	jnz	.done
+	lea	rdi,[ts_admin_tick]
+	xor	esi,esi
+	mov	eax,SYS_nanosleep
+	syscall
+	jmp	.frame
+.done:
+	xor	edi,edi
+	jmp	exit_process
 
 cli_resume:
 	mov	edi,2

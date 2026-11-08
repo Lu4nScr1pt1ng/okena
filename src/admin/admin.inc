@@ -14,12 +14,14 @@ bss
 	g_metrics_fd	dd ?		; -1 = none
 	g_admin_buf	dq ?		; response being built
 	g_admin_req:	rb 4096
+	g_admin_b64:	rb 512		; a Basic credential, decoded
 end bss
 
 rodata
 	admin_name	db 'okena-admin',0
 	align 8
 	ts_admin_io	dq 2, 0
+	ts_admin_tick	dq 1, 0
 end rodata
 
 ; Supervisor, at startup: the metrics socket (kept across reloads).
@@ -77,7 +79,7 @@ metrics_open:
 	mov	rsi,[g_plan_metrics_text]
 	mov	edx,[g_plan_metrics_tlen]
 	call	out_str
-	out_lit ' (/metrics, /live, /ready)'
+	out_lit ' (/metrics, /status, /dashboard, /live, /ready)'
 	call	log_end
 .done:
 	ret
@@ -153,9 +155,10 @@ admin_main:
 	mov	[g_admin_pfd+8],eax
 	mov	word [g_admin_pfd+12],POLLIN_
 .loop:
+	call	top_sample			; (rates for `top` and /status)
 	lea	rdi,[g_admin_pfd]
 	mov	esi,2
-	xor	edx,edx
+	lea	rdx,[ts_admin_tick]
 	xor	r10d,r10d
 	xor	r8d,r8d
 	mov	eax,SYS_ppoll_
@@ -223,13 +226,22 @@ admin_serve:
 	test	rax,rax
 	jle	.parse				; closed or timed out: use what came
 	add	r12d,eax
-	; the request line is enough
+	; the request line is enough; with a token, the head (its Authorization)
 	xor	ecx,ecx
 @@:
 	cmp	ecx,r12d
 	jae	.read
 	cmp	byte [g_admin_req+rcx],10
+	jne	.on
+	cmp	dword [g_plan_mtlen],0
 	je	.parse
+	cmp	ecx,2
+	jb	.on
+	cmp	byte [g_admin_req+rcx-1],10
+	je	.parse
+	cmp	word [g_admin_req+rcx-2],0x0A0D
+	je	.parse
+.on:
 	inc	ecx
 	jmp	@b
 .parse:
@@ -254,6 +266,27 @@ admin_serve:
 	mov	edx,str_p_ready.len
 	call	admin_path_is
 	jz	.ready
+	; the rest is the token's, when there is one
+	call	admin_authorized
+	jnz	.unauthorized
+	cstring str_p_status, '/status'
+	lea	rdi,[str_p_status]
+	mov	edx,str_p_status.len
+	lea	rsi,[g_admin_req+4]
+	call	admin_path_is
+	jz	.status
+	cstring str_p_dash, '/dashboard'
+	lea	rdi,[str_p_dash]
+	mov	edx,str_p_dash.len
+	lea	rsi,[g_admin_req+4]
+	call	admin_path_is
+	jz	.dashboard
+	cstring str_p_root, '/'
+	lea	rdi,[str_p_root]
+	mov	edx,str_p_root.len
+	lea	rsi,[g_admin_req+4]
+	call	admin_path_is
+	jz	.dashboard
 .not_found:
 	cstring str_404, 'HTTP/1.1 404 Not Found',13,10,'Content-Length: 10',13,10,'Connection: close',13,10,13,10,'not found',10
 	lea	rsi,[str_404]
@@ -281,7 +314,38 @@ admin_serve:
 	mov	edx,str_draining.len
 	jmp	.send
 .metrics:
+	call	admin_authorized
+	jnz	.unauthorized
 	call	metrics_render			; rsi/edx = whole response
+	jmp	.send
+.unauthorized:
+	cstring str_401, 'HTTP/1.1 401 Unauthorized',13,10,'WWW-Authenticate: Basic realm="okena", charset="UTF-8"',13,10,'Content-Length: 13',13,10,'Connection: close',13,10,13,10,'unauthorized',10
+	lea	rsi,[str_401]
+	mov	edx,str_401.len
+	jmp	.send
+.status:
+	mov	rdi,[g_admin_buf]
+	add	rdi,256
+	push	rdi
+	call	status_json
+	pop	rsi
+	cstring str_ct_json, 'application/json'
+	lea	rcx,[str_ct_json]
+	mov	r8d,str_ct_json.len
+	call	admin_framed
+	jmp	.send
+.dashboard:
+	lea	rsi,[dashboard_html]
+	mov	rdi,[g_admin_buf]
+	add	rdi,256
+	push	rdi
+	mov	ecx,dashboard_html.len
+	rep	movsb
+	pop	rsi
+	cstring str_ct_html, 'text/html; charset=utf-8'
+	lea	rcx,[str_ct_html]
+	mov	r8d,str_ct_html.len
+	call	admin_framed
 .send:
 	mov	edi,ebx
 	call	write_all
@@ -289,6 +353,163 @@ admin_serve:
 	pop	r12
 	pop	rbx
 	ret
+
+; rsi = a body at g_admin_buf + 256, rdi = its end, rcx/r8d = its type: the
+; whole response in front of it, rsi/edx = it
+admin_framed:
+	push	rbx
+	mov	rbx,rdi
+	sub	rbx,rsi				; body length
+	push	rsi
+	sub	rsp,256
+	mov	rdi,rsp
+	push	rcx
+	memit 'HTTP/1.1 200 OK',13,10,'Content-Type: '
+	pop	rsi
+	mov	ecx,r8d
+	rep	movsb
+	memit 13,10,'Cache-Control: no-store',13,10,'X-Content-Type-Options: nosniff',13,10,'Content-Length: '
+	mov	rax,rbx
+	call	fmt_u64
+	memit 13,10,'Connection: close',13,10,13,10
+	mov	rcx,rdi
+	sub	rcx,rsp				; head length (< 256)
+	mov	rdi,[rsp+256]			; the body
+	sub	rdi,rcx
+	mov	rsi,rsp
+	push	rdi
+	push	rcx
+	rep	movsb
+	pop	rcx
+	pop	rsi
+	add	rsp,256 + 8
+	lea	edx,[rbx+rcx]
+	pop	rbx
+	ret
+
+; The request head in g_admin_req: ZF when it may see what the metrics
+; address shows (no token, or `Authorization: Bearer TOKEN`, or Basic with
+; the token as its password). Compared in constant time.
+admin_authorized:
+	mov	ecx,[g_plan_mtlen]
+	test	ecx,ecx
+	jz	.yes
+	push	rbx
+	push	r12
+	; each line: "authorization:", without case
+	lea	rsi,[g_admin_req]
+.line:
+	cmp	byte [rsi],0
+	je	.no
+	cmp	byte [rsi],10
+	jne	.next
+	inc	rsi
+	lea	rdi,[str_h_authz]
+	xor	ecx,ecx
+@@:
+	mov	al,[rsi+rcx]
+	or	al,0x20
+	cmp	al,[rdi+rcx]
+	jne	.line
+	inc	ecx
+	cmp	ecx,str_h_authz.len
+	jb	@b
+	add	rsi,rcx
+@@:
+	cmp	byte [rsi],' '
+	jne	@f
+	inc	rsi
+	jmp	@b
+@@:
+	; its value, to the line's end
+	xor	ecx,ecx
+@@:
+	mov	al,[rsi+rcx]
+	cmp	al,13
+	je	@f
+	cmp	al,10
+	je	@f
+	test	al,al
+	jz	@f
+	inc	ecx
+	jmp	@b
+@@:
+	cmp	ecx,7
+	jb	.no
+	mov	eax,[rsi]
+	or	eax,0x20202020
+	cmp	eax,'bear'
+	jne	.basic
+	mov	eax,[rsi+3]
+	or	eax,0x20202020
+	cmp	eax,'rer '
+	jne	.basic
+	add	rsi,7
+	sub	ecx,7
+	jmp	.compare
+.basic:
+	mov	eax,[rsi]
+	or	eax,0x20202020
+	cmp	eax,'basi'
+	jne	.no
+	mov	ax,[rsi+4]
+	or	al,0x20
+	cmp	ax,'c '
+	jne	.no
+	add	rsi,6
+	sub	ecx,6
+	cmp	ecx,512
+	ja	.no
+	lea	rdi,[g_admin_b64]
+	mov	edx,ecx
+	call	base64_decode
+	test	rax,rax
+	js	.no
+	; the password: after the first ':'
+	lea	rsi,[g_admin_b64]
+	xor	ecx,ecx
+@@:
+	cmp	rcx,rax
+	jae	.no
+	cmp	byte [rsi+rcx],':'
+	je	@f
+	inc	ecx
+	jmp	@b
+@@:
+	inc	ecx
+	add	rsi,rcx
+	sub	eax,ecx
+	mov	ecx,eax
+.compare:
+	; rsi/ecx = what was given
+	cmp	ecx,[g_plan_mtlen]
+	jne	.no
+	xor	eax,eax
+	xor	edx,edx
+@@:
+	movzx	r8d,byte [rsi+rdx]
+	xor	r8b,[g_plan_mtoken+rdx]
+	or	eax,r8d
+	inc	edx
+	cmp	edx,ecx
+	jb	@b
+	test	eax,eax
+	jnz	.no
+	pop	r12
+	pop	rbx
+.yes:
+	xor	eax,eax
+	ret
+.next:
+	inc	rsi
+	jmp	.line
+.no:
+	pop	r12
+	pop	rbx
+	or	eax,1
+	ret
+
+cstring str_h_authz, 'authorization:'
 
 ; rsi = request target, rdi/edx = path. ZF when the target is that path
 ; (followed by a space or a query).

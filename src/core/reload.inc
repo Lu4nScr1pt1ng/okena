@@ -72,6 +72,8 @@ macro plan_regions action
 	action g_plan_metrics_text, 8
 	action g_plan_metrics_tlen, 4
 	action g_plan_metrics_sa, 28
+	action g_plan_mtlen, 4
+	action g_plan_mtoken, 256
 	action g_listeners, LS_SIZE * MAX_LISTENERS
 	action g_pools, PL_SIZE * MAX_POOLS
 	action g_servers, SV_SIZE * MAX_SERVERS

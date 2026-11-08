@@ -446,7 +446,9 @@ auth + limit stays within the latency budget in ARCHITECTURE.md. Met with `busy_
   TLS) besides files, through the logger process (done).
 * `okena top`; a read-only dashboard from the admin process (listeners, routes,
   pools and servers with their health, drains and limits), behind the admin
-  socket or an address with its own auth.
+  socket or an address with its own auth (done: `/status`, `/dashboard`,
+  `metrics ... token=`; bytes by HTTP listener and passive ejections are not
+  counted yet).
 * Error pages of one's own (`errors 502 503 504 file=/srv/down.html`, by status
   and by route, also for errors a backend sent) and a maintenance mode
   (`okena maintenance on [route]`: a page and a Retry-After, health checks
