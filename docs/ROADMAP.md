@@ -443,7 +443,7 @@ auth + limit stays within the latency budget in ARCHITECTURE.md. Met with `busy_
   reload, `okena drain` and `resume`: done; GOAWAY on a drain for HTTP/2 and 3 to come).
 * Alerts (webhook, Telegram, Slack) from the control process (done).
 * OTLP tracing; access logs out over OTLP and syslog (RFC 5424, UDP, TCP and
-  TLS) besides files, through the logger process.
+  TLS) besides files, through the logger process (access logs: done).
 * `okena top`; a read-only dashboard from the admin process (listeners, routes,
   pools and servers with their health, drains and limits), behind the admin
   socket or an address with its own auth.

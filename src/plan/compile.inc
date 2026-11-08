@@ -715,7 +715,90 @@ ALOG_PATH	:= 256
 bss
 	g_alog_dest	rb ALOG_MAX * ALOG_PATH	; NUL-terminated: stdout, stderr or a path
 	g_alog_count	dd ?
+	g_alog_tmp	rb ALOG_PATH
 end bss
+
+; rdi = an `access_log` node: rdi/esi = its destination as the logger reads
+; it, "URL trust=PATH" when it has trust= (a TLS one's own anchor, checked to
+; be a certificate now).
+alog_dest_node:
+	push	rbx
+	mov	rbx,rdi
+	lea	rsi,[str_key_trust]
+	call	node_option
+	mov	rdx,[rbx+N_ARGS]
+	mov	rdi,[rdx+A_VAL]
+	mov	esi,[rdx+A_VLEN]
+	test	rax,rax
+	jz	.out
+	mov	rbx,rax
+	; only where there is TLS
+	push	rdi
+	push	rsi
+	sub	rsp,64
+	mov	rsi,rdi
+	mov	ecx,[rsp+64]
+	mov	rdi,rsp
+	call	alog_url
+	mov	eax,[rsp+LN_KIND]
+	lea	rsp,[rsp+64]
+	jc	.no_tls
+	cmp	eax,LKS_TLS
+	je	@f
+	cmp	eax,LKS_OTLPS
+	jne	.no_tls
+@@:
+	; "URL trust=PATH"
+	mov	esi,[rsp]
+	mov	ecx,[rbx+A_VLEN]
+	lea	eax,[rsi+rcx+7]
+	cmp	eax,ALOG_PATH - 1
+	jae	.long
+	cmp	ecx,4096
+	jae	.long
+	mov	rsi,[rbx+A_VAL]
+	lea	rdi,[g_trust_path]
+	rep	movsb
+	mov	byte [rdi],0
+	sub	rsp,PK_SIZE + 8
+	lea	rdi,[g_trust_path]
+	mov	rsi,rsp
+	call	ln_trust
+	lea	rsp,[rsp+PK_SIZE + 8]
+	jc	.bad_trust
+	pop	rcx
+	pop	rsi
+	lea	rdi,[g_alog_tmp]
+	rep	movsb
+	cstring str_alog_trust, ' trust='
+	lea	rsi,[str_alog_trust]
+	mov	ecx,str_alog_trust.len
+	rep	movsb
+	mov	rsi,[rbx+A_VAL]
+	mov	ecx,[rbx+A_VLEN]
+	rep	movsb
+	lea	rsi,[g_alog_tmp]
+	sub	rdi,rsi
+	mov	esi,edi
+	lea	rdi,[g_alog_tmp]
+.out:
+	pop	rbx
+	ret
+.no_tls:
+	call	log_begin
+	out_lit 'access_log: trust= is for syslog+tls:// and otlp+https:// only'
+	jmp	.fail
+.long:
+	call	log_begin
+	out_lit 'access_log: its URL and trust= path are too long together (255 bytes)'
+	jmp	.fail
+.bad_trust:
+	call	log_begin
+	out_lit 'access_log: a trust= file that cannot be read as a certificate'
+.fail:
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
 
 ; rdi/esi = `access_log` argument. eax = destination + 1, or 0 for off.
 alog_dest_id:
@@ -3074,9 +3157,8 @@ compile_listener:
 	call	find_child
 	test	rax,rax
 	jz	@f
-	mov	rax,[rax+N_ARGS]
-	mov	rdi,[rax+A_VAL]
-	mov	esi,[rax+A_VLEN]
+	mov	rdi,rax
+	call	alog_dest_node
 	call	alog_dest_id
 	mov	[g_cmp_alog],eax
 @@:

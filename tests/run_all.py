@@ -128,6 +128,8 @@ SUITES = [
     ("fleet epoll", ["tests/gateway/fleet.py", "epoll"]),
     ("alerts io_uring", ["tests/gateway/alerts.py", "io_uring"]),
     ("alerts epoll", ["tests/gateway/alerts.py", "epoll"]),
+    ("logsink io_uring", ["tests/gateway/logsink.py", "io_uring"]),
+    ("logsink epoll", ["tests/gateway/logsink.py", "epoll"]),
     ("geoip io_uring", ["tests/gateway/geoip.py", "io_uring"]),
     ("geoip epoll", ["tests/gateway/geoip.py", "epoll"]),
     ("acl io_uring", ["tests/gateway/acl.py", "io_uring"]),

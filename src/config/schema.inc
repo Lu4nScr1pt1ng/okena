@@ -45,7 +45,7 @@ T_TARGET	:= 13		; `to pool NAME` or `to ADDR...`
 T_FUTURE	:= 14		; an option of the language not implemented yet
 T_HOSTNAME	:= 16		; a host name, or *.example.com
 T_ROUTE		:= 15		; a path ("/x", "/x/*", "/*") or a method (GET, POST...)
-T_LOGDEST	:= 17		; stdout, stderr, off, or an absolute file path
+T_LOGDEST	:= 17		; stdout, stderr, off, an absolute file path, or a syslog or OTLP URL
 T_CIDR		:= 18		; an IP address or a range: 10.0.0.0/8, 2001:db8::/32
 T_STATUSES	:= 19		; an HTTP status or a range: 200, 200..299
 
@@ -141,6 +141,7 @@ enumdef e_quic_cc, 'cubic', 'bbr'
 enumdef e_h3, 'on', 'off', 'retry', 'v2'
 enumdef e_proto, 'h1', 'h2'
 
+keysdef k_alog, 'trust', T_ANY
 keysdef k_drain, 'delay', T_DURATION, 'timeout', T_DURATION
 keysdef k_hs_budget, 'wait', T_DURATION
 keysdef k_auth, 'header', T_ANY, 'keys', T_ANY, 'users', T_ANY, 'realm', T_ANY, 'identity', T_ANY, 'forward', T_ANY, 'pool', T_ANY, 'path', T_ANY, 'copy', T_ANY, 'cache', T_DURATION, 'timeout', T_DURATION
@@ -268,7 +269,7 @@ dirdef DIR_CERT, 'cert',        M_TLS,     0,           0, 1, 1, T_ANY, T_NONE, 
 dirdef DIR_KEY, 'key',          M_TLS,     0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
 dirdef DIR_CLIENT_CA, 'client_ca', M_TLS,   0,           F_UNIQUE, 1, 2, T_ANY, e_cca, 0
 dirdef DIR_KTLS, 'ktls',        M_TLS,     0,           F_UNIQUE, 1, 1, e_onoff, T_NONE, 0
-dirdef DIR_ACCESS_LOG, 'access_log', M_HTTP,   0,           F_UNIQUE, 1, 1, T_LOGDEST, T_NONE, 0
+dirdef DIR_ACCESS_LOG, 'access_log', M_HTTP,   0,           F_UNIQUE, 1, 1, T_LOGDEST, T_NONE, k_alog
 dirdef DIR_HEADER, 'header',      M_TIMEOUT, 0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
 dirdef DIR_RESPONSE, 'response',  M_TIMEOUT, 0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
 dirdef DIR_BODY_IDLE, 'body_idle', M_TIMEOUT, 0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0

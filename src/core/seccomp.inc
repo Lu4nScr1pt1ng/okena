@@ -336,6 +336,13 @@ rodata
 	sc_allow filter_logger, SYS_close
 	sc_check filter_logger, SYS_openat, append_only
 	sc_allow filter_logger, SYS_epoll_wait
+	; syslog and OTLP: connections, names resolved, TLS
+	sc_check filter_logger, SYS_socket, socket
+	sc_allow filter_logger, SYS_connect
+	sc_allow filter_logger, SYS_setsockopt
+	sc_allow filter_logger, SYS_recvfrom
+	sc_allow filter_logger, SYS_getrandom
+	sc_allow filter_logger, SYS_clock_gettime
 	sc_end filter_logger
 
 	; reload compiler: parses bytes already in memory, prints, exits

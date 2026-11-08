@@ -918,10 +918,18 @@ check_value:
 	jns	.ok
 	mov	rdi,[rbx+A_VAL]
 	mov	esi,[rbx+A_VLEN]
-	cmp	byte [rdi],'/'
-	jne	.bad
 	cmp	esi,ALOG_PATH - 1
 	jae	.bad
+	cmp	byte [rdi],'/'
+	je	.ok
+	; syslog://, syslog+tcp://, syslog+tls://, otlp://, otlp+https://
+	sub	rsp,64
+	mov	rsi,rdi
+	mov	ecx,[rbx+A_VLEN]
+	mov	rdi,rsp
+	call	alog_url
+	lea	rsp,[rsp+64]			; (keeps CF)
+	jc	.bad
 	jmp	.ok
 .hostname:
 	; "*.example.com" or a name; matched without case
@@ -1240,7 +1248,7 @@ type_help:
 @@:
 	cmp	rbx,T_LOGDEST
 	jne	@f
-	out_lit '`stdout`, `stderr`, `off`, or an absolute file path (/var/log/okena/access.log)'
+	out_lit '`stdout`, `stderr`, `off`, an absolute file path (/var/log/okena/access.log), or syslog://HOST[:PORT] (also syslog+tcp://, syslog+tls://), otlp://HOST[:PORT][/PATH] (also otlp+https://)'
 	jmp	.end
 @@:
 .end:

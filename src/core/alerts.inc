@@ -447,67 +447,11 @@ alerts_post:
 ; r12 = target: g_al_sa (with its port), edx = its length. CF when its host
 ; has no address.
 alerts_address:
-	; an address as written ("10.0.0.5", "[::1]"): the URL had it so
-	sub	rsp,AD_SIZE + 128
 	mov	rsi,[r12+ATG_HOST]
 	mov	ecx,[r12+ATG_HLEN]
-	lea	rdi,[rsp+AD_SIZE]
-	xor	r8d,r8d
-	cmp	byte [rsi],'['
-	je	.bracketed
-	rep	movsb
-	jmp	.port
-.bracketed:
-	rep	movsb
-	mov	r8d,1
-.port:
-	mov	byte [rdi],':'
-	inc	rdi
-	mov	eax,[r12+ATG_PORT]
-	call	dk_decimal
-	lea	rsi,[rsp+AD_SIZE]
-	sub	rdi,rsi
-	mov	esi,edi
-	lea	rdi,[rsp+AD_SIZE]
-	mov	rdx,rsp
-	xor	ecx,ecx
-	call	parse_address
-	jc	.name
-	mov	eax,[rsp+AD_KIND]
-	cmp	eax,ADDR_V4
-	je	.built
-	cmp	eax,ADDR_V6
-	je	.built
-.name:
-	; a name: resolved now (and again for each send: no cache to go stale)
-	mov	rdi,[r12+ATG_HOST]
-	mov	esi,[r12+ATG_HLEN]
-	call	rs_lookup
-	cmp	eax,RS_OK
-	jne	.none
-	mov	dword [rsp+AD_KIND],ADDR_V6
-	cmp	byte [g_rs_result+RR_FAMILY],4
-	jne	@f
-	mov	dword [rsp+AD_KIND],ADDR_V4
-@@:
-	mov	rax,[g_rs_result+RR_ADDRS]
-	mov	[rsp+AD_IP],rax
-	mov	rax,[g_rs_result+RR_ADDRS+8]
-	mov	[rsp+AD_IP+8],rax
-	mov	eax,[r12+ATG_PORT]
-	mov	[rsp+AD_PORT],eax
-.built:
+	mov	edx,[r12+ATG_PORT]
 	lea	rdi,[g_al_sa]
-	mov	rsi,rsp
-	call	sockaddr_build
-	mov	edx,eax
-	add	rsp,AD_SIZE + 128
-	clc
-	ret
-.none:
-	add	rsp,AD_SIZE + 128
-	stc
-	ret
+	jmp	cx_address
 
 ; rdi = output, rsi/ecx = text: as a JSON string's inside. rdi after it.
 ; Keeps rbx, r12-r15.

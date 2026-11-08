@@ -143,6 +143,7 @@ logger_main:
 	mov	eax,SYS_prctl
 	syscall
 	call	logger_open_all
+	call	ln_setup			; syslog and OTLP destinations
 	; TERM and USR1 are blocked (inherited): read them from a signalfd
 	sub	rsp,8
 	mov	qword [rsp],(1 shl (SIGTERM-1)) or (1 shl (SIGUSR1-1))
@@ -166,10 +167,11 @@ logger_main:
 	call	helper_close_sockets
 	seccomp_for filter_logger
 .loop:
+	call	ln_tick				; OTLP batches due; how long to sleep
+	movsxd	r10,eax
 	mov	edi,[g_lg_ep]
 	lea	rsi,[g_lg_ev]
 	mov	edx,4
-	mov	r10d,-1
 	mov	eax,SYS_epoll_wait
 	syscall
 	call	logger_drain
@@ -187,6 +189,7 @@ logger_main:
 	jmp	.loop
 .term:
 	call	logger_drain			; what is left, then out
+	call	ln_finish
 	xor	edi,edi
 	jmp	exit_process
 
@@ -222,6 +225,9 @@ logger_open_all:
 	call	cstr_eq
 	test	eax,eax
 	jnz	.opened
+	mov	dword [g_lg_fd+rbx*4],-1
+	cmp	byte [rdi],'/'
+	jne	.opened				; syslog, OTLP: the logger's sinks
 	mov	rsi,rdi
 	mov	edi,AT_FDCWD
 	mov	edx,O_WRONLY or O_APPEND or O_CREAT or O_CLOEXEC
@@ -358,6 +364,17 @@ logger_flush:
 	dec	ebx
 	cmp	ebx,[g_alog_count]
 	jae	.done				; not a destination: dropped
+	mov	rax,[g_ln]
+	test	rax,rax
+	jz	.file
+	imul	rdx,rbx,LN_SIZE
+	cmp	dword [rax+rdx+LN_KIND],LKS_FILE
+	je	.file
+	lea	rsi,[g_lg_out]
+	mov	edx,ecx
+	call	ln_out
+	jmp	.done
+.file:
 	mov	edi,[g_lg_fd+rbx*4]
 	test	edi,edi
 	js	.done

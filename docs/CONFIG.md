@@ -404,7 +404,12 @@ The application layer (http) adds its own limits and timeouts:
 limits { header_size 32KiB; body_size 10MiB; h2_streams 128 }
 timeout { header 10s; body_idle 30s; response 30s }
 trusted_proxies 10.0.0.0/8          # believe X-Forwarded-For from these
-access_log /var/log/okena/access.log   # or stdout, stderr, off (default)
+access_log /var/log/okena/access.log   # or stdout, stderr, off (default), or a URL:
+# access_log syslog://10.0.0.5          syslog over UDP (514)
+# access_log syslog+tcp://logs:601      over TCP
+# access_log syslog+tls://logs:6514 trust=/etc/okena/logs-ca.pem
+# access_log otlp://collector:4318      OpenTelemetry logs over OTLP/HTTP
+# access_log otlp+https://collector:4318/v1/logs trust=/etc/okena/ca.pem
 ```
 
 `trusted_proxies` names the peers whose forwarding headers count (load
@@ -421,12 +426,40 @@ Access logs are one JSON line per exchange: `time` (UTC, ms), `listener`,
 `client`, `peer` (the TCP peer), `method`, `host`, `target`, `status`, `bytes` (sent to the
 client), `duration_ms` (from the request head to the end of the
 response), `upstream`, `source` (`backend`, or `okena` when okena answered
-itself) and `retried`. Workers never write files: they pass lines to a
+itself: a redirect, an error, a file, the cache) and `retried`. Workers never write files: they pass lines to a
 logger process through a pipe and drop them (counted in
 `okena_access_log_dropped_total`) rather than wait when it falls behind.
 Lines of different workers may be up to a second out of order. A reload
 or `SIGUSR1` makes the logger reopen its files, so logrotate needs only
 `kill -USR1`.
+
+The logger also sends lines over the network, and it alone waits on it: a
+collector that is slow or gone costs lines, never a request's latency.
+
+* **Syslog** (RFC 5424): each line is one message, `<190>1 TIME HOST okena
+  PID access - LINE`: local7.info as nginx sends it, TIME the line's own, PID
+  the supervisor's. Over UDP (`syslog://`, RFC 5426) each message is one
+  datagram. Over TCP (`syslog+tcp://`) and TLS (`syslog+tls://`, RFC 5425)
+  it is framed by octet counting (RFC 6587), on one connection that is kept
+  open. A connection the collector closed is noticed before lines are
+  written to it, so they go on a new connection and are not lost.
+* **OTLP** (`otlp://`, `otlp+https://`): each line becomes one
+  OpenTelemetry log record in OTLP/HTTP JSON, POSTed to `/v1/logs` (or the
+  URL's path) once a second or every 512 KiB. Its fields are attributes,
+  under OpenTelemetry's names where there are some: `http.request.method`,
+  `http.response.status_code`, `url.path`, `url.query`, `server.address`,
+  `client.address`, `network.peer.address`, `http.response.size`; the
+  others are `okena.*`. The record's time is the line's. Severity is INFO,
+  WARN for 4xx, ERROR for 5xx, and the body is `METHOD TARGET STATUS`. The
+  resource is `service.name=okena` and `host.name`. Records a collector
+  did not take are kept and sent with the next batch, up to 1 MiB.
+
+A destination that cannot be reached is logged once. It is tried again
+after 1 s, then 2, 4 and so on up to 30 s, and logged again when it is
+back. Meanwhile syslog lines are dropped. A name is resolved again at each
+connection. TLS servers are verified as backends are, against `trust=FILE`
+(its first certificate) or the system's roots (`SSL_CERT_FILE`, else the
+usual bundles); `trust=` is refused on a destination without TLS.
 
 ## HTTP routes
 

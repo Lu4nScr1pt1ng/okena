@@ -692,3 +692,82 @@ cx_store_verify:
 	pop	r12
 	pop	rbx
 	ret
+
+; rsi/ecx = a host as a URL has it (a name, an IPv4 address, [an IPv6 one]),
+; edx = port, rdi = out: the sockaddr, edx = its length. CF when the host has
+; no address. A name is resolved each time: no cache to go stale.
+cx_address:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	mov	rbx,rdi
+	mov	r12,rsi
+	mov	r13d,ecx
+	mov	r14d,edx
+	; an address as written ("10.0.0.5", "[::1]"): the URL had it so
+	sub	rsp,AD_SIZE + 128
+	mov	rsi,r12
+	mov	ecx,r13d
+	lea	rdi,[rsp+AD_SIZE]
+	xor	r8d,r8d
+	cmp	byte [rsi],'['
+	je	.bracketed
+	rep	movsb
+	jmp	.port
+.bracketed:
+	rep	movsb
+	mov	r8d,1
+.port:
+	mov	byte [rdi],':'
+	inc	rdi
+	mov	eax,r14d
+	call	dk_decimal
+	lea	rsi,[rsp+AD_SIZE]
+	sub	rdi,rsi
+	mov	esi,edi
+	lea	rdi,[rsp+AD_SIZE]
+	mov	rdx,rsp
+	xor	ecx,ecx
+	call	parse_address
+	jc	.name
+	mov	eax,[rsp+AD_KIND]
+	cmp	eax,ADDR_V4
+	je	.built
+	cmp	eax,ADDR_V6
+	je	.built
+.name:
+	; a name: resolved now (and again for each send: no cache to go stale)
+	mov	rdi,r12
+	mov	esi,r13d
+	call	rs_lookup
+	cmp	eax,RS_OK
+	jne	.none
+	mov	dword [rsp+AD_KIND],ADDR_V6
+	cmp	byte [g_rs_result+RR_FAMILY],4
+	jne	@f
+	mov	dword [rsp+AD_KIND],ADDR_V4
+@@:
+	mov	rax,[g_rs_result+RR_ADDRS]
+	mov	[rsp+AD_IP],rax
+	mov	rax,[g_rs_result+RR_ADDRS+8]
+	mov	[rsp+AD_IP+8],rax
+	mov	[rsp+AD_PORT],r14d
+.built:
+	mov	rdi,rbx
+	mov	rsi,rsp
+	call	sockaddr_build
+	mov	edx,eax
+	add	rsp,AD_SIZE + 128
+	clc
+	jmp	.out
+.none:
+	add	rsp,AD_SIZE + 128
+	stc
+.out:
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
