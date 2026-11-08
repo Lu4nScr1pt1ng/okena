@@ -142,6 +142,7 @@ enumdef e_h3, 'on', 'off', 'retry', 'v2'
 enumdef e_proto, 'h1', 'h2'
 
 keysdef k_alog, 'trust', T_ANY
+keysdef k_tracing, 'sample', T_PERCENT, 'trust', T_ANY
 keysdef k_drain, 'delay', T_DURATION, 'timeout', T_DURATION
 keysdef k_hs_budget, 'wait', T_DURATION
 keysdef k_auth, 'header', T_ANY, 'keys', T_ANY, 'users', T_ANY, 'realm', T_ANY, 'identity', T_ANY, 'forward', T_ANY, 'pool', T_ANY, 'path', T_ANY, 'copy', T_ANY, 'cache', T_DURATION, 'timeout', T_DURATION
@@ -270,6 +271,7 @@ dirdef DIR_KEY, 'key',          M_TLS,     0,           F_UNIQUE, 1, 1, T_ANY, T
 dirdef DIR_CLIENT_CA, 'client_ca', M_TLS,   0,           F_UNIQUE, 1, 2, T_ANY, e_cca, 0
 dirdef DIR_KTLS, 'ktls',        M_TLS,     0,           F_UNIQUE, 1, 1, e_onoff, T_NONE, 0
 dirdef DIR_ACCESS_LOG, 'access_log', M_HTTP,   0,           F_UNIQUE, 1, 1, T_LOGDEST, T_NONE, k_alog
+dirdef DIR_TRACING, 'tracing',   M_HTTP,   0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, k_tracing
 dirdef DIR_HEADER, 'header',      M_TIMEOUT, 0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
 dirdef DIR_RESPONSE, 'response',  M_TIMEOUT, 0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
 dirdef DIR_BODY_IDLE, 'body_idle', M_TIMEOUT, 0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0

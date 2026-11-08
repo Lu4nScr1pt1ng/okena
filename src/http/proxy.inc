@@ -82,8 +82,9 @@ H_LTEXT_M_CAP	:= 16
 HB_LTEXT_H	:= HB_LTEXT_M + 16	; host
 H_LTEXT_H_CAP	:= 255
 HB_LTEXT_T	:= HB_LTEXT_H + 256	; target
-H_LTEXT_T_CAP	:= 1024
-HB_TRAIL	:= HB_LTEXT_T + H_LTEXT_T_CAP	; a chunked response's trailer lines
+H_LTEXT_T_CAP	:= 1024 - TRC_SIZE
+HB_TRC		:= HB_LTEXT_T + H_LTEXT_T_CAP	; the request's trace (TRC_*, http/trace.inc)
+HB_TRAIL	:= HB_TRC + TRC_SIZE		; a chunked response's trailer lines
 assert HB_TRAIL + CK_TRAIL_MAX <= 1 shl 16
 
 HS_HEAD		:= 1		; reading a request head
@@ -1417,6 +1418,8 @@ http_write_request_head:
 	jnz	.skip
 	jmp	.copy
 .end_to_end:
+	call	trace_drops			; (the client's traceparent: ours goes)
+	je	.skip
 	push	rdi				; (what `auth` keeps from the backend)
 	mov	rdi,r14
 	call	auth_hides
@@ -1511,6 +1514,7 @@ http_write_request_head:
 	jmp	.field
 .own:
 	call	auth_emit
+	call	trace_emit
 	test	dword [r15+H_FLAGS],HX_RIDKEPT
 	jnz	@f
 	push	rdi

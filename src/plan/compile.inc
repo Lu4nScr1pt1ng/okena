@@ -35,7 +35,9 @@ LS_CCA		:= 124		; d: `client_ca`: its place in g_cca (LSF_CCA)
 LS_PA4		:= 128		; http3: `preferred_address`'s IPv4 one (sockaddr_in), family 0 none
 LS_PA6		:= 144		; and IPv6 one (sockaddr_in6)
 LS_RESP		:= 172		; d: udp: answers a flow gets, 0 none, -1 no limit
-LS_SIZE		:= 176
+LS_TRACE	:= 176		; d: http: `tracing` destination + 1, 0 = none
+LS_TSAMPLE	:= 180		; d: and the share of new traces kept, in millionths
+LS_SIZE		:= 184
 assert LS_PA6 + 28 <= LS_RESP
 
 ; Host block name (http): routes for requests to that host
@@ -254,6 +256,8 @@ bss
 	g_cmp_t_header	dd ?
 	g_cmp_pt	dd ?
 	g_cmp_alog	dd ?
+	g_cmp_trace	dd ?
+	g_cmp_tsample	dd ?
 	g_cmp_pa4:	rb 16			; `preferred_address`, IPv4 and IPv6
 	g_cmp_pa6:	rb 28
 	g_cmp_pasa:	rb 28
@@ -716,6 +720,7 @@ bss
 	g_alog_dest	rb ALOG_MAX * ALOG_PATH	; NUL-terminated: stdout, stderr or a path
 	g_alog_count	dd ?
 	g_alog_tmp	rb ALOG_PATH
+	g_alog_tmp2	rb ALOG_PATH
 end bss
 
 ; rdi = an `access_log` node: rdi/esi = its destination as the logger reads
@@ -795,6 +800,72 @@ alog_dest_node:
 .bad_trust:
 	call	log_begin
 	out_lit 'access_log: a trust= file that cannot be read as a certificate'
+.fail:
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
+
+; rdi = a `tracing` node: eax = its destination + 1 (the logger's, as
+; "traces URL[ trust=PATH]"), edx = the share of new traces kept, millionths.
+compile_tracing:
+	push	rbx
+	mov	rbx,rdi
+	mov	rdx,[rbx+N_ARGS]
+	mov	rsi,[rdx+A_VAL]
+	mov	ecx,[rdx+A_VLEN]
+	cmp	ecx,ALOG_PATH - 1
+	jae	.bad
+	sub	rsp,64
+	mov	rdi,rsp
+	call	alog_url
+	mov	eax,[rsp+LN_KIND]
+	lea	rsp,[rsp+64]
+	jc	.bad
+	cmp	eax,LKS_OTLP
+	jb	.bad				; spans go to OTLP only
+	cmp	eax,LKS_OTLPS
+	ja	.bad
+	mov	rdi,rbx
+	cstring str_key_sample, 'sample',0
+	lea	rsi,[str_key_sample]
+	call	node_option
+	mov	rdx,rax
+	mov	eax,1000000			; all, unless said
+	test	rdx,rdx
+	jz	@f
+	mov	rdi,[rdx+A_VAL]
+	mov	esi,[rdx+A_VLEN]
+	call	parse_percent			; (hundredths of a percent)
+	imul	eax,eax,100
+@@:
+	push	rax
+	mov	rdi,rbx
+	call	alog_dest_node
+	lea	eax,[rsi+7]
+	cmp	eax,ALOG_PATH - 1
+	jae	.long
+	mov	rcx,rsi
+	mov	rsi,rdi
+	lea	rdi,[g_alog_tmp2]
+	mov	dword [rdi],'trac'
+	mov	dword [rdi+3],'ces '
+	add	rdi,7
+	push	rcx
+	rep	movsb
+	pop	rsi
+	add	esi,7
+	lea	rdi,[g_alog_tmp2]
+	call	alog_dest_id
+	pop	rdx
+	pop	rbx
+	ret
+.long:
+	call	log_begin
+	out_lit 'tracing: its URL and trust= path are too long together (248 bytes)'
+	jmp	.fail
+.bad:
+	call	log_begin
+	out_lit 'tracing takes otlp://HOST[:PORT][/PATH] or otlp+https://..., with sample=PERCENT and trust=FILE'
 .fail:
 	call	log_end
 	mov	edi,EXIT_CONFIG
@@ -3162,6 +3233,17 @@ compile_listener:
 	call	alog_dest_id
 	mov	[g_cmp_alog],eax
 @@:
+	mov	dword [g_cmp_trace],0
+	mov	rdi,r12
+	mov	ecx,DIR_TRACING
+	call	find_child
+	test	rax,rax
+	jz	@f
+	mov	rdi,rax
+	call	compile_tracing
+	mov	[g_cmp_trace],eax
+	mov	[g_cmp_tsample],edx
+@@:
 	; trusted_proxies
 	mov	eax,[g_plan_trust]
 	mov	[g_cmp_tfirst],eax
@@ -3249,6 +3331,10 @@ compile_listener:
 	mov	[rcx+LS_T_BODY],eax
 	mov	eax,[g_cmp_alog]
 	mov	[rcx+LS_ALOG],eax
+	mov	eax,[g_cmp_trace]
+	mov	[rcx+LS_TRACE],eax
+	mov	eax,[g_cmp_tsample]
+	mov	[rcx+LS_TSAMPLE],eax
 	mov	eax,[g_cmp_tlsi]
 	mov	[rcx+LS_TLS],eax
 	mov	eax,[g_cmp_pt]

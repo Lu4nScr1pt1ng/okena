@@ -43,8 +43,9 @@ LN_HASTRUST	:= 52			; d
 LN_BLEN		:= 56			; d: OTLP: bytes in the batch
 LN_BN		:= 60			; d: and records
 LN_BUF		:= 64			; q: the batch
-LN_BAT		:= 72			; q: monotonic seconds when it started
-LN_TRUST	:= 80			; PK_SIZE
+LN_BAT		:= 72			; q: monotonic ms when it started
+LN_TRACES	:= 80			; d: spans (`tracing`), not log lines
+LN_TRUST	:= 88			; PK_SIZE
 LN_TC		:= (LN_TRUST + PK_SIZE + 63) and not 63
 LN_SIZE		:= (LN_TC + TC_FULL + 63) and not 63
 
@@ -116,6 +117,9 @@ rodata
 			db 0
 	ln_v1logs	db '/v1/logs'
 	ln_v1logs.len = $ - ln_v1logs
+	ln_v1traces	db '/v1/traces'
+	ln_v1traces.len = $ - ln_v1traces
+	ln_traces	db 'traces '		; a `tracing` destination's mark
 end rodata
 
 ; rsi/ecx = an access_log destination, rdi = out (LN_KIND .. LN_PLEN): the
@@ -322,7 +326,16 @@ ln_setup:
 	call	cstr_eq
 	test	eax,eax
 	jnz	.next
-	; "URL" or "URL trust=PATH"
+	; "[traces ]URL[ trust=PATH]"
+	mov	eax,dword [ln_traces]
+	cmp	[r12],eax
+	jne	@f
+	mov	eax,dword [ln_traces+3]
+	cmp	[r12+3],eax
+	jne	@f
+	mov	dword [r14+LN_TRACES],1
+	add	r12,7
+@@:
 	xor	ecx,ecx
 @@:
 	cmp	byte [r12+rcx],' '
@@ -336,6 +349,15 @@ ln_setup:
 	call	alog_url
 	pop	rcx
 	jc	.dead
+	cmp	dword [r14+LN_TRACES],0
+	je	@f
+	lea	rax,[ln_v1logs]
+	cmp	[r14+LN_PATH],rax
+	jne	@f
+	lea	rax,[ln_v1traces]			; (its own default path)
+	mov	[r14+LN_PATH],rax
+	mov	dword [r14+LN_PLEN],ln_v1traces.len
+@@:
 	cmp	byte [r12+rcx],' '
 	jne	.trusted
 	lea	rdi,[r12+rcx+7]			; " trust="
@@ -791,7 +813,6 @@ ln_connect:
 	je	.up
 	mov	dword [r14+LN_DOWN],0
 	call	log_begin
-	out_lit 'access log '
 	call	ln_name
 	out_lit ': reached again'
 	call	log_end
@@ -851,7 +872,6 @@ ln_failed:
 	mov	dword [r14+LN_DOWN],1
 	push	rax
 	call	log_begin
-	out_lit 'access log '
 	call	ln_name
 	out_lit ': cannot reach it'
 	pop	rax
@@ -876,8 +896,15 @@ ln_failed:
 	stc
 	ret
 
-; r14 = destination: its URL into the log line
+; r14 = destination: what it is and its URL into the log line
 ln_name:
+	cmp	dword [r14+LN_TRACES],0
+	jne	.traces
+	out_lit 'access log '
+	jmp	.url
+.traces:
+	out_lit 'tracing '
+.url:
 	mov	rax,r14
 	sub	rax,[g_ln]
 	xor	edx,edx
@@ -885,6 +912,10 @@ ln_name:
 	div	rcx
 	imul	rsi,rax,ALOG_PATH
 	lea	rsi,[g_alog_dest+rsi]
+	cmp	dword [r14+LN_TRACES],0
+	je	@f
+	add	rsi,7
+@@:
 	xor	edx,edx
 @@:
 	cmp	byte [rsi+rdx],' '
@@ -927,7 +958,7 @@ ln_record:
 	test	eax,eax
 	jnz	.more
 	push	rdi
-	call	monotonic_seconds
+	call	ln_ms
 	mov	[r14+LN_BAT],rax
 	pop	rdi
 	call	ln_prefix
@@ -937,6 +968,8 @@ ln_record:
 	mov	byte [rdi],','
 	inc	rdi
 .record:
+	cmp	dword [r14+LN_TRACES],0
+	jne	.span
 	memit '{"timeUnixNano":"'
 	lea	rsi,[str_lnk_time]
 	call	ln_find
@@ -950,6 +983,21 @@ ln_record:
 	memit '","observedTimeUnixNano":"'
 	mov	rax,[g_ln_now_ns]
 	call	fmt_u64
+	mov	byte [rdi],'"'
+	inc	rdi
+	; its span, when it has one
+	lea	rsi,[str_lnk_trace]
+	call	ln_find
+	jc	@f
+	memit ',"traceId":"'
+	lea	rsi,[str_lnk_trace]
+	call	ln_copyval
+	memit '","spanId":"'
+	lea	rsi,[str_lnk_span]
+	call	ln_copyval
+	mov	byte [rdi],'"'
+	inc	rdi
+@@:
 	; the severity, from the status
 	lea	rsi,[str_lnk_status]
 	call	ln_find
@@ -961,13 +1009,13 @@ ln_record:
 	jae	.error
 	cmp	eax,400
 	jae	.warn
-	memit '","severityNumber":9,"severityText":"INFO"'
+	memit ',"severityNumber":9,"severityText":"INFO"'
 	jmp	.body
 .warn:
-	memit '","severityNumber":13,"severityText":"WARN"'
+	memit ',"severityNumber":13,"severityText":"WARN"'
 	jmp	.body
 .error:
-	memit '","severityNumber":17,"severityText":"ERROR"'
+	memit ',"severityNumber":17,"severityText":"ERROR"'
 .body:
 	; "METHOD TARGET STATUS"
 	memit ',"body":{"stringValue":"'
@@ -982,6 +1030,37 @@ ln_record:
 	lea	rsi,[str_lnk_status]
 	call	ln_copyval
 	memit '"},"attributes":['
+	jmp	.attributes
+.span:
+	; a server span: its ids, its method for a name, its times
+	memit '{"traceId":"'
+	lea	rsi,[str_lnk_trace]
+	call	ln_copyval
+	memit '","spanId":"'
+	lea	rsi,[str_lnk_span]
+	call	ln_copyval
+	mov	byte [rdi],'"'
+	inc	rdi
+	lea	rsi,[str_lnk_parent]
+	call	ln_find
+	jc	@f
+	memit ',"parentSpanId":"'
+	lea	rsi,[str_lnk_parent]
+	call	ln_copyval
+	mov	byte [rdi],'"'
+	inc	rdi
+@@:
+	memit ',"name":"'
+	lea	rsi,[str_lnk_method]
+	call	ln_copyval
+	memit '","kind":2,"startTimeUnixNano":"'
+	lea	rsi,[str_lnk_start]
+	call	ln_copyval
+	memit '","endTimeUnixNano":"'
+	lea	rsi,[str_lnk_end]
+	call	ln_copyval
+	memit '","attributes":['
+.attributes:
 	xor	ebx,ebx
 	xor	r15d,r15d			; attributes written
 .attr:
@@ -994,9 +1073,8 @@ ln_record:
 	je	.attr
 	cmp	dword [r8+LP_VLEN],0
 	je	.attr				; nothing said: no attribute
-	; time is the record's own; target is url.path and url.query
-	lea	rsi,[str_lnk_time]
-	call	ln_is
+	; what the record has as its own; target is url.path and url.query
+	call	ln_own
 	je	.attr
 	lea	rsi,[str_lnk_target]
 	call	ln_is
@@ -1049,7 +1127,21 @@ ln_record:
 	memit '"}}'
 	jmp	.attr
 .attrs:
-	memit ']}'
+	mov	byte [rdi],']'
+	inc	rdi
+	; a span that ended in a 5xx is in error (a 4xx is the client's)
+	cmp	dword [r14+LN_TRACES],0
+	je	.closed
+	lea	rsi,[str_lnk_status]
+	call	ln_find
+	jc	.closed
+	call	ln_number
+	cmp	eax,500
+	jb	.closed
+	memit ',"status":{"code":2}'
+.closed:
+	mov	byte [rdi],'}'
+	inc	rdi
 	mov	rax,rdi
 	sub	rax,[r14+LN_BUF]
 	mov	[r14+LN_BLEN],eax
@@ -1072,16 +1164,43 @@ ln_comma:
 	ret
 
 cstring str_lnk_time, 'time',0
+cstring str_lnk_trace, 'trace_id',0
+cstring str_lnk_span, 'span_id',0
+cstring str_lnk_parent, 'parent_span_id',0
+cstring str_lnk_start, 'start_ns',0
+cstring str_lnk_end, 'end_ns',0
+
+; r8 = pair: ZF when the record carries it as its own field, not an attribute
+ln_own:
+	irp key, str_lnk_time, str_lnk_trace, str_lnk_span, str_lnk_parent, str_lnk_start, str_lnk_end
+		lea	rsi,[key]
+		call	ln_is
+		je	.yes
+	end irp
+.yes:
+	ret
 cstring str_lnk_status, 'status',0
 cstring str_lnk_method, 'method',0
 cstring str_lnk_target, 'target',0
 
 ; rdi = output: the start of an OTLP logs request, up to its records
 ln_prefix:
-	memit '{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"okena"}},{"key":"host.name","value":{"stringValue":"'
+	cmp	dword [r14+LN_TRACES],0
+	je	@f
+	memit '{"resourceSpans":[{"resource":{"attributes":['
+	jmp	.resource
+@@:
+	memit '{"resourceLogs":[{"resource":{"attributes":['
+.resource:
+	memit '{"key":"service.name","value":{"stringValue":"okena"}},{"key":"host.name","value":{"stringValue":"'
 	lea	rsi,[g_ln_host+1]
 	mov	ecx,[g_ln_hlen]
 	rep	movsb
+	cmp	dword [r14+LN_TRACES],0
+	je	@f
+	memit '"}}]},"scopeSpans":[{"scope":{"name":"okena"},"spans":['
+	ret
+@@:
 	memit '"}}]},"scopeLogs":[{"scope":{"name":"okena"},"logRecords":['
 	ret
 
@@ -1537,7 +1656,6 @@ ln_post:
 	je	.none
 	mov	dword [r14+LN_DOWN],0
 	call	log_begin
-	out_lit 'access log '
 	call	ln_name
 	out_lit ': reached again'
 	call	log_end
@@ -1578,18 +1696,23 @@ ln_tick:
 	je	.dest
 	cmp	dword [r14+LN_BN],0
 	je	.dest
-	call	monotonic_seconds
+	call	ln_ms
 	mov	rcx,[r14+LN_BAT]
-	inc	rcx
-	cmp	rax,rcx
-	jb	.later
+	add	rcx,1000			; its second is up then
+	sub	rcx,rax
+	jg	.later
+	call	monotonic_seconds
 	cmp	rax,[r14+LN_RETRY]
-	jb	.later
+	jb	.again				; (waiting to try again)
 	call	ln_post
 	cmp	dword [r14+LN_BN],0
 	je	.dest
+.again:
+	mov	ecx,1000
 .later:
-	mov	r12d,1000
+	cmp	ecx,r12d
+	jae	.dest				; (unsigned: -1 is no limit)
+	mov	r12d,ecx
 	jmp	.dest
 .out:
 	mov	eax,r12d
@@ -1597,6 +1720,22 @@ ln_tick:
 	pop	r14
 	pop	rbx
 .done:
+	ret
+
+; rax = CLOCK_MONOTONIC in milliseconds
+ln_ms:
+	sub	rsp,16
+	mov	edi,CLOCK_MONOTONIC
+	mov	rsi,rsp
+	mov	eax,SYS_clock_gettime
+	syscall
+	mov	rax,[rsp+8]
+	xor	edx,edx
+	mov	ecx,1000000
+	div	rcx
+	imul	rcx,[rsp],1000
+	add	rax,rcx
+	add	rsp,16
 	ret
 
 ; The logger, leaving: what OTLP batches hold, one last try

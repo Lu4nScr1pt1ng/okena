@@ -11,7 +11,7 @@ not built yet. A directive that is not built is refused by `okena check`
 | `okena` | `workers`, `io_engine`, `busy_poll`, `watchdog`, `drain delay= timeout=`, `metrics`, `ticket_keys`, `handshake_budget wait=`, `quic_server_id HEX` |
 | `tcp ADDR...` | `to`, `limits { connections; per_source }`, `timeout { idle }`, `proxy_protocol send v1\|v2`, `tls { cert; key }`, `tls passthrough { sni NAME... to pool P; default reject\|to pool P }` |
 | `udp ADDR...` | `to`, `responses N`, `limits { connections }` (flows), `timeout { idle }` |
-| `http ADDR...` | `host`, `route`, `limits`, `timeout { idle; header; body_idle; response }`, `trusted_proxies`, `access_log`, `http2 on\|off`, `http3 on\|off\|retry\|v2`, `preferred_address`, `early_data on\|off`, `tls { cert; key; ktls on\|off }` |
+| `http ADDR...` | `host`, `route`, `limits`, `timeout { idle; header; body_idle; response }`, `trusted_proxies`, `access_log`, `tracing`, `http2 on\|off`, `http3 on\|off\|retry\|v2`, `preferred_address`, `early_data on\|off`, `tls { cert; key; ktls on\|off }` |
 | `route PATH... [METHOD...]` | `to`, `redirect`, `rewrite path`, `header set\|add\|drop`, `response header set\|add\|drop` |
 | `pool NAME` | `server ADDR [weight=N] [max=N] [backup]`, `queue timeout=`, `balance least-request\|peak-ewma\|round-robin\|least-conn\|random\|maglev\|ring-hash\|source-hash [key=] [bound=]\|first`, `sticky cookie= [ttl=] [samesite=]`, `connect timeout=`, `health tcp\|http\|grpc ...`, `slow_start`, `tls { trust FILE; sni NAME }` (TLS to the backends), `protocol h1\|h2` |
 
@@ -426,7 +426,8 @@ Access logs are one JSON line per exchange: `time` (UTC, ms), `listener`,
 `client`, `peer` (the TCP peer), `method`, `host`, `target`, `status`, `bytes` (sent to the
 client), `duration_ms` (from the request head to the end of the
 response), `upstream`, `source` (`backend`, or `okena` when okena answered
-itself: a redirect, an error, a file, the cache) and `retried`. Workers never write files: they pass lines to a
+itself: a redirect, an error, a file, the cache) and `retried`; with
+`tracing`, also `trace_id` and `span_id`. The target is kept up to 944 bytes. Workers never write files: they pass lines to a
 logger process through a pipe and drop them (counted in
 `okena_access_log_dropped_total`) rather than wait when it falls behind.
 Lines of different workers may be up to a second out of order. A reload
@@ -460,6 +461,37 @@ back. Meanwhile syslog lines are dropped. A name is resolved again at each
 connection. TLS servers are verified as backends are, against `trust=FILE`
 (its first certificate) or the system's roots (`SSL_CERT_FILE`, else the
 usual bundles); `trust=` is refused on a destination without TLS.
+
+### Tracing
+
+```
+tracing otlp://collector:4318                 # spans to /v1/traces
+tracing otlp+https://collector:4318 sample=5% trust=/etc/okena/ca.pem
+```
+
+With `tracing`, each request on the listener is an OpenTelemetry server
+span (W3C Trace Context). A client that sends a valid `traceparent` gets
+its trace continued, and its span becomes okena's parent. Otherwise okena
+starts a new trace. The backend always gets a `traceparent` naming okena's
+span, so the trace goes on through it; the client's own `traceparent` is
+replaced and its `tracestate` passes untouched.
+
+Sampling is parent-based, as OpenTelemetry's default sampler: a trace the
+client marked sampled is kept, one it marked unsampled is not, and a new
+one is kept for `sample=` of them (100% unless said, decided on the trace
+id's low bits as TraceIdRatio does). A trace not kept still reaches the
+backend, marked unsampled.
+
+A kept span is sent at the end of its exchange, through the logger as
+access lines are, so a worker never waits on the collector. It is named
+by the method, of kind SERVER, from the request head to the end of the
+response, and carries the attributes the access log's records have under
+OpenTelemetry's names. A 5xx makes its status an error; a 4xx does not.
+With tracing, access lines carry `trace_id` and `span_id`, and OTLP log
+records their `traceId` and `spanId`, so logs and traces meet. Copies
+(`mirror`, `hedge`) carry the same `traceparent` and send no span of their
+own. Spans to a collector that is away are kept and retried as OTLP log
+records are.
 
 ## HTTP routes
 

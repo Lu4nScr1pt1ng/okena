@@ -108,6 +108,12 @@ mirror_new:
 	mov	eax,[rsp+32]
 	mov	[rbp+HB_MIRS],eax		; (a copy: its pool)
 	mov	dword [rbp+HB_EH],0			; (of whoever had this slot)
+	mov	rsi,[r14+H_BUF]			; the request's trace: the copy's parent is
+	lea	rsi,[rsi+HB_TRC]		; okena's span too; its own span is not sent
+	lea	rdi,[rbp+HB_TRC]
+	mov	ecx,TRC_SIZE
+	rep	movsb
+	and	dword [rbp+HB_TRC+TRC_FLAGS],not TF_EMIT
 	mov	dword [rbp+HB_ZOK],0
 	mov	dword [rbp+HB_FST],0
 	mov	dword [rbp+HB_H2Q+Q_LEN],0

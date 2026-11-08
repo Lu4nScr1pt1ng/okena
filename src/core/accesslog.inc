@@ -448,10 +448,17 @@ alog_request:
 	call	session_ptr
 	mov	eax,[rax+S_LST]
 	imul	rax,rax,LS_SIZE
-	cmp	dword [g_listeners+rax+LS_ALOG],0
-	je	.done
 	push	r15
 	h_rec
+	lea	rcx,[g_listeners+rax]
+	push	rcx
+	call	trace_begin			; (and a trace from before is forgotten)
+	pop	rcx
+	cmp	dword [rcx+LS_ALOG],0
+	jne	@f
+	cmp	dword [rcx+LS_TRACE],0
+	je	.out
+@@:
 	rdtsc
 	shl	rdx,32
 	or	rax,rdx
@@ -485,8 +492,8 @@ alog_request:
 	lea	rdi,[rdi+HB_LTEXT_T]
 	call	.copy
 	mov	[r15+H_LTLEN],ecx
+.out:
 	pop	r15
-.done:
 	ret
 ; rsi/ecx = text, rdi = room of edx bytes. ecx = bytes kept.
 .copy:
@@ -506,7 +513,7 @@ alog_exchange:
 	mov	ecx,[rax+S_LST]
 	imul	rcx,rcx,LS_SIZE
 	mov	edx,[g_listeners+rcx+LS_ALOG]
-	test	edx,edx
+	or	edx,[g_listeners+rcx+LS_TRACE]
 	jz	.none
 	push	rbx
 	push	r12
@@ -517,12 +524,103 @@ alog_exchange:
 	mov	r12d,esi
 	mov	r13,rax				; the session
 	h_rec
+	mov	edx,[r14+LS_ALOG]
+	test	edx,edx
+	jz	.span
 	lea	rdi,[g_alog_line]
 	mov	[rdi],dl
 	inc	rdi
 	memit '{"time":"'
 	call	alog_fmt_time
-	memit '","listener":"'
+	mov	byte [rdi],'"'
+	inc	rdi
+	; with tracing, the ids that tie it to its span
+	mov	rax,[r15+H_BUF]
+	test	dword [rax+HB_TRC+TRC_FLAGS],TF_ON
+	jz	@f
+	push	rax
+	memit ',"trace_id":"'
+	pop	rax
+	lea	rsi,[rax+HB_TRC+TRC_ID]
+	mov	ecx,32
+	rep	movsb
+	push	rax
+	memit '","span_id":"'
+	pop	rax
+	lea	rsi,[rax+HB_TRC+TRC_SPAN]
+	mov	ecx,16
+	rep	movsb
+	mov	byte [rdi],'"'
+	inc	rdi
+@@:
+	call	.fields
+	call	.append
+.span:
+	; a kept span: once, at its exchange's end (rbx is the session: the
+	; trace is found from r15 each time)
+	mov	edx,[r14+LS_TRACE]
+	test	edx,edx
+	jz	.reset
+	mov	rax,[r15+H_BUF]
+	test	dword [rax+HB_TRC+TRC_FLAGS],TF_EMIT
+	jz	.reset
+	and	dword [rax+HB_TRC+TRC_FLAGS],not TF_EMIT
+	lea	rdi,[g_alog_line]
+	mov	[rdi],dl
+	inc	rdi
+	memit '{"trace_id":"'
+	mov	rsi,[r15+H_BUF]
+	lea	rsi,[rsi+HB_TRC+TRC_ID]
+	mov	ecx,32
+	rep	movsb
+	memit '","span_id":"'
+	mov	rsi,[r15+H_BUF]
+	lea	rsi,[rsi+HB_TRC+TRC_SPAN]
+	mov	ecx,16
+	rep	movsb
+	mov	byte [rdi],'"'
+	inc	rdi
+	mov	rax,[r15+H_BUF]
+	test	dword [rax+HB_TRC+TRC_FLAGS],TF_PARENT
+	jz	@f
+	memit ',"parent_span_id":"'
+	mov	rsi,[r15+H_BUF]
+	lea	rsi,[rsi+HB_TRC+TRC_PARENT]
+	mov	ecx,16
+	rep	movsb
+	mov	byte [rdi],'"'
+	inc	rdi
+@@:
+	memit ',"start_ns":'
+	mov	rax,[r15+H_BUF]
+	mov	rax,[rax+HB_TRC+TRC_T0]
+	call	fmt_u64
+	memit ',"end_ns":'
+	push	rdi
+	call	wall_ns
+	pop	rdi
+	call	fmt_u64
+	call	.fields
+	call	.append
+.reset:
+	; this exchange is logged; the next one on the connection starts clean
+	mov	qword [r15+H_LT0],0
+	mov	qword [r15+H_XBYTES],0
+	mov	dword [r15+H_LMLEN],0
+	mov	dword [r15+H_LHLEN],0
+	mov	dword [r15+H_LTLEN],0
+	mov	dword [r15+H_CKIND],0
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+.none:
+	ret
+
+; rdi = the line: its fields from the listener on, to its end
+.fields:
+	memit ',"listener":"'
 	mov	rsi,[r14+LS_TEXT]
 	mov	edx,[r14+LS_TLEN]
 	mov	ecx,256
@@ -607,10 +705,13 @@ alog_exchange:
 	test	dword [r15+H_FLAGS],HX_RETRIED
 	jz	@f
 	memit ',"retried":true}',10
-	jmp	.line
+	ret
 @@:
 	memit ',"retried":false}',10
-.line:
+	ret
+
+; rdi = the line's end: it, into the buffer for the pipe
+.append:
 	lea	rsi,[g_alog_line]
 	mov	rcx,rdi
 	sub	rcx,rsi
@@ -628,19 +729,6 @@ alog_exchange:
 	add	[g_alog_len],ecx
 	inc	dword [g_alog_lines]
 	rep	movsb
-	; this exchange is logged; the next one on the connection starts clean
-	mov	qword [r15+H_LT0],0
-	mov	qword [r15+H_XBYTES],0
-	mov	dword [r15+H_LMLEN],0
-	mov	dword [r15+H_LHLEN],0
-	mov	dword [r15+H_LTLEN],0
-	mov	dword [r15+H_CKIND],0
-	pop	r15
-	pop	r14
-	pop	r13
-	pop	r12
-	pop	rbx
-.none:
 	ret
 
 ; rdi = output, rsi/edx = text, ecx = most bytes to write. JSON string

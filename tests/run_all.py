@@ -130,6 +130,8 @@ SUITES = [
     ("alerts epoll", ["tests/gateway/alerts.py", "epoll"]),
     ("logsink io_uring", ["tests/gateway/logsink.py", "io_uring"]),
     ("logsink epoll", ["tests/gateway/logsink.py", "epoll"]),
+    ("tracing io_uring", ["tests/gateway/tracing.py", "io_uring"]),
+    ("tracing epoll", ["tests/gateway/tracing.py", "epoll"]),
     ("geoip io_uring", ["tests/gateway/geoip.py", "io_uring"]),
     ("geoip epoll", ["tests/gateway/geoip.py", "epoll"]),
     ("acl io_uring", ["tests/gateway/acl.py", "io_uring"]),
