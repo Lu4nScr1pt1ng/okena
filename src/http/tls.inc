@@ -171,8 +171,44 @@ http_tls_read:
 	jmp	h_recv
 
 http_tls_close:
+	; in the middle of a handshake: it failed, or the client left
+	h_rec
+	mov	eax,[r15+H_STATE]
+	cmp	eax,HS_TLS_HELLO
+	jb	.close
+	cmp	eax,HS_TLS_ALERT
+	jbe	.failed
+	cmp	eax,HS_TLS12_FLIGHT
+	jb	.close
+	cmp	eax,HS_TLS12_FIN2
+	ja	.close
+.failed:
+	mov	dword [r15+H_STATE],0		; (once)
+	mov	eax,3
+	call	tls_count
+.close:
 	mov	edi,ebx
 	jmp	session_close
+
+; ebx = session, eax = 0 TLS 1.2 done, 1 TLS 1.3 done (and resumed, when its
+; ticket was), 3 failed: counted for its listener. Keeps all but rax, rcx.
+tls_count:
+	push	rdx
+	mov	edx,eax
+	call	session_ptr
+	mov	ecx,[rax+S_LST]
+	lea	ecx,[rcx*4]
+	add	ecx,edx
+	inc	qword [g_st_l_tls+rcx*8]
+	cmp	edx,1
+	jne	@f
+	mov	rax,[r15+H_BUF]
+	test	dword [rax+HB_TS+TS_FLAGS],TF_RESUMED
+	jz	@f
+	inc	qword [g_st_l_tls+rcx*8+8]
+@@:
+	pop	rdx
+	ret
 
 ; ebx = session, rax = bytes read (http_recv_done in HS_TLS_HELLO).
 http_tls_hello_in:
@@ -308,6 +344,8 @@ http_tls_fin_in:
 	jne	http_tls_close			; forged, or an alert
 	cmp	edx,[r15+H_INLEN]
 	jne	http_tls_close
+	mov	eax,1				; TLS 1.3, done
+	call	tls_count
 	mov	rax,[r15+H_BUF]
 	mov	rax,[rax+HB_TS+TS_CERT]		; what SNI chose: Host is checked against it
 	mov	[r15+H_SNICERT],rax

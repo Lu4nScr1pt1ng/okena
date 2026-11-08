@@ -12,6 +12,7 @@ import os
 import pathlib
 import shutil
 import socket
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -22,7 +23,7 @@ ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BIN = ROOT / "build" / "okena"
 BASE = 35000 + os.getpid() % 90 * 20 + (10 if ENGINE == "epoll" else 0)
-LST, TCPL, METRICS, BACK, TLSL = BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4
+LST, TCPL, METRICS, BACK, TLSL, UDPL, ECHO = BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4, BASE + 5, BASE + 6
 TOKEN = "s3cret-token-of-32-bytes-ok-1234"
 fails = 0
 
@@ -47,7 +48,9 @@ def until(fn, seconds=8):
 
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        self.send_response(200)
+        if "slow" in self.path:
+            time.sleep(0.05)
+        self.send_response(404 if "missing" in self.path else 200)
         self.send_header("Content-Length", "3")
         self.end_headers()
         self.wfile.write(b"ok\n")
@@ -86,6 +89,14 @@ def main():
                     "-out", tmp / "c.pem", "-subj", "/CN=top.test", "-addext", "subjectAltName=DNS:top.test,DNS:www.top.test", "-days", "30"],
                    check=True, capture_output=True)
     threading.Thread(target=S(("127.0.0.1", BACK), H).serve_forever, daemon=True).start()
+
+    def echo():
+        u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        u.bind(("127.0.0.1", ECHO))
+        while True:
+            d, a = u.recvfrom(2048)
+            u.sendto(d, a)
+    threading.Thread(target=echo, daemon=True).start()
     dead = socket.socket()
     dead.bind(("127.0.0.1", 0))
     dport = dead.getsockname()[1]
@@ -95,6 +106,8 @@ def main():
     conf.write_text(f"""okena {{ workers 2; io_engine {ENGINE}; metrics 127.0.0.1:{METRICS} token={tmp}/token; admin unix:{sock} }}
 pool api {{ health tcp every=200ms fall=1 rise=1; server 127.0.0.1:{BACK}; server localhost:{BACK}; server 127.0.0.1:{dport} }}
 pool found {{ discover file {tmp}/found.list }}
+pool echo {{ server 127.0.0.1:{ECHO} }}
+udp 127.0.0.1:{UDPL} {{ to pool echo }}
 http 127.0.0.1:{LST} {{ route /* {{ to pool api }}; route /f/* {{ to pool found }} }}
 tcp 127.0.0.1:{TCPL} {{ to pool api }}
 http 127.0.0.1:{TLSL} {{
@@ -193,6 +206,62 @@ http 127.0.0.1:{TLSL} {{
         cli("drain")
         check("the instance drained: said", status()["draining"] is True)
         cli("resume")
+
+        # what the workers count: by protocol, status, handshake, datagram; latency
+        for i in range(10):
+            c = http.client.HTTPConnection("127.0.0.1", LST, timeout=5)
+            c.request("GET", "/slow")
+            c.getresponse().read()
+            c.close()
+        c = http.client.HTTPConnection("127.0.0.1", LST, timeout=5)
+        c.request("GET", "/missing")
+        c.getresponse().read()
+        c.close()
+        h2 = subprocess.run(["timeout", "8", "curl", "-q", "-sk", "--http2", "-o", "/dev/null", "-o", "/dev/null", "-w", "%{http_version} ",
+                             f"https://127.0.0.1:{TLSL}/api/x", f"https://127.0.0.1:{TLSL}/api/y"], capture_output=True, text=True)
+        tctx = ssl.create_default_context()
+        tctx.check_hostname, tctx.verify_mode = False, ssl.CERT_NONE
+        tctx.maximum_version = ssl.TLSVersion.TLSv1_3
+        sess = None
+        for i in range(2):                  # the second resumes the first's session
+            raw = socket.create_connection(("127.0.0.1", TLSL), timeout=5)
+            t = tctx.wrap_socket(raw, server_hostname="top.test", session=sess)
+            t.sendall(b"GET /api/z HTTP/1.1\r\nHost: top.test\r\n\r\n")
+            d = b""
+            while not d.endswith(b"ok\n"):    # (an EOF with no close_notify makes OpenSSL drop the session)
+                x = t.recv(4096)
+                if not x:
+                    break
+                d += x
+            sess = t.session
+            t.close()
+        u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        u.settimeout(2)
+        for i in range(12):
+            u.sendto(b"ping", ("127.0.0.1", UDPL))
+            u.recv(100)
+        time.sleep(1.3)
+        s = status()
+        L = {l["address"]: l for l in s["listeners"]}
+        hl, sl, ul = L[f"127.0.0.1:{LST}"], L[f"127.0.0.1:{TLSL}"], L[f"127.0.0.1:{UDPL}"]
+        lat = hl.get("latency_ms") or {}
+        check("latency: percentiles that are the backend's (50 ms, within 1/8)", 50 <= lat.get("p50", 0) <= 60 and lat["p50"] <= lat["p90"] <= lat["p99"] < 70,
+              lat)
+        check("  a 404 counted as such, requests by protocol", hl["statuses"]["404"] == 1 and hl["by_protocol"]["http/1.1"] == hl["requests"]
+              and sl["by_protocol"]["h2"] == 2 and h2.stdout.split() == ["2", "2"], (hl["statuses"], hl["by_protocol"], sl["by_protocol"], h2.stdout))
+        tl = sl.get("tls_handshakes", {})
+        check("  TLS handshakes: 1.3, the second resumed", tl.get("1.3", 0) >= 3 and tl.get("resumed") == 1 and tl.get("1.2") == 0, tl)
+        check("UDP: datagrams in and out, a flow", ul["datagrams_in"] == 12 and ul["datagrams_out"] == 12 and ul["kind"] == "udp"
+              and ul["pool"] == "echo" and ul["responses"] == "any" and s["udp_dropped"] == 0, ul)
+        m = admin("/metrics", f"Bearer {TOKEN}")[2].decode()
+        cnt = [x for x in m.splitlines() if x.startswith("okena_http_request_duration_seconds_count") and f":{LST}" in x]
+        inf = [x for x in m.splitlines() if 'le="+Inf"' in x and f":{LST}" in x]
+        b50 = [x for x in m.splitlines() if 'le="0.050000"' in x and f":{LST}" in x]
+        check("/metrics: the durations as a histogram, its count the requests'", cnt and int(cnt[0].split()[-1]) == hl["requests"]
+              and inf and inf[0].split()[-1] == cnt[0].split()[-1] and b50 and int(b50[0].split()[-1]) < hl["requests"], (cnt, inf, b50))
+        check("  and the rest: by protocol, statuses, handshakes, datagrams, drops",
+              all(k in m for k in ('okena_http_requests_by_protocol_total{', 'code="404"} 1', 'okena_tls_handshakes_total{', 'result="resumed"} 1',
+                                   'okena_udp_datagrams_total{', 'direction="in"} 12', 'okena_udp_dropped_total 0')), m[-600:])
 
         # okena top, once: the table
         r = cli("top", "once")

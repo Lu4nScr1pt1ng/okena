@@ -681,6 +681,17 @@ OFF_HTTP_TRIMMED := g_st_http_trimmed - g_st_begin
 OFF_TLS_DEFERRED := g_st_tls_deferred - g_st_begin
 OFF_TLS_SHED	:= g_st_tls_shed - g_st_begin
 OFF_L_RETRIES	:= g_st_l_retries - g_st_begin
+OFF_L_PROTO	:= g_st_l_proto - g_st_begin
+OFF_L_CODES	:= g_st_l_codes - g_st_begin
+OFF_L_WS	:= g_st_l_ws - g_st_begin
+OFF_L_CACHE	:= g_st_l_cache - g_st_begin
+OFF_L_TLS	:= g_st_l_tls - g_st_begin
+OFF_L_QUIC	:= g_st_l_quic - g_st_begin
+OFF_L_DGIN	:= g_st_l_dgin - g_st_begin
+OFF_L_DGOUT	:= g_st_l_dgout - g_st_begin
+OFF_L_LAT	:= g_st_l_lat - g_st_begin
+OFF_L_LATSUM	:= g_st_l_latsum - g_st_begin
+OFF_UD_DROPS	:= g_st_ud_drops - g_st_begin
 
 ; rdi = output, ebx = listener: {listener="..."
 listener_label:
@@ -900,6 +911,7 @@ metrics_render:
 	inc	ebx
 	jmp	.l7
 .l7_done:
+	call	metrics_more
 	; backends
 	memit '# TYPE okena_backend_connects_total counter',10
 	mov	r12d,OFF_S_CONNECTS
@@ -1029,6 +1041,307 @@ metrics_render:
 str_m_connects	db 'okena_backend_connects_total',0
 str_m_fails	db 'okena_backend_connect_failures_total',0
 str_m_active	db 'okena_backend_active',0
+
+; rdi = output: what the workers count by protocol, status, handshake and
+; datagram, and the request durations as a histogram
+metrics_more:
+	push	rbx
+	push	r12
+	push	r13
+	memit '# HELP okena_http_requests_by_protocol_total HTTP responses sent, by the protocol of the request.',10
+	memit '# TYPE okena_http_requests_by_protocol_total counter',10
+	xor	ebx,ebx
+.p:
+	cmp	ebx,[g_plan_listeners]
+	jae	.p_done
+	imul	rax,rbx,LS_SIZE
+	cmp	dword [g_listeners+rax+LS_KIND],LK_HTTP
+	jne	.p_next
+	xor	r12d,r12d
+.p_one:
+	memit 'okena_http_requests_by_protocol_total'
+	call	listener_label
+	memit ',protocol="'
+	lea	rsi,[mt_protos]
+	mov	eax,r12d
+	call	st_word
+	call	fmt_cstr
+	memit '"} '
+	lea	ecx,[rbx*2+rbx]
+	add	ecx,r12d
+	lea	rcx,[OFF_L_PROTO+rcx*8]
+	call	stats_sum_q
+	call	fmt_u64
+	mov	byte [rdi],10
+	inc	rdi
+	inc	r12d
+	cmp	r12d,3
+	jb	.p_one
+.p_next:
+	inc	ebx
+	jmp	.p
+.p_done:
+	memit '# HELP okena_http_responses_by_code_total HTTP responses with these statuses: 401, 403, 404, 429.',10
+	memit '# TYPE okena_http_responses_by_code_total counter',10
+	xor	ebx,ebx
+.c:
+	cmp	ebx,[g_plan_listeners]
+	jae	.c_done
+	imul	rax,rbx,LS_SIZE
+	cmp	dword [g_listeners+rax+LS_KIND],LK_HTTP
+	jne	.c_next
+	xor	r12d,r12d
+.c_one:
+	memit 'okena_http_responses_by_code_total'
+	call	listener_label
+	memit ',code="'
+	lea	rsi,[mt_codes]
+	mov	eax,r12d
+	call	st_word
+	call	fmt_cstr
+	memit '"} '
+	lea	ecx,[rbx*4]
+	add	ecx,r12d
+	lea	rcx,[OFF_L_CODES+rcx*8]
+	call	stats_sum_q
+	call	fmt_u64
+	mov	byte [rdi],10
+	inc	rdi
+	inc	r12d
+	cmp	r12d,4
+	jb	.c_one
+.c_next:
+	inc	ebx
+	jmp	.c
+.c_done:
+	memit '# HELP okena_websocket_upgrades_total Requests whose protocol was switched (101): WebSocket and the like.',10
+	memit '# TYPE okena_websocket_upgrades_total counter',10
+	mov	r12d,OFF_L_WS
+	lea	r13,[str_mt_ws]
+	mov	eax,LK_HTTP
+	call	.per_listener
+	memit '# HELP okena_cache_hits_total Answers from the cache.',10
+	memit '# TYPE okena_cache_hits_total counter',10
+	mov	r12d,OFF_L_CACHE
+	lea	r13,[str_mt_cache]
+	mov	eax,LK_HTTP
+	call	.per_listener
+	memit '# HELP okena_quic_handshakes_total QUIC handshakes done.',10
+	memit '# TYPE okena_quic_handshakes_total counter',10
+	mov	r12d,OFF_L_QUIC
+	lea	r13,[str_mt_quic]
+	mov	eax,LK_HTTP
+	call	.per_listener
+	memit '# HELP okena_tls_handshakes_total TLS handshakes: done (by version; resumed ones too), or failed or abandoned.',10
+	memit '# TYPE okena_tls_handshakes_total counter',10
+	xor	ebx,ebx
+.t:
+	cmp	ebx,[g_plan_listeners]
+	jae	.t_done
+	imul	rax,rbx,LS_SIZE
+	cmp	dword [g_listeners+rax+LS_TLS],0
+	jne	@f
+	test	dword [g_listeners+rax+LS_FLAGS],LSF_H3
+	jz	.t_next
+@@:
+	xor	r12d,r12d
+.t_one:
+	memit 'okena_tls_handshakes_total'
+	call	listener_label
+	lea	rsi,[mt_tls]
+	mov	eax,r12d
+	call	st_word
+	call	fmt_cstr
+	memit '} '
+	lea	ecx,[rbx*4]
+	add	ecx,r12d
+	lea	rcx,[OFF_L_TLS+rcx*8]
+	call	stats_sum_q
+	call	fmt_u64
+	mov	byte [rdi],10
+	inc	rdi
+	inc	r12d
+	cmp	r12d,4
+	jb	.t_one
+.t_next:
+	inc	ebx
+	jmp	.t
+.t_done:
+	memit '# HELP okena_udp_datagrams_total UDP datagrams, from clients (in) and to them (out).',10
+	memit '# TYPE okena_udp_datagrams_total counter',10
+	xor	ebx,ebx
+.u:
+	cmp	ebx,[g_plan_listeners]
+	jae	.u_done
+	imul	rax,rbx,LS_SIZE
+	cmp	dword [g_listeners+rax+LS_KIND],LK_UDP
+	jne	.u_next
+	memit 'okena_udp_datagrams_total'
+	call	listener_label
+	memit ',direction="in"} '
+	lea	rcx,[OFF_L_DGIN+rbx*8]
+	call	stats_sum_q
+	call	fmt_u64
+	memit 10,'okena_udp_datagrams_total'
+	call	listener_label
+	memit ',direction="out"} '
+	lea	rcx,[OFF_L_DGOUT+rbx*8]
+	call	stats_sum_q
+	call	fmt_u64
+	mov	byte [rdi],10
+	inc	rdi
+.u_next:
+	inc	ebx
+	jmp	.u
+.u_done:
+	memit '# HELP okena_udp_dropped_total UDP datagrams lost: no flow to take them, or a socket buffer full.',10
+	memit '# TYPE okena_udp_dropped_total counter',10,'okena_udp_dropped_total '
+	mov	ecx,OFF_UD_DROPS
+	call	stats_sum_q
+	call	fmt_u64
+	mov	byte [rdi],10
+	inc	rdi
+	; the durations: a histogram a listener
+	memit '# HELP okena_http_request_duration_seconds From a request head to the end of its answer.',10
+	memit '# TYPE okena_http_request_duration_seconds histogram',10
+	xor	ebx,ebx
+.h:
+	cmp	ebx,[g_plan_listeners]
+	jae	.h_done
+	imul	rax,rbx,LS_SIZE
+	cmp	dword [g_listeners+rax+LS_KIND],LK_HTTP
+	jne	.h_next
+	xor	r12d,r12d
+	xor	r13d,r13d			; the buckets counted so far
+	mov	qword [g_mt_cum],0		; and what they hold
+.h_one:
+	memit 'okena_http_request_duration_seconds_bucket'
+	call	listener_label
+	memit ',le="'
+	cmp	r12d,LAT_EXPORT - 1
+	jne	@f
+	memit '+Inf'
+	jmp	.h_le
+@@:
+	mov	rax,[lat_export+r12*8]		; µs, as seconds
+	xor	edx,edx
+	mov	ecx,1000000
+	div	rcx
+	push	rdx
+	call	fmt_u64
+	mov	byte [rdi],'.'
+	inc	rdi
+	pop	rax
+	mov	ecx,6
+	call	fmt_pad
+.h_le:
+	memit '"} '
+	; the buckets that end at or below it (all of them for +Inf)
+	push	r14
+	mov	r14d,r13d			; the next bucket to add
+.h_add:
+	cmp	r14d,LAT_B
+	jae	.h_sum
+	cmp	r12d,LAT_EXPORT - 1
+	je	@f
+	mov	ecx,r14d
+	call	lat_bucket
+	cmp	rax,[lat_export+r12*8]
+	ja	.h_sum
+@@:
+	imul	ecx,ebx,LAT_B
+	add	ecx,r14d
+	lea	rcx,[OFF_L_LAT+rcx*8]
+	call	stats_sum_q
+	add	[g_mt_cum],rax
+	inc	r14d
+	jmp	.h_add
+.h_sum:
+	mov	r13d,r14d
+	pop	r14
+	mov	rax,[g_mt_cum]
+	call	fmt_u64
+	mov	byte [rdi],10
+	inc	rdi
+	inc	r12d
+	cmp	r12d,LAT_EXPORT
+	jb	.h_one
+	memit 'okena_http_request_duration_seconds_sum'
+	call	listener_label
+	memit '} '
+	lea	rcx,[OFF_L_LATSUM+rbx*8]
+	call	stats_sum_q
+	xor	edx,edx
+	mov	ecx,1000000
+	div	rcx
+	push	rdx
+	call	fmt_u64
+	mov	byte [rdi],'.'
+	inc	rdi
+	pop	rax
+	mov	ecx,6
+	call	fmt_pad
+	memit 10,'okena_http_request_duration_seconds_count'
+	call	listener_label
+	memit '} '
+	mov	rax,[g_mt_cum]
+	call	fmt_u64
+	mov	byte [rdi],10
+	inc	rdi
+.h_next:
+	inc	ebx
+	jmp	.h
+.h_done:
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+; r12d = a per-listener qword's offset, r13 = the metric's name, eax = the
+; kind of listener that has it
+.per_listener:
+	push	r14
+	mov	r14d,eax
+	xor	ebx,ebx
+.pl:
+	cmp	ebx,[g_plan_listeners]
+	jae	.pl_done
+	imul	rax,rbx,LS_SIZE
+	cmp	[g_listeners+rax+LS_KIND],r14d
+	jne	.pl_next
+	mov	rsi,r13
+	call	fmt_cstr
+	call	listener_label
+	memit '} '
+	lea	rcx,[r12+rbx*8]
+	call	stats_sum_q
+	call	fmt_u64
+	mov	byte [rdi],10
+	inc	rdi
+.pl_next:
+	inc	ebx
+	jmp	.pl
+.pl_done:
+	pop	r14
+	ret
+
+LAT_EXPORT	:= 14
+bss
+	align 8
+	g_mt_cum	dq ?
+end bss
+rodata
+	; the histogram's bounds as /metrics gives them (µs; the last is +Inf):
+	; each counts the buckets that end at or below it (a bucket is 1/8 wide)
+	align 8
+	lat_export	dq 1000, 2500, 5000, 10000, 25000, 50000, 100000, 250000, 500000
+			dq 1000000, 2500000, 5000000, 10000000, -1
+	mt_protos	db 'http/1.1',0,'h2',0,'h3',0
+	mt_codes	db '401',0,'403',0,'404',0,'429',0
+	mt_tls		db ',version="1.2"',0,',version="1.3"',0,',result="resumed"',0,',result="failed"',0
+	str_mt_ws	db 'okena_websocket_upgrades_total',0
+	str_mt_cache	db 'okena_cache_hits_total',0
+	str_mt_quic	db 'okena_quic_handshakes_total',0
+end rodata
 
 ; rdi = output, ebx = server: {pool="...",server="...",address="..."
 server_labels:

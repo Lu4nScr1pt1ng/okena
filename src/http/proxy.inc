@@ -3268,13 +3268,53 @@ http_count:
 	mov	eax,4
 @@:
 	add	eax,esi
+	push	rdx
 	mov	ecx,ebx
 	shl	rcx,S_SHIFT
 	add	rcx,[g_sess_base]
+	mov	edx,[rcx+S_FLAGS]
 	mov	ecx,[rcx+S_LST]
+	push	rcx
 	imul	ecx,ecx,10
 	add	eax,ecx
 	inc	qword [g_st_l_http+rax*8]
+	pop	rcx				; the listener
+	; its protocol: an HTTP/2 stream, an HTTP/3 one, or HTTP/1
+	lea	eax,[rcx*2+rcx]
+	test	edx,SF_H2S
+	jz	@f
+	inc	eax
+@@:
+	test	edx,SF_H3S
+	jz	@f
+	add	eax,2
+@@:
+	inc	qword [g_st_l_proto+rax*8]
+	test	edx,SF_CACHED
+	jz	@f
+	inc	qword [g_st_l_cache+rcx*8]
+@@:
+	; statuses that say something of their own
+	cmp	edi,101
+	jne	@f
+	inc	qword [g_st_l_ws+rcx*8]
+@@:
+	lea	eax,[rcx*4]
+	cmp	edi,401
+	je	.code
+	inc	eax
+	cmp	edi,403
+	je	.code
+	inc	eax
+	cmp	edi,404
+	je	.code
+	inc	eax
+	cmp	edi,429
+	jne	.codes_done
+.code:
+	inc	qword [g_st_l_codes+rax*8]
+.codes_done:
+	pop	rdx
 	pop	rax
 	ret
 

@@ -53,7 +53,7 @@ def metrics(port):
     for line in data.decode().split("\r\n\r\n", 1)[-1].splitlines():
         if line and not line.startswith("#"):
             k, _, v = line.rpartition(" ")
-            out[k] = int(v)
+            out[k] = float(v) if "." in v else int(v)
     return out
 
 

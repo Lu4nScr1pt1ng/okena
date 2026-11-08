@@ -17,6 +17,17 @@ bss
 	g_st_l_evicted	rq MAX_LISTENERS	; idle sessions closed under pressure
 	g_st_l_http	rq MAX_LISTENERS * 10	; responses: [source: backend, okena][1xx..5xx]
 	g_st_l_retries	rq MAX_LISTENERS	; requests sent again to another server
+	g_st_l_proto	rq MAX_LISTENERS * 3	; responses by protocol: HTTP/1, h2, h3
+	g_st_l_codes	rq MAX_LISTENERS * 4	; and by some statuses: 401, 403, 404, 429
+	g_st_l_ws	rq MAX_LISTENERS	; 101: protocols switched (WebSocket)
+	g_st_l_cache	rq MAX_LISTENERS	; answers from the cache
+	g_st_l_tls	rq MAX_LISTENERS * 4	; handshakes: TLS 1.2, 1.3, of them resumed, failed
+	g_st_l_quic	rq MAX_LISTENERS	; QUIC handshakes done
+	g_st_l_dgin	rq MAX_LISTENERS	; udp: datagrams from clients
+	g_st_l_dgout	rq MAX_LISTENERS	; and to them
+	g_st_l_lat	rq MAX_LISTENERS * LAT_B	; http: request durations, by bucket
+	g_st_l_latsum	rq MAX_LISTENERS	; and their sum, µs
+	g_st_ud_drops	dq ?			; udp: datagrams lost (no flow to go in, a full buffer)
 	g_st_src_open	dq ?			; let in uncounted: per_source table full
 	g_st_alog_dropped dq ?			; access log lines lost to a full pipe
 	g_st_http_trimmed dq ?			; idle http records given back to the kernel

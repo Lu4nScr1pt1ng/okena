@@ -141,6 +141,10 @@ http_tls12_fin:
 	call	tls12_finished
 	test	eax,eax
 	jz	http_tls_close
+	push	rax
+	xor	eax,eax				; TLS 1.2, done
+	call	tls_count
+	pop	rax
 	mov	dword [r15+H_STATE],HS_TLS12_FIN2
 	mov	esi,eax
 	mov	rdi,[r15+H_BUF]

@@ -330,7 +330,14 @@ follows the traffic's way through: each listener, with its protocols
 (HTTP/1.1, HTTP/2, HTTP/3 and QUIC's retry, v2 and 0-RTT; TLS, kTLS,
 client certificates; PROXY protocol), its certificates (names, key, days
 until they expire, in colour as the day nears), its limits and timeouts,
-and its rates (connections, requests, 5xx and bytes a second); each route,
+and its rates (connections, requests, 5xx and bytes a second); for HTTP,
+latency (p50, p90, p99 over the last ten seconds, from a log-linear
+histogram whose buckets are an eighth of their value wide), requests by
+protocol, the 401, 403, 404 and 429 it answered, WebSocket upgrades and
+cache hits; TLS handshakes by version, resumed and failed or abandoned, and
+QUIC's; for UDP, flows, new flows, datagrams and bytes each way, and what a
+flow may get back (`responses`), with the instance's dropped datagrams at
+the top. Each route,
 with its methods, what it passes through (limit, auth, cache, cors,
 compress, rewrite, headers, hedge, mirror, split, fault, priority) and
 where it goes: a pool, with how many of its servers are up, or okena itself
@@ -354,6 +361,17 @@ browser can open the dashboard; without it the answer is 401 asking for
 Basic. It is compared in constant time. The token travels as written:
 without TLS on that address, keep it on a trusted network or behind a
 proxy that adds TLS.
+
+Besides connections, bytes and responses by class, `/metrics` has, by
+listener: `okena_http_request_duration_seconds` (a histogram, from the
+request head to the end of its answer), `okena_http_requests_by_protocol_total`
+(`protocol` http/1.1, h2, h3), `okena_http_responses_by_code_total` (401,
+403, 404, 429), `okena_websocket_upgrades_total`, `okena_cache_hits_total`,
+`okena_tls_handshakes_total` (`version` 1.2 or 1.3; `result` resumed, or
+failed for a handshake that failed or that its client left),
+`okena_quic_handshakes_total`, `okena_udp_datagrams_total` (`direction`);
+and `okena_udp_dropped_total`, the datagrams lost with no flow to take
+them or a socket buffer full.
 
 Profiles set groups of defaults: `latency` enables busy polling, NAPI
 polling and smaller batches; `throughput` larger batches and `SEND_ZC`

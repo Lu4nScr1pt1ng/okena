@@ -73,6 +73,7 @@ function el(tag, cls, text) {
 function add(parent, ...kids) { for (const k of kids) if (k) parent.appendChild(typeof k === "string" ? document.createTextNode(k) : k); return parent; }
 const chip = (text, cls) => el("span", "chip" + (cls ? " " + cls : ""), text);
 const rate = n => n >= 1000 ? (n / 1000).toFixed(1) + "k" : n.toFixed(1);
+const ms = v => v >= 1000 ? (v / 1000).toFixed(2) + " s" : v >= 10 ? v.toFixed(0) + " ms" : v.toFixed(2) + " ms";
 function bytes(n) {
   if (n >= 1e9) return (n / 1e9).toFixed(1) + " GB/s";
   if (n >= 1e6) return (n / 1e6).toFixed(1) + " MB/s";
@@ -145,13 +146,42 @@ function listenerBox(l) {
   if (l.tracing) add(top, chip("tracing"));
   box.appendChild(top);
   const st = el("div", "stats");
-  add(st, stat("active", l.active + (l.limit ? " / " + l.limit : "")), stat("conn/s", rate(l.conn_rate)));
-  if (l.kind === "http") add(st, stat("req/s", rate(l.req_rate)), stat("5xx/s", rate(l.err_rate), l.err_rate > 0 ? "red" : ""),
-    stat("requests", l.requests), stat("5xx", l.errors, l.errors > 0 ? "red" : ""));
-  else add(st, stat("in", bytes(l.in_rate)), stat("out", bytes(l.out_rate)));
-  add(st, stat("refused", l.refused, l.refused > 0 ? "red" : ""), stat("idle timeout", l.idle_s + "s"));
+  if (l.kind === "udp") {
+    add(st, stat("flows", l.active + (l.limit ? " / " + l.limit : "")), stat("new flows/s", rate(l.conn_rate)),
+      stat("datagrams in/s", rate(l.dgin_rate)), stat("out/s", rate(l.dgout_rate)), stat("in", bytes(l.in_rate)), stat("out", bytes(l.out_rate)),
+      stat("answers a flow gets", l.responses));
+  } else {
+    add(st, stat("active", l.active + (l.limit ? " / " + l.limit : "")), stat("conn/s", rate(l.conn_rate)));
+    if (l.kind === "http") add(st, stat("req/s", rate(l.req_rate)), stat("5xx/s", rate(l.err_rate), l.err_rate > 0 ? "red" : ""),
+      stat("requests", l.requests), stat("5xx", l.errors, l.errors > 0 ? "red" : ""));
+    else add(st, stat("in", bytes(l.in_rate)), stat("out", bytes(l.out_rate)));
+  }
+  add(st, stat(l.kind === "udp" ? "flows refused" : "refused", l.refused, l.refused > 0 ? "red" : ""), stat("idle timeout", l.idle_s + "s"));
   if (l.per_source) add(st, stat("per client", l.per_source));
   box.appendChild(st);
+  if (l.kind === "http") {
+    const m = el("div", "stats");
+    const lat = l.latency_ms;
+    add(m, stat("latency p50", lat ? ms(lat.p50) : "–"), stat("p90", lat ? ms(lat.p90) : "–"),
+      stat("p99", lat ? ms(lat.p99) : "–", lat && lat.p99 > 1000 ? "red" : ""));
+    const pr = l.by_protocol_rate;
+    add(m, stat("HTTP/1.1", rate(pr["http/1.1"]) + "/s"));
+    if (l.protocols.includes("h2")) add(m, stat("HTTP/2", rate(pr.h2) + "/s"));
+    if (l.protocols.includes("h3")) add(m, stat("HTTP/3", rate(pr.h3) + "/s"));
+    const sc = l.statuses;
+    add(m, stat("401", sc["401"]), stat("403", sc["403"]), stat("404", sc["404"]), stat("429", sc["429"], sc["429"] > 0 ? "red" : ""));
+    if (l.websocket_upgrades) add(m, stat("WebSocket upgrades", l.websocket_upgrades));
+    if (l.cache_hits) add(m, stat("cache hits", l.cache_hits + " (" + Math.round(100 * l.cache_hits / Math.max(l.requests, 1)) + "%)"));
+    box.appendChild(m);
+  }
+  if (l.tls_handshakes) {
+    const t = el("div", "stats"), h = l.tls_handshakes, done = h["1.2"] + h["1.3"];
+    add(t, stat("TLS handshakes 1.3", h["1.3"]), stat("1.2", h["1.2"]),
+      stat("resumed", h.resumed + (done ? " (" + Math.round(100 * h.resumed / done) + "%)" : "")),
+      stat("failed or left", h.failed, h.failed > done && h.failed > 0 ? "red" : ""));
+    if (l.protocols.includes("h3")) add(t, stat("QUIC handshakes", l.quic_handshakes));
+    box.appendChild(t);
+  }
   if (l.tls && l.tls.certificates.length) {
     const info = el("div", "info");
     for (const c of l.tls.certificates) info.appendChild(certLine(c));
@@ -171,7 +201,7 @@ function listenerBox(l) {
       })));
   } else {
     const info = el("div", "info");
-    add(info, add(el("div"), el("span", "dim", "every connection goes to "), poolLink(l.pool)));
+    add(info, add(el("div"), el("span", "dim", l.kind === "udp" ? "every flow goes to " : "every connection goes to "), poolLink(l.pool)));
     box.appendChild(info);
   }
   return box;
@@ -220,13 +250,21 @@ async function tick() {
     for (const p of s.pools) poolsById[p.name] = p;
     $("ver").textContent = s.version;
     $("sum").textContent = s.engine + " · " + s.workers + " workers · up " + since(s.uptime_s) + " · " +
-      s.reloads + " reloads (" + s.reload_failures + " refused) · " + s.restarts + " restarts";
+      s.reloads + " reloads (" + s.reload_failures + " refused) · " + s.restarts + " restarts" +
+      (s.udp_dropped ? " · " + s.udp_dropped + " UDP datagrams dropped" : "");
     $("drained").replaceChildren(...(s.draining ? [el("span", "badge", "DRAINED: /ready answers 503")] : []));
-    let req = 0, err = 0, act = 0, up = 0, all = 0;
-    for (const l of s.listeners) { req += l.req_rate; err += l.err_rate; act += l.active; }
+    let req = 0, err = 0, act = 0, up = 0, all = 0, dg = 0, worst = null;
+    for (const l of s.listeners) {
+      req += l.req_rate; err += l.err_rate; act += l.active;
+      if (l.kind === "udp") dg += l.dgin_rate;
+      if (l.latency_ms && (worst === null || l.latency_ms.p99 > worst)) worst = l.latency_ms.p99;
+    }
     for (const p of s.pools) for (const v of p.servers) { all++; if (v.state === "up") up++; }
-    $("kpis").replaceChildren(kpi(rate(req), "requests / s"), kpi(rate(err), "5xx / s", err > 0 ? "red" : ""),
-      kpi(String(act), "connections open"), kpi(up + " / " + all, "servers up", up < all ? "red" : ""));
+    const k = [kpi(rate(req), "requests / s"), kpi(rate(err), "5xx / s", err > 0 ? "red" : ""),
+      kpi(worst === null ? "–" : ms(worst), "p99 latency (worst listener)"),
+      kpi(String(act), "connections and flows open"), kpi(up + " / " + all, "servers up", up < all ? "red" : "")];
+    if (s.listeners.some(l => l.kind === "udp")) k.splice(3, 0, kpi(rate(dg), "UDP datagrams / s"));
+    $("kpis").replaceChildren(...k);
     $("listeners").replaceChildren(...s.listeners.map(listenerBox));
     $("pools").replaceChildren(...s.pools.map(poolBox));
     $("err").textContent = "";

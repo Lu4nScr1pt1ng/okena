@@ -11,12 +11,18 @@ TSL_REQ		:= 8
 TSL_ERR		:= 16
 TSL_IN		:= 24
 TSL_OUT		:= 32
-TSL_SIZE	:= 40
+TSL_H1		:= 40			; responses by protocol
+TSL_H2		:= 48
+TSL_H3		:= 56
+TSL_DGIN	:= 64			; udp datagrams
+TSL_DGOUT	:= 72
+TSL_SIZE	:= 80
 TOP_S		:= MAX_LISTENERS * TSL_SIZE	; a server: 2 qwords
 TSS_CON		:= 0
 TSS_FAIL	:= 8
 TSS_SIZE	:= 16
 TOP_SIZE		:= TOP_S + MAX_SERVERS * TSS_SIZE
+LAT_RING	:= 11
 
 bss
 	align 8
@@ -25,6 +31,10 @@ bss
 	g_top_t		dq ?		; ms of the current sample
 	g_top_pt	dq ?		; and of the one before
 	g_top_n		dd ?		; samples taken
+	; the latency histograms of the last LAT_RING samples: percentiles over
+	; ten seconds (one is too few requests for a quiet listener)
+	align 8
+	g_top_lat	rb LAT_RING * MAX_LISTENERS * LAT_B * 8
 	g_top_tmp	rb 64
 	g_top_ub	dq ?		; status_used_by: where its list starts
 end bss
@@ -68,6 +78,49 @@ top_sample:
 	lea	rcx,[OFF_L_OUT+rbx*8]
 	call	stats_sum_q
 	mov	[rdi+TSL_OUT],rax
+	lea	ecx,[rbx*2+rbx]
+	lea	rcx,[OFF_L_PROTO+rcx*8]
+	push	rcx
+	call	stats_sum_q
+	mov	[rdi+TSL_H1],rax
+	mov	rcx,[rsp]
+	add	rcx,8
+	call	stats_sum_q
+	mov	[rdi+TSL_H2],rax
+	pop	rcx
+	add	rcx,16
+	call	stats_sum_q
+	mov	[rdi+TSL_H3],rax
+	lea	rcx,[OFF_L_DGIN+rbx*8]
+	call	stats_sum_q
+	mov	[rdi+TSL_DGIN],rax
+	lea	rcx,[OFF_L_DGOUT+rbx*8]
+	call	stats_sum_q
+	mov	[rdi+TSL_DGOUT],rax
+	; its latency histogram, into the ring
+	push	rdi
+	mov	eax,[g_top_n]
+	dec	eax
+	xor	edx,edx
+	mov	ecx,LAT_RING
+	div	ecx
+	imul	rdi,rdx,MAX_LISTENERS * LAT_B * 8
+	imul	rax,rbx,LAT_B * 8
+	add	rdi,rax
+	add	rdi,g_top_lat
+	xor	r8d,r8d
+@@:
+	imul	ecx,ebx,LAT_B
+	add	ecx,r8d
+	lea	rcx,[OFF_L_LAT+rcx*8]
+	push	r8
+	call	stats_sum_q
+	pop	r8
+	mov	[rdi+r8*8],rax
+	inc	r8d
+	cmp	r8d,LAT_B
+	jb	@b
+	pop	rdi
 	inc	ebx
 	jmp	.listener
 .servers:
@@ -125,6 +178,141 @@ top_requests:
 	pop	r13
 	pop	r12
 	ret
+
+; ebx = listener, ecx = a fraction in thousandths: rax = that percentile of
+; its request durations over the last ten seconds, µs, from its histogram
+; (linear within a bucket); CF when it served none then
+top_pct:
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	mov	r15d,ecx
+	mov	eax,[g_top_n]
+	test	eax,eax
+	jz	.none
+	; now, and ten samples ago (or the first there is)
+	dec	eax
+	mov	r12d,eax
+	sub	eax,LAT_RING - 1
+	jns	@f
+	xor	eax,eax
+@@:
+	cmp	eax,r12d
+	je	.none
+	xor	edx,edx
+	mov	ecx,LAT_RING
+	div	ecx
+	imul	r13,rdx,MAX_LISTENERS * LAT_B * 8
+	mov	eax,r12d
+	xor	edx,edx
+	div	ecx
+	imul	r12,rdx,MAX_LISTENERS * LAT_B * 8
+	imul	rax,rbx,LAT_B * 8
+	lea	r12,[g_top_lat+r12+rax]		; now
+	lea	r13,[g_top_lat+r13+rax]		; then
+	; how many, and the one wanted
+	xor	r14d,r14d
+	xor	ecx,ecx
+@@:
+	mov	rax,[r12+rcx*8]
+	sub	rax,[r13+rcx*8]
+	jbe	.empty_b
+	add	r14,rax
+.empty_b:
+	inc	ecx
+	cmp	ecx,LAT_B
+	jb	@b
+	test	r14,r14
+	jz	.none
+	mov	rax,r14
+	imul	rax,r15
+	add	rax,999
+	xor	edx,edx
+	mov	ecx,1000
+	div	rcx
+	mov	r15,rax				; its rank, from 1
+	xor	ecx,ecx
+	xor	r8d,r8d				; seen below this bucket
+.bucket:
+	mov	rax,[r12+rcx*8]
+	sub	rax,[r13+rcx*8]
+	jbe	.next
+	lea	r9,[r8+rax]
+	cmp	r9,r15
+	jae	.here
+	mov	r8,r9
+.next:
+	inc	ecx
+	cmp	ecx,LAT_B
+	jb	.bucket
+	dec	ecx
+	mov	rax,1
+.here:
+	; lower + (upper - lower) * (rank - below) / in it
+	mov	r9,rax
+	call	lat_bucket			; r10 = lower, rax = upper
+	cmp	ecx,LAT_B - 1
+	jne	@f
+	mov	rax,r10				; past the last bound: that bound
+	jmp	.done
+@@:
+	sub	rax,r10
+	mov	rdx,r15
+	sub	rdx,r8
+	imul	rax,rdx
+	xor	edx,edx
+	div	r9
+	add	rax,r10
+.done:
+	clc
+	jmp	.out
+.none:
+	stc
+.out:
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	ret
+
+; ecx = a latency bucket: r10 = its lower bound, rax = its upper one (µs, the
+; upper one not in it). Keeps all else.
+lat_bucket:
+	cmp	ecx,16
+	jae	@f
+	mov	r10d,ecx
+	lea	eax,[rcx+1]
+	ret
+@@:
+	push	rcx
+	push	rdx
+	lea	edx,[rcx-16]
+	mov	eax,edx
+	and	eax,7				; m
+	shr	edx,3
+	add	edx,1				; e - 3
+	lea	r10d,[rax+8]			; (8 + m) << (e - 3)
+	lea	eax,[rax+9]
+	mov	ecx,edx
+	shl	r10,cl
+	shl	rax,cl
+	pop	rdx
+	pop	rcx
+	ret
+
+; rdi = output, rax = µs: milliseconds, three digits after the point
+top_fmt_ms:
+	xor	edx,edx
+	mov	ecx,1000
+	div	rcx
+	push	rdx
+	call	fmt_u64
+	mov	byte [rdi],'.'
+	inc	rdi
+	pop	rax
+	mov	ecx,3
+	jmp	fmt_pad
 
 ; ecx = an offset in a sample: rax = its rate a second, times ten (0 until
 ; there are two samples; a counter that went back, a worker restarted, is 0)
@@ -305,6 +493,10 @@ status_json:
 	mov	rax,[g_stats_tbl]
 	mov	rax,[rax+SG_OFF+SG_RESTARTS]
 	call	fmt_u64
+	memit ',"udp_dropped":'
+	mov	ecx,OFF_UD_DROPS
+	call	stats_sum_q
+	call	fmt_u64
 	memit ',"listeners":['
 	xor	ebx,ebx
 .listener:
@@ -384,6 +576,7 @@ status_json:
 	lea	ecx,[r13+TOP_L+TSL_OUT]
 	call	top_rate10
 	call	top_fmt_rate
+	call	status_counts
 	mov	byte [rdi],'}'
 	inc	rdi
 	inc	ebx
@@ -512,6 +705,154 @@ status_json:
 	add	rsi,5
 .k:
 	jmp	fmt_cstr
+
+; rdi = output, ebx = listener, r12 = it, r13 = its place in a sample: what
+; its kind counts: HTTP by protocol, some statuses, WebSocket, the cache,
+; TLS and QUIC handshakes and latency; UDP datagrams
+status_counts:
+	mov	eax,[r12+LS_KIND]
+	cmp	eax,LK_UDP
+	je	.udp
+	cmp	eax,LK_HTTP
+	jne	.tls
+	memit ',"by_protocol":{"http/1.1":'
+	lea	ecx,[rbx*2+rbx]
+	lea	rcx,[OFF_L_PROTO+rcx*8]
+	push	rcx
+	call	stats_sum_q
+	call	fmt_u64
+	memit ',"h2":'
+	mov	rcx,[rsp]
+	add	rcx,8
+	call	stats_sum_q
+	call	fmt_u64
+	memit ',"h3":'
+	pop	rcx
+	add	rcx,16
+	call	stats_sum_q
+	call	fmt_u64
+	memit '},"by_protocol_rate":{"http/1.1":'
+	lea	ecx,[r13+TOP_L+TSL_H1]
+	call	top_rate10
+	call	top_fmt_rate
+	memit ',"h2":'
+	lea	ecx,[r13+TOP_L+TSL_H2]
+	call	top_rate10
+	call	top_fmt_rate
+	memit ',"h3":'
+	lea	ecx,[r13+TOP_L+TSL_H3]
+	call	top_rate10
+	call	top_fmt_rate
+	memit '},"statuses":{"401":'
+	lea	ecx,[rbx*4]
+	lea	rcx,[OFF_L_CODES+rcx*8]
+	push	rcx
+	call	stats_sum_q
+	call	fmt_u64
+	memit ',"403":'
+	mov	rcx,[rsp]
+	add	rcx,8
+	call	stats_sum_q
+	call	fmt_u64
+	memit ',"404":'
+	mov	rcx,[rsp]
+	add	rcx,16
+	call	stats_sum_q
+	call	fmt_u64
+	memit ',"429":'
+	pop	rcx
+	add	rcx,24
+	call	stats_sum_q
+	call	fmt_u64
+	memit '},"websocket_upgrades":'
+	lea	rcx,[OFF_L_WS+rbx*8]
+	call	stats_sum_q
+	call	fmt_u64
+	memit ',"cache_hits":'
+	lea	rcx,[OFF_L_CACHE+rbx*8]
+	call	stats_sum_q
+	call	fmt_u64
+	; latency over the last ten seconds
+	memit ',"latency_ms":'
+	mov	ecx,500
+	call	top_pct
+	jnc	@f
+	memit 'null'
+	jmp	.tls
+@@:
+	push	rax
+	memit '{"p50":'
+	pop	rax
+	call	top_fmt_ms
+	memit ',"p90":'
+	mov	ecx,900
+	call	top_pct
+	call	top_fmt_ms
+	memit ',"p99":'
+	mov	ecx,990
+	call	top_pct
+	call	top_fmt_ms
+	memit ',"window_s":10}'
+.tls:
+	cmp	dword [r12+LS_TLS],0
+	jne	@f
+	test	dword [r12+LS_FLAGS],LSF_H3
+	jz	.out
+@@:
+	memit ',"tls_handshakes":{"1.2":'
+	lea	ecx,[rbx*4]
+	lea	rcx,[OFF_L_TLS+rcx*8]
+	push	rcx
+	call	stats_sum_q
+	call	fmt_u64
+	memit ',"1.3":'
+	mov	rcx,[rsp]
+	add	rcx,8
+	call	stats_sum_q
+	call	fmt_u64
+	memit ',"resumed":'
+	mov	rcx,[rsp]
+	add	rcx,16
+	call	stats_sum_q
+	call	fmt_u64
+	memit ',"failed":'
+	pop	rcx
+	add	rcx,24
+	call	stats_sum_q
+	call	fmt_u64
+	memit '},"quic_handshakes":'
+	lea	rcx,[OFF_L_QUIC+rbx*8]
+	call	stats_sum_q
+	call	fmt_u64
+.out:
+	ret
+.udp:
+	memit ',"datagrams_in":'
+	lea	rcx,[OFF_L_DGIN+rbx*8]
+	call	stats_sum_q
+	call	fmt_u64
+	memit ',"datagrams_out":'
+	lea	rcx,[OFF_L_DGOUT+rbx*8]
+	call	stats_sum_q
+	call	fmt_u64
+	memit ',"dgin_rate":'
+	lea	ecx,[r13+TOP_L+TSL_DGIN]
+	call	top_rate10
+	call	top_fmt_rate
+	memit ',"dgout_rate":'
+	lea	ecx,[r13+TOP_L+TSL_DGOUT]
+	call	top_rate10
+	call	top_fmt_rate
+	memit ',"responses":'
+	mov	eax,[r12+LS_RESP]
+	cmp	eax,-1
+	jne	@f
+	memit '"any"'
+	jmp	.udp_pool
+@@:
+	call	fmt_u64
+.udp_pool:
+	ret
 
 ; rdi = output, ZF: false, else true
 status_bool:

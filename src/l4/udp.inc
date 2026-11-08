@@ -107,7 +107,6 @@ bss
 	g_ud_qh		rd MAX_LISTENERS	; the queues, + 1
 	g_ud_qt		rd MAX_LISTENERS
 	g_ud_shared	rd MAX_SERVERS		; `responses 0`: + 1
-	g_st_ud_drops	dq ?		; datagrams with no flow to go in
 	g_ud_ev:	rb EPOLL_EVENT * UD_EV
 	align 8
 	g_ud_rm:	rb MM_SIZE * UD_RX
@@ -569,6 +568,7 @@ udp_in:
 	imul	rax,rcx,MM_SIZE
 	mov	edx,[g_ud_rm+rax+MM_LEN]
 	add	[g_st_l_in+r13*8],rdx
+	inc	qword [g_st_l_dgin+r13*8]
 	mov	eax,[rdi+FL_FD]
 	cmp	dword [g_ud_tn],0
 	je	.run
@@ -1027,6 +1027,7 @@ udp_flow_read:
 	imul	rax,rdx,MM_SIZE
 	mov	r9d,[g_ud_rm+rax+MM_LEN]
 	add	[g_st_l_out+r8*8],r9
+	inc	qword [g_st_l_dgout+r8*8]
 	lea	r10,[r12+FL_SA]
 	mov	[g_ud_tm+rax+MM_NAME],r10
 	mov	r10d,[r12+FL_SALEN]

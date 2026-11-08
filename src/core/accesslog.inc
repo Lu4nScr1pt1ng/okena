@@ -451,6 +451,11 @@ alog_request:
 	push	r15
 	h_rec
 	lea	rcx,[g_listeners+rax]
+	; when it began: for its duration (latency), logged or not
+	rdtsc
+	shl	rdx,32
+	or	rax,rdx
+	mov	[r15+H_LT0],rax
 	push	rcx
 	call	trace_begin			; (and a trace from before is forgotten)
 	pop	rcx
@@ -459,10 +464,6 @@ alog_request:
 	cmp	dword [rcx+LS_TRACE],0
 	je	.out
 @@:
-	rdtsc
-	shl	rdx,32
-	or	rax,rdx
-	mov	[r15+H_LT0],rax
 	lea	r8,[g_hm]
 	mov	rsi,[r8+HM_METHOD]
 	mov	ecx,[r8+HM_MLEN]
@@ -509,6 +510,9 @@ alog_request:
 ; ebx = session, esi = 0 when the backend answered, 1 when okena did:
 ; one line for the exchange that just ended. Keeps rbx.
 alog_exchange:
+	push	rsi
+	call	lat_record
+	pop	rsi
 	call	session_ptr
 	mov	ecx,[rax+S_LST]
 	imul	rcx,rcx,LS_SIZE
@@ -729,6 +733,64 @@ alog_exchange:
 	add	[g_alog_len],ecx
 	inc	dword [g_alog_lines]
 	rep	movsb
+	ret
+
+; Request durations, from the head to the end of the answer, in µs, into a
+; log-linear histogram (HdrHistogram's idea): below 16 µs one bucket a µs,
+; then each power of two cut in 8, so a bucket is at most 1/8 of its value
+; wide and a percentile read from it is that close; past 2^26 µs (67 s), the
+; last bucket. The index is a bsr away: nothing to search.
+LAT_B		:= 16 + 22 * 8
+
+; ebx = session: the exchange that ends, into its listener's histogram
+; (once: its clock is stopped). Keeps rbx.
+lat_record:
+	h_rec
+	mov	rcx,[r15+H_LT0]
+	test	rcx,rcx
+	jz	.none
+	cmp	qword [g_tsc_per_us],0
+	je	.none
+	rdtsc
+	shl	rdx,32
+	or	rax,rdx
+	sub	rax,rcx
+	jb	.none
+	xor	edx,edx
+	div	qword [g_tsc_per_us]		; µs
+	push	rax
+	call	session_ptr
+	mov	ecx,[rax+S_LST]
+	pop	rax
+	add	[g_st_l_latsum+rcx*8],rax
+	mov	ecx,eax
+	cmp	rax,16
+	jb	@f				; (one a µs)
+	bsr	rcx,rax				; its power of two, e >= 4
+	cmp	ecx,25
+	ja	.last
+	mov	rdx,rax
+	sub	ecx,3
+	shr	rdx,cl				; 1mmm: its top four bits
+	and	edx,7
+	lea	ecx,[rcx*8 - 8 + 16]		; 16 + (e - 4) * 8 ...
+	add	ecx,edx				; ... + m
+	jmp	@f
+.last:
+	mov	ecx,LAT_B - 1
+@@:
+	push	rcx
+	call	session_ptr
+	pop	rcx
+	imul	eax,[rax+S_LST],LAT_B
+	add	eax,ecx
+	inc	qword [g_st_l_lat+rax*8]
+	cmp	dword [r15+H_LMLEN],0		; (a logged one's clock goes on to its line)
+	jne	.none
+	cmp	dword [r15+H_LTLEN],0
+	jne	.none
+	mov	qword [r15+H_LT0],0
+.none:
 	ret
 
 ; rdi = output, rsi/edx = text, ecx = most bytes to write. JSON string

@@ -104,6 +104,7 @@ TF_0RTT		:= 64				; set by the caller: QUIC early data may be taken
 MTLS_NAME_MAX	:= 64				; a client certificate's name
 TF_CCA		:= 128				; set by the caller: ask for a client certificate
 TF_CCA_REQ	:= 256				; and with none, refuse
+TF_RESUMED	:= 512				; a ticket of ours resumed it
 
 TH_MORE		:= 0
 TH_SEND		:= 1
@@ -980,6 +981,7 @@ tls_hello:
 	test	eax,eax
 	jz	.bad_binder
 	or	dword [rbp+HL_GOT],G_RESUME
+	or	dword [rbx+TS_FLAGS],TF_RESUMED	; (counted: okena_tls_handshakes_total)
 .full:
 
 	; the transcript starts with the ClientHello, or after a retry with

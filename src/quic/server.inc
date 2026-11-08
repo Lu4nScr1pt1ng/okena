@@ -3296,6 +3296,16 @@ qc_crypto_in:
 	mov	[r15+QC_CS_LEN+8],eax
 	or	dword [r15+QC_FLAGS],QF_DONE or QF_HDONE
 	mov	dword [r15+QC_STATE],QCS_EST
+	; counted for its listener: a QUIC handshake, TLS 1.3, maybe resumed
+	mov	eax,[r15+QC_SOCK]
+	mov	eax,[g_qs_lst+rax*4]
+	inc	qword [g_st_l_quic+rax*8]
+	shl	eax,2
+	inc	qword [g_st_l_tls+rax*8+8]
+	test	dword [r15+QC_TS+TS_FLAGS],TF_RESUMED
+	jz	@f
+	inc	qword [g_st_l_tls+rax*8+16]
+@@:
 	mov	eax,[r15+QC_CS_LEN+4]
 	mov	[r15+QC_CS_SENT+4],eax
 	mov	dword [r15+QC_ACKED_ALL+4],1
