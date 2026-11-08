@@ -147,6 +147,7 @@ admin_main:
 	syscall
 	mov	[g_api_uid],eax
 	call	api_apply			; (what came in while it was gone)
+	call	ll_confine_none			; (Landlock: no file at all)
 	seccomp_for filter_admin
 	mov	eax,[g_metrics_fd]
 	mov	[g_admin_pfd],eax

@@ -401,6 +401,7 @@ supervisor_reload:
 	call	log_end
 	jmp	.out
 .compiler:
+	call	ll_confine_reader		; (and reads, writing nothing)
 	seccomp_for filter_compiler		; the parser runs boxed in
 	call	cfg_parse_checked
 	call	plan_reset

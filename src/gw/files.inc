@@ -90,7 +90,7 @@ end rodata
 ; a worker, at its start: the roots, and what it may read from then on
 files_init:
 	cmp	dword [g_plan_files],0
-	je	.none
+	je	ll_confine_none			; (no file at all: none to read)
 	push	rbx
 	push	r12
 	xor	ebx,ebx
@@ -110,51 +110,20 @@ files_init:
 	jmp	.root
 .rooted:
 	; Landlock: reading only beneath them
-	sub	rsp,32
-	mov	qword [rsp],LL_ALL
-	mov	rdi,rsp
-	mov	esi,8
-	xor	edx,edx
-	mov	eax,SYS_ll_create
-	syscall
-	test	eax,eax
-	js	.unconfined
-	mov	r12d,eax
+	call	ll_begin
+	jc	.unconfined
 	xor	ebx,ebx
 .rule:
 	cmp	ebx,[g_plan_files]
 	jae	.rules
-	mov	qword [rsp],LL_READ
-	mov	eax,[g_fi_fd+rbx*4]
-	mov	[rsp+8],eax
-	mov	edi,r12d
-	mov	esi,1				; LANDLOCK_RULE_PATH_BENEATH
-	mov	rdx,rsp
-	xor	r10d,r10d
-	mov	eax,SYS_ll_add
-	syscall
-	test	eax,eax
-	js	.close
+	mov	edi,[g_fi_fd+rbx*4]
+	mov	esi,LL_READS
+	call	ll_fd
 	inc	ebx
 	jmp	.rule
 .rules:
-	mov	edi,PR_SET_NO_NEW_PRIVS
-	mov	esi,1
-	xor	edx,edx
-	xor	r10d,r10d
-	xor	r8d,r8d
-	mov	eax,SYS_prctl
-	syscall
-	mov	edi,r12d
-	xor	esi,esi
-	mov	eax,SYS_ll_restrict
-	syscall
-	mov	ebx,eax
-.close:
-	mov	edi,r12d
-	mov	eax,SYS_close
-	syscall
-	test	ebx,ebx
+	call	ll_end
+	test	eax,eax
 	js	.unconfined
 	mov	dword [g_ll_on],1
 	jmp	.out
@@ -165,7 +134,6 @@ files_init:
 	out_lit 'files: this kernel gives no Landlock here: a worker is kept beneath its roots by openat2 alone'
 	call	log_end
 .out:
-	add	rsp,32
 	pop	r12
 	pop	rbx
 .none:

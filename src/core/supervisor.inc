@@ -87,6 +87,7 @@ supervisor_main:
 	call	peer_global_init		; per_source table: lives across reloads
 	call	limit_global_init		; and rate limits'
 	call	stats_table_init
+	call	ll_init				; Landlock's version, said once when none
 	call	upgrade_receive
 	call	upgrade_listen
 	call	api_listen

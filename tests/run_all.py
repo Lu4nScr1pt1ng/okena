@@ -138,6 +138,8 @@ SUITES = [
     ("errpage epoll", ["tests/gateway/errpage.py", "epoll"]),
     ("maint io_uring", ["tests/gateway/maint.py", "io_uring"]),
     ("maint epoll", ["tests/gateway/maint.py", "epoll"]),
+    ("landlock io_uring", ["tests/gateway/landlock.py", "io_uring"]),
+    ("landlock epoll", ["tests/gateway/landlock.py", "epoll"]),
     ("geoip io_uring", ["tests/gateway/geoip.py", "io_uring"]),
     ("geoip epoll", ["tests/gateway/geoip.py", "epoll"]),
     ("acl io_uring", ["tests/gateway/acl.py", "io_uring"]),

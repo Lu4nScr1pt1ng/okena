@@ -987,6 +987,15 @@ needs from okena:
   (`IORING_REGISTER_RESTRICTIONS`), Landlock for the filesystem, privileges
   dropped after binding (or `CAP_NET_BIND_SERVICE` only), no writable and
   executable memory, guard pages around every pool.
+* Landlock (src/core/landlock.inc), each process with the least it needs,
+  set before its seccomp filter, with every right the kernel's version
+  handles: workers no file at all (but their `files` roots, to read);
+  health and admin none; the control process, JWKS and the reload's
+  compiler to read, anywhere, and write nothing; the logger to read, and to
+  write and create files only in its access logs' directories (so a log
+  that is a link out of them is refused). From Landlock 6 a process may not
+  signal, nor reach the abstract UNIX sockets of, one outside its domain.
+  A kernel without Landlock is said once at the start; seccomp still holds.
 * Private keys live only in workers' memory, mapped `MADV_DONTDUMP`, and
   are wiped on generation release.
 * Trusted proxy lists decide whether `X-Forwarded-For` and PROXY protocol

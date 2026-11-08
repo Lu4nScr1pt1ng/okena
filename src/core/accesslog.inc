@@ -142,6 +142,7 @@ logger_main:
 	lea	rsi,[logger_name]
 	mov	eax,SYS_prctl
 	syscall
+	call	ll_confine_logger		; Landlock first: its logs' directories, even to open them
 	call	logger_open_all
 	call	ln_setup			; syslog and OTLP destinations
 	; TERM and USR1 are blocked (inherited): read them from a signalfd
