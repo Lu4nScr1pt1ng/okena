@@ -258,28 +258,76 @@ worker_main:
 	mov	edi,EXIT_FATAL
 	jmp	exit_process
 
-; TSC ticks per microsecond (the TSC is invariant on every x86-64-v3 CPU).
+; TSC ticks per microsecond (the TSC is invariant on every x86-64-v3 CPU):
+; the ticks over a sleep, against the clock's own reading of how long it
+; was (a loaded machine sleeps longer than asked: taking 10 ms for granted
+; made every duration short). Each reading is bracketed by two TSC reads,
+; the tightest of a few kept, so a preemption between them costs nothing.
 tsc_calibrate:
 	cmp	qword [g_tsc_per_us],0
 	jne	.known				; measured by the supervisor, inherited
-	rdtsc
-	shl	rdx,32
-	or	rax,rdx
-	push	rax
+	push	rbx
+	push	r12
+	push	r13
+	call	.pair
+	mov	rbx,rax				; TSC
+	mov	r12,rdx				; ns
 	lea	rdi,[ts_calibrate]
 	xor	esi,esi
 	mov	eax,SYS_nanosleep
 	syscall
+	call	.pair
+	sub	rax,rbx
+	sub	rdx,r12				; ns between them (about 10 ms or more)
+	mov	rcx,rdx
+	mov	edx,1000
+	mul	rdx				; ticks * 1000
+	div	rcx				; / ns
+	mov	[g_tsc_per_us],rax
+	pop	r13
+	pop	r12
+	pop	rbx
+.known:
+	ret
+; rax = TSC, rdx = CLOCK_MONOTONIC_RAW ns, read together (the TSC is the
+; middle of the tightest of 8 brackets around the clock; r8, r9 hold the
+; best, which a system call keeps)
+.pair:
+	push	rbx
+	push	r12
+	push	r13
+	mov	r13,-1				; the tightest bracket so far
+	mov	r12d,8
+	sub	rsp,16
+.try:
 	rdtsc
 	shl	rdx,32
 	or	rax,rdx
-	pop	rcx
-	sub	rax,rcx
-	xor	edx,edx
-	mov	ecx,10000
-	div	rcx
-	mov	[g_tsc_per_us],rax
-.known:
+	mov	rbx,rax
+	mov	edi,CLOCK_MONOTONIC_RAW
+	mov	rsi,rsp
+	mov	eax,SYS_clock_gettime
+	syscall
+	rdtsc
+	shl	rdx,32
+	or	rax,rdx
+	sub	rax,rbx				; the bracket
+	cmp	rax,r13
+	jae	.next
+	mov	r13,rax
+	shr	rax,1
+	lea	r8,[rbx+rax]
+	imul	r9,[rsp],1000000000
+	add	r9,[rsp+8]
+.next:
+	dec	r12d
+	jnz	.try
+	add	rsp,16
+	mov	rax,r8
+	mov	rdx,r9
+	pop	r13
+	pop	r12
+	pop	rbx
 	ret
 
 ; Multishot one-second tick: idle timeouts and drain deadlines.
