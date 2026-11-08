@@ -4081,6 +4081,12 @@ on_h2t_send:
 ; request on the client connection, or close it.
 http_exchange_done:
 	h_rec
+	; a file or the cache answered: okena's own (cache_finish forgets which)
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_FILE or SF_CACHED
+	jz	@f
+	or	dword [r15+H_FLAGS],HX_SELF
+@@:
 	call	cache_finish
 	h_rec
 	and	dword [r15+H_FLAGS],not (HX_DUPLEX or HX_H2TUN)
