@@ -7,7 +7,9 @@ the expected handshake messages, which exercises the ClientHello, the
 ServerHello parse, the ECDH key exchange (x25519 and secp256r1) and the
 handshake-key derivation."""
 import atexit
+import os
 import pathlib
+import select
 import shutil
 import socket
 import struct
@@ -47,9 +49,18 @@ def run_against(groups, port, ktls=False, cert="s.pem", key="s.key"):
            "-groups", groups, "-naccept", "1", "-www"]
     if ktls:
         cmd += ["-num_tickets", "0"]    # a plain read() can't drain post-handshake records
-    sp = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    sp = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     try:
-        time.sleep(0.7)                 # let s_server bind (its one accept is for the client)
+        # it says ACCEPT once it listens (a fixed sleep lost the race under
+        # load; a probe connection would take its one accept)
+        end, said = time.time() + 15, b""
+        while b"ACCEPT" not in said and select.select([sp.stdout], [], [], max(end - time.time(), 0))[0]:
+            more = os.read(sp.stdout.fileno(), 4096)    # (not readline: its buffer hides lines from select)
+            if not more:
+                break
+            said += more
+        if b"ACCEPT" not in said:
+            return "s_server did not start"
         r = subprocess.run([str(CLIENT)], input=struct.pack(">H", port) + bytes([1 if ktls else 0]),
                            capture_output=True, timeout=10)
     finally:
