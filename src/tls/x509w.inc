@@ -24,6 +24,8 @@ bss
 	g_x5_time:	rb 16
 	g_x5_pem:	rb 16384
 	g_x5_csrflag	dd ?			; okena cert csr
+	align 8
+	g_x5_acmeid	dq ?			; x5_selfsigned: 32 bytes for acmeIdentifier, or 0
 end bss
 
 SYS_mkdirat_	:= 258
@@ -611,6 +613,17 @@ x5_selfsigned:
 	call	dw_close
 	call	dw_close
 	call	dw_close
+	cmp	qword [g_x5_acmeid],0		; TLS-ALPN-01 (RFC 8737): acmeIdentifier,
+	je	@f				; critical, the key authorization's hash
+	mov	rdi,[g_dw_p]
+	lea	rsi,[.acmeid]
+	mov	ecx,.acmeid_len
+	rep	movsb
+	mov	rsi,[g_x5_acmeid]
+	mov	ecx,32
+	rep	movsb
+	mov	[g_dw_p],rdi
+@@:
 	call	dw_close
 	call	dw_close
 	call	dw_close			; (the TBSCertificate)
@@ -650,6 +663,8 @@ x5_selfsigned:
 .bc_len = $ - .bc
 .ku	db 0x30,0x0E, 0x06,0x03,0x55,0x1D,0x0F, 0x01,0x01,0xFF, 0x04,0x04,0x03,0x02,0x07,0x80
 .ku_len = $ - .ku
+.acmeid	db 0x30,0x31, 0x06,0x08,0x2B,0x06,0x01,0x05,0x05,0x07,0x01,0x1F, 0x01,0x01,0xFF, 0x04,0x22,0x04,0x20
+.acmeid_len = $ - .acmeid
 
 ; ----------------------------------------------------------------- PEM
 

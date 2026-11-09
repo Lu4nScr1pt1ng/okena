@@ -152,5 +152,6 @@ segment readable
 
 segment readable writeable
 	bss_emit
+	assert g_acme_chain - g_tls_store = TLS_STORE	; (a TL_CHAIN offset reaches it)
 
 segment gnustack

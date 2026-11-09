@@ -17,6 +17,7 @@ bss
 	g_tls_used	dd ?
 	g_tls:		rb TL_SIZE * MAX_TLS
 	g_tls_store:	rb TLS_STORE
+	g_acme_chain:	rb AX_CHAINMAX		; (right after it: TLS-ALPN-01's, acme.inc)
 	; scratch while loading
 	g_tls_path	rb 1024
 	g_tls_b64	rb TLS_DER_MAX * 2

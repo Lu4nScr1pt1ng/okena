@@ -33,7 +33,7 @@ ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BIN = ROOT / "build" / "okena"
 BASE = 56000 + os.getpid() % 90 * 20 + (10 if ENGINE == "epoll" else 0)
-BACK, PLAIN, TLS, CA = BASE, BASE + 1, BASE + 2, BASE + 3
+BACK, PLAIN, TLS, CA, TLS2 = BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4
 fails = 0
 
 
@@ -129,6 +129,40 @@ def jwk_key(jwk):
 def thumbprint(jwk):
     j = json.dumps({"crv": jwk["crv"], "kty": jwk["kty"], "x": jwk["x"], "y": jwk["y"]}, separators=(",", ":"), sort_keys=True)
     return b64u(hashlib.sha256(j.encode()).digest())
+
+
+def validate_tls(az):
+    """TLS-ALPN-01 (RFC 8737): okena's TLS port, the name as SNI, ALPN acme-tls/1 only;
+    a certificate for that name alone carrying the key authorization's hash"""
+    want = hashlib.sha256((az["token"] + "." + az["thumb"]).encode()).digest()
+    ok, got = False, None
+    try:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        ctx.set_alpn_protocols(["acme-tls/1"])
+        with socket.create_connection(("127.0.0.1", TLS2), timeout=3) as s:
+            with ctx.wrap_socket(s, server_hostname=az["name"]) as t:
+                c = x509.load_der_x509_certificate(t.getpeercert(binary_form=True))
+                ext = c.extensions.get_extension_for_oid(x509.ObjectIdentifier("1.3.6.1.5.5.7.1.31"))
+                san = c.extensions.get_extension_for_class(x509.SubjectAlternativeName).value.get_values_for_type(x509.DNSName)
+                got = (t.selected_alpn_protocol(), ext.critical, ext.value.value.hex(), san)
+        # meanwhile an ordinary client of that name: the ordinary certificate
+        ctx2 = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx2.check_hostname = False
+        ctx2.verify_mode = ssl.CERT_NONE
+        ctx2.set_alpn_protocols(["h2", "http/1.1"])
+        with socket.create_connection(("127.0.0.1", TLS2), timeout=3) as s:
+            with ctx2.wrap_socket(s, server_hostname=az["name"]) as t2:
+                c2 = x509.load_der_x509_certificate(t2.getpeercert(binary_form=True))
+                plain = not any(e.oid.dotted_string == "1.3.6.1.5.5.7.1.31" for e in c2.extensions)
+        got = got + (plain,)
+        ok = got == ("acme-tls/1", True, (b"\x04\x20" + want).hex(), [az["name"]], True)
+    except Exception as e:
+        got = repr(e)
+    with ST.lock:
+        az["status"] = "valid" if ok else "invalid"
+        ST.log.append(("validated", (az["name"], ok, got)))
 
 
 def validate(az):
@@ -266,14 +300,17 @@ class H(http.server.BaseHTTPRequestHandler):
             return self.send(200, {"identifier": {"type": "dns", "value": az["name"]}, "status": az["status"],
                                    "challenges": [
                                        {"type": "dns-01", "url": f"{st.base}/chall/x{zid}", "token": "dnstoken", "status": "pending"},
-                                       {"type": "http-01", "url": f"{st.base}/chall/{zid}", "token": az["token"], "status": az["status"]}]})
+                                       {"type": "http-01", "url": f"{st.base}/chall/{zid}", "token": az["token"], "status": az["status"]},
+                                       {"type": "tls-alpn-01", "url": f"{st.base}/chall/t{zid}", "token": az["token"], "status": az["status"]}]})
         if path.startswith("/chall/"):
-            zid = int(path.split("/")[2])
+            ref = path.split("/")[2]
+            zid = int(ref.lstrip("t"))
             az = st.authz[zid]
             if p != {}:
                 return self.problem(400, "malformed", "challenge payload")
             az["status"] = "processing"
-            threading.Thread(target=validate, args=(az,), daemon=True).start()
+            st.log.append(("challenge", "tls-alpn-01" if ref.startswith("t") else "http-01"))
+            threading.Thread(target=validate_tls if ref.startswith("t") else validate, args=(az,), daemon=True).start()
             return self.send(200, {"type": "http-01", "url": f"{st.base}/chall/{zid}", "token": az["token"], "status": "processing"})
         if path.startswith("/order/"):
             oid = int(path.split("/")[2])
@@ -330,19 +367,25 @@ class Back(http.server.BaseHTTPRequestHandler):
         pass
 
 
-def served(sni):
+def served(sni, port=TLS, alpn=None):
     """the certificate okena shows for that name (not verified), DER"""
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
-    with socket.create_connection(("127.0.0.1", TLS), timeout=3) as s:
+    if alpn:
+        ctx.set_alpn_protocols(alpn)
+    with socket.create_connection(("127.0.0.1", port), timeout=3) as s:
         with ctx.wrap_socket(s, server_hostname=sni) as t:
             return x509.load_der_x509_certificate(t.getpeercert(binary_form=True))
 
 
 def verified(sni, cafile):
+    return verified_on(sni, cafile, TLS)
+
+
+def verified_on(sni, cafile, port):
     ctx = ssl.create_default_context(cafile=cafile)
-    with socket.create_connection(("127.0.0.1", TLS), timeout=3) as s:
+    with socket.create_connection(("127.0.0.1", port), timeout=3) as s:
         with ctx.wrap_socket(s, server_hostname=sni) as t:
             t.sendall(f"GET /x HTTP/1.1\r\nHost: {sni}\r\nConnection: close\r\n\r\n".encode())
             return t.recv(4096)
@@ -438,6 +481,35 @@ http 127.0.0.1:{TLS} {{
         procs.append(p)
         check("a restart: the certificates from the directory at once", until(lambda: served("a.example.test").serial_number == serial, 5))
         check("  and nothing asked of the CA (none due)", not until(lambda: [e for e in ST.log[n0:] if e[0] in ("order", "post")], 1.5), ST.log[n0:])
+        p.terminate()
+        p.wait(10)
+
+        # TLS-ALPN-01: only a TLS port, no http listener (no port 80 needed)
+        n0 = len(ST.log)
+        conf2 = tmp / "okena2.conf"
+        conf2.write_text(f"""okena {{ workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s
+    acme {tmp}/acme2 ca=https://localhost:{CA}/dir trust={tmp}/ca.pem challenge=tls-alpn-01 }}
+pool b {{ server 127.0.0.1:{BACK} }}
+http 127.0.0.1:{TLS2} {{
+    tls {{ acme d.example.test }}
+    route /* {{ to pool b }}
+}}
+""")
+        p = subprocess.Popen([str(BIN), "-c", str(conf2)], stdout=subprocess.DEVNULL, stderr=open(log, "a"))
+        procs.append(p)
+        check("tls-alpn-01: proven on the TLS port (ALPN acme-tls/1, the hash in a critical acmeIdentifier), issued",
+              until(lambda: served("d.example.test", TLS2).issuer == ca_c.subject, 15),
+              (ST.log[n0:][-8:], log.read_text()[-400:]))
+        v = [e[1] for e in ST.log[n0:] if e[0] == "validated"]
+        check("  the challenge chosen: tls-alpn-01, validated (an ordinary client meanwhile: the ordinary certificate)", [e[1] for e in ST.log[n0:] if e[0] == "challenge"] == ["tls-alpn-01"]
+              and len(v) == 1 and v[0][1], v)
+        try:
+            c = served("d.example.test", TLS2, ["acme-tls/1"])
+            refused = not any(e.oid.dotted_string == "1.3.6.1.5.5.7.1.31" for e in c.extensions)
+        except (ssl.SSLError, OSError):
+            refused = True
+        check("  acme-tls/1 with no challenge pending: no challenge certificate", refused)
+        check("  the CA's certificate, verified", verified_on("d.example.test", cafile, TLS2).startswith(b"HTTP/1.1 200"))
     finally:
         for q in procs:
             if q.poll() is None:

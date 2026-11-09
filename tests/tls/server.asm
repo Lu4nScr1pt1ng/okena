@@ -231,6 +231,10 @@ tls_cert_sibling:
 tls_cert_select:
 	mov	rax,rdi
 	ret
+; (no ACME here: acme-tls/1 finds no challenge's certificate)
+acme_tls_cert:
+	xor	eax,eax
+	ret
 
 ; edx = bytes from g_out: written, or CF.
 send_out:

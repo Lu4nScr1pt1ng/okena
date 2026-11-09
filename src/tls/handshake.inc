@@ -105,6 +105,7 @@ MTLS_NAME_MAX	:= 64				; a client certificate's name
 TF_CCA		:= 128				; set by the caller: ask for a client certificate
 TF_CCA_REQ	:= 256				; and with none, refuse
 TF_RESUMED	:= 512				; a ticket of ours resumed it
+TF_GOT_ACME	:= 1024				; acme-tls/1 chosen: the challenge's certificate
 
 TH_MORE		:= 0
 TH_SEND		:= 1
@@ -255,6 +256,7 @@ G_H3		:= 1048576			; ALPN offers h3 (QUIC)
 G_QTP		:= 2097152			; quic_transport_parameters (QUIC)
 G_HQ		:= 4194304			; ALPN offers hq-interop (QUIC, the interop runner)
 G_EARLY		:= 8388608			; early_data: the client sends 0-RTT data
+G_ACME		:= 16777216			; ALPN offers acme-tls/1 (TLS-ALPN-01, acme.inc)
 
 ; the transcript: rsi = bytes, rdx = length
 macro th_add
@@ -771,6 +773,14 @@ tls_hello:
 @@:
 	cmp	ecx,10
 	jne	@f
+	mov	rax,'acme-tls'
+	cmp	[rsi],rax
+	jne	.not_acme
+	cmp	word [rsi+8],'/1'
+	jne	.protocol_next
+	or	dword [rbp+HL_GOT],G_ACME
+	jmp	.protocol_next
+.not_acme:
 	mov	rax,'hq-inter'
 	cmp	[rsi],rax
 	jne	.protocol_next
@@ -792,8 +802,25 @@ tls_hello:
 .ext_done:
 	; the certificate for the name asked (SNI), before anything uses it; then
 	; prefer ECDSA and fall back to RSA by what the client's ClientHello offers
+	and	dword [rbx+TS_FLAGS],not TF_GOT_ACME
 	cmp	dword [rbp+HL_SNILEN],0
 	je	.cert_default
+	mov	eax,[rbp+HL_GOT]		; a CA proving the name (TLS-ALPN-01): its
+	and	eax,G_ACME or G_TLS13		; certificate, made by the acme process
+	cmp	eax,G_ACME or G_TLS13
+	jne	.cert_named
+	test	dword [rbx+TS_FLAGS],TF_QUIC
+	jnz	.cert_named
+	mov	rsi,[rbp+HL_SNIP]
+	mov	edx,[rbp+HL_SNILEN]
+	call	acme_tls_cert
+	test	rax,rax
+	jz	.cert_named
+	mov	[rbp+HL_TL],rax
+	mov	[rbx+TS_CERT],rax
+	or	dword [rbx+TS_FLAGS],TF_GOT_ACME
+	jmp	.cert_done
+.cert_named:
 	mov	rdi,[rbp+HL_TL]			; the listener's default entry
 	mov	rsi,[rbp+HL_SNIP]
 	mov	edx,[rbp+HL_SNILEN]
@@ -880,6 +907,8 @@ tls_hello:
 	jmp	.psk_check			; a ticket of ours resumes (no early data)
 .tls_alpn:
 	and	dword [rbx+TS_FLAGS],not (TF_GOT_H1 or TF_GOT_H2)
+	test	dword [rbx+TS_FLAGS],TF_GOT_ACME
+	jnz	.alpn_done
 	test	dword [rbx+TS_FLAGS],TF_ALPN_H1 or TF_ALPN_H2
 	jz	.alpn_done
 	test	eax,G_ALPN
@@ -1307,6 +1336,18 @@ tls_hello:
 	mov	r14,rdi
 	jmp	.ee_done
 .ee_tls:
+	test	dword [rbx+TS_FLAGS],TF_GOT_ACME
+	jz	.ee_h2
+	mov	dword [r14],0x13000008		; 19 bytes:
+	mov	dword [r14+4],0x10001100	; 17 of extensions: ALPN,
+	mov	dword [r14+8],0x0B000D00	; 13 bytes, an 11-byte list,
+	mov	byte [r14+12],10
+	mov	rax,'acme-tls'
+	mov	[r14+13],rax
+	mov	word [r14+21],'/1'
+	add	r14,23
+	jmp	.ee_done
+.ee_h2:
 	test	dword [rbx+TS_FLAGS],TF_GOT_H2
 	jz	.ee_h1
 	mov	dword [r14],0x0B000008		; 11 bytes:

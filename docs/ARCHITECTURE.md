@@ -675,9 +675,11 @@ ECN. 0-RTT off by default and, when on, only for routes marked idempotent.
   tickets encrypted under keys rotated every hour and shared across
   workers through the plan (read-only, so no lock).
 * ACME (RFC 8555) in its own process, okena-acme (built: HTTP-01 answered
-  by the workers from a page the supervisor shares, the account and the
-  JWS (ES256) its own, files renamed into a 0700 directory, a reload of its
-  own; Landlock writes only there). Planned: TLS-ALPN-01, and
+  by the workers from a page the supervisor shares, TLS-ALPN-01 by their
+  TLS 1.3 handshake, which copies the challenge's certificate and key from
+  that page when the hello offers acme-tls/1; the account and the JWS
+  (ES256) its own, files renamed into a 0700 directory, a reload of its
+  own; Landlock writes only there). Planned:
   DNS-01 through provider APIs (Cloudflare, Route 53, RFC 2136) for
   wildcard certificates; staging first on new configs, backoff that
   respects the CA's rate limits, renewal at two thirds of the lifetime

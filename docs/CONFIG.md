@@ -468,21 +468,26 @@ tls passthrough {                   # tcp only: route on SNI, never decrypt
 
 **Automatic HTTPS.** `acme NAME...` in a tls block is a certificate for those
 names from an ACME CA (RFC 8555: Let's Encrypt, ZeroSSL, a step-ca of one's own),
-named once in `okena { acme DIR ca=URL [email=ADDRESS] [trust=FILE] }`: `ca=` is
-the CA's directory URL (https), `trust=` a PEM file whose first certificate signs
-the CA's own (else the system's roots), `email=` the account's contact. Up to 16
-such lines, 15 names each (no wildcards: each name is proven over HTTP-01).
+named once in `okena { acme DIR ca=URL [email=ADDRESS] [trust=FILE]
+[challenge=http-01|tls-alpn-01] }`: `ca=` is the CA's directory URL (https),
+`trust=` a PEM file whose first certificate signs the CA's own (else the system's
+roots), `email=` the account's contact. Up to 16 such lines, 15 names each (no
+wildcards: each name is proven one at a time).
 
 okena keeps them in DIR (made 0700, the `user`'s): `DIR/account.key`, the
 account's key (P-256, made once), and for each certificate `DIR/NAME/cert.pem` (the
 chain) and `DIR/NAME/key.pem` (0600), NAME its first name. They are loaded as
 `cert` loads files; until there are any, the listener serves a certificate it
 signs itself for the names (7 days), so it is up from the start. A process of its
-own, `okena-acme`, asks the CA: an order for the names, each proven over HTTP-01
-(the CA fetches `http://NAME/.well-known/acme-challenge/TOKEN`: port 80 must reach
-an http listener of this okena, which answers it before any route, whatever the
-routes say; a token not being asked for goes on to the routes), a new key and its
-CSR, the chain. The files are written beside and renamed over, and okena reloads
+own, `okena-acme`, asks the CA: an order for the names, each proven, a new key
+and its CSR, the chain. With HTTP-01 (the default) the CA fetches
+`http://NAME/.well-known/acme-challenge/TOKEN`: port 80 must reach an http
+listener of this okena, which answers it before any route, whatever the routes
+say (a token not being asked for goes on to the routes). With TLS-ALPN-01 (RFC
+8737) no port 80 is needed: the CA opens TLS to port 443 asking only for ALPN
+`acme-tls/1`, and that handshake alone gets a certificate the acme process made
+for the name, carrying the proof; every other client of the name gets the
+ordinary one. The files are written beside and renamed over, and okena reloads
 itself: the new certificate is served, no connection dropped. A certificate is
 renewed when two thirds of its life have gone; a failed order is tried again
 after a minute, then twice as long each time up to six hours, the one being served

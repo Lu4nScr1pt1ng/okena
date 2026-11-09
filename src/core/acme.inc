@@ -41,7 +41,16 @@ AS_TOK		:= 8
 AS_KA		:= 108
 AS_SIZE		:= 256
 AS_TOKMAX	:= 100
-ACME_PAGE	:= 4096
+ACME_TSLOT	:= 4096			; TLS-ALPN-01: a certificate a name
+AX_NLEN		:= 0			; d: the name's length, 0 a free slot (written last)
+AX_CLEN		:= 4			; d: the certificate_list's
+AX_KEY		:= 8			; 32: d
+AX_PUB		:= 40			; 65
+AX_NAME		:= 112			; 256
+AX_CHAIN	:= 368			; the certificate_list (one entry)
+AX_SIZE		:= 1024
+AX_CHAINMAX	:= AX_SIZE - AX_CHAIN
+ACME_PAGE	:= (ACME_TSLOT + ACME_NAMES * AX_SIZE + 4095) and not 4095
 
 ; the plan's
 ACM_ON		:= 0			; d
@@ -55,7 +64,8 @@ ACM_HASTRUST	:= 40			; d
 ACM_NCERT	:= 44			; d
 ACM_CERT		:= 48			; per certificate: q its names (arguments), d how many, d -
 ACM_TRUST	:= ACM_CERT + ACME_CERTS * 16
-ACM_SIZE		:= (ACM_TRUST + PK_SIZE + 7) and not 7
+ACM_CHAL		:= ACM_TRUST + PK_SIZE	; d: 0 HTTP-01, 1 TLS-ALPN-01
+ACM_SIZE		:= (ACM_CHAL + 4 + 7) and not 7
 
 SYS_fchownat_	:= 260
 LLF_REMOVE_FILE	:= 32
@@ -110,6 +120,11 @@ bss
 	g_ac_sig:	rb 64
 	g_ac_word:	rb 32
 	g_ac_thumb:	rb 48
+	g_ac_kah:	rb 32			; TLS-ALPN-01: the key authorization's hash
+	g_ac_identl	dd ?
+	g_ac_ident:	rb 256			; the authorization's name
+	g_ac_ka:	rb 256
+	g_acme_tl:	rb TL_SIZE		; a worker: the challenge's certificate, copied
 	g_ac_jwk:	rb 160
 	g_ac_host:	rb 256
 	g_ac_sa:	rb 128
@@ -284,6 +299,61 @@ acme_challenge:
 .out:
 	ret
 
+; TLS-ALPN-01, in a handshake that offers ALPN acme-tls/1: rsi/edx = the SNI.
+; rax = an entry (g_acme_tl, its chain past g_tls_store) with the certificate
+; the acme process made for that name, or 0. Keeps rbx, rbp, r10-r15.
+acme_tls_cert:
+	xor	eax,eax
+	cmp	dword [g_plan_acme+ACM_ON],0
+	je	.out
+	mov	r9,[g_acme_page]
+	test	r9,r9
+	jz	.out
+	lea	r9,[r9+ACME_TSLOT]
+	mov	r8d,ACME_NAMES
+.slot:
+	cmp	[r9+AX_NLEN],edx
+	jne	.next
+	push	rsi
+	mov	ecx,edx
+	lea	rdi,[r9+AX_NAME]
+	repe	cmpsb
+	pop	rsi
+	jne	.next
+	mov	ecx,[r9+AX_CLEN]
+	cmp	ecx,AX_CHAINMAX
+	ja	.next
+	lea	rdi,[g_acme_tl]
+	mov	[rdi+TL_CLEN],ecx
+	mov	dword [rdi+TL_CHAIN],TLS_STORE
+	mov	dword [rdi+TL_KEYTYPE],0
+	mov	dword [rdi+TL_ALT],-1
+	mov	dword [rdi+TL_GROUP],-1
+	push	rsi
+	lea	rsi,[r9+AX_CHAIN]
+	lea	rdi,[g_acme_chain]
+	rep	movsb
+	lea	rsi,[r9+AX_KEY]
+	lea	rdi,[g_acme_tl+TL_KEY]
+	mov	ecx,32
+	rep	movsb
+	lea	rsi,[r9+AX_PUB]
+	lea	rdi,[g_acme_tl+TL_PUB]
+	mov	ecx,65
+	rep	movsb
+	pop	rsi
+	cmp	[r9+AX_NLEN],edx		; (not rewritten while it was copied)
+	jne	.next
+	lea	rax,[g_acme_tl]
+	ret
+.next:
+	add	r9,AX_SIZE
+	dec	r8d
+	jnz	.slot
+	xor	eax,eax
+.out:
+	ret
+
 ; rax = the slot: its key authorization, as text/plain, the connection kept.
 ; ebx = session, r15 = state.
 acme_answer:
@@ -390,7 +460,7 @@ compile_acme:
 	lea	rsi,[str_key_trust]
 	call	node_option
 	test	rax,rax
-	jz	.ok
+	jz	.chal
 	mov	rsi,[rax+A_VAL]
 	mov	ecx,[rax+A_VLEN]
 	cmp	ecx,4096
@@ -417,12 +487,41 @@ compile_acme:
 	test	eax,eax
 	jz	plan_bad_trust
 	mov	dword [g_plan_acme+ACM_HASTRUST],1
+.chal:
+	mov	rdi,rbx				; challenge=http-01 (by default) or tls-alpn-01
+	cstring .k_chal, 'challenge',0
+	lea	rsi,[.k_chal]
+	call	node_option
+	test	rax,rax
+	jz	.ok
+	mov	rsi,[rax+A_VAL]
+	mov	ecx,[rax+A_VLEN]
+	cmp	ecx,7
+	jne	.not_http
+	cmp	dword [rsi],'http'
+	jne	.bad
+	cmp	word [rsi+4],'-0'
+	jne	.bad
+	cmp	byte [rsi+6],'1'
+	jne	.bad
+	jmp	.ok
+.not_http:
+	cmp	ecx,11
+	jne	.bad
+	mov	rdx,'tls-alpn'
+	cmp	[rsi],rdx
+	jne	.bad
+	cmp	word [rsi+8],'-0'
+	jne	.bad
+	cmp	byte [rsi+10],'1'
+	jne	.bad
+	mov	dword [g_plan_acme+ACM_CHAL],1
 .ok:
 	mov	dword [g_plan_acme+ACM_ON],1
 	ret
 .bad:
 	call	log_begin
-	out_lit 'acme takes a directory (its whole path, 200 bytes at most), ca=URL (https://, the CA',39,'s directory), and, if wanted, email=ADDRESS and trust=FILE'
+	out_lit 'acme takes a directory (its whole path, 200 bytes at most), ca=URL (https://, the CA',39,'s directory), and, if wanted, email=ADDRESS, trust=FILE and challenge=http-01|tls-alpn-01'
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process
@@ -1254,10 +1353,13 @@ acme_epoch:
 acme_clear:
 	mov	rax,[g_acme_page]
 	lea	rdi,[rax+AH_SLOT]
+	lea	rsi,[rax+ACME_TSLOT]
 	mov	ecx,ACME_NAMES
 @@:
 	mov	dword [rdi+AS_TLEN],0
+	mov	dword [rsi+AX_NLEN],0
 	add	rdi,AS_SIZE
+	add	rsi,AX_SIZE
 	dec	ecx
 	jnz	@b
 	ret
@@ -2294,8 +2396,38 @@ acme_prove:
 	lea	rsi,[.s_valid]
 	call	acme_is
 	je	.ok				; (proven before, for this account)
-	; the challenges: the one of type http-01
-	cstring .w_http01, 'no HTTP-01 challenge offered',0
+	; its name: identifier.value
+	mov	rsi,[g_ac_rb]
+	mov	edx,[g_ac_rbl]
+	add	rdx,rsi
+	cstring .n_ident, 'identifier'
+	lea	rdi,[.n_ident]
+	mov	ecx,10
+	call	json_get
+	jc	.bad
+	test	rax,rax
+	jz	.bad
+	mov	rsi,rax
+	mov	rdx,r8
+	cstring .n_value, 'value'
+	lea	rdi,[.n_value]
+	mov	ecx,5
+	call	json_get
+	jc	.bad
+	test	rax,rax
+	jz	.bad
+	mov	rsi,rax
+	lea	rdi,[g_ac_ident]
+	mov	ecx,253
+	call	json_string
+	jc	.bad
+	mov	[g_ac_identl],eax
+	lea	rsi,[g_ac_ident]
+	mov	ecx,eax
+	call	acme_safe
+	jc	.bad
+	; the challenges: the one of the type wanted
+	cstring .w_http01, 'the CA offers no challenge of the type wanted',0
 	lea	rax,[.w_http01]
 	mov	[g_ac_why],rax
 	mov	rsi,[g_ac_rb]
@@ -2335,11 +2467,23 @@ acme_prove:
 	jz	.not_it
 	mov	rcx,r8
 	sub	rcx,rax
+	cmp	dword [g_plan_acme+ACM_CHAL],0
+	jne	.want_tls
 	cmp	rcx,9
 	jne	.not_it
 	mov	rcx,'"http-01'
 	cmp	[rax],rcx
 	jne	.not_it
+	jmp	.found
+.want_tls:
+	cmp	rcx,13
+	jne	.not_it
+	mov	rcx,'"tls-alp'
+	cmp	[rax],rcx
+	jne	.not_it
+	cmp	dword [rax+8],'n-01'
+	jne	.not_it
+.found:
 	; it: its url and token
 	mov	[g_ac_rb],rbx			; (the body, from here: this object)
 	mov	rax,rdx
@@ -2382,16 +2526,8 @@ acme_prove:
 .tch:
 	cmp	ecx,eax
 	jb	@b
-	; the slot: token and key authorization (token.thumbprint), the length last
-	mov	rax,[g_acme_page]
-	imul	ecx,r12d,AS_SIZE
-	lea	rbx,[rax+AH_SLOT+rcx]
-	mov	dword [rbx+AS_TLEN],0
-	lea	rdi,[rbx+AS_TOK]
-	lea	rsi,[g_ac_tok]
-	mov	ecx,[g_ac_tokl]
-	rep	movsb
-	lea	rdi,[rbx+AS_KA]
+	; the key authorization: token.thumbprint
+	lea	rdi,[g_ac_ka]
 	lea	rsi,[g_ac_tok]
 	mov	ecx,[g_ac_tokl]
 	rep	movsb
@@ -2400,11 +2536,84 @@ acme_prove:
 	lea	rsi,[g_ac_thumb]
 	mov	ecx,43
 	rep	movsb
-	lea	rax,[rbx+AS_KA]
+	lea	rax,[g_ac_ka]
 	sub	rdi,rax
-	mov	[rbx+AS_KLEN],edi
+	push	rdi				; its length
+	cmp	dword [g_plan_acme+ACM_CHAL],0
+	jne	.tls_slot
+	; HTTP-01's slot: the token and it, the length last
+	mov	rax,[g_acme_page]
+	imul	ecx,r12d,AS_SIZE
+	lea	rbx,[rax+AH_SLOT+rcx]
+	mov	dword [rbx+AS_TLEN],0
+	lea	rdi,[rbx+AS_TOK]
+	lea	rsi,[g_ac_tok]
+	mov	ecx,[g_ac_tokl]
+	rep	movsb
+	pop	rcx
+	mov	[rbx+AS_KLEN],ecx
+	lea	rdi,[rbx+AS_KA]
+	lea	rsi,[g_ac_ka]
+	rep	movsb
 	mov	eax,[g_ac_tokl]
 	mov	[rbx+AS_TLEN],eax
+	jmp	.ready
+.tls_slot:
+	; TLS-ALPN-01's: a certificate for the name that carries its hash
+	pop	rdx
+	lea	rdi,[g_ac_kah]
+	lea	rsi,[g_ac_ka]
+	call	sha256
+	cstring .w_tlscert, 'the TLS-ALPN-01 certificate',0
+	lea	rax,[.w_tlscert]
+	mov	[g_ac_why],rax
+	call	x5_keygen
+	jc	.bad
+	lea	rdi,[g_ac_names]
+	lea	rsi,[g_ac_ident]
+	mov	ecx,[g_ac_identl]
+	rep	movsb
+	mov	word [rdi],0
+	lea	rax,[g_ac_kah]
+	mov	[g_x5_acmeid],rax
+	lea	rsi,[g_ac_names]
+	mov	edx,ACME_DAYS_SELF
+	call	x5_selfsigned
+	mov	qword [g_x5_acmeid],0
+	jc	.bad
+	cmp	eax,AX_CHAINMAX - 5
+	ja	.bad
+	mov	rcx,[g_acme_page]
+	imul	edx,r12d,AX_SIZE
+	lea	rbx,[rcx+ACME_TSLOT+rdx]
+	mov	dword [rbx+AX_NLEN],0
+	lea	ecx,[rax+5]
+	mov	[rbx+AX_CLEN],ecx
+	mov	ecx,eax				; the certificate_list: one entry, no extensions
+	bswap	eax
+	shr	eax,8
+	mov	[rbx+AX_CHAIN],ax
+	shr	eax,16
+	mov	[rbx+AX_CHAIN+2],al
+	lea	rdi,[rbx+AX_CHAIN+3]
+	lea	rsi,[g_x5_der2]
+	rep	movsb
+	mov	word [rdi],0
+	lea	rsi,[g_x5_d]
+	lea	rdi,[rbx+AX_KEY]
+	mov	ecx,32
+	rep	movsb
+	lea	rsi,[g_x5_pub]
+	lea	rdi,[rbx+AX_PUB]
+	mov	ecx,65
+	rep	movsb
+	lea	rsi,[g_ac_ident]
+	lea	rdi,[rbx+AX_NAME]
+	mov	ecx,[g_ac_identl]
+	rep	movsb
+	mov	eax,[g_ac_identl]
+	mov	[rbx+AX_NLEN],eax
+.ready:
 	; ready: told so
 	mov	word [g_ac_pay],'{}'
 	mov	dword [g_ac_payl],2
