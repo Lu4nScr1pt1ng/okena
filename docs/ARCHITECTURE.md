@@ -56,6 +56,8 @@ supervisor (PID 1 in a container, or under systemd)
  ├─ control  ── DNS, service discovery, JWKS and other remote keys, active
  │              health checks; publishes immutable sets to the workers
  ├─ admin    ── admin API and /metrics, reads the workers' stats pages
+ ├─ cache    ── with cache_disk: keeps room in the disk store ahead of the
+ │              writers (S3-FIFO); workers never wait for it
  └─ (optional) acme ── certificate issuance and renewal
 ```
 
@@ -849,7 +851,21 @@ cooperates with it instead of pretending to replace it.
   that should not pollute the page cache, and writes on the ring instead
   of in place.
 * Admission with S3-FIFO, so one-hit wonders (crawlers) do not evict the
-  working set (to come: today the disk is plain FIFO).
+  working set. The store has two logs: a small one (S, a tenth) where
+  answers come in, and a main one (M). The cache keeper, a process of its
+  own (src/gw/ckeep.inc), makes room ahead of each log's head. Of S's
+  oldest segment, what was asked for again moves to M (copied kernel to
+  kernel, `copy_file_range`) and the rest goes, its key kept as a ghost.
+  Of M's oldest, what was asked for again is written again at M's head,
+  one count less, and the rest goes. An answer whose key is a ghost comes
+  in straight to M. A writer that begins a segment wakes the keeper
+  through a futex in the shared index, so the next segment is free before
+  it is needed. A writer that finds no room does not keep the answer on
+  disk, and never waits. Only one keeper works at a time, even across an
+  upgrade (its pid in the index, taken by compare-and-swap). A segment is
+  reclaimed in steps that a keeper dying between any two leaves safe for
+  the next: marked, its records dealt with, handed over once nobody pins
+  it.
 
 RFC 9111 semantics, plus what a CDN needs: cache keys configurable
 (host, path, chosen query parameters, headers, cookies), `Vary`

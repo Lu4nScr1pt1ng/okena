@@ -472,8 +472,8 @@ on a machine that can spare it).
   sendfile to the socket. (Done: `cache_disk`, with segments, a lock-free
   index shared by all workers and processes, pins, and a store that
   outlives reloads, upgrades and restarts; zero copy from the page cache to
-  the socket, splice with io_uring and sendfile with epoll, kTLS too.
-  Still to come: S3-FIFO in place of FIFO.)
+  the socket, splice with io_uring and sendfile with epoll, kTLS too;
+  S3-FIFO, kept by a process of its own off the request path.)
 * Cache keys, `Vary` normalisation, slicing, `stale-if-error`, purge by
   URL/prefix/tag with fleet fan-out, `Cache-Status`.
 * Shield tier, signed URLs, CDN provider ranges, authenticated origin

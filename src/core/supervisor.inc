@@ -190,6 +190,7 @@ supervisor_main:
 	call	spawn_health
 	call	spawn_admin
 	call	spawn_logger
+	call	spawn_keeper
 	call	upgrade_ready
 	call	api_ready
 
@@ -872,6 +873,26 @@ reap_workers:
 	call	spawn_logger			; lines wait in the pipe meanwhile
 	jmp	.next
 .not_logger:
+	cmp	r12d,[g_keeper_old]
+	jne	@f
+	mov	dword [g_keeper_old],0		; (the one a reload told to go)
+	jmp	.next
+@@:
+	cmp	r12d,[g_keeper_pid]
+	jne	.not_keeper
+	mov	dword [g_keeper_pid],0
+	cmp	dword [g_shutdown],0
+	jne	.next
+	call	log_begin
+	out_lit 'cache keeper exited, restarting it'
+	call	log_end
+	lea	rdi,[ts_respawn_delay]
+	xor	esi,esi
+	mov	eax,SYS_nanosleep
+	syscall
+	call	spawn_keeper
+	jmp	.next
+.not_keeper:
 	cmp	r12d,[g_health_pid]
 	jne	.not_health
 	mov	dword [g_health_pid],0
@@ -1047,6 +1068,7 @@ reap_workers:
 	mov	eax,SYS_kill
 	syscall
 @@:
+	call	keeper_finish			; the store left whole: it may outlive a reboot
 	call	logger_finish			; what the workers logged last
 	call	log_begin
 	out_lit 'all workers stopped'

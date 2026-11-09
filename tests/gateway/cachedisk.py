@@ -23,7 +23,7 @@ ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BIN = ROOT / "build" / "okena"
 BASE = 44000 + os.getpid() % 90 * 20 + (10 if ENGINE == "epoll" else 0)
-BACK, LST = BASE, BASE + 1
+BACK, LST, MET = BASE, BASE + 1, BASE + 2
 fails = 0
 hits = {}
 lock = threading.Lock()
@@ -98,8 +98,21 @@ def many(path, n=40):
     return out
 
 
+def disk_counters():
+    """(on a failure: what the store counted, once a second's publishing is past)"""
+    import re
+    import urllib.request
+    time.sleep(1.1)
+    try:
+        t = urllib.request.urlopen(f"http://127.0.0.1:{MET}/metrics", timeout=3).read().decode()
+    except OSError:
+        return None
+    d = {k: int(v) for k, v in re.findall(r"^okena_cache_disk_(\w+)_total (\d+)", t, re.M)}
+    return d
+
+
 def conf_text(tmp, size="8MiB", workers=4):
-    return f"""okena {{ workers {workers}; io_engine {ENGINE}; drain delay=0s timeout=1s; upgrade {tmp}/up.sock
+    return f"""okena {{ workers {workers}; io_engine {ENGINE}; drain delay=0s timeout=1s; upgrade {tmp}/up.sock; metrics 127.0.0.1:{MET}
     cache_memory 1MiB; cache_disk {tmp}/store size={size} }}
 pool b {{ server 127.0.0.1:{BACK} }}
 http 127.0.0.1:{LST} {{
@@ -246,7 +259,53 @@ def main():
               and hits["/x/fifo39?size=200000"] == before["/x/fifo39?size=200000"] == 1
               and all(x[2] == body_of("/x/fifo0?size=200000") for x in early[:1])
               and all(x[2] == body_of("/x/fifo39?size=200000") for x in late),
-              ([hits[f"/x/fifo{i}?size=200000"] for i in range(3)], hits["/x/fifo39?size=200000"]))
+              ([hits[f"/x/fifo{i}?size=200000"] for i in range(3)], hits["/x/fifo39?size=200000"], disk_counters()))
+
+        # S3-FIFO: what is asked for again outlives a scan of what is asked for once
+        hot = [f"/x/hot{i}?size=200000" for i in range(5)]
+        for q in hot:
+            get(q)
+        for _ in range(3):
+            for q in hot:
+                many(q, 4)                      # (hits from the other workers' disk)
+        ghost = "/x/ghost?size=200000"
+        get(ghost)                              # asked for once
+        h_hot = [hits[q] for q in hot]
+        for i in range(48):                     # 9.6 MB of one-hit wonders through 8 MB
+            get(f"/x/scan{i}?size=200000")
+        out = [get(q) for q in hot for _ in range(2)]
+        check("S3-FIFO: what was asked for again outlives a scan bigger than the store",
+              [hits[q] for q in hot] == h_hot and all(o[0] == 200 for o in out),
+              ([hits[q] - h for q, h in zip(hot, h_hot)]))
+        h_g = hits[ghost]
+        get(ghost)
+        check("  the scan's one-hit wonders went (one of them, asked again: fetched)", hits[ghost] == h_g + 1, hits[ghost])
+        for i in range(48):
+            get(f"/x/scan2-{i}?size=200000")
+        many(ghost, 6)
+        check("  it came back as a ghost: straight to the main log, and outlived the next scan",
+              hits[ghost] == h_g + 1, hits[ghost] - h_g)
+
+        # the keeper killed: started again, and the store goes on
+        def keeper():
+            for d in pathlib.Path("/proc").iterdir():
+                try:
+                    if d.name.isdigit() and (d / "comm").read_text().strip() == "okena-cache" \
+                            and f"PPid:\t{procs[-1].pid}\n" in (d / "status").read_text():
+                        return int(d.name)
+                except OSError:
+                    pass
+        k0 = keeper()
+        if k0:
+            os.kill(k0, signal.SIGKILL)
+        check("the cache keeper killed: started again", k0 and until(lambda: keeper() not in (None, k0), 5)
+              and "cache keeper exited, restarting it" in log.read_text(), (k0, keeper()))
+        for i in range(48):
+            get(f"/x/scan3-{i}?size=200000")
+        q = "/x/after-keeper?size=100000"
+        get(q)
+        out = many(q, 12)
+        check("  and the store goes on: filled, served from disk", hits[q] == 1 and any("detail=disk" in o[1] for o in out), hits[q])
 
         # stale within its window, from disk: served at once, fetched again
         sw = "/swr/a?size=1000"

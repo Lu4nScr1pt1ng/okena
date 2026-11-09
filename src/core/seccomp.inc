@@ -204,6 +204,10 @@ rodata
 	sc_allow filter_supervisor, SYS_msync
 	sc_allow filter_supervisor, SYS_pipe2		; zero copy: a worker's pipes (zc.inc)
 	sc_allow filter_supervisor, SYS_sendfile	; (and an epoll worker's sendfile: filters stack)
+	sc_allow filter_supervisor, SYS_pwrite64	; the cache keeper (ckeep.inc)
+	sc_allow filter_supervisor, SYS_copy_file_range
+	sc_allow filter_supervisor, SYS_rt_sigtimedwait
+	sc_allow filter_supervisor, SYS_futex		; a worker wakes the cache keeper
 	sc_end filter_supervisor
 
 	; io_uring worker: the ring does the I/O
@@ -213,6 +217,7 @@ rodata
 	sc_allow filter_worker_uring, SYS_pwritev
 	sc_allow filter_worker_uring, SYS_fdatasync		; (the last one out)
 	sc_allow filter_worker_uring, SYS_msync
+	sc_allow filter_worker_uring, SYS_futex		; (wakes the cache keeper)
 	sc_allow filter_worker_uring, SYS_io_uring_enter
 	sc_allow filter_worker_uring, SYS_madvise
 	sc_allow filter_worker_uring, SYS_getsockname	; PROXY protocol, wildcard listeners
@@ -230,6 +235,7 @@ rodata
 	sc_allow filter_worker_uring_u, SYS_pwritev
 	sc_allow filter_worker_uring_u, SYS_fdatasync		; (the last one out)
 	sc_allow filter_worker_uring_u, SYS_msync
+	sc_allow filter_worker_uring_u, SYS_futex		; (wakes the cache keeper)
 	sc_allow filter_worker_uring_u, SYS_io_uring_enter
 	sc_allow filter_worker_uring_u, SYS_madvise
 	sc_allow filter_worker_uring_u, SYS_getsockname
@@ -257,6 +263,7 @@ rodata
 	sc_allow filter_worker_epoll, SYS_pwritev
 	sc_allow filter_worker_epoll, SYS_fdatasync		; (the last one out)
 	sc_allow filter_worker_epoll, SYS_msync
+	sc_allow filter_worker_epoll, SYS_futex		; (wakes the cache keeper)
 	sc_allow filter_worker_epoll, SYS_epoll_wait
 	sc_allow filter_worker_epoll, SYS_epoll_ctl
 	sc_allow filter_worker_epoll, SYS_read
@@ -284,6 +291,7 @@ rodata
 	sc_allow filter_worker_uring_f, SYS_pwritev
 	sc_allow filter_worker_uring_f, SYS_fdatasync		; (the last one out)
 	sc_allow filter_worker_uring_f, SYS_msync
+	sc_allow filter_worker_uring_f, SYS_futex		; (wakes the cache keeper)
 	sc_allow filter_worker_uring_f, SYS_io_uring_enter
 	sc_allow filter_worker_uring_f, SYS_madvise
 	sc_allow filter_worker_uring_f, SYS_getsockname
@@ -304,6 +312,7 @@ rodata
 	sc_allow filter_worker_epoll_f, SYS_pwritev
 	sc_allow filter_worker_epoll_f, SYS_fdatasync		; (the last one out)
 	sc_allow filter_worker_epoll_f, SYS_msync
+	sc_allow filter_worker_epoll_f, SYS_futex		; (wakes the cache keeper)
 	sc_allow filter_worker_epoll_f, SYS_epoll_wait
 	sc_allow filter_worker_epoll_f, SYS_epoll_ctl
 	sc_allow filter_worker_epoll_f, SYS_read
@@ -343,6 +352,20 @@ rodata
 	sc_end filter_control
 
 	; health process: check connections
+	; the cache keeper: records read, copied kernel to kernel, a head written
+	sc_begin filter_keeper
+	sc_common filter_keeper
+	sc_allow filter_keeper, SYS_pread64
+	sc_allow filter_keeper, SYS_pwrite64
+	sc_allow filter_keeper, SYS_copy_file_range
+	sc_allow filter_keeper, SYS_rt_sigtimedwait	; told to go?
+	sc_allow filter_keeper, SYS_futex		; asleep until a writer wakes it
+	sc_allow filter_keeper, SYS_kill		; is another keeper still there (signal 0)
+	sc_allow filter_keeper, SYS_clock_gettime
+	sc_allow filter_keeper, SYS_fdatasync		; (the last one out)
+	sc_allow filter_keeper, SYS_msync
+	sc_end filter_keeper
+
 	sc_begin filter_health
 	sc_common filter_health
 	sc_check filter_health, SYS_socket, socket

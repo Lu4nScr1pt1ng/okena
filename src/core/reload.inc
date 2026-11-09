@@ -384,6 +384,7 @@ supervisor_reload:
 @@:
 	call	spawn_admin
 	call	logger_restart			; destinations may have changed
+	call	keeper_reload			; the store may have changed
 	mov	edi,SG_RELOADS
 	call	stats_global_inc
 	call	api_reloaded

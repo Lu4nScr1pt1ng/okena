@@ -6,10 +6,16 @@
 ; other (a log); okena.idx is mapped shared by all, and holds where each one is.
 ; Nothing is locked on the way of a request:
 ;
-; - The log is cut in segments. A writer takes room with one compare-and-swap on the
-;   head, below `ready`; past it, the oldest segment is reclaimed first, and what was
-;   in it is gone (FIFO): its index entries point at a generation the segment no
-;   longer has, and nobody needs to look for them. A record never crosses a segment.
+; - There are two logs, cut in segments: a small one (S, a tenth) where answers come
+;   in, and a main one (M). A writer takes room with one compare-and-swap on a log's
+;   head, below its `ready`. A record never crosses a segment. Room is made ahead of
+;   the heads by the cache keeper (ckeep.inc), off the way of requests, as S3-FIFO
+;   does: of S's oldest segment, what was asked for again moves to M and the rest
+;   goes, its key kept as a ghost; of M's, what was asked for again is written again
+;   at M's head, and the rest goes. An answer whose key is a ghost comes in to M
+;   straight away. One-hit wonders (a crawler) pass through S and never reach M.
+;   Once its records are dealt with, a segment holds a generation its old index
+;   entries do not name, and nobody needs to look for them.
 ;
 ; - A reader pins the segment it reads (a counter of its own, per segment, so no
 ;   two processes write the same word), then checks that the segment still holds
@@ -38,7 +44,10 @@ CD_HMAX		:= 8192				; the largest head kept on disk
 CD_RH		:= 64				; a record's own head
 CD_REG		:= 256				; processes that can pin, at once
 CD_IOV		:= 256
-CD_VER		:= 1
+CD_VER		:= 2
+CD_LOGM		:= 1 shl 62			; a place in M (in S without it)
+CD_FREQ		:= 1 shl 30			; IS_LEN: asked for again (0-3), above the length
+CD_LENM		:= CD_FREQ - 1
 
 ; okena.idx: its head
 CH_MAGIC	:= 0				; q
@@ -47,11 +56,15 @@ CH_SEGSH	:= 12				; d
 CH_SIZE		:= 16				; q: bytes of okena.dat
 CH_NSEG		:= 24				; d
 CH_NSLOT	:= 28				; d
-CH_HEAD		:= 32				; q: where the next record goes (in the log, ever growing)
-CH_READY	:= 40				; q: room is free below this
+CH_NS		:= 32				; d: segments of S (the rest are M's)
 CH_LIVE		:= 48				; q: who is in (low half); bit 32: left clean
 CH_BOOT		:= 64				; 40: the boot it was used in
 CH_HDR		:= 128				; (what is read before mapping)
+CH_LOGS		:= 128				; S, then M: q where the next record goes (ever
+						; growing), q room is free below this
+CH_KEEPER	:= 160				; d: the pid of the keeper at work, 0 none
+CH_WAKE		:= 164				; d: a futex: a writer entered a segment, or found
+						; no room: the keeper wakes
 CH_SEGS		:= 4096				; q a segment: its generation * 2, + 1 being reclaimed
 
 ; a slot of the index
@@ -97,6 +110,10 @@ bss
 	g_cd_segsh	dd ?
 	g_cd_nseg	dd ?
 	g_cd_nslot	dd ?
+	g_cd_ns		dd ?			; S's segments, then M's
+	g_cd_nm		dd ?
+	g_cd_ghost	dq ?			; the ghosts: buckets of 8, a key's first 8 bytes each
+	g_cd_sptr	dq ?			; cd_find: its slot
 	g_cd_lockfd	dd ?
 	g_cd_idxfd	dd ?
 	align 8
@@ -190,6 +207,18 @@ cd_init:
 	mov	[g_cd_nseg],eax
 	shl	rax,cl
 	mov	[g_cd_size],rax
+	mov	eax,[g_cd_nseg]			; S: a tenth, 4 segments at least
+	xor	edx,edx
+	mov	ecx,10
+	div	ecx
+	cmp	eax,4
+	jae	@f
+	mov	eax,4
+@@:
+	mov	[g_cd_ns],eax
+	mov	ecx,[g_cd_nseg]
+	sub	ecx,eax
+	mov	[g_cd_nm],ecx
 	mov	rax,[g_plan_cdsize]
 	shr	rax,15
 	cmp	rax,4096
@@ -218,6 +247,8 @@ cd_init:
 	mov	ecx,[g_cd_nslot]
 	shl	rcx,5
 	add	rax,rcx
+	mov	ecx,[g_cd_nslot]		; and the ghosts, as many
+	lea	rax,[rax+rcx*8]
 	mov	[g_cd_total],rax
 
 	; the boot this is: a store from another is kept only if it was left clean
@@ -290,6 +321,9 @@ cd_init:
 	jne	.unfit
 	mov	eax,[g_cd_nslot]
 	cmp	[rbx+CH_NSLOT],eax
+	jne	.unfit
+	mov	eax,[g_cd_ns]
+	cmp	[rbx+CH_NS],eax
 	jne	.unfit
 	mov	rax,[g_cd_size]
 	cmp	[rbx+CH_SIZE],rax
@@ -364,21 +398,44 @@ cd_init:
 	mov	[rbx+CH_SEGSH],eax
 	mov	rax,[g_cd_size]
 	mov	[rbx+CH_SIZE],rax
-	mov	[rbx+CH_READY],rax		; all of it free
-	mov	qword [rbx+CH_HEAD],0
 	mov	qword [rbx+CH_LIVE],0
+	mov	dword [rbx+CH_KEEPER],0
 	mov	eax,[g_cd_nseg]
 	mov	[rbx+CH_NSEG],eax
+	mov	eax,[g_cd_ns]
+	mov	[rbx+CH_NS],eax
+	; both logs empty, all of them free
+	mov	qword [rbx+CH_LOGS],0
+	mov	ecx,[g_cd_segsh]
+	mov	eax,[g_cd_ns]
+	shl	rax,cl
+	mov	[rbx+CH_LOGS+8],rax
+	mov	rax,CD_LOGM
+	mov	[rbx+CH_LOGS+16],rax
+	mov	eax,[g_cd_nm]
+	shl	rax,cl
+	mov	rdx,CD_LOGM
+	or	rax,rdx
+	mov	[rbx+CH_LOGS+24],rax
 	mov	eax,[g_cd_nslot]
 	mov	[rbx+CH_NSLOT],eax
 	lea	rdi,[rbx+CH_BOOT]
 	lea	rsi,[g_cd_boot]
 	mov	ecx,40
 	rep	movsb
-	; segment i holds generation i
+	; S's segment i holds its generation i, and M's j its j
 	lea	rdi,[rbx+CH_SEGS]
 	xor	eax,eax
-	mov	ecx,[g_cd_nseg]
+	mov	ecx,[g_cd_ns]
+@@:
+	lea	rdx,[rax*2]
+	mov	[rdi+rax*8],rdx
+	inc	eax
+	cmp	eax,ecx
+	jb	@b
+	lea	rdi,[rdi+rcx*8]
+	xor	eax,eax
+	mov	ecx,[g_cd_nm]
 @@:
 	lea	rdx,[rax*2]
 	mov	[rdi+rax*8],rdx
@@ -434,6 +491,7 @@ cd_init:
 	xor	eax,eax
 	rep	stosb
 	mov	qword [rbx+CH_LIVE],0
+	mov	dword [rbx+CH_KEEPER],0
 	lea	rdi,[rbx+CH_BOOT]
 	lea	rsi,[g_cd_boot]
 	mov	ecx,40
@@ -448,6 +506,10 @@ cd_init:
 	mov	[g_cd_pins],rax
 	lea	rax,[rbx+r14]
 	mov	[g_cd_slots],rax
+	mov	ecx,[g_cd_nslot]
+	shl	rcx,5
+	add	rax,rcx
+	mov	[g_cd_ghost],rax
 	mov	edi,[g_cd_idxfd]
 	mov	eax,SYS_close
 	syscall
@@ -649,16 +711,32 @@ cd_leave:
 .none:
 	ret
 
-; rdi = a place in the log: pinned, eax = its segment. CF: it no longer holds it.
-cd_pin:
+; rdi = a place in a log: eax = its segment, r8 = the generation it is in. Keeps rdi,
+; rsi, r10, r11.
+cd_segof:
 	mov	r8,rdi
+	btr	r8,62				; (CF: in M)
+	setc	r9b
 	mov	ecx,[g_cd_segsh]
-	shr	r8,cl				; its generation
+	shr	r8,cl
 	mov	rax,r8
 	xor	edx,edx
-	mov	r9d,[g_cd_nseg]
-	div	r9
+	test	r9b,r9b
+	jnz	.m
+	mov	ecx,[g_cd_ns]
+	div	rcx
 	mov	eax,edx
+	ret
+.m:
+	mov	ecx,[g_cd_nm]
+	div	rcx
+	mov	eax,edx
+	add	eax,[g_cd_ns]
+	ret
+
+; rdi = a place in a log: pinned, eax = its segment. CF: it no longer holds it.
+cd_pin:
+	call	cd_segof
 	mov	r9,[g_cd_pins]
 	mov	r10d,eax
 	shl	r10,8				; * CD_REG
@@ -729,9 +807,11 @@ cd_find:
 	cmp	rdi,[g_cd_sabs]
 	jbe	.next
 .take:
+	and	edx,CD_LENM
 	mov	[g_cd_slen],edx
 	mov	[g_cd_sabs],rdi
 	mov	qword [g_cd_sfresh],rcx
+	mov	[g_cd_sptr],r9
 	jmp	.next
 .busy:
 	pause
@@ -802,6 +882,17 @@ cd_lookup:
 	mov	eax,[rsi+RH_HLEN]
 	lea	rax,[r10+rax+CD_RH]
 	mov	[g_cd_spos],rax
+	; asked for again: up to 3 (once is enough: a slot changed meanwhile keeps its own)
+	mov	rcx,[g_cd_sptr]
+	mov	eax,[rcx+IS_LEN]
+	cmp	eax,3 * CD_FREQ
+	jae	@f
+	mov	rdx,[g_cd_sabs]
+	cmp	[rcx+IS_ABS],rdx
+	jne	@f
+	lea	edx,[rax+CD_FREQ]
+	lock cmpxchg [rcx+IS_LEN],edx
+@@:
 	mov	eax,1
 	mov	ecx,[g_cd_sfresh]
 	cmp	[g_cd_rnow],rcx
@@ -913,15 +1004,18 @@ cd_recv:
 	mov	ecx,SIDE_UP
 	jmp	hep_queue
 
-; ecx = a record's length: rax = its place in the log. CF: no room now.
+; ecx = a record's length, esi = the log (0 S, 1 M): rax = its place. CF: no room
+; now (the keeper makes it).
 cd_reserve:
 	push	rbx
 	push	r12
 	mov	rbx,[g_cd_base]
+	shl	esi,4
+	lea	rbx,[rbx+rsi+CH_LOGS]		; its head, then its ready
 	mov	r12d,ecx
 	mov	r11d,8
 .again:
-	mov	rax,[rbx+CH_HEAD]
+	mov	rax,[rbx]
 	mov	r8,rax
 	mov	rdx,[g_cd_seg]
 	dec	rdx
@@ -935,83 +1029,90 @@ cd_reserve:
 	inc	r8
 @@:
 	lea	r9,[r8+r12]
-	cmp	r9,[rbx+CH_READY]
-	jbe	.take
-	push	r11
-	call	cd_reclaim
-	pop	r11
-	dec	r11d
-	jnz	.again
-	stc
-	jmp	.out
-.take:
-	lock cmpxchg [rbx+CH_HEAD],r9
+	cmp	r9,[rbx+8]
+	ja	.full
+	lock cmpxchg [rbx],r9
 	je	@f
 	dec	r11d
 	jnz	.again
+.full:
+	call	cd_wake				; (room, now)
 	stc
 	jmp	.out
 @@:
 	mov	rax,r8
+	mov	rdx,[g_cd_seg]
+	dec	rdx
+	test	rax,rdx
+	jnz	@f
+	push	rax
+	call	cd_wake				; a segment begun: the next one made room
+	pop	rax
+@@:
 	clc
 .out:
 	pop	r12
 	pop	rbx
 	ret
 
-; the oldest segment, the one at `ready`, made room, unless someone reads it. rbx =
-; the head of the store. Keeps rbx, r12.
-cd_reclaim:
-	mov	r8,[rbx+CH_READY]
-	mov	ecx,[g_cd_segsh]
-	mov	r9,r8
-	shr	r9,cl				; the generation it is to hold
-	mov	rax,r9
-	xor	edx,edx
-	mov	r10d,[g_cd_nseg]
-	div	r10
-	mov	r10d,edx			; the segment
-	mov	rcx,[g_cd_segs]
-	lea	rcx,[rcx+r10*8]
-	lea	rdx,[r9*2]			; the word once it is room
-	mov	eax,[g_cd_nseg]
-	mov	r11,r9
-	sub	r11,rax
-	add	r11,r11				; what it holds now
-	mov	rax,[rcx]
-	cmp	rax,rdx
-	je	.ready				; someone did it
-	cmp	rax,r11
-	jne	@f
-	lea	rsi,[r11+1]
-	lock cmpxchg [rcx],rsi		; marked: no new pins
-	jne	.out
-	mov	rax,rsi
-@@:
-	lea	rsi,[r11+1]
-	cmp	rax,rsi
-	jne	.out
-	; any pins left?
-	mov	rsi,[g_cd_pins]
-	mov	eax,r10d
-	shl	rax,10				; * CD_REG * 4
-	add	rsi,rax
-	mov	eax,CD_REG
-.pins:
-	cmp	dword [rsi],0
-	jne	.out				; (a reader: not yet)
-	add	rsi,4
-	dec	eax
-	jnz	.pins
-	lea	rax,[r11+1]
-	lock cmpxchg [rcx],rdx
-	jne	.out
-.ready:
-	mov	rax,r8
-	mov	rcx,r8
-	add	rcx,[g_cd_seg]
-	lock cmpxchg [rbx+CH_READY],rcx
-.out:
+; rsi = a key: its bucket of ghosts, rdx; rax = its first 8 bytes
+macro cd_ghost_bucket
+	mov	rdx,[rsi+8]
+	mov	ecx,[g_cd_nslot]
+	shr	ecx,3
+	dec	ecx
+	and	rdx,rcx
+	shl	rdx,6				; 8 of 8 bytes
+	add	rdx,[g_cd_ghost]
+	mov	rax,[rsi]
+end macro
+
+; rsi = a key: eax = 1 when it was a ghost (it no longer is)
+cd_ghost_take:
+	cd_ghost_bucket
+	xor	ecx,ecx
+.look:
+	cmp	[rdx+rcx*8],rax
+	je	.found
+	inc	ecx
+	cmp	ecx,8
+	jb	.look
+	xor	eax,eax
+	ret
+.found:
+	mov	qword [rdx+rcx*8],0
+	mov	eax,1
+	ret
+
+; rsi = a key: a ghost now. Into an empty place of its bucket, or over one of them
+; (the bits below its own pick which).
+cd_ghost_add:
+	cd_ghost_bucket
+	xor	ecx,ecx
+.look:
+	cmp	qword [rdx+rcx*8],0
+	je	.put
+	cmp	[rdx+rcx*8],rax
+	je	.put
+	inc	ecx
+	cmp	ecx,8
+	jb	.look
+	mov	ecx,eax
+	and	ecx,7
+.put:
+	mov	[rdx+rcx*8],rax
+	ret
+
+; the keeper woken. Keeps all but rax, rcx, rdx, rsi, rdi, r8-r11.
+cd_wake:
+	mov	rdi,[g_cd_base]
+	add	rdi,CH_WAKE
+	lock inc dword [rdi]
+	mov	esi,FUTEX_WAKE
+	mov	edx,1
+	xor	r10d,r10d
+	mov	eax,SYS_futex
+	syscall
 	ret
 
 ; r12 = a memory entry just made ready, g_ck its key: a copy on disk, when it fits.
@@ -1033,8 +1134,23 @@ cd_put:
 	cmp	rcx,[g_cd_seg]
 	ja	.out
 	mov	r15,rcx				; its length
+	; a ghost (it went from S unasked a while ago, and is back): straight to M
+	lea	rsi,[g_ck]
+	call	cd_ghost_take
+	mov	esi,eax
+.log:
+	mov	ecx,r15d
+	push	rsi
+	call	cd_reserve
+	pop	rsi
+	jnc	@f
+	test	esi,esi
+	jz	.full
+	xor	esi,esi				; (M full now: S)
+	mov	ecx,r15d
 	call	cd_reserve
 	jnc	@f
+.full:
 	inc	qword [g_st_cd_full]
 	jmp	.out
 @@:
@@ -1234,16 +1350,17 @@ cd_publish:
 @@:
 	; is its segment still holding it?
 	push	rcx
-	mov	rax,[r9+IS_ABS]
-	mov	ecx,[g_cd_segsh]
-	shr	rax,cl
-	mov	rdi,rax
-	xor	edx,edx
-	mov	ecx,[g_cd_nseg]
-	div	rcx
-	mov	rax,[g_cd_segs]
-	add	rdi,rdi
-	cmp	[rax+rdx*8],rdi
+	push	r8
+	push	r9
+	push	r10
+	mov	rdi,[r9+IS_ABS]
+	call	cd_segof
+	mov	rcx,[g_cd_segs]
+	add	r8,r8
+	cmp	[rcx+rax*8],r8
+	pop	r10
+	pop	r9
+	pop	r8
 	pop	rcx
 	je	@f
 	mov	edx,1

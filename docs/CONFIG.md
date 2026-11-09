@@ -692,11 +692,17 @@ both tiers. A hit from disk says `Cache-Status: okena; hit; ttl=N; detail=disk`.
 
 The directory must exist and be writable by whoever starts okena. It holds three
 files: `okena.dat` holds the answers, `okena.idx` says where each one is, and
-`okena.lock` is taken only while a worker starts. The disk is used as a log cut into
-16 segments (of 64 KiB to 64 MiB). When it is full, the oldest segment goes, and
-everything in it, first in first out. An answer larger than a segment, or with a
-head over 8 KiB, stays in memory only. Nothing is overwritten while a client is
-still being sent it: until then, new answers are not written to disk. Each record is
+`okena.lock` is taken only while a worker starts. The disk is used as two logs, cut
+into segments of 64 KiB to 64 MiB (a sixteenth of the size): a small one, a tenth of
+the store, where answers come in, and a main one. A process of its own,
+`okena-cache`, keeps room free ahead of both, S3-FIFO. An answer asked for again
+while it is in the small log moves to the main one. One asked for once goes, and its
+key is remembered: if it is asked for again later, it goes straight to the main log.
+In the main log, an answer that is still asked for is kept; one that is not goes.
+So a crawler that reads everything once does not push out what people keep asking
+for. An answer larger than a segment, or with a head over 8 KiB, stays in memory
+only. Nothing is overwritten while a client is still being sent it: until then, new
+answers are not written to disk. Each record is
 checked against its key and its place before it is served, so a damaged file is a
 miss, never a wrong answer. A different `size=` makes a new store; processes still
 on the old one keep it until they go. When the directory cannot be used, okena says
