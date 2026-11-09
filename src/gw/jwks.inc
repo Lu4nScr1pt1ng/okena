@@ -19,7 +19,7 @@
 ; most, so that tokens cannot be used to flood the provider. Shared secrets (`oct`)
 ; are left out of a set by URL: whoever can read it could sign.
 
-MAX_JWKS	:= 8
+MAX_JWKS	:= 64				; (a set costs ~19 KiB, touched only when used)
 JK_PER_SET	:= 32
 JF_GAP		:= 10				; seconds between fetches a token asked for
 JF_RETRY	:= 30				; after a failure, unless refresh is sooner
@@ -357,7 +357,7 @@ cstring .k_stale, 'stale',0
 
 plan_bad_jwks:
 	call	log_begin
-	out_lit 'auth jwt: a jwks URL is https://HOST[:PORT]/PATH trust=FILE, or http:// on localhost; refresh= and stale= are times; at most 8 sets'
+	out_lit 'auth jwt: a jwks URL is https://HOST[:PORT]/PATH trust=FILE, or http:// on localhost; refresh= and stale= are times; at most 64 sets'
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process

@@ -806,7 +806,7 @@ the same URL and `trust` are one set, with the times of the first. Shared secret
 (`oct`) in a set by URL are left out: anyone who can read it could sign.
 
 Limits: TLS 1.3 with AES-128-GCM towards the provider, one anchor, a response of
-256 KB, 32 keys in a set, 8 sets. Redirects are not followed.
+256 KB, 32 keys in a set, 64 sets. Redirects are not followed.
 
 ES256, RS256, PS256, EdDSA and HS256. A bearer token must have `exp`; `issuer`
 and `audience` are checked when given, and a route with no `issuer` takes
