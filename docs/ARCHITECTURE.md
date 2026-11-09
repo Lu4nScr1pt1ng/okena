@@ -211,13 +211,20 @@ one worker run; `/ready` fails while starting, draining, or when no pool
 of the default route has a backend. Fleets and orchestrators use them to
 take an instance out before it fails.
 
-**Faults are tested, not hoped for.** `make chaos` runs the service under
-load while killing workers (SIGKILL and SIGSTOP), the control process,
-addons and backends; filling the disk; injecting packet loss, delay and
-reordering (netem); black-holing backends with iptables; exhausting ports
-and memory (cgroup limits); stepping the clock. A run passes when every
-request got either a correct response or a fast, explicit error, never a
-hang. Routes can also inject faults on purpose (`fault delay=100ms 5%`,
+**Faults are tested, not hoped for.** `make chaos` (tests/chaos/run.py)
+runs the service under steady load, in a namespace of its own, while what
+it depends on fails one thing at a time, each put right before the next:
+a worker killed (SIGKILL) and one stopped (SIGSTOP: its watchdog replaces
+it), the control process and the logger killed, a backend killed and one
+black-holed (it takes the connection and never answers), the JWKS provider
+gone, the discovery file made garbage, the access log's disk full, the
+local ports run out, the DNS server silent; with `tc` there, packet loss
+and delay (netem). A run
+passes when every request got either a correct response or a fast,
+explicit error, never a hang (a client waits 4 s), when each fault once
+undone leaves nothing behind, and when okena is still up at the end with
+no process of it killed by its own filters. Still to come: memory
+exhaustion (cgroup limits) and a stepped clock. Routes can also inject faults on purpose (`fault delay=100ms 5%`,
 `fault abort=503 1%`) to test the clients and backends behind okena.
 
 ## Surviving spikes

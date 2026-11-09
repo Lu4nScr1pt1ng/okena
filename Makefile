@@ -9,7 +9,7 @@ TLSC      := build/tlsclient
 TLS12S    := build/tlsserver12
 TLSC12    := build/tlsclient12
 
-.PHONY: all toolchain test test-serial fuzz bench image docker-test clean
+.PHONY: all toolchain test test-serial fuzz bench chaos image docker-test clean
 
 all: $(BIN)
 
@@ -211,6 +211,11 @@ docker-test:
 
 bench: $(BIN)
 	./tests/bench/l4.sh
+
+# okena under load while what it depends on fails, one thing at a time (~40 s an engine)
+chaos: $(BIN)
+	timeout 300 python3 -I tests/chaos/run.py io_uring
+	timeout 300 python3 -I tests/chaos/run.py epoll
 
 # Longer runs: make fuzz FUZZ_CASES=1000000
 FUZZ_CASES ?= 100000

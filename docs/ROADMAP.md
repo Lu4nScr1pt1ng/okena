@@ -460,7 +460,9 @@ auth + limit stays within the latency budget in ARCHITECTURE.md. Met with `busy_
 
 Exit: a week-long soak with reloads and upgrades every minute under load
 loses no request; `make chaos` passes with every dependency (DNS,
-discovery, JWKS, control process, logger, disk) failed in turn.
+discovery, JWKS, control process, logger, disk) failed in turn (`make chaos`
+passes for all of them, with workers, backends and ports too; the soak is
+still to run).
 
 ## Phase 8 — Edge and CDN
 
