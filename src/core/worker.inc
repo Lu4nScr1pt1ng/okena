@@ -88,6 +88,7 @@ worker_main:
 	call	ring_register_files
 	test	eax,eax
 	js	.no_uring
+	call	zc_init				; (none made: bodies are copied)
 	lea	r12,[str_why_pbuf]
 	call	pbuf_register
 	test	eax,eax

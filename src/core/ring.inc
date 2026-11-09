@@ -183,8 +183,11 @@ ring_init:
 ; on every operation. eax = 0 or -errno.
 ring_register_files:
 	sub	rsp,40
+	mov	dword [g_zc_room],ZC_PIPES * 2
+.again:
 	mov	eax,[g_sessions]
-	imul	eax,eax,3			; clients, then twice as many upstreams
+	imul	eax,eax,3			; clients, then twice as many upstreams,
+	add	eax,[g_zc_room]			; then the pipes of zero copy (zc.inc)
 	mov	[rsp],eax				; nr
 	mov	dword [rsp+4],IORING_RSRC_REGISTER_SPARSE
 	xor	eax,eax
@@ -198,7 +201,12 @@ ring_register_files:
 	mov	eax,SYS_io_uring_register
 	syscall
 	test	eax,eax
-	js	.done
+	jns	@f
+	cmp	dword [g_zc_room],0		; (past the descriptor limit: no pipes,
+	je	.done				; bodies are copied)
+	mov	dword [g_zc_room],0
+	jmp	.again
+@@:
 	; struct io_uring_file_index_range { off, len, resv }
 	mov	dword [rsp],0
 	mov	eax,[g_sessions]
@@ -223,7 +231,7 @@ rodata
 	irp op, IORING_OP_NOP, IORING_OP_TIMEOUT, IORING_OP_ACCEPT, IORING_OP_ASYNC_CANCEL, \
 		IORING_OP_LINK_TIMEOUT, IORING_OP_CONNECT, IORING_OP_CLOSE, IORING_OP_READ, \
 		IORING_OP_SEND, IORING_OP_RECV, IORING_OP_SHUTDOWN, IORING_OP_SOCKET, \
-		IORING_OP_URING_CMD, IORING_OP_POLL_ADD, IORING_OP_RECVMSG
+		IORING_OP_URING_CMD, IORING_OP_POLL_ADD, IORING_OP_RECVMSG, IORING_OP_SPLICE
 		dw IORING_RESTRICTION_SQE_OP
 		db op, 0
 		dd 0, 0, 0
@@ -355,7 +363,10 @@ OP_QTIMER	:= 33		; QUIC: the 10 ms clock
 OP_QPACE	:= 34		; QUIC: pacing lets data go before the next tick
 OP_FDELAY	:= 35		; fault delay=: a held request's time has come
 OP_UPOLL	:= 36		; udp: its epoll is readable
-OP_COUNT	:= 37
+OP_ZC_IN	:= 37		; zero copy (zc.inc): file -> pipe
+OP_ZC_OUT	:= 38		; pipe -> client
+OP_ZC_DRAIN	:= 39		; a pipe given back with bytes in it
+OP_COUNT	:= 40
 
 rodata
 	align 8
@@ -368,6 +379,7 @@ rodata
 			dq on_h_uktls, on_h_udrain, on_h_ktls12
 			dq on_h2_recv, on_h2_send, on_h2_drain, on_h2t_send
 			dq on_qpoll, on_qtimer, on_qpace, on_fdelay, on_upoll
+			dq on_zc_in, on_zc_out, on_zc_drain
 end rodata
 
 ring_reap:

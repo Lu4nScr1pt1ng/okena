@@ -822,6 +822,8 @@ cd_serve:
 	mov	ecx,[g_cd_sidx]
 	or	ecx,CD_MARK
 	mov	[rax+HB_CE],ecx
+	mov	dword [rax+HB_ZCP],0		; (no pipe yet: zc.inc)
+	inc	qword [g_st_cd_hits]
 	mov	qword [rax+HB_HT0],0
 	call	session_ptr
 	or	dword [rax+S_FLAGS],SF_CACHED
@@ -1032,7 +1034,10 @@ cd_put:
 	ja	.out
 	mov	r15,rcx				; its length
 	call	cd_reserve
-	jc	.out
+	jnc	@f
+	inc	qword [g_st_cd_full]
+	jmp	.out
+@@:
 	mov	r13,rax				; its place in the log
 	mov	rdi,rax
 	call	cd_pin				; (none takes it while it is written)
@@ -1091,6 +1096,7 @@ cd_put:
 	add	eax,[r12+CE_SWR]
 	mov	ecx,eax
 	call	cd_publish
+	inc	qword [g_st_cd_writes]
 .unpin:
 	mov	edi,r14d
 	call	cd_unpin

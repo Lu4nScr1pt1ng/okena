@@ -33,6 +33,10 @@ bss
 	g_st_http_trimmed dq ?			; idle http records given back to the kernel
 	g_st_tls_deferred dq ?			; ClientHellos queued by the handshake budget
 	g_st_tls_shed	dq ?			; ... closed: queue full, or waited too long
+	g_st_zc_bytes	dq ?			; body bytes sent without copies (zc.inc)
+	g_st_cd_hits	dq ?			; cache_disk: answers served from disk
+	g_st_cd_writes	dq ?			; answers written to it
+	g_st_cd_full	dq ?			; not written: no room (the oldest still read)
 	g_st_end:
 	g_stats_tbl	dq ?			; shared: one page set per worker
 end bss

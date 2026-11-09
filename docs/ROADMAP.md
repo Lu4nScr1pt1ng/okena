@@ -471,8 +471,9 @@ on a machine that can spare it).
 * Disk cache tier: append-only segments, lock-free shared index, S3-FIFO,
   sendfile to the socket. (Done: `cache_disk`, with segments, a lock-free
   index shared by all workers and processes, pins, and a store that
-  outlives reloads, upgrades and restarts. Still to come: S3-FIFO in place
-  of FIFO, and sendfile.)
+  outlives reloads, upgrades and restarts; zero copy from the page cache to
+  the socket, splice with io_uring and sendfile with epoll, kTLS too.
+  Still to come: S3-FIFO in place of FIFO.)
 * Cache keys, `Vary` normalisation, slicing, `stale-if-error`, purge by
   URL/prefix/tag with fleet fan-out, `Cache-Status`.
 * Shield tier, signed URLs, CDN provider ranges, authenticated origin

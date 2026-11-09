@@ -202,6 +202,8 @@ rodata
 	sc_allow filter_supervisor, SYS_pwritev
 	sc_allow filter_supervisor, SYS_fdatasync
 	sc_allow filter_supervisor, SYS_msync
+	sc_allow filter_supervisor, SYS_pipe2		; zero copy: a worker's pipes (zc.inc)
+	sc_allow filter_supervisor, SYS_sendfile	; (and an epoll worker's sendfile: filters stack)
 	sc_end filter_supervisor
 
 	; io_uring worker: the ring does the I/O
@@ -250,6 +252,7 @@ rodata
 	; epoll worker
 	sc_begin filter_worker_epoll
 	sc_common filter_worker_epoll
+	sc_allow filter_worker_epoll, SYS_sendfile	; zero copy (zc.inc)
 	sc_allow filter_worker_epoll, SYS_pread64		; cache_disk: a head read, a record written
 	sc_allow filter_worker_epoll, SYS_pwritev
 	sc_allow filter_worker_epoll, SYS_fdatasync		; (the last one out)
@@ -296,6 +299,7 @@ rodata
 
 	sc_begin filter_worker_epoll_f
 	sc_common filter_worker_epoll_f
+	sc_allow filter_worker_epoll_f, SYS_sendfile
 	sc_allow filter_worker_epoll_f, SYS_pread64		; cache_disk: a head read, a record written
 	sc_allow filter_worker_epoll_f, SYS_pwritev
 	sc_allow filter_worker_epoll_f, SYS_fdatasync		; (the last one out)

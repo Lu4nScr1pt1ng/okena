@@ -836,10 +836,18 @@ cooperates with it instead of pretending to replace it.
   in the log, and both are checked before a byte is served. Pins left by
   a process that died are cleared by the next worker that starts. The
   last process to leave cleanly syncs the files and marks the store
-  clean, which is what lets it outlive a reboot. **Still to come:** reads
-  from the page cache to the socket with `sendfile`/splice (zero-copy,
-  kTLS too), `O_DIRECT` through io_uring for objects that should not
-  pollute the page cache, and writes on the ring instead of in place.
+  clean, which is what lets it outlive a reboot. A body from disk (or
+  from `files`) goes from the page cache to the socket without copies
+  (src/http/zc.inc), for HTTP/1.1 in the clear or over kTLS. With
+  io_uring each step is a chain: a SPLICE from the file into a pipe, then
+  a poll for room on the socket, then a SPLICE from the pipe that does
+  not wait. The kernel runs splices on io-wq threads, and one that waited
+  for a slow client would hold a thread for each. Pipes come from a pool
+  per worker, made at start and registered with the ring, and a pipe
+  given back with bytes still in it is emptied first. With epoll it is
+  `sendfile`. **Still to come:** `O_DIRECT` through io_uring for objects
+  that should not pollute the page cache, and writes on the ring instead
+  of in place.
 * Admission with S3-FIFO, so one-hit wonders (crawlers) do not evict the
   working set (to come: today the disk is plain FIFO).
 

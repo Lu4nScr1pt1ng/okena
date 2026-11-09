@@ -415,7 +415,7 @@ on_h_send_u:
 ; body does not turn into deep recursion.
 
 H_SSIDE		:= 68		; d: side of the pending send
-H_EPOP		:= 136		; d: 0 none, 1 recv waiting, 2 send waiting
+H_EPOP		:= 136		; d: 0 none, 1 recv waiting, 2 send waiting, 3 sendfile waiting (zc.inc)
 H_EPSIDE	:= 140
 H_EPBUF		:= 144		; q: receive buffer
 H_EPLEN		:= 152		; d: its room
@@ -686,6 +686,8 @@ hep_event:
 	je	.recv
 	test	edi,EPOLLOUT or EPOLLERR or EPOLLHUP
 	jz	.out
+	cmp	dword [r15+H_EPOP],3
+	je	zc_ep_try			; zero copy: sendfile on (zc.inc)
 	jmp	hep_try_send
 .recv:
 	test	edi,EPOLLIN or EPOLLRDHUP or EPOLLHUP or EPOLLERR

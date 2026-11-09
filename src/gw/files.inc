@@ -668,6 +668,7 @@ fs_serve:
 	mov	rax,[r15+H_BUF]
 	mov	ecx,[g_fs_fd]
 	mov	[rax+HB_FFD],ecx
+	mov	dword [rax+HB_ZCP],0		; (no pipe yet: zc.inc)
 	push	rdi
 	call	session_ptr
 	or	dword [rax+S_FLAGS],SF_FILE

@@ -705,8 +705,16 @@ so and keeps answers in memory only.
 Every okena on one store must see the others' processes: one host, or one pid
 namespace. A store whose last process did not stop cleanly is kept after a crash,
 because the pages were in the kernel's cache, but not after a reboot. Heads are read
-and records written in place, through the page cache. Bodies are read through the
-ring with io_uring, and in place with epoll.
+and records written in place, through the page cache.
+
+A body of 64 KiB or more, from disk or from `files`, goes from the page cache to the
+socket without copies: splice through a pipe with io_uring, sendfile with epoll. This
+needs HTTP/1.1 in the clear or with kTLS (`tls { ktls on }`), and an answer that is
+not compressed. Anything else is read into okena and sent from there, as before.
+`/metrics` counts `okena_zero_copy_bytes_total`, and for the disk
+`okena_cache_disk_hits_total`, `okena_cache_disk_writes_total` and
+`okena_cache_disk_full_total` (answers not written because the oldest part was still
+being sent).
 
 | Option | Meaning |
 |---|---|

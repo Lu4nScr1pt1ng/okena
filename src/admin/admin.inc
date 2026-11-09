@@ -694,6 +694,10 @@ OFF_L_DGOUT	:= g_st_l_dgout - g_st_begin
 OFF_L_LAT	:= g_st_l_lat - g_st_begin
 OFF_L_LATSUM	:= g_st_l_latsum - g_st_begin
 OFF_UD_DROPS	:= g_st_ud_drops - g_st_begin
+OFF_ZC_BYTES	:= g_st_zc_bytes - g_st_begin
+OFF_CD_HITS	:= g_st_cd_hits - g_st_begin
+OFF_CD_WRITES	:= g_st_cd_writes - g_st_begin
+OFF_CD_FULL	:= g_st_cd_full - g_st_begin
 
 ; rdi = output, ebx = listener: {listener="..."
 listener_label:
@@ -1199,6 +1203,34 @@ metrics_more:
 	memit '# HELP okena_udp_dropped_total UDP datagrams lost: no flow to take them, or a socket buffer full.',10
 	memit '# TYPE okena_udp_dropped_total counter',10,'okena_udp_dropped_total '
 	mov	ecx,OFF_UD_DROPS
+	call	stats_sum_q
+	call	fmt_u64
+	mov	byte [rdi],10
+	inc	rdi
+	memit '# HELP okena_zero_copy_bytes_total Body bytes sent from the page cache to the socket without copies.',10
+	memit '# TYPE okena_zero_copy_bytes_total counter',10,'okena_zero_copy_bytes_total '
+	mov	ecx,OFF_ZC_BYTES
+	call	stats_sum_q
+	call	fmt_u64
+	mov	byte [rdi],10
+	inc	rdi
+	memit '# HELP okena_cache_disk_hits_total Answers served from cache_disk.',10
+	memit '# TYPE okena_cache_disk_hits_total counter',10,'okena_cache_disk_hits_total '
+	mov	ecx,OFF_CD_HITS
+	call	stats_sum_q
+	call	fmt_u64
+	mov	byte [rdi],10
+	inc	rdi
+	memit '# HELP okena_cache_disk_writes_total Answers written to cache_disk.',10
+	memit '# TYPE okena_cache_disk_writes_total counter',10,'okena_cache_disk_writes_total '
+	mov	ecx,OFF_CD_WRITES
+	call	stats_sum_q
+	call	fmt_u64
+	mov	byte [rdi],10
+	inc	rdi
+	memit '# HELP okena_cache_disk_full_total Answers not written to cache_disk: no room, its oldest part still being sent.',10
+	memit '# TYPE okena_cache_disk_full_total counter',10,'okena_cache_disk_full_total '
+	mov	ecx,OFF_CD_FULL
 	call	stats_sum_q
 	call	fmt_u64
 	mov	byte [rdi],10

@@ -1663,6 +1663,7 @@ cache_gone:
 	push	r11
 	push	r15
 	h_rec
+	call	zc_gone				; a pipe it held
 	test	dword [r12+S_FLAGS],SF_IDEMF
 	jz	@f
 	call	idem_gone

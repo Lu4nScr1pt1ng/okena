@@ -2674,7 +2674,11 @@ http_resp_pump:
 	je	.length_done
 	mov	ecx,[r15+H_UPLEN]
 	sub	ecx,[r15+H_UPOFF]
-	jz	.read
+	jnz	@f
+	call	zc_ok				; from a file or the disk cache: without copies?
+	jnc	zc_send
+	jmp	.read
+@@:
 	mov	rax,[r15+H_RREMAIN]
 	cmp	rax,rcx
 	jae	@f
