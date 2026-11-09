@@ -99,9 +99,11 @@ def issue(ca_k, ca_c, pub, names, before, after):
 
 
 class CAState:
-    def __init__(self, ca_k, ca_c):
+    def __init__(self, ca_k, ca_c, port=None):
         self.ca_k, self.ca_c = ca_k, ca_c
-        self.base = f"https://localhost:{CA}"
+        self.base = f"https://localhost:{port or CA}"
+        self.eab = {}                 # kid -> HMAC key: external accounts required
+        self.fail_orders = None       # (status, error) every newOrder gets
         self.nonces = set()
         self.accounts = {}            # thumbprint -> (id, key)
         self.by_kid = {}
@@ -260,9 +262,9 @@ def validate_dns(az):
     want = b64u(hashlib.sha256((az["token"] + "." + az["thumb"]).encode()).digest())
     got = txt_of("_acme-challenge." + az["name"])
     ok = want in got
-    with ST.lock:
+    with az["st"].lock:
         az["status"] = "valid" if ok else "invalid"
-        ST.log.append(("validated", (az["name"], ok, got)))
+        az["st"].log.append(("validated", (az["name"], ok, got)))
 
 
 class CFApi(http.server.BaseHTTPRequestHandler):
@@ -447,9 +449,9 @@ def validate_tls(az):
         ok = got == ("acme-tls/1", True, (b"\x04\x20" + want).hex(), [az["name"]], True)
     except Exception as e:
         got = repr(e)
-    with ST.lock:
+    with az["st"].lock:
         az["status"] = "valid" if ok else "invalid"
-        ST.log.append(("validated", (az["name"], ok, got)))
+        az["st"].log.append(("validated", (az["name"], ok, got)))
 
 
 def validate(az):
@@ -463,9 +465,9 @@ def validate(az):
             ok = r.status == 200 and got == want
     except Exception as e:
         got, ok = repr(e), False
-    with ST.lock:
+    with az["st"].lock:
         az["status"] = "valid" if ok else "invalid"
-        ST.log.append(("validated", (az["name"], ok, got)))
+        az["st"].log.append(("validated", (az["name"], ok, got)))
 
 
 class H(http.server.BaseHTTPRequestHandler):
@@ -476,7 +478,7 @@ class H(http.server.BaseHTTPRequestHandler):
 
     def send(self, code, body=b"", ctype="application/json", headers=(), chunked=False):
         self.send_response(code)
-        self.send_header("Replay-Nonce", ST.nonce())
+        self.send_header("Replay-Nonce", self.server.st.nonce())
         self.send_header("Cache-Control", "no-store")
         self.send_header("Connection", "close")
         for k, v in headers:
@@ -502,9 +504,12 @@ class H(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/dir":
-            b = ST.base
+            b = self.server.st.base
+            meta = {"termsOfService": b + "/tos"}
+            if self.server.st.eab:
+                meta["externalAccountRequired"] = True
             self.send(200, {"newNonce": b + "/nonce", "newAccount": b + "/acct", "newOrder": b + "/order",
-                            "revokeCert": b + "/revoke", "keyChange": b + "/kc", "meta": {"termsOfService": b + "/tos"}})
+                            "revokeCert": b + "/revoke", "keyChange": b + "/kc", "meta": meta})
         elif self.path == "/nonce":
             self.send(204)
         else:
@@ -515,15 +520,16 @@ class H(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
-        with ST.lock:
+        st = self.server.st
+        with st.lock:
             try:
                 self.post(body)
             except Exception as e:
-                ST.log.append(("error", repr(e)))
+                st.log.append(("error", repr(e)))
                 self.problem(400, "malformed", repr(e))
 
     def post(self, body):
-        st = ST
+        st = self.server.st
         if self.headers.get("Content-Type") != "application/jose+json":
             return self.problem(415, "malformed", "content type")
         jws = json.loads(body)
@@ -565,19 +571,36 @@ class H(http.server.BaseHTTPRequestHandler):
                 return self.send(200, {"status": "valid"}, headers=[("Location", f"{st.base}/acct/{aid}")])
             if not p.get("termsOfServiceAgreed"):
                 return self.problem(400, "malformed", "terms")
+            if st.eab:
+                # RFC 8555 7.3.4: a JWS over the account's key, HS256 with the external account's
+                eb = p.get("externalAccountBinding")
+                if not eb:
+                    return self.problem(400, "externalAccountRequired", "an external account binding is required")
+                ep = json.loads(unb64u(eb["protected"]))
+                ek = st.eab.get(ep.get("kid"))
+                good = (ek is not None and ep.get("alg") == "HS256" and ep.get("url") == url and "nonce" not in ep
+                        and json.loads(unb64u(eb["payload"])) == prot["jwk"]
+                        and hmac.compare_digest(unb64u(eb["signature"]),
+                                                hmac.new(ek, (eb["protected"] + "." + eb["payload"]).encode(), hashlib.sha256).digest()))
+                st.log.append(("eab", (ep.get("kid"), good)))
+                if not good:
+                    return self.problem(400, "unauthorized", "external account binding")
             aid = st.next()
             st.accounts[thumb] = (aid, key)
             st.by_kid[f"{st.base}/acct/{aid}"] = thumb
             st.log.append(("account", (aid, p.get("contact"))))
             return self.send(201, {"status": "valid", "contact": p.get("contact", [])}, headers=[("Location", f"{st.base}/acct/{aid}")])
         if path == "/order":
+            if st.fail_orders:
+                st.log.append(("order refused", st.fail_orders))
+                return self.problem(*st.fail_orders, "no")
             names = [i["value"] for i in p["identifiers"] if i["type"] == "dns"]
             oid = st.next()
             azs = []
             for nm in names:
                 zid = st.next()
                 wild = nm.startswith("*.")
-                st.authz[zid] = {"name": nm[2:] if wild else nm, "wildcard": wild, "status": "pending",
+                st.authz[zid] = {"name": nm[2:] if wild else nm, "wildcard": wild, "status": "pending", "st": st,
                                  "token": b64u(os.urandom(24)), "thumb": thumb, "cid": st.next()}
                 azs.append(zid)
             st.orders[oid] = {"names": names, "authz": azs, "status": "pending", "cert": None, "thumb": thumb, "polled": 0}
@@ -636,7 +659,7 @@ class H(http.server.BaseHTTPRequestHandler):
         return self.problem(404, "malformed", path)
 
     def order_json(self, oid):
-        st = ST
+        st = self.server.st
         o = st.orders[oid]
         if o["status"] == "pending" and all(st.authz[z]["status"] == "valid" for z in o["authz"]):
             o["status"] = "ready"
@@ -703,6 +726,7 @@ def main():
     (tmp / "srv.key").write_bytes(sk.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
     ST = CAState(ca_k, ca_c)
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", CA), H)
+    srv.st = ST
     sctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     sctx.minimum_version = ssl.TLSVersion.TLSv1_3
     sctx.load_cert_chain(tmp / "srv.pem", tmp / "srv.key")
@@ -957,4 +981,5 @@ http 127.0.0.1:{TLS5} {{
     sys.exit(1 if fails else 0)
 
 
-main()
+if __name__ == "__main__":
+    main()

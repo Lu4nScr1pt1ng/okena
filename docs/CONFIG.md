@@ -474,6 +474,14 @@ named once in `okena { acme DIR ca=URL [email=ADDRESS] [trust=FILE]
 system's roots), `email=` the account's contact. Up to 16 such lines, 15 names
 each; a wildcard (`*.example.com`) with DNS-01 only.
 
+`fallback=URL` names a second CA, asked at once when an order with the first
+fails (down, rate-limited, refusing), before any backoff; `fallback_trust=FILE`
+is its anchor. `eab=FILE` and `fallback_eab=FILE` give a CA an external account
+binding (RFC 8555 7.3.4), which ZeroSSL, Google's CA and many private CAs ask
+for: one line, `KID:HMAC_KEY`, as the CA gave them (the key base64url). A CA
+whose directory says `externalAccountRequired` and has none is not asked for an
+account, and the log says why.
+
 okena keeps them in DIR (made 0700, the `user`'s): `DIR/account.key`, the
 account's key (P-256, made once), and for each certificate `DIR/NAME/cert.pem` (the
 chain) and `DIR/NAME/key.pem` (0600), NAME its first name. They are loaded as

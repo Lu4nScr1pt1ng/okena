@@ -83,7 +83,20 @@ ACM_DNSSEC	:= ACM_D2 + 280		; 64: its secret
 ACM_D3		:= ACM_D2 + 344		; Route 53's: (the key id in ACM_DNSTOK, the secret in ACM_DNSSEC)
 ACM_DNSSTL	:= ACM_D3		; d
 ACM_DNSST	:= ACM_D3 + 8		; 2048: a session token, if one
-ACM_SIZE		:= (ACM_D3 + 8 + 2048 + 7) and not 7
+ACM_D4		:= ACM_D3 + 8 + 2048	; the fallback CA, and the external accounts:
+ACM_FBL		:= ACM_D4		; d: fallback=, 0 none
+ACM_FBHASTRUST	:= ACM_D4 + 4		; d
+ACM_FB		:= ACM_D4 + 8		; q
+ACM_EABKL	:= ACM_D4 + 16		; d: eab='s key id, 0 none
+ACM_EABHL	:= ACM_D4 + 20		; d: its HMAC key's
+ACM_FBEABKL	:= ACM_D4 + 24		; d: fallback_eab='s
+ACM_FBEABHL	:= ACM_D4 + 28		; d
+ACM_EABK	:= ACM_D4 + 32		; 128
+ACM_EABH	:= ACM_D4 + 160		; 64
+ACM_FBEABK	:= ACM_D4 + 224		; 128
+ACM_FBEABH	:= ACM_D4 + 352		; 64
+ACM_FBTRUST	:= ACM_D4 + 416		; fallback_trust='s anchor
+ACM_SIZE		:= (ACM_FBTRUST + PK_SIZE + 7) and not 7
 
 SYS_fchownat_	:= 260
 LLF_REMOVE_FILE	:= 32
@@ -155,6 +168,8 @@ bss
 	g_ac_dchal:	rb ACME_URL * ACME_NAMES
 	g_ac_txt:	rb 64
 	g_ac_dnamel	rd ACME_NAMES
+	g_ac_cai	dd ?			; the CA being asked: 0 ca=, 1 fallback=
+	g_ac_eabreq	dd ?			; its directory says externalAccountRequired
 	g_ac_dchgl	rd ACME_NAMES
 	g_ac_dchg:	rb 64 * ACME_NAMES	; (Route 53: each change, until INSYNC)
 	align 8
@@ -546,6 +561,7 @@ compile_acme:
 	jz	plan_bad_trust
 	mov	dword [g_plan_acme+ACM_HASTRUST],1
 .chal:
+	call	compile_acme_more		; fallback=, fallback_trust=, eab=, fallback_eab=
 	mov	rdi,rbx				; challenge=http-01 (by default) or tls-alpn-01
 	cstring .k_chal, 'challenge',0
 	lea	rsi,[.k_chal]
@@ -590,6 +606,195 @@ compile_acme:
 .bad:
 	call	log_begin
 	out_lit 'acme takes a directory (its whole path, 200 bytes at most), ca=URL (https://, the CA',39,'s directory), and, if wanted, email=ADDRESS, trust=FILE and challenge=http-01|tls-alpn-01|dns-01'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
+
+; rbx = the acme node: fallback=URL (another CA, asked when the first fails),
+; fallback_trust=FILE, eab=FILE and fallback_eab=FILE (KID:HMAC_KEY, base64url:
+; an external account binding, RFC 8555 7.3.4, as ZeroSSL and others ask)
+compile_acme_more:
+	mov	rdi,rbx
+	cstring .k_fb, 'fallback',0
+	lea	rsi,[.k_fb]
+	call	node_option
+	test	rax,rax
+	jz	.eab
+	mov	rsi,[rax+A_VAL]
+	mov	ecx,[rax+A_VLEN]
+	cmp	ecx,9
+	jb	.bad
+	cmp	ecx,ACME_URL - 1
+	ja	.bad
+	mov	rdx,'https://'
+	cmp	[rsi],rdx
+	jne	.bad
+	call	acme_safe
+	jc	.bad
+	mov	[g_plan_acme+ACM_FB],rsi
+	mov	[g_plan_acme+ACM_FBL],ecx
+	mov	rdi,rbx
+	cstring .k_fbt, 'fallback_trust',0
+	lea	rsi,[.k_fbt]
+	call	node_option
+	test	rax,rax
+	jz	.eab
+	lea	rdi,[g_plan_acme+ACM_FBTRUST]
+	call	acme_anchor
+	mov	dword [g_plan_acme+ACM_FBHASTRUST],1
+.eab:
+	mov	rdi,rbx
+	cstring .k_eab, 'eab',0
+	lea	rsi,[.k_eab]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	lea	rdi,[g_plan_acme+ACM_EABK]
+	call	acme_eab_file
+	mov	[g_plan_acme+ACM_EABKL],ecx
+	mov	[g_plan_acme+ACM_EABHL],edx
+@@:
+	mov	rdi,rbx
+	cstring .k_fbeab, 'fallback_eab',0
+	lea	rsi,[.k_fbeab]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	cmp	dword [g_plan_acme+ACM_FBL],0
+	je	.bad
+	lea	rdi,[g_plan_acme+ACM_FBEABK]
+	call	acme_eab_file
+	mov	[g_plan_acme+ACM_FBEABKL],ecx
+	mov	[g_plan_acme+ACM_FBEABHL],edx
+@@:
+	ret
+.bad:
+	call	log_begin
+	out_lit 'acme: fallback= is another CA',39,'s directory (https://), and fallback_trust= and fallback_eab= go with it'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
+
+; rax = an option naming a PEM file: its first certificate's key into rdi (an
+; anchor). Exits when it cannot be.
+acme_anchor:
+	push	rdi
+	mov	rsi,[rax+A_VAL]
+	mov	ecx,[rax+A_VLEN]
+	cmp	ecx,4096
+	jae	plan_bad_trust
+	lea	rdi,[g_trust_path]
+	push	rcx
+	rep	movsb
+	pop	rcx
+	mov	byte [g_trust_path+rcx],0
+	lea	rdi,[g_trust_path]
+	lea	rsi,[g_ar_text]
+	call	read_file
+	test	rax,rax
+	js	plan_bad_trust
+	mov	rsi,rax
+	lea	rdi,[g_trust_der]
+	call	pem_first_cert
+	test	eax,eax
+	jz	plan_bad_trust
+	lea	rsi,[g_trust_der]
+	mov	edx,eax
+	pop	rdi
+	call	cert_pubkey
+	test	eax,eax
+	jz	plan_bad_trust
+	ret
+
+; rax = an option naming a file, KID:HMAC_KEY (the key base64url, or base64),
+; rdi = where: the key id there, the key 128 bytes on. ecx = the id's length,
+; edx = the key's. Exits when it is not one.
+acme_eab_file:
+	push	rbx
+	push	r12
+	mov	r12,rdi
+	mov	rsi,[rax+A_VAL]
+	mov	ecx,[rax+A_VLEN]
+	cmp	ecx,4096
+	jae	.bad
+	lea	rdi,[g_trust_path]
+	push	rcx
+	rep	movsb
+	pop	rcx
+	mov	byte [g_trust_path+rcx],0
+	lea	rdi,[g_trust_path]
+	lea	rsi,[g_ar_text]
+	call	read_file
+	test	rax,rax
+	js	.bad
+	mov	rsi,rax
+	xor	ecx,ecx				; the line
+@@:
+	cmp	ecx,edx
+	jae	@f
+	cmp	byte [rsi+rcx],0x21
+	jb	@f
+	inc	ecx
+	jmp	@b
+@@:
+	xor	ebx,ebx				; KID up to ':'
+@@:
+	cmp	ebx,ecx
+	jae	.bad
+	cmp	byte [rsi+rbx],':'
+	je	@f
+	inc	ebx
+	jmp	@b
+@@:
+	test	ebx,ebx
+	jz	.bad
+	cmp	ebx,127
+	ja	.bad
+	push	rcx
+	mov	ecx,ebx
+	call	acme_safe
+	pop	rcx
+	jc	.bad
+	push	rsi
+	push	rcx
+	mov	rdi,r12
+	push	rcx
+	mov	ecx,ebx
+	rep	movsb
+	pop	rcx
+	pop	rcx
+	pop	rsi
+	lea	rsi,[rsi+rbx+1]
+	sub	ecx,ebx
+	dec	ecx
+	jz	.bad
+	cmp	ecx,90
+	ja	.bad
+	push	rsi
+	push	rcx
+	lea	rdi,[r12+128]
+	mov	edx,ecx
+	call	base64url_decode
+	pop	rcx
+	pop	rsi
+	test	rax,rax
+	jg	.ok
+	lea	rdi,[r12+128]
+	mov	edx,ecx
+	call	base64_decode
+	test	rax,rax
+	jle	.bad
+.ok:
+	cmp	eax,64
+	ja	.bad
+	mov	edx,eax
+	mov	ecx,ebx
+	pop	r12
+	pop	rbx
+	ret
+.bad:
+	call	log_begin
+	out_lit 'acme: eab= and fallback_eab= name a file with one line, KID:HMAC_KEY (the key base64url, 64 bytes at most), as the CA gave them'
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process
@@ -1430,8 +1635,31 @@ acme_main:
 	call	acme_now
 	cmp	rax,[g_ac_due+rbx*8]
 	jb	.later
+	mov	dword [g_ac_cai],0
 	call	acme_issue
+	jnc	.issued
+	cmp	dword [g_plan_acme+ACM_FBL],0
+	je	.failed
+	; the first CA failed: said, and the fallback asked at once
+	call	log_begin
+	out_lit 'acme: '
+	call	acme_out_name
+	out_lit ': the CA failed ('
+	mov	rsi,[g_ac_why]
+	call	out_cstr
+	cmp	dword [g_ac_st],0
+	je	@f
+	out_lit ', HTTP '
+	mov	eax,[g_ac_st]
+	call	out_u64
+@@:
+	out_lit '): asking the fallback CA'
+	call	log_end
+	mov	dword [g_ac_cai],1
+	call	acme_issue
+	mov	dword [g_ac_cai],0
 	jc	.failed
+.issued:
 	mov	qword [g_ac_back+rbx*8],0
 	call	acme_file_due
 	mov	dword [g_ac_reload],1
@@ -2084,9 +2312,16 @@ acme_request:
 	xor	edi,edi
 	cmp	dword [g_ac_dns],0
 	jne	.dns_anchor
+	cmp	dword [g_ac_cai],0
+	jne	.fb_anchor
 	cmp	dword [g_plan_acme+ACM_HASTRUST],0
 	je	@f
 	lea	rdi,[g_plan_acme+ACM_TRUST]
+	jmp	@f
+.fb_anchor:
+	cmp	dword [g_plan_acme+ACM_FBHASTRUST],0
+	je	@f
+	lea	rdi,[g_plan_acme+ACM_FBTRUST]
 	jmp	@f
 .dns_anchor:
 	cmp	dword [g_plan_acme+ACM_DNSHASTRUST],0
@@ -4107,6 +4342,11 @@ acme_issue:
 	; the directory
 	mov	rsi,[g_plan_acme+ACM_CA]
 	mov	ecx,[g_plan_acme+ACM_CAL]
+	cmp	dword [g_ac_cai],0
+	je	@f
+	mov	rsi,[g_plan_acme+ACM_FB]
+	mov	ecx,[g_plan_acme+ACM_FBL]
+@@:
 	xor	edx,edx
 	call	acme_request
 	jc	.out
@@ -4133,7 +4373,43 @@ acme_issue:
 	call	.url_field
 	jc	.bad
 	mov	[g_ac_uorderl],eax
+	; meta.externalAccountRequired
+	mov	dword [g_ac_eabreq],0
+	mov	rsi,[g_ac_rb]
+	mov	edx,[g_ac_rbl]
+	add	rdx,rsi
+	cstring .n_meta, 'meta'
+	lea	rdi,[.n_meta]
+	mov	ecx,4
+	call	json_get
+	jc	.meta_done
+	test	rax,rax
+	jz	.meta_done
+	cmp	byte [rax],'{'
+	jne	.meta_done
+	mov	rsi,rax
+	mov	rdx,r8
+	cstring .n_ear, 'externalAccountRequired'
+	lea	rdi,[.n_ear]
+	mov	ecx,23
+	call	json_get
+	jc	.meta_done
+	test	rax,rax
+	jz	.meta_done
+	cmp	byte [rax],'t'
+	jne	.meta_done
+	mov	dword [g_ac_eabreq],1
+.meta_done:
 	; the account: made, or found (the same key)
+	call	acme_eab_of			; rsi = KID, ecx its length (0 none), rdx = key, r8d its
+	test	ecx,ecx
+	jnz	@f
+	cstring .w_eab, 'the CA asks for an external account binding (eab=)',0
+	lea	rax,[.w_eab]
+	mov	[g_ac_why],rax
+	cmp	dword [g_ac_eabreq],0
+	jne	.bad
+@@:
 	lea	rdi,[g_ac_pay]
 	memit_x '{"termsOfServiceAgreed":true'
 	cmp	dword [g_plan_acme+ACM_EMAILL],0
@@ -4144,6 +4420,7 @@ acme_issue:
 	rep	movsb
 	memit_x '"]'
 @@:
+	call	acme_eab			; ,"externalAccountBinding":{...}, when one
 	memit_x '}'
 	call	.payload
 	lea	rsi,[g_ac_uacct]
@@ -4391,6 +4668,94 @@ acme_issue:
 .url_field:
 	mov	r10d,ACME_URL - 1
 	jmp	acme_field
+
+; the CA being asked's external account: rsi = its key id, ecx its length (0:
+; none), rdx = its HMAC key, r8d that one's length
+acme_eab_of:
+	lea	rsi,[g_plan_acme+ACM_EABK]
+	mov	ecx,[g_plan_acme+ACM_EABKL]
+	lea	rdx,[g_plan_acme+ACM_EABH]
+	mov	r8d,[g_plan_acme+ACM_EABHL]
+	cmp	dword [g_ac_cai],0
+	je	@f
+	lea	rsi,[g_plan_acme+ACM_FBEABK]
+	mov	ecx,[g_plan_acme+ACM_FBEABKL]
+	lea	rdx,[g_plan_acme+ACM_FBEABH]
+	mov	r8d,[g_plan_acme+ACM_FBEABHL]
+@@:
+	ret
+
+; rdi = the newAccount payload so far: ,"externalAccountBinding":{"protected":
+; base64url({"alg":"HS256","kid":KID,"url":newAccount}), "payload": base64url(the
+; account's JWK), "signature": HMAC-SHA256 with the external account's key}, when
+; there is one. rdi past it.
+acme_eab:
+	push	rbx
+	push	r12
+	push	r13
+	mov	rbx,rdi
+	call	acme_eab_of
+	test	ecx,ecx
+	jz	.none
+	mov	r12,rdx
+	mov	r13d,r8d
+	lea	rdi,[g_ac_prot]
+	push	rsi
+	push	rcx
+	memit_x '{"alg":"HS256","kid":"'
+	pop	rcx
+	pop	rsi
+	rep	movsb
+	memit_x '","url":"'
+	lea	rsi,[g_ac_uacct]
+	mov	ecx,[g_ac_uacctl]
+	rep	movsb
+	memit_x '"}'
+	lea	rsi,[g_ac_prot]
+	mov	rdx,rdi
+	sub	rdx,rsi
+	lea	rdi,[g_ac_b64]
+	call	base64url_encode
+	push	rdi				; the protected part's end
+	mov	byte [rdi],'.'
+	inc	rdi
+	lea	rsi,[g_ac_jwk]
+	mov	edx,[g_ac_jwkl]
+	call	base64url_encode
+	push	rdi				; the payload's end
+	lea	rdi,[g_ac_hash]
+	mov	rsi,r12
+	mov	edx,r13d
+	lea	rcx,[g_ac_b64]
+	mov	r8,[rsp]
+	sub	r8,rcx
+	call	hmac_sha256
+	pop	r9
+	pop	r8
+	mov	rdi,rbx
+	memit_x ',"externalAccountBinding":{"protected":"'
+	lea	rsi,[g_ac_b64]
+	mov	rcx,r8
+	sub	rcx,rsi
+	rep	movsb
+	memit_x '","payload":"'
+	lea	rsi,[r8+1]
+	mov	rcx,r9
+	sub	rcx,rsi
+	rep	movsb
+	memit_x '","signature":"'
+	lea	rsi,[g_ac_hash]
+	mov	edx,32
+	call	base64url_encode
+	memit_x '"}'
+	jmp	.out
+.none:
+	mov	rdi,rbx
+.out:
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
 
 ; the order's "authorizations" (its body): g_ac_authz, g_ac_nauthz. CF: none,
 ; or more than names.

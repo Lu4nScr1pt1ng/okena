@@ -528,8 +528,9 @@ built; both measurements are still to be made on the lab.)
   included, CSR, the chain), a self-signed certificate until then,
   files renamed into DIR, a reload of its own, renewal at two thirds, backoff
   from a minute to six hours; `okena cert` for keys, CSRs and self-signed ones.
-  Still to do: the rest of the list above (fallback CAs,
-  EAB, ARI, OCSP, on-demand, the shared lock, `okena certs`, the local CA).
+  A fallback CA, asked at once when the first fails; external account binding
+  (EAB) for either.
+  Still to do: the rest of the list above (ARI, OCSP, on-demand, the shared lock, `okena certs`, the local CA).
   Exit: a fresh install with `tls auto` serves a valid certificate within a
   minute; a CA down, rate-limited or answering wrongly never takes a served
   certificate away; `make chaos` with the CA failed in turn passes.
