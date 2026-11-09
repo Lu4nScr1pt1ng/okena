@@ -26,6 +26,7 @@ cstring str_cmd_bench, 'bench',0
 cstring str_cmd_top, 'top',0
 cstring str_cmd_maint, 'maintenance',0
 cstring str_cmd_purge, 'purge',0
+cstring str_cmd_sign, 'sign',0
 cstring str_flag_help, '--help',0
 cstring str_flag_version, '--version',0
 cstring str_flag_c, '-c',0
@@ -111,6 +112,12 @@ cli_main:
 	call	cstr_eq
 	test	eax,eax
 	jnz	cli_purge
+	mov	rax,[g_argv]
+	mov	rdi,[rax+8]
+	lea	rsi,[str_cmd_sign]
+	call	cstr_eq
+	test	eax,eax
+	jnz	cli_sign
 	mov	rax,[g_argv]
 	mov	rdi,[rax+8]
 	lea	rsi,[str_cmd_health]

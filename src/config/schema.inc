@@ -148,6 +148,7 @@ keysdef k_metrics, 'token', T_ANY
 keysdef k_cdisk, 'size', T_SIZE
 keysdef k_tracing, 'sample', T_PERCENT, 'trust', T_ANY
 keysdef k_drain, 'delay', T_DURATION, 'timeout', T_DURATION
+keysdef k_signed, 'key', T_ANY, 'key2', T_ANY
 keysdef k_hs_budget, 'wait', T_DURATION
 keysdef k_auth, 'header', T_ANY, 'keys', T_ANY, 'users', T_ANY, 'realm', T_ANY, 'identity', T_ANY, 'forward', T_ANY, 'pool', T_ANY, 'path', T_ANY, 'copy', T_ANY, 'cache', T_DURATION, 'timeout', T_DURATION
 keysdef k_hedge, 'after', T_ANY, 'max', T_COUNT
@@ -189,7 +190,7 @@ enumdef future_names, 'xdp', \
 	'source', \
 	'concurrency', 'retry_budget', 'retry', 'outlier', \
 	'canonical', \
-	'body', 'signed_urls', \
+	'body', \
 	'response', 'alpn', 'cert', 'warm'
 
 rodata
@@ -261,6 +262,7 @@ dirdef DIR_REDIRECTS, 'redirects', M_ROUTE, 0,         F_UNIQUE, 1, 1, T_ANY, T_
 dirdef DIR_FILES, 'files',      M_ROUTE,   0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, k_files
 dirdef DIR_MATCH, 'match',      M_ROUTE,   CTX_ROUTE,   F_BLOCK_REQ or F_FREE_KEYS, 0, 16, T_ANY, T_ANY, 0
 dirdef DIR_CACHE, 'cache',      M_ROUTE,   0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, k_cache
+dirdef DIR_SIGNED, 'signed_urls', M_ROUTE, 0,           F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_signed
 dirdef DIR_PRIORITY, 'priority', M_ROUTE,   0,           F_UNIQUE, 1, 1, e_priority, T_NONE, 0
 dirdef DIR_HEDGE, 'hedge',      M_ROUTE,   0,           F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_hedge
 dirdef DIR_MIRROR, 'mirror',    M_ROUTE,   0,           F_UNIQUE, 2, 3, e_mirror_what, T_ANY, 0

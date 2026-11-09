@@ -562,8 +562,66 @@ ck_make:
 	mov	edx,[g_hm+HM_TLEN]
 	cmp	dword [r12+CA_QMODE],0
 	jne	.split
+	push	rsi
+	push	rdx
+	sg_route_signed				; a signed route: not its signature
+	pop	rdx
+	pop	rsi
+	jc	.unsigned
 	call	.field				; (all of it)
 	jmp	.varied
+.unsigned:
+	; the path, then each parameter but expires, prefix, ip and sig
+	xor	ecx,ecx
+@@:
+	cmp	ecx,edx
+	jae	@f
+	cmp	byte [rsi+rcx],'?'
+	je	@f
+	inc	ecx
+	jmp	@b
+@@:
+	lea	r14,[rsi+rdx]			; the end
+	lea	r15,[rsi+rcx]			; the query
+	mov	edx,ecx
+	push	r15
+	call	.field
+	pop	r15
+.u_pair:
+	cmp	r15,r14
+	jae	.varied
+	inc	r15				; past ? or &
+	mov	rsi,r15
+@@:
+	cmp	r15,r14
+	jae	@f
+	cmp	byte [r15],'&'
+	je	@f
+	inc	r15
+	jmp	@b
+@@:
+	mov	rdx,r15
+	sub	rdx,rsi				; the pair
+	mov	rdi,rsi				; its name's length
+	xor	ecx,ecx
+@@:
+	cmp	ecx,edx
+	jae	@f
+	cmp	byte [rdi+rcx],'='
+	je	@f
+	inc	ecx
+	jmp	@b
+@@:
+	push	rsi
+	push	rdx
+	call	sg_is_param
+	pop	rdx
+	pop	rsi
+	je	.u_pair
+	push	r15
+	call	.field
+	pop	r15
+	jmp	.u_pair
 .split:
 	; the path, up to `?`
 	xor	ecx,ecx

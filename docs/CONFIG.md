@@ -12,7 +12,7 @@ not built yet. A directive that is not built is refused by `okena check`
 | `tcp ADDR...` | `to`, `limits { connections; per_source }`, `timeout { idle }`, `proxy_protocol send v1\|v2`, `tls { cert; key }`, `tls passthrough { sni NAME... to pool P; default reject\|to pool P }` |
 | `udp ADDR...` | `to`, `responses N`, `limits { connections }` (flows), `timeout { idle }` |
 | `http ADDR...` | `host`, `route`, `errors CODES file= [backend]`, `maintenance file= retry= allow= except=`, `limits`, `timeout { idle; header; body_idle; response }`, `trusted_proxies`, `access_log`, `tracing`, `http2 on\|off`, `http3 on\|off\|retry\|v2`, `preferred_address`, `early_data on\|off`, `tls { cert; key; ktls on\|off }` |
-| `route PATH... [METHOD...]` | `to`, `redirect`, `rewrite path`, `header set\|add\|drop`, `response header set\|add\|drop` |
+| `route PATH... [METHOD...]` | `to`, `redirect`, `rewrite path`, `signed_urls key= [key2=]`, `header set\|add\|drop`, `response header set\|add\|drop` |
 | `pool NAME` | `server ADDR [weight=N] [max=N] [backup]`, `queue timeout=`, `balance least-request\|peak-ewma\|round-robin\|least-conn\|random\|maglev\|ring-hash\|source-hash [key=] [bound=]\|first`, `sticky cookie= [ttl=] [samesite=]`, `connect timeout=`, `health tcp\|http\|grpc ...`, `slow_start`, `tls { trust FILE; sni NAME }` (TLS to the backends), `protocol h1\|h2` |
 
 `tls { cert FILE; key FILE }` on an `http` listener makes it HTTPS: TLS
@@ -778,6 +778,28 @@ slice whose `Content-Range` is not the one asked for is never kept, and a client
 waiting for it is cut rather than sent the wrong bytes. A purge of the object's URL
 takes all its slices.
 
+`signed_urls key=FILE [key2=FILE]` on a route serves only links the origin signed,
+until they expire. The key is the first line of its file (16 to 128 bytes), shared
+with whoever signs. A link carries in its query `expires=` (Unix seconds), `sig=`
+and, if wanted, `prefix=` and `ip=`. `sig` is the HMAC-SHA256 of
+`PATH\nEXPIRES\nIP`, in base64url without padding. PATH is the link's path as
+it is in the link, or the prefix when there is one. IP is empty when there is none.
+
+```
+okena sign /etc/okena/url.key /video/a.mp4 1h               # one file, an hour
+okena sign /etc/okena/url.key /live/x/0.ts 6h prefix=/live/x/   # a whole stream
+okena sign /etc/okena/url.key /dl/f.zip 10m ip=203.0.113.7  # one client
+```
+
+With `prefix=`, one signature serves every path under that prefix: the segments of
+an HLS or DASH stream. With `ip=`, only that client may use the link (the address
+`trusted_proxies` gives, behind a CDN). `key2=` is taken as well, so a key can be
+rotated without breaking the links already out. Anything wrong (no signature,
+expired, another path, another client, a parameter twice) is a 403, the same for
+each. The check comes before the cache, so a cached answer still wants a valid
+link. The cache keeps one answer per object, not one per link: `expires`, `prefix`,
+`ip` and `sig` are not part of its key.
+
 A purge takes answers back at once, from every worker's memory and from the disk:
 
 ```
@@ -1183,7 +1205,7 @@ http :443 {
         stale_if_error 1h
         slice 4MiB
     }
-    signed_urls key=${file:/etc/okena/url.key}
+    signed_urls key=/etc/okena/url.key
     to pool shield
 }
 

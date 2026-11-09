@@ -716,6 +716,14 @@ http_request:
 	jnz	cors_preflight
 	h_rec
 .no_cors:
+	mov	eax,[g_acts+rdx+RA_SIGNED]	; signed_urls: a link the origin signed
+	test	eax,eax
+	jz	.no_signed
+	call	signed_check
+	jnc	.no_signed
+	mov	edi,403
+	jmp	http_error
+.no_signed:
 	cmp	dword [g_acts+rdx+RA_AUTH],0	; auth: who it is
 	je	.no_auth
 	push	rax

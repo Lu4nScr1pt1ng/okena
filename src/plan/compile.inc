@@ -1317,6 +1317,18 @@ compile_route_action:
 	pop	r12
 .no_cache:
 	mov	rdi,r12
+	mov	ecx,DIR_SIGNED
+	call	find_child
+	test	rax,rax
+	jz	.no_signed
+	push	r12
+	push	rbx
+	mov	rbx,rax
+	call	compile_signed
+	pop	rbx
+	pop	r12
+.no_signed:
+	mov	rdi,r12
 	mov	ecx,DIR_FILES
 	call	find_child
 	test	rax,rax

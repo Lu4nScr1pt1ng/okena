@@ -482,7 +482,8 @@ on a machine that can spare it).
   fanned out to `fleet`; ranges answered from the cache, and `slice=` for
   large objects.)
 * Shield tier, signed URLs, CDN provider ranges, authenticated origin
-  pulls, health-driven BGP announcement (through BIRD).
+  pulls, health-driven BGP announcement (through BIRD). (Done: signed
+  URLs, with prefix, client address and key rotation, and `okena sign`.)
 * A floating address for a pair of instances without BGP: VRRP v3 (RFC 9568),
   with health deciding who holds it and gratuitous ARP / unsolicited NA on a
   change, as keepalived beside HAProxy does it.
