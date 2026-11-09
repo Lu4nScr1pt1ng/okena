@@ -261,6 +261,7 @@ supervisor_reload:
 	push	r15
 	cmp	dword [g_shutdown],0
 	jne	.out
+	call	sd_reloading			; (systemd: RELOADING=1)
 	cmp	qword [g_cli_text],0
 	je	@f
 	call	log_begin
@@ -458,6 +459,10 @@ supervisor_reload:
 	mov	edi,SG_RELOAD_FAILS
 	call	stats_global_inc
 .out:
+	cmp	dword [g_shutdown],0
+	jne	@f
+	call	sd_ready			; (systemd: READY=1, the reload over either way)
+@@:
 	pop	r15
 	pop	r14
 	pop	r13

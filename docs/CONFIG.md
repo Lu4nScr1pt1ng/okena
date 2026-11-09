@@ -1279,8 +1279,30 @@ drain timeout, and exits. Until then the old one has lost nothing: if the new on
 start it goes on. The socket is the owner's only, by mode and by a look at the caller.
 What is reused goes by the address as written; a listener the new configuration no
 longer has closes. HTTP/3 connections do not survive it, as QUIC sockets are opened anew.
-The new okena is a new process in the foreground of whoever started it, so a service
-manager has to be told: with systemd, a `Type=notify` unit does not follow it yet.
+The new okena is a new process in the foreground of whoever started it; under
+systemd the old one tells it `MAINPID=` of the new as it leaves (the unit needs
+`NotifyAccess=all` for the new one's `READY=1`).
+
+### systemd
+
+okena speaks systemd's protocols with no library (contrib/systemd has a unit and a
+socket unit):
+
+* **Notify** (`Type=notify-reload`): `READY=1` once the workers serve, with
+  `MAINPID`; `RELOADING=1` (with `MONOTONIC_USEC`) and then `READY=1` around each
+  reload, whether it took or not; `STOPPING=1` when it stops; `WATCHDOG=1` once a
+  second while `WatchdogSec=` asks, from the supervisor, so a supervisor that hangs
+  is restarted.
+* **Socket activation**: the sockets of a `.socket` unit, passed on fds from 3
+  (`LISTEN_FDS`, for this process: `LISTEN_PID`), are taken by the listeners with
+  the same address and kind: `ListenStream` for `tcp` and `http`, `ListenDatagram`
+  for `udp`, and `:443` in okena.conf takes a socket on any address of that port.
+  Every worker accepts from systemd's socket (each holds a dup of it, and a reload
+  that adds workers dups it again), so the unit wants `ReusePort=no`. A socket no
+  listener takes is closed and said; a listener none is there for opens its own.
+  QUIC's sockets are okena's. With systemd holding the sockets, a restart refuses
+  no connection: the new okena takes them, the old one drains what it has.
+
 
 `okena route 'GET https://api.example.com/v1/users/42 x-canary:yes' [-c FILE]` answers
 "where does this request go", without starting anything: listener, route, the `match`

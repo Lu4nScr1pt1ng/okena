@@ -191,6 +191,8 @@ rodata
 	sc_allow filter_supervisor, SYS_getsockopt
 	sc_allow filter_supervisor, SYS_shutdown
 	sc_allow filter_supervisor, SYS_getsockname
+	sc_allow filter_supervisor, SYS_dup		; systemd's sockets, one a worker (systemd.inc)
+	sc_allow filter_supervisor, SYS_fcntl
 	sc_allow filter_supervisor, SYS_recvfrom
 	sc_allow filter_supervisor, SYS_recvmsg	; epoll workers: kTLS control records
 	sc_end filter_supervisor

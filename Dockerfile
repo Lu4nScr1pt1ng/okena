@@ -20,6 +20,10 @@ COPY src src
 RUN make
 
 FROM scratch
+LABEL org.opencontainers.image.title="okena" \
+      org.opencontainers.image.description="L4/L7 load balancer, reverse proxy and API gateway, in x86-64 assembly" \
+      org.opencontainers.image.source="https://github.com/Lu4nScr1pt1ng/okena" \
+      org.opencontainers.image.licenses="AGPL-3.0-only"
 COPY --from=build /src/build/okena /okena
 COPY LICENSE /LICENSE
 USER 65532:65532

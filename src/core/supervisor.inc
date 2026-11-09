@@ -114,6 +114,7 @@ supervisor_main:
 	mov	eax,SYS_getpid
 	syscall
 	mov	[g_sup_pid],eax
+	call	sd_init				; systemd: its sockets, its notify socket
 
 	; one socket per worker for each listener
 	xor	r12d,r12d
@@ -144,10 +145,12 @@ supervisor_main:
 	inc	r12d
 	jmp	.listener
 .opened:
+	call	sd_leftovers			; (systemd's sockets no listener took)
 	call	qs_open_all			; http3: a UDP socket per worker
 	test	eax,eax
 	js	.no_udp
 	call	log_begin
+	call	sd_ready			; (systemd: READY=1)
 	out_lit 'started with '
 	mov	eax,[g_workers]
 	call	out_u64
@@ -228,6 +231,7 @@ supervisor_main:
 	call	reap_workers
 	jmp	.wait_signal
 .watchdog:
+	call	sd_tick				; systemd's watchdog, when it asks
 	call	upgrade_tick
 	call	api_tick
 	call	watchdog_check
@@ -349,6 +353,11 @@ log_listener:
 ; traffic. A probe socket without SO_REUSEPORT fails to bind when anyone
 ; is listening there. edi = listener.
 listener_probe:
+	push	rdi				; (systemd's socket for it: nothing to probe)
+	call	sd_find
+	pop	rdi
+	test	eax,eax
+	jns	.sd
 	push	rbx
 	push	r12
 	push	r13
@@ -442,6 +451,9 @@ listener_probe:
 	pop	r12
 	pop	rbx
 	ret
+.sd:
+	xor	eax,eax				; (free: systemd holds it for us)
+	ret
 
 ; rcx = pool. eax = servers as written: a name counts once, not as the
 ; slots reserved for its addresses.
@@ -474,6 +486,11 @@ pool_written_count:
 ; ":port" is dual stack: an IPv6 socket that takes IPv4 too, or plain IPv4
 ; when the kernel has no IPv6.
 listener_open:
+	push	rdi				; systemd's socket, when it gave one (a dup)
+	call	sd_socket
+	pop	rdi
+	test	eax,eax
+	jns	.sd_given
 	push	rbx
 	push	r12
 	push	r13
@@ -605,6 +622,8 @@ listener_open:
 	pop	r13
 	pop	r12
 	pop	rbx
+	ret
+.sd_given:
 	ret
 
 .setsockopt:
@@ -1044,6 +1063,10 @@ begin_shutdown:
 	push	rbx
 	push	r12
 	mov	r12d,SIGTERM
+	cmp	dword [g_shutdown],0
+	jne	@f
+	call	sd_stopping
+@@:
 	cmp	dword [g_shutdown],0
 	je	.first
 	mov	r12d,SIGKILL

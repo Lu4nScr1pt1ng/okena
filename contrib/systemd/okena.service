@@ -1,0 +1,28 @@
+# okena as a systemd service. With okena.socket beside it, systemd holds the
+# listening sockets: a restart (a new binary, a change `okena reload` cannot
+# make) refuses no connection, and okena drains what it has before it leaves.
+[Unit]
+Description=okena: L4/L7 load balancer, reverse proxy and API gateway
+Documentation=https://github.com/Lu4nScr1pt1ng/okena/blob/main/docs/CONFIG.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# READY=1 once the workers serve; RELOADING=1 and READY=1 around a reload
+Type=notify-reload
+ExecStart=/usr/local/bin/okena run -c /etc/okena/okena.conf
+ExecReload=/bin/kill -HUP $MAINPID
+# the watchdog: okena says WATCHDOG=1 each second while its supervisor lives
+WatchdogSec=10s
+Restart=on-failure
+# okena's drain (drain timeout=, 7 s by default) fits inside this
+TimeoutStopSec=15s
+# `okena { user okena }` drops the processes that face the network to this user;
+# the supervisor stays root to read keys and bind low ports on a reload
+LimitNOFILE=1048576
+# `okena upgrade` (a binary handed over in place): the new one says READY=1
+# itself, and the old one MAINPID= of the new as it leaves
+NotifyAccess=all
+
+[Install]
+WantedBy=multi-user.target

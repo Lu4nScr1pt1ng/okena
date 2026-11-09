@@ -1,0 +1,17 @@
+# The sockets systemd opens for okena and hands it at start (socket activation):
+# each is taken by the listener with the same address and kind (ListenStream for
+# tcp and http, ListenDatagram for udp; ":443" in okena.conf takes [::]:443).
+# QUIC (HTTP/3) sockets are okena's own.
+[Unit]
+Description=okena's listening sockets
+
+[Socket]
+ListenStream=0.0.0.0:80
+ListenStream=0.0.0.0:443
+# ListenDatagram=0.0.0.0:53
+Backlog=4096
+# the same socket for every worker: no SO_REUSEPORT group needed
+ReusePort=no
+
+[Install]
+WantedBy=sockets.target

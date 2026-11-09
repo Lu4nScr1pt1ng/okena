@@ -453,7 +453,10 @@ auth + limit stays within the latency budget in ARCHITECTURE.md. Met with `busy_
   and by route, also for errors a backend sent: done) and a maintenance mode (done)
   (`okena maintenance on [route]`: a page and a Retry-After, health checks
   and allowed addresses still let in).
-* Landlock, privilege drop, systemd socket activation, container image.
+* Landlock, privilege drop, systemd socket activation, container image (done:
+  Landlock in every process, `user`, socket activation and the notify protocol
+  with contrib/systemd units, a `scratch` image as uid 65532 with its seccomp
+  profile).
 
 Exit: a week-long soak with reloads and upgrades every minute under load
 loses no request; `make chaos` passes with every dependency (DNS,

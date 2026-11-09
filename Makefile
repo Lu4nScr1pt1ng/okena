@@ -169,6 +169,8 @@ test-serial: $(BIN) $(HTTPH) $(KAT) $(TLSH)
 	python3 -I tests/gateway/landlock.py epoll
 	python3 -I tests/gateway/privdrop.py io_uring
 	python3 -I tests/gateway/privdrop.py epoll
+	python3 -I tests/gateway/systemd.py io_uring
+	python3 -I tests/gateway/systemd.py epoll
 	python3 -I tests/gateway/geoip.py io_uring
 	python3 -I tests/gateway/geoip.py epoll
 	python3 -I tests/gateway/acl.py io_uring

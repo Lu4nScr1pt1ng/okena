@@ -35,6 +35,7 @@ bss
 	g_up_conn	dd ?			; the new one talking to it + 1; or, in the
 						; new one, the old one
 	g_up_metrics	dd ?			; a metrics socket handed over + 1
+	g_up_newpid	dd ?			; the new okena's pid
 	g_up_n		dd ?
 	g_up_texts:	rb UP_TEXT * MAX_LISTENERS
 	g_up_tlen	rd MAX_LISTENERS
@@ -78,6 +79,7 @@ up_name:
 ; a helper, starting: the listening sockets are no business of its own, and if it holds
 ; one past the supervisor's end a connection can land on it, to be reset as it dies
 helper_close_sockets:
+	call	sd_close_all			; (and systemd's, kept by the supervisor)
 	push	rbx
 	push	r12
 	xor	r12d,r12d
@@ -212,6 +214,8 @@ upgrade_tick:
 	syscall
 	cmp	eax,[rsp+4]
 	jne	.refuse
+	mov	eax,[rsp]			; (its pid: systemd's MAINPID when it stands)
+	mov	[g_up_newpid],eax
 	add	rsp,32
 	call	up_send_all
 	lea	eax,[rbx+1]
@@ -244,6 +248,8 @@ upgrade_tick:
 	call	log_begin
 	out_lit 'upgrade: the new okena is ready: finishing'
 	call	log_end
+	mov	edi,[g_up_newpid]
+	call	sd_mainpid			; (systemd follows the new one)
 	mov	dword [g_shutdown],1
 	mov	edi,[g_admin_pid]
 	test	edi,edi

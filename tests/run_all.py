@@ -143,6 +143,8 @@ SUITES = [
     ("landlock epoll", ["tests/gateway/landlock.py", "epoll"]),
     ("privdrop io_uring", ["tests/gateway/privdrop.py", "io_uring"]),
     ("privdrop epoll", ["tests/gateway/privdrop.py", "epoll"]),
+    ("systemd io_uring", ["tests/gateway/systemd.py", "io_uring"]),
+    ("systemd epoll", ["tests/gateway/systemd.py", "epoll"]),
     ("geoip io_uring", ["tests/gateway/geoip.py", "io_uring"]),
     ("geoip epoll", ["tests/gateway/geoip.py", "epoll"]),
     ("acl io_uring", ["tests/gateway/acl.py", "io_uring"]),
