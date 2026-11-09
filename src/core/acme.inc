@@ -169,6 +169,17 @@ bss
 	g_ac_txt:	rb 64
 	g_ac_dnamel	rd ACME_NAMES
 	g_ac_cai	dd ?			; the CA being asked: 0 ca=, 1 fallback=
+	; ARI (RFC 9773): per certificate, its CertID and when to ask again
+	align 8
+	g_ac_arinext	rq ACME_CERTS
+	g_ac_retry	dq ?			; the answer's Retry-After (s), 0 none
+	g_ac_certidl	rd ACME_CERTS
+	g_ac_arigot	rd ACME_CERTS		; the CA answered for it: an order "replaces" it
+	g_ac_derl	dd ?
+	g_ac_rinfol	dd ?
+	g_ac_certid:	rb 128 * ACME_CERTS
+	g_ac_rinfo:	rb ACME_URL
+	g_ac_t14:	rb 16
 	g_ac_eabreq	dd ?			; its directory says externalAccountRequired
 	g_ac_dchgl	rd ACME_NAMES
 	g_ac_dchg:	rb 64 * ACME_NAMES	; (Route 53: each change, until INSYNC)
@@ -1632,6 +1643,13 @@ acme_main:
 	jne	@f
 	call	acme_file_due
 @@:
+	cmp	dword [g_ac_certidl+rbx*4],0	; ARI: the CA's window, when it gives one
+	je	@f
+	call	acme_now
+	cmp	rax,[g_ac_arinext+rbx*8]
+	jb	@f
+	call	acme_ari
+@@:
 	call	acme_now
 	cmp	rax,[g_ac_due+rbx*8]
 	jb	.later
@@ -1712,6 +1730,13 @@ acme_main:
 	call	log_end
 .later:
 	mov	rax,[g_ac_due+rbx*8]
+	cmp	rax,r13
+	jae	@f
+	mov	r13,rax
+@@:
+	cmp	dword [g_ac_certidl+rbx*4],0
+	je	@f
+	mov	rax,[g_ac_arinext+rbx*8]
 	cmp	rax,r13
 	jae	@f
 	mov	r13,rax
@@ -2025,6 +2050,9 @@ acme_file_due:
 	push	r12
 	mov	qword [g_ac_due+rbx*8],0
 	mov	qword [g_ac_end+rbx*8],0
+	mov	dword [g_ac_certidl+rbx*4],0
+	mov	dword [g_ac_arigot+rbx*4],0
+	mov	qword [g_ac_arinext+rbx*8],0
 	cstring .f_cert, '/cert.pem',0
 	lea	rsi,[.f_cert]
 	call	acme_path
@@ -2036,8 +2064,18 @@ acme_file_due:
 	call	pem_first_cert
 	test	eax,eax
 	jz	.out
+	mov	[g_ac_derl],eax
+	imul	edi,ebx,128			; its CertID, for ARI
+	lea	rdi,[g_ac_certid+rdi]
 	lea	rsi,[g_ac_der]
 	mov	edx,eax
+	call	acme_certid
+	jnc	@f
+	xor	eax,eax
+@@:
+	mov	[g_ac_certidl+rbx*4],eax
+	lea	rsi,[g_ac_der]
+	mov	edx,[g_ac_derl]
 	call	x509_locate
 	test	eax,eax
 	jz	.out
@@ -2137,6 +2175,323 @@ acme_epoch:
 	add	rax,rdx
 	dec	ecx
 	jnz	@b
+	ret
+
+; ------------------------------------------------------------------ ARI
+
+; rsi = a certificate's DER, edx = its length, rdi = out: its ARI CertID,
+; base64url(the authority key identifier) "." base64url(the serial's bytes);
+; eax its length. CF: it has no AKI (or one too long).
+acme_certid:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	mov	r12,rdi
+	mov	rbx,rsi
+	mov	r13d,edx
+	; the serial: Certificate, TBSCertificate, [0] version, INTEGER
+	lea	rdx,[rsi+rdx]
+	call	der_read
+	jc	.bad
+	cmp	al,0x30
+	jne	.bad
+	lea	rdx,[rsi+rcx]
+	call	der_read
+	jc	.bad
+	cmp	al,0x30
+	jne	.bad
+	lea	rdx,[rsi+rcx]
+	call	der_read
+	jc	.bad
+	cmp	al,0xA0
+	jne	@f
+	mov	rsi,r8
+	call	der_read
+	jc	.bad
+@@:
+	cmp	al,2
+	jne	.bad
+	cmp	ecx,32
+	ja	.bad
+	mov	r14,rsi
+	mov	r15d,ecx
+	; the AKI: extension 2.5.29.35, [0] keyIdentifier
+	mov	rsi,rbx
+	mov	edx,r13d
+	call	x509_locate
+	test	eax,eax
+	jz	.bad
+	mov	rsi,[g_x509_ext]
+	test	rsi,rsi
+	jz	.bad
+.ext:
+	cmp	rsi,[g_x509_extend]
+	jae	.bad
+	mov	rdx,[g_x509_extend]
+	call	der_read			; Extension
+	jc	.bad
+	cmp	al,0x30
+	jne	.bad
+	push	r8				; (the next)
+	lea	rdx,[rsi+rcx]
+	call	der_read			; its OID
+	jc	.next
+	cmp	al,6
+	jne	.next
+	cmp	ecx,3
+	jne	.next
+	cmp	word [rsi],0x1D55
+	jne	.next
+	cmp	byte [rsi+2],0x23
+	jne	.next
+	mov	rsi,r8
+	call	der_read
+	jc	.next
+	cmp	al,1				; (critical)
+	jne	@f
+	mov	rsi,r8
+	call	der_read
+	jc	.next
+@@:
+	cmp	al,4
+	jne	.next
+	lea	rdx,[rsi+rcx]
+	call	der_read			; AuthorityKeyIdentifier
+	jc	.next
+	cmp	al,0x30
+	jne	.next
+	lea	rdx,[rsi+rcx]
+	call	der_read
+	jc	.next
+	cmp	al,0x80				; [0] keyIdentifier
+	jne	.next
+	add	rsp,8
+	test	ecx,ecx
+	jz	.bad
+	cmp	ecx,64
+	ja	.bad
+	mov	rdi,r12
+	mov	edx,ecx
+	call	base64url_encode
+	mov	byte [rdi],'.'
+	inc	rdi
+	mov	rsi,r14
+	mov	edx,r15d
+	call	base64url_encode
+	mov	rax,rdi
+	sub	rax,r12
+	clc
+	jmp	.out
+.next:
+	pop	rsi
+	jmp	.ext
+.bad:
+	stc
+.out:
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; rsi/ecx = an RFC 3339 time (YYYY-MM-DDTHH:MM:SS, a fraction if wanted, Z or
+; +00:00): rax = seconds since 1970. CF: not one.
+acme_rfc3339:
+	cmp	ecx,20
+	jb	.bad
+	cmp	byte [rsi+4],'-'
+	jne	.bad
+	cmp	byte [rsi+7],'-'
+	jne	.bad
+	mov	al,[rsi+10]
+	or	al,0x20
+	cmp	al,'t'
+	jne	.bad
+	cmp	byte [rsi+13],':'
+	jne	.bad
+	cmp	byte [rsi+16],':'
+	jne	.bad
+	lea	rdi,[g_ac_t14]
+	xor	edx,edx
+.digits:
+	movzx	eax,byte [.at+rdx]
+	mov	al,[rsi+rax]
+	cmp	al,'0'
+	jb	.bad
+	cmp	al,'9'
+	ja	.bad
+	mov	[rdi+rdx],al
+	inc	edx
+	cmp	edx,14
+	jb	.digits
+	; past the seconds: a fraction, then Z (or +00:00)
+	lea	r8,[rsi+19]
+	lea	r9,[rsi+rcx]
+	cmp	byte [r8],'.'
+	jne	.zone
+@@:
+	inc	r8
+	cmp	r8,r9
+	jae	.bad
+	cmp	byte [r8],'0'
+	jb	.zone
+	cmp	byte [r8],'9'
+	jbe	@b
+.zone:
+	mov	al,[r8]
+	or	al,0x20
+	cmp	al,'z'
+	je	.utc
+	lea	rax,[r8+6]
+	cmp	rax,r9
+	ja	.bad
+	cmp	dword [r8],'+00:'
+	jne	.bad
+	cmp	word [r8+4],'00'
+	jne	.bad
+.utc:
+	lea	rsi,[g_ac_t14]
+	call	acme_epoch
+	clc
+	ret
+.bad:
+	stc
+	ret
+.at	db 0,1,2,3, 5,6, 8,9, 11,12, 14,15, 17,18
+
+; ebx = a certificate with a CertID: the first CA's renewalInfo for it; its
+; suggested window, a time in it chosen at random, is when it is renewed. Asked
+; again after Retry-After (an hour to a day; 6 hours when none). A CA with no
+; ARI, or no answer: the due date stays (2/3 of the life).
+acme_ari:
+	push	r12
+	push	r13
+	mov	qword [g_ac_arinext+rbx*8],0
+	mov	r12d,21600			; (when to ask again)
+	mov	dword [g_ac_cai],0
+	mov	rsi,[g_plan_acme+ACM_CA]
+	mov	ecx,[g_plan_acme+ACM_CAL]
+	xor	edx,edx
+	call	acme_request
+	jc	.again
+	cmp	dword [g_ac_st],200
+	jne	.again
+	cstring .n_ri, 'renewalInfo',0
+	lea	rdi,[.n_ri]
+	lea	r9,[g_ac_rinfo]
+	mov	r10d,ACME_URL - 130
+	call	acme_field
+	jc	.none				; (no ARI at this CA: once a day)
+	mov	[g_ac_rinfol],eax
+	lea	rdi,[g_ac_durl]
+	lea	rsi,[g_ac_rinfo]
+	mov	ecx,eax
+	rep	movsb
+	cmp	byte [rdi-1],'/'
+	je	@f
+	mov	byte [rdi],'/'
+	inc	rdi
+@@:
+	imul	esi,ebx,128
+	lea	rsi,[g_ac_certid+rsi]
+	mov	ecx,[g_ac_certidl+rbx*4]
+	rep	movsb
+	lea	rsi,[g_ac_durl]
+	mov	rcx,rdi
+	sub	rcx,rsi
+	xor	edx,edx
+	call	acme_request
+	jc	.again
+	mov	rax,[g_ac_retry]
+	test	rax,rax
+	jz	@f
+	cmp	rax,3600
+	jae	.ra_min
+	mov	eax,3600
+.ra_min:
+	cmp	rax,86400
+	jbe	.ra_max
+	mov	eax,86400
+.ra_max:
+	mov	r12,rax
+@@:
+	cmp	dword [g_ac_st],200
+	jne	.again
+	; suggestedWindow: start, end
+	mov	rsi,[g_ac_rb]
+	mov	edx,[g_ac_rbl]
+	add	rdx,rsi
+	cstring .n_sw, 'suggestedWindow'
+	lea	rdi,[.n_sw]
+	mov	ecx,15
+	call	json_get
+	jc	.again
+	test	rax,rax
+	jz	.again
+	cmp	byte [rax],'{'
+	jne	.again
+	mov	[g_ac_rb],rax			; (the body, from here: the window)
+	sub	r8,rax
+	mov	[g_ac_rbl],r8d
+	cstring .n_start, 'start',0
+	lea	rdi,[.n_start]
+	lea	r9,[g_ac_word]
+	mov	r10d,31
+	call	acme_field
+	jc	.again
+	lea	rsi,[g_ac_word]
+	mov	ecx,eax
+	call	acme_rfc3339
+	jc	.again
+	mov	r13,rax
+	cstring .n_end, 'end',0
+	lea	rdi,[.n_end]
+	lea	r9,[g_ac_word]
+	mov	r10d,31
+	call	acme_field
+	jc	.again
+	lea	rsi,[g_ac_word]
+	mov	ecx,eax
+	call	acme_rfc3339
+	jc	.again
+	sub	rax,r13
+	jb	.again
+	; a time in it, at random (so a fleet does not renew all at once)
+	lea	rcx,[rax+1]
+	push	rcx
+	push	0
+	mov	rdi,rsp
+	mov	esi,8
+	xor	edx,edx
+	mov	eax,SYS_getrandom
+	syscall
+	pop	rax
+	pop	rcx
+	xor	edx,edx
+	div	rcx
+	add	rdx,r13
+	mov	[g_ac_due+rbx*8],rdx
+	mov	dword [g_ac_arigot+rbx*4],1
+	call	acme_now
+	cmp	rax,[g_ac_due+rbx*8]
+	jb	.again
+	call	log_begin
+	out_lit 'acme: '
+	call	acme_out_name
+	out_lit ': the CA asks for it to be renewed now (ARI)'
+	call	log_end
+	jmp	.again
+.none:
+	mov	r12d,86400
+.again:
+	call	acme_now
+	add	rax,r12
+	mov	[g_ac_arinext+rbx*8],rax
+	pop	r13
+	pop	r12
 	ret
 
 ; the challenges' slots, free
@@ -2368,6 +2723,7 @@ acme_request:
 acme_heads:
 	push	rbx
 	mov	dword [g_ac_locl],0
+	mov	qword [g_ac_retry],0
 	xor	ebx,ebx				; chunked
 	mov	rsi,[g_dk_buf]
 	mov	rdx,[g_ac_rb]
@@ -2388,9 +2744,33 @@ acme_heads:
 	mov	ecx,18
 	call	.is
 	je	.te
+	lea	rdi,[.n_ra]
+	mov	ecx,12
+	call	.is
+	je	.ra
 .next:
 	call	.eol
 	jmp	.line
+.ra:
+	call	.value				; delay-seconds (an HTTP date: not taken)
+	xor	eax,eax
+	xor	r8d,r8d
+@@:
+	cmp	r8d,ecx
+	jae	@f
+	movzx	r9d,byte [r10+r8]
+	sub	r9d,'0'
+	cmp	r9d,9
+	ja	.next
+	imul	rax,rax,10
+	add	rax,r9
+	inc	r8d
+	cmp	r8d,9
+	ja	.next
+	jmp	@b
+@@:
+	mov	[g_ac_retry],rax
+	jmp	.next
 .nonce:
 	call	.value
 	cmp	ecx,250
@@ -2518,6 +2898,7 @@ acme_heads:
 .n_nonce	db 'replay-nonce:'
 .n_loc		db 'location:'
 .n_te		db 'transfer-encoding:'
+.n_ra		db 'retry-after:'
 
 ; g_ac_rb/rbl, chunked: joined in place. CF: broken.
 acme_dechunk:
@@ -4466,7 +4847,22 @@ acme_issue:
 	inc	rdi
 	jmp	.ident
 @@:
-	memit_x ']}'
+	mov	byte [rdi],']'
+	inc	rdi
+	cmp	dword [g_ac_cai],0		; ARI: the certificate it replaces
+	jne	@f
+	cmp	dword [g_ac_arigot+rbx*4],0
+	je	@f
+	memit_x ',"replaces":"'
+	imul	esi,ebx,128
+	lea	rsi,[g_ac_certid+rsi]
+	mov	ecx,[g_ac_certidl+rbx*4]
+	rep	movsb
+	mov	byte [rdi],'"'
+	inc	rdi
+@@:
+	mov	byte [rdi],'}'
+	inc	rdi
 	call	.payload
 	lea	rsi,[g_ac_uorder]
 	mov	ecx,[g_ac_uorderl]

@@ -98,12 +98,24 @@ def issue(ca_k, ca_c, pub, names, before, after):
     return b.sign(ca_k, hashes.SHA256())
 
 
+def certid(c):
+    """ARI's CertID: base64url(AKI keyIdentifier) "." base64url(the serial's DER bytes)"""
+    aki = c.extensions.get_extension_for_class(x509.AuthorityKeyIdentifier).value.key_identifier
+    sn = c.serial_number
+    return b64u(aki) + "." + b64u(sn.to_bytes((sn.bit_length() + 8) // 8, "big"))
+
+
+def rfc3339(t, frac=False):
+    return t.strftime("%Y-%m-%dT%H:%M:%S") + (".123456Z" if frac else "Z")
+
+
 class CAState:
     def __init__(self, ca_k, ca_c, port=None):
         self.ca_k, self.ca_c = ca_k, ca_c
         self.base = f"https://localhost:{port or CA}"
         self.eab = {}                 # kid -> HMAC key: external accounts required
         self.fail_orders = None       # (status, error) every newOrder gets
+        self.ari = None               # ARI (RFC 9773): CertID -> (start, end), when served
         self.nonces = set()
         self.accounts = {}            # thumbprint -> (id, key)
         self.by_kid = {}
@@ -508,8 +520,21 @@ class H(http.server.BaseHTTPRequestHandler):
             meta = {"termsOfService": b + "/tos"}
             if self.server.st.eab:
                 meta["externalAccountRequired"] = True
-            self.send(200, {"newNonce": b + "/nonce", "newAccount": b + "/acct", "newOrder": b + "/order",
-                            "revokeCert": b + "/revoke", "keyChange": b + "/kc", "meta": meta})
+            d = {"newNonce": b + "/nonce", "newAccount": b + "/acct", "newOrder": b + "/order",
+                 "revokeCert": b + "/revoke", "keyChange": b + "/kc", "meta": meta}
+            if self.server.st.ari is not None:
+                d["renewalInfo"] = b + "/renewal-info"
+            self.send(200, d)
+        elif self.path.startswith("/renewal-info/") and self.server.st.ari is not None:
+            st = self.server.st
+            cid = self.path[len("/renewal-info/"):]
+            with st.lock:
+                st.log.append(("ari", cid))
+                w = st.ari.get(cid)
+            if not w:
+                return self.send(404, b"", "text/plain")
+            self.send(200, {"suggestedWindow": {"start": rfc3339(w[0], True), "end": rfc3339(w[1])}},
+                      headers=[("Retry-After", "21600")])
         elif self.path == "/nonce":
             self.send(204)
         else:
@@ -595,6 +620,8 @@ class H(http.server.BaseHTTPRequestHandler):
                 st.log.append(("order refused", st.fail_orders))
                 return self.problem(*st.fail_orders, "no")
             names = [i["value"] for i in p["identifiers"] if i["type"] == "dns"]
+            if "replaces" in p:
+                st.log.append(("replaces", p["replaces"]))
             oid = st.next()
             azs = []
             for nm in names:
@@ -649,6 +676,8 @@ class H(http.server.BaseHTTPRequestHandler):
             now = datetime.datetime.now(datetime.timezone.utc)
             c = issue(st.ca_k, st.ca_c, csr.public_key(), o["names"], now - datetime.timedelta(minutes=1), now + datetime.timedelta(days=st.days))
             o["cert"] = c.public_bytes(serialization.Encoding.PEM) + st.ca_c.public_bytes(serialization.Encoding.PEM)
+            if st.ari is not None:
+                st.ari[certid(c)] = (now + datetime.timedelta(days=20), now + datetime.timedelta(days=21))
             o["status"] = "processing"
             o["polled"] = 0
             st.log.append(("issued", (o["names"], c.serial_number)))

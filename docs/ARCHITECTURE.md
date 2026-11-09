@@ -680,7 +680,7 @@ ECN. 0-RTT off by default and, when on, only for routes marked idempotent.
   that page when the hello offers acme-tls/1; DNS-01 through Cloudflare's
   API, an RFC 2136 UPDATE signed with TSIG, or Route 53 (SigV4, INSYNC
   waited for), records removed after; a fallback CA asked at once when the
-  first fails, EAB for CAs that ask for it; the account and the JWS
+  first fails, EAB for CAs that ask for it, ARI's renewal window followed; the account and the JWS
   (ES256) its own, files renamed into a 0700 directory, a reload of its
   own; Landlock writes only there). Planned:
   DNS-01 through provider APIs (Cloudflare, Route 53, RFC 2136) for

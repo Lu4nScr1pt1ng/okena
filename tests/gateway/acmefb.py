@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ACME with two CAs, on one engine (argument): the first refuses the order
+"""ACME with two CAs, and ARI, on one engine (argument): the first refuses the order
 (rateLimited), so okena asks the fallback at once, which wants an external account
 binding (EAB, RFC 8555 7.3.4: an HS256 JWS over the account's key, as ZeroSSL asks)
 and gets it; each CA's own anchor (trust=, fallback_trust=). A CA that wants EAB
@@ -28,7 +28,7 @@ from cryptography.hazmat.primitives.asymmetric import ec  # noqa: E402
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
 BIN = A.BIN
 BASE = 47000 + os.getpid() % 90 * 20 + (10 if ENGINE == "epoll" else 0)
-BACK, PLAIN, TLS, CA1, CA2 = BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4
+BACK, PLAIN, TLS, CA1, CA2, CA3 = BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4, BASE + 5
 A.PLAIN = PLAIN                         # (where the CAs prove HTTP-01)
 KID = "kid-zerossl-0123"
 fails = 0
@@ -155,6 +155,45 @@ http 127.0.0.1:{TLS} {{
         r = subprocess.run([str(BIN), "check", "-c", str(conf("d", f"ca=https://localhost:{CA2}/dir fallback_eab={tmp}/eab"))],
                            capture_output=True, text=True, timeout=10)
         check("fallback_eab= without fallback=: refused", r.returncode != 0 and "fallback" in r.stderr, r.stderr)
+
+        # ARI (RFC 9773): two certificates far from 2/3 of their life; the CA's window
+        # for one is past (renew now), for the other ahead
+        k3, c3 = ca("okena test CA three")
+        st3 = A.CAState(k3, c3, CA3)
+        st3.bad_nonce_once = False
+        st3.ari = {}
+        serve(tmp, "three", CA3, k3, c3, st3)
+        now = datetime.datetime.now(datetime.timezone.utc)
+        olds = {}
+        for nm in ("g.example.test", "h.example.test"):
+            d = tmp / "e" / nm
+            d.mkdir(parents=True)
+            key = ec.generate_private_key(ec.SECP256R1())
+            c = A.issue(k3, c3, key.public_key(), [nm], now - datetime.timedelta(days=1), now + datetime.timedelta(days=60))
+            (d / "cert.pem").write_bytes(c.public_bytes(serialization.Encoding.PEM) + c3.public_bytes(serialization.Encoding.PEM))
+            (d / "key.pem").write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.TraditionalOpenSSL,
+                                                          serialization.NoEncryption()))
+            olds[nm] = c
+        st3.ari[A.certid(olds["g.example.test"])] = (now - datetime.timedelta(hours=2), now - datetime.timedelta(hours=1))
+        st3.ari[A.certid(olds["h.example.test"])] = (now + datetime.timedelta(days=10), now + datetime.timedelta(days=11))
+        c = tmp / "e.conf"
+        c.write_text(conf("x", "").read_text().replace(f"acme {tmp}/x ", f"acme {tmp}/e ca=https://localhost:{CA3}/dir trust={tmp}/three-ca.pem ")
+                     .replace("tls { acme f.example.test }", "tls { acme g.example.test; acme h.example.test }"))
+        p = start(c)
+        check("ari: the certificate the CA's window says is due: renewed at once (the other one is not)",
+              A.until(lambda: served("g.example.test").serial_number != olds["g.example.test"].serial_number, 10)
+              and served("h.example.test").serial_number == olds["h.example.test"].serial_number,
+              (st3.log[-8:], log.read_text()[-400:]))
+        check("  asked for by the CertID (the AKI and serial), the order saying what it replaces, the log why",
+              ("ari", A.certid(olds["g.example.test"])) in st3.log and ("ari", A.certid(olds["h.example.test"])) in st3.log
+              and [e[1] for e in st3.log if e[0] == "replaces"] == [A.certid(olds["g.example.test"])]
+              and [e[1] for e in st3.log if e[0] == "order"] == [["g.example.test"]]
+              and "asks for it to be renewed now (ARI)" in log.read_text(), (st3.log, log.read_text()[-300:]))
+        new = served("g.example.test")
+        check("  the new one's window asked for too (ahead: nothing more)",
+              A.until(lambda: ("ari", A.certid(new)) in st3.log, 5)
+              and not A.until(lambda: sum(1 for e in st3.log if e[0] == "order") > 1, 1), st3.log[-6:])
+        stop(p)
     finally:
         for q in procs:
             if q.poll() is None:
