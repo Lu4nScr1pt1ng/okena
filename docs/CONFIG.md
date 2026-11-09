@@ -1472,7 +1472,17 @@ okena top                          # live per-route/backend view
 okena bench https://localhost/v1/ rate=200k duration=60s
 okena health                       # exit 0 when ready (Docker HEALTHCHECK)
 okena check --host                 # kernel features, limits, sysctls, container
+okena cert selfsigned DIR a.test b.test days=30   # DIR/key.pem, DIR/cert.pem
+okena cert csr DIR a.example.com   # DIR/key.pem, DIR/csr.pem, for a CA to sign
+okena sign KEYFILE /path 1h        # a signed link (signed_urls)
+okena ranges cloudflare            # a provider's ranges, as built in
+okena purge url|prefix|tag VALUE   # take cached answers back (and on the fleet)
 ```
+
+`okena cert` makes ECDSA P-256 keys (SEC1, mode 0600) and either a certificate that
+signs itself, for a test or a development name, or a request (CSR) for a CA. The
+names go in the subjectAltName, and the first is the CN as well. It is the same
+code that answers ACME.
 
 `okena bench URL [key=value...]` is an open-loop load generator (http://,
 https:// over TLS 1.3 and kTLS, tcp:// and udp:// for echo). Options: `rate=N`
