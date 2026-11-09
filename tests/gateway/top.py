@@ -23,7 +23,7 @@ ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BIN = ROOT / "build" / "okena"
 BASE = 35000 + os.getpid() % 90 * 20 + (10 if ENGINE == "epoll" else 0)
-LST, TCPL, METRICS, BACK, TLSL, UDPL, ECHO = BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4, BASE + 5, BASE + 6
+LST, TCPL, METRICS, BACK, TLSL, UDPL, ECHO, SLOWL = BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4, BASE + 5, BASE + 6, BASE + 7
 TOKEN = "s3cret-token-of-32-bytes-ok-1234"
 fails = 0
 
@@ -108,6 +108,7 @@ pool api {{ health tcp every=200ms fall=1 rise=1; server 127.0.0.1:{BACK}; serve
 pool found {{ discover file {tmp}/found.list }}
 pool echo {{ server 127.0.0.1:{ECHO} }}
 udp 127.0.0.1:{UDPL} {{ to pool echo }}
+http 127.0.0.1:{SLOWL} {{ route /* {{ to pool api }} }}
 http 127.0.0.1:{LST} {{ route /* {{ to pool api }}; route /f/* {{ to pool found }} }}
 tcp 127.0.0.1:{TCPL} {{ to pool api }}
 http 127.0.0.1:{TLSL} {{
@@ -130,6 +131,9 @@ http 127.0.0.1:{TLSL} {{
         check("/status without the token: 401, asking for Basic", st == 401 and h.get("www-authenticate", "").startswith("Basic realm="), (st, h))
         check("  /metrics too", admin("/metrics")[0] == 401 and admin("/dashboard")[0] == 401)
         check("  the token as Bearer: in", admin("/status", f"Bearer {TOKEN}")[0] == 200 and admin("/metrics", f"bearer {TOKEN}")[0] == 200)
+        t0 = time.time()
+        admin("/status", f"Bearer {TOKEN}")
+        check("  answered at once: the head's end is seen, not waited past", time.time() - t0 < 0.5, time.time() - t0)
         basic = lambda u, pw: "Basic " + base64.b64encode(f"{u}:{pw}".encode()).decode()
         check("  as Basic's password (a browser's prompt): in", admin("/status", basic("anyone", TOKEN))[0] == 200)
         wrong = TOKEN[:-1] + ("x" if TOKEN[-1] != "x" else "y")
@@ -177,7 +181,7 @@ http 127.0.0.1:{TLSL} {{
               [(r["path"], r["pool"]) for r in hl["routes"]] == [("/*", "api"), ("/f/*", "found")] and tl["pool"] == "api"
               and hl["protocols"] == ["http/1.1"] and hl["tls"] is None, (hl["routes"], tl.get("pool")))
         check("  and who uses a pool", sorted((u["listener"], u.get("route")) for u in pools["api"]["used_by"])
-              == sorted([(f"127.0.0.1:{LST}", "/*"), (f"127.0.0.1:{TCPL}", None), (f"127.0.0.1:{TLSL}", "/api/*")]), pools["api"]["used_by"])
+              == sorted([(f"127.0.0.1:{LST}", "/*"), (f"127.0.0.1:{TCPL}", None), (f"127.0.0.1:{TLSL}", "/api/*"), (f"127.0.0.1:{SLOWL}", "/*")]), pools["api"]["used_by"])
         check("  a pool's balancing and health check", pools["api"]["balance"] == "least-request"
               and pools["api"]["health"] == {"kind": "tcp", "every_ms": 200, "timeout_ms": pools["api"]["health"]["timeout_ms"], "rise": 1, "fall": 1},
               (pools["api"]["balance"], pools["api"]["health"]))
@@ -208,8 +212,8 @@ http 127.0.0.1:{TLSL} {{
         cli("resume")
 
         # what the workers count: by protocol, status, handshake, datagram; latency
-        for i in range(10):
-            c = http.client.HTTPConnection("127.0.0.1", LST, timeout=5)
+        for i in range(10):                     # (a listener of their own: its latency theirs alone)
+            c = http.client.HTTPConnection("127.0.0.1", SLOWL, timeout=5)
             c.request("GET", "/slow")
             c.getresponse().read()
             c.close()
@@ -244,7 +248,7 @@ http 127.0.0.1:{TLSL} {{
         s = status()
         L = {l["address"]: l for l in s["listeners"]}
         hl, sl, ul = L[f"127.0.0.1:{LST}"], L[f"127.0.0.1:{TLSL}"], L[f"127.0.0.1:{UDPL}"]
-        lat = hl.get("latency_ms") or {}
+        lat = L[f"127.0.0.1:{SLOWL}"].get("latency_ms") or {}
         check("latency: percentiles that are the backend's (50 ms, within 1/8)", 50 <= lat.get("p50", 0) <= 60 and lat["p50"] <= lat["p90"] <= lat["p99"] < 70,
               lat)
         check("  a 404 counted as such, requests by protocol", hl["statuses"]["404"] == 1 and hl["by_protocol"]["http/1.1"] == hl["requests"]
@@ -254,11 +258,11 @@ http 127.0.0.1:{TLSL} {{
         check("UDP: datagrams in and out, a flow", ul["datagrams_in"] == 12 and ul["datagrams_out"] == 12 and ul["kind"] == "udp"
               and ul["pool"] == "echo" and ul["responses"] == "any" and s["udp_dropped"] == 0, ul)
         m = admin("/metrics", f"Bearer {TOKEN}")[2].decode()
-        cnt = [x for x in m.splitlines() if x.startswith("okena_http_request_duration_seconds_count") and f":{LST}" in x]
-        inf = [x for x in m.splitlines() if 'le="+Inf"' in x and f":{LST}" in x]
-        b50 = [x for x in m.splitlines() if 'le="0.050000"' in x and f":{LST}" in x]
-        check("/metrics: the durations as a histogram, its count the requests'", cnt and int(cnt[0].split()[-1]) == hl["requests"]
-              and inf and inf[0].split()[-1] == cnt[0].split()[-1] and b50 and int(b50[0].split()[-1]) < hl["requests"], (cnt, inf, b50))
+        cnt = [x for x in m.splitlines() if x.startswith("okena_http_request_duration_seconds_count") and f":{SLOWL}" in x]
+        inf = [x for x in m.splitlines() if 'le="+Inf"' in x and f":{SLOWL}" in x]
+        b50 = [x for x in m.splitlines() if 'le="0.050000"' in x and f":{SLOWL}" in x]
+        check("/metrics: the durations as a histogram, its count the requests'", cnt and int(cnt[0].split()[-1]) == 10
+              and inf and inf[0].split()[-1] == "10" and b50 and int(b50[0].split()[-1]) == 0, (cnt, inf, b50))
         check("  and the rest: by protocol, statuses, handshakes, datagrams, drops",
               all(k in m for k in ('okena_http_requests_by_protocol_total{', 'code="404"} 1', 'okena_tls_handshakes_total{', 'result="resumed"} 1',
                                    'okena_udp_datagrams_total{', 'direction="in"} 12', 'okena_udp_dropped_total 0')), m[-600:])

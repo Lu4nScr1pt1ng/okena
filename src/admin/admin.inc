@@ -239,9 +239,9 @@ admin_serve:
 	je	.parse
 	cmp	ecx,2
 	jb	.on
-	cmp	byte [g_admin_req+rcx-1],10
+	cmp	byte [g_admin_req+rcx-1],10	; "\n\n"
 	je	.parse
-	cmp	word [g_admin_req+rcx-2],0x0A0D
+	cmp	word [g_admin_req+rcx-2],0x0D0A	; "\n\r\n": the blank line
 	je	.parse
 .on:
 	inc	ecx
