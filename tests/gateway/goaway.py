@@ -187,8 +187,26 @@ http 127.0.0.1:{LST} {{ http2 on; route /* {{ to pool b }} }}
               (fresh.events[-3:], fresh.closed))
 
         # stopping: an idle HTTP/2 connection no longer holds it for its drain timeout (20 s)
+        import http.client
+        h1 = http.client.HTTPConnection("127.0.0.1", LST, timeout=5)
+        h1.request("GET", "/h1")
+        h1.getresponse().read()
         t0 = time.time()
         p.send_signal(signal.SIGTERM)
+        # HTTP/1.1 kept alive: once the worker drains, its next answer is whole and says close
+        said = None
+        while time.time() - t0 < 3 and said is None:
+            try:
+                h1.request("GET", "/h1")
+                r = h1.getresponse()
+                body = r.read()
+                if r.getheader("connection", "").lower() == "close":
+                    said = (r.status, body)
+            except (OSError, http.client.HTTPException) as e:
+                said = repr(e)
+        check("a stop: HTTP/1.1 kept alive gets its answer whole, with Connection: close",
+              said == (200, b"answer of /h1"), said)
+        h1.close()
         fresh.pump(4)
         p.wait(15)
         took = time.time() - t0

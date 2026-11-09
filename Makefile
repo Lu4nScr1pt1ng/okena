@@ -9,7 +9,7 @@ TLSC      := build/tlsclient
 TLS12S    := build/tlsserver12
 TLSC12    := build/tlsclient12
 
-.PHONY: all toolchain test test-serial fuzz bench chaos image docker-test clean
+.PHONY: all toolchain test test-serial fuzz bench chaos soak image docker-test clean
 
 all: $(BIN)
 
@@ -227,3 +227,8 @@ fuzz: $(BIN) $(HTTPH)
 
 clean:
 	rm -rf build
+
+# a long run under load, reloaded and upgraded again and again: SOAK_SECONDS (600), SOAK_RELOAD, SOAK_UPGRADE
+soak: $(BIN)
+	SOAK_ENGINE=io_uring python3 -I tests/soak/run.py
+	SOAK_ENGINE=epoll python3 -I tests/soak/run.py

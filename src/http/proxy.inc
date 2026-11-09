@@ -558,6 +558,10 @@ http_request:
 	je	@f
 	or	dword [r15+H_FLAGS],HX_CLOSE
 @@:
+	cmp	dword [g_draining],0		; a reload, an upgrade or a stop replaced
+	je	@f				; this worker: its clients go to the new one
+	or	dword [r15+H_FLAGS],HX_CLOSE
+@@:
 	cmp	dword [r14+HM_VERSION],10
 	jne	@f
 	or	dword [r15+H_FLAGS],HX_CLOSE or HX_HTTP10	; HTTP/1.0 clients: one exchange

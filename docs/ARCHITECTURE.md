@@ -227,6 +227,19 @@ no process of it killed by its own filters. Still to come: memory
 exhaustion (cgroup limits) and a stepped clock. Routes can also inject faults on purpose (`fault delay=100ms 5%`,
 `fault abort=503 1%`) to test the clients and backends behind okena.
 
+**So is time.** `make soak` (tests/soak/run.py) keeps okena under load
+(HTTP/1.1 kept alive and on new connections, HTTPS, POSTs with a body,
+slow requests, an L4 echo) for `SOAK_SECONDS` (600 by default; a week is
+604800). Every `SOAK_RELOAD` seconds it reloads okena with a changed
+configuration (weights, a route, the worker count), and every
+`SOAK_UPGRADE` seconds a new okena process takes over (`okena upgrade`).
+A run passes when no request is lost and when the memory and descriptors
+of okena's processes do not grow over time. A worker that is replaced by a
+reload, an upgrade or a stop sends `Connection: close` with its next
+HTTP/1.1 answer, so a kept-alive client moves to the new worker after a
+whole answer. Without this, the client was cut off at the drain timeout,
+in the middle of an answer: that is the first thing the soak found.
+
 ## Surviving spikes
 
 A spike has to be absorbed or refused in microseconds, without a cascade.
