@@ -12,6 +12,7 @@ rodata
 				db 0x27,0xae,0x41,0xe4,0x64,0x9b,0x93,0x4c,0xa4,0x95,0x99,0x1b,0x78,0x52,0xb8,0x55
 	tls13_zero32		db 32 dup 0
 	tls13_cv_prefix		db 64 dup 0x20, 'TLS 1.3, server CertificateVerify', 0
+	tls13_cv_cprefix	db 64 dup 0x20, 'TLS 1.3, client CertificateVerify', 0
 	TLS13_CV_PREFIX	:= 98
 	lbl_c_hs		db 'c hs traffic',0
 	lbl_s_hs		db 's hs traffic',0

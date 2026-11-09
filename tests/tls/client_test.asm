@@ -31,6 +31,14 @@ include '../../src/tls/x509.inc'
 include '../../src/tls/keyschedule.inc'
 include '../../src/tls/tls12.inc'
 include '../../src/tls/client.inc'
+; (no client certificates here: clientcert.inc wants the certificate store)
+tlsc_client_auth:
+	xor	eax,eax
+	add	rsp,8
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
 
 SBUF	:= 1 shl 16
 SOL_TLS	:= 282

@@ -73,6 +73,12 @@ http_uptls_start:
 	h_rec
 	mov	[r15+H_UHLEN],eax
 	mov	r14,[r15+H_BUF]
+	mov	dword [r14+HB_UTC+TC_CREQ],0	; a certificate asked for: not yet
+	call	session_ptr			; and the one it would be answered with
+	mov	eax,[rax+S_POOL]
+	imul	rax,rax,PL_SIZE
+	mov	ecx,[g_pools+rax+PL_TLS_CID]
+	mov	[r14+HB_UTC+TC_CID],ecx
 	lea	rsi,[r14+HB_UTC+TC_SHA]		; snapshot the transcript for re-runs
 	lea	rdi,[r14+HB_USNAP]
 	mov	ecx,SHA256_CTX_SIZE
@@ -201,9 +207,11 @@ http_uptls_flight_in:
 	test	eax,eax
 	jz	.badcert
 .verified:
-	lea	rdi,[r14+HB_UTC]		; the client Finished
-	lea	rsi,[r14+HB_UWORK]
+	lea	rdi,[r14+HB_UTC]		; the client Finished (and our certificate, when asked:
+	lea	rsi,[r14+HB_UDEC]		; the server's flight is read already)
 	call	tlsc_finish
+	test	eax,eax
+	jz	.badcert			; (a signature that could not be made)
 	h_rec
 	mov	[r15+H_UHLEN],eax
 	mov	r14,[r15+H_BUF]			; the records after the server Finished:
@@ -230,7 +238,7 @@ http_uptls_flight_in:
 	mov	dword [r15+H_STATE],HS_UTLS_FIN
 	mov	esi,[r15+H_UHLEN]
 	mov	r14,[r15+H_BUF]
-	lea	rdi,[r14+HB_UWORK]
+	lea	rdi,[r14+HB_UDEC]
 	mov	ecx,SIDE_UP
 	jmp	h_send
 .tls12:

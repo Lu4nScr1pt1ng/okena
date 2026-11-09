@@ -912,7 +912,9 @@ are about trust: `trusted_proxies cloudflare` takes the provider's
 published ranges (built in, from contrib/ranges; a fresher list through
 `file:PATH`, fetched by contrib/ranges/update.sh), the client address
 comes from the provider's header only when the peer is in those ranges,
-authenticated origin pulls (mTLS from the CDN) can be required, and the
+authenticated origin pulls (mTLS from the CDN) can be required (a
+listener's `client_ca`), okena can make them itself towards an origin (a
+pool's `tls { cert; key }`, TLS 1.3 client certificates), and the
 listener can refuse everyone else, so the origin is not reachable around
 the CDN.
 

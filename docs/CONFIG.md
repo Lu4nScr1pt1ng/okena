@@ -13,7 +13,7 @@ not built yet. A directive that is not built is refused by `okena check`
 | `udp ADDR...` | `to`, `responses N`, `limits { connections }` (flows), `timeout { idle }` |
 | `http ADDR...` | `host`, `route`, `errors CODES file= [backend]`, `maintenance file= retry= allow= except=`, `limits`, `timeout { idle; header; body_idle; response }`, `trusted_proxies`, `access_log`, `tracing`, `http2 on\|off`, `http3 on\|off\|retry\|v2`, `preferred_address`, `early_data on\|off`, `tls { cert; key; ktls on\|off }` |
 | `route PATH... [METHOD...]` | `to`, `redirect`, `rewrite path`, `signed_urls key= [key2=]`, `header set\|add\|drop`, `response header set\|add\|drop` |
-| `pool NAME` | `server ADDR [weight=N] [max=N] [backup]`, `queue timeout=`, `balance least-request\|peak-ewma\|round-robin\|least-conn\|random\|maglev\|ring-hash\|source-hash [key=] [bound=]\|first`, `sticky cookie= [ttl=] [samesite=]`, `connect timeout=`, `health tcp\|http\|grpc ...`, `slow_start`, `tls { trust FILE; sni NAME }` (TLS to the backends), `protocol h1\|h2` |
+| `pool NAME` | `server ADDR [weight=N] [max=N] [backup]`, `queue timeout=`, `balance least-request\|peak-ewma\|round-robin\|least-conn\|random\|maglev\|ring-hash\|source-hash [key=] [bound=]\|first`, `sticky cookie= [ttl=] [samesite=]`, `connect timeout=`, `health tcp\|http\|grpc ...`, `slow_start`, `tls { trust FILE; sni NAME; cert FILE; key FILE }` (TLS to the backends), `protocol h1\|h2` |
 
 `tls { cert FILE; key FILE }` on an `http` listener makes it HTTPS: TLS
 1.3 with a certificate chain (leaf first) and its key: EC P-256 (SEC 1 or
@@ -1060,6 +1060,8 @@ pool api {
         trust /etc/okena/internal-ca.pem   # the first certificate is the anchor; the chain is
                                            # verified: only a CA signs, and each link in date
         sni api.internal                   # SNI + the name checked against the certificate
+        cert /etc/okena/edge.pem           # what okena shows a backend that asks for a
+        key /etc/okena/edge.key            # certificate (authenticated origin pulls)
     }
 
     connect timeout=1s warm=4 max=512 idle=55s rate=200/s
@@ -1077,6 +1079,14 @@ pool api {
     slow_start 30s
 }
 ```
+
+`cert` and `key` in a pool's `tls` block are the certificate okena shows a backend
+that asks for one, so that an origin can let in its CDN's edges and no one else:
+authenticated origin pulls, from okena's side. The key may be EC P-256, RSA or
+Ed25519, and the chain goes as the file has it. A backend that asks for a
+certificate when the pool has none gets an empty one: one that only asks serves the
+request anonymously, one that requires it refuses, and the client gets a 502. Client
+certificates are TLS 1.3; a TLS 1.2 backend that asks for one is refused (502).
 
 `maglev` and `ring-hash` send a key to one server: the same one in every worker,
 after a reload, and on every okena with the same servers, which is what a cache, a

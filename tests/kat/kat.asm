@@ -65,6 +65,14 @@ include '../../src/tls/x509.inc'
 include '../../src/tls/keyschedule.inc'
 include '../../src/quic/crypto.inc'
 include '../../src/tls/client.inc'
+; (no client certificates here: clientcert.inc wants the certificate store)
+tlsc_client_auth:
+	xor	eax,eax
+	add	rsp,8
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
 include '../../src/tls/tls12.inc'
 include '../../src/http/hpack_tables.inc'
 include '../../src/http/hpack.inc'

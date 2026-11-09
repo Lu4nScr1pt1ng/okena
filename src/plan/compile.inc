@@ -184,6 +184,7 @@ PL_SSAME	:= 720		; d: SS_*
 PL_QTIMEOUT	:= 728		; q: µs a request may wait for a place, 0: the connect timeout
 PL_HBOUND	:= 736		; d: maglev, ring-hash: a server's load at most this % of the mean, 0 none
 PL_HASMAX	:= 740		; d: a server of it has a max
+PL_TLS_CID	:= 744		; d: `tls { cert; key }`: what it shows the backends (g_tls + 1), 0 none
 PL_SIZE		:= 768		; room for PL_TLS_ANCHOR + a PK blob (16 + 528), then PL_H2
 assert PL_TLS_ANCHOR + PK_SIZE <= PL_H2
 
@@ -2861,6 +2862,29 @@ compile_pool:
 	jmp	.advance
 .uptls:
 	mov	dword [r13+PL_TLS],1
+	; cert= and key=: a certificate to show the backends that ask for one
+	mov	rdi,rbx
+	cstring str_key_upcert, 'cert',0
+	lea	rsi,[str_key_upcert]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	push	rax
+	mov	rdi,rbx
+	cstring str_key_upkey, 'key',0
+	lea	rsi,[str_key_upkey]
+	call	node_option
+	pop	rdi
+	test	rax,rax
+	jz	plan_bad_upcert
+	mov	rsi,rax
+	mov	eax,[g_plan_tls]
+	inc	eax
+	mov	[r13+PL_TLS_CID],eax
+	mov	edx,0x40000000			; (a group no listener has: its names serve no SNI)
+	add	edx,eax
+	call	compile_cert
+@@:
 	mov	rdi,rbx				; sni = SNI + the name verified (optional)
 	lea	rsi,[str_key_sni]
 	call	node_option
@@ -2911,6 +2935,13 @@ compile_pool:
 	pop	r12
 	pop	rbx
 	ret
+
+plan_bad_upcert:
+	call	log_begin
+	out_lit 'a pool''s tls cert= wants key= too (the certificate it shows backends that ask for one)'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
 
 ; rdi = pool entry, rsi = server node.
 compile_server:

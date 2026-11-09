@@ -52,6 +52,8 @@ tlsc_client_hello:
 	mov	r12,rsi				; out (record start)
 	mov	r13,rdx				; sni
 	mov	r14d,ecx			; sni length
+	mov	dword [rbx+TC_CREQ],0		; (no certificate asked for, none to give: the
+	mov	dword [rbx+TC_CID],0		; caller says which after this)
 	; client random, session id, and two ephemeral private keys
 	lea	rdi,[rbx+TC_RANDOM]
 	mov	esi,64				; random (32) | session id (32)
@@ -274,7 +276,12 @@ TC_FEND		:= TC_KXLEN + 4		; d: where the flight ends in the input
 						; (records after the server Finished follow)
 TC_QCAP		:= TC_KXLEN + 8			; QUIC: the application traffic secrets
 TC_QSAP		:= TC_QCAP + 32
-TC_FULL		:= TC_QSAP + 32
+; client certificates (an origin that asks for one: clientcert.inc)
+TC_CREQ		:= TC_QSAP + 32			; d: the server sent a CertificateRequest
+TC_CID		:= TC_CREQ + 4			; d: the certificate to answer with (g_tls + 1), 0 none
+TC_THSF		:= TC_CREQ + 8			; 32: the transcript through the server Finished
+TC_CRCTX	:= TC_CREQ + 40			; its certificate_request_context: u8 length, bytes
+TC_FULL		:= TC_CRCTX + 256
 
 ; rdi = tc, rsi = in (the server's bytes), edx = in length, rcx = out:
 ; parses the ServerHello, computes the ECDH secret, derives the server
@@ -592,6 +599,21 @@ tlsc_verify:
 	je	.certverify
 	cmp	eax,20
 	je	.finished
+	cmp	eax,13
+	jne	.other
+	; CertificateRequest: our flight answers it (its context goes back as it came)
+	movzx	ecx,byte [r12+4]
+	lea	rax,[r12+5+rcx]
+	cmp	rax,r14
+	ja	.bad
+	mov	dword [rbx+TC_CREQ],1
+	mov	[rbx+TC_CRCTX],cl
+	push	rsi
+	lea	rsi,[r12+5]
+	lea	rdi,[rbx+TC_CRCTX+1]
+	rep	movsb
+	pop	rsi
+.other:
 	; EncryptedExtensions or anything else: just transcript it
 	mov	rsi,r12
 	mov	edx,r14d
@@ -770,6 +792,8 @@ tlsc_finish:
 	mov	r13,rsi				; out
 	; TH through the server Finished
 	tc_snapshot				; -> TC_THX
+	cmp	dword [rbx+TC_CREQ],0
+	jne	tlsc_client_auth		; (clientcert.inc)
 	; client Finished = HMAC(client finished key, TH)
 	lea	rdi,[rbx+TC_FIN]
 	lea	rsi,[rbx+TC_CFK]
@@ -784,15 +808,20 @@ tlsc_finish:
 	mov	ecx,32
 	rep	movsb
 	mov	byte [r13+5+36],22		; inner content type
+	mov	dword [rsp],37
+.seal:
 	; client handshake key/IV from the client handshake traffic secret
 	tls_label [rbx+TC_CAPK], 16, [rbx+TC_CHT], lbl_key
 	tls_label [rbx+TC_CAPIV], 12, [rbx+TC_CHT], lbl_iv
 	lea	rdi,[rbx+TC_GCM]
 	lea	rsi,[rbx+TC_CAPK]
 	call	gcm_init
-	; record header: application_data, length = 37 + 16 tag
+	; record header: application_data, length = the plaintext + 16 tag
 	mov	dword [r13],0x00030317
-	mov	word [r13+3],0x3500		; length 0x0035 = 53
+	mov	eax,[rsp]
+	add	eax,16
+	xchg	al,ah
+	mov	[r13+3],ax
 	lea	rdi,[rbx+TC_NONCE2]		; nonce (seq 0)
 	lea	rsi,[rbx+TC_CAPIV]
 	xor	edx,edx
@@ -802,9 +831,10 @@ tlsc_finish:
 	mov	rdx,r13
 	mov	ecx,5
 	lea	r8,[r13+5]
-	mov	r9d,37
+	mov	r9d,[rsp]
 	call	gcm_seal
-	mov	r12d,58				; 5 header + 37 plaintext + 16 tag
+	mov	r12d,[rsp]
+	add	r12d,5 + 16			; header, plaintext, tag
 	; application keys: master secret, then c/s ap traffic
 	tls_label [rbx+TC_TMP], 32, [rbx+TC_HS], lbl_derived, [sha256_empty], 32
 	lea	rdi,[rbx+TC_MS]
