@@ -205,6 +205,7 @@ dirdef DIR_USER, 'user',        M_OKENA,   0,           F_UNIQUE, 1, 1, T_ANY, T
 dirdef DIR_GEOIP, 'geoip',      M_OKENA,   0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
 dirdef DIR_CACHE_MEM, 'cache_memory', M_OKENA, 0,       F_UNIQUE, 1, 1, T_SIZE, T_NONE, 0
 dirdef DIR_CACHE_DISK, 'cache_disk', M_OKENA, 0,       F_UNIQUE, 1, 1, T_ANY, T_NONE, k_cdisk
+dirdef DIR_FLEET, 'fleet',      M_OKENA,   0,           F_UNIQUE, 1, 16, T_LISTEN, T_LISTEN, 0
 dirdef DIR_WATCHDOG, 'watchdog',    M_OKENA,   0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
 dirdef DIR_METRICS, 'metrics',     M_OKENA,   0,           F_UNIQUE, 1, 1, T_LISTEN, T_NONE, k_metrics
 dirdef DIR_BUSY_POLL, 'busy_poll',   M_OKENA,   0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0

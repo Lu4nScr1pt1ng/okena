@@ -83,6 +83,7 @@ supervisor_main:
 	call	groups_resolve_all
 	call	health_table_init
 	call	api_table_init
+	call	pr_init				; the purge ring, when there is no store (purge.inc)
 	call	sv_live_init
 	call	peer_global_init		; per_source table: lives across reloads
 	call	limit_global_init		; and rate limits'

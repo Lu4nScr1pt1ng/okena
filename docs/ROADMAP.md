@@ -477,8 +477,9 @@ on a machine that can spare it).
 * Cache keys, `Vary` normalisation, slicing, `stale-if-error`, purge by
   URL/prefix/tag with fleet fan-out, `Cache-Status`. (Done: keys with
   `query=` and `host=off`, Accept-Encoding normalised, `stale-if-error`
-  from the route and the origin, `Cache-Status` on every answer. Still to
-  come: purge, slicing.)
+  from the route and the origin, `Cache-Status` on every answer; purge by
+  URL, prefix and tag, kept in the store, over the admin socket and HTTP,
+  fanned out to `fleet`. Still to come: slicing.)
 * Shield tier, signed URLs, CDN provider ranges, authenticated origin
   pulls, health-driven BGP announcement (through BIRD).
 * A floating address for a pair of instances without BGP: VRRP v3 (RFC 9568),

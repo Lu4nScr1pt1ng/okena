@@ -8,7 +8,7 @@ not built yet. A directive that is not built is refused by `okena check`
 
 | Block | Directives |
 |---|---|
-| `okena` | `workers`, `io_engine`, `busy_poll`, `watchdog`, `drain delay= timeout=`, `metrics [token=]`, `user`, `ticket_keys`, `handshake_budget wait=`, `quic_server_id HEX` |
+| `okena` | `workers`, `io_engine`, `busy_poll`, `watchdog`, `drain delay= timeout=`, `metrics [token=]`, `user`, `ticket_keys`, `handshake_budget wait=`, `quic_server_id HEX`, `cache_memory`, `cache_disk PATH size=`, `fleet ADDR...` |
 | `tcp ADDR...` | `to`, `limits { connections; per_source }`, `timeout { idle }`, `proxy_protocol send v1\|v2`, `tls { cert; key }`, `tls passthrough { sni NAME... to pool P; default reject\|to pool P }` |
 | `udp ADDR...` | `to`, `responses N`, `limits { connections }` (flows), `timeout { idle }` |
 | `http ADDR...` | `host`, `route`, `errors CODES file= [backend]`, `maintenance file= retry= allow= except=`, `limits`, `timeout { idle; header; body_idle; response }`, `trusted_proxies`, `access_log`, `tracing`, `http2 on\|off`, `http3 on\|off\|retry\|v2`, `preferred_address`, `early_data on\|off`, `tls { cert; key; ktls on\|off }` |
@@ -759,6 +759,34 @@ Every answer of a route with `cache` says what the cache did with it, in
 
 A backend's own `Cache-Status` is passed on, and okena's comes after it, as the RFC
 orders them.
+
+A purge takes answers back at once, from every worker's memory and from the disk:
+
+```
+okena purge url https://shop.example/p/a?x=1     # this answer
+okena purge prefix shop.example/assets/          # all under it
+okena purge tag product-42                       # all that the origin tagged so
+curl -X POST -H "Authorization: Bearer $TOKEN" 'http://10.0.0.1:9464/purge?tag=product-42'
+```
+
+A URL is matched by its host, in any case, and its target as the client asked for
+it, query included. An answer's tags are what the origin said in `Cache-Tag`
+(commas between them) and `Surrogate-Key` (spaces between them). `okena purge` goes
+through the `admin` socket. `POST /purge` is on the metrics listener, and needs its
+`token=`: without one, purges over HTTP are refused.
+
+A purge covers an answer whose fetch began before it, even one still in flight when
+the purge came. Purges are checked when an answer is about to be served, so a purge
+costs nothing at the time it is made, however much is cached. Up to 1024 purges are
+remembered; past that, anything fetched before the oldest purge forgotten counts as
+purged, so it is fetched again rather than served stale. With `cache_disk` the
+purges are kept in the store, so they hold for every okena process on it and
+outlive restarts and upgrades.
+
+`okena { fleet 10.0.0.2:9464 10.0.0.3:9464 }` names the metrics listeners of the
+other instances. `okena purge` asks each of them too, over HTTP with this instance's
+metrics token (the fleet shares one), and prints a line for each: `ok`, the status
+it answered with, or `no answer`. This is plain HTTP: keep it on a private network.
 
 `redirects FILE code=301` keeps thousands of old paths in a file, one lookup each:
 lines `/old /new` or `/old https://else/ 302`, `#` for comments, each path once. The

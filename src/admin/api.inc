@@ -372,6 +372,7 @@ api_serve:
 	api_cmd 'list', .list
 	api_cmd 'status', .status
 	api_cmd 'maintenance', .maintenance
+	api_cmd 'purge', .purge
 	api_cmd 'top', .top
 	api_cmd 'state', .state
 	api_cmd 'reload', .reload
@@ -396,6 +397,10 @@ api_serve:
 .maintenance:
 	pop	rdi
 	call	api_maintenance			; rdi = after its answer
+	jmp	.send
+.purge:
+	pop	rdi
+	call	api_purge
 	jmp	.send
 .top:
 	pop	rdi

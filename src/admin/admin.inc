@@ -147,6 +147,8 @@ admin_main:
 	syscall
 	mov	[g_api_uid],eax			; (the supervisor's: whom the API answers)
 	call	api_apply			; (what came in while it was gone)
+	mov	dword [g_cd_attach],1		; the store's purge ring, if there is one
+	call	cd_init
 	call	priv_drop
 	call	ll_confine_none			; (Landlock: no file at all)
 	seccomp_for filter_admin
@@ -250,6 +252,8 @@ admin_serve:
 	mov	byte [g_admin_req+r12],0
 	cmp	r12d,5
 	jb	.out
+	cmp	dword [g_admin_req],'POST'
+	je	.post
 	cmp	dword [g_admin_req],'GET '
 	jne	.not_found
 	lea	rsi,[g_admin_req+4]
@@ -293,6 +297,29 @@ admin_serve:
 	cstring str_404, 'HTTP/1.1 404 Not Found',13,10,'Content-Length: 10',13,10,'Connection: close',13,10,13,10,'not found',10
 	lea	rsi,[str_404]
 	mov	edx,str_404.len
+	jmp	.send
+.post:
+	; POST /purge: the token's, and only when there is one
+	cmp	byte [g_admin_req+4],' '
+	jne	.not_found
+	cstring str_p_purge, '/purge'
+	lea	rsi,[g_admin_req+5]
+	lea	rdi,[str_p_purge]
+	mov	ecx,str_p_purge.len
+	repe	cmpsb
+	jne	.not_found
+	cmp	dword [g_plan_mtlen],0
+	je	.forbidden
+	push	rsi
+	call	admin_authorized
+	pop	rsi
+	jnz	.unauthorized
+	call	admin_purge
+	jmp	.send
+.forbidden:
+	cstring str_403p, 'HTTP/1.1 403 Forbidden',13,10,'Content-Length: 31',13,10,'Connection: close',13,10,13,10,'purge needs a token on metrics',10
+	lea	rsi,[str_403p]
+	mov	edx,str_403p.len
 	jmp	.send
 .live:
 	cstring str_live, 'HTTP/1.1 200 OK',13,10,'Content-Length: 5',13,10,'Connection: close',13,10,13,10,'live',10

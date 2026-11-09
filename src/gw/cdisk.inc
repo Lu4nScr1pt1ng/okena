@@ -44,7 +44,7 @@ CD_HMAX		:= 8192				; the largest head kept on disk
 CD_RH		:= 64				; a record's own head
 CD_REG		:= 256				; processes that can pin, at once
 CD_IOV		:= 256
-CD_VER		:= 3
+CD_VER		:= 4
 CD_LOGM		:= 1 shl 62			; a place in M (in S without it)
 CD_FREQ		:= 1 shl 30			; IS_LEN: asked for again (0-3), above the length
 CD_LENM		:= CD_FREQ - 1
@@ -78,12 +78,13 @@ IS_SIZE		:= 32
 
 ; a record
 RH_MAGIC	:= 0				; d
-RH_HLEN		:= 4				; d
+RH_HLEN		:= 4				; w: the head's length; then w: its purge facts', before it
+RH_MLEN		:= 6
 RH_BLEN		:= 8				; d
 RH_SWR		:= 12				; d: stale-while-revalidate ends, seconds (past it,
 						; to the slot's IS_STALE, only for an error)
 RH_ABS		:= 16				; q
-RH_BORN		:= 24				; q: seconds
+RH_BORN		:= 24				; q: µs (wall clock) its fetch began
 RH_KEY		:= 32				; 32
 
 bss
@@ -125,7 +126,9 @@ bss
 	g_cd_zero:	rb 64
 	g_cd_boot:	rb 40
 	g_cd_path:	rb 4096
-	g_cd_buf:	rb CD_RH + CD_HMAX
+	g_cd_buf:	rb CD_RH + PM_MAX + CD_HMAX
+	g_cd_attach	dd ?			; 1: the store's purge ring only (the admin process)
+	g_cd_pr		dq ?			; where the purge ring is in okena.idx
 end bss
 
 ; g_plan_cdpath, then rsi = what follows (NUL-terminated): g_cd_path
@@ -250,7 +253,10 @@ cd_init:
 	shl	rcx,5
 	add	rax,rcx
 	mov	ecx,[g_cd_nslot]		; and the ghosts, as many
-	lea	rax,[rax+rcx*8]
+	lea	rax,[rax+rcx*8+4095]
+	and	rax,not 4095
+	mov	[g_cd_pr],rax			; then the purge ring (purge.inc)
+	add	rax,PR_SIZE
 	mov	[g_cd_total],rax
 
 	; the boot this is: a store from another is kept only if it was left clean
@@ -512,6 +518,16 @@ cd_init:
 	shl	rcx,5
 	add	rax,rcx
 	mov	[g_cd_ghost],rax
+	mov	rax,rbx
+	add	rax,[g_cd_pr]
+	mov	[g_pr_base],rax			; purges: the store's, for all its processes
+	cmp	dword [g_cd_attach],0
+	je	@f
+	mov	edi,[g_cd_idxfd]		; (the admin: that is all it wants)
+	mov	eax,SYS_close
+	syscall
+	jmp	.unlock
+@@:
 	mov	edi,[g_cd_idxfd]
 	mov	eax,SYS_close
 	syscall
@@ -846,9 +862,9 @@ cd_lookup:
 	cd_pos
 	mov	r10,rax				; where
 	mov	edx,[g_cd_slen]
-	cmp	edx,CD_RH + CD_HMAX
+	cmp	edx,CD_RH + PM_MAX + CD_HMAX
 	jbe	@f
-	mov	edx,CD_RH + CD_HMAX
+	mov	edx,CD_RH + PM_MAX + CD_HMAX
 @@:
 	push	r10
 	mov	edi,[g_cd_fd]
@@ -865,10 +881,13 @@ cd_lookup:
 	mov	rcx,[g_cd_sabs]
 	cmp	[rsi+RH_ABS],rcx
 	jne	.bad
-	mov	ecx,[rsi+RH_HLEN]
+	movzx	ecx,word [rsi+RH_HLEN]
 	cmp	ecx,CD_HMAX
 	ja	.bad
-	lea	edx,[ecx+CD_RH]
+	movzx	edx,word [rsi+RH_MLEN]
+	cmp	edx,PM_MAX
+	ja	.bad
+	lea	edx,[rcx+rdx+CD_RH]
 	cmp	edx,eax
 	ja	.bad
 	mov	r8d,[rsi+RH_BLEN]
@@ -881,9 +900,26 @@ cd_lookup:
 	repe	cmpsq
 	jne	.bad
 	lea	rsi,[g_cd_buf]
-	mov	eax,[rsi+RH_HLEN]
+	movzx	eax,word [rsi+RH_HLEN]
+	movzx	ecx,word [rsi+RH_MLEN]
+	add	eax,ecx
 	lea	rax,[r10+rax+CD_RH]
 	mov	[g_cd_spos],rax
+	; a purge since it was fetched?
+	mov	rdi,[g_cd_buf+RH_BORN]
+	pr_maybe
+	jnc	.unpurged
+	movzx	ecx,word [g_cd_buf+RH_MLEN]
+	mov	esi,ecx
+	lea	rdi,[g_pm]
+	push	rsi
+	lea	rsi,[g_cd_buf+CD_RH]
+	rep	movsb
+	pop	rsi
+	mov	rdi,[g_cd_buf+RH_BORN]
+	call	pr_check
+	jc	.bad
+.unpurged:
 	; asked for again: up to 3 (once is enough: a slot changed meanwhile keeps its own)
 	mov	rcx,[g_cd_sptr]
 	mov	eax,[rcx+IS_LEN]
@@ -929,12 +965,18 @@ cd_serve:
 	mov	qword [r15+H_UPT0],0
 	mov	rdi,[r15+H_BUF]
 	lea	rdi,[rdi+HB_UP]
-	lea	rsi,[g_cd_buf+CD_RH]
-	mov	ecx,[g_cd_buf+RH_HLEN]
+	movzx	eax,word [g_cd_buf+RH_MLEN]
+	lea	rsi,[g_cd_buf+CD_RH+rax]
+	movzx	ecx,word [g_cd_buf+RH_HLEN]
 	rep	movsb
 	memit_x 'Age: '
+	mov	rax,[g_cd_buf+RH_BORN]
+	xor	edx,edx
+	mov	ecx,1000000
+	div	rcx
+	mov	rcx,rax
 	mov	rax,[g_cd_rnow]
-	sub	rax,[g_cd_buf+RH_BORN]
+	sub	rax,rcx
 	jns	@f
 	xor	eax,eax				; (a clock set back)
 @@:
@@ -1129,11 +1171,14 @@ cd_put:
 	je	.none
 	cmp	dword [r12+CE_HLEN],CD_HMAX
 	ja	.none
+	cmp	dword [r12+CE_MLEN],PM_MAX
+	ja	.none
 	push	rbx
 	push	r13
 	push	r14
 	push	r15
 	mov	eax,[r12+CE_HLEN]
+	add	eax,[r12+CE_MLEN]
 	add	eax,[r12+CE_BLEN]
 	jc	.out
 	lea	rcx,[rax+CD_RH+63]
@@ -1171,7 +1216,9 @@ cd_put:
 	lea	rdi,[g_cd_rec]
 	mov	dword [rdi+RH_MAGIC],'OKR1'
 	mov	eax,[r12+CE_HLEN]
-	mov	[rdi+RH_HLEN],eax
+	mov	[rdi+RH_HLEN],ax
+	mov	eax,[r12+CE_MLEN]
+	mov	[rdi+RH_MLEN],ax
 	mov	eax,[r12+CE_BLEN]
 	mov	[rdi+RH_BLEN],eax
 	mov	eax,[r12+CE_TTL]
@@ -1179,7 +1226,7 @@ cd_put:
 	add	eax,[r12+CE_SWR]
 	mov	[rdi+RH_SWR],eax
 	mov	[rdi+RH_ABS],r13
-	mov	rax,[g_cd_rnow]
+	mov	rax,[r12+CE_RB]
 	mov	[rdi+RH_BORN],rax
 	lea	rsi,[g_ck]
 	add	rdi,RH_KEY
@@ -1196,6 +1243,10 @@ cd_put:
 	mov	qword [r8+8],CD_RH
 	mov	r9d,1				; iovecs
 	mov	r10,CD_RH			; their bytes
+	mov	eax,[r12+CE_META]
+	mov	ecx,[r12+CE_MLEN]
+	call	.chain
+	jc	.unpin
 	mov	eax,[r12+CE_HEAD]
 	mov	ecx,[r12+CE_HLEN]
 	call	.chain

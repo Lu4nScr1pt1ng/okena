@@ -402,7 +402,9 @@ keeper_walk:
 	lea	rax,[r12+r14]
 	cmp	[rbx+RH_ABS],rax
 	jne	.done
-	mov	eax,[rbx+RH_HLEN]
+	movzx	eax,word [rbx+RH_HLEN]
+	movzx	ecx,word [rbx+RH_MLEN]
+	add	eax,ecx
 	add	eax,[rbx+RH_BLEN]
 	jc	.done
 	lea	rbp,[rax+CD_RH+63]

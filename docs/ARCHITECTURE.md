@@ -867,6 +867,15 @@ cooperates with it instead of pretending to replace it.
   the next: marked, its records dealt with, handed over once nobody pins
   it.
 
+**Purge** (src/gw/purge.inc) is a ring of rules (time, kind, what it
+names), in the disk store's index when there is one, so every process on
+the store sees it and it outlives them. Nothing is searched when a purge
+is made. An answer is checked when it is about to be served, against the
+rules made after its fetch began, which covers a fetch in flight. The
+newest rule's time settles most answers with one comparison. When the
+ring goes round, whatever was fetched before the rule it loses counts as
+purged. Each answer keeps the facts a purge needs: host, target and tags.
+
 RFC 9111 semantics, plus what a CDN needs: cache keys configurable
 (host, path, chosen query parameters, headers, cookies), `Vary`
 normalisation (`Accept-Encoding` reduced to the variants served), request

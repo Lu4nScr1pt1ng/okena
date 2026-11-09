@@ -71,7 +71,11 @@ CE_MAX		:= 112				; d: what the route allows
 CE_TTL		:= 116				; d: seconds
 CE_SWR		:= 120				; d
 CE_SIE		:= 124				; d: stale-if-error, seconds past fresh
-CE_SIZE		:= 128
+CE_META		:= 128				; d: its purge facts (purge.inc): first block
+CE_MTAIL	:= 132				; d
+CE_MLEN		:= 136				; d
+CE_RB		:= 144				; q: µs (wall clock) its fetch began
+CE_SIZE		:= 160
 
 ; `cache` of a route (plan)
 CA_TTL		:= 0				; d: seconds
@@ -222,10 +226,9 @@ cache_init:
 
 ; eax = entry: rax = it. Keeps everything else.
 macro ce_ptr
-	shl	rax,7				; CE_SIZE
+	imul	rax,rax,CE_SIZE
 	add	rax,[g_ce_base]
 end macro
-assert CE_SIZE = 128
 
 ; edi = entry: into the list, as the one used last
 ce_lru_add:
@@ -340,6 +343,9 @@ ce_free:
 	mov	rax,[rsp]
 	mov	edi,[rax+CE_BODY]
 	call	cb_free_chain
+	mov	rax,[rsp]
+	mov	edi,[rax+CE_META]
+	call	cb_free_chain
 	pop	rax
 	mov	dword [rax+CE_STATE],CE_FREE
 	mov	ecx,[g_ce_free]
@@ -426,6 +432,8 @@ ce_alloc:
 	mov	[rdi+CE_HTAIL],eax
 	mov	[rdi+CE_BODY],eax
 	mov	[rdi+CE_BTAIL],eax
+	mov	[rdi+CE_META],eax
+	mov	[rdi+CE_MTAIL],eax
 	mov	eax,r8d
 	clc
 	ret
@@ -810,6 +818,12 @@ cache_check:
 	mov	eax,[g_cf_r]
 	cmp	eax,NIL
 	je	.no_entry
+	call	pm_purged			; a purge since it was fetched?
+	jnc	@f
+	mov	dword [g_cf_r],NIL
+	jmp	.no_entry
+@@:
+	mov	eax,[g_cf_r]
 	ce_ptr
 	mov	rcx,[g_qnow]
 	cmp	rcx,[rax+CE_FRESH]
@@ -1230,6 +1244,9 @@ cache_poll:
 	mov	eax,[g_cf_r]
 	cmp	eax,NIL
 	je	.no_entry
+	call	pm_purged
+	jc	.no_entry
+	mov	eax,[g_cf_r]
 	ce_ptr
 	mov	rcx,[g_qnow]
 	cmp	rcx,[rax+CE_STALE]
@@ -1280,7 +1297,21 @@ cache_begin:
 	mov	[rdi+CE_SWR],eax
 	mov	eax,[r12+CA_SIE]
 	mov	[rdi+CE_SIE],eax
+	; what a purge would name it by, and when its fetch began
 	push	r8
+	call	pr_clock
+	mov	eax,[rsp]
+	ce_ptr
+	mov	rcx,[g_pr_now]
+	mov	[rax+CE_RB],rcx
+	lea	r9,[rax+CE_META]
+	call	pm_request
+	jnc	@f
+	pop	rdi				; (no room for them: not kept)
+	call	ce_free
+	jmp	.out
+@@:
+	mov	r8,[rsp]
 	mov	edi,r8d
 	call	ce_link
 	pop	r8
@@ -1553,11 +1584,15 @@ cache_no:
 	mov	rax,[rsp]
 	mov	edi,[rax+CE_BODY]
 	call	cb_free_chain
+	mov	rax,[rsp]
+	mov	edi,[rax+CE_META]
+	call	cb_free_chain
 	call	qs_clock
 	pop	rax
 	mov	ecx,NIL
 	mov	[rax+CE_HEAD],ecx
 	mov	[rax+CE_BODY],ecx
+	mov	[rax+CE_META],ecx
 	mov	dword [rax+CE_STATE],CE_PASS
 	mov	rcx,[g_qnow]
 	add	rcx,CP_SECS * 1000000
@@ -1657,6 +1692,8 @@ cache_fields:
 	jc	.no
 	jmp	.field
 .done:
+	call	pm_tags				; its tags, for a purge
+	jc	.no
 	mov	[r12+CE_SWR],r14d
 	and	dword [r12+CE_SIE],0x7FFFFFFF	; (must-revalidate's lock off)
 	cmp	dword [r12+CE_HLEN],H_UP_CAP - 256

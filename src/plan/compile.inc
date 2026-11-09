@@ -506,6 +506,9 @@ compile_settings:
 	lea	rcx,[dir_table + D_SIZE*DIR_CACHE_DISK]
 	cmp	rax,rcx
 	je	.cache_disk
+	lea	rcx,[dir_table + D_SIZE*DIR_FLEET]
+	cmp	rax,rcx
+	je	.fleet
 	lea	rcx,[dir_table + D_SIZE*DIR_GEOIP]
 	cmp	rax,rcx
 	je	.geoip
@@ -678,6 +681,9 @@ compile_settings:
 	jmp	.advance
 .cache_disk:
 	call	compile_cache_disk
+	jmp	.advance
+.fleet:
+	call	compile_fleet
 	jmp	.advance
 .cache_memory:
 	mov	rax,[rbx+N_ARGS]
