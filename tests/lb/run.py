@@ -134,8 +134,14 @@ try:
     check("slow_start: a server that is back gets little at first (expected ~7%)",
           early < 0.25 and early < 0.6 * fast, f"b0 {early:.0%} of {n1}, without slow_start {fast:.0%}")
     check("without slow_start it gets its share at once", 0.3 < fast < 0.7, f"b0 {fast:.0%} of {n2}")
-    time.sleep(2.5)                                          # past the 3 s window
-    late, n3 = share(SLOW, b"b0", 0.8)
+    # past the 3 s window: it starts when a worker sees the server back (its
+    # tick, which runs late under load), so its end is waited for, not assumed
+    time.sleep(1.5)
+    t0 = time.time()
+    while True:
+        late, n3 = share(SLOW, b"b0", 0.8)
+        if 0.3 < late < 0.7 or time.time() - t0 > 4:
+            break
     check("after the window it has its full share", 0.3 < late < 0.7, f"b0 {late:.0%} of {n3}")
 finally:
     p.send_signal(signal.SIGTERM)

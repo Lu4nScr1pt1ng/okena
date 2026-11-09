@@ -969,6 +969,12 @@ cd_serve:
 	lea	rsi,[g_cd_buf+CD_RH+rax]
 	movzx	ecx,word [g_cd_buf+RH_HLEN]
 	rep	movsb
+	mov	eax,[g_cd_buf+RH_BLEN]
+	call	range_fix			; a Range: a 206 of it
+	mov	eax,[g_cd_buf+RH_BLEN]
+	call	slice_fix			; a slice: the object's head
+	mov	rax,[g_c_skip]
+	add	[g_cd_spos],rax
 	memit_x 'Age: '
 	mov	rax,[g_cd_buf+RH_BORN]
 	xor	edx,edx
@@ -1001,7 +1007,7 @@ cd_serve:
 	mov	rax,[r15+H_BUF]
 	mov	rcx,[g_cd_spos]
 	mov	[rax+HB_CPOSB],rcx		; (and HB_CPOS: a place in okena.dat)
-	mov	ecx,[g_cd_buf+RH_BLEN]
+	mov	rcx,[g_c_take]
 	mov	[rax+HB_CLEFT],ecx
 	mov	dword [r15+H_STATE],HS_RESP_HEAD
 	mov	edi,ebx

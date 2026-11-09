@@ -479,7 +479,8 @@ on a machine that can spare it).
   `query=` and `host=off`, Accept-Encoding normalised, `stale-if-error`
   from the route and the origin, `Cache-Status` on every answer; purge by
   URL, prefix and tag, kept in the store, over the admin socket and HTTP,
-  fanned out to `fleet`. Still to come: slicing.)
+  fanned out to `fleet`; ranges answered from the cache, and `slice=` for
+  large objects.)
 * Shield tier, signed URLs, CDN provider ranges, authenticated origin
   pulls, health-driven BGP announcement (through BIRD).
 * A floating address for a pair of instances without BGP: VRRP v3 (RFC 9568),

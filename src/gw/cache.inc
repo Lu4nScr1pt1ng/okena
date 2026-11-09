@@ -90,7 +90,8 @@ CA_QN		:= CA_NOHOST + 8		; d
 CA_SIE		:= CA_NOHOST + 12		; d: stale-if-error=, seconds
 CA_Q		:= CA_NOHOST + 16		; (name q, length q) * CA_QMAX
 CA_QMAX		:= 8
-CA_SIZE		:= CA_Q + 16 * CA_QMAX
+CA_SLICE	:= CA_Q + 16 * CA_QMAX		; d: slice=, bytes (slice.inc), 0 none
+CA_SIZE		:= CA_SLICE + 8
 
 ; HB_CST: what the cache made of a request that went to the backend (Cache-Status)
 CST_MISS	:= 1
@@ -127,6 +128,13 @@ bss
 	g_c_sie		dd ?			; cache_check: an entry kept for an error, NIL none
 	g_c_sied	dd ?			; or one on disk
 	g_c_fwd		dd ?			; the failed status a stale copy answers for, 0 none
+	g_c_rk		dd ?			; a Range a hit answers: 0 none (all of it), 1 a-b,
+	align 8					; 2 a-, 3 -n
+	g_c_ra		dq ?
+	g_c_rb		dq ?
+	g_c_skip	dq ?			; range_fix: the body from here
+	g_c_take	dq ?			; this much
+	g_rng_tmp:	rb H_UP_CAP
 end bss
 
 ; a worker, at its start
@@ -217,6 +225,7 @@ cache_init:
 	mov	dword [g_ce_old],NIL
 	mov	dword [g_ce_new],NIL
 	call	cd_init				; and on disk, if it is to be
+	call	slice_init
 .out:
 	pop	r13
 	pop	r12
@@ -780,8 +789,16 @@ cache_check:
 	cmp	eax,'GET'
 	jne	.o_method
 .method:
+	; a Range: a hit answers it (206); a miss goes on as it is, and fills nothing
+	mov	dword [g_c_rk],0
 	has_field 'range'
-	jnz	.o_bypass			; (not a whole object: the backend's)
+	jz	@f
+	mov	r13d,1
+	call	range_parse
+	has_field 'if-range'
+	jz	@f
+	mov	dword [g_c_rk],0		; (all of it: a server may always say more)
+@@:
 	cmp	dword [r12+CA_SHARED],0
 	jne	.conditional
 	has_field 'authorization'
@@ -806,6 +823,12 @@ cache_check:
 	mov	r13d,1
 @@:
 	call	ck_make
+	cmp	dword [r12+CA_SLICE],0		; a sliced route: its first slice is looked for
+	je	@f
+	call	slice_prepare
+	jc	@f
+	xor	r13d,r13d			; (and fetched, whatever the request)
+@@:
 	mov	rdi,[r15+H_BUF]
 	lea	rdi,[rdi+HB_CK]
 	lea	rsi,[g_ck]
@@ -893,6 +916,15 @@ cache_check:
 .miss:
 	test	r13d,r13d
 	jnz	.origin
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_SLICE
+	jz	@f
+	sl_ctx					; a slice: a copy fetches it, this waits
+	mov	eax,[rax+SC_K]
+	call	slice_fetch
+	jnc	.wait
+	jmp	.origin
+@@:
 	call	cache_begin
 	jmp	.origin
 .wait:
@@ -916,6 +948,8 @@ cache_check:
 	mov	rax,[r15+H_BUF]
 	mov	dword [rax+HB_CST],CST_BYPASS
 .origin:
+	call	session_ptr			; (to the backend as it came: not sliced)
+	and	dword [rax+S_FLAGS],not SF_SLICE
 	; a stale copy to fall back on?
 	mov	rdx,[r15+H_BUF]
 	mov	ecx,[g_c_sie]
@@ -1060,6 +1094,240 @@ ae_set:
 	mov	eax,r9d
 	ret
 
+; rsi/ecx = a Range value: g_c_rk, g_c_ra, g_c_rb. One range of bytes, a-b, a- or
+; -n; anything else (several, another unit, garbage) leaves g_c_rk 0: the whole
+; answer, which a server may always give. Keeps rbx, r12-r15.
+range_parse:
+	mov	dword [g_c_rk],0
+	lea	r8,[rsi+rcx]
+	cmp	ecx,7
+	jb	.out
+	cmp	dword [rsi],'byte'
+	jne	.out
+	cmp	word [rsi+4],'s='
+	jne	.out
+	add	rsi,6
+	call	.num
+	jc	.suffix
+	mov	[g_c_ra],rax
+	cmp	rsi,r8
+	jae	.out
+	cmp	byte [rsi],'-'
+	jne	.out
+	inc	rsi
+	cmp	rsi,r8
+	je	.open
+	call	.num
+	jc	.out
+	cmp	rsi,r8
+	jne	.out				; (a comma: several)
+	cmp	rax,[g_c_ra]
+	jb	.out
+	mov	[g_c_rb],rax
+	mov	dword [g_c_rk],1
+	ret
+.open:
+	mov	dword [g_c_rk],2
+	ret
+.suffix:
+	cmp	rsi,r8
+	jae	.out
+	cmp	byte [rsi],'-'
+	jne	.out
+	inc	rsi
+	call	.num
+	jc	.out
+	cmp	rsi,r8
+	jne	.out
+	mov	[g_c_rb],rax
+	mov	dword [g_c_rk],3
+.out:
+	ret
+; digits at rsi (to r8): rax. CF: none, or too many
+.num:
+	xor	eax,eax
+	xor	ecx,ecx
+@@:
+	cmp	rsi,r8
+	jae	@f
+	movzx	edx,byte [rsi]
+	sub	edx,'0'
+	cmp	edx,9
+	ja	@f
+	cmp	ecx,18
+	jae	.nan
+	imul	rax,rax,10
+	add	rax,rdx
+	inc	ecx
+	inc	rsi
+	jmp	@b
+@@:
+	test	ecx,ecx
+	jz	.nan
+	clc
+	ret
+.nan:
+	stc
+	ret
+
+; rdi = past a hit's head in HB_UP (r15), eax = its body's length: with a Range to
+; answer (g_c_rk), and a 200 kept, the head made a 206 (or a 416) in place: its
+; status line, and its last line, the Content-Length the cache wrote, become
+; Content-Range and the range's length. g_c_skip, g_c_take: what of the body goes.
+; Keeps rbx, r12-r15.
+range_fix:
+	mov	r9d,eax				; the whole of it
+	mov	qword [g_c_skip],0
+	mov	[g_c_take],r9
+	mov	ecx,[g_c_rk]
+	mov	dword [g_c_rk],0
+	test	ecx,ecx
+	jz	.out
+	mov	r10,[r15+H_BUF]
+	add	r10,HB_UP			; the head's start
+	cmp	dword [r10],'HTTP'
+	jne	.out
+	cmp	dword [r10+8],' 200'
+	jne	.out				; (only what is whole)
+	; where it is asked from, and to
+	mov	rax,[g_c_ra]
+	mov	rdx,[g_c_rb]
+	cmp	ecx,1
+	je	.ab
+	cmp	ecx,2
+	je	.from
+	; -n: the last n
+	test	rdx,rdx
+	jz	.none
+	mov	rax,r9
+	sub	rax,rdx
+	jae	@f
+	xor	eax,eax
+@@:
+	lea	rdx,[r9-1]
+	jmp	.got
+.from:
+	lea	rdx,[r9-1]
+	jmp	.check
+.ab:
+	lea	rcx,[r9-1]
+	cmp	rdx,rcx
+	jbe	.check
+	mov	rdx,rcx
+.check:
+	cmp	rax,r9
+	jae	.none
+.got:
+	mov	[g_c_skip],rax
+	mov	rcx,rdx
+	sub	rcx,rax
+	inc	rcx
+	mov	[g_c_take],rcx
+	push	rax
+	push	rdx
+	call	.split				; r11 = the fields', rcx = their length
+	jc	.keep2
+	push	rdi
+	lea	rdi,[.s206]
+	call	.status
+	pop	rax				; (the old end: nothing of it is needed)
+	memit_x 'Content-Range: bytes '
+	mov	rax,[rsp+8]
+	call	fmt_u64
+	mov	byte [rdi],'-'
+	inc	rdi
+	mov	rax,[rsp]
+	call	fmt_u64
+	mov	byte [rdi],'/'
+	inc	rdi
+	mov	eax,r9d
+	call	fmt_u64
+	memit_x 13,10,'Content-Length: '
+	mov	rax,[g_c_take]
+	call	fmt_u64
+	memit_x 13,10
+	add	rsp,16
+	ret
+.keep2:
+	add	rsp,16
+	mov	qword [g_c_skip],0
+	mov	[g_c_take],r9
+	ret
+.none:
+	; nothing of it there: 416, and no body
+	call	.split
+	jc	.out
+	push	rdi
+	lea	rdi,[.s416]
+	call	.status
+	pop	rax
+	memit_x 'Content-Range: bytes */'
+	mov	eax,r9d
+	call	fmt_u64
+	memit_x 13,10,'Content-Length: 0',13,10
+	mov	qword [g_c_skip],0
+	mov	qword [g_c_take],0
+.out:
+	ret
+; the fields between the status line and the Content-Length line, into g_rng_tmp:
+; r11 = there, rcx = their length. CF: not as the cache writes a head.
+.split:
+	mov	rsi,r10
+@@:
+	cmp	rsi,rdi
+	jae	.bad
+	cmp	byte [rsi],10
+	je	@f
+	inc	rsi
+	jmp	@b
+@@:
+	inc	rsi				; the fields begin
+	lea	rdx,[rdi-3]			; the last line: after the line feed before it
+@@:
+	cmp	rdx,rsi
+	jb	.bad
+	cmp	byte [rdx],10
+	je	@f
+	dec	rdx
+	jmp	@b
+@@:
+	inc	rdx
+	cmp	dword [rdx],'Cont'
+	jne	.bad
+	cmp	dword [rdx+8],'Leng'
+	jne	.bad
+	mov	rcx,rdx
+	sub	rcx,rsi
+	lea	r11,[g_rng_tmp]
+	push	rdi
+	push	rcx
+	mov	rdi,r11
+	rep	movsb
+	pop	rcx
+	pop	rdi
+	clc
+	ret
+.bad:
+	stc
+	ret
+; rdi = a status line (NUL-ended): it, then the fields, at the head's start; rdi
+; past them
+.status:
+	mov	rsi,rdi
+	mov	rdi,r10
+@@:
+	lodsb
+	test	al,al
+	jz	@f
+	stosb
+	jmp	@b
+@@:
+	mov	rsi,r11
+	rep	movsb
+	ret
+.s206	db 'HTTP/1.1 206 Partial Content',13,10,0
+.s416	db 'HTTP/1.1 416 Range Not Satisfiable',13,10,0
+
 ; rdi = a hit's head, past Age's value: its Cache-Status up to `ttl=`: a hit, or a
 ; stale copy answering for a backend that failed (g_c_fwd, then cleared). Keeps r12-r15.
 cache_status_head:
@@ -1119,6 +1387,7 @@ cache_sie_ok:
 ; after cache_sie_ok said yes (ebx, r15): the backend let go of, the stale copy as the
 ; answer, with what the backend said in its Cache-Status
 cache_sie_serve:
+	mov	dword [g_c_rk],0		; (all of it)
 	call	h_upclose
 	h_rec
 	call	session_ptr
@@ -1371,6 +1640,7 @@ cache_refetch:
 	imul	r12,rax,CA_SIZE
 	lea	r12,[g_caches+r12]
 	call	ck_make
+	call	slice_copy_key			; (a slice's copy: the slice's key)
 	call	ce_find
 	cmp	dword [g_cf_f],NIL
 	jne	.out
@@ -1428,6 +1698,10 @@ cache_serve:
 	mov	eax,[rdx+rax*4]
 	jmp	.head
 .head_done:
+	mov	eax,[r13+CE_BLEN]
+	call	range_fix
+	mov	eax,[r13+CE_BLEN]
+	call	slice_fix
 	memit_x 'Age: '
 	mov	rax,[g_qnow]
 	sub	rax,[r13+CE_BORN]
@@ -1456,9 +1730,18 @@ cache_serve:
 	mov	dword [r15+H_UPOFF],0
 	mov	rax,[r15+H_BUF]
 	mov	ecx,[r13+CE_BODY]
+	mov	rdx,[g_c_skip]			; (a range: its first block, and where in it)
+@@:
+	cmp	rdx,CB_SIZE
+	jb	@f
+	sub	rdx,CB_SIZE
+	mov	r8,[g_cb_nexts]
+	mov	ecx,[r8+rcx*4]
+	jmp	@b
+@@:
 	mov	[rax+HB_CPOSB],ecx
-	mov	dword [rax+HB_CPOS],0
-	mov	ecx,[r13+CE_BLEN]
+	mov	[rax+HB_CPOS],edx
+	mov	rcx,[g_c_take]
 	mov	[rax+HB_CLEFT],ecx
 	mov	dword [r15+H_STATE],HS_RESP_HEAD
 	mov	edi,ebx
@@ -1472,6 +1755,13 @@ cache_serve:
 cache_recv:
 	h_rec
 	mov	r8,[r15+H_BUF]
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_SLICE
+	jz	@f
+	call	slice_ahead			; (the next slice asked for now)
+	cmp	dword [r8+HB_CLEFT],0
+	je	slice_next			; this one spent
+@@:
 	mov	eax,[r8+HB_CE]
 	cmp	eax,NIL
 	je	@f
@@ -1529,6 +1819,16 @@ cache_head:
 	mov	r14d,eax
 	ce_ptr
 	mov	r12,rax
+	mov	rax,[r15+H_BUF]			; a slice's copy: its own answers
+	cmp	dword [rax+HB_SPLIT],0
+	je	.whole
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_CREF
+	jz	.whole
+	call	slice_answer_ok
+	jc	.no
+	jmp	.status
+.whole:
 	mov	eax,[g_hm+HM_STATUS]
 	cmp	eax,200
 	je	.status
@@ -2078,6 +2378,8 @@ cache_tee:
 cache_finish:
 	call	cache_sie_drop
 	call	session_ptr
+	and	dword [rax+S_FLAGS],not SF_SLICE
+	call	session_ptr
 	mov	ecx,[rax+S_FLAGS]
 	test	ecx,SF_IDEMS
 	jz	@f
@@ -2335,6 +2637,21 @@ compile_cache:
 	mov	[r13+CA_SHARED],eax
 @@:
 	mov	rdi,rbx
+	lea	rsi,[.k_slice]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_size
+	cmp	rax,1 shl 16
+	jb	plan_bad_cache
+	cmp	rax,1 shl 26
+	ja	plan_bad_cache
+	mov	[r13+CA_SLICE],eax
+	mov	dword [g_plan_slices],1
+@@:
+	mov	rdi,rbx
 	lea	rsi,[.k_sie]
 	call	node_option
 	test	rax,rax
@@ -2446,11 +2763,12 @@ cstring .k_shared, 'shared',0
 cstring .k_vary, 'vary',0
 cstring .k_host, 'host',0
 cstring .k_sie, 'stale-if-error',0
+cstring .k_slice, 'slice',0
 cstring .k_query, 'query',0
 
 plan_bad_cache:
 	call	log_begin
-	out_lit 'cache needs a time above a second; stale-while-revalidate= a time, max= a size up to 1GiB, vary= up to 4 fields, query= all, none or up to 8 names, host= on or off, and at most 256 routes have one'
+	out_lit 'cache needs a time above a second; stale-while-revalidate= a time, max= a size up to 1GiB, vary= up to 4 fields, query= all, none or up to 8 names, host= on or off, slice= 64KiB to 64MiB, and at most 256 routes have one'
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process

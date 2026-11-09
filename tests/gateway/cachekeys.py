@@ -22,6 +22,7 @@ BIN = ROOT / "build" / "okena"
 BASE = 48000 + os.getpid() % 90 * 20 + (10 if ENGINE == "epoll" else 0)
 BACK, LST, DOWN = BASE, BASE + 1, BASE + 2
 fails = 0
+BIG = bytes(range(256)) * 400                  # 102400 bytes
 hits = {}
 state = {"fail": set(), "n": 0}
 lock = threading.Lock()
@@ -68,6 +69,8 @@ class H(http.server.BaseHTTPRequestHandler):
             self.wfile.write(b)
             return
         b = f"{path} #{n}".encode()
+        if path.startswith("/rng/"):
+            b = BIG
         self.send_response(200)
         self.send_header("Content-Length", str(len(b)))
         if path.startswith("/cc/"):
@@ -93,7 +96,7 @@ class S(http.server.ThreadingHTTPServer):
         pass
 
 
-def get(path, host="t", method="GET", headers=None, port=LST):
+def get(path, host="t", method="GET", headers=None, port=LST, full=False):
     c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
     h = {"Host": host}
     h.update(headers or {})
@@ -101,6 +104,8 @@ def get(path, host="t", method="GET", headers=None, port=LST):
     r = c.getresponse()
     b = r.read()
     c.close()
+    if full:
+        return r.status, b, r.getheader("cache-status", ""), r
     return r.status, b, r.getheader("cache-status", "")
 
 
@@ -175,10 +180,42 @@ http 127.0.0.1:{LST} {{
             "a route without cache": get("/nocache/x")[2],
         }
         want = {"a miss, kept": "okena; fwd=miss; stored", "not kept (no-store)": "okena; fwd=miss",
-                "for one person (Cookie)": "okena; fwd=bypass", "a range": "okena; fwd=bypass",
+                "for one person (Cookie)": "okena; fwd=bypass", "a range": "okena; fwd=miss",
                 "a POST": "okena; fwd=method", "a route without cache": ""}
         check("Cache-Status on every answer of a cached route (RFC 9211)",
               all(st[k] == v for k, v in want.items()) and st["a hit"].startswith("okena; hit; ttl="), st)
+
+        # Range: a hit answers it
+        rp = "/rng/a"
+        r = get(rp, headers={"Range": "bytes=0-9"}, full=True)
+        check("a Range on a miss: to the backend, and nothing kept", r[1] in (BIG, BIG[:10]) and "stored" not in r[2], r[2])
+        get(rp)
+        h0 = hits[rp]
+        N = len(BIG)
+        cases = {"bytes=0-99": (0, 99), "bytes=100-199": (100, 199), f"bytes={N - 10}-": (N - 10, N - 1),
+                 "bytes=-5": (N - 5, N - 1), f"bytes=50000-{N * 3}": (50000, N - 1), "bytes=-999999": (0, N - 1)}
+        ok = True
+        bad = []
+        for rv, (a, b) in cases.items():
+            s, body, cs, r = get(rp, headers={"Range": rv}, full=True)
+            good = (s == 206 and body == BIG[a:b + 1] and r.getheader("content-range") == f"bytes {a}-{b}/{N}"
+                    and r.getheader("content-length") == str(b - a + 1) and cs.startswith("okena; hit"))
+            ok &= good
+            if not good:
+                bad.append((rv, s, len(body), r.getheader("content-range"), cs))
+        check("a hit answers a Range: 206, its bytes, Content-Range (a-b, a-, -n, an end past it)", ok and hits[rp] == h0, bad)
+        s, body, cs, r = get(rp, headers={"Range": f"bytes={N}-"}, full=True)
+        check("  past the end: 416, Content-Range: bytes */N", s == 416 and body == b"" and r.getheader("content-range") == f"bytes */{N}",
+              (s, r.getheader("content-range")))
+        outs = [get(rp, headers={"Range": v}) for v in ("bytes=0-1,5-6", "items=0-1", "bytes=x-y")]
+        outs.append(get(rp, headers={"Range": "bytes=0-1", "If-Range": '"abc"'}))
+        check("  several ranges, another unit, garbage, If-Range: all of it (200)", all(o[0] == 200 and o[1] == BIG for o in outs),
+              [(o[0], len(o[1])) for o in outs])
+        s, body, cs, r = get(rp, method="HEAD", headers={"Range": "bytes=10-19"}, full=True)
+        check("  HEAD with a Range: the 206 head, no body", s == 206 and body == b"" and r.getheader("content-length") == "10", (s, r.getheader("content-length")))
+        outs = [get(rp, headers={"Range": "bytes=1000-1999"}, full=True) for _ in range(12)]
+        check("  from disk on the other workers too", all(o[0] == 206 and o[1] == BIG[1000:2000] for o in outs)
+              and any("detail=disk" in o[2] for o in outs) and hits[rp] == h0, {o[2] for o in outs})
 
         # stale-if-error: the route's
         p1 = "/sie/a"

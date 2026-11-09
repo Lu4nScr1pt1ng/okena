@@ -151,6 +151,7 @@ macro plan_regions action
 	action g_plan_cdplen, 4
 	action g_plan_cdsize, 8
 	action g_plan_fleet, 4
+	action g_plan_slices, 4
 	action g_plan_fleet_sa, 32 * MAX_FLEET
 	action g_plan_fleet_sl, 4 * MAX_FLEET
 	action g_plan_fleet_tx, 8 * MAX_FLEET

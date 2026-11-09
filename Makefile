@@ -200,6 +200,8 @@ test-serial: $(BIN) $(HTTPH) $(KAT) $(TLSH)
 	python3 -I tests/gateway/cachekeys.py epoll
 	python3 -I tests/gateway/purge.py io_uring
 	python3 -I tests/gateway/purge.py epoll
+	python3 -I tests/gateway/slice.py io_uring
+	python3 -I tests/gateway/slice.py epoll
 	python3 -I tests/gateway/forward.py io_uring
 	python3 -I tests/gateway/forward.py epoll
 	python3 -I tests/gateway/mtls.py io_uring

@@ -730,14 +730,19 @@ being sent).
 | `vary=a,b` | up to 4 request fields that are part of the key, with host and target. `Accept-Encoding` counts as the set of codings it takes (br, zstd, gzip; `q=0` takes one away): `gzip, br` and `br;q=1, gzip` are one answer |
 | `query=all\|none\|a,b` | the target's query in the key: all of it (the default), none of it, or only the parameters named, in that order, whatever order the request has them in. An absent parameter and an empty one are not the same |
 | `host=off` | the host is not in the key: one answer for every name the listener serves |
+| `slice=SIZE` | large objects kept in slices of this size (64 KiB to 64 MiB), each fetched with a Range of its own: see below |
 | `max=SIZE` | the largest answer kept, 1 MiB by default |
 | `shared=on` | the answer is the same for everyone: see below |
 
 Kept: GET answers of 200, 301, 308, 404 and 410 with a length or chunked. HEAD reads
 them. Not kept: `Cache-Control` no-store, private or no-cache, `Set-Cookie`, `Vary`
 naming a field not in `vary=`, or a body with no length, as a cut would look like
-its end. A request's `Range`, or a body, goes to the backend; a conditional one reads
-what is kept and gets a 200, and on a miss is not kept. A client's own `Cache-Control`
+its end. A request with a body goes to the backend; a conditional one reads what is
+kept and gets a 200, and on a miss is not kept. A `Range` of bytes (`a-b`, `a-`,
+`-n`) on a kept 200 is answered from the cache: a 206 with `Content-Range`, or a 416
+past its end. Several ranges, another unit or an `If-Range` get the whole answer, a
+200, as a server may always give. A `Range` of what is not kept yet goes to the
+backend as it is, and fills nothing. A client's own `Cache-Control`
 is not obeyed.
 
 Unless `shared=on`, a request with Cookie or Authorization, or on a route with `auth`,
@@ -752,13 +757,26 @@ Every answer of a route with `cache` says what the cache did with it, in
 |---|---|
 | `okena; hit; ttl=N` | from the cache (`; detail=disk` from `cache_disk`) |
 | `okena; fwd=miss; stored` | from the backend, and kept |
-| `okena; fwd=miss` | from the backend, not kept (`no-store`, a status it does not keep, too large) |
-| `okena; fwd=bypass` | past the cache: a request for one person, or a range |
+| `okena; fwd=miss` | from the backend, not kept (`no-store`, a status it does not keep, too large, a range of what is not there yet) |
+| `okena; fwd=bypass` | past the cache: a request for one person |
 | `okena; fwd=method` | past the cache: a method it does not keep |
 | `okena; fwd=stale; fwd-status=503; ttl=-N` | the backend failed, and a stale copy answered (stale-if-error) |
 
 A backend's own `Cache-Status` is passed on, and okena's comes after it, as the RFC
 orders them.
+
+`slice=4MiB` is for video and downloads. An object is kept as slices: each one a
+cache entry of its own, fetched from the backend with `Range: bytes=` of that slice
+and kept whole. A client's answer is put together from them: a whole GET as one
+200, a range as a 206 of the slices it covers. Only those slices are fetched, so a
+client that seeks to the end of a 4 GB file costs the backend a few slices, not
+4 GB. A slice that is not there is fetched while the client waits for it, and the
+next one is asked for while the current one goes out. The backend must answer a
+Range with a 206 that says where it begins. One that answers with a 200 (for an
+object larger than a slice) is not sliced: the request goes to it as it came. A
+slice whose `Content-Range` is not the one asked for is never kept, and a client
+waiting for it is cut rather than sent the wrong bytes. A purge of the object's URL
+takes all its slices.
 
 A purge takes answers back at once, from every worker's memory and from the disk:
 

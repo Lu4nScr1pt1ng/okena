@@ -876,6 +876,16 @@ newest rule's time settles most answers with one comparison. When the
 ring goes round, whatever was fetched before the rule it loses counts as
 purged. Each answer keeps the facts a purge needs: host, target and tags.
 
+**Slices** (src/gw/slice.inc): on a route with `slice=`, a client never
+reads the backend directly. Its answer is put together from cache entries,
+one per slice, keyed by the object's key and the slice number. A slice
+that is missing is fetched by a copy of the request (like a stale entry's
+refetch) that asks for that slice and fills it whole, while the client's
+read waits on a timer; the next slice is asked for while the current one
+goes out. Each worker remembers the slices it asked for in the last two
+seconds, until their fill begins, so concurrent clients do not ask twice.
+Its state per session lives in an array of its own, touched only when used.
+
 RFC 9111 semantics, plus what a CDN needs: cache keys configurable
 (host, path, chosen query parameters, headers, cookies), `Vary`
 normalisation (`Accept-Encoding` reduced to the variants served), request

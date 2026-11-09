@@ -396,7 +396,7 @@ fault_flush:
 	jmp	.next
 @@:
 	mov	r10d,ebx
-	and	ebx,not (FD_HEDGE or FD_FWD or FD_CACHE or FD_HOLD)
+	and	ebx,not (FD_HEDGE or FD_FWD or FD_CACHE or FD_HOLD or FD_SLICE)
 	push	r8
 	push	r9
 	push	r10
@@ -424,6 +424,11 @@ fault_flush:
 	call	cache_poll
 	jmp	.next
 .not_cache:
+	test	r10d,FD_SLICE
+	jz	.not_slice
+	call	slice_poll
+	jmp	.next
+.not_slice:
 	test	r10d,FD_HOLD
 	jz	.held
 	call	hold_again
@@ -1435,6 +1440,10 @@ http_write_request_head:
 	call	auth_hides
 	pop	rdi
 	je	.skip
+	push	rdi				; (a slice's copy: the client's Range)
+	call	slice_drops
+	pop	rdi
+	je	.skip
 	; the route's header changes: a field it sets or drops is not copied
 	mov	eax,[r15+H_ACT]
 	test	eax,eax
@@ -1524,6 +1533,7 @@ http_write_request_head:
 	jmp	.field
 .own:
 	call	auth_emit
+	call	slice_range_emit
 	call	trace_emit
 	test	dword [r15+H_FLAGS],HX_RIDKEPT
 	jnz	@f
