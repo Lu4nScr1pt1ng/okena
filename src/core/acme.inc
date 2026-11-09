@@ -73,7 +73,14 @@ ACM_DNSTOKL	:= ACM_CHAL + 24	; d
 ACM_DNSHASTRUST	:= ACM_CHAL + 28	; d
 ACM_DNSTOK	:= ACM_CHAL + 32	; 256: the API token
 ACM_DNSTRUST	:= ACM_CHAL + 288	; the API's anchor, dns_trust=
-ACM_SIZE		:= (ACM_DNSTRUST + PK_SIZE + 7) and not 7
+ACM_D2		:= ACM_DNSTRUST + PK_SIZE	; RFC 2136's:
+ACM_DNSSRVL	:= ACM_D2		; d
+ACM_DNSKEYNL	:= ACM_D2 + 4		; d
+ACM_DNSSECL	:= ACM_D2 + 8		; d
+ACM_DNSSRV	:= ACM_D2 + 16		; q: the server, HOST:PORT
+ACM_DNSKEYN	:= ACM_D2 + 24		; 256: the TSIG key's name, as wire
+ACM_DNSSEC	:= ACM_D2 + 280		; 64: its secret
+ACM_SIZE		:= (ACM_D2 + 344 + 7) and not 7
 
 SYS_fchownat_	:= 260
 LLF_REMOVE_FILE	:= 32
@@ -144,6 +151,19 @@ bss
 	g_ac_did:	rb 64 * ACME_NAMES
 	g_ac_dchal:	rb ACME_URL * ACME_NAMES
 	g_ac_txt:	rb 64
+	g_ac_dnamel	rd ACME_NAMES
+	g_ac_dname:	rb 256 * ACME_NAMES	; (RFC 2136: each authorization's name)
+	g_dn_idx	dd ?			; the authorization being updated
+	g_dn_mode	dd ?			; 0 add, 1 delete
+	g_dn_zone	dq ?			; its zone
+	g_dn_zonel	dd ?
+	g_dn_len	dd ?			; the message's (and then the answer's) length
+	g_dn_id		dw ?
+	g_dn_rmac:	rb 32			; the request's MAC
+	g_dn_hash:	rb 32
+	g_dn_msg:	rb 2048			; (2 bytes of length first: TCP)
+	g_dn_resp:	rb 4096
+	g_dn_dig:	rb 4200
 	g_ac_rname:	rb 300
 	g_ac_durl:	rb 1024
 	g_acme_tl:	rb TL_SIZE		; a worker: the challenge's certificate, copied
@@ -568,6 +588,16 @@ compile_acme_dns:
 	test	rax,rax
 	jz	.bad
 	mov	rsi,[rax+A_VAL]
+	cmp	dword [rax+A_VLEN],7
+	jne	@f
+	cmp	dword [rsi],'rfc2'
+	jne	.bad
+	cmp	word [rsi+4],'13'
+	jne	.bad
+	cmp	byte [rsi+6],'6'
+	jne	.bad
+	jmp	compile_acme_rfc2136
+@@:
 	cmp	dword [rax+A_VLEN],10
 	jne	.bad
 	mov	rdx,'cloudfla'
@@ -709,6 +739,169 @@ compile_acme_dns:
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process
+
+; dns=rfc2136 dns_server=HOST:PORT dns_key=FILE [dns_wait=TIME], rbx = the node.
+; The key file: one line, [hmac-sha256:]NAME:SECRET (base64), as nsupdate -y.
+compile_acme_rfc2136:
+	mov	dword [g_plan_acme+ACM_DNS],2
+	mov	dword [g_plan_acme+ACM_DNSWAIT],20000
+	mov	rdi,rbx
+	lea	rsi,[compile_acme_dns.k_wait]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_duration
+	jc	.bad
+	xor	edx,edx
+	mov	ecx,1000
+	div	rcx
+	cmp	rax,600000
+	ja	.bad
+	mov	[g_plan_acme+ACM_DNSWAIT],eax
+@@:
+	mov	rdi,rbx
+	cstring .k_srv, 'dns_server',0
+	lea	rsi,[.k_srv]
+	call	node_option
+	test	rax,rax
+	jz	.bad
+	mov	rsi,[rax+A_VAL]
+	mov	ecx,[rax+A_VLEN]
+	cmp	ecx,3
+	jb	.bad
+	cmp	ecx,255
+	ja	.bad
+	mov	[g_plan_acme+ACM_DNSSRV],rsi
+	mov	[g_plan_acme+ACM_DNSSRVL],ecx
+	; the key
+	mov	rdi,rbx
+	cstring .k_key, 'dns_key',0
+	lea	rsi,[.k_key]
+	call	node_option
+	test	rax,rax
+	jz	.bad
+	mov	rsi,[rax+A_VAL]
+	mov	ecx,[rax+A_VLEN]
+	cmp	ecx,4096
+	jae	.bad
+	lea	rdi,[g_trust_path]
+	push	rcx
+	rep	movsb
+	pop	rcx
+	mov	byte [g_trust_path+rcx],0
+	lea	rdi,[g_trust_path]
+	lea	rsi,[g_ar_text]
+	call	read_file
+	test	rax,rax
+	js	.no_key
+	mov	rsi,rax
+	xor	ecx,ecx				; the line
+@@:
+	cmp	ecx,edx
+	jae	@f
+	cmp	byte [rsi+rcx],0x21
+	jb	@f
+	inc	ecx
+	jmp	@b
+@@:
+	cmp	ecx,12
+	jb	@f
+	mov	rax,'hmac-sha'
+	cmp	[rsi],rax
+	jne	@f
+	cmp	dword [rsi+8],'256:'
+	jne	@f
+	add	rsi,12
+	sub	ecx,12
+@@:
+	; NAME:SECRET
+	xor	edx,edx
+@@:
+	cmp	edx,ecx
+	jae	.no_key
+	cmp	byte [rsi+rdx],':'
+	je	@f
+	inc	edx
+	jmp	@b
+@@:
+	test	edx,edx
+	jz	.no_key
+	cmp	edx,200
+	ja	.no_key
+	push	rsi
+	push	rcx
+	push	rdx
+	lea	rdi,[g_plan_acme+ACM_DNSKEYN]
+	mov	ecx,edx
+	call	dns_wire_name
+	lea	rax,[g_plan_acme+ACM_DNSKEYN]
+	sub	rdi,rax
+	mov	[g_plan_acme+ACM_DNSKEYNL],edi
+	pop	rdx
+	pop	rcx
+	pop	rsi
+	lea	rsi,[rsi+rdx+1]
+	sub	ecx,edx
+	dec	ecx
+	jz	.no_key
+	cmp	ecx,88
+	ja	.no_key
+	lea	rdi,[g_plan_acme+ACM_DNSSEC]
+	mov	edx,ecx
+	call	base64_decode
+	test	rax,rax
+	jle	.no_key
+	mov	[g_plan_acme+ACM_DNSSECL],eax
+	ret
+.no_key:
+	call	log_begin
+	out_lit 'acme: dns_key= names a file with one line, [hmac-sha256:]NAME:SECRET (base64, 64 bytes at most), as nsupdate -y takes it'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
+.bad:
+	call	log_begin
+	out_lit 'acme dns=rfc2136 takes dns_server=HOST:PORT and dns_key=FILE, and, if wanted, dns_wait= (10 min at most)'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
+
+; rdi = out, rsi/ecx = a name (no dot at its end): in wire form, lower case, the
+; root's 0 at its end; rdi past it
+dns_wire_name:
+.label:
+	mov	r8,rdi
+	inc	rdi
+	xor	r9d,r9d
+.ch:
+	test	ecx,ecx
+	jz	.last
+	lodsb
+	dec	ecx
+	cmp	al,'.'
+	je	.dot
+	cmp	al,'A'
+	jb	@f
+	cmp	al,'Z'
+	ja	@f
+	or	al,0x20
+@@:
+	stosb
+	inc	r9d
+	jmp	.ch
+.dot:
+	mov	[r8],r9b
+	jmp	.label
+.last:
+	mov	[r8],r9b
+	test	r9d,r9d
+	jz	.out
+	mov	byte [rdi],0
+	inc	rdi
+.out:
+	ret
 
 ; rsi/ecx = text: CF when it has a byte a JSON string would need escaped (or a
 ; space, or past ASCII). Keeps all but r8.
@@ -2335,6 +2528,8 @@ dns_result_id:
 ; made (its zone found: the name, then each parent, the first the account
 ; holds), kept in g_ac_dzone/g_ac_did. CF: failed (g_ac_why).
 dns_create:
+	cmp	dword [g_plan_acme+ACM_DNS],2
+	je	rfc_create
 	push	rbx
 	push	r13
 	cstring .w_zone, 'no DNS zone of the account holds the name',0
@@ -2436,6 +2631,466 @@ dns_create:
 	pop	rbx
 	ret
 
+; RFC 2136: r12d = the authorization, g_ac_ident its name, g_ac_txt the value:
+; the record added, in the zone that takes it (the name, then each parent: one
+; that is not the server's answers NOTAUTH or NOTZONE). CF: failed.
+rfc_create:
+	push	r13
+	; this authorization's own: its name and value, for the removal
+	imul	edi,r12d,256
+	lea	rdi,[g_ac_dname+rdi]
+	lea	rsi,[g_ac_ident]
+	mov	ecx,[g_ac_identl]
+	mov	[g_ac_dnamel+r12*4],ecx
+	rep	movsb
+	imul	edi,r12d,64
+	lea	rdi,[g_ac_did+rdi]
+	lea	rsi,[g_ac_txt]
+	mov	ecx,43
+	rep	movsb
+	mov	[g_dn_idx],r12d
+	mov	dword [g_dn_mode],0
+	xor	r13d,r13d
+.zone:
+	lea	rsi,[g_ac_ident+r13]
+	mov	ecx,[g_ac_identl]
+	sub	ecx,r13d
+	mov	rdi,rsi
+	mov	al,'.'
+	push	rcx
+	repne	scasb
+	pop	rcx
+	jne	.no_zone
+	mov	[g_dn_zone],rsi
+	mov	[g_dn_zonel],ecx
+	call	rfc_update
+	jc	.out
+	test	eax,eax
+	jz	.made
+	cmp	eax,9				; NOTAUTH
+	je	.parent
+	cmp	eax,10				; NOTZONE
+	je	.parent
+	cmp	eax,5				; REFUSED
+	je	.parent
+	cstring .w_rcode, 'the DNS server refused the update',0
+	lea	rax,[.w_rcode]
+	mov	[g_ac_why],rax
+	stc
+	jmp	.out
+.parent:
+	inc	r13d
+	cmp	r13d,[g_ac_identl]
+	jae	.no_zone
+	cmp	byte [g_ac_ident+r13-1],'.'
+	jne	.parent
+	jmp	.zone
+.made:
+	mov	[g_ac_dzonel+r12*4],r13d
+	mov	dword [g_ac_didl+r12*4],43
+	clc
+	jmp	.out
+.no_zone:
+	cstring .w_zone, 'no zone of the DNS server takes the name',0
+	lea	rax,[.w_zone]
+	mov	[g_ac_why],rax
+	stc
+.out:
+	pop	r13
+	ret
+
+; g_dn_idx/mode/zone: an UPDATE to the server (TCP), signed with TSIG
+; (HMAC-SHA256, RFC 8945), adding (or removing) TXT _acme-challenge.NAME with the
+; value. The answer's own TSIG verified: eax = its RCODE. CF: no answer, or
+; one not signed with the key (g_ac_why).
+rfc_update:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	cstring .w_conn, 'the DNS server cannot be reached',0
+	lea	rax,[.w_conn]
+	mov	[g_ac_why],rax
+	mov	dword [g_ac_st],0
+	; the header: an id, UPDATE, one zone, one update
+	lea	rbx,[g_dn_msg+2]
+	mov	rdi,rbx
+	mov	esi,2
+	xor	edx,edx
+	mov	eax,SYS_getrandom
+	syscall
+	mov	ax,[rbx]
+	mov	[g_dn_id],ax
+	mov	word [rbx+2],0x0028		; opcode 5
+	mov	word [rbx+4],0x0100		; ZOCOUNT 1
+	mov	word [rbx+6],0
+	mov	word [rbx+8],0x0100		; UPCOUNT 1
+	mov	word [rbx+10],0
+	lea	rdi,[rbx+12]
+	mov	rsi,[g_dn_zone]
+	mov	ecx,[g_dn_zonel]
+	call	dns_wire_name
+	mov	dword [rdi],0x01000600		; SOA, IN
+	add	rdi,4
+	; the record: _acme-challenge.NAME TXT
+	mov	r12d,[g_dn_idx]
+	mov	byte [rdi],15
+	inc	rdi
+	mov	rax,'_acme-ch'
+	mov	[rdi],rax
+	mov	rax,'allenge'
+	mov	[rdi+8],rax			; (its 8th byte the next label's: written below)
+	add	rdi,15
+	imul	esi,r12d,256
+	lea	rsi,[g_ac_dname+rsi]
+	mov	ecx,[g_ac_dnamel+r12*4]
+	call	dns_wire_name
+	mov	dword [rdi],0x01001000		; TXT, IN
+	mov	dword [rdi+4],0x3C000000	; TTL 60
+	cmp	dword [g_dn_mode],0
+	je	@f
+	mov	word [rdi+2],0xFE00		; class NONE: this record removed
+	mov	dword [rdi+4],0
+@@:
+	mov	word [rdi+8],0x2C00		; RDLENGTH 44
+	mov	byte [rdi+10],43
+	add	rdi,11
+	imul	esi,r12d,64
+	lea	rsi,[g_ac_did+rsi]
+	mov	ecx,43
+	rep	movsb
+	mov	r12,rdi				; the message's end
+	; signed: the message, then TSIG's variables (written where its record goes)
+	call	acme_now
+	mov	r13,rax				; time signed
+	mov	rdi,r12
+	xor	r14d,r14d
+	call	.vars_head			; key name, ANY, TTL 0, algorithm
+	call	.time
+	mov	dword [rdi],0x00002C01		; fudge 300, error 0
+	mov	word [rdi+4],0			; other: none
+	add	rdi,6
+	lea	rax,[g_dn_rmac]
+	push	rdi
+	mov	rdi,rax
+	lea	rsi,[g_plan_acme+ACM_DNSSEC]
+	mov	edx,[g_plan_acme+ACM_DNSSECL]
+	mov	rcx,rbx
+	pop	r8
+	sub	r8,rbx
+	call	hmac_sha256
+	; the TSIG record
+	mov	rdi,r12
+	mov	r14d,1
+	call	.vars_head
+	mov	r14,rdi				; (its RDLENGTH: patched below)
+	sub	r14,13				; (back over the algorithm's name)
+	call	.time
+	mov	dword [rdi],0x20002C01		; fudge 300, MAC size 32
+	add	rdi,4
+	lea	rsi,[g_dn_rmac]
+	mov	ecx,32
+	rep	movsb
+	mov	ax,[g_dn_id]
+	mov	[rdi],ax			; original id
+	mov	dword [rdi+2],0			; error, other length
+	add	rdi,6
+	mov	word [r14-2],0x3D00		; RDLENGTH 61
+	mov	word [rbx+10],0x0100		; ARCOUNT 1
+	mov	rax,rdi
+	sub	rax,rbx
+	mov	[g_dn_len],eax
+	xchg	al,ah
+	mov	[g_dn_msg],ax
+	; to the server: HOST:PORT
+	mov	rsi,[g_plan_acme+ACM_DNSSRV]
+	mov	ecx,[g_plan_acme+ACM_DNSSRVL]
+	mov	r8d,ecx
+.colon:
+	dec	r8d
+	js	.fail
+	cmp	byte [rsi+r8],':'
+	jne	.colon
+	push	rsi
+	push	r8
+	lea	rdi,[rsi+r8+1]
+	mov	esi,ecx
+	sub	esi,r8d
+	dec	esi
+	call	parse_decimal
+	pop	r8
+	pop	rsi
+	jc	.fail
+	test	eax,eax
+	jz	.fail
+	cmp	eax,65535
+	ja	.fail
+	mov	edx,eax
+	mov	ecx,r8d				; (the host as a URL has it: [v6] too)
+	lea	rdi,[g_ac_sa]
+	call	cx_address
+	jc	.fail
+	lea	rsi,[g_ac_sa]
+	call	cx_connect
+	jc	.fail
+	mov	edi,[g_cx_fd]
+	lea	rsi,[g_dn_msg]
+	mov	edx,[g_dn_len]
+	add	edx,2
+	call	write_all
+	lea	rdi,[g_dn_resp]
+	mov	edx,2
+	call	.read
+	jc	.closed
+	movzx	edx,word [g_dn_resp]
+	xchg	dl,dh
+	cmp	edx,12
+	jb	.closed
+	cmp	edx,4096
+	ja	.closed
+	mov	[g_dn_len],edx
+	lea	rdi,[g_dn_resp]
+	call	.read
+	jc	.closed
+	call	cx_close
+	call	rfc_verify
+	jmp	.out
+.closed:
+	call	cx_close
+.fail:
+	stc
+.out:
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+; rdi: the key's name, class ANY, TTL 0, and (r14d = 1: as the record, its type
+; and RDLENGTH's room; 0: as the variables, none) the algorithm
+.vars_head:
+	lea	rsi,[g_plan_acme+ACM_DNSKEYN]
+	mov	ecx,[g_plan_acme+ACM_DNSKEYNL]
+	rep	movsb
+	test	r14d,r14d
+	jnz	@f
+	; (the variables)
+	mov	dword [rdi],0xFF00		; ANY, and TTL's first half
+	mov	word [rdi+4],0
+	add	rdi,6
+	jmp	.alg
+@@:
+	mov	dword [rdi],0xFF00FA00		; TSIG, ANY
+	mov	dword [rdi+4],0			; TTL 0
+	add	rdi,10				; (and RDLENGTH)
+.alg:
+	lea	rsi,[.alg_name]
+	mov	ecx,13
+	rep	movsb
+	ret
+; rdi: r13 as 48 bits
+.time:
+	mov	word [rdi],0
+	mov	eax,r13d
+	bswap	eax
+	mov	[rdi+2],eax
+	add	rdi,6
+	ret
+; rdi = out, edx = bytes: read exactly. CF: short.
+.read:
+	push	rbx
+	mov	rbx,rdi
+	mov	r8d,edx
+.more:
+	test	r8d,r8d
+	jz	.read_done
+	push	r8
+	mov	edi,[g_cx_fd]
+	mov	rsi,rbx
+	mov	edx,r8d
+	xor	eax,eax
+	syscall
+	pop	r8
+	cmp	rax,-EINTR
+	je	.more
+	test	rax,rax
+	jle	.read_short
+	add	rbx,rax
+	sub	r8d,eax
+	jmp	.more
+.read_done:
+	clc
+	pop	rbx
+	ret
+.read_short:
+	stc
+	pop	rbx
+	ret
+.alg_name	db 11,'hmac-sha256',0
+
+; The answer (g_dn_resp, g_dn_len): ours, and its TSIG the key's over the
+; request's MAC and it. eax = its RCODE. CF: not.
+rfc_verify:
+	push	rbx
+	push	r12
+	push	r13
+	cstring .w_sig, 'the DNS server',39,'s answer is not signed with the key (dns_key?)',0
+	lea	rax,[.w_sig]
+	mov	[g_ac_why],rax
+	lea	rbx,[g_dn_resp]
+	mov	edx,[g_dn_len]
+	lea	rdx,[rbx+rdx]			; the end
+	mov	ax,[rbx]
+	cmp	ax,[g_dn_id]
+	jne	.bad
+	mov	al,[rbx+2]
+	and	al,0xF8
+	cmp	al,0xA8				; QR, UPDATE
+	jne	.bad
+	movzx	eax,word [rbx+10]
+	xchg	al,ah
+	test	eax,eax
+	jz	.bad				; (unsigned)
+	; past the zone section and every record but the last
+	movzx	eax,word [rbx+4]
+	xchg	al,ah
+	mov	r12d,eax
+	lea	rsi,[rbx+12]
+.zones:
+	test	r12d,r12d
+	jz	.records
+	call	.skip_name
+	jc	.bad
+	add	rsi,4
+	dec	r12d
+	jmp	.zones
+.records:
+	movzx	eax,word [rbx+6]
+	xchg	al,ah
+	mov	r12d,eax
+	movzx	eax,word [rbx+8]
+	xchg	al,ah
+	add	r12d,eax
+	movzx	eax,word [rbx+10]
+	xchg	al,ah
+	lea	r12d,[r12+rax-1]
+.rr:
+	test	r12d,r12d
+	jz	.tsig
+	call	.skip_name
+	jc	.bad
+	lea	rax,[rsi+10]
+	cmp	rax,rdx
+	ja	.bad
+	movzx	eax,word [rsi+8]
+	xchg	al,ah
+	lea	rsi,[rsi+rax+10]
+	dec	r12d
+	jmp	.rr
+.tsig:
+	mov	r13,rsi				; the TSIG record
+	call	.skip_name
+	jc	.bad
+	lea	rax,[rsi+10]
+	cmp	rax,rdx
+	ja	.bad
+	cmp	word [rsi],0xFA00
+	jne	.bad
+	add	rsi,10				; its RDATA: algorithm, time, fudge, MAC...
+	mov	r8,rsi
+	call	.skip_name
+	jc	.bad
+	lea	rax,[rsi+10+32+6]
+	cmp	rax,rdx
+	ja	.bad
+	cmp	word [rsi+8],0x2000		; a 32-byte MAC
+	jne	.bad
+	mov	r9,rsi				; time and fudge
+	; what was signed: the request's MAC, the answer without its TSIG (ARCOUNT
+	; one less), the variables
+	lea	rdi,[g_dn_dig]
+	mov	word [rdi],0x2000
+	add	rdi,2
+	lea	rsi,[g_dn_rmac]
+	mov	ecx,32
+	rep	movsb
+	mov	r10,rdi
+	mov	rsi,rbx
+	mov	rcx,r13
+	sub	rcx,rbx
+	rep	movsb
+	movzx	eax,word [r10+10]
+	xchg	al,ah
+	dec	eax
+	xchg	al,ah
+	mov	[r10+10],ax
+	lea	rsi,[g_plan_acme+ACM_DNSKEYN]
+	mov	ecx,[g_plan_acme+ACM_DNSKEYNL]
+	rep	movsb
+	mov	dword [rdi],0xFF00		; ANY, TTL 0
+	mov	word [rdi+4],0
+	add	rdi,6
+	mov	rsi,r8				; the algorithm, time, fudge (as sent)
+	mov	rcx,r9
+	add	rcx,8
+	sub	rcx,r8
+	rep	movsb
+	lea	rsi,[r9+10+32+2]		; error, other length, other
+	movzx	ecx,word [rsi+2]
+	xchg	cl,ch
+	add	ecx,4
+	lea	rax,[rsi+rcx]
+	cmp	rax,rdx
+	ja	.bad
+	rep	movsb
+	lea	rax,[g_dn_dig]
+	sub	rdi,rax
+	mov	r8,rdi
+	lea	rdi,[g_dn_hash]
+	lea	rsi,[g_plan_acme+ACM_DNSSEC]
+	mov	edx,[g_plan_acme+ACM_DNSSECL]
+	lea	rcx,[g_dn_dig]
+	call	hmac_sha256
+	lea	rsi,[g_dn_hash]
+	lea	rdi,[r9+10]
+	mov	ecx,32
+	repe	cmpsb
+	jne	.bad
+	movzx	eax,byte [rbx+3]
+	and	eax,15
+	clc
+	jmp	.out
+.bad:
+	stc
+.out:
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+; rsi at a name (rdx the end): rsi past it. CF: broken.
+.skip_name:
+	cmp	rsi,rdx
+	jae	.sn_bad
+	movzx	eax,byte [rsi]
+	test	eax,eax
+	jz	.sn_root
+	cmp	eax,0xC0
+	jae	.sn_ptr
+	cmp	eax,63
+	ja	.sn_bad
+	lea	rsi,[rsi+rax+1]
+	jmp	.skip_name
+.sn_root:
+	inc	rsi
+	clc
+	ret
+.sn_ptr:
+	add	rsi,2
+	clc
+	ret
+.sn_bad:
+	stc
+	ret
+
 ; the records there: dns_wait for them to reach the name's servers, then each
 ; challenge answered ("{}"). CF: failed.
 dns_go:
@@ -2491,6 +3146,21 @@ dns_clean:
 	jae	.done
 	cmp	dword [g_ac_didl+r12*4],0
 	je	.next
+	cmp	dword [g_plan_acme+ACM_DNS],2
+	jne	.api
+	mov	[g_dn_idx],r12d
+	mov	dword [g_dn_mode],1
+	mov	eax,[g_ac_dzonel+r12*4]
+	imul	ecx,r12d,256
+	lea	rsi,[g_ac_dname+rcx+rax]
+	mov	[g_dn_zone],rsi
+	mov	ecx,[g_ac_dnamel+r12*4]
+	sub	ecx,eax
+	mov	[g_dn_zonel],ecx
+	call	rfc_update
+	mov	dword [g_ac_didl+r12*4],0
+	jmp	.next
+.api:
 	lea	rdi,[g_ac_durl]
 	call	dns_base
 	memit_x '/zones/'

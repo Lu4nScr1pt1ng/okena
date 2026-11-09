@@ -147,7 +147,7 @@ keysdef k_maint, 'file', T_ANY, 'retry', T_DURATION, 'allow', T_ANY, 'except', T
 keysdef k_metrics, 'token', T_ANY
 keysdef k_cdnloop, 'max', T_ANY
 keysdef k_bird, 'protocol', T_ANY, 'pool', T_ANY
-keysdef k_acme, 'ca', T_ANY, 'email', T_ANY, 'trust', T_ANY, 'challenge', T_ANY, 'dns', T_ANY, 'dns_token', T_ANY, 'dns_api', T_ANY, 'dns_wait', T_DURATION, 'dns_trust', T_ANY
+keysdef k_acme, 'ca', T_ANY, 'email', T_ANY, 'trust', T_ANY, 'challenge', T_ANY, 'dns', T_ANY, 'dns_token', T_ANY, 'dns_api', T_ANY, 'dns_wait', T_DURATION, 'dns_trust', T_ANY, 'dns_server', T_ANY, 'dns_key', T_ANY
 keysdef k_vrrp, 'vrid', T_ANY, 'priority', T_ANY, 'address', T_ANY, 'advert', T_DURATION, 'preempt', T_ANY, 'track', T_ANY
 keysdef k_cdisk, 'size', T_SIZE
 keysdef k_tracing, 'sample', T_PERCENT, 'trust', T_ANY

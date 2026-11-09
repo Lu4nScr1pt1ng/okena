@@ -524,10 +524,11 @@ built; both measurements are still to be made on the lab.)
   Built so far: `okena { acme DIR ca=URL }` and `tls { acme NAME... }`: the
   okena-acme process (account key, JWS ES256, orders, HTTP-01 answered by any
   http listener's workers or TLS-ALPN-01 by their TLS 1.3 handshake or DNS-01
-  through Cloudflare's API, wildcards included, CSR, the chain), a self-signed certificate until then,
+  through Cloudflare's API or RFC 2136 (TSIG), wildcards included, CSR, the
+  chain), a self-signed certificate until then,
   files renamed into DIR, a reload of its own, renewal at two thirds, backoff
   from a minute to six hours; `okena cert` for keys, CSRs and self-signed ones.
-  Still to do: the rest of the list above (DNS-01 through Route 53 and RFC 2136, fallback CAs,
+  Still to do: the rest of the list above (DNS-01 through Route 53, fallback CAs,
   EAB, ARI, OCSP, on-demand, the shared lock, `okena certs`, the local CA).
   Exit: a fresh install with `tls auto` serves a valid certificate within a
   minute; a CA down, rate-limited or answering wrongly never takes a served

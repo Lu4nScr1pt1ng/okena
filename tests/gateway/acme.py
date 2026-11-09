@@ -9,6 +9,9 @@ a badNonce is tried again; a token not asked for goes on to the routes."""
 import base64
 import datetime
 import hashlib
+import hmac
+import socketserver
+import struct
 import http.server
 import json
 import os
@@ -33,7 +36,8 @@ ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BIN = ROOT / "build" / "okena"
 BASE = 56000 + os.getpid() % 90 * 20 + (10 if ENGINE == "epoll" else 0)
-BACK, PLAIN, TLS, CA, TLS2, CF, TLS3 = BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4, BASE + 5, BASE + 6
+BACK, PLAIN, TLS, CA, TLS2, CF, TLS3, DNS, TLS4 = (BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4, BASE + 5, BASE + 6,
+                                                  BASE + 7, BASE + 8)
 CF_TOKEN = "cf-test-token_0123"
 fails = 0
 
@@ -194,6 +198,110 @@ class CFApi(http.server.BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         self.handle_any("DELETE")
+
+
+def wire(name):
+    return b"".join(bytes([len(l)]) + l.encode() for l in name.lower().rstrip(".").split(".")) + b"\0"
+
+
+def read_name(m, i):
+    """a name at m[i], compression pointers followed: its text, the index past it"""
+    labels, end = [], None
+    while m[i]:
+        if m[i] >= 0xC0:
+            if end is None:
+                end = i + 2
+            i = (m[i] & 0x3F) << 8 | m[i + 1]
+            continue
+        labels.append(m[i + 1:i + 1 + m[i]].decode())
+        i += 1 + m[i]
+    return ".".join(labels), (end if end is not None else i + 1)
+
+
+DNSS = {"key": "acme-key.example.test", "secret": os.urandom(32), "log": [], "zone": "example.test"}
+
+
+class DNSUpdate(socketserver.BaseRequestHandler):
+    """RFC 2136 UPDATE over TCP, TSIG HMAC-SHA256 (RFC 8945) checked and signed; one
+    zone, example.test: any other is NOTAUTH"""
+
+    def handle(self):
+        def recv(n):
+            b = b""
+            while len(b) < n:
+                c = self.request.recv(n - len(b))
+                if not c:
+                    raise EOFError
+                b += c
+            return b
+        try:
+            n = struct.unpack("!H", recv(2))[0]
+            m = recv(n)
+        except EOFError:
+            return
+        mid, flags, zo, pr, up, ar = struct.unpack("!6H", m[:12])
+        i = 12
+        zone, i = read_name(m, i)
+        zt, zc = struct.unpack("!HH", m[i:i + 4])
+        i += 4
+        rrs = []
+        for _ in range(pr + up):
+            nm, i = read_name(m, i)
+            t, c, ttl, rl = struct.unpack("!HHIH", m[i:i + 10])
+            rrs.append((nm, t, c, ttl, m[i + 10:i + 10 + rl]))
+            i += 10 + rl
+        # the TSIG: the last additional record
+        tstart = i
+        kname, i = read_name(m, i)
+        t, c, ttl, rl = struct.unpack("!HHIH", m[i:i + 10])
+        rd = m[i + 10:i + 10 + rl]
+        alg, j = read_name(rd, 0)
+        tsigned = int.from_bytes(rd[j:j + 6], "big")
+        fudge, msize = struct.unpack("!HH", rd[j + 6:j + 10])
+        mac = rd[j + 10:j + 10 + msize]
+        oid, err, olen = struct.unpack("!HHH", rd[j + 10 + msize:j + 16 + msize])
+        other = rd[j + 16 + msize:j + 16 + msize + olen]
+        head = bytearray(m[:tstart])
+        head[10:12] = struct.pack("!H", ar - 1)
+        tvars = wire(kname) + struct.pack("!HI", 255, 0) + wire(alg) + rd[j:j + 8] + struct.pack("!HH", err, olen) + other
+        want = hmac.new(DNSS["secret"], bytes(head) + tvars, hashlib.sha256).digest()
+        good = (t == 250 and kname == DNSS["key"] and alg == "hmac-sha256" and hmac.compare_digest(mac, want)
+                and abs(tsigned - time.time()) <= fudge and (flags >> 11) & 15 == 5 and zt == 6)
+        DNSS["log"].append((zone, good, [(r[0], r[1], r[2], r[3]) for r in rrs]))
+        if not good:
+            # BADSIG: NOTAUTH, unsigned (RFC 8945 5.3.2)
+            self.reply(struct.pack("!6H", mid, 0x8000 | 5 << 11 | 9, 0, 0, 0, 0))
+            return
+        rcode = 0
+        if zone != DNSS["zone"]:
+            rcode = 9
+        else:
+            with CFS["lock"]:
+                for nm, t, c, ttl, rdata in rrs:
+                    txt = rdata[1:1 + rdata[0]].decode()
+                    if c == 1 and t == 16:
+                        CFS["n"] += 1
+                        CFS["records"][f"dns{CFS['n']}"] = {"type": "TXT", "name": nm, "content": txt, "via": "rfc2136"}
+                    elif c == 254 and t == 16:
+                        for k in [k for k, r in CFS["records"].items() if r["name"] == nm and r["content"] == txt]:
+                            del CFS["records"][k]
+        body = struct.pack("!6H", mid, 0x8000 | 5 << 11 | rcode, 1, 0, 0, 0) + wire(zone) + struct.pack("!HH", 6, 1)
+        now = int(time.time())
+        rvars = wire(DNSS["key"]) + struct.pack("!HI", 255, 0) + wire("hmac-sha256") + now.to_bytes(6, "big") + struct.pack("!HHH", 300, 0, 0)
+        rmac = hmac.new(DNSS["secret"], struct.pack("!H", len(mac)) + mac + body + rvars, hashlib.sha256).digest()
+        rdata = wire("hmac-sha256") + now.to_bytes(6, "big") + struct.pack("!HH", 300, 32) + rmac + struct.pack("!HHH", mid, 0, 0)
+        tsig = wire(DNSS["key"]) + struct.pack("!HHIH", 250, 255, 0, len(rdata)) + rdata
+        signed = bytearray(body + tsig)
+        signed[10:12] = struct.pack("!H", 1)
+        self.reply(bytes(signed))
+
+    def reply(self, msg):
+        self.request.sendall(struct.pack("!H", len(msg)) + msg)
+
+
+class TCPServer(socketserver.ThreadingTCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
 
 
 def validate_tls(az):
@@ -482,6 +590,7 @@ def main():
     srv.socket = sctx.wrap_socket(srv.socket, server_side=True)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     threading.Thread(target=http.server.ThreadingHTTPServer(("127.0.0.1", BACK), Back).serve_forever, daemon=True).start()
+    threading.Thread(target=TCPServer(("127.0.0.1", DNS), DNSUpdate).serve_forever, daemon=True).start()
     cf = http.server.ThreadingHTTPServer(("127.0.0.1", CF), CFApi)
     cf.socket = sctx.wrap_socket(cf.socket, server_side=True)
     threading.Thread(target=cf.serve_forever, daemon=True).start()
@@ -623,6 +732,58 @@ http 127.0.0.1:{TLS3} {{
                        f"http 127.0.0.1:{TLS3} {{\n    tls {{ acme *.w.example.test }}\n    route /* {{ to pool b }}\n}}\n")
         r = subprocess.run([str(BIN), "check", "-c", str(bad)], capture_output=True, text=True, timeout=10)
         check("a wildcard without dns-01: refused", r.returncode != 0 and "wildcard" in r.stderr, r.stderr)
+        p.terminate()
+        p.wait(10)
+
+        # DNS-01 by RFC 2136: an UPDATE signed with TSIG, to the server itself. The
+        # test's server first checked against BIND's nsupdate (when it is here)
+        if shutil.which("nsupdate"):
+            nk = f"hmac-sha256:{DNSS['key']}:{base64.b64encode(DNSS['secret']).decode()}"
+            r = subprocess.run(["nsupdate", "-v", "-y", nk], capture_output=True, text=True, timeout=10,
+                               input=f"server 127.0.0.1 {DNS}\nzone example.test\n"
+                                     "update add _acme-challenge.ref.example.test 60 TXT ref\nsend\n"
+                                     "update delete _acme-challenge.ref.example.test TXT ref\nsend\n")
+            check("  (the test's DNS server and BIND's nsupdate agree on TSIG, both ways)",
+                  r.returncode == 0 and len(DNSS["log"]) == 2 and all(g for _, g, _ in DNSS["log"]), (r.stdout, r.stderr, DNSS["log"]))
+            DNSS["log"].clear()
+        n0 = len(ST.log)
+        (tmp / "tsig.key").write_text(f"hmac-sha256:{DNSS['key']}:{base64.b64encode(DNSS['secret']).decode()}\n")
+        conf4 = tmp / "okena4.conf"
+        conf4.write_text(f"""okena {{ workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s
+    acme {tmp}/acme4 ca=https://localhost:{CA}/dir trust={tmp}/ca.pem challenge=dns-01 dns=rfc2136 dns_server=127.0.0.1:{DNS} dns_key={tmp}/tsig.key dns_wait=100ms }}
+pool b {{ server 127.0.0.1:{BACK} }}
+http 127.0.0.1:{TLS4} {{
+    tls {{ acme *.r.example.test r.example.test }}
+    route /* {{ to pool b }}
+}}
+""")
+        p = subprocess.Popen([str(BIN), "-c", str(conf4)], stdout=subprocess.DEVNULL, stderr=open(log, "a"))
+        procs.append(p)
+        check("rfc2136: a wildcard issued through UPDATE (TSIG HMAC-SHA256)",
+              until(lambda: served("y.r.example.test", TLS4).issuer == ca_c.subject, 15)
+              and verified_on("y.r.example.test", cafile, TLS4).startswith(b"HTTP/1.1 200"),
+              (ST.log[n0:][-6:], DNSS["log"][-4:], log.read_text()[-400:]))
+        v = [e[1] for e in ST.log[n0:] if e[0] == "validated"]
+        lg = DNSS["log"]
+        check("  each UPDATE signed right; the zone found from the name up (NOTAUTH, then example.test)",
+              lg and all(g for _, g, _ in lg) and lg[0][0] == "r.example.test" and lg[1][0] == "example.test"
+              and len(v) == 2 and all(x[1] for x in v), (lg, v))
+        check("  the records added (IN, TTL 60), then removed (NONE)",
+              until(lambda: not [r for r in CFS["records"].values() if r.get("via") == "rfc2136"], 3)
+              and sum(1 for z, _, rr in lg if z == "example.test" and rr and rr[0][2] == 1 and rr[0][3] == 60) == 2
+              and sum(1 for z, _, rr in lg if z == "example.test" and rr and rr[0][2] == 254) == 2, lg)
+        p.terminate()
+        p.wait(10)
+        # the wrong key: the server's unsigned BADSIG is not taken
+        (tmp / "bad.key").write_text(f"{DNSS['key']}:{base64.b64encode(os.urandom(32)).decode()}\n")
+        conf5 = tmp / "okena5.conf"
+        conf5.write_text(conf4.read_text().replace(f"{tmp}/tsig.key", f"{tmp}/bad.key").replace(f"{tmp}/acme4", f"{tmp}/acme5"))
+        n1 = len(DNSS["log"])
+        p = subprocess.Popen([str(BIN), "-c", str(conf5)], stdout=subprocess.DEVNULL, stderr=open(log, "a"))
+        procs.append(p)
+        check("  the wrong key: refused by the server, its unsigned answer not taken, said",
+              until(lambda: "not signed with the key" in log.read_text(), 8) and DNSS["log"][n1:]
+              and not any(g for _, g, _ in DNSS["log"][n1:]), (DNSS["log"][n1:], log.read_text()[-300:]))
     finally:
         for q in procs:
             if q.poll() is None:

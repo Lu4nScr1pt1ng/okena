@@ -493,7 +493,13 @@ API, waits for it to spread, and removes it after, whatever the outcome.
 `dns=cloudflare dns_token=FILE` (an API token with Zone.DNS edit, alone in the
 file), and if wanted `dns_api=URL` (else Cloudflare's), `dns_wait=` (20 s by
 default) and `dns_trust=FILE` (the API's anchor, else the system's roots). The
-zone is the first of the name and its parents that the token's account holds. The files are written beside and renamed over, and okena reloads
+zone is the first of the name and its parents that the token's account holds.
+Or any server that takes dynamic updates (BIND, Knot, PowerDNS): `dns=rfc2136
+dns_server=HOST:PORT dns_key=FILE [dns_wait=]`, the key file one line as
+`nsupdate -y` takes it, `[hmac-sha256:]NAME:SECRET` (base64). The UPDATE goes
+over TCP signed with TSIG (HMAC-SHA256, RFC 8945), and the server's answer must
+be signed with the same key; the zone is the first of the name and its parents
+that the server does not answer NOTAUTH or NOTZONE for. The files are written beside and renamed over, and okena reloads
 itself: the new certificate is served, no connection dropped. A certificate is
 renewed when two thirds of its life have gone; a failed order is tried again
 after a minute, then twice as long each time up to six hours, the one being served

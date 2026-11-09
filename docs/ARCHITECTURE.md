@@ -678,7 +678,7 @@ ECN. 0-RTT off by default and, when on, only for routes marked idempotent.
   by the workers from a page the supervisor shares, TLS-ALPN-01 by their
   TLS 1.3 handshake, which copies the challenge's certificate and key from
   that page when the hello offers acme-tls/1; DNS-01 through Cloudflare's
-  API, records removed after; the account and the JWS
+  API or an RFC 2136 UPDATE signed with TSIG, records removed after; the account and the JWS
   (ES256) its own, files renamed into a 0700 directory, a reload of its
   own; Landlock writes only there). Planned:
   DNS-01 through provider APIs (Cloudflare, Route 53, RFC 2136) for
