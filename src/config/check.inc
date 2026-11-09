@@ -1454,7 +1454,14 @@ check_tls:
 	jmp	.cert
 .counted:
 	test	r12d,r12d
-	jz	.missing
+	jnz	@f
+	mov	rdi,rbx				; acme NAME...: certificates from the CA
+	mov	ecx,DIR_TLSACME
+	call	find_child
+	test	rax,rax
+	jnz	.done
+	jmp	.missing
+@@:
 	test	r13d,r13d
 	jz	.all_keyed
 	cmp	r12d,1

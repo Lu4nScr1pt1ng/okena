@@ -193,6 +193,7 @@ supervisor_main:
 	call	spawn_logger
 	call	spawn_keeper
 	call	spawn_vrrp
+	call	spawn_acme
 	call	upgrade_ready
 	call	api_ready
 
@@ -241,6 +242,9 @@ supervisor_main:
 	call	old_workers_check
 	call	tls_tickets_tick		; the ticket key, once a period
 	call	tk_watch			; a fleet's keys file, changed
+	call	acme_tick			; a certificate from the CA: served
+	test	eax,eax
+	jnz	.reload
 	jmp	.wait_signal
 .reload:
 	call	supervisor_reload
@@ -910,6 +914,21 @@ reap_workers:
 	call	spawn_vrrp
 	jmp	.next
 .not_vrrp:
+	cmp	r12d,[g_acme_pid]
+	jne	.not_acme
+	mov	dword [g_acme_pid],0
+	cmp	dword [g_shutdown],0
+	jne	.next
+	call	log_begin
+	out_lit 'acme process exited, restarting it'
+	call	log_end
+	lea	rdi,[ts_respawn_delay]
+	xor	esi,esi
+	mov	eax,SYS_nanosleep
+	syscall
+	call	spawn_acme
+	jmp	.next
+.not_acme:
 	cmp	r12d,[g_health_pid]
 	jne	.not_health
 	mov	dword [g_health_pid],0

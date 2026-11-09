@@ -216,6 +216,8 @@ test-serial: $(BIN) $(HTTPH) $(KAT) $(TLSH)
 	python3 -I tests/gateway/vrrp.py epoll
 	python3 -I tests/gateway/certgen.py io_uring
 	python3 -I tests/gateway/certgen.py epoll
+	python3 -I tests/gateway/acme.py io_uring
+	python3 -I tests/gateway/acme.py epoll
 	python3 -I tests/gateway/forward.py io_uring
 	python3 -I tests/gateway/forward.py epoll
 	python3 -I tests/gateway/mtls.py io_uring

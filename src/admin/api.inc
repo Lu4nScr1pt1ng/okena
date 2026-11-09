@@ -69,6 +69,7 @@ end rodata
 
 ; before any fork, and for each generation
 api_table_init:
+	call	acme_page_init			; (acme.inc: shared before any fork)
 	cmp	qword [g_api_ov],0
 	jne	.list_there
 	xor	edi,edi

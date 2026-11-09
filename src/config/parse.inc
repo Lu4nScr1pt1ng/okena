@@ -53,6 +53,7 @@ A_SIZE		:= 48
 ARG_WORD	:= 0
 ARG_STRING	:= 1
 ARG_KV		:= 2
+ARG_MEM		:= 3		; (made by the compiler: A_VAL is the text itself)
 
 CFG_MAX_DEPTH	:= 16
 CFG_MAX_ERRORS	:= 20

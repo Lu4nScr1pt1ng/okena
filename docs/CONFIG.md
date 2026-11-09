@@ -269,8 +269,10 @@ http :80 {
 HTTPS: the same, with the TLS layer added:
 
 ```
+okena { acme /var/lib/okena/acme ca=https://acme-v02.api.letsencrypt.org/directory }
+http :80 { route /* { redirect 308 https://example.com/{*} } }   # (and the CA's proof)
 http :443 {
-    tls { cert auto }               # ACME for the hosts below
+    tls { acme example.com }        # a certificate from the CA, renewed by okena
     host example.com {
         route /* { to 127.0.0.1:3000 }
     }
@@ -319,10 +321,11 @@ okena {
     user okena                # or okena:okena, 65532:65532: who faces the network
     handshake_budget 100us wait=1s  # TLS hello crypto per loop iteration (0us: off);
                               # past it hellos queue, and those older than wait close
+    acme /var/lib/okena/acme ca=https://acme-v02.api.letsencrypt.org/directory email=ops@example.com
+                              # automatic HTTPS: `tls { acme NAME... }` (below)
     # planned:
     profile balanced          # balanced | latency | throughput | memory-lean
     reload on-change          # watch the config directory (today: SIGHUP, `okena reload`)
-    acme email=ops@example.com
 }
 ```
 
@@ -451,7 +454,8 @@ The TLS layer:
 
 ```
 tls {
-    cert auto                       # ACME; or a file, or one per host
+    cert /etc/okena/fullchain.pem key=/etc/okena/key.pem   # or one per host,
+    acme example.com www.example.com   # or from a CA (ACME), okena renewing it
     versions 1.2 1.3
     alpn h2 http/1.1
     client_ca /etc/okena/clients.pem required
@@ -461,6 +465,29 @@ tls passthrough {                   # tcp only: route on SNI, never decrypt
     default reject
 }
 ```
+
+**Automatic HTTPS.** `acme NAME...` in a tls block is a certificate for those
+names from an ACME CA (RFC 8555: Let's Encrypt, ZeroSSL, a step-ca of one's own),
+named once in `okena { acme DIR ca=URL [email=ADDRESS] [trust=FILE] }`: `ca=` is
+the CA's directory URL (https), `trust=` a PEM file whose first certificate signs
+the CA's own (else the system's roots), `email=` the account's contact. Up to 16
+such lines, 15 names each (no wildcards: each name is proven over HTTP-01).
+
+okena keeps them in DIR (made 0700, the `user`'s): `DIR/account.key`, the
+account's key (P-256, made once), and for each certificate `DIR/NAME/cert.pem` (the
+chain) and `DIR/NAME/key.pem` (0600), NAME its first name. They are loaded as
+`cert` loads files; until there are any, the listener serves a certificate it
+signs itself for the names (7 days), so it is up from the start. A process of its
+own, `okena-acme`, asks the CA: an order for the names, each proven over HTTP-01
+(the CA fetches `http://NAME/.well-known/acme-challenge/TOKEN`: port 80 must reach
+an http listener of this okena, which answers it before any route, whatever the
+routes say; a token not being asked for goes on to the routes), a new key and its
+CSR, the chain. The files are written beside and renamed over, and okena reloads
+itself: the new certificate is served, no connection dropped. A certificate is
+renewed when two thirds of its life have gone; a failed order is tried again
+after a minute, then twice as long each time up to six hours, the one being served
+kept meanwhile (the log says what failed). A restart finds the files and asks
+nothing until a renewal is due.
 
 The application layer (http) adds its own limits and timeouts:
 

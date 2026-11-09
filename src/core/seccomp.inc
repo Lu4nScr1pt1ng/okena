@@ -228,6 +228,8 @@ rodata
 	sc_allow filter_supervisor, SYS_copy_file_range
 	sc_allow filter_supervisor, SYS_rt_sigtimedwait
 	sc_allow filter_supervisor, SYS_futex		; a worker wakes the cache keeper
+	sc_allow filter_supervisor, SYS_mkdirat_	; the acme process: its directories
+	sc_allow filter_supervisor, SYS_fchownat_
 	sc_end filter_supervisor
 
 	; io_uring worker: the ring does the I/O
@@ -450,7 +452,26 @@ rodata
 	sc_allow filter_compiler, SYS_close
 	sc_check filter_compiler, SYS_socket, socket		; the kTLS probe
 	sc_allow filter_compiler, SYS_setsockopt
+	sc_allow filter_compiler, SYS_getrandom		; acme: a key until the CA's certificate comes
 	sc_end filter_compiler
+
+	; acme: the CA asked over HTTPS, its directory written
+	sc_begin filter_acme
+	sc_common filter_acme
+	sc_check filter_acme, SYS_openat, append_only
+	sc_allow filter_acme, SYS_read
+	sc_allow filter_acme, SYS_close
+	sc_allow filter_acme, SYS_fstat
+	sc_check filter_acme, SYS_socket, socket
+	sc_allow filter_acme, SYS_connect
+	sc_allow filter_acme, SYS_setsockopt
+	sc_allow filter_acme, SYS_getrandom
+	sc_allow filter_acme, SYS_nanosleep
+	sc_allow filter_acme, SYS_clock_gettime
+	sc_allow filter_acme, SYS_ftruncate
+	sc_allow filter_acme, SYS_fdatasync
+	sc_allow filter_acme, SYS_rename_
+	sc_end filter_acme
 
 	align 8
 	sigact_sigsys	dq on_sigsys, SA_SIGINFO or SA_RESTORER, sigsys_restorer, 0

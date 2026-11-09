@@ -147,6 +147,7 @@ keysdef k_maint, 'file', T_ANY, 'retry', T_DURATION, 'allow', T_ANY, 'except', T
 keysdef k_metrics, 'token', T_ANY
 keysdef k_cdnloop, 'max', T_ANY
 keysdef k_bird, 'protocol', T_ANY, 'pool', T_ANY
+keysdef k_acme, 'ca', T_ANY, 'email', T_ANY, 'trust', T_ANY
 keysdef k_vrrp, 'vrid', T_ANY, 'priority', T_ANY, 'address', T_ANY, 'advert', T_DURATION, 'preempt', T_ANY, 'track', T_ANY
 keysdef k_cdisk, 'size', T_SIZE
 keysdef k_tracing, 'sample', T_PERCENT, 'trust', T_ANY
@@ -212,6 +213,7 @@ dirdef DIR_CACHE_DISK, 'cache_disk', M_OKENA, 0,       F_UNIQUE, 1, 1, T_ANY, T_
 dirdef DIR_FLEET, 'fleet',      M_OKENA,   0,           F_UNIQUE, 1, 16, T_LISTEN, T_LISTEN, 0
 dirdef DIR_CDNLOOP, 'cdn_loop',  M_OKENA,   0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, k_cdnloop
 dirdef DIR_BIRD, 'bird',        M_OKENA,   0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, k_bird
+dirdef DIR_ACME, 'acme',        M_OKENA,   0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, k_acme
 dirdef DIR_WATCHDOG, 'watchdog',    M_OKENA,   0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
 dirdef DIR_METRICS, 'metrics',     M_OKENA,   0,           F_UNIQUE, 1, 1, T_LISTEN, T_NONE, k_metrics
 dirdef DIR_BUSY_POLL, 'busy_poll',   M_OKENA,   0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
@@ -285,6 +287,7 @@ dirdef DIR_SNI, 'sni',          M_TLS,     0,           0, 4, 64, T_ANY, T_ANY, 
 dirdef DIR_DEFAULT, 'default',  M_TLS,     0,           F_UNIQUE, 1, 3, T_ANY, T_ANY, 0
 dirdef DIR_CERT, 'cert',        M_TLS,     0,           0, 1, 1, T_ANY, T_NONE, k_cert
 dirdef DIR_KEY, 'key',          M_TLS,     0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
+dirdef DIR_TLSACME, 'acme',     M_TLS,     0,           0, 1, 15, T_ANY, T_ANY, 0
 dirdef DIR_CLIENT_CA, 'client_ca', M_TLS,   0,           F_UNIQUE, 1, 2, T_ANY, e_cca, 0
 dirdef DIR_KTLS, 'ktls',        M_TLS,     0,           F_UNIQUE, 1, 1, e_onoff, T_NONE, 0
 dirdef DIR_ACCESS_LOG, 'access_log', M_HTTP,   0,           F_UNIQUE, 1, 1, T_LOGDEST, T_NONE, k_alog

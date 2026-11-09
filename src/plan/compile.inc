@@ -522,6 +522,9 @@ compile_settings:
 	lea	rcx,[dir_table + D_SIZE*DIR_BIRD]
 	cmp	rax,rcx
 	je	.bird
+	lea	rcx,[dir_table + D_SIZE*DIR_ACME]
+	cmp	rax,rcx
+	je	.acme
 	lea	rcx,[dir_table + D_SIZE*DIR_GEOIP]
 	cmp	rax,rcx
 	je	.geoip
@@ -703,6 +706,9 @@ compile_settings:
 	jmp	.advance
 .bird:
 	call	compile_bird
+	jmp	.advance
+.acme:
+	call	compile_acme
 	jmp	.advance
 .cache_memory:
 	mov	rax,[rbx+N_ARGS]

@@ -645,6 +645,9 @@ http_request:
 	mov	r13d,[rax+HB_MIRS]
 	jmp	.pool_chosen
 .routing:
+	call	acme_challenge			; /.well-known/acme-challenge/: okena's own
+	test	rax,rax
+	jnz	acme_answer
 	call	http_route			; eax = route entry, -1 none, -2 unsafe path
 	cmp	eax,-1
 	je	.no_route

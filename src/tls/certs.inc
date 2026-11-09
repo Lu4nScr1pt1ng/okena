@@ -453,6 +453,13 @@ tls_read_arg:
 	mov	rdi,[rdi+N_ARGS]
 ; rdi = an argument (a path): the same.
 tls_read_val:
+	cmp	dword [rdi+A_KIND],ARG_MEM	; (a certificate made here: acme.inc)
+	jne	@f
+	mov	rax,[rdi+A_VAL]
+	mov	edx,[rdi+A_VLEN]
+	add	rdx,rax
+	ret
+@@:
 	push	rbx
 	mov	rax,rdi
 	mov	rsi,[rax+A_VAL]
@@ -556,6 +563,9 @@ compile_tls:
 	mov	rbx,[rbx+N_NEXT]
 	jmp	.cert
 .done:
+	mov	rdi,r12				; acme NAME...: from the CA (acme.inc)
+	mov	edx,r13d
+	call	compile_tls_acme
 	lea	eax,[r13+1]
 	jmp	.out
 .none:

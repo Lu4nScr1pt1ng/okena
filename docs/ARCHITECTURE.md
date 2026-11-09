@@ -674,7 +674,10 @@ ECN. 0-RTT off by default and, when on, only for routes marked idempotent.
 * SNI selects the certificate; ALPN picks h2/http/1.1; resumption with
   tickets encrypted under keys rotated every hour and shared across
   workers through the plan (read-only, so no lock).
-* ACME (RFC 8555) with HTTP-01 and TLS-ALPN-01, in its own process, and
+* ACME (RFC 8555) in its own process, okena-acme (built: HTTP-01 answered
+  by the workers from a page the supervisor shares, the account and the
+  JWS (ES256) its own, files renamed into a 0700 directory, a reload of its
+  own; Landlock writes only there). Planned: TLS-ALPN-01, and
   DNS-01 through provider APIs (Cloudflare, Route 53, RFC 2136) for
   wildcard certificates; staging first on new configs, backoff that
   respects the CA's rate limits, renewal at two thirds of the lifetime
