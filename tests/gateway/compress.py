@@ -150,7 +150,7 @@ def main():
     (tmp / "site" / "f").mkdir()
     (tmp / "site" / "f" / "a.html").write_bytes(BODIES["html"])
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 2; io_engine {ENGINE} }}
+    conf.write_text(f"""okena {{ drain delay=0s timeout=1s; workers 2; io_engine {ENGINE} }}
 pool b {{ server 127.0.0.1:{BACK} }}
 http 127.0.0.1:{LST} {{
     compress gzip min=64B

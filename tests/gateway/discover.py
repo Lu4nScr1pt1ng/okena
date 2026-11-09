@@ -100,7 +100,7 @@ def main():
     write(lst, f"# the servers\n127.0.0.1:{port['a']}\n127.0.0.1:{port['b']}   # and b\n")
     write(few, f"127.0.0.1:{port['a']}\n127.0.0.1:{port['b']}\n127.0.0.1:{port['c']}\n")
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 2; io_engine {ENGINE} }}
+    conf.write_text(f"""okena {{ drain delay=0s timeout=1s; workers 2; io_engine {ENGINE} }}
 pool p {{ balance round-robin; discover file {lst} }}
 pool q {{ balance round-robin; discover file {few} max=2 }}
 http 127.0.0.1:{LST} {{ route /* {{ to pool p }} }}

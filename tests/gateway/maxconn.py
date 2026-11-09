@@ -92,7 +92,7 @@ def main():
     t.listen(16)
     held = []
     threading.Thread(target=lambda: [held.append(t.accept()) for _ in iter(int, 1)], daemon=True).start()
-    conf.write_text(f"""okena {{ workers 4; io_engine {ENGINE} }}
+    conf.write_text(f"""okena {{ drain delay=0s timeout=1s; workers 4; io_engine {ENGINE} }}
 pool lim {{ server {a[1]} max=2; server {b[1]} max=2 }}
 pool short {{ queue timeout=300ms; server {a[1]} max=1 }}
 pool fst {{ balance first; {''.join(f'server {x[1]} max=2; ' for x in f)}}}

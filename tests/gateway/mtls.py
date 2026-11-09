@@ -288,7 +288,7 @@ def ecdsa(sk):
     return lambda c: sk.sign(c, ec.ECDSA(hashes.SHA256()))
 
 
-CONF = """okena {{ workers 2; io_engine {engine} }}
+CONF = """okena {{ drain delay=0s timeout=1s; workers 2; io_engine {engine} }}
 pool b {{ server 127.0.0.1:{back} }}
 pool s {{ server 127.0.0.1:{shadow} }}
 http 127.0.0.1:{req} {{

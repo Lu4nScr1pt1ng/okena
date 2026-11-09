@@ -101,7 +101,7 @@ def main():
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-jfz-"))
     (tmp / "jwks.json").write_text(json.dumps({"keys": [{"kty": "oct", "kid": "k1", "alg": "HS256", "k": b64(SECRET)}]}))
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 1; io_engine {ENGINE}; watchdog 5s }}
+    conf.write_text(f"""okena {{ drain delay=0s timeout=1s; workers 1; io_engine {ENGINE}; watchdog 5s }}
 http 127.0.0.1:{LST} {{
     route /t {{ redirect 302 /z; auth jwt {{ jwks {tmp}/jwks.json; claims sub -> x-user-id, scope -> x-s, nothing -> x-n }} }}
 }}

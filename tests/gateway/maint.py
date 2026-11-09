@@ -76,7 +76,7 @@ def main():
     threading.Thread(target=S(("127.0.0.1", BACK), H).serve_forever, daemon=True).start()
     (tmp / "maint.html").write_text("<h1>Back soon</h1><p>{status}, ref {request_id}</p>\n")
     conf = tmp / "okena.conf"
-    good = f"""okena {{ workers 2; io_engine {ENGINE}; metrics 127.0.0.1:{METRICS}; admin unix:{tmp}/admin.sock }}
+    good = f"""okena {{ drain delay=0s timeout=1s; workers 2; io_engine {ENGINE}; metrics 127.0.0.1:{METRICS}; admin unix:{tmp}/admin.sock }}
 pool b {{ server 127.0.0.1:{BACK} }}
 http 127.0.0.1:{LST} {{
     maintenance file={tmp}/maint.html retry=2m allow=127.0.0.2/32 except=/healthz,/status/*

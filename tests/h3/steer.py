@@ -110,7 +110,7 @@ def main():
     conf = tmp / "okena.conf"
     for KEYED, sid in ((False, "beef"), (True, f"beef key={KEY} rotation=2")):
         CIDS.clear()
-        conf.write_text(f"""okena {{ workers 4; io_engine {ENGINE}; quic_server_id {sid} }}
+        conf.write_text(f"""okena {{ drain delay=0s timeout=1s; workers 4; io_engine {ENGINE}; quic_server_id {sid} }}
 http 127.0.0.1:{t.LST} {{
     http3 on
     tls {{ cert {tmp / 'c.pem'}; key {tmp / 'k.pem'} }}

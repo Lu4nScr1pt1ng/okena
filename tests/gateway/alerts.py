@@ -126,7 +126,7 @@ def main():
     bport = b.getsockname()[1]
     b.close()                                   # the backend starts down
     conf = tmp / "okena.conf"
-    good = f"""okena {{ workers 2; io_engine {ENGINE} }}
+    good = f"""okena {{ drain delay=0s timeout=1s; workers 2; io_engine {ENGINE} }}
 alerts {{
     webhook http://127.0.0.1:{HOOK}/okena/events
     webhook https://localhost:{SHOOK}/in trust={tmp}/ca.crt

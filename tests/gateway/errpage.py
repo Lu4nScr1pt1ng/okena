@@ -89,7 +89,7 @@ def main():
     (tmp / "nf.txt").write_text("nothing here ({status})\n")
     (tmp / "four.html").write_text("<p>client error {status}</p>\n")
     conf = tmp / "okena.conf"
-    good = f"""okena {{ workers 2; io_engine {ENGINE} }}
+    good = f"""okena {{ drain delay=0s timeout=1s; workers 2; io_engine {ENGINE} }}
 pool gone {{ server 127.0.0.1:1 }}
 pool b {{ server 127.0.0.1:{BACK} }}
 http 127.0.0.1:{LST} {{

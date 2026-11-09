@@ -148,7 +148,7 @@ def main():
 }}
 """
     conf = tmp / "okena.conf"
-    conf.write_text(f"okena {{ workers 2; io_engine {ENGINE} }}\n"
+    conf.write_text(f"okena {{ drain delay=0s timeout=1s; workers 2; io_engine {ENGINE} }}\n"
                     f"pool b {{ server 127.0.0.1:{BACK} }}\npool shadow {{ server 127.0.0.1:{SHADOW} }}\npool gone {{ server 127.0.0.1:1 }}\n"
                     + site(L_ALL, f"tracing otlp://127.0.0.1:{COLL}; access_log otlp://127.0.0.1:{COLL}")
                     + site(L_NONE, f"tracing otlp://127.0.0.1:{COLL} sample=0%")

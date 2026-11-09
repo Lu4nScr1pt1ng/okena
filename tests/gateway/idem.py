@@ -97,7 +97,7 @@ def post(path, key=None, method="POST", body=b"x", **hdr):
     return r.status, b, {k.lower(): v for k, v in r.getheaders()}
 
 
-CONF = """okena {{ workers 2; io_engine {engine} }}
+CONF = """okena {{ drain delay=0s timeout=1s; workers 2; io_engine {engine} }}
 pool b {{ server 127.0.0.1:{back} }}
 pool gone {{ server 127.0.0.1:1 }}
 http 127.0.0.1:{lst} {{

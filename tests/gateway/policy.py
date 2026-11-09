@@ -54,7 +54,7 @@ def get(path, **hdr):
         c.close()
 
 
-CONF = """okena {{ workers 2; io_engine {engine} }}
+CONF = """okena {{ drain delay=0s timeout=1s; workers 2; io_engine {engine} }}
 policy partners {{
     auth api_key header=x-api-key keys={tmp}/keys
     cors origins=https://a.test

@@ -220,7 +220,7 @@ def main():
 }}
 """
     conf = tmp / "okena.conf"
-    conf.write_text(f"okena {{ workers 2; io_engine {ENGINE} }}\npool gone {{ server 127.0.0.1:1 }}\n"
+    conf.write_text(f"okena {{ drain delay=0s timeout=1s; workers 2; io_engine {ENGINE} }}\npool gone {{ server 127.0.0.1:1 }}\n"
                     + site(L_UDP, f"syslog://127.0.0.1:{S_UDP}")
                     + site(L_TCP, f"syslog+tcp://127.0.0.1:{S_TCP}")
                     + site(L_TLS, f"syslog+tls://localhost:{S_TLS} trust={tmp}/ca.crt")

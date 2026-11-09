@@ -48,7 +48,7 @@ def main():
         s.tag = tag
         threading.Thread(target=s.serve_forever, daemon=True).start()
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 1 }}
+    conf.write_text(f"""okena {{ drain delay=0s timeout=1s; workers 1 }}
 pool one {{ server 127.0.0.1:{A} }}
 pool two {{ server 127.0.0.1:{B} }}
 http 127.0.0.1:{LST} {{

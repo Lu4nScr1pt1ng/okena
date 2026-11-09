@@ -54,7 +54,7 @@ def get(path):
     return r
 
 
-CONF = """okena {{ workers 1; io_engine {engine}; watchdog 10s }}
+CONF = """okena {{ drain delay=0s timeout=1s; workers 1; io_engine {engine}; watchdog 10s }}
 http 127.0.0.1:{lst} {{
     limits {{ connections 100 }}
     route /hold {{ to 127.0.0.1:{back}; priority critical }}
@@ -152,7 +152,9 @@ def main():
         check("a loop at least 700 ms late: pressed", bool(lv) and int(lv[0]) >= 3, str(lv))
         s = get("/critical").status
         check("  critical still served", s == 200, str(s))
-        check("  and it eases", wait_level(log, 0, 20), t[-160:])
+        # a step down shows it eases (the whole way to 0, a step at a time, is above)
+        top = max(int(x) for x in lv) if lv else 4
+        check("  and it eases", wait_level(log, top - 1, 8), t[-160:])
     finally:
         release.set()
         p.terminate()

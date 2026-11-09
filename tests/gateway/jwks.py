@@ -38,6 +38,9 @@ BIN = ROOT / "build" / "okena"
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
 BASE = 29900 + os.getpid() % 3 * 16 + (8 if ENGINE == "epoll" else 0)	# (above what the mirror suite's BASE reaches)
 BACK, LST, GOOD, EVIL, LATER = BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4
+FORGED = [BASE + 9 + i for i in range(4)]       # (a suite has its own network: no other is here)
+BADS = (("a 500", "500"), ("a redirect", "302"), ("not JSON", "html"), ("JSON, no keys", "nokeys"),
+        ("not a set", "notset"), ("a set cut short", "short"), ("a body cut short", "cut"), ("only shared secrets", "secrets"))
 fails = 0
 SECRET = {"kty": "oct", "kid": "s", "alg": "HS256", "k": base64.urlsafe_b64encode(b"s" * 32).rstrip(b"=").decode()}
 
@@ -232,7 +235,7 @@ def main():
     threading.Thread(target=b.serve_forever, daemon=True).start()
     k1, k2, k3, stranger = Key("one"), Key("two"), Key("three"), Key("two")
     good, evil, later = Provider(GOOD, good_ctx), Provider(EVIL, evil_ctx), Provider(LATER, good_ctx)
-    for p in ("/fast", "/bad", "/name"):
+    for p in ("/fast", "/bad", "/name", *[f"/bad-{tag}" for _, tag in BADS]):
         good.paths[p] = jset(k1)
     good.paths["/slow"] = jset(k1)
     good.paths["/short"] = jset(k1)
@@ -251,8 +254,10 @@ def main():
         "evil": f"https://localhost:{EVIL}/x {tr} refresh=1s",
         "name": f"https://127.0.0.1:{GOOD}/name {tr}",
         "later": f"https://localhost:{LATER}/x {tr} refresh=1s",
+        **{f"forged{i}": f"https://localhost:{port}/x {tr} refresh=1s" for i, port in enumerate(FORGED)},
+        **{f"bad-{tag}": f"https://localhost:{GOOD}/bad-{tag} {tr} refresh=1s" for _, tag in BADS},
     }
-    text = f"okena {{ workers 2; io_engine {ENGINE} }}\npool b {{ server 127.0.0.1:{BACK} }}\n" \
+    text = f"okena {{ drain delay=0s timeout=1s; workers 2; io_engine {ENGINE} }}\npool b {{ server 127.0.0.1:{BACK} }}\n" \
            f"http 127.0.0.1:{LST} {{\n"
     for r, u in routes.items():
         text += f"    route /{r} {{ to pool b; auth jwt {{ jwks {u} }} }}\n"
@@ -272,12 +277,19 @@ def main():
         check("the wrong authority: no keys", status("/evil", k1.token()) == 401, log.read_text()[-300:])
         check("  and the log says why", "not trusted" in log.read_text(), log.read_text()[-300:])
         evil.stop()
+        # every forged chain at once, each on its own port and set: each asked, none taken
+        fs = []
         for i, (what, chain, sk) in enumerate(forged):
-            f = Provider(EVIL, serving(tmp, f"forged{i}", chain, sk))
+            f = Provider(FORGED[i], serving(tmp, f"forged{i}", chain, sk))
             f.paths["/x"] = jset(k1)
             f.start()
-            time.sleep(1.6)
-            check(f"{what}: no keys", status("/evil", k1.token()) == 401, log.read_text()[-200:])
+            fs.append(f)
+        # (refused at the handshake, before any request: the log is where it shows)
+        tried = lambda port: any(f"localhost:{port}/x: the certificate is not trusted" in l for l in log.read_text().splitlines())
+        until(lambda: all(tried(port) for port in FORGED), 6)
+        for i, (what, chain, sk) in enumerate(forged):
+            check(f"{what}: no keys", tried(FORGED[i]) and status(f"/forged{i}", k1.token()) == 401, log.read_text()[-300:])
+        for f in fs:
             f.stop()
         f = Provider(EVIL, honest)
         f.paths["/x"] = jset(k1)
@@ -303,16 +315,18 @@ def main():
         check("  the key it had goes on working", status("/slow", k1.token()) == 200)
 
         # nothing a provider answers can take the keys away
-        for name, a in (("a 500", (500, jset())), ("a redirect", (302, b"")), ("not JSON", b"<html>"),
-                        ("JSON, no keys", b'{"keys":[]}'), ("not a set", b'{"a":1}'),
-                        ("a set cut short", jset(k3)[:20]), ("a body cut short", cut_short(jset(k3))),
-                        ("only shared secrets", json.dumps({"keys": [SECRET]}).encode())):
-            good.paths["/bad"] = a
-            hits = good.hits["/bad"]
-            until(lambda: good.hits["/bad"] > hits, 34)
-            time.sleep(0.3)
-            check(f"{name}: the keys stay", good.hits["/bad"] > hits and status("/bad", k1.token()) == 200
-                  and status("/bad", k3.token()) == 401, str(good.hits["/bad"] - hits))
+        # every one at once, each on a set of its own
+        answers = {"500": (500, jset()), "302": (302, b""), "html": b"<html>", "nokeys": b'{"keys":[]}', "notset": b'{"a":1}',
+                   "short": jset(k3)[:20], "cut": cut_short(jset(k3)), "secrets": json.dumps({"keys": [SECRET]}).encode()}
+        hits = {tag: good.hits.get(f"/bad-{tag}", 0) for _, tag in BADS}
+        for tag, a in answers.items():
+            good.paths[f"/bad-{tag}"] = a
+        until(lambda: all(good.hits.get(f"/bad-{tag}", 0) > hits[tag] for _, tag in BADS), 34)
+        time.sleep(0.3)
+        for name, tag in BADS:
+            path = f"/bad-{tag}"
+            check(f"{name}: the keys stay", good.hits.get(path, 0) > hits[tag] and status(path, k1.token()) == 200
+                  and status(path, k3.token()) == 401, str(good.hits.get(path, 0) - hits[tag]))
         good.paths["/bad"] = json.dumps({"keys": [k1.jwk(), SECRET]}).encode()
         hits = good.hits["/bad"]
         until(lambda: good.hits["/bad"] > hits, 34)

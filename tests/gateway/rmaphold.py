@@ -65,7 +65,7 @@ def main():
     (tmp / "map").write_text("# old paths\n\n/old /new\n/gone https://else.test/there 302\n  /spaced\t/x   # with a comment\n/perm /p 308\n" +
                              "".join(f"/n{i} /t{i}\n" for i in range(20000)))
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 2; io_engine {ENGINE} }}
+    conf.write_text(f"""okena {{ drain delay=0s timeout=1s; workers 2; io_engine {ENGINE} }}
 pool b {{ server 127.0.0.1:{BACK} }}
 pool g {{ server 127.0.0.1:{GONE} }}
 http 127.0.0.1:{LST} {{

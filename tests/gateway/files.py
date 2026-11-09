@@ -96,7 +96,7 @@ def main():
     (spa / "index.html").write_text("<app>")
     (spa / "app.js").write_text("js")
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 2; io_engine {ENGINE} }}
+    conf.write_text(f"""okena {{ drain delay=0s timeout=1s; workers 2; io_engine {ENGINE} }}
 http 127.0.0.1:{LST} {{
     route /spa/* {{ files {tmp}/spa2 fallback=/index.html }}
     route /pre/* {{ files {root} precompressed=br,zst,gz cache=immutable }}

@@ -6,6 +6,7 @@ import http.client
 import os
 import pathlib
 import re
+import select
 import shutil
 import socket
 import subprocess
@@ -250,12 +251,16 @@ tcp 127.0.0.1:{DNS} {{ to pool game }}
             x = client(t=0.2)
             x.sendto(b"f", ("127.0.0.1", FEW))
             ks.append(x)
-        got = 0
-        for x in ks:
-            try:
-                got += x.recv(10) == b"c:f"
-            except OSError:
-                pass
+        # every answer that comes, waited for together (not 0.2 s each in turn)
+        got, waiting, end = 0, set(ks), time.time() + 1.0
+        while waiting and time.time() < end:
+            ready, _, _ = select.select(list(waiting), [], [], max(end - time.time(), 0))
+            for x in ready:
+                waiting.discard(x)
+                try:
+                    got += x.recv(10) == b"c:f"
+                except OSError:
+                    pass
         check("a table of 16: the rest are dropped, no one crashes", 8 <= got <= 40, got)
         time.sleep(0.1)
         k = client()
@@ -301,7 +306,7 @@ tcp 127.0.0.1:{DNS} {{ to pool game }}
         okc("backend", "up", "logs", l1.addr)
 
         # quiet flows go
-        before = metric("okena_listener_active")
+        before = metric("okena_listener_active", GAME)       # (this listener's: others' flows live on their own idle)
         x = client()
         ask(GAME, b"stays", c=x)
         time.sleep(1.5)
@@ -312,8 +317,8 @@ tcp 127.0.0.1:{DNS} {{ to pool game }}
         d.got.clear()
         ask(GAME, b"stays", c=x)
         time.sleep(4.5)
-        active = metric("okena_listener_active")
-        check("flows that went quiet are forgotten", active < 20, (before, active))
+        active = metric("okena_listener_active", GAME)
+        check("flows that went quiet are forgotten", active <= 1, (before, active))
         x.close()
         x2.close()
 

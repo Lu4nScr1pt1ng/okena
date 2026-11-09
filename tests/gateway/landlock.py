@@ -74,7 +74,7 @@ def main():
     (a / "sneaky.log").symlink_to(b / "target.log")       # in A, writing to B
     threading.Thread(target=http.server.HTTPServer(("127.0.0.1", BACK), H).serve_forever, daemon=True).start()
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 2; io_engine {ENGINE} }}
+    conf.write_text(f"""okena {{ drain delay=0s timeout=1s; workers 2; io_engine {ENGINE} }}
 pool b {{ server 127.0.0.1:{BACK} }}
 http 127.0.0.1:{LST} {{ access_log {a}/access.log; route /* {{ to pool b }} }}
 http 127.0.0.1:{OTHER} {{ access_log {a}/sneaky.log; route /* {{ to pool b }} }}

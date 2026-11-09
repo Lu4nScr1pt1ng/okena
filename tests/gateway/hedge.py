@@ -31,6 +31,9 @@ def check(what, ok, more=""):
     failures += 0 if ok else 1
 
 
+SLOW_DELAY = 0.3                    # six times `after=50ms`: a hedge is told from no hedge
+
+
 def backend(port, name, delay=0, status=200):
     class H(http.server.BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -82,7 +85,7 @@ def get(path, method="GET", body=None, headers=None, conn=None):
     return r, b
 
 
-CONF = """okena {{ workers 2; io_engine {engine}; watchdog 5s }}
+CONF = """okena {{ drain delay=0s timeout=1s; workers 2; io_engine {engine}; watchdog 5s }}
 pool two {{ server 127.0.0.1:{fast}; server 127.0.0.1:{slow} }}
 pool withbad {{ server 127.0.0.1:{slow}; server 127.0.0.1:{bad} }}
 pool one {{ server 127.0.0.1:{slow} }}
@@ -112,7 +115,7 @@ def main():
                     "-addext", "subjectAltName=DNS:h.test", "-days", "2", "-out", tmp / "c.pem"],
                    check=True, capture_output=True)
     backend(FAST, "fast")
-    backend(SLOW, "slow", delay=0.4)
+    backend(SLOW, "slow", delay=SLOW_DELAY)
     backend(BAD, "bad", status=503)
     conf = tmp / "okena.conf"
     args = dict(engine=ENGINE, fast=FAST, slow=SLOW, bad=BAD, lst=LST, tls=TLS, tmp=tmp)
@@ -133,8 +136,8 @@ def main():
             r, b = get(f"/h/{i}")
             ts.append(time.time() - t0)
             bodies.append((r.status, b))
-        check(f"a slow server's requests hedged: worst {max(ts) * 1000:.0f} ms, not 400",
-              max(ts) < 0.25 and all(s == 200 for s, _ in bodies), str(ts))
+        check(f"a slow server's requests hedged: worst {max(ts) * 1000:.0f} ms, not {SLOW_DELAY * 1000:.0f}",
+              max(ts) < SLOW_DELAY * 0.8 and all(s == 200 for s, _ in bodies), str(ts))
         check("  answered by the other, once", all(b == b"fast" for _, b in bodies)
               and all(hits.get(("fast", f"/h/{i}")) == 1 for i in range(30)), str(bodies[:3]))
         n = sum(1 for i in range(30) if ("slow", f"/h/{i}") in hits)
@@ -150,24 +153,26 @@ def main():
         rs = [get(f"/h/head{i}", "HEAD") for i in range(12)]
         check("HEAD", all(x[0].status == 200 and x[1] == b"" for x in rs), str([x[0].status for x in rs]))
         before = hits.get(("slow", "/h/post"), 0) + hits.get(("fast", "/h/post"), 0)
-        for _ in range(12):
-            get("/h/post", "POST", b"x")
-        time.sleep(0.5)
+        with ThreadPoolExecutor(12) as ex:      # (at once: each is its own exchange)
+            list(ex.map(lambda i: get("/h/post", "POST", b"x"), range(12)))
+        time.sleep(SLOW_DELAY + 0.1)
         after = hits.get(("slow", "/h/post"), 0) + hits.get(("fast", "/h/post"), 0)
         check("POST: never twice", after - before == 12, str(after - before))
-        ts = []
-        for i in range(10):
+        def timed(path):
             t0 = time.time()
-            r, b = get("/one")
-            ts.append(time.time() - t0)
-        check("a pool of one: nothing to hedge to", min(ts) > 0.35 and hits[("slow", "/one")] == 10, str(hits[("slow", "/one")]))
-        r = [get(f"/bad/{i}") for i in range(20)]
+            get(path)
+            return time.time() - t0
+        with ThreadPoolExecutor(10) as ex:
+            ts = list(ex.map(lambda i: timed("/one"), range(10)))
+        check("a pool of one: nothing to hedge to", min(ts) > SLOW_DELAY * 0.9 and hits[("slow", "/one")] == 10, str(hits[("slow", "/one")]))
+        with ThreadPoolExecutor(10) as ex:
+            r = list(ex.map(lambda i: get(f"/bad/{i}"), range(20)))
         got = {(x[0].status, x[1]) for x in r}
         check("a 503 does not beat the slow answer", (200, b"slow") in got and all(s != 500 for s, _ in got)
               and sum(1 for x in r if x[0].status == 200) >= 8, str(got))
-        for i in range(120):
-            get("/p")
-        time.sleep(0.5)
+        with ThreadPoolExecutor(16) as ex:
+            list(ex.map(lambda i: get("/p"), range(120)))
+        time.sleep(SLOW_DELAY + 0.1)
         check("after=p95: warm, slow ones hedged", hits.get(("fast", "/p"), 0) > 60, str((hits.get(("fast", "/p")), hits.get(("slow", "/p")))))
         r = [get("/cors", headers={"Origin": "https://a.test"})[0] for _ in range(10)]
         check("what the route adds is on a hedge's answer too",
@@ -179,11 +184,15 @@ def main():
         for proto, flag in (("h1", "--http1.1"), ("h2", "--http2"), ("h3", "--http3-only")):
             good = slow = 0
             wrong = []
-            for path in ("x", "big", "chunked"):
-                for i in range(8):
-                    q = subprocess.run(["timeout", "6", "curl", "-sSkv", flag, "--resolve", f"h.test:{TLS}:127.0.0.1",
-                                        f"https://h.test:{TLS}/{path}{proto}{i}", "-w", "\\n%{http_code}"],
-                                       capture_output=True, stdin=subprocess.DEVNULL)
+            def curl(job):
+                path, i = job
+                return path, i, subprocess.run(["timeout", "6", "curl", "-sSkv", flag, "--resolve", f"h.test:{TLS}:127.0.0.1",
+                                                f"https://h.test:{TLS}/{path}{proto}{i}", "-w", "\\n%{http_code}"],
+                                               capture_output=True, stdin=subprocess.DEVNULL)
+            with ThreadPoolExecutor(8) as ex:
+                runs = list(ex.map(curl, [(path, i) for path in ("x", "big", "chunked") for i in range(8)]))
+            if True:
+                for path, i, q in runs:
                     if q.returncode in (1, 2):
                         break
                     n = 50000 if path == "big" else 3 if path == "chunked" else 1

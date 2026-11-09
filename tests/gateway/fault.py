@@ -52,7 +52,7 @@ def get(path):
     return r.status, r.reason
 
 
-CONF = """okena {{ workers 1; io_engine {engine} }}
+CONF = """okena {{ workers 1; io_engine {engine}; drain delay=0s timeout=1s }}
 http 127.0.0.1:{tls} {{
     http2 on
     http3 on
@@ -90,7 +90,8 @@ def main():
         check("abort=503: every request, the backend not asked",
               all(x == (503, "Service Unavailable") for x in r) and seen[0] == 0, f"{r[:3]} {seen[0]}")
         check("a route without one goes through", get("/fine")[0] == 200 and seen[0] == 1, str(seen[0]))
-        r = [get("/half")[0] for _ in range(400)]
+        with ThreadPoolExecutor(16) as ex:      # (each on its own: the share is per request)
+            r = list(ex.map(lambda i: get("/half")[0], range(400)))
         n = r.count(429)
         check("percent=50: about half, the status named", 140 <= n <= 260 and set(r) == {200, 429}, f"{n} {set(r)}")
         t0 = time.time()
@@ -108,11 +109,12 @@ def main():
         dt = time.time() - t0
         check("32 at once, held together, none lost", r.count((200, "OK")) == 32 and seen[0] == before + 32
               and dt < 0.5, f"{r[:2]} {seen[0] - before} {dt:.3f}")
-        ts = []
-        for _ in range(60):
+        def timed(i):
             t0 = time.time()
             get("/someslow")
-            ts.append(time.time() - t0)
+            return time.time() - t0
+        with ThreadPoolExecutor(12) as ex:      # (each timed on its own)
+            ts = list(ex.map(timed, range(60)))
         n = sum(x > 0.09 for x in ts)
         check("percent=50: about half wait", 15 <= n <= 45, str(n))
         with ThreadPoolExecutor(2) as ex:			# a shorter wait behind a longer one

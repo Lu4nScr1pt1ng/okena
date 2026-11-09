@@ -14,6 +14,7 @@ import sys
 import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
@@ -56,7 +57,7 @@ def get(path, headers=None):
     return b, r
 
 
-CONF = """okena {{ workers 2; io_engine {engine} }}
+CONF = """okena {{ drain delay=0s timeout=1s; workers 2; io_engine {engine} }}
 pool stable {{ server 127.0.0.1:{one} }}
 pool canary {{ server 127.0.0.1:{two} }}
 http 127.0.0.1:{tls} {{
@@ -96,17 +97,19 @@ def main():
                 break
             except OSError:
                 time.sleep(0.05)
-        r = [get("/free")[0] for _ in range(600)]
+        with ThreadPoolExecutor(16) as ex:      # (each its own new client: at once, 16 at a time)
+            r = list(ex.map(lambda i: get("/free")[0], range(600)))
         n = r.count(b"two")
         check(f"80/20 of 600: {n} to the second", 80 <= n <= 170 and r.count(b"one") + n == 600, str(n))
         b, q = get("/free")
         check("no sticky: no cookie", q.getheader("set-cookie") is None, str(q.getheaders()))
         check("a route with `to` as ever", get("/fine")[0] == b"one", "")
-        given = []
-        for _ in range(400):
+        def one(i):
             b, q = get("/c")
             m = re.fullmatch(r"okena_split=(\d+); Path=/; HttpOnly; SameSite=Lax", q.getheader("set-cookie") or "")
-            given.append((m and int(m[1]), b))
+            return (m and int(m[1]), b)
+        with ThreadPoolExecutor(16) as ex:
+            given = list(ex.map(one, range(400)))
         check("sticky: each new client gets a number of 0 to 99", all(x is not None and 0 <= x < 100 for x, _ in given),
               str(given[:4]))
         check("  which decides its pool", all((b == b"two") == (x >= 95) for x, b in given), str(given[:9]))

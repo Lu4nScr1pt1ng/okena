@@ -41,6 +41,7 @@ TCP_ULP	:= 31
 bss
 	align 16
 	g_tc:		rb TC_FULL
+	g_snap:		rb SHA256_CTX_SIZE	; the transcript after the ClientHello
 	g_fd		dd ?
 	g_addr:		rb 16
 	g_ch:		rb SBUF			; the ClientHello
@@ -119,32 +120,60 @@ start:
 	lea	rsi,[g_ch]
 	mov	edx,r12d
 	sys	SYS_write
-	; read the server's flight (until it pauses: one read is enough for a
-	; small flight, loop a few times to gather it)
+	; the server's flight, as it comes: after each read, its whole records
+	; are processed again from the transcript after the ClientHello, until
+	; they end on the server's Finished (no waiting for it to pause)
+	lea	rsi,[g_tc+TC_SHA]
+	lea	rdi,[g_snap]
+	mov	ecx,SHA256_CTX_SIZE
+	rep	movsb
 	xor	ebx,ebx				; bytes received
 .read:
 	mov	edi,[g_fd]
 	lea	rsi,[g_in+rbx]
 	mov	edx,SBUF
 	sub	edx,ebx
-	jz	.process
+	jz	fail
 	xor	eax,eax				; SYS_read
 	syscall
 	test	rax,rax
-	jle	.process
+	jle	fail				; closed, or 2 s of nothing
 	add	rbx,rax
-	cmp	rbx,16384			; a full flight fits; stop once we have plenty
-	jb	.read
-.process:
-	test	rbx,rbx
-	jz	fail
+	; up to the last whole record
+	xor	r13d,r13d
+.whole:
+	lea	eax,[r13+5]
+	cmp	rax,rbx
+	ja	.try
+	movzx	eax,word [g_in+r13+3]
+	xchg	al,ah
+	lea	eax,[r13+rax+5]
+	cmp	rax,rbx
+	ja	.try
+	mov	r13d,eax
+	jmp	.whole
+.try:
+	test	r13d,r13d
+	jz	.read
+	lea	rsi,[g_snap]
+	lea	rdi,[g_tc+TC_SHA]
+	mov	ecx,SHA256_CTX_SIZE
+	rep	movsb
 	lea	rdi,[g_tc]
 	lea	rsi,[g_in]
-	mov	edx,ebx
+	mov	edx,r13d
 	lea	rcx,[g_out]
 	call	tlsc_server_flight
 	test	eax,eax
-	jz	fail
+	jz	.read				; not all there yet
+	push	rax
+	lea	rsi,[g_out]
+	mov	edx,eax
+	call	tlsc_flight_complete
+	mov	ecx,eax
+	pop	rax
+	test	ecx,ecx
+	jz	.read
 	; verify the CertificateVerify and the server Finished
 	lea	rdi,[g_tc]
 	lea	rsi,[g_out]
@@ -175,33 +204,31 @@ start:
 	lea	rsi,[g_send]
 	mov	edx,eax
 	sys	SYS_write
+	; the answer, as it comes: each whole record opened in turn (where the
+	; last read left off: opening advances the sequence), until one is an
+	; application_data record whose plaintext is an HTTP response
 	xor	ebx,ebx
+	xor	r13d,r13d			; offset into g_in
 .read2:
 	mov	edi,[g_fd]
 	lea	rsi,[g_in+rbx]
 	mov	edx,SBUF
 	sub	edx,ebx
-	jz	.scan
+	jz	.no
 	xor	eax,eax
 	syscall
 	test	rax,rax
-	jle	.scan
+	jle	.no
 	add	rbx,rax
-	cmp	rbx,16384
-	jb	.read2
-.scan:
-	; walk the records; open each with the server application key and look
-	; for an application_data record whose plaintext is an HTTP response
-	xor	r13d,r13d			; offset into g_in
 .next:
 	lea	rax,[r13+5]
 	cmp	rax,rbx
-	ja	.no				; no full record left
+	ja	.read2				; no whole record yet: more
 	movzx	ecx,word [g_in+r13+3]
 	rol	cx,8
 	lea	rax,[r13+rcx+5]			; end of this record
 	cmp	rax,rbx
-	ja	.no
+	ja	.read2
 	lea	rdi,[g_tc]
 	lea	rsi,[g_in+r13]
 	push	rax				; next offset

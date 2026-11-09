@@ -64,7 +64,7 @@ def basic(u, p):
     return {"Authorization": "Basic " + base64.b64encode(f"{u}:{p}".encode()).decode()}
 
 
-CONF = """okena {{ workers 2; io_engine {engine} }}
+CONF = """okena {{ drain delay=0s timeout=1s; workers 2; io_engine {engine} }}
 http 127.0.0.1:{tls} {{
     http2 on
     http3 on

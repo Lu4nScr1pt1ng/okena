@@ -128,6 +128,8 @@ start:
 	test	rax,rax
 	jle	.flight
 	add	rbx,rax
+	call	done_flight			; ServerHelloDone there: no waiting for a pause
+	jc	.flight
 	cmp	rbx,16384
 	jb	.read
 .flight:
@@ -157,6 +159,8 @@ start:
 	test	rax,rax
 	jle	.srvfin
 	add	rbx,rax
+	call	done_finished			; CCS and a whole handshake record after it
+	jc	.srvfin
 	cmp	rbx,16384
 	jb	.read2
 .srvfin:
@@ -201,6 +205,9 @@ start:
 	test	rax,rax
 	jle	.scan
 	add	rbx,rax
+	mov	eax,23
+	call	done_record			; a whole application_data record
+	jc	.scan
 	cmp	rbx,16384
 	jb	.read3
 .scan:
@@ -289,6 +296,95 @@ start:
 .ulp		db 'tls',0
 .sni		db 'localhost'
 .sni.len	:= $ - .sni
+
+; ebx = bytes in g_in: CF when its handshake records hold a whole
+; ServerHelloDone (type 14), the end of the server's first flight
+done_flight:
+	xor	ecx,ecx
+.rec:
+	lea	eax,[rcx+5]
+	cmp	eax,ebx
+	ja	.no
+	movzx	edx,word [g_in+rcx+3]
+	xchg	dl,dh
+	lea	r8d,[rcx+rdx+5]			; its end
+	cmp	r8d,ebx
+	ja	.no
+	cmp	byte [g_in+rcx],22
+	jne	.next
+	lea	r9d,[rcx+5]			; its messages
+.msg:
+	lea	eax,[r9+4]
+	cmp	eax,r8d
+	ja	.next
+	cmp	byte [g_in+r9],14
+	je	.yes
+	movzx	eax,byte [g_in+r9+1]
+	shl	eax,16
+	movzx	edx,word [g_in+r9+2]
+	xchg	dl,dh
+	or	eax,edx
+	lea	r9d,[r9+rax+4]
+	jmp	.msg
+.next:
+	mov	ecx,r8d
+	jmp	.rec
+.yes:
+	stc
+	ret
+.no:
+	clc
+	ret
+
+; ebx = bytes in g_in: CF when a ChangeCipherSpec and a whole handshake
+; record after it (the server's Finished) are there
+done_finished:
+	xor	ecx,ecx
+	xor	r9d,r9d				; a CCS seen
+.rec:
+	lea	eax,[rcx+5]
+	cmp	eax,ebx
+	ja	.no
+	movzx	edx,word [g_in+rcx+3]
+	xchg	dl,dh
+	lea	r8d,[rcx+rdx+5]
+	cmp	r8d,ebx
+	ja	.no
+	cmp	byte [g_in+rcx],20
+	jne	@f
+	mov	r9d,1
+@@:
+	cmp	byte [g_in+rcx],22
+	jne	@f
+	test	r9d,r9d
+	jnz	.yes
+@@:
+	mov	ecx,r8d
+	jmp	.rec
+.yes:
+	stc
+	ret
+.no:
+	clc
+	ret
+
+; ebx = bytes in g_in, al = a record type: CF when the first record is
+; whole and of that type
+done_record:
+	cmp	ebx,5
+	jb	.no
+	cmp	[g_in],al
+	jne	.no
+	movzx	edx,word [g_in+3]
+	xchg	dl,dh
+	add	edx,5
+	cmp	edx,ebx
+	ja	.no
+	stc
+	ret
+.no:
+	clc
+	ret
 
 segment readable
 	rodata_emit

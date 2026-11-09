@@ -59,7 +59,7 @@ def get(path, headers={}, conn=None):
     return r
 
 
-CONF = """okena {{ workers 4; io_engine {engine} }}
+CONF = """okena {{ drain delay=0s timeout=1s; workers 4; io_engine {engine} }}
 http 127.0.0.1:{tls} {{
     http2 on
     http3 on

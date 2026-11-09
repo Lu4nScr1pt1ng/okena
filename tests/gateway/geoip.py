@@ -155,7 +155,7 @@ NETS = [("127.0.0.0/8", "BR"), ("10.0.0.0/8", "PT"), ("192.0.2.0/24", "RU"), ("2
 def run(tmp, name, db, routes, fn):
     (tmp / "db.mmdb").write_bytes(db)
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 2; io_engine {ENGINE}; geoip {tmp}/db.mmdb }}
+    conf.write_text(f"""okena {{ drain delay=0s timeout=1s; workers 2; io_engine {ENGINE}; geoip {tmp}/db.mmdb }}
 pool b {{ server 127.0.0.1:{BACK} }}
 pool c {{ server 127.0.0.1:{BACK} }}
 http 127.0.0.1:{LST} {{
@@ -266,11 +266,11 @@ def main():
     (tmp / "big").write_bytes(build(NETS, 24, 6, meta_extra={"node_count": 1 << 30}))
     P = f"pool b {{ server 127.0.0.1:1 }}\nhttp 127.0.0.1:{LST} {{ route /* {{ to pool b }} }}\n"
     for f, what in (("junk", "not an mmdb"), ("short", "too short"), ("norec", "a record size that does not exist"), ("big", "more nodes than the file holds"), ("nosuch", "no file")):
-        refused(what, f"okena {{ geoip {tmp}/{f} }}\n" + P)
+        refused(what, f"okena {{ drain delay=0s timeout=1s; geoip {tmp}/{f} }}\n" + P)
     (tmp / "db.mmdb").write_bytes(build(NETS, 24, 6))
     refused("client.country with no geoip", f"pool b {{ server 127.0.0.1:1 }}\nhttp 127.0.0.1:{LST} {{ route /* {{ match client.country=BR {{ to pool b }}; to pool b }} }}\n")
     refused("country: with no geoip", f"pool b {{ server 127.0.0.1:1 }}\nhttp 127.0.0.1:{LST} {{ route /* {{ allow country:BR; to pool b }} }}\n")
-    refused("a bad list", f"okena {{ geoip {tmp}/db.mmdb }}\npool b {{ server 127.0.0.1:1 }}\nhttp 127.0.0.1:{LST} {{ route /* {{ allow country:BRA; to pool b }} }}\n")
+    refused("a bad list", f"okena {{ drain delay=0s timeout=1s; geoip {tmp}/db.mmdb }}\npool b {{ server 127.0.0.1:1 }}\nhttp 127.0.0.1:{LST} {{ route /* {{ allow country:BRA; to pool b }} }}\n")
     print(f"geoip {ENGINE}: " + ("all passed" if not fails else f"{fails} failed"))
     sys.exit(1 if fails else 0)
 

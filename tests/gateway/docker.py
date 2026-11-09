@@ -137,7 +137,7 @@ def main():
                      container("n", "", {"okena.pool": "net"}, [(8080, "tcp")],
                                nets={"front": {"IPAddress": "10.9.9.9"}, "back": {"IPAddress": "127.0.0.6"}})]
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 2; io_engine {ENGINE} }}
+    conf.write_text(f"""okena {{ drain delay=0s timeout=1s; workers 2; io_engine {ENGINE} }}
 pool web {{ balance round-robin; discover docker label=okena.pool=web socket={sock} }}
 pool net {{ discover docker label=okena.pool=net network=back socket={sock} }}
 http 127.0.0.1:{LST} {{ route /* {{ to pool web }} }}

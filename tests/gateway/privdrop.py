@@ -125,7 +125,7 @@ def main():
     os.chmod(tmp / "k.pem", 0o600)                          # root's alone
     threading.Thread(target=http.server.HTTPServer(("127.0.0.1", BACK), H).serve_forever, daemon=True).start()
     conf = tmp / "okena.conf"
-    good = f"""okena {{ workers 2; io_engine {ENGINE}; user {UID}:{GID} }}
+    good = f"""okena {{ drain delay=0s timeout=1s; workers 2; io_engine {ENGINE}; user {UID}:{GID} }}
 pool b {{ health tcp every=500ms; server 127.0.0.1:{BACK} }}
 http 127.0.0.1:{LST} {{ access_log {logs}/access.log; route /* {{ to pool b }} }}
 http 127.0.0.1:{TLSL} {{ tls {{ cert {tmp}/c.pem; key {tmp}/k.pem }}; route /* {{ to pool b }} }}
@@ -179,7 +179,7 @@ http 127.0.0.1:{TLSL} {{ tls {{ cert {tmp}/c.pem; key {tmp}/k.pem }}; route /* {
 
     def bad(what, line, as_user=False):
         g = tmp / "bad.conf"
-        g.write_text(f"okena {{ {line} }}\npool b {{ server 127.0.0.1:1 }}\nhttp 127.0.0.1:{BASE + 9} {{ route /* {{ to pool b }} }}\n")
+        g.write_text(f"okena {{ drain delay=0s timeout=1s; {line} }}\npool b {{ server 127.0.0.1:1 }}\nhttp 127.0.0.1:{BASE + 9} {{ route /* {{ to pool b }} }}\n")
         os.chmod(g, 0o644)
         if as_user and not (tmp / "okena").exists():
             shutil.copy(BIN, tmp / "okena")       # (the user may not reach the build's directory)

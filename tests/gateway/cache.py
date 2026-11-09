@@ -178,12 +178,12 @@ def hit(r):
     return "hit" in status_of(r)
 
 
-CONF = """okena {{ workers 1; io_engine {engine} }}
+CONF = """okena {{ workers 1; io_engine {engine}; drain delay=0s timeout=1s }}
 pool b {{ server 127.0.0.1:{back} }}
 http 127.0.0.1:{lst} {{
     route /c/* {{ cache 60s vary=accept-encoding; to pool b }}
     route /t/* {{ cache 1s; to pool b }}
-    route /s/* {{ cache 1s stale-while-revalidate=4s; to pool b }}
+    route /s/* {{ cache 1s stale-while-revalidate=2s; to pool b }}
     route /shared/* {{ cache 60s shared=on; to pool b }}
     route /key/* {{ auth api_key header=x-api-key keys={tmp}/keys; cache 60s; to pool b }}
     route /fwd/* {{ auth forward pool=b path=/ok; cache 60s; to pool b }}
@@ -339,7 +339,7 @@ def main():
         r = get("/s/strict")
         check("must-revalidate has no stale window", not hit(r) and hits["/s/strict"] == 2, hits.get("/s/strict"))
         get("/s/gone")
-        time.sleep(5.3)
+        time.sleep(3.3)                         # (1 s fresh and 2 s stale, past both)
         r = get("/s/gone")
         check("past the window: a miss", not hit(r) and hits["/s/gone"] == 2, hits.get("/s/gone"))
 

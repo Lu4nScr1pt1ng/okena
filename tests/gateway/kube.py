@@ -170,7 +170,7 @@ def main():
     sr = api(tmp, "rsa", API_RSA)
     common = f"token={tok}"
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 2; io_engine {ENGINE} }}
+    conf.write_text(f"""okena {{ drain delay=0s timeout=1s; workers 2; io_engine {ENGINE} }}
 pool web {{ balance round-robin; discover kubernetes service=shop/web port=http api=127.0.0.1:{API_EC} ca={tmp}/ec-ca.crt {common} }}
 pool rsa {{ discover kubernetes service=shop/web port=http api=127.0.0.1:{API_RSA} ca={tmp}/rsa-ca.crt {common} }}
 pool badca {{ discover kubernetes service=shop/web port=http api=127.0.0.1:{API_EC} ca={tmp}/o/ec-ca.crt {common} }}

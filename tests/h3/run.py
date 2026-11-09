@@ -23,6 +23,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 BIN = ROOT / "build" / "okena"
 VENV = ROOT / "build" / "qenv" / "bin" / "python"
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
+sys.stdout.reconfigure(line_buffering=True)     # (each line as it comes: what took long shows)
 
 try:
     import asyncio
@@ -345,11 +346,11 @@ async def cases():
     async with connect("127.0.0.1", LST, configuration=config(), create_protocol=Client) as c:
         stay = b"the-same-long-value-" + b"s" * 60
         ok = True
-        for i in range(300):
-            v = f"value-{i}-".encode() + b"x" * (i % 90)
+        for i in range(100):                    # (~20 KB inserted: the table turns over and over;
+            v = f"value-{i}-".encode() + b"x" * (i % 90)   # qpack_raw's evictions are by hand)
             r = await c.request("GET", "/dyn", extra=[(b"x-dyn", v), (b"x-stay", stay), (f"x-n{i % 7}".encode(), v)])
             ok = ok and r["body"] == v + b"|" + stay
-        check("QPACK dynamic table: 300 requests inserting, evicting; every value right",
+        check("QPACK dynamic table: 100 requests inserting, evicting; every value right",
               ok and c.h3._encoder_bytes_sent > 20 and c.h3._decoder_bytes_received > 10 and c.closed is None,
               f"{r['body'][:40]} encoder {c.h3._encoder_bytes_sent} decoder {c.h3._decoder_bytes_received} {c.closed}")
     await qpack_raw()

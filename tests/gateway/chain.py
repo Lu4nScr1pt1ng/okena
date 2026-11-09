@@ -126,7 +126,7 @@ def main():
     ]
     honest = [target("mid", inter), make("mid", "ca", inter, cak, True)]
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 1; io_engine {ENGINE} }}
+    conf.write_text(f"""okena {{ drain delay=0s timeout=1s; workers 1; io_engine {ENGINE} }}
 pool b {{
     server 127.0.0.1:{BACK}
     tls {{ trust {tmp}/ca.pem; sni backend.test }}

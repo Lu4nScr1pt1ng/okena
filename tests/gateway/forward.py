@@ -118,7 +118,7 @@ def get(path, method="GET", body=None, port=LST, conn=None, **hdr):
     return r.status, b, {k.lower(): v for k, v in r.getheaders()}, time.time() - t
 
 
-CONF = """okena {{ workers 2; io_engine {engine} }}
+CONF = """okena {{ drain delay=0s timeout=1s; workers 2; io_engine {engine} }}
 pool b {{ server 127.0.0.1:{back} }}
 pool sso {{ server 127.0.0.1:{sso} }}
 pool nobody {{ server 127.0.0.1:1 }}
@@ -263,7 +263,7 @@ def main():
     fast = subprocess.Popen(["timeout", "--foreground", "12", str(tmp / "l4bench"), "http", str(FAST), "2"],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     few = tmp / "few.conf"
-    few.write_text(f"""okena {{ workers 2; io_engine {ENGINE} }}
+    few.write_text(f"""okena {{ drain delay=0s timeout=1s; workers 2; io_engine {ENGINE} }}
 pool fast {{ server 127.0.0.1:{FAST} }}
 http 127.0.0.1:{FEW} {{
     route /a {{ auth forward pool=fast path=/v; to pool fast }}

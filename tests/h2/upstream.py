@@ -239,7 +239,7 @@ http 127.0.0.1:{TMID} {{
 }}
 """
     conf = tmp / "okena.conf"
-    conf.write_text(tls_part + f"""okena {{ workers 1; io_engine {ENGINE} }}
+    conf.write_text(tls_part + f"""okena {{ drain delay=0s timeout=1s; workers 1; io_engine {ENGINE} }}
 http 127.0.0.1:{FRONT} {{
     http2 on
     route /* {{ to pool h2b }}

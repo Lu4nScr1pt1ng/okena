@@ -55,7 +55,7 @@ def get(path, method="GET", **hdr):
     return r.status, b, {k.lower(): v for k, v in r.getheaders()}
 
 
-CONF = """okena {{ workers 2; io_engine {engine} }}
+CONF = """okena {{ drain delay=0s timeout=1s; workers 2; io_engine {engine} }}
 pool main {{ server 127.0.0.1:{main} }}
 pool canary {{ server 127.0.0.1:{canary} }}
 http 127.0.0.1:{lst} {{
