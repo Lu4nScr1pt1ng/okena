@@ -161,6 +161,7 @@ macro plan_regions action
 	action g_plan_birdp, 8
 	action g_plan_birdpool, 8
 	action g_plan_birdpooll, 4
+	action g_plan_vrrp, VC_SIZE
 	action g_signed, SU_SIZE * MAX_SIGNED
 	action g_plan_signed, 4
 	action g_plan_fleet_sa, 32 * MAX_FLEET
@@ -402,6 +403,7 @@ supervisor_reload:
 	call	spawn_admin
 	call	logger_restart			; destinations may have changed
 	call	keeper_reload			; the store may have changed
+	call	vrrp_reload			; (kept when it is as it was: its state too)
 	mov	edi,SG_RELOADS
 	call	stats_global_inc
 	call	api_reloaded

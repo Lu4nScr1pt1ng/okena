@@ -487,13 +487,15 @@ on a machine that can spare it).
   Cloudflare's ranges by name in `trusted_proxies` and `allow`, and
   `file:PATH` lists; authenticated origin pulls, a pool's client
   certificate over TLS 1.3; the shield tier, `key=url` and `cdn_loop`;
-  health-driven anycast through BIRD's control socket.)
+  health-driven anycast through BIRD's control socket; VRRP v3.)
 * A floating address for a pair of instances without BGP: VRRP v3 (RFC 9568),
   with health deciding who holds it and gratuitous ARP / unsolicited NA on a
-  change, as keepalived beside HAProxy does it.
+  change, as keepalived beside HAProxy does it. (Done for IPv4, with
+  gratuitous ARP; IPv6 and unsolicited NA to come.)
 
 Exit: hit path serves from page cache at line rate with zero copies;
-origin load stays flat during a purge-and-refill storm.
+origin load stays flat during a purge-and-refill storm. (Every item is
+built; both measurements are still to be made on the lab.)
 
 ## Phase 9 — Breadth
 

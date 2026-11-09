@@ -103,6 +103,24 @@ macro sc_end f*
 	bpf_jeq PR_SET_NO_NEW_PRIVS, f#.allow, f#.p3
 	f#.p3:
 	bpf_jeq PR_SET_SECCOMP, f#.allow, f#.trap
+	f#.socket_net:				; the supervisor's (vrrp's): netlink, packets too
+	bpf_ld 16
+	bpf_jeq AF_INET, f#.allow, f#.n1
+	f#.n1:
+	bpf_jeq AF_INET6, f#.allow, f#.n2
+	f#.n2:
+	bpf_jeq AF_UNIX, f#.allow, f#.n3
+	f#.n3:
+	bpf_jeq AF_NETLINK_, f#.allow, f#.n4
+	f#.n4:
+	bpf_jeq AF_PACKET_, f#.allow, f#.trap
+	f#.ifreq:				; ioctl: an interface's index, address, MAC
+	bpf_ld 24
+	bpf_jeq SIOCGIFINDEX_, f#.allow, f#.i1
+	f#.i1:
+	bpf_jeq SIOCGIFADDR_, f#.allow, f#.i2
+	f#.i2:
+	bpf_jeq SIOCGIFHWADDR_, f#.allow, f#.trap
 	f#.socket:				; families in use only
 	bpf_ld 16
 	bpf_jeq AF_INET, f#.allow, f#.s1
@@ -157,7 +175,9 @@ rodata
 	sc_allow filter_supervisor, SYS_getrandom
 	sc_allow filter_supervisor, SYS_recvmmsg		; (QUIC, in workers)
 	sc_allow filter_supervisor, SYS_sendmmsg
-	sc_check filter_supervisor, SYS_socket, socket
+	sc_check filter_supervisor, SYS_socket, socket_net	; (the vrrp process: netlink, packets)
+	sc_check filter_supervisor, SYS_ioctl_, ifreq
+	sc_allow filter_supervisor, SYS_sendto
 	sc_allow filter_supervisor, SYS_bind
 	sc_allow filter_supervisor, SYS_listen
 	sc_allow filter_supervisor, SYS_sendmsg_	; an upgrade: sockets to the new binary
@@ -365,6 +385,17 @@ rodata
 	sc_allow filter_keeper, SYS_fdatasync		; (the last one out)
 	sc_allow filter_keeper, SYS_msync
 	sc_end filter_keeper
+
+	; vrrp: its sockets made, adverts in and out, the address over netlink
+	sc_begin filter_vrrp
+	sc_common filter_vrrp
+	sc_allow filter_vrrp, SYS_sendto
+	sc_allow filter_vrrp, SYS_recvfrom
+	sc_allow filter_vrrp, SYS_ppoll_
+	sc_allow filter_vrrp, SYS_read
+	sc_allow filter_vrrp, SYS_close
+	sc_allow filter_vrrp, SYS_clock_gettime
+	sc_end filter_vrrp
 
 	sc_begin filter_health
 	sc_common filter_health

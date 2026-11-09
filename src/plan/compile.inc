@@ -336,6 +336,12 @@ plan_compile:
 	call	compile_alerts
 	jmp	@f
 .not_alerts:
+	lea	rcx,[dir_table + D_SIZE*DIR_VRRP]
+	cmp	rax,rcx
+	jne	.not_vrrp
+	call	compile_vrrp			; (rbx = the node)
+	jmp	@f
+.not_vrrp:
 	lea	rcx,[dir_table + D_SIZE*DIR_POOL]
 	cmp	rax,rcx
 	jne	@f

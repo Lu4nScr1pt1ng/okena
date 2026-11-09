@@ -1036,7 +1036,12 @@ needs from okena:
   per-instance share (`limit ... instances=4`), and an exact distributed
   limiter is out of scope until a shared store is worth its latency;
 * health and drain state are exposed through the admin API so a fleet
-  controller can drain an instance before maintenance.
+  controller can drain an instance before maintenance;
+* a pair without BGP shares an address with VRRP v3 (src/core/vrrp.inc,
+  a process of its own): health decides who holds it, and a node that
+  cannot take traffic gives it up with a priority-0 advert;
+* anycast through BIRD is announced only while the node can take traffic
+  (src/admin/bird.inc).
 
 ## Non-goals
 

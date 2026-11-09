@@ -105,7 +105,9 @@ spawn_admin:
 	jge	@f
 	cmp	dword [g_api_fd],0
 	jge	@f
-	cmp	qword [g_plan_bird],0		; (`bird` is the admin process's too)
+	cmp	qword [g_plan_bird],0		; (`bird` and `vrrp`'s health are the admin
+	jne	@f				; process's too)
+	cmp	dword [g_plan_vrrp+VC_ON],0
 	je	.none
 @@:
 	mov	eax,SYS_fork
@@ -163,6 +165,7 @@ admin_main:
 .loop:
 	call	top_sample			; (rates for `top` and /status)
 	call	bird_tick			; (the anycast address, announced or not: bird.inc)
+	call	vrrp_ready_tick			; (and whether vrrp may hold its address)
 	lea	rdi,[g_admin_pfd]
 	mov	esi,2
 	lea	rdx,[ts_admin_tick]

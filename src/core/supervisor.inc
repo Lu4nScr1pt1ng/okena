@@ -192,6 +192,7 @@ supervisor_main:
 	call	spawn_admin
 	call	spawn_logger
 	call	spawn_keeper
+	call	spawn_vrrp
 	call	upgrade_ready
 	call	api_ready
 
@@ -894,6 +895,21 @@ reap_workers:
 	call	spawn_keeper
 	jmp	.next
 .not_keeper:
+	cmp	r12d,[g_vrrp_pid]
+	jne	.not_vrrp
+	mov	dword [g_vrrp_pid],0
+	cmp	dword [g_shutdown],0
+	jne	.next
+	call	log_begin
+	out_lit 'vrrp process exited, restarting it'
+	call	log_end
+	lea	rdi,[ts_respawn_delay]
+	xor	esi,esi
+	mov	eax,SYS_nanosleep
+	syscall
+	call	spawn_vrrp
+	jmp	.next
+.not_vrrp:
 	cmp	r12d,[g_health_pid]
 	jne	.not_health
 	mov	dword [g_health_pid],0
@@ -1069,6 +1085,7 @@ reap_workers:
 	mov	eax,SYS_kill
 	syscall
 @@:
+	call	vrrp_finish			; the address given up, for another to take
 	call	keeper_finish			; the store left whole: it may outlive a reboot
 	call	logger_finish			; what the workers logged last
 	call	log_begin

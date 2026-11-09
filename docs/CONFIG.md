@@ -9,6 +9,7 @@ not built yet. A directive that is not built is refused by `okena check`
 | Block | Directives |
 |---|---|
 | `okena` | `workers`, `io_engine`, `busy_poll`, `watchdog`, `drain delay= timeout=`, `metrics [token=]`, `user`, `ticket_keys`, `handshake_budget wait=`, `quic_server_id HEX`, `cache_memory`, `cache_disk PATH size=`, `fleet ADDR...`, `cdn_loop NAME [max=]`, `bird PATH protocol= [pool=]` |
+| `vrrp IFACE` | `vrid=`, `priority=`, `address=A/N`, `advert=`, `preempt=`, `track=POOL` (a floating address, VRRP v3) |
 | `tcp ADDR...` | `to`, `limits { connections; per_source }`, `timeout { idle }`, `proxy_protocol send v1\|v2`, `tls { cert; key }`, `tls passthrough { sni NAME... to pool P; default reject\|to pool P }` |
 | `udp ADDR...` | `to`, `responses N`, `limits { connections }` (flows), `timeout { idle }` |
 | `http ADDR...` | `host`, `route`, `errors CODES file= [backend]`, `maintenance file= retry= allow= except=`, `limits`, `timeout { idle; header; body_idle; response }`, `trusted_proxies`, `access_log`, `tracing`, `http2 on\|off`, `http3 on\|off\|retry\|v2`, `preferred_address`, `early_data on\|off`, `tls { cert; key; ktls on\|off }` |
@@ -851,6 +852,30 @@ protocol static anycast { ipv4; route 203.0.113.10/32 blackhole; }
 protocol bgp upstream { local as 65001; neighbor 10.0.0.1 as 65000;
                         ipv4 { export where proto = "anycast"; }; }
 ```
+
+Without BGP, two okenas can share one address with VRRP version 3 (RFC 9568), as
+keepalived does beside HAProxy:
+
+```
+vrrp eth0 vrid=51 priority=150 address=203.0.113.10/24 advert=1s track=web
+# the other one: priority=100
+```
+
+The highest priority holds the address on the interface. It says so every `advert=`
+(10 ms to 40.95 s, 1 s by default) to 224.0.0.18. When those adverts stop for three
+intervals and a bit, the backup with the next priority adds the address and sends a
+gratuitous ARP, so the network learns where it is. The real MAC answers for it; no
+virtual MAC is used. With `preempt=on` (the default), a node of higher priority that
+comes back takes the address again. Health counts as well. An okena that cannot take
+traffic (draining, stopping, or `track=POOL` with no server up) gives the address up
+with an advert of priority 0, so the other takes it at once, and as a backup it does
+not take it. A stop gives the address up first. A reload that leaves `vrrp` as it
+was changes nothing, master included.
+
+It runs in a process of its own, `okena-vrrp`, as root (raw and packet sockets; the
+address added and removed over netlink), confined by seccomp to what it does, with
+the admin process telling it whether okena can take traffic. IPv4 for now. Every
+node on the link must use the same `vrid` and `advert`.
 
 A purge takes answers back at once, from every worker's memory and from the disk:
 

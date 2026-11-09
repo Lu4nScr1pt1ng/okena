@@ -186,6 +186,8 @@ SUITES = [
     ("shield epoll", ["tests/gateway/shield.py", "epoll"]),
     ("bird io_uring", ["tests/gateway/bird.py", "io_uring"]),
     ("bird epoll", ["tests/gateway/bird.py", "epoll"]),
+    ("vrrp io_uring", ["tests/gateway/vrrp.py", "io_uring"]),
+    ("vrrp epoll", ["tests/gateway/vrrp.py", "epoll"]),
     ("forward io_uring", ["tests/gateway/forward.py", "io_uring"]),
     ("forward epoll", ["tests/gateway/forward.py", "epoll"]),
     ("mtls io_uring", ["tests/gateway/mtls.py", "io_uring"]),

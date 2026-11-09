@@ -147,6 +147,7 @@ keysdef k_maint, 'file', T_ANY, 'retry', T_DURATION, 'allow', T_ANY, 'except', T
 keysdef k_metrics, 'token', T_ANY
 keysdef k_cdnloop, 'max', T_ANY
 keysdef k_bird, 'protocol', T_ANY, 'pool', T_ANY
+keysdef k_vrrp, 'vrid', T_ANY, 'priority', T_ANY, 'address', T_ANY, 'advert', T_DURATION, 'preempt', T_ANY, 'track', T_ANY
 keysdef k_cdisk, 'size', T_SIZE
 keysdef k_tracing, 'sample', T_PERCENT, 'trust', T_ANY
 keysdef k_drain, 'delay', T_DURATION, 'timeout', T_DURATION
@@ -226,6 +227,7 @@ dirdef DIR_HTTP, 'http',        M_TOP,     CTX_HTTP,    F_BLOCK_REQ, 1, 16, T_LI
 dirdef DIR_HOST, 'host',        M_HTTP,    CTX_HOST,    F_BLOCK_REQ, 1, 64, T_HOSTNAME, T_HOSTNAME, 0
 dirdef DIR_ROUTE, 'route',      M_HTTP or M_HOST,    CTX_ROUTE,   F_BLOCK_REQ, 1, 32, T_ROUTE, T_ROUTE, 0
 dirdef DIR_ALERTS, 'alerts',    M_TOP,     CTX_ALERTS,  F_BLOCK_REQ or F_UNIQUE, 0, 0, T_NONE, T_NONE, 0
+dirdef DIR_VRRP, 'vrrp',        M_TOP,     0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, k_vrrp
 dirdef DIR_WEBHOOK, 'webhook',  M_ALERTS,  0,           0, 1, 1, T_ANY, T_NONE, k_alert
 dirdef DIR_SLACK, 'slack',      M_ALERTS,  0,           0, 1, 1, T_ANY, T_NONE, k_alert
 dirdef DIR_TELEGRAM, 'telegram', M_ALERTS, 0,           F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_telegram
