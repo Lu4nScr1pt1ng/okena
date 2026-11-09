@@ -17,6 +17,7 @@ gives its time. Exit status: 0 when every suite passed.
 """
 import os
 import pathlib
+import signal
 import subprocess
 import sys
 import threading
@@ -140,6 +141,8 @@ SUITES = [
     ("maint epoll", ["tests/gateway/maint.py", "epoll"]),
     ("landlock io_uring", ["tests/gateway/landlock.py", "io_uring"]),
     ("landlock epoll", ["tests/gateway/landlock.py", "epoll"]),
+    ("privdrop io_uring", ["tests/gateway/privdrop.py", "io_uring"]),
+    ("privdrop epoll", ["tests/gateway/privdrop.py", "epoll"]),
     ("geoip io_uring", ["tests/gateway/geoip.py", "io_uring"]),
     ("geoip epoll", ["tests/gateway/geoip.py", "epoll"]),
     ("acl io_uring", ["tests/gateway/acl.py", "io_uring"]),
@@ -183,8 +186,27 @@ def netns_ok():
 NETNS = ["unshare", "-rn", "sh", "-c", 'ip link set lo up && exec "$0" "$@"']
 
 
+# a suite takes about a minute at most; past this it is stuck
+SUITE_TIMEOUT = int(os.environ.get("OKENA_SUITE_TIMEOUT", "150"))
+running = []
+
+
+def kill_group(p):
+    try:
+        os.killpg(p.pid, signal.SIGKILL)
+    except OSError:
+        pass
+
+
 def main():
     words = sys.argv[1:]
+    # stopped (make's timeout, ^C): every suite with it, not orphans
+    def stop(sig, frame):
+        for p in list(running):
+            kill_group(p)
+        sys.exit(128 + sig)
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
     isolate = netns_ok()
     if not isolate:
         print("note: no user namespaces here; the suites share the host network")
@@ -197,13 +219,26 @@ def main():
         argv = [sys.executable, "-I", *cmd]
         # the DNS suite makes its own namespace (with /etc mounts); Wycheproof
         # fetches its vectors once and touches no network after that
-        if isolate and name not in ("dns", "wycheproof"):
+        # (privdrop makes one with uids to spare, unshare --map-auto)
+        if isolate and name not in ("dns", "wycheproof") and not name.startswith("privdrop"):
             argv = NETNS + argv
-        p = subprocess.Popen(argv, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        out, _ = p.communicate()              # read as it comes: a full pipe never stalls a suite
+        # a session of its own: a suite that hangs is killed whole (its okena,
+        # its backends), never left running
+        p = subprocess.Popen(argv, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
         with lock:
-            results.append((name, p.returncode == 0, time.time() - start, out.decode(errors="replace")))
-            print(f"{'ok  ' if p.returncode == 0 else 'FAIL'} {name:<20} {time.time() - start:5.1f}s", flush=True)
+            running.append(p)
+        try:
+            out, _ = p.communicate(timeout=SUITE_TIMEOUT)   # read as it comes: a full pipe never stalls a suite
+            ok = p.returncode == 0
+        except subprocess.TimeoutExpired:
+            kill_group(p)
+            out, _ = p.communicate()
+            out += f"\nrun_all: timed out after {SUITE_TIMEOUT} s, killed with all it started\n".encode()
+            ok = False
+        with lock:
+            running.remove(p)
+            results.append((name, ok, time.time() - start, out.decode(errors="replace")))
+            print(f"{'ok  ' if ok else 'FAIL'} {name:<20} {time.time() - start:5.1f}s", flush=True)
 
     threads = [threading.Thread(target=run, args=suite) for suite in chosen]
     for t in threads:
