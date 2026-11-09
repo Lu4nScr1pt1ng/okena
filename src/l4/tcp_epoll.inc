@@ -77,6 +77,7 @@ ep_main:
 	mov	rax,[g_now_ms]
 	add	rax,1000
 	mov	[g_next_tick_ms],rax
+	call	priv_drop			; as `user` from here on
 	cmp	dword [g_plan_files],0
 	jne	.with_files
 	seccomp_for filter_worker_epoll

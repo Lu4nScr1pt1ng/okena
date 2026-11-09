@@ -71,6 +71,9 @@ macro plan_regions action
 	action g_plan_metrics_salen, 4
 	action g_plan_metrics_text, 8
 	action g_plan_metrics_tlen, 4
+	action g_plan_user, 4
+	action g_plan_uid, 4
+	action g_plan_gid, 4
 	action g_plan_metrics_sa, 28
 	action g_plan_mtlen, 4
 	action g_plan_mtoken, 256

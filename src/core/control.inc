@@ -385,6 +385,7 @@ control_main:
 	syscall
 	call	helper_close_sockets
 	call	alerts_init
+	call	priv_drop
 	call	ll_confine_reader		; (Landlock: reads, writes nothing)
 	seccomp_for filter_control
 .loop:

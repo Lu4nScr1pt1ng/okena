@@ -113,7 +113,8 @@ worker_main:
 	imul	rax,[g_tsc_per_us]
 	mov	[g_spin_ticks],rax
 .confine:
-	; set up: from here on only what serving needs
+	; set up: from here on only what serving needs, as `user`
+	call	priv_drop
 	cmp	dword [g_ud_on],0
 	jne	.with_udp
 	cmp	dword [g_plan_files],0

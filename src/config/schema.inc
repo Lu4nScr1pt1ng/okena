@@ -200,6 +200,7 @@ dirdef DIR_WORKERS, 'workers',     M_OKENA,   0,           F_UNIQUE, 1, 1, T_WOR
 dirdef DIR_IO_ENGINE, 'io_engine',   M_OKENA,   0,           F_UNIQUE, 1, 1, e_io_engine, T_NONE, 0
 dirdef DIR_UPGRADE, 'upgrade',  M_OKENA,   0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
 dirdef DIR_ADMIN, 'admin',      M_OKENA,   0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
+dirdef DIR_USER, 'user',        M_OKENA,   0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
 dirdef DIR_GEOIP, 'geoip',      M_OKENA,   0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
 dirdef DIR_CACHE_MEM, 'cache_memory', M_OKENA, 0,       F_UNIQUE, 1, 1, T_SIZE, T_NONE, 0
 dirdef DIR_WATCHDOG, 'watchdog',    M_OKENA,   0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0

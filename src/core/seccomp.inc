@@ -163,6 +163,10 @@ rodata
 	sc_allow filter_supervisor, SYS_sendmsg_	; an upgrade: sockets to the new binary
 	sc_allow filter_supervisor, SYS_rename_
 	sc_allow filter_supervisor, SYS_getuid_
+	sc_allow filter_supervisor, SYS_geteuid_	; children become `user` (privdrop.inc)
+	sc_allow filter_supervisor, SYS_setgroups
+	sc_allow filter_supervisor, SYS_setresgid
+	sc_allow filter_supervisor, SYS_setresuid
 	sc_allow filter_supervisor, SYS_ppoll_		; (the admin process)
 	sc_allow filter_supervisor, SYS_connect
 	sc_allow filter_supervisor, SYS_setsockopt

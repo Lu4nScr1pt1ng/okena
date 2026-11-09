@@ -8,7 +8,7 @@ not built yet. A directive that is not built is refused by `okena check`
 
 | Block | Directives |
 |---|---|
-| `okena` | `workers`, `io_engine`, `busy_poll`, `watchdog`, `drain delay= timeout=`, `metrics [token=]`, `ticket_keys`, `handshake_budget wait=`, `quic_server_id HEX` |
+| `okena` | `workers`, `io_engine`, `busy_poll`, `watchdog`, `drain delay= timeout=`, `metrics [token=]`, `user`, `ticket_keys`, `handshake_budget wait=`, `quic_server_id HEX` |
 | `tcp ADDR...` | `to`, `limits { connections; per_source }`, `timeout { idle }`, `proxy_protocol send v1\|v2`, `tls { cert; key }`, `tls passthrough { sni NAME... to pool P; default reject\|to pool P }` |
 | `udp ADDR...` | `to`, `responses N`, `limits { connections }` (flows), `timeout { idle }` |
 | `http ADDR...` | `host`, `route`, `errors CODES file= [backend]`, `maintenance file= retry= allow= except=`, `limits`, `timeout { idle; header; body_idle; response }`, `trusted_proxies`, `access_log`, `tracing`, `http2 on\|off`, `http3 on\|off\|retry\|v2`, `preferred_address`, `early_data on\|off`, `tls { cert; key; ktls on\|off }` |
@@ -315,6 +315,7 @@ okena {
     metrics :9464             # /metrics, /status, /dashboard, /live, /ready
     # metrics :9464 token=/etc/okena/metrics.token   # all but /live and /ready behind it
     admin unix:/run/okena/admin.sock  # `okena reload`, `okena backend`
+    user okena                # or okena:okena, 65532:65532: who faces the network
     handshake_budget 100us wait=1s  # TLS hello crypto per loop iteration (0us: off);
                               # past it hellos queue, and those older than wait close
     # planned:
@@ -372,6 +373,18 @@ failed for a handshake that failed or that its client left),
 `okena_quic_handshakes_total`, `okena_udp_datagrams_total` (`direction`);
 and `okena_udp_dropped_total`, the datagrams lost with no flow to take
 them or a socket buffer full.
+
+`user NAME[:GROUP]` (or numbers) makes the processes that face the
+network, or read what it sends, run as that user and group with no
+capability: workers, health checks, the control process and JWKS, the admin
+process and the logger. The supervisor stays as it was started, as nginx's
+master does: a reload reads private keys that only root may read and binds
+ports below 1024, and the reload's compiler, which reads them, is boxed in
+by seccomp and Landlock to reading. So the access logs' directories must be
+the user's to write, and what the control process reads (a discovery file,
+a token) the user's to read. A name is looked up in /etc/passwd and
+/etc/group; with no group, the user's own. Started by anyone but root,
+okena may only name itself.
 
 Profiles set groups of defaults: `latency` enables busy polling, NAPI
 polling and smaller batches; `throughput` larger batches and `SEND_ZC`

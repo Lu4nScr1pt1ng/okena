@@ -145,8 +145,9 @@ admin_main:
 	call	helper_close_sockets
 	mov	eax,SYS_getuid_
 	syscall
-	mov	[g_api_uid],eax
+	mov	[g_api_uid],eax			; (the supervisor's: whom the API answers)
 	call	api_apply			; (what came in while it was gone)
+	call	priv_drop
 	call	ll_confine_none			; (Landlock: no file at all)
 	seccomp_for filter_admin
 	mov	eax,[g_metrics_fd]

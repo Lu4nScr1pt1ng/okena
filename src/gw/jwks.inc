@@ -563,6 +563,7 @@ keys_main:
 	mov	eax,SYS_prctl
 	syscall
 	call	helper_close_sockets
+	call	priv_drop
 	call	ll_confine_reader
 	seccomp_for filter_control		; its needs are the same: DNS, a socket
 .loop:

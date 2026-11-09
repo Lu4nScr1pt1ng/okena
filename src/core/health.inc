@@ -155,6 +155,7 @@ health_main:
 	jmp	.resume
 .confine:
 	call	helper_close_sockets
+	call	priv_drop
 	call	ll_confine_none			; (Landlock: no file at all)
 	seccomp_for filter_health
 .loop:

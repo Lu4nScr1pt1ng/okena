@@ -142,6 +142,7 @@ logger_main:
 	lea	rsi,[logger_name]
 	mov	eax,SYS_prctl
 	syscall
+	call	priv_drop			; as `user`: its logs are that user's
 	call	ll_confine_logger		; Landlock first: its logs' directories, even to open them
 	call	logger_open_all
 	call	ln_setup			; syslog and OTLP destinations

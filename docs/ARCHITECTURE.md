@@ -996,6 +996,12 @@ needs from okena:
   that is a link out of them is refused). From Landlock 6 a process may not
   signal, nor reach the abstract UNIX sockets of, one outside its domain.
   A kernel without Landlock is said once at the start; seccomp still holds.
+* `user` (src/core/privdrop.inc): the children that face the network drop
+  to its uid and gid, with no supplementary group and no capability (the
+  kernel clears them as uid 0 becomes another); the supervisor and the
+  reload's compiler stay root, to read keys and bind low ports. A change of
+  credentials clears the parent-death signal, so each child sets it again
+  and looks at its parent once more.
 * Private keys live only in workers' memory, mapped `MADV_DONTDUMP`, and
   are wiped on generation release.
 * Trusted proxy lists decide whether `X-Forwarded-For` and PROXY protocol

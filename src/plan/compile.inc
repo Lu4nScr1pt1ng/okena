@@ -511,6 +511,9 @@ compile_settings:
 	lea	rcx,[dir_table + D_SIZE*DIR_ADMIN]
 	cmp	rax,rcx
 	je	.admin
+	lea	rcx,[dir_table + D_SIZE*DIR_USER]
+	cmp	rax,rcx
+	je	.user
 	lea	rcx,[dir_table + D_SIZE*DIR_DRAIN]
 	cmp	rax,rcx
 	je	.drain
@@ -649,6 +652,10 @@ compile_settings:
 	mov	[g_plan_up],rcx
 	mov	ecx,[rax+A_VLEN]
 	mov	[g_plan_uplen],ecx
+	jmp	.advance
+.user:
+	mov	rdi,rbx
+	call	compile_user
 	jmp	.advance
 .admin:
 	mov	rax,[rbx+N_ARGS]
