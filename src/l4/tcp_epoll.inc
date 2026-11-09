@@ -153,6 +153,7 @@ ep_main:
 	jmp	.loop
 .drained:
 	call	alog_flush
+	call	cd_leave
 	mov	edi,EXIT_OK
 	jmp	exit_process
 .no_epoll:

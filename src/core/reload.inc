@@ -147,6 +147,9 @@ macro plan_regions action
 	action g_plan_mconds, 4
 	action g_plan_caches, 4
 	action g_plan_cmem, 8
+	action g_plan_cdpath, 8
+	action g_plan_cdplen, 4
+	action g_plan_cdsize, 8
 	action g_plan_cca, 4
 	action g_plan_jsrc, 4
 	action g_claims, CM_SIZE * MAX_CLAIMS

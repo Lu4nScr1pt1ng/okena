@@ -166,6 +166,8 @@ SUITES = [
     ("match epoll", ["tests/gateway/match.py", "epoll"]),
     ("cache io_uring", ["tests/gateway/cache.py", "io_uring"]),
     ("cache epoll", ["tests/gateway/cache.py", "epoll"]),
+    ("cachedisk io_uring", ["tests/gateway/cachedisk.py", "io_uring"]),
+    ("cachedisk epoll", ["tests/gateway/cachedisk.py", "epoll"]),
     ("forward io_uring", ["tests/gateway/forward.py", "io_uring"]),
     ("forward epoll", ["tests/gateway/forward.py", "epoll"]),
     ("mtls io_uring", ["tests/gateway/mtls.py", "io_uring"]),

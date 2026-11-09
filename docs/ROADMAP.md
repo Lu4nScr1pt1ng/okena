@@ -469,7 +469,10 @@ on a machine that can spare it).
 ## Phase 8 — Edge and CDN
 
 * Disk cache tier: append-only segments, lock-free shared index, S3-FIFO,
-  sendfile to the socket.
+  sendfile to the socket. (Done: `cache_disk`, with segments, a lock-free
+  index shared by all workers and processes, pins, and a store that
+  outlives reloads, upgrades and restarts. Still to come: S3-FIFO in place
+  of FIFO, and sendfile.)
 * Cache keys, `Vary` normalisation, slicing, `stale-if-error`, purge by
   URL/prefix/tag with fleet fan-out, `Cache-Status`.
 * Shield tier, signed URLs, CDN provider ranges, authenticated origin

@@ -683,6 +683,31 @@ for each one, and a reload starts empty. Each worker fetches on its own, and the
 answers it has are not seen by the others. When many ask at once for what is not
 there, one goes to the backend and the rest wait for it.
 
+`okena { cache_disk /var/cache/okena size=200GiB }` adds a second tier, on disk, that
+is one for every worker and every okena process on the machine. What one worker
+fills, all of them serve. The cache survives reloads, upgrades and restarts, and a
+reboot too if okena was stopped cleanly. Memory stays the first tier: a worker
+looks there first, then on disk, then asks the backend. An answer it keeps goes to
+both tiers. A hit from disk says `Cache-Status: okena; hit; ttl=N; detail=disk`.
+
+The directory must exist and be writable by whoever starts okena. It holds three
+files: `okena.dat` holds the answers, `okena.idx` says where each one is, and
+`okena.lock` is taken only while a worker starts. The disk is used as a log cut into
+16 segments (of 64 KiB to 64 MiB). When it is full, the oldest segment goes, and
+everything in it, first in first out. An answer larger than a segment, or with a
+head over 8 KiB, stays in memory only. Nothing is overwritten while a client is
+still being sent it: until then, new answers are not written to disk. Each record is
+checked against its key and its place before it is served, so a damaged file is a
+miss, never a wrong answer. A different `size=` makes a new store; processes still
+on the old one keep it until they go. When the directory cannot be used, okena says
+so and keeps answers in memory only.
+
+Every okena on one store must see the others' processes: one host, or one pid
+namespace. A store whose last process did not stop cleanly is kept after a crash,
+because the pages were in the kernel's cache, but not after a reboot. Heads are read
+and records written in place, through the page cache. Bodies are read through the
+ring with io_uring, and in place with epoll.
+
 | Option | Meaning |
 |---|---|
 | the time | how long an answer is good, unless the backend's `s-maxage` or `max-age` says otherwise |

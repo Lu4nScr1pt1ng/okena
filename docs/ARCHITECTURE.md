@@ -819,17 +819,29 @@ cooperates with it instead of pretending to replace it.
 **Cache.** Two tiers:
 
 * **memory**, per worker, for the hottest small objects (no contention);
-* **disk**, shared by the workers of the instance (otherwise disk use
-  would be multiplied by the worker count). Objects are written
-  append-only into large segment files (log structured, no fragmentation,
-  eviction by whole segments); the index is a shared hash table that
-  readers walk without locks (a version per slot, readers retry when a
-  slot changed under them) and writers update with compare-and-swap.
-  Reads go from the page cache to the socket with `sendfile`/splice
-  (zero-copy, kTLS too); `O_DIRECT` reads through io_uring for objects
-  that should not pollute the page cache.
+* **disk** (`cache_disk`, src/gw/cdisk.inc), shared by every worker and
+  every okena process on the host. Without that, disk use would be
+  multiplied by the worker count. It also lives through reloads, upgrades
+  and restarts. Objects are appended to a log cut into segments, so
+  nothing fragments, and space comes back a whole segment at a time,
+  oldest first. A writer takes room with one compare-and-swap on the head.
+  The index is a file mapped shared: buckets of eight 32-byte slots.
+  Readers walk it without locks, with a sequence number per slot (odd
+  while it is written, read before and after). Writers claim a slot with
+  compare-and-swap. A reader pins the segment it reads with a counter of
+  its own, and then checks that the segment still holds the generation it
+  wants. A segment being reclaimed is marked first and handed over only
+  when no pin is left, so what a client is being sent is never
+  overwritten under it. Each record carries its whole key and its place
+  in the log, and both are checked before a byte is served. Pins left by
+  a process that died are cleared by the next worker that starts. The
+  last process to leave cleanly syncs the files and marks the store
+  clean, which is what lets it outlive a reboot. **Still to come:** reads
+  from the page cache to the socket with `sendfile`/splice (zero-copy,
+  kTLS too), `O_DIRECT` through io_uring for objects that should not
+  pollute the page cache, and writes on the ring instead of in place.
 * Admission with S3-FIFO, so one-hit wonders (crawlers) do not evict the
-  working set.
+  working set (to come: today the disk is plain FIFO).
 
 RFC 9111 semantics, plus what a CDN needs: cache keys configurable
 (host, path, chosen query parameters, headers, cookies), `Vary`

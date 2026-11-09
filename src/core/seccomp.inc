@@ -195,11 +195,22 @@ rodata
 	sc_allow filter_supervisor, SYS_fcntl
 	sc_allow filter_supervisor, SYS_recvfrom
 	sc_allow filter_supervisor, SYS_recvmsg	; epoll workers: kTLS control records
+	sc_allow filter_supervisor, SYS_flock		; cache_disk: a worker opens the store (cdisk.inc)
+	sc_allow filter_supervisor, SYS_ftruncate
+	sc_allow filter_supervisor, SYS_getpid
+	sc_allow filter_supervisor, SYS_pread64
+	sc_allow filter_supervisor, SYS_pwritev
+	sc_allow filter_supervisor, SYS_fdatasync
+	sc_allow filter_supervisor, SYS_msync
 	sc_end filter_supervisor
 
 	; io_uring worker: the ring does the I/O
 	sc_begin filter_worker_uring
 	sc_common filter_worker_uring
+	sc_allow filter_worker_uring, SYS_pread64		; cache_disk: a head read, a record written
+	sc_allow filter_worker_uring, SYS_pwritev
+	sc_allow filter_worker_uring, SYS_fdatasync		; (the last one out)
+	sc_allow filter_worker_uring, SYS_msync
 	sc_allow filter_worker_uring, SYS_io_uring_enter
 	sc_allow filter_worker_uring, SYS_madvise
 	sc_allow filter_worker_uring, SYS_getsockname	; PROXY protocol, wildcard listeners
@@ -213,6 +224,10 @@ rodata
 	; flows' sockets are opened, and forgotten, at the speed of a datagram
 	sc_begin filter_worker_uring_u
 	sc_common filter_worker_uring_u
+	sc_allow filter_worker_uring_u, SYS_pread64		; cache_disk: a head read, a record written
+	sc_allow filter_worker_uring_u, SYS_pwritev
+	sc_allow filter_worker_uring_u, SYS_fdatasync		; (the last one out)
+	sc_allow filter_worker_uring_u, SYS_msync
 	sc_allow filter_worker_uring_u, SYS_io_uring_enter
 	sc_allow filter_worker_uring_u, SYS_madvise
 	sc_allow filter_worker_uring_u, SYS_getsockname
@@ -235,6 +250,10 @@ rodata
 	; epoll worker
 	sc_begin filter_worker_epoll
 	sc_common filter_worker_epoll
+	sc_allow filter_worker_epoll, SYS_pread64		; cache_disk: a head read, a record written
+	sc_allow filter_worker_epoll, SYS_pwritev
+	sc_allow filter_worker_epoll, SYS_fdatasync		; (the last one out)
+	sc_allow filter_worker_epoll, SYS_msync
 	sc_allow filter_worker_epoll, SYS_epoll_wait
 	sc_allow filter_worker_epoll, SYS_epoll_ctl
 	sc_allow filter_worker_epoll, SYS_read
@@ -258,6 +277,10 @@ rodata
 	; workers with `files` routes: they open beneath their roots (files.inc)
 	sc_begin filter_worker_uring_f
 	sc_common filter_worker_uring_f
+	sc_allow filter_worker_uring_f, SYS_pread64		; cache_disk: a head read, a record written
+	sc_allow filter_worker_uring_f, SYS_pwritev
+	sc_allow filter_worker_uring_f, SYS_fdatasync		; (the last one out)
+	sc_allow filter_worker_uring_f, SYS_msync
 	sc_allow filter_worker_uring_f, SYS_io_uring_enter
 	sc_allow filter_worker_uring_f, SYS_madvise
 	sc_allow filter_worker_uring_f, SYS_getsockname
@@ -273,6 +296,10 @@ rodata
 
 	sc_begin filter_worker_epoll_f
 	sc_common filter_worker_epoll_f
+	sc_allow filter_worker_epoll_f, SYS_pread64		; cache_disk: a head read, a record written
+	sc_allow filter_worker_epoll_f, SYS_pwritev
+	sc_allow filter_worker_epoll_f, SYS_fdatasync		; (the last one out)
+	sc_allow filter_worker_epoll_f, SYS_msync
 	sc_allow filter_worker_epoll_f, SYS_epoll_wait
 	sc_allow filter_worker_epoll_f, SYS_epoll_ctl
 	sc_allow filter_worker_epoll_f, SYS_read

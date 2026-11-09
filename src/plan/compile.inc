@@ -502,6 +502,9 @@ compile_settings:
 	lea	rcx,[dir_table + D_SIZE*DIR_CACHE_MEM]
 	cmp	rax,rcx
 	je	.cache_memory
+	lea	rcx,[dir_table + D_SIZE*DIR_CACHE_DISK]
+	cmp	rax,rcx
+	je	.cache_disk
 	lea	rcx,[dir_table + D_SIZE*DIR_GEOIP]
 	cmp	rax,rcx
 	je	.geoip
@@ -671,6 +674,9 @@ compile_settings:
 	sub	edx,5
 	mov	[g_plan_api],rcx
 	mov	[g_plan_apilen],edx
+	jmp	.advance
+.cache_disk:
+	call	compile_cache_disk
 	jmp	.advance
 .cache_memory:
 	mov	rax,[rbx+N_ARGS]

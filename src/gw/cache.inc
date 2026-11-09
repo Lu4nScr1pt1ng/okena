@@ -190,6 +190,7 @@ cache_init:
 	mov	dword [g_ce_free],0
 	mov	dword [g_ce_old],NIL
 	mov	dword [g_ce_new],NIL
+	call	cd_init				; and on disk, if it is to be
 .out:
 	pop	r13
 	pop	r12
@@ -650,7 +651,16 @@ cache_check:
 	jb	.serve
 	cmp	rcx,[rax+CE_STALE]
 	jae	.too_old
-	; stale, and allowed: now, and someone goes for a new one
+	; stale, and allowed: a fresh one on disk is better; else this one now, and
+	; someone goes for a new one
+	call	cd_lookup
+	cmp	eax,1
+	je	.disk
+	test	eax,eax
+	jz	@f
+	mov	edi,[g_cd_sidx]
+	call	cd_unpin
+@@:
 	call	cache_refresh
 	jmp	.serve
 .too_old:
@@ -658,6 +668,17 @@ cache_check:
 	call	ce_kill
 	mov	dword [g_cf_r],NIL
 .no_entry:
+	; not in this worker's memory: on disk, filled by any of them?
+	call	cd_lookup
+	test	eax,eax
+	jz	.no_disk
+	cmp	eax,2
+	jne	.disk
+	call	cache_refresh
+.disk:
+	call	cd_serve
+	jmp	.taken
+.no_disk:
 	cmp	dword [g_cf_f],NIL
 	jne	.wait
 	mov	eax,[g_cf_p]
@@ -922,6 +943,12 @@ cache_serve:
 cache_recv:
 	h_rec
 	mov	r8,[r15+H_BUF]
+	mov	eax,[r8+HB_CE]
+	cmp	eax,NIL
+	je	@f
+	test	eax,CD_MARK
+	jnz	cd_recv				; from disk
+@@:
 	mov	ecx,[r8+HB_CLEFT]
 	cmp	ecx,esi
 	cmova	ecx,esi
@@ -1588,6 +1615,7 @@ cache_commit:
 	mov	dword [r12+CE_STATE],CE_READY
 	mov	edi,r13d
 	call	ce_lru_add
+	call	cd_put				; and a copy on disk
 	pop	r13
 	pop	r12
 .none:
@@ -1604,6 +1632,8 @@ cache_unpin:
 	mov	edi,[rax+HB_CE]
 	cmp	edi,NIL
 	je	.out				; (okena's own head, no entry)
+	test	edi,CD_MARK
+	jnz	.disk
 	mov	eax,edi
 	ce_ptr
 	dec	dword [rax+CE_PIN]
@@ -1613,6 +1643,9 @@ cache_unpin:
 	jmp	ce_free
 .out:
 	ret
+.disk:
+	and	edi,CD_MARK - 1
+	jmp	cd_unpin
 
 ; a session is closing, ebx = it, r12 = it: nothing of the cache stays with it. Keeps
 ; all.
