@@ -669,6 +669,22 @@ http_request:
 	call	cache_refetch
 	jmp	.pool_chosen
 .not_copy:
+	push	rax				; (RFC 8586: round in circles)
+	push	rcx
+	push	rdx
+	push	rsi
+	push	rdi
+	push	r8
+	push	r9
+	call	cdnloop_check
+	pop	r9
+	pop	r8
+	pop	rdi
+	pop	rsi
+	pop	rdx
+	pop	rcx
+	pop	rax
+	jc	.loop
 	call	maint_check			; `okena maintenance on`: 503, unless let through
 	jc	.maintenance
 	test	edx,edx
@@ -684,6 +700,9 @@ http_request:
 	jmp	.chosen_none
 .maintenance:
 	mov	edi,503
+	jmp	http_error
+.loop:
+	mov	edi,508
 	jmp	http_error
 .shed:
 	mov	qword [g_lim_retry],1
@@ -1542,6 +1561,7 @@ http_write_request_head:
 .own:
 	call	auth_emit
 	call	slice_range_emit
+	call	cdnloop_emit
 	call	trace_emit
 	test	dword [r15+H_FLAGS],HX_RIDKEPT
 	jnz	@f
@@ -4424,7 +4444,7 @@ reasons 409,'Conflict', 422,'Unprocessable Content', 301,'Moved Permanently', 30
 	421,'Misdirected Request', \
 	410,'Gone', 411,'Length Required', 413,'Content Too Large', 414,'URI Too Long', 415,'Unsupported Media Type', \
 	431,'Request Header Fields Too Large', 500,'Internal Server Error', 501,'Not Implemented', 502,'Bad Gateway', \
-	503,'Service Unavailable', 504,'Gateway Timeout', 505,'HTTP Version Not Supported'
+	503,'Service Unavailable', 504,'Gateway Timeout', 505,'HTTP Version Not Supported', 508,'Loop Detected'
 
 http_reason:
 	lea	rcx,[http_reasons]

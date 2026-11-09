@@ -26,6 +26,7 @@ HK_HEADER	:= 1
 HK_COOKIE	:= 2
 HK_PATH		:= 3
 HK_QUERY	:= 4
+HK_URL		:= 5				; the host and the whole target (a cache's key: shields)
 
 HT_M		:= 0			; d: maglev: entries; ring: points
 HT_SIG		:= 8			; q: the servers it was built for
@@ -170,6 +171,8 @@ pick_key_http:
 	je	.path
 	cmp	eax,HK_QUERY
 	je	.query
+	cmp	eax,HK_URL
+	je	.url
 	call	http_client_resolve
 	pop	r12
 	lea	rdi,[r15+H_CLIENT]
@@ -211,6 +214,23 @@ pick_key_http:
 	mov	r8b,'&'
 	call	limit_field
 	jmp	.value
+.url:
+	lea	rdi,[.host_name]
+	mov	esi,4
+	call	limit_find
+	call	hash_bytes
+	push	rax
+	mov	rsi,[g_hm+HM_TARGET]
+	mov	ecx,[g_hm+HM_TLEN]
+	call	hash_bytes
+	pop	rdx
+	mov	r8,0x9E3779B97F4A7C15
+	imul	rdx,r8
+	xor	rax,rdx
+	pop	r12
+	mov	[g_pick_hash],rax
+	mov	dword [g_pick_hashed],1
+	ret
 .empty:
 	xor	ecx,ecx
 .value:
@@ -223,6 +243,7 @@ pick_key_http:
 .none:
 	ret
 .cookie_name	db 'cookie'
+.host_name	db 'host'
 
 ; ------------------------------------------------------------ the tables
 

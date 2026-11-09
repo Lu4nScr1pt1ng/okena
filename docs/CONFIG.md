@@ -8,7 +8,7 @@ not built yet. A directive that is not built is refused by `okena check`
 
 | Block | Directives |
 |---|---|
-| `okena` | `workers`, `io_engine`, `busy_poll`, `watchdog`, `drain delay= timeout=`, `metrics [token=]`, `user`, `ticket_keys`, `handshake_budget wait=`, `quic_server_id HEX`, `cache_memory`, `cache_disk PATH size=`, `fleet ADDR...` |
+| `okena` | `workers`, `io_engine`, `busy_poll`, `watchdog`, `drain delay= timeout=`, `metrics [token=]`, `user`, `ticket_keys`, `handshake_budget wait=`, `quic_server_id HEX`, `cache_memory`, `cache_disk PATH size=`, `fleet ADDR...`, `cdn_loop NAME [max=]` |
 | `tcp ADDR...` | `to`, `limits { connections; per_source }`, `timeout { idle }`, `proxy_protocol send v1\|v2`, `tls { cert; key }`, `tls passthrough { sni NAME... to pool P; default reject\|to pool P }` |
 | `udp ADDR...` | `to`, `responses N`, `limits { connections }` (flows), `timeout { idle }` |
 | `http ADDR...` | `host`, `route`, `errors CODES file= [backend]`, `maintenance file= retry= allow= except=`, `limits`, `timeout { idle; header; body_idle; response }`, `trusted_proxies`, `access_log`, `tracing`, `http2 on\|off`, `http3 on\|off\|retry\|v2`, `preferred_address`, `early_data on\|off`, `tls { cert; key; ktls on\|off }` |
@@ -807,6 +807,28 @@ each. The check comes before the cache, so a cached answer still wants a valid
 link. The cache keeps one answer per object, not one per link: `expires`, `prefix`,
 `ip` and `sig` are not part of its key.
 
+A shield tier is a pool of other okenas between the edges and the origin, each
+caching. With `balance maglev key=url` every edge sends an object to the same
+shield, so the origin is asked for it once, however many edges there are:
+
+```
+okena { cdn_loop examplecdn }                  # on every edge and every shield
+pool shields {
+    balance maglev key=url
+    server shield-1.internal:80
+    server shield-2.internal:80
+}
+http :443 { route /* { cache 1h stale-if-error=1h; to pool shields } }
+```
+
+Each cache adds its own `Cache-Status`, the one nearest the origin first, so a
+client sees what each did. `okena { cdn_loop NAME [max=3] }` (RFC 8586) names
+okena in `CDN-Loop` on every request to a backend, after what the request said
+there already. A request that comes in naming it `max` times or more (in any case,
+with or without parameters) has gone round in circles, for example an origin
+pointed back at the edges, and gets a 508 Loop Detected. Other CDNs' names do not
+count.
+
 A purge takes answers back at once, from every worker's memory and from the disk:
 
 ```
@@ -1092,7 +1114,8 @@ certificates are TLS 1.3; a TLS 1.2 backend that asks for one is refused (502).
 after a reload, and on every okena with the same servers, which is what a cache, a
 shard or a session kept in memory wants. The key is `key=source` (the client's
 address, the default; for `http` the one trusted proxies give), `header:NAME`,
-`cookie:NAME`, `query:NAME` (a parameter) or `path` (without the query); `source-hash` is `maglev` on the
+`cookie:NAME`, `query:NAME` (a parameter), `path` (without the query) or `url` (the host and the whole
+target: a cache's key, for shields); `source-hash` is `maglev` on the
 client's address, which is all a `tcp` or `udp` listener can hash on. A request
 without its key is drawn at random, as is a retry. `maglev` shares out evenly and
 looks up in one step; `ring-hash` (160 points per unit of weight) moves the fewest

@@ -182,6 +182,8 @@ SUITES = [
     ("ranges epoll", ["tests/gateway/ranges.py", "epoll"]),
     ("originpull io_uring", ["tests/gateway/originpull.py", "io_uring"]),
     ("originpull epoll", ["tests/gateway/originpull.py", "epoll"]),
+    ("shield io_uring", ["tests/gateway/shield.py", "io_uring"]),
+    ("shield epoll", ["tests/gateway/shield.py", "epoll"]),
     ("forward io_uring", ["tests/gateway/forward.py", "io_uring"]),
     ("forward epoll", ["tests/gateway/forward.py", "epoll"]),
     ("mtls io_uring", ["tests/gateway/mtls.py", "io_uring"]),

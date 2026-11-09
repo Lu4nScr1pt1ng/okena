@@ -510,6 +510,9 @@ compile_settings:
 	lea	rcx,[dir_table + D_SIZE*DIR_FLEET]
 	cmp	rax,rcx
 	je	.fleet
+	lea	rcx,[dir_table + D_SIZE*DIR_CDNLOOP]
+	cmp	rax,rcx
+	je	.cdnloop
 	lea	rcx,[dir_table + D_SIZE*DIR_GEOIP]
 	cmp	rax,rcx
 	je	.geoip
@@ -685,6 +688,9 @@ compile_settings:
 	jmp	.advance
 .fleet:
 	call	compile_fleet
+	jmp	.advance
+.cdnloop:
+	call	compile_cdnloop
 	jmp	.advance
 .cache_memory:
 	mov	rax,[rbx+N_ARGS]
@@ -2761,6 +2767,10 @@ compile_pool:
 	je	.advance
 	mov	dword [r13+PL_HKEY],HK_PATH
 	mov	rdx,'path'
+	call	.balance_is
+	je	.advance
+	mov	dword [r13+PL_HKEY],HK_URL
+	mov	rdx,'url'
 	call	.balance_is
 	je	.advance
 	mov	dword [r13+PL_HKEY],HK_HEADER

@@ -486,7 +486,7 @@ on a machine that can spare it).
   URLs, with prefix, client address and key rotation, and `okena sign`;
   Cloudflare's ranges by name in `trusted_proxies` and `allow`, and
   `file:PATH` lists; authenticated origin pulls, a pool's client
-  certificate over TLS 1.3.)
+  certificate over TLS 1.3; the shield tier, `key=url` and `cdn_loop`.)
 * A floating address for a pair of instances without BGP: VRRP v3 (RFC 9568),
   with health deciding who holds it and gratuitous ARP / unsolicited NA on a
   change, as keepalived beside HAProxy does it.

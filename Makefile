@@ -208,6 +208,8 @@ test-serial: $(BIN) $(HTTPH) $(KAT) $(TLSH)
 	python3 -I tests/gateway/ranges.py epoll
 	python3 -I tests/gateway/originpull.py io_uring
 	python3 -I tests/gateway/originpull.py epoll
+	python3 -I tests/gateway/shield.py io_uring
+	python3 -I tests/gateway/shield.py epoll
 	python3 -I tests/gateway/forward.py io_uring
 	python3 -I tests/gateway/forward.py epoll
 	python3 -I tests/gateway/mtls.py io_uring

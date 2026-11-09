@@ -898,6 +898,9 @@ the admin API, fanned out to every node of a fleet.
 
 **Tiers.** An edge's pool can be another okena (`shield`): edges in
 several regions fill from one shield, which alone talks to the origin.
+`balance maglev key=url` sends each object to the same shield from every
+edge, and `cdn_loop` (RFC 8586) stops a request that goes round in
+circles with a 508.
 **Signed URLs** (HMAC with expiry, path prefix, optional client IP) let
 the origin hand out links to protected content that edges validate
 without calling it.
