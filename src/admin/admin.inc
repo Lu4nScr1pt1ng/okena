@@ -104,7 +104,9 @@ spawn_admin:
 	cmp	dword [g_metrics_fd],0
 	jge	@f
 	cmp	dword [g_api_fd],0
-	jl	.none
+	jge	@f
+	cmp	qword [g_plan_bird],0		; (`bird` is the admin process's too)
+	je	.none
 @@:
 	mov	eax,SYS_fork
 	syscall
@@ -160,6 +162,7 @@ admin_main:
 	mov	word [g_admin_pfd+12],POLLIN_
 .loop:
 	call	top_sample			; (rates for `top` and /status)
+	call	bird_tick			; (the anycast address, announced or not: bird.inc)
 	lea	rdi,[g_admin_pfd]
 	mov	esi,2
 	lea	rdx,[ts_admin_tick]

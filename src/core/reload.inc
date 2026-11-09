@@ -155,6 +155,12 @@ macro plan_regions action
 	action g_plan_cdnl, 8
 	action g_plan_cdnll, 4
 	action g_plan_cdnmax, 4
+	action g_plan_bird, 8
+	action g_plan_birdl, 4
+	action g_plan_birdpl, 4
+	action g_plan_birdp, 8
+	action g_plan_birdpool, 8
+	action g_plan_birdpooll, 4
 	action g_signed, SU_SIZE * MAX_SIGNED
 	action g_plan_signed, 4
 	action g_plan_fleet_sa, 32 * MAX_FLEET

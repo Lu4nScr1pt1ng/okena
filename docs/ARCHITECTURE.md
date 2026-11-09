@@ -908,7 +908,10 @@ without calling it.
 **Distribution.** Nodes in several regions are reached through GeoDNS or
 anycast (BGP announced by a routing daemon such as BIRD, with okena's
 health deciding whether the address is announced: a node that fails its
-own checks withdraws itself).
+own checks withdraws itself). `bird` (src/admin/bird.inc): the admin
+process enables or disables BIRD's announcing protocol through its control
+socket, from what `/ready` says and a pool's servers up, on a change and
+every 5 s again.
 
 **Behind someone else's CDN** (Cloudflare and the like), the edge cases
 are about trust: `trusted_proxies cloudflare` takes the provider's

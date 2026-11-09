@@ -8,7 +8,7 @@ not built yet. A directive that is not built is refused by `okena check`
 
 | Block | Directives |
 |---|---|
-| `okena` | `workers`, `io_engine`, `busy_poll`, `watchdog`, `drain delay= timeout=`, `metrics [token=]`, `user`, `ticket_keys`, `handshake_budget wait=`, `quic_server_id HEX`, `cache_memory`, `cache_disk PATH size=`, `fleet ADDR...`, `cdn_loop NAME [max=]` |
+| `okena` | `workers`, `io_engine`, `busy_poll`, `watchdog`, `drain delay= timeout=`, `metrics [token=]`, `user`, `ticket_keys`, `handshake_budget wait=`, `quic_server_id HEX`, `cache_memory`, `cache_disk PATH size=`, `fleet ADDR...`, `cdn_loop NAME [max=]`, `bird PATH protocol= [pool=]` |
 | `tcp ADDR...` | `to`, `limits { connections; per_source }`, `timeout { idle }`, `proxy_protocol send v1\|v2`, `tls { cert; key }`, `tls passthrough { sni NAME... to pool P; default reject\|to pool P }` |
 | `udp ADDR...` | `to`, `responses N`, `limits { connections }` (flows), `timeout { idle }` |
 | `http ADDR...` | `host`, `route`, `errors CODES file= [backend]`, `maintenance file= retry= allow= except=`, `limits`, `timeout { idle; header; body_idle; response }`, `trusted_proxies`, `access_log`, `tracing`, `http2 on\|off`, `http3 on\|off\|retry\|v2`, `preferred_address`, `early_data on\|off`, `tls { cert; key; ktls on\|off }` |
@@ -828,6 +828,29 @@ there already. A request that comes in naming it `max` times or more (in any cas
 with or without parameters) has gone round in circles, for example an origin
 pointed back at the edges, and gets a 508 Loop Detected. Other CDNs' names do not
 count.
+
+`okena { bird /run/bird/bird.ctl protocol=anycast pool=web }` announces an anycast
+address only while this okena can take traffic, through BIRD's control socket. It
+sends `enable anycast` and `disable anycast`, for BIRD's protocol that exports the
+address over BGP. okena can take traffic as `/ready` says: not draining (`okena
+drain`, a stop, the old process of an upgrade) and, with `pool=`, while that pool
+has a server up. A node whose backends are all down withdraws itself, and the
+routers send its share of clients to the other nodes.
+
+okena tells BIRD as soon as its state changes, and again every 5 seconds, so a BIRD
+that restarted learns it. When BIRD does not answer, okena says so once and tries
+again every second. On a stop the address is withdrawn during the drain delay: use
+`drain delay=` of a few seconds, so the route is gone before the connections are.
+The admin process talks to BIRD (as `user`, so the socket must let that user in).
+If okena dies outright, BIRD keeps announcing, so pair this with a check in BIRD
+itself or a `birdc disable` in the service manager's stop hook.
+
+```
+# bird.conf
+protocol static anycast { ipv4; route 203.0.113.10/32 blackhole; }
+protocol bgp upstream { local as 65001; neighbor 10.0.0.1 as 65000;
+                        ipv4 { export where proto = "anycast"; }; }
+```
 
 A purge takes answers back at once, from every worker's memory and from the disk:
 
