@@ -469,10 +469,10 @@ tls passthrough {                   # tcp only: route on SNI, never decrypt
 **Automatic HTTPS.** `acme NAME...` in a tls block is a certificate for those
 names from an ACME CA (RFC 8555: Let's Encrypt, ZeroSSL, a step-ca of one's own),
 named once in `okena { acme DIR ca=URL [email=ADDRESS] [trust=FILE]
-[challenge=http-01|tls-alpn-01] }`: `ca=` is the CA's directory URL (https),
-`trust=` a PEM file whose first certificate signs the CA's own (else the system's
-roots), `email=` the account's contact. Up to 16 such lines, 15 names each (no
-wildcards: each name is proven one at a time).
+[challenge=http-01|tls-alpn-01|dns-01] }`: `ca=` is the CA's directory URL
+(https), `trust=` a PEM file whose first certificate signs the CA's own (else the
+system's roots), `email=` the account's contact. Up to 16 such lines, 15 names
+each; a wildcard (`*.example.com`) with DNS-01 only.
 
 okena keeps them in DIR (made 0700, the `user`'s): `DIR/account.key`, the
 account's key (P-256, made once), and for each certificate `DIR/NAME/cert.pem` (the
@@ -487,7 +487,13 @@ say (a token not being asked for goes on to the routes). With TLS-ALPN-01 (RFC
 8737) no port 80 is needed: the CA opens TLS to port 443 asking only for ALPN
 `acme-tls/1`, and that handshake alone gets a certificate the acme process made
 for the name, carrying the proof; every other client of the name gets the
-ordinary one. The files are written beside and renamed over, and okena reloads
+ordinary one. With DNS-01 nothing of okena need be reachable, and wildcards can be
+had: okena puts a TXT record `_acme-challenge.NAME` through the DNS provider's
+API, waits for it to spread, and removes it after, whatever the outcome.
+`dns=cloudflare dns_token=FILE` (an API token with Zone.DNS edit, alone in the
+file), and if wanted `dns_api=URL` (else Cloudflare's), `dns_wait=` (20 s by
+default) and `dns_trust=FILE` (the API's anchor, else the system's roots). The
+zone is the first of the name and its parents that the token's account holds. The files are written beside and renamed over, and okena reloads
 itself: the new certificate is served, no connection dropped. A certificate is
 renewed when two thirds of its life have gone; a failed order is tried again
 after a minute, then twice as long each time up to six hours, the one being served

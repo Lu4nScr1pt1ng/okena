@@ -64,8 +64,16 @@ ACM_HASTRUST	:= 40			; d
 ACM_NCERT	:= 44			; d
 ACM_CERT		:= 48			; per certificate: q its names (arguments), d how many, d -
 ACM_TRUST	:= ACM_CERT + ACME_CERTS * 16
-ACM_CHAL		:= ACM_TRUST + PK_SIZE	; d: 0 HTTP-01, 1 TLS-ALPN-01
-ACM_SIZE		:= (ACM_CHAL + 4 + 7) and not 7
+ACM_CHAL		:= ACM_TRUST + PK_SIZE	; d: 0 HTTP-01, 1 TLS-ALPN-01, 2 DNS-01
+ACM_DNS		:= ACM_CHAL + 4		; d: DNS-01's provider: 1 Cloudflare
+ACM_DNSWAIT	:= ACM_CHAL + 8		; d: ms, the records left to spread
+ACM_DNSAPIL	:= ACM_CHAL + 12	; d
+ACM_DNSAPI	:= ACM_CHAL + 16	; q: the API's base URL
+ACM_DNSTOKL	:= ACM_CHAL + 24	; d
+ACM_DNSHASTRUST	:= ACM_CHAL + 28	; d
+ACM_DNSTOK	:= ACM_CHAL + 32	; 256: the API token
+ACM_DNSTRUST	:= ACM_CHAL + 288	; the API's anchor, dns_trust=
+ACM_SIZE		:= (ACM_DNSTRUST + PK_SIZE + 7) and not 7
 
 SYS_fchownat_	:= 260
 LLF_REMOVE_FILE	:= 32
@@ -124,6 +132,20 @@ bss
 	g_ac_identl	dd ?
 	g_ac_ident:	rb 256			; the authorization's name
 	g_ac_ka:	rb 256
+	; DNS-01: per authorization, its record (zone and id) and its challenge
+	g_ac_dns	dd ?			; this request is the DNS API's
+	align 8
+	g_ac_meth	dq ?			; its method (cstr), 0: GET or POST
+	g_ac_dzonel	rd ACME_NAMES
+	g_ac_didl	rd ACME_NAMES
+	g_ac_dpost	rd ACME_NAMES
+	g_ac_dchall	rd ACME_NAMES
+	g_ac_dzone:	rb 64 * ACME_NAMES
+	g_ac_did:	rb 64 * ACME_NAMES
+	g_ac_dchal:	rb ACME_URL * ACME_NAMES
+	g_ac_txt:	rb 64
+	g_ac_rname:	rb 300
+	g_ac_durl:	rb 1024
 	g_acme_tl:	rb TL_SIZE		; a worker: the challenge's certificate, copied
 	g_ac_jwk:	rb 160
 	g_ac_host:	rb 256
@@ -506,6 +528,16 @@ compile_acme:
 	jne	.bad
 	jmp	.ok
 .not_http:
+	cmp	ecx,6
+	jne	.not_dns
+	cmp	dword [rsi],'dns-'
+	jne	.bad
+	cmp	word [rsi+4],'01'
+	jne	.bad
+	mov	dword [g_plan_acme+ACM_CHAL],2
+	call	compile_acme_dns
+	jmp	.ok
+.not_dns:
 	cmp	ecx,11
 	jne	.bad
 	mov	rdx,'tls-alpn'
@@ -521,7 +553,159 @@ compile_acme:
 	ret
 .bad:
 	call	log_begin
-	out_lit 'acme takes a directory (its whole path, 200 bytes at most), ca=URL (https://, the CA',39,'s directory), and, if wanted, email=ADDRESS, trust=FILE and challenge=http-01|tls-alpn-01'
+	out_lit 'acme takes a directory (its whole path, 200 bytes at most), ca=URL (https://, the CA',39,'s directory), and, if wanted, email=ADDRESS, trust=FILE and challenge=http-01|tls-alpn-01|dns-01'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
+
+; challenge=dns-01's options, rbx = the node: dns=cloudflare, dns_token=FILE (the
+; API token, alone in it), dns_api=URL, dns_wait=TIME (20 s), dns_trust=FILE
+compile_acme_dns:
+	mov	rdi,rbx
+	cstring .k_dns, 'dns',0
+	lea	rsi,[.k_dns]
+	call	node_option
+	test	rax,rax
+	jz	.bad
+	mov	rsi,[rax+A_VAL]
+	cmp	dword [rax+A_VLEN],10
+	jne	.bad
+	mov	rdx,'cloudfla'
+	cmp	[rsi],rdx
+	jne	.bad
+	cmp	word [rsi+8],'re'
+	jne	.bad
+	mov	dword [g_plan_acme+ACM_DNS],1
+	cstring .api_cf, 'https://api.cloudflare.com/client/v4'
+	lea	rax,[.api_cf]
+	mov	[g_plan_acme+ACM_DNSAPI],rax
+	mov	dword [g_plan_acme+ACM_DNSAPIL],36
+	mov	dword [g_plan_acme+ACM_DNSWAIT],20000
+	mov	rdi,rbx
+	cstring .k_api, 'dns_api',0
+	lea	rsi,[.k_api]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	mov	rsi,[rax+A_VAL]
+	mov	ecx,[rax+A_VLEN]
+	cmp	ecx,9
+	jb	.bad
+	cmp	ecx,200
+	ja	.bad
+	mov	rdx,'https://'
+	cmp	[rsi],rdx
+	jne	.bad
+	call	acme_safe
+	jc	.bad
+	cmp	byte [rsi+rcx-1],'/'		; (no '/' at its end)
+	jne	.api
+	dec	ecx
+.api:
+	mov	[g_plan_acme+ACM_DNSAPI],rsi
+	mov	[g_plan_acme+ACM_DNSAPIL],ecx
+@@:
+	mov	rdi,rbx
+	cstring .k_wait, 'dns_wait',0
+	lea	rsi,[.k_wait]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_duration
+	jc	.bad
+	xor	edx,edx
+	mov	ecx,1000
+	div	rcx				; us -> ms
+	cmp	rax,600000
+	ja	.bad
+	mov	[g_plan_acme+ACM_DNSWAIT],eax
+@@:
+	; the token: a file's first line
+	mov	rdi,rbx
+	cstring .k_tok, 'dns_token',0
+	lea	rsi,[.k_tok]
+	call	node_option
+	test	rax,rax
+	jz	.bad
+	mov	rsi,[rax+A_VAL]
+	mov	ecx,[rax+A_VLEN]
+	cmp	ecx,4096
+	jae	.bad
+	lea	rdi,[g_trust_path]
+	push	rcx
+	rep	movsb
+	pop	rcx
+	mov	byte [g_trust_path+rcx],0
+	lea	rdi,[g_trust_path]
+	lea	rsi,[g_ar_text]
+	call	read_file
+	test	rax,rax
+	js	.no_token
+	xor	ecx,ecx
+@@:
+	cmp	ecx,edx
+	jae	@f
+	cmp	byte [rax+rcx],0x21
+	jb	@f
+	cmp	byte [rax+rcx],0x7E
+	ja	.no_token
+	inc	ecx
+	jmp	@b
+@@:
+	test	ecx,ecx
+	jz	.no_token
+	cmp	ecx,255
+	ja	.no_token
+	mov	[g_plan_acme+ACM_DNSTOKL],ecx
+	mov	rsi,rax
+	lea	rdi,[g_plan_acme+ACM_DNSTOK]
+	rep	movsb
+	; dns_trust=: the API's anchor (else the system's roots)
+	mov	rdi,rbx
+	cstring .k_dtrust, 'dns_trust',0
+	lea	rsi,[.k_dtrust]
+	call	node_option
+	test	rax,rax
+	jz	.ok
+	mov	rsi,[rax+A_VAL]
+	mov	ecx,[rax+A_VLEN]
+	cmp	ecx,4096
+	jae	.bad
+	lea	rdi,[g_trust_path]
+	push	rcx
+	rep	movsb
+	pop	rcx
+	mov	byte [g_trust_path+rcx],0
+	lea	rdi,[g_trust_path]
+	lea	rsi,[g_ar_text]
+	call	read_file
+	test	rax,rax
+	js	plan_bad_trust
+	mov	rsi,rax
+	lea	rdi,[g_trust_der]
+	call	pem_first_cert
+	test	eax,eax
+	jz	plan_bad_trust
+	lea	rsi,[g_trust_der]
+	mov	edx,eax
+	lea	rdi,[g_plan_acme+ACM_DNSTRUST]
+	call	cert_pubkey
+	test	eax,eax
+	jz	plan_bad_trust
+	mov	dword [g_plan_acme+ACM_DNSHASTRUST],1
+.ok:
+	ret
+.no_token:
+	call	log_begin
+	out_lit 'acme: dns_token= names a file that holds the DNS API',39,'s token (its first line, 255 bytes at most)'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
+.bad:
+	call	log_begin
+	out_lit 'acme challenge=dns-01 takes dns=cloudflare and dns_token=FILE, and, if wanted, dns_api=https://URL, dns_wait= (10 min at most) and dns_trust=FILE'
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process
@@ -589,6 +773,15 @@ compile_tls_acme:
 	jz	.bad_name
 	cmp	ecx,253
 	ja	.bad_name
+	cmp	ecx,3
+	jb	@f
+	cmp	word [rsi],'*.'			; a wildcard: DNS-01 proves it
+	jne	@f
+	cmp	dword [g_plan_acme+ACM_CHAL],2
+	jne	.bad_name
+	add	rsi,2
+	sub	ecx,2
+@@:
 	cmp	byte [rsi],'.'
 	je	.bad_name
 	cmp	byte [rsi],'-'
@@ -757,7 +950,7 @@ compile_tls_acme:
 .bad_name:
 	mov	rdi,rbx
 	call	tls_error_at
-	out_lit 'acme: a name is letters, digits, - and . (no wildcard: HTTP-01 proves one name at a time)'
+	out_lit 'acme: a name is letters, digits, - and . (a wildcard *.NAME with challenge=dns-01 only)'
 	jmp	tls_error_end
 .no_key:
 	mov	rdi,rbx
@@ -1450,6 +1643,12 @@ acme_request:
 	call	acme_url
 	jc	.out
 	lea	rdi,[g_ac_req]
+	mov	rsi,[g_ac_meth]
+	test	rsi,rsi
+	jz	@f
+	call	fmt_cstr
+	jmp	.path
+@@:
 	test	r12,r12
 	jz	.get
 	memit_x 'POST '
@@ -1470,9 +1669,24 @@ acme_request:
 	mov	ecx,[g_ac_authl]
 	rep	movsb
 	memit_x 13,10,'User-Agent: okena',13,10,'Accept: */*',13,10,'Connection: close',13,10
+	cmp	dword [g_ac_dns],0
+	je	@f
+	memit_x 'Authorization: Bearer '
+	lea	rsi,[g_plan_acme+ACM_DNSTOK]
+	mov	ecx,[g_plan_acme+ACM_DNSTOKL]
+	rep	movsb
+	memit_x 13,10
+@@:
 	test	r12,r12
 	jz	.head_end
-	memit_x 'Content-Type: application/jose+json',13,10,'Content-Length: '
+	cmp	dword [g_ac_dns],0
+	je	.jose
+	memit_x 'Content-Type: application/json',13,10
+	jmp	.length
+.jose:
+	memit_x 'Content-Type: application/jose+json',13,10
+.length:
+	memit_x 'Content-Length: '
 	mov	eax,r13d
 	call	fmt_u64
 	memit_x 13,10
@@ -1498,9 +1712,16 @@ acme_request:
 	call	cx_connect
 	jc	.out
 	xor	edi,edi
+	cmp	dword [g_ac_dns],0
+	jne	.dns_anchor
 	cmp	dword [g_plan_acme+ACM_HASTRUST],0
 	je	@f
 	lea	rdi,[g_plan_acme+ACM_TRUST]
+	jmp	@f
+.dns_anchor:
+	cmp	dword [g_plan_acme+ACM_DNSHASTRUST],0
+	je	@f
+	lea	rdi,[g_plan_acme+ACM_DNSTRUST]
 @@:
 	lea	rsi,[g_ac_host]
 	mov	edx,[g_ac_hostl]
@@ -2015,6 +2236,288 @@ acme_poll:
 	pop	rbx
 	ret
 
+; ---------------------------------------------------------------- DNS-01
+
+; the DNS API: rsi/ecx = URL, rdx/r8d = a JSON body (0: GET), r9 = the method
+; (cstr) or 0. As acme_request.
+dns_request:
+	mov	dword [g_ac_dns],1
+	mov	[g_ac_meth],r9
+	call	acme_request
+	mov	dword [g_ac_dns],0
+	mov	qword [g_ac_meth],0
+	ret
+
+; rdi = out: the API's base URL, rdi past it
+dns_base:
+	mov	rsi,[g_plan_acme+ACM_DNSAPI]
+	mov	ecx,[g_plan_acme+ACM_DNSAPIL]
+	rep	movsb
+	ret
+
+; Cloudflare's answer (g_ac_rb): "result", an object, or an array's first; its
+; "id" into rdi (63 bytes at most: letters, digits, - and _), eax its length.
+; CF: none.
+dns_result_id:
+	push	rbx
+	mov	rbx,rdi
+	mov	rsi,[g_ac_rb]
+	mov	edx,[g_ac_rbl]
+	add	rdx,rsi
+	cstring .n_result, 'result'
+	lea	rdi,[.n_result]
+	mov	ecx,6
+	call	json_get
+	jc	.none
+	test	rax,rax
+	jz	.none
+	mov	rsi,rax
+	mov	rdx,r8
+	cmp	byte [rsi],'['
+	jne	.object
+	inc	rsi
+	call	json_ws
+	cmp	rsi,rdx
+	jae	.none
+	cmp	byte [rsi],'{'
+	jne	.none
+	push	rsi
+	call	json_skip_value
+	mov	rdx,rsi
+	pop	rsi
+	jc	.none
+.object:
+	cmp	byte [rsi],'{'
+	jne	.none
+	cstring .n_id, 'id'
+	lea	rdi,[.n_id]
+	mov	ecx,2
+	call	json_get
+	jc	.none
+	test	rax,rax
+	jz	.none
+	mov	rsi,rax
+	mov	rdi,rbx
+	mov	ecx,63
+	call	json_string
+	jc	.none
+	test	eax,eax
+	jz	.none
+	xor	ecx,ecx
+@@:
+	movzx	edx,byte [rbx+rcx]
+	inc	ecx
+	cmp	dl,'-'
+	je	.ch
+	cmp	dl,'_'
+	je	.ch
+	cmp	dl,'0'
+	jb	.none
+	cmp	dl,'9'
+	jbe	.ch
+	or	dl,0x20
+	cmp	dl,'a'
+	jb	.none
+	cmp	dl,'z'
+	ja	.none
+.ch:
+	cmp	ecx,eax
+	jb	@b
+	clc
+	pop	rbx
+	ret
+.none:
+	stc
+	pop	rbx
+	ret
+
+; r12d = the authorization, g_ac_ident its name, g_ac_txt the value: the record
+; made (its zone found: the name, then each parent, the first the account
+; holds), kept in g_ac_dzone/g_ac_did. CF: failed (g_ac_why).
+dns_create:
+	push	rbx
+	push	r13
+	cstring .w_zone, 'no DNS zone of the account holds the name',0
+	lea	rax,[.w_zone]
+	mov	[g_ac_why],rax
+	xor	r13d,r13d			; the candidate: g_ac_ident + r13
+.zone:
+	; (a zone has a dot in it)
+	lea	rsi,[g_ac_ident+r13]
+	mov	ecx,[g_ac_identl]
+	sub	ecx,r13d
+	mov	rdi,rsi
+	mov	al,'.'
+	push	rcx
+	repne	scasb
+	pop	rcx
+	jne	.fail
+	lea	rdi,[g_ac_durl]
+	call	dns_base
+	memit_x '/zones?name='
+	lea	rsi,[g_ac_ident+r13]
+	mov	ecx,[g_ac_identl]
+	sub	ecx,r13d
+	rep	movsb
+	lea	rsi,[g_ac_durl]
+	mov	rcx,rdi
+	sub	rcx,rsi
+	xor	edx,edx
+	xor	r9d,r9d
+	call	dns_request
+	jc	.out
+	cmp	dword [g_ac_st],200
+	jne	.api_bad
+	imul	edi,r12d,64
+	lea	rdi,[g_ac_dzone+rdi]
+	call	dns_result_id
+	jnc	.zone_found
+	; the parent
+@@:
+	inc	r13d
+	cmp	r13d,[g_ac_identl]
+	jae	.fail
+	cmp	byte [g_ac_ident+r13-1],'.'
+	jne	@b
+	jmp	.zone
+.zone_found:
+	mov	[g_ac_dzonel+r12*4],eax
+	; the record: POST zones/ZONE/dns_records
+	lea	rdi,[g_ac_durl]
+	call	dns_base
+	memit_x '/zones/'
+	imul	esi,r12d,64
+	lea	rsi,[g_ac_dzone+rsi]
+	mov	ecx,[g_ac_dzonel+r12*4]
+	rep	movsb
+	memit_x '/dns_records'
+	mov	rbx,rdi
+	lea	rdi,[g_ac_pay]
+	memit_x '{"type":"TXT","name":"_acme-challenge.'
+	lea	rsi,[g_ac_ident]
+	mov	ecx,[g_ac_identl]
+	rep	movsb
+	memit_x '","content":"'
+	lea	rsi,[g_ac_txt]
+	mov	ecx,43
+	rep	movsb
+	memit_x '","ttl":60}'
+	lea	rdx,[g_ac_pay]
+	mov	r8,rdi
+	sub	r8,rdx
+	lea	rsi,[g_ac_durl]
+	mov	rcx,rbx
+	sub	rcx,rsi
+	xor	r9d,r9d
+	call	dns_request
+	jc	.out
+	cstring .w_rec, 'the DNS API would not make the TXT record',0
+	lea	rax,[.w_rec]
+	mov	[g_ac_why],rax
+	mov	eax,[g_ac_st]
+	sub	eax,200
+	cmp	eax,2
+	jae	.fail
+	imul	edi,r12d,64
+	lea	rdi,[g_ac_did+rdi]
+	call	dns_result_id
+	jc	.fail
+	mov	[g_ac_didl+r12*4],eax
+	clc
+	jmp	.out
+.api_bad:
+	cstring .w_api, 'the DNS API refused (its token?)',0
+	lea	rax,[.w_api]
+	mov	[g_ac_why],rax
+.fail:
+	stc
+.out:
+	pop	r13
+	pop	rbx
+	ret
+
+; the records there: dns_wait for them to reach the name's servers, then each
+; challenge answered ("{}"). CF: failed.
+dns_go:
+	push	r12
+	mov	eax,[g_plan_acme+ACM_DNSWAIT]
+	xor	edx,edx
+	mov	ecx,1000
+	div	ecx
+	imul	rdx,rdx,1000000
+	push	rdx
+	push	rax
+	mov	rdi,rsp
+	xor	esi,esi
+	mov	eax,SYS_nanosleep
+	syscall
+	add	rsp,16
+	xor	r12d,r12d
+.chal:
+	cmp	r12d,[g_ac_nauthz]
+	jae	.done
+	cmp	dword [g_ac_dpost+r12*4],0
+	je	.next
+	mov	word [g_ac_pay],'{}'
+	mov	dword [g_ac_payl],2
+	imul	esi,r12d,ACME_URL
+	lea	rsi,[g_ac_dchal+rsi]
+	mov	ecx,[g_ac_dchall+r12*4]
+	call	acme_post
+	jc	.out
+	cstring .w_chal, 'the challenge',0
+	lea	rax,[.w_chal]
+	mov	[g_ac_why],rax
+	cmp	dword [g_ac_st],200
+	jne	.bad
+.next:
+	inc	r12d
+	jmp	.chal
+.done:
+	clc
+	jmp	.out
+.bad:
+	stc
+.out:
+	pop	r12
+	ret
+
+; the records made, removed (DELETE zones/ZONE/dns_records/ID)
+dns_clean:
+	push	r12
+	xor	r12d,r12d
+.rec:
+	cmp	r12d,ACME_NAMES
+	jae	.done
+	cmp	dword [g_ac_didl+r12*4],0
+	je	.next
+	lea	rdi,[g_ac_durl]
+	call	dns_base
+	memit_x '/zones/'
+	imul	esi,r12d,64
+	lea	rsi,[g_ac_dzone+rsi]
+	mov	ecx,[g_ac_dzonel+r12*4]
+	rep	movsb
+	memit_x '/dns_records/'
+	imul	esi,r12d,64
+	lea	rsi,[g_ac_did+rsi]
+	mov	ecx,[g_ac_didl+r12*4]
+	rep	movsb
+	lea	rsi,[g_ac_durl]
+	mov	rcx,rdi
+	sub	rcx,rsi
+	xor	edx,edx
+	cstring .m_delete, 'DELETE ',0
+	lea	r9,[.m_delete]
+	call	dns_request
+	mov	dword [g_ac_didl+r12*4],0
+.next:
+	inc	r12d
+	jmp	.rec
+.done:
+	pop	r12
+	ret
+
 ; ------------------------------------------------------------ the order
 
 ; ebx = a certificate: asked for, proven, fetched and stored. CF: failed
@@ -2027,6 +2530,11 @@ acme_issue:
 	push	r15
 	mov	dword [g_ac_kidl],0
 	mov	dword [g_ac_noncel],0
+	mov	dword [g_ac_nauthz],0
+	lea	rdi,[g_ac_didl]
+	xor	eax,eax
+	mov	ecx,ACME_NAMES * 2		; (g_ac_didl, g_ac_dpost)
+	rep	stosd
 	mov	eax,ebx
 	shl	eax,4
 	mov	r14,[g_plan_acme+ACM_CERT+rax]	; the names
@@ -2156,6 +2664,11 @@ acme_issue:
 	inc	r12d
 	jmp	.authz
 .proven:
+	cmp	dword [g_plan_acme+ACM_CHAL],2
+	jne	@f
+	call	dns_go
+	jc	.out
+@@:
 	xor	r12d,r12d
 .wait_authz:
 	cmp	r12d,[g_ac_nauthz]
@@ -2287,6 +2800,16 @@ acme_issue:
 .bad:
 	stc
 .out:
+	pushfq					; (as it went, whatever the cleaning does)
+	cmp	dword [g_plan_acme+ACM_CHAL],2
+	jne	@f
+	push	qword [g_ac_why]
+	push	qword [g_ac_st]
+	call	dns_clean
+	pop	qword [g_ac_st]
+	pop	qword [g_ac_why]
+@@:
+	popfq
 	pop	r15
 	pop	r14
 	pop	r13
@@ -2467,11 +2990,19 @@ acme_prove:
 	jz	.not_it
 	mov	rcx,r8
 	sub	rcx,rax
-	cmp	dword [g_plan_acme+ACM_CHAL],0
-	jne	.want_tls
+	cmp	dword [g_plan_acme+ACM_CHAL],1
+	je	.want_tls
+	ja	.want_dns
 	cmp	rcx,9
 	jne	.not_it
 	mov	rcx,'"http-01'
+	cmp	[rax],rcx
+	jne	.not_it
+	jmp	.found
+.want_dns:
+	cmp	rcx,8
+	jne	.not_it
+	mov	rcx,'"dns-01"'
 	cmp	[rax],rcx
 	jne	.not_it
 	jmp	.found
@@ -2539,8 +3070,9 @@ acme_prove:
 	lea	rax,[g_ac_ka]
 	sub	rdi,rax
 	push	rdi				; its length
-	cmp	dword [g_plan_acme+ACM_CHAL],0
-	jne	.tls_slot
+	cmp	dword [g_plan_acme+ACM_CHAL],1
+	je	.tls_slot
+	ja	.dns_record
 	; HTTP-01's slot: the token and it, the length last
 	mov	rax,[g_acme_page]
 	imul	ecx,r12d,AS_SIZE
@@ -2558,6 +3090,27 @@ acme_prove:
 	mov	eax,[g_ac_tokl]
 	mov	[rbx+AS_TLEN],eax
 	jmp	.ready
+.dns_record:
+	; DNS-01's: a TXT record _acme-challenge.NAME = base64url(SHA-256(it)); the
+	; challenge is answered once every record is there and has spread
+	pop	rdx
+	lea	rdi,[g_ac_kah]
+	lea	rsi,[g_ac_ka]
+	call	sha256
+	lea	rdi,[g_ac_txt]
+	lea	rsi,[g_ac_kah]
+	mov	edx,32
+	call	base64url_encode
+	call	dns_create
+	jc	.bad
+	imul	edi,r12d,ACME_URL
+	lea	rdi,[g_ac_dchal+rdi]
+	lea	rsi,[g_ac_chal]
+	mov	ecx,[g_ac_chall]
+	mov	[g_ac_dchall+r12*4],ecx
+	rep	movsb
+	mov	dword [g_ac_dpost+r12*4],1
+	jmp	.ok
 .tls_slot:
 	; TLS-ALPN-01's: a certificate for the name that carries its hash
 	pop	rdx

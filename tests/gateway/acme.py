@@ -33,7 +33,8 @@ ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BIN = ROOT / "build" / "okena"
 BASE = 56000 + os.getpid() % 90 * 20 + (10 if ENGINE == "epoll" else 0)
-BACK, PLAIN, TLS, CA, TLS2 = BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4
+BACK, PLAIN, TLS, CA, TLS2, CF, TLS3 = BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4, BASE + 5, BASE + 6
+CF_TOKEN = "cf-test-token_0123"
 fails = 0
 
 
@@ -129,6 +130,70 @@ def jwk_key(jwk):
 def thumbprint(jwk):
     j = json.dumps({"crv": jwk["crv"], "kty": jwk["kty"], "x": jwk["x"], "y": jwk["y"]}, separators=(",", ":"), sort_keys=True)
     return b64u(hashlib.sha256(j.encode()).digest())
+
+
+CFS = {"records": {}, "log": [], "n": 0, "lock": threading.Lock()}
+
+
+def validate_dns(az):
+    """DNS-01: a TXT record _acme-challenge.NAME, base64url(SHA-256(key authorization))
+    (the DNS here: what the provider's API holds)"""
+    want = b64u(hashlib.sha256((az["token"] + "." + az["thumb"]).encode()).digest())
+    with CFS["lock"]:
+        got = [r["content"] for r in CFS["records"].values() if r["type"] == "TXT" and r["name"] == "_acme-challenge." + az["name"]]
+    ok = want in got
+    with ST.lock:
+        az["status"] = "valid" if ok else "invalid"
+        ST.log.append(("validated", (az["name"], ok, got)))
+
+
+class CFApi(http.server.BaseHTTPRequestHandler):
+    """Cloudflare's API, as much as DNS-01 uses: zones by name, TXT records made and removed"""
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *a):
+        pass
+
+    def answer(self, code, j):
+        b = json.dumps(j).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(b)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(b)
+        self.close_connection = True
+
+    def handle_any(self, method):
+        n = int(self.headers.get("Content-Length", "0") or 0)
+        body = json.loads(self.rfile.read(n)) if n else None
+        with CFS["lock"]:
+            CFS["log"].append((method, self.path, self.headers.get("Authorization"), self.headers.get("Content-Type")))
+            if self.headers.get("Authorization") != "Bearer " + CF_TOKEN:
+                return self.answer(403, {"success": False, "errors": [{"code": 10000, "message": "Authentication error"}]})
+            parts = self.path.split("?")[0].split("/")
+            if method == "GET" and self.path.startswith("/client/v4/zones?name="):
+                name = self.path.split("=", 1)[1]
+                res = [{"id": "zone1example", "name": name}] if name == "example.test" else []
+                return self.answer(200, {"success": True, "result": res})
+            if method == "POST" and parts[-1] == "dns_records" and parts[-2] == "zone1example":
+                CFS["n"] += 1
+                rid = f"rec{CFS['n']:04d}abc"
+                CFS["records"][rid] = dict(body, id=rid)
+                return self.answer(200, {"success": True, "result": dict(body, id=rid)})
+            if method == "DELETE" and parts[-2] == "dns_records" and parts[-1] in CFS["records"]:
+                del CFS["records"][parts[-1]]
+                return self.answer(200, {"success": True, "result": {"id": parts[-1]}})
+            return self.answer(404, {"success": False})
+
+    def do_GET(self):
+        self.handle_any("GET")
+
+    def do_POST(self):
+        self.handle_any("POST")
+
+    def do_DELETE(self):
+        self.handle_any("DELETE")
 
 
 def validate_tls(az):
@@ -289,7 +354,9 @@ class H(http.server.BaseHTTPRequestHandler):
             azs = []
             for nm in names:
                 zid = st.next()
-                st.authz[zid] = {"name": nm, "status": "pending", "token": b64u(os.urandom(24)), "thumb": thumb, "cid": st.next()}
+                wild = nm.startswith("*.")
+                st.authz[zid] = {"name": nm[2:] if wild else nm, "wildcard": wild, "status": "pending",
+                                 "token": b64u(os.urandom(24)), "thumb": thumb, "cid": st.next()}
                 azs.append(zid)
             st.orders[oid] = {"names": names, "authz": azs, "status": "pending", "cert": None, "thumb": thumb, "polled": 0}
             st.log.append(("order", names))
@@ -297,20 +364,25 @@ class H(http.server.BaseHTTPRequestHandler):
         if path.startswith("/authz/"):
             zid = int(path.split("/")[2])
             az = st.authz[zid]
-            return self.send(200, {"identifier": {"type": "dns", "value": az["name"]}, "status": az["status"],
-                                   "challenges": [
-                                       {"type": "dns-01", "url": f"{st.base}/chall/x{zid}", "token": "dnstoken", "status": "pending"},
-                                       {"type": "http-01", "url": f"{st.base}/chall/{zid}", "token": az["token"], "status": az["status"]},
-                                       {"type": "tls-alpn-01", "url": f"{st.base}/chall/t{zid}", "token": az["token"], "status": az["status"]}]})
+            ch = [{"type": "dns-01", "url": f"{st.base}/chall/d{zid}", "token": az["token"], "status": az["status"]}]
+            if not az["wildcard"]:          # (a wildcard: DNS-01 only, RFC 8555 7.1.3)
+                ch += [{"type": "http-01", "url": f"{st.base}/chall/{zid}", "token": az["token"], "status": az["status"]},
+                       {"type": "tls-alpn-01", "url": f"{st.base}/chall/t{zid}", "token": az["token"], "status": az["status"]}]
+            j = {"identifier": {"type": "dns", "value": az["name"]}, "status": az["status"], "challenges": ch}
+            if az["wildcard"]:
+                j["wildcard"] = True
+            return self.send(200, j)
         if path.startswith("/chall/"):
             ref = path.split("/")[2]
-            zid = int(ref.lstrip("t"))
+            zid = int(ref.lstrip("td"))
             az = st.authz[zid]
             if p != {}:
                 return self.problem(400, "malformed", "challenge payload")
             az["status"] = "processing"
-            st.log.append(("challenge", "tls-alpn-01" if ref.startswith("t") else "http-01"))
-            threading.Thread(target=validate_tls if ref.startswith("t") else validate, args=(az,), daemon=True).start()
+            kind = {"t": "tls-alpn-01", "d": "dns-01"}.get(ref[0], "http-01")
+            st.log.append(("challenge", kind))
+            fn = {"tls-alpn-01": validate_tls, "dns-01": validate_dns}.get(kind, validate)
+            threading.Thread(target=fn, args=(az,), daemon=True).start()
             return self.send(200, {"type": "http-01", "url": f"{st.base}/chall/{zid}", "token": az["token"], "status": "processing"})
         if path.startswith("/order/"):
             oid = int(path.split("/")[2])
@@ -410,6 +482,9 @@ def main():
     srv.socket = sctx.wrap_socket(srv.socket, server_side=True)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     threading.Thread(target=http.server.ThreadingHTTPServer(("127.0.0.1", BACK), Back).serve_forever, daemon=True).start()
+    cf = http.server.ThreadingHTTPServer(("127.0.0.1", CF), CFApi)
+    cf.socket = sctx.wrap_socket(cf.socket, server_side=True)
+    threading.Thread(target=cf.serve_forever, daemon=True).start()
 
     adir = tmp / "acme"
     # c.example.test: a certificate there already, 2/3 of its life gone
@@ -510,6 +585,44 @@ http 127.0.0.1:{TLS2} {{
             refused = True
         check("  acme-tls/1 with no challenge pending: no challenge certificate", refused)
         check("  the CA's certificate, verified", verified_on("d.example.test", cafile, TLS2).startswith(b"HTTP/1.1 200"))
+        p.terminate()
+        p.wait(10)
+
+        # DNS-01 through Cloudflare's API: a wildcard and its parent
+        n0 = len(ST.log)
+        (tmp / "cf.token").write_text(CF_TOKEN + "\n")
+        conf3 = tmp / "okena3.conf"
+        conf3.write_text(f"""okena {{ workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s
+    acme {tmp}/acme3 ca=https://localhost:{CA}/dir trust={tmp}/ca.pem challenge=dns-01 dns=cloudflare dns_token={tmp}/cf.token dns_api=https://localhost:{CF}/client/v4 dns_wait=100ms dns_trust={tmp}/ca.pem }}
+pool b {{ server 127.0.0.1:{BACK} }}
+http 127.0.0.1:{TLS3} {{
+    tls {{ acme *.w.example.test w.example.test }}
+    route /* {{ to pool b }}
+}}
+""")
+        p = subprocess.Popen([str(BIN), "-c", str(conf3)], stdout=subprocess.DEVNULL, stderr=open(log, "a"))
+        procs.append(p)
+        check("dns-01: a wildcard issued, served for a name under it and for its parent",
+              until(lambda: served("x.w.example.test", TLS3).issuer == ca_c.subject, 15)
+              and verified_on("x.w.example.test", cafile, TLS3).startswith(b"HTTP/1.1 200")
+              and verified_on("w.example.test", cafile, TLS3).startswith(b"HTTP/1.1 200"),
+              (ST.log[n0:][-8:], CFS["log"][-6:], log.read_text()[-400:]))
+        v = [e[1] for e in ST.log[n0:] if e[0] == "validated"]
+        check("  both names proven over dns-01 (the wildcard's offered nothing else)",
+              [e[1] for e in ST.log[n0:] if e[0] == "challenge"] == ["dns-01", "dns-01"] and len(v) == 2 and all(x[1] for x in v), v)
+        calls = [(m, path) for m, path, *_ in CFS["log"]]
+        check("  the zone found from the name up, the records made in it with the token",
+              ("GET", "/client/v4/zones?name=w.example.test") in calls and ("GET", "/client/v4/zones?name=example.test") in calls
+              and sum(1 for m, path in calls if m == "POST" and path == "/client/v4/zones/zone1example/dns_records") == 2
+              and all(a == "Bearer " + CF_TOKEN for _, _, a, _ in CFS["log"])
+              and all(c == "application/json" for m, _, _, c in CFS["log"] if m == "POST"), CFS["log"])
+        check("  and removed after", until(lambda: not CFS["records"], 3)
+              and sum(1 for m, _ in calls if m == "DELETE") == 2, CFS["records"])
+        bad = tmp / "bad.conf"
+        bad.write_text(f"okena {{ acme {tmp}/x ca=https://localhost:{CA}/dir }}\npool b {{ server 127.0.0.1:{BACK} }}\n"
+                       f"http 127.0.0.1:{TLS3} {{\n    tls {{ acme *.w.example.test }}\n    route /* {{ to pool b }}\n}}\n")
+        r = subprocess.run([str(BIN), "check", "-c", str(bad)], capture_output=True, text=True, timeout=10)
+        check("a wildcard without dns-01: refused", r.returncode != 0 and "wildcard" in r.stderr, r.stderr)
     finally:
         for q in procs:
             if q.poll() is None:
