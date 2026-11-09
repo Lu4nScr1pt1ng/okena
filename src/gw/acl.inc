@@ -208,6 +208,20 @@ compile_acl:
 	call	acl_file
 	jmp	.done_arg
 .one:
+	; a provider's name: its ranges
+	mov	rdi,rsi
+	mov	esi,ecx
+	push	rdi
+	push	rsi
+	call	ranges_named
+	pop	rcx
+	pop	rdi
+	jc	@f
+	lea	rax,[acl_add]
+	call	ranges_each
+	jmp	.done_arg
+@@:
+	mov	rsi,rdi
 	cmp	ecx,10
 	jb	.range
 	mov	rax,[rsi]

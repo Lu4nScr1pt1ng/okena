@@ -908,8 +908,9 @@ health deciding whether the address is announced: a node that fails its
 own checks withdraws itself).
 
 **Behind someone else's CDN** (Cloudflare and the like), the edge cases
-are about trust: `trusted_proxies cloudflare` loads the provider's
-published ranges (refreshed by the control process), the client address
+are about trust: `trusted_proxies cloudflare` takes the provider's
+published ranges (built in, from contrib/ranges; a fresher list through
+`file:PATH`, fetched by contrib/ranges/update.sh), the client address
 comes from the provider's header only when the peer is in those ranges,
 authenticated origin pulls (mTLS from the CDN) can be required, and the
 listener can refuse everyone else, so the origin is not reachable around

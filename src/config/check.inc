@@ -905,6 +905,20 @@ check_value:
 	jc	.bad
 	jmp	.ok
 .cidr:
+	; a provider's name, or file:PATH (read when compiled)
+	push	rdi
+	push	rsi
+	call	ranges_named
+	pop	rsi
+	pop	rdi
+	jnc	.ok
+	cmp	esi,6
+	jb	@f
+	cmp	dword [rdi],'file'
+	jne	@f
+	cmp	byte [rdi+4],':'
+	je	.ok
+@@:
 	sub	rsp,TR_SIZE
 	mov	rdx,rsp
 	call	parse_cidr

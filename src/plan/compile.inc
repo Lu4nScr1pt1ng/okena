@@ -3392,19 +3392,14 @@ compile_listener:
 .trust:
 	cmp	r13d,[rbx+N_ARGC]
 	jae	.trust_end
-	mov	ecx,[g_plan_trust]
-	cmp	ecx,MAX_TRUST
-	jae	plan_too_many
-	inc	dword [g_plan_trust]
-	inc	dword [g_cmp_tcount]
-	imul	rdx,rcx,TR_SIZE
-	lea	rdx,[g_trust+rdx]
 	imul	rax,r13,A_SIZE
 	add	rax,[rbx+N_ARGS]
 	mov	rdi,[rax+A_VAL]
 	mov	esi,[rax+A_VLEN]
-	call	parse_cidr			; checked already
 	inc	r13d
+	call	trust_list			; a provider's, or a file's: each of them
+	jnc	.trust
+	call	trust_add			; (checked already)
 	jmp	.trust
 .trust_end:
 	pop	r13

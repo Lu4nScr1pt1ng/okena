@@ -27,6 +27,7 @@ cstring str_cmd_top, 'top',0
 cstring str_cmd_maint, 'maintenance',0
 cstring str_cmd_purge, 'purge',0
 cstring str_cmd_sign, 'sign',0
+cstring str_cmd_ranges, 'ranges',0
 cstring str_flag_help, '--help',0
 cstring str_flag_version, '--version',0
 cstring str_flag_c, '-c',0
@@ -118,6 +119,12 @@ cli_main:
 	call	cstr_eq
 	test	eax,eax
 	jnz	cli_sign
+	mov	rax,[g_argv]
+	mov	rdi,[rax+8]
+	lea	rsi,[str_cmd_ranges]
+	call	cstr_eq
+	test	eax,eax
+	jnz	cli_ranges
 	mov	rax,[g_argv]
 	mov	rdi,[rax+8]
 	lea	rsi,[str_cmd_health]

@@ -1,6 +1,6 @@
 TOOLCHAIN := .toolchain/fasm2
 FASMG     := $(TOOLCHAIN)/fasmg.x64
-SOURCES   := $(shell find src -name '*.asm' -o -name '*.inc' -o -name '*.html')
+SOURCES   := $(shell find src -name '*.asm' -o -name '*.inc' -o -name '*.html') $(wildcard contrib/ranges/*.txt)
 BIN       := build/okena
 HTTPH     := build/httpharness
 KAT       := build/kat
@@ -204,6 +204,8 @@ test-serial: $(BIN) $(HTTPH) $(KAT) $(TLSH)
 	python3 -I tests/gateway/slice.py epoll
 	python3 -I tests/gateway/signed.py io_uring
 	python3 -I tests/gateway/signed.py epoll
+	python3 -I tests/gateway/ranges.py io_uring
+	python3 -I tests/gateway/ranges.py epoll
 	python3 -I tests/gateway/forward.py io_uring
 	python3 -I tests/gateway/forward.py epoll
 	python3 -I tests/gateway/mtls.py io_uring

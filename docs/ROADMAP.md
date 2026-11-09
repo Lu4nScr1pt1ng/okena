@@ -483,7 +483,9 @@ on a machine that can spare it).
   large objects.)
 * Shield tier, signed URLs, CDN provider ranges, authenticated origin
   pulls, health-driven BGP announcement (through BIRD). (Done: signed
-  URLs, with prefix, client address and key rotation, and `okena sign`.)
+  URLs, with prefix, client address and key rotation, and `okena sign`;
+  Cloudflare's ranges by name in `trusted_proxies` and `allow`, and
+  `file:PATH` lists.)
 * A floating address for a pair of instances without BGP: VRRP v3 (RFC 9568),
   with health deciding who holds it and gratuitous ARP / unsolicited NA on a
   change, as keepalived beside HAProxy does it.

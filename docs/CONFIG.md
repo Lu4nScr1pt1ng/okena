@@ -485,6 +485,13 @@ and later in limits) is then the rightmost address of that chain that is
 not trusted itself; an entry that is not an address stops the walk at the
 last trusted hop.
 
+Behind a CDN, `trusted_proxies cloudflare` takes Cloudflare's published ranges, built
+into okena (`okena ranges cloudflare` prints them). `allow cloudflare` on a route
+lets only those addresses in, so the origin cannot be reached around the CDN (on a
+listener without `trusted_proxies`, where the client is the peer). Both also take
+`file:PATH`, a range a line, `#` for comments: `contrib/ranges/update.sh PATH`
+fetches Cloudflare's current list there, from cron, and `okena reload` takes it.
+
 Access logs are one JSON line per exchange: `time` (UTC, ms), `listener`,
 `client`, `peer` (the TCP peer), `method`, `host`, `target`, `status`, `bytes` (sent to the
 client), `duration_ms` (from the request head to the end of the
@@ -1199,7 +1206,7 @@ http :443 {
 
 http :443 {
     tls { cert /etc/okena/cdn.pem }
-    trusted_proxies cloudflare         # provider ranges, refreshed
+    trusted_proxies cloudflare         # its published ranges
     cache disk=/var/cache/okena size=200GiB memory=2GiB {
         key host path query=v,lang
         stale_if_error 1h
