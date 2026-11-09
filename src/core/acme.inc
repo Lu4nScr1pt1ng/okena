@@ -80,7 +80,10 @@ ACM_DNSSECL	:= ACM_D2 + 8		; d
 ACM_DNSSRV	:= ACM_D2 + 16		; q: the server, HOST:PORT
 ACM_DNSKEYN	:= ACM_D2 + 24		; 256: the TSIG key's name, as wire
 ACM_DNSSEC	:= ACM_D2 + 280		; 64: its secret
-ACM_SIZE		:= (ACM_D2 + 344 + 7) and not 7
+ACM_D3		:= ACM_D2 + 344		; Route 53's: (the key id in ACM_DNSTOK, the secret in ACM_DNSSEC)
+ACM_DNSSTL	:= ACM_D3		; d
+ACM_DNSST	:= ACM_D3 + 8		; 2048: a session token, if one
+ACM_SIZE		:= (ACM_D3 + 8 + 2048 + 7) and not 7
 
 SYS_fchownat_	:= 260
 LLF_REMOVE_FILE	:= 32
@@ -152,6 +155,19 @@ bss
 	g_ac_dchal:	rb ACME_URL * ACME_NAMES
 	g_ac_txt:	rb 64
 	g_ac_dnamel	rd ACME_NAMES
+	g_ac_dchgl	rd ACME_NAMES
+	g_ac_dchg:	rb 64 * ACME_NAMES	; (Route 53: each change, until INSYNC)
+	align 8
+	g_ac_xhdr	dq ?			; the DNS API's own header lines, and its
+	g_ac_ctype	dq ?			; content type (cstr)
+	g_ac_xhdrl	dd ?
+	g_r53_date:	rb 20			; YYYYMMDDTHHMMSSZ
+	g_r53_key:	rb 80
+	g_r53_mac:	rb 32
+	g_r53_sig:	rb 72
+	g_r53_creq:	rb 4096
+	g_r53_sts:	rb 256
+	g_ac_xbuf:	rb 4096
 	g_ac_dname:	rb 256 * ACME_NAMES	; (RFC 2136: each authorization's name)
 	g_dn_idx	dd ?			; the authorization being updated
 	g_dn_mode	dd ?			; 0 add, 1 delete
@@ -590,6 +606,14 @@ compile_acme_dns:
 	mov	rsi,[rax+A_VAL]
 	cmp	dword [rax+A_VLEN],7
 	jne	@f
+	cmp	dword [rsi],'rout'
+	jne	.not_r53
+	cmp	word [rsi+4],'e5'
+	jne	.bad
+	cmp	byte [rsi+6],'3'
+	jne	.bad
+	jmp	compile_acme_route53
+.not_r53:
 	cmp	dword [rsi],'rfc2'
 	jne	.bad
 	cmp	word [rsi+4],'13'
@@ -693,6 +717,7 @@ compile_acme_dns:
 	lea	rdi,[g_plan_acme+ACM_DNSTOK]
 	rep	movsb
 	; dns_trust=: the API's anchor (else the system's roots)
+.dns_trust:
 	mov	rdi,rbx
 	cstring .k_dtrust, 'dns_trust',0
 	lea	rsi,[.k_dtrust]
@@ -864,6 +889,157 @@ compile_acme_rfc2136:
 .bad:
 	call	log_begin
 	out_lit 'acme dns=rfc2136 takes dns_server=HOST:PORT and dns_key=FILE, and, if wanted, dns_wait= (10 min at most)'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
+
+; dns=route53 dns_key=FILE [dns_api=URL] [dns_wait=TIME] [dns_trust=FILE], rbx =
+; the node. The key file: one line, ACCESS_KEY_ID:SECRET[:SESSION_TOKEN].
+compile_acme_route53:
+	mov	dword [g_plan_acme+ACM_DNS],3
+	cstring .api_r53, 'https://route53.amazonaws.com'
+	lea	rax,[.api_r53]
+	mov	[g_plan_acme+ACM_DNSAPI],rax
+	mov	dword [g_plan_acme+ACM_DNSAPIL],29
+	mov	dword [g_plan_acme+ACM_DNSWAIT],20000
+	mov	rdi,rbx
+	lea	rsi,[compile_acme_dns.k_api]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	mov	rsi,[rax+A_VAL]
+	mov	ecx,[rax+A_VLEN]
+	cmp	ecx,9
+	jb	.bad
+	cmp	ecx,200
+	ja	.bad
+	mov	rdx,'https://'
+	cmp	[rsi],rdx
+	jne	.bad
+	call	acme_safe
+	jc	.bad
+	cmp	byte [rsi+rcx-1],'/'
+	jne	.api
+	dec	ecx
+.api:
+	mov	[g_plan_acme+ACM_DNSAPI],rsi
+	mov	[g_plan_acme+ACM_DNSAPIL],ecx
+@@:
+	mov	rdi,rbx
+	lea	rsi,[compile_acme_dns.k_wait]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_duration
+	jc	.bad
+	xor	edx,edx
+	mov	ecx,1000
+	div	rcx
+	cmp	rax,600000
+	ja	.bad
+	mov	[g_plan_acme+ACM_DNSWAIT],eax
+@@:
+	mov	rdi,rbx
+	lea	rsi,[compile_acme_rfc2136.k_key]
+	call	node_option
+	test	rax,rax
+	jz	.bad
+	mov	rsi,[rax+A_VAL]
+	mov	ecx,[rax+A_VLEN]
+	cmp	ecx,4096
+	jae	.bad
+	lea	rdi,[g_trust_path]
+	push	rcx
+	rep	movsb
+	pop	rcx
+	mov	byte [g_trust_path+rcx],0
+	lea	rdi,[g_trust_path]
+	lea	rsi,[g_ar_text]
+	call	read_file
+	test	rax,rax
+	js	.no_key
+	mov	rsi,rax
+	xor	ecx,ecx				; the line
+@@:
+	cmp	ecx,edx
+	jae	@f
+	cmp	byte [rsi+rcx],0x21
+	jb	@f
+	cmp	byte [rsi+rcx],0x7E
+	ja	.no_key
+	inc	ecx
+	jmp	@b
+@@:
+	; the key id
+	call	.field
+	jc	.no_key
+	cmp	edx,255
+	ja	.no_key
+	mov	[g_plan_acme+ACM_DNSTOKL],edx
+	lea	rdi,[g_plan_acme+ACM_DNSTOK]
+	call	.take
+	; the secret
+	call	.field
+	jc	.no_key
+	cmp	edx,60
+	ja	.no_key
+	mov	[g_plan_acme+ACM_DNSSECL],edx
+	lea	rdi,[g_plan_acme+ACM_DNSSEC]
+	call	.take
+	; a session token, if one
+	mov	dword [g_plan_acme+ACM_DNSSTL],0
+	test	ecx,ecx
+	jz	.trust
+	call	.field
+	jc	.no_key
+	cmp	edx,2040
+	ja	.no_key
+	mov	[g_plan_acme+ACM_DNSSTL],edx
+	lea	rdi,[g_plan_acme+ACM_DNSST]
+	call	.take
+.trust:
+	jmp	compile_acme_dns.dns_trust
+; rsi/ecx = what is left: edx = the next field's length (to ':' or the end). CF: empty.
+.field:
+	xor	edx,edx
+@@:
+	cmp	edx,ecx
+	jae	@f
+	cmp	byte [rsi+rdx],':'
+	je	@f
+	inc	edx
+	jmp	@b
+@@:
+	test	edx,edx
+	jz	.empty
+	clc
+	ret
+.empty:
+	stc
+	ret
+; rdi = where: the field (edx bytes) copied, and past it and its ':'
+.take:
+	push	rcx
+	mov	ecx,edx
+	rep	movsb
+	pop	rcx
+	sub	ecx,edx
+	jz	@f
+	inc	rsi
+	dec	ecx
+@@:
+	ret
+.no_key:
+	call	log_begin
+	out_lit 'acme: dns_key= names a file with one line, ACCESS_KEY_ID:SECRET[:SESSION_TOKEN] (an AWS key that may change the zone',39,'s records)'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
+.bad:
+	call	log_begin
+	out_lit 'acme dns=route53 takes dns_key=FILE, and, if wanted, dns_api=https://URL, dns_wait= (10 min at most) and dns_trust=FILE'
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process
@@ -1864,17 +2040,18 @@ acme_request:
 	memit_x 13,10,'User-Agent: okena',13,10,'Accept: */*',13,10,'Connection: close',13,10
 	cmp	dword [g_ac_dns],0
 	je	@f
-	memit_x 'Authorization: Bearer '
-	lea	rsi,[g_plan_acme+ACM_DNSTOK]
-	mov	ecx,[g_plan_acme+ACM_DNSTOKL]
+	mov	rsi,[g_ac_xhdr]
+	mov	ecx,[g_ac_xhdrl]
 	rep	movsb
-	memit_x 13,10
 @@:
 	test	r12,r12
 	jz	.head_end
 	cmp	dword [g_ac_dns],0
 	je	.jose
-	memit_x 'Content-Type: application/json',13,10
+	memit_x 'Content-Type: '
+	mov	rsi,[g_ac_ctype]
+	call	fmt_cstr
+	memit_x 13,10
 	jmp	.length
 .jose:
 	memit_x 'Content-Type: application/jose+json',13,10
@@ -2436,6 +2613,38 @@ acme_poll:
 dns_request:
 	mov	dword [g_ac_dns],1
 	mov	[g_ac_meth],r9
+	cmp	dword [g_plan_acme+ACM_DNS],3
+	jne	.bearer
+	push	rsi
+	push	rcx
+	push	rdx
+	push	r8
+	call	r53_sign
+	pop	r8
+	pop	rdx
+	pop	rcx
+	pop	rsi
+	jmp	.send
+.bearer:
+	; Cloudflare: its token
+	push	rsi
+	push	rcx
+	lea	rdi,[g_ac_xbuf]
+	memit_x 'Authorization: Bearer '
+	lea	rsi,[g_plan_acme+ACM_DNSTOK]
+	mov	ecx,[g_plan_acme+ACM_DNSTOKL]
+	rep	movsb
+	memit_x 13,10
+	lea	rax,[g_ac_xbuf]
+	mov	[g_ac_xhdr],rax
+	sub	rdi,rax
+	mov	[g_ac_xhdrl],edi
+	cstring .ct_json, 'application/json',0
+	lea	rax,[.ct_json]
+	mov	[g_ac_ctype],rax
+	pop	rcx
+	pop	rsi
+.send:
 	call	acme_request
 	mov	dword [g_ac_dns],0
 	mov	qword [g_ac_meth],0
@@ -2530,6 +2739,8 @@ dns_result_id:
 dns_create:
 	cmp	dword [g_plan_acme+ACM_DNS],2
 	je	rfc_create
+	cmp	dword [g_plan_acme+ACM_DNS],3
+	je	r53_create
 	push	rbx
 	push	r13
 	cstring .w_zone, 'no DNS zone of the account holds the name',0
@@ -2628,6 +2839,680 @@ dns_create:
 	stc
 .out:
 	pop	r13
+	pop	rbx
+	ret
+
+; ------------------------------------------------------------- Route 53
+
+; rdi = out, rsi = bytes, ecx = how many: lower-case hex, rdi past it
+r53_hex:
+	test	ecx,ecx
+	jz	.out
+	movzx	eax,byte [rsi]
+	inc	rsi
+	mov	edx,eax
+	shr	edx,4
+	mov	dl,[hex_digits+rdx]
+	mov	[rdi],dl
+	and	eax,15
+	mov	al,[hex_digits+rax]
+	mov	[rdi+1],al
+	add	rdi,2
+	dec	ecx
+	jmp	r53_hex
+.out:
+	ret
+
+; rsi/ecx = a URL, rdx/r8d = the body (0: none), g_ac_meth 0: AWS Signature
+; Version 4 (us-east-1, route53): g_ac_xhdr its header lines, g_ac_ctype text/xml.
+r53_sign:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	mov	r12,rsi
+	mov	r13d,ecx
+	mov	r14,rdx
+	mov	r15d,r8d
+	call	acme_now
+	call	x5_utctime			; YYMMDDHHMMSSZ
+	lea	rdi,[g_r53_date]
+	mov	word [rdi],'20'
+	mov	eax,dword [g_x5_time]
+	mov	[rdi+2],eax
+	mov	ax,word [g_x5_time+4]
+	mov	[rdi+6],ax
+	mov	byte [rdi+8],'T'
+	mov	eax,dword [g_x5_time+6]
+	mov	[rdi+9],eax
+	mov	ax,word [g_x5_time+10]
+	mov	[rdi+13],ax
+	mov	byte [rdi+15],'Z'
+	mov	rsi,r12
+	mov	ecx,r13d
+	call	acme_url
+	jc	.out
+	; the canonical request
+	lea	rdi,[g_r53_creq]
+	test	r14,r14
+	jz	.get
+	memit_x 'POST',10
+	jmp	.uri
+.get:
+	memit_x 'GET',10
+.uri:
+	mov	rsi,[g_ac_path]
+	mov	ecx,[g_ac_pathl]
+	test	ecx,ecx
+	jnz	@f
+	mov	byte [rdi],'/'
+	inc	rdi
+@@:
+	test	ecx,ecx
+	jz	.query
+	lodsb
+	dec	ecx
+	cmp	al,'?'
+	je	.query
+	stosb
+	jmp	@b
+.query:
+	mov	byte [rdi],10
+	inc	rdi
+	rep	movsb				; (built in order, nothing to escape)
+	memit_x 10,'host:'
+	mov	rsi,[g_ac_auth]
+	mov	ecx,[g_ac_authl]
+	rep	movsb
+	memit_x 10,'x-amz-date:'
+	lea	rsi,[g_r53_date]
+	mov	ecx,16
+	rep	movsb
+	mov	byte [rdi],10
+	inc	rdi
+	cmp	dword [g_plan_acme+ACM_DNSSTL],0
+	je	@f
+	memit_x 'x-amz-security-token:'
+	lea	rsi,[g_plan_acme+ACM_DNSST]
+	mov	ecx,[g_plan_acme+ACM_DNSSTL]
+	rep	movsb
+	mov	byte [rdi],10
+	inc	rdi
+@@:
+	memit_x 10
+	call	.signed
+	mov	byte [rdi],10
+	inc	rdi
+	push	rdi
+	lea	rdi,[g_r53_mac]
+	mov	rsi,r14
+	mov	edx,r15d
+	test	r14,r14
+	jnz	@f
+	xor	edx,edx
+	lea	rsi,[g_r53_mac]
+@@:
+	call	sha256
+	pop	rdi
+	lea	rsi,[g_r53_mac]
+	mov	ecx,32
+	call	r53_hex
+	; the string to sign
+	lea	rsi,[g_r53_creq]
+	mov	rdx,rdi
+	sub	rdx,rsi
+	lea	rdi,[g_r53_mac]
+	call	sha256
+	lea	rdi,[g_r53_sts]
+	memit_x 'AWS4-HMAC-SHA256',10
+	lea	rsi,[g_r53_date]
+	mov	ecx,16
+	rep	movsb
+	mov	byte [rdi],10
+	inc	rdi
+	call	.scope
+	mov	byte [rdi],10
+	inc	rdi
+	lea	rsi,[g_r53_mac]
+	mov	ecx,32
+	call	r53_hex
+	mov	rbx,rdi				; its end
+	; the key: HMAC("AWS4" secret, date), then region, service, aws4_request
+	lea	rdi,[g_r53_key]
+	mov	dword [rdi],'AWS4'
+	add	rdi,4
+	lea	rsi,[g_plan_acme+ACM_DNSSEC]
+	mov	ecx,[g_plan_acme+ACM_DNSSECL]
+	rep	movsb
+	lea	rdi,[g_r53_mac]
+	lea	rsi,[g_r53_key]
+	mov	edx,[g_plan_acme+ACM_DNSSECL]
+	add	edx,4
+	lea	rcx,[g_r53_date]
+	mov	r8d,8
+	call	hmac_sha256
+	cstring .s_region, 'us-east-1'
+	lea	rcx,[.s_region]
+	mov	r8d,9
+	call	.step
+	cstring .s_service, 'route53'
+	lea	rcx,[.s_service]
+	mov	r8d,7
+	call	.step
+	cstring .s_req, 'aws4_request'
+	lea	rcx,[.s_req]
+	mov	r8d,12
+	call	.step
+	lea	rcx,[g_r53_sts]
+	mov	r8,rbx
+	sub	r8,rcx
+	call	.step
+	lea	rdi,[g_r53_sig]
+	lea	rsi,[g_r53_mac]
+	mov	ecx,32
+	call	r53_hex
+	; the header lines
+	lea	rdi,[g_ac_xbuf]
+	memit_x 'X-Amz-Date: '
+	lea	rsi,[g_r53_date]
+	mov	ecx,16
+	rep	movsb
+	memit_x 13,10
+	cmp	dword [g_plan_acme+ACM_DNSSTL],0
+	je	@f
+	memit_x 'X-Amz-Security-Token: '
+	lea	rsi,[g_plan_acme+ACM_DNSST]
+	mov	ecx,[g_plan_acme+ACM_DNSSTL]
+	rep	movsb
+	memit_x 13,10
+@@:
+	memit_x 'Authorization: AWS4-HMAC-SHA256 Credential='
+	lea	rsi,[g_plan_acme+ACM_DNSTOK]
+	mov	ecx,[g_plan_acme+ACM_DNSTOKL]
+	rep	movsb
+	mov	byte [rdi],'/'
+	inc	rdi
+	call	.scope
+	memit_x ', SignedHeaders='
+	call	.signed
+	memit_x ', Signature='
+	lea	rsi,[g_r53_sig]
+	mov	ecx,64
+	rep	movsb
+	memit_x 13,10
+	lea	rax,[g_ac_xbuf]
+	mov	[g_ac_xhdr],rax
+	sub	rdi,rax
+	mov	[g_ac_xhdrl],edi
+	cstring .ct_xml, 'text/xml',0
+	lea	rax,[.ct_xml]
+	mov	[g_ac_ctype],rax
+.out:
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+; rcx/r8 = data: g_r53_mac = HMAC(g_r53_mac, it)
+.step:
+	lea	rdi,[g_r53_key]
+	push	rcx
+	push	r8
+	lea	rsi,[g_r53_mac]
+	mov	ecx,32
+	rep	movsb
+	pop	r8
+	pop	rcx
+	lea	rdi,[g_r53_mac]
+	lea	rsi,[g_r53_key]
+	mov	edx,32
+	jmp	hmac_sha256
+; rdi: DATE/us-east-1/route53/aws4_request
+.scope:
+	lea	rsi,[g_r53_date]
+	mov	ecx,8
+	rep	movsb
+	memit_x '/us-east-1/route53/aws4_request'
+	ret
+; rdi: the signed headers' names
+.signed:
+	memit_x 'host;x-amz-date'
+	cmp	dword [g_plan_acme+ACM_DNSSTL],0
+	je	@f
+	memit_x ';x-amz-security-token'
+@@:
+	ret
+
+; the answer's body: rdi = "<Tag>" (cstr), rsi = where to look from: rax = its
+; text, ecx its length (to the next '<'). CF: not there.
+r53_xml:
+	push	rsi
+	xor	edx,edx
+@@:
+	cmp	byte [rdi+rdx],0
+	je	@f
+	inc	edx
+	jmp	@b
+@@:
+	pop	rsi
+	push	rdx
+	mov	rcx,[g_ac_rb]
+	mov	eax,[g_ac_rbl]
+	add	rcx,rax
+	sub	rcx,rsi
+	jbe	.none_pop
+	call	find_sub
+	pop	rdx
+	test	rax,rax
+	jz	.none
+	add	rax,rdx
+	mov	rcx,[g_ac_rb]
+	mov	edx,[g_ac_rbl]
+	add	rdx,rcx				; the end
+	xor	ecx,ecx
+@@:
+	lea	r8,[rax+rcx]
+	cmp	r8,rdx
+	jae	.none
+	cmp	byte [r8],'<'
+	je	@f
+	inc	ecx
+	jmp	@b
+@@:
+	clc
+	ret
+.none_pop:
+	pop	rdx
+.none:
+	stc
+	ret
+
+; rax/ecx = "/hostedzone/ID" or "/change/ID", rdi = out (63): the ID (letters
+; and digits), eax its length. CF: not one.
+r53_id:
+	lea	rsi,[rax+rcx]			; from the last '/'
+@@:
+	cmp	rsi,rax
+	je	@f
+	cmp	byte [rsi-1],'/'
+	je	@f
+	dec	rsi
+	jmp	@b
+@@:
+	lea	rdx,[rax+rcx]
+	sub	rdx,rsi
+	jz	.bad
+	cmp	edx,63
+	ja	.bad
+	mov	ecx,edx
+	push	rdx
+@@:
+	lodsb
+	stosb
+	cmp	al,'0'
+	jb	.bad_pop
+	cmp	al,'9'
+	jbe	.ch
+	or	al,0x20
+	cmp	al,'a'
+	jb	.bad_pop
+	cmp	al,'z'
+	ja	.bad_pop
+.ch:
+	dec	ecx
+	jnz	@b
+	pop	rax
+	clc
+	ret
+.bad_pop:
+	pop	rdx
+.bad:
+	stc
+	ret
+
+; r12d, ebx = two authorizations: ZF when theirs is the same name
+r53_same:
+	mov	ecx,[g_ac_dnamel+r12*4]
+	cmp	ecx,[g_ac_dnamel+rbx*4]
+	jne	.out
+	imul	esi,r12d,256
+	lea	rsi,[g_ac_dname+rsi]
+	imul	edi,ebx,256
+	lea	rdi,[g_ac_dname+rdi]
+	repe	cmpsb
+.out:
+	ret
+
+; r12d = the authorization, g_ac_ident its name, g_ac_txt the value: its zone
+; (one already found for that name, or the first of the name and its parents
+; that the account holds), and the record set UPSERT. CF: failed.
+r53_create:
+	push	rbx
+	push	r13
+	imul	edi,r12d,256
+	lea	rdi,[g_ac_dname+rdi]
+	lea	rsi,[g_ac_ident]
+	mov	ecx,[g_ac_identl]
+	mov	[g_ac_dnamel+r12*4],ecx
+	rep	movsb
+	imul	edi,r12d,64
+	lea	rdi,[g_ac_did+rdi]
+	lea	rsi,[g_ac_txt]
+	mov	ecx,43
+	rep	movsb
+	xor	ebx,ebx
+.earlier:
+	cmp	ebx,r12d
+	jae	.find
+	cmp	dword [g_ac_didl+rbx*4],0
+	je	.earlier_next
+	call	r53_same
+	jne	.earlier_next
+	imul	esi,ebx,64
+	lea	rsi,[g_ac_dzone+rsi]
+	imul	edi,r12d,64
+	lea	rdi,[g_ac_dzone+rdi]
+	mov	ecx,[g_ac_dzonel+rbx*4]
+	mov	[g_ac_dzonel+r12*4],ecx
+	rep	movsb
+	jmp	.change
+.earlier_next:
+	inc	ebx
+	jmp	.earlier
+.find:
+	xor	r13d,r13d
+.zone:
+	lea	rsi,[g_ac_ident+r13]
+	mov	ecx,[g_ac_identl]
+	sub	ecx,r13d
+	mov	rdi,rsi
+	mov	al,'.'
+	push	rcx
+	repne	scasb
+	pop	rcx
+	jne	.no_zone
+	lea	rdi,[g_ac_durl]
+	call	dns_base
+	memit_x '/2013-04-01/hostedzonesbyname?dnsname='
+	lea	rsi,[g_ac_ident+r13]
+	mov	ecx,[g_ac_identl]
+	sub	ecx,r13d
+	rep	movsb
+	memit_x '&maxitems=1'
+	lea	rsi,[g_ac_durl]
+	mov	rcx,rdi
+	sub	rcx,rsi
+	xor	edx,edx
+	xor	r8d,r8d
+	xor	r9d,r9d
+	call	dns_request
+	jc	.out
+	cstring .w_api, 'the Route 53 API refused (the key, or its rights?)',0
+	lea	rax,[.w_api]
+	mov	[g_ac_why],rax
+	cmp	dword [g_ac_st],200
+	jne	.fail
+	; the first zone from that name on: it, when its Name is the name
+	cstring .x_hz, '<HostedZone>',0
+	lea	rdi,[.x_hz]
+	mov	rsi,[g_ac_rb]
+	call	r53_xml
+	jc	.parent
+	mov	rbx,rax				; (in it)
+	cstring .x_name, '<Name>',0
+	lea	rdi,[.x_name]
+	mov	rsi,rbx
+	call	r53_xml
+	jc	.parent
+	mov	edx,[g_ac_identl]
+	sub	edx,r13d
+	inc	edx
+	cmp	ecx,edx
+	jne	.parent
+	dec	ecx
+	cmp	byte [rax+rcx],'.'
+	jne	.parent
+	lea	rsi,[g_ac_ident+r13]
+	mov	rdi,rax
+	repe	cmpsb
+	jne	.parent
+	cstring .x_id, '<Id>',0
+	lea	rdi,[.x_id]
+	mov	rsi,rbx
+	call	r53_xml
+	jc	.parent
+	imul	edi,r12d,64
+	lea	rdi,[g_ac_dzone+rdi]
+	call	r53_id
+	jc	.fail
+	mov	[g_ac_dzonel+r12*4],eax
+	jmp	.change
+.parent:
+	inc	r13d
+	cmp	r13d,[g_ac_identl]
+	jae	.no_zone
+	cmp	byte [g_ac_ident+r13-1],'.'
+	jne	.parent
+	jmp	.zone
+.change:
+	cstring .a_upsert, 'UPSERT',0
+	lea	rsi,[.a_upsert]
+	call	r53_change
+	jc	.out
+	mov	dword [g_ac_didl+r12*4],43
+	clc
+	jmp	.out
+.no_zone:
+	cstring .w_zone, 'no hosted zone of the account holds the name',0
+	lea	rax,[.w_zone]
+	mov	[g_ac_why],rax
+.fail:
+	stc
+.out:
+	pop	r13
+	pop	rbx
+	ret
+
+; r12d = an authorization, rsi = the action (cstr): its name's record set, with
+; every value made for that name (and its own), changed; the change kept to
+; wait on. CF: failed.
+r53_change:
+	push	rbx
+	push	r13
+	mov	r13,rsi
+	lea	rdi,[g_ac_pay]
+	memit_x '<?xml version="1.0" encoding="UTF-8"?>',10,'<ChangeResourceRecordSetsRequest xmlns="https://route53.amazonaws.com/doc/2013-04-01/"><ChangeBatch><Changes><Change><Action>'
+	mov	rsi,r13
+	call	fmt_cstr
+	memit_x '</Action><ResourceRecordSet><Name>_acme-challenge.'
+	imul	esi,r12d,256
+	lea	rsi,[g_ac_dname+rsi]
+	mov	ecx,[g_ac_dnamel+r12*4]
+	rep	movsb
+	memit_x '.</Name><Type>TXT</Type><TTL>60</TTL><ResourceRecords>'
+	xor	ebx,ebx
+.value:
+	cmp	ebx,ACME_NAMES
+	jae	.values
+	cmp	ebx,r12d
+	je	.it
+	cmp	dword [g_ac_didl+rbx*4],0
+	je	.next
+	push	rdi
+	call	r53_same
+	pop	rdi
+	jne	.next
+.it:
+	memit_x '<ResourceRecord><Value>"'
+	imul	esi,ebx,64
+	lea	rsi,[g_ac_did+rsi]
+	mov	ecx,43
+	rep	movsb
+	memit_x '"</Value></ResourceRecord>'
+.next:
+	inc	ebx
+	jmp	.value
+.values:
+	memit_x '</ResourceRecords></ResourceRecordSet></Change></Changes></ChangeBatch></ChangeResourceRecordSetsRequest>'
+	lea	rdx,[g_ac_pay]
+	mov	r8,rdi
+	sub	r8,rdx
+	push	rdx
+	push	r8
+	lea	rdi,[g_ac_durl]
+	call	dns_base
+	memit_x '/2013-04-01/hostedzone/'
+	imul	esi,r12d,64
+	lea	rsi,[g_ac_dzone+rsi]
+	mov	ecx,[g_ac_dzonel+r12*4]
+	rep	movsb
+	memit_x '/rrset'
+	lea	rsi,[g_ac_durl]
+	mov	rcx,rdi
+	sub	rcx,rsi
+	pop	r8
+	pop	rdx
+	xor	r9d,r9d
+	call	dns_request
+	jc	.out
+	cstring .w_rec, 'Route 53 would not change the TXT record',0
+	lea	rax,[.w_rec]
+	mov	[g_ac_why],rax
+	cmp	dword [g_ac_st],200
+	jne	.fail
+	cstring .x_ci, '<ChangeInfo>',0
+	lea	rdi,[.x_ci]
+	mov	rsi,[g_ac_rb]
+	call	r53_xml
+	jc	.fail
+	cstring .x_id, '<Id>',0
+	lea	rdi,[.x_id]
+	mov	rsi,rax
+	call	r53_xml
+	jc	.fail
+	imul	edi,r12d,64
+	lea	rdi,[g_ac_dchg+rdi]
+	call	r53_id
+	jc	.fail
+	mov	[g_ac_dchgl+r12*4],eax
+	clc
+	jmp	.out
+.fail:
+	stc
+.out:
+	pop	r13
+	pop	rbx
+	ret
+
+; each change made, asked after until INSYNC (a while between, 40 times at
+; most). CF: failed.
+r53_insync:
+	push	r12
+	push	r13
+	push	r14
+	xor	r12d,r12d
+.change:
+	cmp	r12d,ACME_NAMES
+	jae	.done
+	cmp	dword [g_ac_dchgl+r12*4],0
+	je	.next
+	mov	r13d,40
+	mov	r14d,200
+.ask:
+	lea	rdi,[g_ac_durl]
+	call	dns_base
+	memit_x '/2013-04-01/change/'
+	imul	esi,r12d,64
+	lea	rsi,[g_ac_dchg+rsi]
+	mov	ecx,[g_ac_dchgl+r12*4]
+	rep	movsb
+	lea	rsi,[g_ac_durl]
+	mov	rcx,rdi
+	sub	rcx,rsi
+	xor	edx,edx
+	xor	r8d,r8d
+	xor	r9d,r9d
+	call	dns_request
+	jc	.out
+	cstring .w_chg, 'Route 53 would not show its change',0
+	lea	rax,[.w_chg]
+	mov	[g_ac_why],rax
+	cmp	dword [g_ac_st],200
+	jne	.fail
+	cstring .x_st, '<Status>',0
+	lea	rdi,[.x_st]
+	mov	rsi,[g_ac_rb]
+	call	r53_xml
+	jc	.fail
+	cmp	ecx,6
+	jne	.wait
+	cmp	dword [rax],'INSY'
+	jne	.wait
+	cmp	word [rax+4],'NC'
+	je	.next
+.wait:
+	dec	r13d
+	jz	.too_long
+	mov	eax,r14d
+	xor	edx,edx
+	mov	ecx,1000
+	div	ecx
+	imul	rdx,rdx,1000000
+	push	rdx
+	push	rax
+	mov	rdi,rsp
+	xor	esi,esi
+	mov	eax,SYS_nanosleep
+	syscall
+	add	rsp,16
+	add	r14d,r14d
+	cmp	r14d,5000
+	jbe	.ask
+	mov	r14d,5000
+	jmp	.ask
+.next:
+	mov	dword [g_ac_dchgl+r12*4],0
+	inc	r12d
+	jmp	.change
+.done:
+	clc
+	jmp	.out
+.too_long:
+	cstring .w_long, 'Route 53 took too long to apply the record',0
+	lea	rax,[.w_long]
+	mov	[g_ac_why],rax
+.fail:
+	stc
+.out:
+	pop	r14
+	pop	r13
+	pop	r12
+	ret
+
+; r12d = an authorization with its record made: its name's record set deleted
+; (every value made for that name), once for them all
+r53_remove:
+	push	rbx
+	cstring .a_delete, 'DELETE',0
+	lea	rsi,[.a_delete]
+	call	r53_change
+	xor	ebx,ebx
+.same:
+	cmp	ebx,ACME_NAMES
+	jae	.done
+	cmp	ebx,r12d
+	je	.next
+	call	r53_same
+	jne	.next
+	mov	dword [g_ac_didl+rbx*4],0
+.next:
+	inc	ebx
+	jmp	.same
+.done:
+	mov	dword [g_ac_didl+r12*4],0
+	mov	dword [g_ac_dchgl+r12*4],0
 	pop	rbx
 	ret
 
@@ -3095,6 +3980,11 @@ rfc_verify:
 ; challenge answered ("{}"). CF: failed.
 dns_go:
 	push	r12
+	cmp	dword [g_plan_acme+ACM_DNS],3
+	jne	@f
+	call	r53_insync			; Route 53: its changes applied first
+	jc	.out
+@@:
 	mov	eax,[g_plan_acme+ACM_DNSWAIT]
 	xor	edx,edx
 	mov	ecx,1000
@@ -3146,6 +4036,11 @@ dns_clean:
 	jae	.done
 	cmp	dword [g_ac_didl+r12*4],0
 	je	.next
+	cmp	dword [g_plan_acme+ACM_DNS],3
+	jne	@f
+	call	r53_remove
+	jmp	.next
+@@:
 	cmp	dword [g_plan_acme+ACM_DNS],2
 	jne	.api
 	mov	[g_dn_idx],r12d

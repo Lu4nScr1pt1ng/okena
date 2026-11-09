@@ -499,7 +499,14 @@ dns_server=HOST:PORT dns_key=FILE [dns_wait=]`, the key file one line as
 `nsupdate -y` takes it, `[hmac-sha256:]NAME:SECRET` (base64). The UPDATE goes
 over TCP signed with TSIG (HMAC-SHA256, RFC 8945), and the server's answer must
 be signed with the same key; the zone is the first of the name and its parents
-that the server does not answer NOTAUTH or NOTZONE for. The files are written beside and renamed over, and okena reloads
+that the server does not answer NOTAUTH or NOTZONE for. Or Route 53: `dns=route53
+dns_key=FILE [dns_api=] [dns_wait=] [dns_trust=]`, the file one line,
+`ACCESS_KEY_ID:SECRET[:SESSION_TOKEN]`, a key allowed
+`route53:ListHostedZonesByName`, `ChangeResourceRecordSets` and `GetChange`.
+Requests are signed with AWS Signature Version 4; the zone is the hosted zone
+named as the name or its nearest parent; a name's values (a wildcard's and its
+parent's share one) go in one record set, okena waits for Route 53 to say the
+change is INSYNC before `dns_wait`, and deletes the record set after. The files are written beside and renamed over, and okena reloads
 itself: the new certificate is served, no connection dropped. A certificate is
 renewed when two thirds of its life have gone; a failed order is tried again
 after a minute, then twice as long each time up to six hours, the one being served

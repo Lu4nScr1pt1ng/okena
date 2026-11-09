@@ -24,7 +24,9 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
@@ -36,8 +38,8 @@ ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BIN = ROOT / "build" / "okena"
 BASE = 56000 + os.getpid() % 90 * 20 + (10 if ENGINE == "epoll" else 0)
-BACK, PLAIN, TLS, CA, TLS2, CF, TLS3, DNS, TLS4 = (BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4, BASE + 5, BASE + 6,
-                                                  BASE + 7, BASE + 8)
+BACK, PLAIN, TLS, CA, TLS2, CF, TLS3, DNS, TLS4, R53_PORT, TLS5 = (BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4, BASE + 5,
+                                                             BASE + 6, BASE + 7, BASE + 8, BASE + 9, BASE + 10)
 CF_TOKEN = "cf-test-token_0123"
 fails = 0
 
@@ -139,12 +141,124 @@ def thumbprint(jwk):
 CFS = {"records": {}, "log": [], "n": 0, "lock": threading.Lock()}
 
 
+def sigv4(secret, method, path, query, headers, signed, payload, amzdate, region, service):
+    """AWS Signature Version 4 (checked below against AWS's own get-vanilla vector)"""
+    def h(k, m):
+        return hmac.new(k, m.encode(), hashlib.sha256).digest()
+    creq = "\n".join([method, path, query] + [f"{n}:{headers[n]}" for n in signed.split(";")] + ["", signed,
+                      hashlib.sha256(payload).hexdigest()])
+    scope = f"{amzdate[:8]}/{region}/{service}/aws4_request"
+    sts = "\n".join(["AWS4-HMAC-SHA256", amzdate, scope, hashlib.sha256(creq.encode()).hexdigest()])
+    k = h(h(h(h(("AWS4" + secret).encode(), amzdate[:8]), region), service), "aws4_request")
+    return hmac.new(k, sts.encode(), hashlib.sha256).hexdigest(), scope
+
+
+R53 = {"akid": "AKIDOKENATEST", "secret": "okena/Test+Secret0123456789abcdefghijKLMN", "token": "sess-tok/en+" + "x" * 300,
+       "rrsets": {}, "log": [], "changes": {}, "n": 0, "lock": threading.Lock()}
+NS = "https://route53.amazonaws.com/doc/2013-04-01/"
+
+
+class R53Api(http.server.BaseHTTPRequestHandler):
+    """Route 53's API, as much as DNS-01 uses: zones by name (the first from that
+    name on, as Route 53 lists them), record sets changed (DELETE only of what is
+    there), changes PENDING then INSYNC; every request's SigV4 checked"""
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *a):
+        pass
+
+    def answer(self, code, body):
+        b = body.encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "text/xml")
+        self.send_header("Content-Length", str(len(b)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(b)
+        self.close_connection = True
+
+    def handle_any(self, method):
+        n = int(self.headers.get("Content-Length", "0") or 0)
+        payload = self.rfile.read(n) if n else b""
+        path, _, query = self.path.partition("?")
+        auth = self.headers.get("Authorization", "")
+        amz = self.headers.get("X-Amz-Date", "")
+        ok = False
+        try:
+            parts = dict(x.strip().split("=", 1) for x in auth[len("AWS4-HMAC-SHA256 "):].split(","))
+            signed = parts["SignedHeaders"]
+            hdrs = {"host": self.headers["Host"], "x-amz-date": amz,
+                    "x-amz-security-token": self.headers.get("X-Amz-Security-Token", "")}
+            want, scope = sigv4(R53["secret"], method, path, query, hdrs, signed, payload, amz, "us-east-1", "route53")
+            ok = (auth.startswith("AWS4-HMAC-SHA256 ") and parts["Credential"] == f"{R53['akid']}/{scope}"
+                  and signed == "host;x-amz-date;x-amz-security-token" and hdrs["x-amz-security-token"] == R53["token"]
+                  and hmac.compare_digest(parts["Signature"], want)
+                  and abs(datetime.datetime.strptime(amz, "%Y%m%dT%H%M%SZ").replace(tzinfo=datetime.timezone.utc).timestamp() - time.time()) < 300)
+        except Exception as e:
+            R53["log"].append(("bad auth", repr(e)))
+        with R53["lock"]:
+            R53["log"].append((method, self.path, ok, self.headers.get("Content-Type")))
+            if not ok:
+                return self.answer(403, "<ErrorResponse><Error><Code>SignatureDoesNotMatch</Code></Error></ErrorResponse>")
+            if method == "GET" and path == "/2013-04-01/hostedzonesbyname":
+                q = urllib.parse.parse_qs(query)
+                # (the zones listed from that name on: example.test whatever is asked, here)
+                return self.answer(200, f'<?xml version="1.0"?><ListHostedZonesByNameResponse xmlns="{NS}"><HostedZones>'
+                                        f'<HostedZone><Id>/hostedzone/Z0EXAMPLE123</Id><Name>example.test.</Name></HostedZone>'
+                                        f'</HostedZones><DNSName>{q["dnsname"][0]}</DNSName><MaxItems>{q["maxitems"][0]}</MaxItems>'
+                                        f'</ListHostedZonesByNameResponse>')
+            if method == "POST" and path == "/2013-04-01/hostedzone/Z0EXAMPLE123/rrset":
+                x = ET.fromstring(payload)
+                c = x.find(f"{{{NS}}}ChangeBatch/{{{NS}}}Changes/{{{NS}}}Change")
+                action = c.find(f"{{{NS}}}Action").text
+                rr = c.find(f"{{{NS}}}ResourceRecordSet")
+                name = rr.find(f"{{{NS}}}Name").text.rstrip(".")
+                key = (name, rr.find(f"{{{NS}}}Type").text)
+                vals = sorted(v.text for v in rr.iter(f"{{{NS}}}Value"))
+                ttl = int(rr.find(f"{{{NS}}}TTL").text)
+                if action == "DELETE":
+                    if R53["rrsets"].get(key) != (ttl, vals):
+                        return self.answer(400, "<ErrorResponse><Error><Code>InvalidChangeBatch</Code></Error></ErrorResponse>")
+                    del R53["rrsets"][key]
+                elif action in ("UPSERT", "CREATE"):
+                    R53["rrsets"][key] = (ttl, vals)
+                R53["n"] += 1
+                cid = f"C{R53['n']:06d}XYZ"
+                R53["changes"][cid] = 0
+                R53["log"].append(("change", action, key, vals))
+                return self.answer(200, f'<?xml version="1.0"?><ChangeResourceRecordSetsResponse xmlns="{NS}"><ChangeInfo>'
+                                        f'<Id>/change/{cid}</Id><Status>PENDING</Status><SubmittedAt>2026-11-09T00:00:00Z</SubmittedAt>'
+                                        f'</ChangeInfo></ChangeResourceRecordSetsResponse>')
+            if method == "GET" and path.startswith("/2013-04-01/change/"):
+                cid = path.rsplit("/", 1)[1]
+                if cid not in R53["changes"]:
+                    return self.answer(404, "<ErrorResponse/>")
+                R53["changes"][cid] += 1
+                st = "INSYNC" if R53["changes"][cid] > 1 else "PENDING"
+                return self.answer(200, f'<?xml version="1.0"?><GetChangeResponse xmlns="{NS}"><ChangeInfo><Id>/change/{cid}</Id>'
+                                        f'<Status>{st}</Status></ChangeInfo></GetChangeResponse>')
+            return self.answer(404, "<ErrorResponse/>")
+
+    def do_GET(self):
+        self.handle_any("GET")
+
+    def do_POST(self):
+        self.handle_any("POST")
+
+
+def txt_of(name):
+    with CFS["lock"]:
+        got = [r["content"] for r in CFS["records"].values() if r["type"] == "TXT" and r["name"] == name]
+    with R53["lock"]:
+        got += [v.strip('"') for v in R53["rrsets"].get((name, "TXT"), (0, []))[1]]
+    return got
+
+
 def validate_dns(az):
     """DNS-01: a TXT record _acme-challenge.NAME, base64url(SHA-256(key authorization))
     (the DNS here: what the provider's API holds)"""
     want = b64u(hashlib.sha256((az["token"] + "." + az["thumb"]).encode()).digest())
-    with CFS["lock"]:
-        got = [r["content"] for r in CFS["records"].values() if r["type"] == "TXT" and r["name"] == "_acme-challenge." + az["name"]]
+    got = txt_of("_acme-challenge." + az["name"])
     ok = want in got
     with ST.lock:
         az["status"] = "valid" if ok else "invalid"
@@ -573,6 +687,11 @@ def verified_on(sni, cafile, port):
 
 def main():
     global ST
+    # the test's SigV4 against AWS's own vector (aws-sig-v4-test-suite, get-vanilla)
+    v, _ = sigv4("wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY", "GET", "/", "",
+                 {"host": "example.amazonaws.com", "x-amz-date": "20150830T123600Z"}, "host;x-amz-date", b"",
+                 "20150830T123600Z", "us-east-1", "service")
+    check("(the test's SigV4 gives AWS's get-vanilla signature)", v == "5fa00fa31553b73ebf1942676e86291e8372ff2a2260956d9b8aae1d763fbf31", v)
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-acme-", dir="/tmp"))
     ca_k, ca_c = make_ca()
     (tmp / "ca.pem").write_bytes(ca_c.public_bytes(serialization.Encoding.PEM))
@@ -591,6 +710,9 @@ def main():
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     threading.Thread(target=http.server.ThreadingHTTPServer(("127.0.0.1", BACK), Back).serve_forever, daemon=True).start()
     threading.Thread(target=TCPServer(("127.0.0.1", DNS), DNSUpdate).serve_forever, daemon=True).start()
+    r53 = http.server.ThreadingHTTPServer(("127.0.0.1", R53_PORT), R53Api)
+    r53.socket = sctx.wrap_socket(r53.socket, server_side=True)
+    threading.Thread(target=r53.serve_forever, daemon=True).start()
     cf = http.server.ThreadingHTTPServer(("127.0.0.1", CF), CFApi)
     cf.socket = sctx.wrap_socket(cf.socket, server_side=True)
     threading.Thread(target=cf.serve_forever, daemon=True).start()
@@ -784,6 +906,40 @@ http 127.0.0.1:{TLS4} {{
         check("  the wrong key: refused by the server, its unsigned answer not taken, said",
               until(lambda: "not signed with the key" in log.read_text(), 8) and DNSS["log"][n1:]
               and not any(g for _, g, _ in DNSS["log"][n1:]), (DNSS["log"][n1:], log.read_text()[-300:]))
+        p.terminate()
+        p.wait(10)
+
+        # DNS-01 through Route 53: SigV4 (with a session token), the zone by name,
+        # the wildcard's and its parent's values in one record set, INSYNC waited for
+        n0 = len(ST.log)
+        (tmp / "aws.key").write_text(f"{R53['akid']}:{R53['secret']}:{R53['token']}\n")
+        conf6 = tmp / "okena6.conf"
+        conf6.write_text(f"""okena {{ workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s
+    acme {tmp}/acme6 ca=https://localhost:{CA}/dir trust={tmp}/ca.pem challenge=dns-01 dns=route53 dns_key={tmp}/aws.key dns_api=https://localhost:{R53_PORT} dns_wait=100ms dns_trust={tmp}/ca.pem }}
+pool b {{ server 127.0.0.1:{BACK} }}
+http 127.0.0.1:{TLS5} {{
+    tls {{ acme *.q.example.test q.example.test }}
+    route /* {{ to pool b }}
+}}
+""")
+        p = subprocess.Popen([str(BIN), "-c", str(conf6)], stdout=subprocess.DEVNULL, stderr=open(log, "a"))
+        procs.append(p)
+        check("route53: a wildcard issued (SigV4, a session token)",
+              until(lambda: served("z.q.example.test", TLS5).issuer == ca_c.subject, 20)
+              and verified_on("q.example.test", cafile, TLS5).startswith(b"HTTP/1.1 200"),
+              (ST.log[n0:][-6:], R53["log"][-6:], log.read_text()[-400:]))
+        lg = R53["log"]
+        calls = [(e[0], e[1]) for e in lg if e[0] in ("GET", "POST")]
+        check("  every request signed right; the zone by name: q.example.test's answer not taken (another zone's), example.test's",
+              lg and all(e[2] for e in lg if e[0] in ("GET", "POST"))
+              and ("GET", "/2013-04-01/hostedzonesbyname?dnsname=q.example.test&maxitems=1") in calls
+              and ("GET", "/2013-04-01/hostedzonesbyname?dnsname=example.test&maxitems=1") in calls
+              and all(e[3] == "text/xml" for e in lg if e[0] == "POST"), lg)
+        ch = [e for e in lg if e[0] == "change"]
+        check("  one record set, its values added up (UPSERT 1, then 2), INSYNC waited for, then DELETE exactly",
+              [c[1] for c in ch] == ["UPSERT", "UPSERT", "DELETE"] and len(ch[0][3]) == 1 and len(ch[1][3]) == 2
+              and ch[2][3] == ch[1][3] and not R53["rrsets"]
+              and sum(1 for e in calls if e[1].startswith("/2013-04-01/change/")) >= 4, ch)
     finally:
         for q in procs:
             if q.poll() is None:
