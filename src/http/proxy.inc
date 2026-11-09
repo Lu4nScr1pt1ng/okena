@@ -221,6 +221,7 @@ http_start:
 	shl	rax,HB_SHIFT
 	add	rax,[g_hbuf_base]
 	mov	[r15+H_BUF],rax
+	mov	dword [rax+HB_CW],0		; (cache.inc: a stale copy kept, none)
 	xor	eax,eax
 	mov	[r15+H_INLEN],eax
 	mov	[r15+H_INOFF],eax
@@ -2343,6 +2344,10 @@ http_resp_head:
 	mov	edi,eax
 	call	http_backend_status		; may send the request elsewhere
 	h_rec
+	push	rax				; a failure, with a stale copy kept for it?
+	call	cache_sie_ok
+	pop	rax
+	jnc	cache_sie_serve
 	lea	r14,[g_hm]
 	mov	edi,eax
 	xor	esi,esi
@@ -2591,6 +2596,7 @@ http_write_response_head:
 	jnz	@f
 	call	cors_emit
 	call	split_emit
+	call	cache_status_emit
 	mov	eax,[rsp+24]			; the session
 	call	sticky_emit_for
 @@:
@@ -4237,6 +4243,11 @@ http_error:
 	and	dword [r15+H_FLAGS],not HX_DUPLEX
 	test	dword [r15+H_FLAGS],HX_STARTED
 	jnz	.close
+	mov	eax,edi				; a stale copy kept for this?
+	push	rdi
+	call	cache_sie_ok
+	pop	rdi
+	jnc	cache_sie_serve
 	push	rdi
 	call	h_upclose
 	pop	rax

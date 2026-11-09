@@ -726,7 +726,10 @@ being sent).
 |---|---|
 | the time | how long an answer is good, unless the backend's `s-maxage` or `max-age` says otherwise |
 | `stale-while-revalidate=T` | past that, serve it at once for T while it is fetched again; `must-revalidate` takes this away |
-| `vary=a,b` | up to 4 request fields that are part of the key, with host and target |
+| `stale-if-error=T` | past that, still answer with it for T when the backend fails: 500, 502, 503, 504, or okena's own 502/504 for a backend that cannot be reached. The origin's `Cache-Control: stale-if-error=N` (RFC 5861) wins over the route's; `must-revalidate` takes it away |
+| `vary=a,b` | up to 4 request fields that are part of the key, with host and target. `Accept-Encoding` counts as the set of codings it takes (br, zstd, gzip; `q=0` takes one away): `gzip, br` and `br;q=1, gzip` are one answer |
+| `query=all\|none\|a,b` | the target's query in the key: all of it (the default), none of it, or only the parameters named, in that order, whatever order the request has them in. An absent parameter and an empty one are not the same |
+| `host=off` | the host is not in the key: one answer for every name the listener serves |
 | `max=SIZE` | the largest answer kept, 1 MiB by default |
 | `shared=on` | the answer is the same for everyone: see below |
 
@@ -741,6 +744,21 @@ Unless `shared=on`, a request with Cookie or Authorization, or on a route with `
 neither reads nor fills: an answer for one person must not reach another. A hit says
 `Age` and `Cache-Status: okena; hit; ttl=N`, negative when stale, and runs behind
 what the route has for clients: auth, limits, CORS and `response` rules.
+
+Every answer of a route with `cache` says what the cache did with it, in
+`Cache-Status` (RFC 9211):
+
+| `Cache-Status` | When |
+|---|---|
+| `okena; hit; ttl=N` | from the cache (`; detail=disk` from `cache_disk`) |
+| `okena; fwd=miss; stored` | from the backend, and kept |
+| `okena; fwd=miss` | from the backend, not kept (`no-store`, a status it does not keep, too large) |
+| `okena; fwd=bypass` | past the cache: a request for one person, or a range |
+| `okena; fwd=method` | past the cache: a method it does not keep |
+| `okena; fwd=stale; fwd-status=503; ttl=-N` | the backend failed, and a stale copy answered (stale-if-error) |
+
+A backend's own `Cache-Status` is passed on, and okena's comes after it, as the RFC
+orders them.
 
 `redirects FILE code=301` keeps thousands of old paths in a file, one lookup each:
 lines `/old /new` or `/old https://else/ 302`, `#` for comments, each path once. The

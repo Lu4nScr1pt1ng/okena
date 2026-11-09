@@ -454,6 +454,7 @@ cstring str_key_identity, 'identity',0
 cstring str_key_forward, 'forward',0
 cstring str_key_header, 'header',0
 cstring str_word_on, 'on',0
+cstring str_word_off, 'off',0
 cstring str_x_user_id, 'x-user-id',0
 cstring str_authorization, 'authorization',0
 cstring str_realm_okena, 'okena',0

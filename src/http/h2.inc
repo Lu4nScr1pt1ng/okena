@@ -2254,6 +2254,7 @@ h2_stream_new:
 	shl	rax,HB_SHIFT
 	add	rax,[g_hbuf_base]
 	mov	[r15+H_BUF],rax
+	mov	dword [rax+HB_CW],0		; (cache.inc: a stale copy kept, none)
 	xor	eax,eax
 	mov	[r15+H_INLEN],eax
 	mov	[r15+H_INOFF],eax

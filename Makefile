@@ -196,6 +196,8 @@ test-serial: $(BIN) $(HTTPH) $(KAT) $(TLSH)
 	python3 -I tests/gateway/cachedisk.py epoll
 	python3 -I tests/gateway/zerocopy.py io_uring
 	python3 -I tests/gateway/zerocopy.py epoll
+	python3 -I tests/gateway/cachekeys.py io_uring
+	python3 -I tests/gateway/cachekeys.py epoll
 	python3 -I tests/gateway/forward.py io_uring
 	python3 -I tests/gateway/forward.py epoll
 	python3 -I tests/gateway/mtls.py io_uring

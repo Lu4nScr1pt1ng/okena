@@ -475,7 +475,10 @@ on a machine that can spare it).
   the socket, splice with io_uring and sendfile with epoll, kTLS too;
   S3-FIFO, kept by a process of its own off the request path.)
 * Cache keys, `Vary` normalisation, slicing, `stale-if-error`, purge by
-  URL/prefix/tag with fleet fan-out, `Cache-Status`.
+  URL/prefix/tag with fleet fan-out, `Cache-Status`. (Done: keys with
+  `query=` and `host=off`, Accept-Encoding normalised, `stale-if-error`
+  from the route and the origin, `Cache-Status` on every answer. Still to
+  come: purge, slicing.)
 * Shield tier, signed URLs, CDN provider ranges, authenticated origin
   pulls, health-driven BGP announcement (through BIRD).
 * A floating address for a pair of instances without BGP: VRRP v3 (RFC 9568),

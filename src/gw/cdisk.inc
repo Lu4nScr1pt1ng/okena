@@ -44,7 +44,7 @@ CD_HMAX		:= 8192				; the largest head kept on disk
 CD_RH		:= 64				; a record's own head
 CD_REG		:= 256				; processes that can pin, at once
 CD_IOV		:= 256
-CD_VER		:= 2
+CD_VER		:= 3
 CD_LOGM		:= 1 shl 62			; a place in M (in S without it)
 CD_FREQ		:= 1 shl 30			; IS_LEN: asked for again (0-3), above the length
 CD_LENM		:= CD_FREQ - 1
@@ -80,6 +80,8 @@ IS_SIZE		:= 32
 RH_MAGIC	:= 0				; d
 RH_HLEN		:= 4				; d
 RH_BLEN		:= 8				; d
+RH_SWR		:= 12				; d: stale-while-revalidate ends, seconds (past it,
+						; to the slot's IS_STALE, only for an error)
 RH_ABS		:= 16				; q
 RH_BORN		:= 24				; q: seconds
 RH_KEY		:= 32				; 32
@@ -825,7 +827,7 @@ cd_find:
 	ret
 
 ; g_ck = a key, r15 = record. eax = 0 not on disk; 1 there and fresh; 2 stale but in
-; its window. When there, it is pinned (g_cd_sidx) and its head is in g_cd_buf,
+; its stale-while-revalidate window; 3 past it, within stale-if-error. When there, it is pinned (g_cd_sidx) and its head is in g_cd_buf,
 ; checked. Keeps rbx, r12-r15.
 cd_lookup:
 	cmp	dword [g_cd_on],0
@@ -898,6 +900,10 @@ cd_lookup:
 	cmp	[g_cd_rnow],rcx
 	jb	@f
 	mov	eax,2
+	mov	ecx,[g_cd_buf+RH_SWR]
+	cmp	[g_cd_rnow],rcx
+	jb	@f
+	mov	eax,3				; (only should the backend fail)
 @@:
 	ret
 .bad:
@@ -913,6 +919,7 @@ cd_serve:
 	mov	ecx,[g_cd_sidx]
 	or	ecx,CD_MARK
 	mov	[rax+HB_CE],ecx
+	mov	dword [rax+HB_CW],0
 	mov	dword [rax+HB_ZCP],0		; (no pipe yet: zc.inc)
 	inc	qword [g_st_cd_hits]
 	mov	qword [rax+HB_HT0],0
@@ -932,7 +939,7 @@ cd_serve:
 	xor	eax,eax				; (a clock set back)
 @@:
 	call	fmt_u64
-	memit_x 13,10,'Cache-Status: okena; hit; ttl='
+	call	cache_status_head
 	mov	eax,[g_cd_sfresh]
 	sub	rax,[g_cd_rnow]
 	jg	@f
@@ -1167,7 +1174,10 @@ cd_put:
 	mov	[rdi+RH_HLEN],eax
 	mov	eax,[r12+CE_BLEN]
 	mov	[rdi+RH_BLEN],eax
-	mov	dword [rdi+12],0
+	mov	eax,[r12+CE_TTL]
+	add	eax,dword [g_cd_rnow]
+	add	eax,[r12+CE_SWR]
+	mov	[rdi+RH_SWR],eax
 	mov	[rdi+RH_ABS],r13
 	mov	rax,[g_cd_rnow]
 	mov	[rdi+RH_BORN],rax
@@ -1208,9 +1218,11 @@ cd_put:
 	mov	esi,r15d
 	mov	eax,[r12+CE_TTL]
 	add	rax,[g_cd_rnow]
-	mov	edx,eax
-	add	eax,[r12+CE_SWR]
-	mov	ecx,eax
+	mov	edx,eax				; fresh until
+	mov	ecx,[r12+CE_SWR]
+	cmp	ecx,[r12+CE_SIE]
+	cmovb	ecx,[r12+CE_SIE]
+	add	ecx,eax				; and of any use until
 	call	cd_publish
 	inc	qword [g_st_cd_writes]
 .unpin:

@@ -170,6 +170,8 @@ SUITES = [
     ("cachedisk epoll", ["tests/gateway/cachedisk.py", "epoll"]),
     ("zerocopy io_uring", ["tests/gateway/zerocopy.py", "io_uring"]),
     ("zerocopy epoll", ["tests/gateway/zerocopy.py", "epoll"]),
+    ("cachekeys io_uring", ["tests/gateway/cachekeys.py", "io_uring"]),
+    ("cachekeys epoll", ["tests/gateway/cachekeys.py", "epoll"]),
     ("forward io_uring", ["tests/gateway/forward.py", "io_uring"]),
     ("forward epoll", ["tests/gateway/forward.py", "epoll"]),
     ("mtls io_uring", ["tests/gateway/mtls.py", "io_uring"]),

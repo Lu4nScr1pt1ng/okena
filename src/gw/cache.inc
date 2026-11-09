@@ -33,6 +33,7 @@
 SF_CACHED	:= 4194304			; S_FLAGS: its answer comes from the cache
 SF_CFILL	:= 8388608			; what it relays goes into an entry
 SF_CREF		:= 16777216			; a copy that fetches a stale entry again
+SF_SIE		:= 1 shl 30			; a stale copy is kept for it (HB_CW), for an error
 
 FD_CACHE	:= 0x20000000			; FD_SESS: it waits for an entry being filled
 
@@ -69,6 +70,7 @@ CE_WANT		:= 104				; q: the length said, -1 not said
 CE_MAX		:= 112				; d: what the route allows
 CE_TTL		:= 116				; d: seconds
 CE_SWR		:= 120				; d
+CE_SIE		:= 124				; d: stale-if-error, seconds past fresh
 CE_SIZE		:= 128
 
 ; `cache` of a route (plan)
@@ -78,7 +80,24 @@ CA_MAX		:= 8				; d: bytes
 CA_SHARED	:= 12				; d
 CA_VN		:= 16				; d
 CA_V		:= 24				; (name q, length q) * CA_VMAX
-CA_SIZE		:= CA_V + 16 * CA_VMAX
+CA_NOHOST	:= CA_V + 16 * CA_VMAX		; d: host=off: not in the key
+CA_QMODE	:= CA_NOHOST + 4		; d: query= all (0), none (1), these (2)
+CA_QN		:= CA_NOHOST + 8		; d
+CA_SIE		:= CA_NOHOST + 12		; d: stale-if-error=, seconds
+CA_Q		:= CA_NOHOST + 16		; (name q, length q) * CA_QMAX
+CA_QMAX		:= 8
+CA_SIZE		:= CA_Q + 16 * CA_QMAX
+
+; HB_CST: what the cache made of a request that went to the backend (Cache-Status)
+CST_MISS	:= 1
+CST_BYPASS	:= 2				; for one person (Cookie, Authorization), a range
+CST_METHOD	:= 3
+HB_CST		:= HB_CPOSB			; (a hit's field: a request that goes on has none)
+
+; HB_CW, once a request goes on to the backend: a stale copy kept for it, should the
+; backend fail (stale-if-error). Times it waited are far below these.
+CW_SIEM		:= 0x40000000			; + an entry of memory, pinned
+CW_SIED		:= 0x20000000			; one on disk (looked up again then)
 MAX_CACHES	:= 256
 
 bss
@@ -101,6 +120,9 @@ bss
 	g_ck_sha:	rb SHA256_CTX_SIZE
 	g_ck:		rb 32
 	g_c_pool	dd ?			; the route's pool, for a refetch
+	g_c_sie		dd ?			; cache_check: an entry kept for an error, NIL none
+	g_c_sied	dd ?			; or one on disk
+	g_c_fwd		dd ?			; the failed status a stale copy answers for, 0 none
 end bss
 
 ; a worker, at its start
@@ -500,20 +522,61 @@ ce_find:
 .out:
 	ret
 
-; r12 = the route's `cache`: g_ck for this request, in g_hm. Keeps rbx, r12-r15.
+; r12 = the route's `cache`: g_ck for this request, in g_hm: its host (unless
+; host=off), its target (with all of its query, none of it, or the parameters query=
+; names, in that order), and the fields vary= names, Accept-Encoding as the set of
+; br, zstd and gzip it takes. Keeps rbx, r12-r15.
 ck_make:
 	push	rbx
 	push	r13
+	push	r14
+	push	r15
 	lea	rdi,[g_ck_sha]
 	call	sha256_init
+	cmp	dword [r12+CA_NOHOST],0
+	jne	@f
 	lea	rdi,[.host]
 	mov	esi,4
 	call	limit_find
 	mov	edx,ecx
 	call	.field
+@@:
 	mov	rsi,[g_hm+HM_TARGET]
 	mov	edx,[g_hm+HM_TLEN]
+	cmp	dword [r12+CA_QMODE],0
+	jne	.split
+	call	.field				; (all of it)
+	jmp	.varied
+.split:
+	; the path, up to `?`
+	xor	ecx,ecx
+@@:
+	cmp	ecx,edx
+	jae	@f
+	cmp	byte [rsi+rcx],'?'
+	je	@f
+	inc	ecx
+	jmp	@b
+@@:
+	lea	r14,[rsi+rcx]			; the query, from `?`
+	mov	r15d,edx
+	sub	r15d,ecx
+	mov	edx,ecx
 	call	.field
+	cmp	dword [r12+CA_QMODE],1
+	je	.varied
+	; the parameters named, each its value or absent
+	mov	ebx,[r12+CA_QN]
+	lea	r13,[r12+CA_Q]
+.param:
+	test	ebx,ebx
+	jz	.varied
+	dec	ebx
+	call	.param_value
+	call	.field
+	add	r13,16
+	jmp	.param
+.varied:
 	mov	ebx,[r12+CA_VN]
 	lea	r13,[r12+CA_V]
 .vary:
@@ -523,7 +586,30 @@ ck_make:
 	mov	rdi,[r13]
 	mov	esi,[r13+8]
 	add	r13,16
+	push	rdi
+	push	rsi
 	call	limit_find
+	pop	rax
+	pop	rdi
+	cmp	eax,15
+	jne	.raw
+	push	rsi
+	push	rcx
+	lea	rsi,[.ae]
+	mov	edx,15
+	call	mem_eq_nocase
+	mov	r8d,eax
+	pop	rcx
+	pop	rsi
+	test	r8d,r8d
+	jz	.raw
+	call	ae_set				; the codings it takes, not how it says so
+	mov	byte [g_ck+31],al
+	lea	rsi,[g_ck+31]
+	mov	edx,1
+	call	.field
+	jmp	.vary
+.raw:
 	mov	edx,ecx
 	call	.field
 	jmp	.vary
@@ -531,9 +617,80 @@ ck_make:
 	lea	rdi,[g_ck_sha]
 	lea	rsi,[g_ck]
 	call	sha256_final
+	pop	r15
+	pop	r14
 	pop	r13
 	pop	rbx
 	ret
+; r13 = a parameter's name, r14/r15d = the query from `?`: rsi/edx = its value, the
+; first one, edx = -1 when it is not there (not the same as empty)
+.param_value:
+	mov	rsi,r14
+	lea	r8,[r14+r15]
+	inc	rsi				; (past `?` or `&`)
+.pair:
+	cmp	rsi,r8
+	jae	.absent
+	mov	rdi,rsi				; a name, up to = or &
+@@:
+	cmp	rsi,r8
+	jae	@f
+	cmp	byte [rsi],'='
+	je	@f
+	cmp	byte [rsi],'&'
+	je	@f
+	inc	rsi
+	jmp	@b
+@@:
+	mov	rcx,rsi
+	sub	rcx,rdi
+	cmp	rcx,[r13+8]
+	jne	.skip_pair
+	push	rsi
+	push	r8
+	mov	rsi,[r13]
+	mov	edx,ecx
+	push	rdi
+	mov	ecx,edx
+	repe	cmpsb
+	pop	rdi
+	pop	r8
+	pop	rsi
+	jne	.skip_pair
+	; its value
+	xor	edx,edx
+	cmp	rsi,r8
+	jae	.value
+	cmp	byte [rsi],'='
+	jne	.value
+	inc	rsi
+	mov	rdi,rsi
+@@:
+	cmp	rdi,r8
+	jae	@f
+	cmp	byte [rdi],'&'
+	je	@f
+	inc	rdi
+	jmp	@b
+@@:
+	mov	rdx,rdi
+	sub	rdx,rsi
+.value:
+	ret
+.skip_pair:
+	cmp	rsi,r8
+	jae	.absent
+	cmp	byte [rsi],'&'
+	je	@f
+	inc	rsi
+	jmp	.skip_pair
+@@:
+	inc	rsi
+	jmp	.pair
+.absent:
+	mov	edx,-1
+	ret
+.ae	db 'accept-encoding'
 ; a field and its length: two fields must not pass for two others
 .field:
 	push	rsi
@@ -545,8 +702,12 @@ ck_make:
 	call	sha256_update
 	pop	rdx
 	pop	rsi
+	cmp	edx,-1
+	je	.absent_field			; (absent: its mark alone)
 	lea	rdi,[g_ck_sha]
 	jmp	sha256_update
+.absent_field:
+	ret
 .host	db 'host'
 
 ; ZF when the request has no such field. Keeps r12-r15.
@@ -583,15 +744,19 @@ cache_check:
 	imul	r12,rax,CA_SIZE
 	lea	r12,[g_caches+r12]
 	mov	rax,[r15+H_BUF]
+	mov	dword [rax+HB_CST],CST_MISS
+	mov	dword [rax+HB_CW],0
+	mov	dword [g_c_sie],NIL
+	mov	dword [g_c_sied],0
 	cmp	dword [rax+HB_CPASS],0
 	je	@f
 	mov	dword [rax+HB_CPASS],0
 	jmp	.origin
 @@:
 	test	dword [r15+H_FLAGS],HX_NOBODY
-	jz	.origin
+	jz	.o_method
 	test	dword [r15+H_FLAGS],HX_UPGRADE
-	jnz	.origin
+	jnz	.o_bypass
 	; GET, or HEAD, which reads what GET kept and fills nothing
 	xor	r13d,r13d			; 1: it may read, not fill
 	test	dword [r15+H_FLAGS],HX_HEAD
@@ -605,23 +770,23 @@ cache_check:
 	mov	eax,[rax]
 	and	eax,0xFFFFFF
 	cmp	eax,'GET'
-	jne	.origin
+	jne	.o_method
 .method:
 	has_field 'range'
-	jnz	.origin				; (not a whole object: the backend's)
+	jnz	.o_bypass			; (not a whole object: the backend's)
 	cmp	dword [r12+CA_SHARED],0
 	jne	.conditional
 	has_field 'authorization'
-	jnz	.origin
+	jnz	.o_bypass
 	has_field 'cookie'
-	jnz	.origin
+	jnz	.o_bypass
 	; (the route, not HB_AUTHL: that holds, on a route with no auth, what the last
 	; request on this session's buffers left; and a yes may come with no name)
 	mov	eax,[r15+H_ACT]
 	dec	eax
 	imul	rax,rax,RA_SIZE
 	cmp	dword [g_acts+rax+RA_AUTH],0
-	jne	.origin
+	jne	.o_bypass
 .conditional:
 	; a conditional request reads what is kept, but its answer may be a 304
 	has_field 'if-none-match'
@@ -664,6 +829,20 @@ cache_check:
 	call	cache_refresh
 	jmp	.serve
 .too_old:
+	; past stale-while-revalidate, but within stale-if-error: kept, to answer
+	; should the backend fail
+	mov	eax,[g_cf_r]
+	ce_ptr
+	mov	ecx,[rax+CE_SIE]
+	imul	rcx,rcx,1000000
+	add	rcx,[rax+CE_FRESH]
+	cmp	[g_qnow],rcx
+	jae	.kill_old
+	mov	eax,[g_cf_r]
+	mov	[g_c_sie],eax
+	mov	dword [g_cf_r],NIL
+	jmp	.no_entry
+.kill_old:
 	mov	edi,[g_cf_r]
 	call	ce_kill
 	mov	dword [g_cf_r],NIL
@@ -672,6 +851,13 @@ cache_check:
 	call	cd_lookup
 	test	eax,eax
 	jz	.no_disk
+	cmp	eax,3
+	jne	@f
+	mov	edi,[g_cd_sidx]			; (only for an error: looked up again then)
+	call	cd_unpin
+	mov	dword [g_c_sied],1
+	jmp	.no_disk
+@@:
 	cmp	eax,2
 	jne	.disk
 	call	cache_refresh
@@ -708,11 +894,317 @@ cache_check:
 .taken:
 	mov	eax,1
 	jmp	.out
+.o_method:
+	mov	rax,[r15+H_BUF]
+	mov	dword [rax+HB_CST],CST_METHOD
+	jmp	.origin
+.o_bypass:
+	mov	rax,[r15+H_BUF]
+	mov	dword [rax+HB_CST],CST_BYPASS
 .origin:
+	; a stale copy to fall back on?
+	mov	rdx,[r15+H_BUF]
+	mov	ecx,[g_c_sie]
+	cmp	ecx,NIL
+	je	@f
+	mov	eax,ecx
+	ce_ptr
+	inc	dword [rax+CE_PIN]
+	or	ecx,CW_SIEM
+	mov	[rdx+HB_CW],ecx
+	jmp	.o_kept
+@@:
+	cmp	dword [g_c_sied],0
+	je	.o_done
+	mov	dword [rdx+HB_CW],CW_SIED
+.o_kept:
+	call	session_ptr
+	or	dword [rax+S_FLAGS],SF_SIE
+.o_done:
 	xor	eax,eax
 .out:
 	pop	r13
 	pop	r12
+	ret
+
+; rsi/ecx = an Accept-Encoding value: al = the codings it takes, of br (1), zstd (2)
+; and gzip (4); `*` all of them; one with q=0 none. Keeps r12-r15, rbx.
+ae_set:
+	xor	r9d,r9d
+	lea	r8,[rsi+rcx]
+.item:
+	cmp	rsi,r8
+	jae	.done
+	movzx	eax,byte [rsi]
+	cmp	al,' '
+	je	.sp
+	cmp	al,9
+	je	.sp
+	cmp	al,','
+	jne	.token
+.sp:
+	inc	rsi
+	jmp	.item
+.token:
+	mov	rdi,rsi				; up to ; , or a space
+@@:
+	cmp	rsi,r8
+	jae	@f
+	mov	al,[rsi]
+	cmp	al,';'
+	je	@f
+	cmp	al,','
+	je	@f
+	cmp	al,' '
+	je	@f
+	inc	rsi
+	jmp	@b
+@@:
+	mov	rcx,rsi
+	sub	rcx,rdi
+	xor	r10d,r10d			; its bit
+	cmp	ecx,1
+	jne	@f
+	cmp	byte [rdi],'*'
+	jne	.params
+	mov	r10d,7
+	jmp	.params
+@@:
+	cmp	ecx,2
+	jne	@f
+	mov	ax,[rdi]
+	or	ax,0x2020
+	cmp	ax,'br'
+	jne	.params
+	mov	r10d,1
+	jmp	.params
+@@:
+	cmp	ecx,4
+	jne	.params
+	mov	eax,[rdi]
+	or	eax,0x20202020
+	cmp	eax,'zstd'
+	jne	@f
+	mov	r10d,2
+	jmp	.params
+@@:
+	cmp	eax,'gzip'
+	jne	.params
+	mov	r10d,4
+.params:
+	; up to the next item; q=0 (0, 0.0, 0.00, 0.000) takes it away
+	xor	r11d,r11d			; q=0 seen
+.p:
+	cmp	rsi,r8
+	jae	.end
+	mov	al,[rsi]
+	cmp	al,','
+	je	.end
+	cmp	al,'q'
+	je	.q
+	cmp	al,'Q'
+	jne	.pn
+.q:
+	lea	rdx,[rsi+1]
+	cmp	rdx,r8
+	jae	.pn
+	cmp	byte [rdx],'='
+	jne	.pn
+	inc	rdx
+	cmp	rdx,r8
+	jae	.pn
+	cmp	byte [rdx],'0'
+	jne	.pn
+	inc	rdx
+	mov	r11d,1
+@@:
+	cmp	rdx,r8
+	jae	.pn
+	mov	al,[rdx]
+	cmp	al,'.'
+	je	.qd
+	cmp	al,'0'
+	je	.qd
+	cmp	al,'1'
+	jb	.pn
+	cmp	al,'9'
+	ja	.pn
+	xor	r11d,r11d			; (0.5: it is taken)
+	jmp	.pn
+.qd:
+	inc	rdx
+	jmp	@b
+.pn:
+	inc	rsi
+	jmp	.p
+.end:
+	test	r11d,r11d
+	jnz	.item
+	or	r9d,r10d
+	jmp	.item
+.done:
+	mov	eax,r9d
+	ret
+
+; rdi = a hit's head, past Age's value: its Cache-Status up to `ttl=`: a hit, or a
+; stale copy answering for a backend that failed (g_c_fwd, then cleared). Keeps r12-r15.
+cache_status_head:
+	cmp	dword [g_c_fwd],0
+	jne	.stale
+	memit_x 13,10,'Cache-Status: okena; hit; ttl='
+	ret
+.stale:
+	memit_x 13,10,'Cache-Status: okena; fwd=stale; fwd-status='
+	mov	eax,[g_c_fwd]
+	mov	dword [g_c_fwd],0
+	call	fmt_u64
+	memit_x '; ttl='
+	ret
+
+; eax = a status from the backend, or okena's own error for it (ebx, r15): CF unless
+; a stale copy answers instead (stale-if-error: 500, 502, 503, 504). From disk, it is
+; looked up again (and pinned) here. Keeps rbx, r12-r15.
+cache_sie_ok:
+	cmp	eax,500
+	je	@f
+	cmp	eax,502
+	jb	.no
+	cmp	eax,504
+	ja	.no
+@@:
+	push	rax
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_SIE
+	pop	rax
+	jz	.no
+	mov	rcx,[r15+H_BUF]
+	mov	ecx,[rcx+HB_CW]
+	test	ecx,CW_SIEM
+	jnz	.yes
+	test	ecx,CW_SIED
+	jz	.no
+	push	rax
+	lea	rdi,[g_ck]
+	mov	rsi,[r15+H_BUF]
+	add	rsi,HB_CK
+	mov	ecx,32
+	rep	movsb
+	call	cd_lookup
+	mov	ecx,eax
+	pop	rax
+	test	ecx,ecx
+	jz	.no
+.yes:
+	mov	[g_c_fwd],eax
+	clc
+	ret
+.no:
+	stc
+	ret
+
+; after cache_sie_ok said yes (ebx, r15): the backend let go of, the stale copy as the
+; answer, with what the backend said in its Cache-Status
+cache_sie_serve:
+	call	h_upclose
+	h_rec
+	call	session_ptr
+	and	dword [rax+S_FLAGS],not SF_SIE
+	test	dword [rax+S_FLAGS],SF_CFILL
+	jz	@f
+	; what it was filling: nobody will finish it
+	and	dword [rax+S_FLAGS],not SF_CFILL
+	mov	rax,[r15+H_BUF]
+	push	rbx
+	mov	ebx,[rax+HB_CE]
+	mov	edi,ebx
+	call	ce_unlink
+	mov	edi,ebx
+	call	ce_free
+	pop	rbx
+@@:
+	mov	rax,[r15+H_BUF]
+	mov	ecx,[rax+HB_CW]
+	mov	dword [rax+HB_CW],0
+	test	ecx,CW_SIED
+	jnz	cd_serve
+	and	ecx,CW_SIEM - 1
+	push	rcx
+	mov	eax,ecx
+	ce_ptr
+	dec	dword [rax+CE_PIN]		; (cache_serve takes it again)
+	call	qs_clock
+	pop	rdi
+	jmp	cache_serve
+
+; ebx, r15: a stale copy kept for an error goes (the exchange is over, or the
+; session). Keeps rbx, r12-r15.
+cache_sie_drop:
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_SIE
+	jz	.none
+	and	dword [rax+S_FLAGS],not SF_SIE
+	mov	rax,[r15+H_BUF]
+	mov	edi,[rax+HB_CW]
+	mov	dword [rax+HB_CW],0
+	test	edi,CW_SIEM
+	jz	.none
+	and	edi,CW_SIEM - 1
+	mov	eax,edi
+	ce_ptr
+	dec	dword [rax+CE_PIN]
+	jnz	.none
+	cmp	dword [rax+CE_DEAD],0
+	je	.none
+	jmp	ce_free
+.none:
+	ret
+
+; rdi = where a response head is being written, r15 = its record: Cache-Status
+; (RFC 9211) for an answer of a route with `cache` that went to the backend: forwarded
+; on a miss (`stored` when it is kept), past the cache for one person, a range, or a
+; method it does not keep. A hit carries its own. Keeps rbx, r8-r15.
+cache_status_emit:
+	mov	eax,[r15+H_ACT]
+	test	eax,eax
+	jz	.none
+	dec	eax
+	imul	rax,rax,RA_SIZE
+	cmp	dword [g_acts+rax+RA_CACHE],0
+	je	.none
+	mov	rax,r15
+	sub	rax,[g_http_base]
+	shr	rax,H_SHIFT
+	shl	rax,S_SHIFT
+	add	rax,[g_sess_base]
+	mov	edx,[rax+S_FLAGS]
+	test	edx,SF_CACHED or SF_FILE or SF_CREF or SF_MIR
+	jnz	.none
+	mov	rax,[r15+H_BUF]
+	mov	ecx,[rax+HB_CST]
+	push	rdx
+	push	rcx
+	memit_x 'Cache-Status: okena; fwd='
+	pop	rcx
+	pop	rdx
+	cmp	ecx,CST_BYPASS
+	jne	@f
+	memit_x 'bypass'
+	jmp	.eol
+@@:
+	cmp	ecx,CST_METHOD
+	jne	@f
+	memit_x 'method'
+	jmp	.eol
+@@:
+	push	rdx
+	memit_x 'miss'
+	pop	rdx
+	test	edx,SF_CFILL
+	jz	.eol
+	memit_x '; stored'
+.eol:
+	memit_x 13,10
+.none:
 	ret
 
 ; ebx = session, r15 = record: looks again, in a moment
@@ -786,6 +1278,8 @@ cache_begin:
 	mov	[rdi+CE_TTL],eax
 	mov	eax,[r12+CA_SWR]
 	mov	[rdi+CE_SWR],eax
+	mov	eax,[r12+CA_SIE]
+	mov	[rdi+CE_SIE],eax
 	push	r8
 	mov	edi,r8d
 	call	ce_link
@@ -863,11 +1357,15 @@ cache_serve:
 	ce_ptr
 	mov	r13,rax
 	inc	dword [r13+CE_PIN]
+	cmp	dword [r13+CE_DEAD],0
+	jne	@f				; (one kept for an error, replaced since: in no list)
 	mov	edi,r12d
 	call	ce_lru_del
 	mov	edi,r12d
 	call	ce_lru_add
+@@:
 	mov	rax,[r15+H_BUF]
+	mov	dword [rax+HB_CW],0
 	mov	[rax+HB_CE],r12d
 	mov	qword [rax+HB_HT0],0
 	call	session_ptr
@@ -906,7 +1404,7 @@ cache_serve:
 	mov	ecx,1000000
 	div	rcx
 	call	fmt_u64
-	memit_x 13,10,'Cache-Status: okena; hit; ttl='
+	call	cache_status_head
 	mov	rax,[r13+CE_FRESH]
 	sub	rax,[g_qnow]
 	jns	@f
@@ -1160,6 +1658,7 @@ cache_fields:
 	jmp	.field
 .done:
 	mov	[r12+CE_SWR],r14d
+	and	dword [r12+CE_SIE],0x7FFFFFFF	; (must-revalidate's lock off)
 	cmp	dword [r12+CE_HLEN],H_UP_CAP - 256
 	ja	.no
 	clc
@@ -1274,6 +1773,7 @@ cache_control:
 	pop	rsi
 	jz	@f
 	xor	r14d,r14d			; no stale window
+	mov	dword [r12+CE_SIE],0x80000000	; (nor for errors, whatever follows)
 @@:
 	test	r9d,r9d
 	jnz	.refuse
@@ -1298,6 +1798,27 @@ cache_control:
 	mov	[r12+CE_TTL],eax
 	jmp	.value_end
 .not_max:
+	cmp	ecx,14
+	jne	.not_sie
+	push	rsi
+	push	rcx
+	push	r8
+	mov	rdi,r8
+	lea	rsi,[.n_sie]
+	mov	edx,14
+	call	mem_eq_nocase
+	pop	r8
+	pop	rcx
+	pop	rsi
+	test	eax,eax
+	jz	.value_end
+	call	.seconds
+	jc	.value_end			; (not a number: not taken)
+	test	dword [r12+CE_SIE],0x80000000
+	jnz	.value_end
+	mov	[r12+CE_SIE],eax
+	jmp	.value_end
+.not_sie:
 	cmp	ecx,8
 	jne	.value_end
 	push	rsi
@@ -1381,6 +1902,7 @@ cache_control:
 .strict	db 15,'must-revalidate',16,'proxy-revalidate',0
 .n_max	db 'max-age'
 .n_smax	db 's-maxage'
+.n_sie	db 'stale-if-error'
 
 ; r13 = a Vary field, r12 = the entry, r15 = record: CF unless all it names are in
 ; the route's vary=: it would have to be in the key.
@@ -1517,6 +2039,7 @@ cache_tee:
 
 ; the exchange is over: ebx, r15. What it read goes back, what it filled is kept.
 cache_finish:
+	call	cache_sie_drop
 	call	session_ptr
 	mov	ecx,[rax+S_FLAGS]
 	test	ecx,SF_IDEMS
@@ -1650,7 +2173,7 @@ cache_unpin:
 ; a session is closing, ebx = it, r12 = it: nothing of the cache stays with it. Keeps
 ; all.
 cache_gone:
-	test	dword [r12+S_FLAGS],SF_CACHED or SF_CFILL or SF_FILE or SF_ZIP or SF_IDEMF
+	test	dword [r12+S_FLAGS],SF_CACHED or SF_CFILL or SF_FILE or SF_ZIP or SF_IDEMF or SF_SIE
 	jz	.none
 	push	rax
 	push	rcx
@@ -1663,7 +2186,10 @@ cache_gone:
 	push	r11
 	push	r15
 	h_rec
+	call	cache_sie_drop			; a stale copy it kept for an error
 	call	zc_gone				; a pipe it held
+	test	dword [r12+S_FLAGS],SF_CACHED or SF_CFILL or SF_FILE or SF_ZIP or SF_IDEMF
+	jz	.out
 	test	dword [r12+S_FLAGS],SF_IDEMF
 	jz	@f
 	call	idem_gone
@@ -1772,6 +2298,77 @@ compile_cache:
 	mov	[r13+CA_SHARED],eax
 @@:
 	mov	rdi,rbx
+	lea	rsi,[.k_sie]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_duration
+	xor	edx,edx
+	mov	ecx,1000000
+	div	rcx
+	mov	[r13+CA_SIE],eax
+@@:
+	mov	rdi,rbx
+	lea	rsi,[.k_host]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	lea	rdx,[str_word_off]
+	call	mem_eq_cstr
+	mov	[r13+CA_NOHOST],eax
+@@:
+	mov	rdi,rbx
+	lea	rsi,[.k_query]
+	call	node_option
+	test	rax,rax
+	jz	.query_done
+	mov	r8,[rax+A_VAL]
+	mov	ecx,[rax+A_VLEN]
+	cmp	ecx,3
+	jne	@f
+	cmp	word [r8],'al'
+	jne	@f
+	cmp	byte [r8+2],'l'
+	je	.query_done
+@@:
+	cmp	ecx,4
+	jne	@f
+	cmp	dword [r8],'none'
+	jne	@f
+	mov	dword [r13+CA_QMODE],1
+	jmp	.query_done
+@@:
+	mov	dword [r13+CA_QMODE],2
+	lea	r9,[r8+rcx]
+.qname:
+	mov	rcx,r8
+@@:
+	cmp	rcx,r9
+	jae	@f
+	cmp	byte [rcx],','
+	je	@f
+	inc	rcx
+	jmp	@b
+@@:
+	mov	rdx,rcx
+	sub	rdx,r8
+	jz	plan_bad_cache
+	mov	eax,[r13+CA_QN]
+	cmp	eax,CA_QMAX
+	jae	plan_bad_cache
+	inc	dword [r13+CA_QN]
+	shl	rax,4
+	mov	[r13+CA_Q+rax],r8
+	mov	[r13+CA_Q+rax+8],rdx
+	lea	r8,[rcx+1]
+	cmp	rcx,r9
+	jb	.qname
+.query_done:
+	mov	rdi,rbx
 	lea	rsi,[.k_vary]
 	call	node_option
 	test	rax,rax
@@ -1810,10 +2407,13 @@ cstring .k_swr, 'stale-while-revalidate',0
 cstring .k_max, 'max',0
 cstring .k_shared, 'shared',0
 cstring .k_vary, 'vary',0
+cstring .k_host, 'host',0
+cstring .k_sie, 'stale-if-error',0
+cstring .k_query, 'query',0
 
 plan_bad_cache:
 	call	log_begin
-	out_lit 'cache needs a time above a second; stale-while-revalidate= a time, max= a size up to 1GiB, vary= up to 4 fields, and at most 256 routes have one'
+	out_lit 'cache needs a time above a second; stale-while-revalidate= a time, max= a size up to 1GiB, vary= up to 4 fields, query= all, none or up to 8 names, host= on or off, and at most 256 routes have one'
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process

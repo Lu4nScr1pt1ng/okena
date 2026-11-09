@@ -153,7 +153,7 @@ keysdef k_auth, 'header', T_ANY, 'keys', T_ANY, 'users', T_ANY, 'realm', T_ANY, 
 keysdef k_hedge, 'after', T_ANY, 'max', T_COUNT
 keysdef k_cors, 'origins', T_ANY, 'methods', T_ANY, 'headers', T_ANY, 'expose', T_ANY, 'max_age', T_DURATION
 keysdef k_jwks, 'trust', T_ANY, 'refresh', T_DURATION, 'stale', T_DURATION
-keysdef k_cache, 'stale-while-revalidate', T_DURATION, 'vary', T_ANY, 'max', T_SIZE, 'shared', T_ANY
+keysdef k_cache, 'stale-while-revalidate', T_DURATION, 'vary', T_ANY, 'max', T_SIZE, 'shared', T_ANY, 'stale-if-error', T_DURATION, 'query', T_ANY, 'host', T_ANY
 keysdef k_files, 'index', T_ANY, 'fallback', T_ANY, 'precompressed', T_ANY, 'cache', T_ANY
 keysdef k_compress, 'min', T_SIZE
 keysdef k_headers, 'preset', T_ANY

@@ -2496,6 +2496,7 @@ h3_request_new:
 	shl	rax,HB_SHIFT
 	add	rax,[g_hbuf_base]
 	mov	[r14+H_BUF],rax
+	mov	dword [rax+HB_CW],0		; (cache.inc: a stale copy kept, none)
 	mov	rbp,rax				; its buffers
 	xor	eax,eax
 	mov	[r14+H_INLEN],eax
