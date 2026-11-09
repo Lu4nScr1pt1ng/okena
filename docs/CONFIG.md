@@ -1205,9 +1205,13 @@ come back through it to another instance. Requests in flight finish, and new
 connections are still served for as long as the balancer takes to notice.
 `okena drain wait` returns once nothing is left open (60 s at most), the moment
 to stop or upgrade it; `okena resume` puts it back. A reload keeps a drain; a
-restart or an upgrade starts in rotation. HTTP/2 and HTTP/3 connections are
-not told to go yet (a GOAWAY on a drain is to come): they end as their clients
-end them.
+restart or an upgrade starts in rotation. HTTP/2 and HTTP/3 connections are told
+to go with a GOAWAY (NO_ERROR, the last stream taken), on the next tick: what
+they have in flight finishes, a stream a client opens after it is refused
+(REFUSED_STREAM, which a client may send again elsewhere), and each connection
+closes once nothing is left on it. A shutdown or a reload does the same once its
+workers stop accepting, so idle HTTP/2 connections no longer hold it for its
+drain timeout.
 
 Each takes `-c FILE` to find the socket. A server is named as in the file, so a name
 means all its addresses. A drained server is not chosen even when every other is down:

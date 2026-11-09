@@ -4329,7 +4329,11 @@ qs_tick:
 	add	r15,[g_hbuf_base]
 	mov	r12d,[r15+QC_LINK]		; (before it may go)
 	cmp	dword [g_draining],2
-	jb	@f
+	jae	.drain
+	mov	rax,[g_api_ov]			; (`okena drain` too)
+	cmp	dword [rax+AP_DRAIN],0
+	je	@f
+.drain:
 	call	qc_drain			; http3.inc: GOAWAY, then close
 @@:
 	cmp	dword [r15+QC_STATE],QCS_CLOSING

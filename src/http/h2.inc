@@ -120,6 +120,7 @@ C2F_PEERGONE	:= 8				; the client sent GOAWAY
 C2F_EPOUT	:= 16				; epoll: the socket was full
 C2F_FLUSHQ	:= 32				; in the flush list: its send goes at the iteration's end
 C2F_SACKED	:= 128				; the client acknowledged our SETTINGS
+C2F_DRAIN	:= 256				; our GOAWAY (NO_ERROR) went: no new stream, close when none is left
 H2_FLUSH_MAX	:= 4096
 H2_RESERVE	:= 17				; OUT keeps room for a GOAWAY
 H2_CTRL		:= 512				; DATA and HEADERS leave this much for the
@@ -412,6 +413,64 @@ h2_goaway:
 .out:
 	ret
 
+; ebx = a client's HTTP/2 connection, c2 registers: GOAWAY (NO_ERROR) with
+; the last stream taken, once; the streams open go on to their end, a new
+; one is refused (REFUSED_STREAM: the client may send it again elsewhere),
+; and the connection closes when none is left
+h2_goaway_soft:
+	test	dword [r13+C2_FLAGS],C2F_CLOSING or C2F_DRAIN or C2F_CLIENT
+	jnz	.out
+	call	h2_room
+	cmp	eax,17
+	jb	.out				; (no room yet: the next tick)
+	or	dword [r13+C2_FLAGS],C2F_DRAIN
+	mov	esi,8
+	mov	dl,H2F_GOAWAY
+	xor	ecx,ecx
+	xor	r8d,r8d
+	call	h2_frame
+	mov	eax,[r13+C2_LASTSID]
+	bswap	eax
+	mov	[rdi],eax
+	mov	dword [rdi+4],0			; NO_ERROR
+.out:
+	ret
+
+; The worker's tick, while it drains (it stopped accepting) or the instance
+; is drained (`okena drain`): every HTTP/2 connection of a client told to go
+h2_drain_tick:
+	cmp	dword [g_draining],2
+	jae	.all
+	mov	rax,[g_api_ov]
+	cmp	dword [rax+AP_DRAIN],0
+	je	.out
+.all:
+	push	rbx
+	xor	ebx,ebx
+.next:
+	cmp	ebx,[g_sess_hwm]
+	jae	.done
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_H2C
+	jz	.skip
+	cmp	dword [rax+S_STATE],ST_OPEN
+	jne	.skip
+	c2_regs
+	test	dword [r13+C2_FLAGS],C2F_CLOSING or C2F_DRAIN or C2F_CLIENT
+	jnz	.skip
+	call	h2_goaway_soft
+	c2_regs
+	test	dword [r13+C2_FLAGS],C2F_DRAIN
+	jz	.skip
+	call	h2_pump				; (its GOAWAY out; idle: it closes)
+.skip:
+	inc	ebx
+	jmp	.next
+.done:
+	pop	rbx
+.out:
+	ret
+
 ; ------------------------------------------------------------- the pump
 
 ; Start what can start: the send of what OUT holds, the next receive;
@@ -425,6 +484,13 @@ h2_pump:
 	c2_regs
 	test	dword [r13+C2_FLAGS],C2F_CLOSING
 	jnz	.closing
+	test	dword [r13+C2_FLAGS],C2F_DRAIN
+	jz	@f
+	cmp	dword [r13+C2_NSTR],0
+	jne	@f
+	or	dword [r13+C2_FLAGS],C2F_CLOSING	; drained: the last stream is over
+	jmp	.closing
+@@:
 	test	dword [r13+C2_FLAGS],C2F_PEERGONE
 	jz	.recv
 	test	dword [r13+C2_FLAGS],C2F_CLIENT
@@ -1832,8 +1898,8 @@ h2_block_done:
 	cmp	r12d,[r13+C2_LASTSID]
 	jbe	.closed_stream
 	mov	[r13+C2_LASTSID],r12d
-	test	dword [r13+C2_FLAGS],C2F_PEERGONE
-	jnz	.refuse
+	test	dword [r13+C2_FLAGS],C2F_PEERGONE or C2F_DRAIN
+	jnz	.refuse				; (after our GOAWAY: REFUSED_STREAM, safe to send again)
 	cmp	dword [r13+C2_NSTR],H2_MAX_OPEN
 	jae	.refuse
 	mov	edi,ecx				; how many fields

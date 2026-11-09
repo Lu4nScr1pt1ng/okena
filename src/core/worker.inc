@@ -372,6 +372,7 @@ tick_work:
 	call	jwks_tick
 	call	retry_budget_tick
 	call	alog_tick
+	call	h2_drain_tick			; GOAWAY to HTTP/2 clients when draining
 	cmp	dword [g_draining],0
 	je	.done
 	mov	eax,[g_tick]

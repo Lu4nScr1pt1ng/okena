@@ -440,7 +440,7 @@ auth + limit stays within the latency budget in ARCHITECTURE.md. Met with `busy_
 * SRV/file discovery, Docker discovery by labels, Kubernetes EndpointSlices
   (`discover file`, `srv`, `docker`, `kubernetes`: done).
 * Shared ticket keys and drain API for fleets (`ticket_keys` followed without a
-  reload, `okena drain` and `resume`: done; GOAWAY on a drain for HTTP/2 and 3 to come).
+  reload, `okena drain` and `resume`, GOAWAY on a drain for HTTP/2 and 3: done).
 * Alerts (webhook, Telegram, Slack) from the control process (done).
 * OTLP tracing; access logs out over OTLP and syslog (RFC 5424, UDP, TCP and
   TLS) besides files, through the logger process (done).
