@@ -215,6 +215,7 @@ dirdef DIR_FLEET, 'fleet',      M_OKENA,   0,           F_UNIQUE, 1, 16, T_LISTE
 dirdef DIR_CDNLOOP, 'cdn_loop',  M_OKENA,   0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, k_cdnloop
 dirdef DIR_BIRD, 'bird',        M_OKENA,   0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, k_bird
 dirdef DIR_ACME, 'acme',        M_OKENA,   0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, k_acme
+dirdef DIR_LOCALCA, 'local_ca', M_OKENA,  0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
 dirdef DIR_WATCHDOG, 'watchdog',    M_OKENA,   0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
 dirdef DIR_METRICS, 'metrics',     M_OKENA,   0,           F_UNIQUE, 1, 1, T_LISTEN, T_NONE, k_metrics
 dirdef DIR_BUSY_POLL, 'busy_poll',   M_OKENA,   0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
@@ -289,6 +290,7 @@ dirdef DIR_DEFAULT, 'default',  M_TLS,     0,           F_UNIQUE, 1, 3, T_ANY, T
 dirdef DIR_CERT, 'cert',        M_TLS,     0,           0, 1, 1, T_ANY, T_NONE, k_cert
 dirdef DIR_KEY, 'key',          M_TLS,     0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
 dirdef DIR_TLSACME, 'acme',     M_TLS,     0,           0, 1, 15, T_ANY, T_ANY, 0
+dirdef DIR_TLSLOCAL, 'local',   M_TLS,     0,           0, 1, 15, T_ANY, T_ANY, 0
 dirdef DIR_OCSP, 'ocsp',        M_TLS,     0,           F_UNIQUE, 1, 1, e_onoff, T_NONE, 0
 dirdef DIR_ODEMAND, 'on_demand', M_TLS,     0,           F_UNIQUE, 0, 16, T_ANY, T_ANY, k_odemand
 dirdef DIR_CLIENT_CA, 'client_ca', M_TLS,   0,           F_UNIQUE, 1, 2, T_ANY, e_cca, 0

@@ -26,6 +26,15 @@ bss
 	g_x5_csrflag	dd ?			; okena cert csr
 	align 8
 	g_x5_acmeid	dq ?			; x5_selfsigned: 32 bytes for acmeIdentifier, or 0
+	; x5_selfsigned, for a local CA (localca.inc): the CA's own certificate, or
+	; one the CA issues (its subject the issuer, its key signing)
+	g_x5_mkca	dd ?			; 1: a CA's certificate (no names, keyCertSign)
+	g_x5_issuing	dd ?			; 1: issued by the CA below
+	g_x5_issnl	dd ?
+	g_x5_issname:	rb 512			; its subject Name's content
+	g_x5_issd:	rb 32			; its key
+	g_x5_isskid:	rb 20			; its key identifier (SHA-1 of its public key)
+	g_x5_kid:	rb 20
 end bss
 
 SYS_mkdirat_	:= 258
@@ -251,6 +260,33 @@ x5_san_value:
 	jmp	@b
 @@:
 	lea	rbx,[rbx+rcx+1]
+	push	rsi
+	push	rcx
+	mov	rdi,rsi				; an address: [7] iPAddress, its bytes
+	mov	esi,ecx
+	call	parse_ipv4_text
+	jc	.v6
+	add	rsp,16
+	mov	[g_x5_kid],eax
+	lea	rsi,[g_x5_kid]
+	mov	ecx,4
+	mov	al,0x87
+	call	dw_prim
+	jmp	.name
+.v6:
+	mov	rdi,[rsp+8]
+	mov	esi,[rsp]
+	lea	rdx,[g_x5_issname+496]		; (16 bytes of room, past any Name kept)
+	call	parse_ipv6_text
+	pop	rcx
+	pop	rsi
+	jc	.dns
+	lea	rsi,[g_x5_issname+496]
+	mov	ecx,16
+	mov	al,0x87
+	call	dw_prim
+	jmp	.name
+.dns:
 	mov	al,0x82				; [2] dNSName
 	call	dw_prim
 	jmp	.name
@@ -552,7 +588,20 @@ x5_selfsigned:
 	call	x5_csr.first
 	push	rsi
 	push	rcx
+	cmp	dword [g_x5_issuing],0
+	je	.self
+	mov	al,0x30				; issuer: the CA
+	call	dw_open
+	lea	rsi,[g_x5_issname]
+	mov	ecx,[g_x5_issnl]
+	mov	rdi,[g_dw_p]
+	rep	movsb
+	mov	[g_dw_p],rdi
+	call	dw_close
+	jmp	.validity
+.self:
 	call	x5_name				; issuer: itself
+.validity:
 	; validity: an hour ago, for the days asked
 	mov	al,0x30
 	call	dw_open
@@ -588,8 +637,21 @@ x5_selfsigned:
 	call	dw_open
 	mov	al,0x30
 	call	dw_open
+	cmp	dword [g_x5_mkca],0
+	jne	.ca_exts
 	mov	rsi,rbx
 	call	x5_ext_san
+	cmp	dword [g_x5_issuing],0		; authorityKeyIdentifier: the CA's key
+	je	@f
+	mov	rdi,[g_dw_p]
+	lea	rsi,[.aki]
+	mov	ecx,.aki_len
+	rep	movsb
+	lea	rsi,[g_x5_isskid]
+	mov	ecx,20
+	rep	movsb
+	mov	[g_dw_p],rdi
+@@:
 	; basicConstraints, critical: not a CA
 	mov	rdi,[g_dw_p]
 	lea	rsi,[.bc]
@@ -624,14 +686,27 @@ x5_selfsigned:
 	rep	movsb
 	mov	[g_dw_p],rdi
 @@:
+.exts_done:
 	call	dw_close
 	call	dw_close
 	call	dw_close			; (the TBSCertificate)
+	cmp	dword [g_x5_issuing],0		; the CA signs: its key for a moment
+	je	@f
+	call	.swap
+@@:
 	lea	rsi,[g_x5_der]
 	mov	rcx,[g_dw_p]
 	sub	rcx,rsi
 	push	rcx
 	call	x5_sign
+	pushfq
+	cmp	dword [g_x5_issuing],0
+	je	@f
+	push	rax
+	call	.swap
+	pop	rax
+@@:
+	popfq
 	pop	rcx
 	jc	.bad
 	push	rax
@@ -659,6 +734,34 @@ x5_selfsigned:
 	pop	r12
 	pop	rbx
 	ret
+; a CA's: basicConstraints cA, keyUsage keyCertSign and cRLSign (both critical),
+; subjectKeyIdentifier
+.ca_exts:
+	mov	rdi,[g_dw_p]
+	lea	rsi,[.cabc]
+	mov	ecx,.cabc_len
+	rep	movsb
+	lea	rsi,[g_x5_kid]
+	mov	ecx,20
+	rep	movsb
+	mov	[g_dw_p],rdi
+	jmp	.exts_done
+.swap:
+	xor	ecx,ecx
+@@:
+	mov	rax,qword [g_x5_d+rcx*8]
+	xchg	rax,qword [g_x5_issd+rcx*8]
+	mov	qword [g_x5_d+rcx*8],rax
+	inc	ecx
+	cmp	ecx,4
+	jb	@b
+	ret
+.cabc	db 0x30,0x0F, 0x06,0x03,0x55,0x1D,0x13, 0x01,0x01,0xFF, 0x04,0x05,0x30,0x03,0x01,0x01,0xFF
+	db 0x30,0x0E, 0x06,0x03,0x55,0x1D,0x0F, 0x01,0x01,0xFF, 0x04,0x04,0x03,0x02,0x01,0x06
+	db 0x30,0x1D, 0x06,0x03,0x55,0x1D,0x0E, 0x04,0x16,0x04,0x14
+.cabc_len = $ - .cabc
+.aki	db 0x30,0x1F, 0x06,0x03,0x55,0x1D,0x23, 0x04,0x18,0x30,0x16,0x80,0x14
+.aki_len = $ - .aki
 .bc	db 0x30,0x0C, 0x06,0x03,0x55,0x1D,0x13, 0x01,0x01,0xFF, 0x04,0x02,0x30,0x00
 .bc_len = $ - .bc
 .ku	db 0x30,0x0E, 0x06,0x03,0x55,0x1D,0x0F, 0x01,0x01,0xFF, 0x04,0x04,0x03,0x02,0x07,0x80

@@ -525,6 +525,9 @@ compile_settings:
 	lea	rcx,[dir_table + D_SIZE*DIR_ACME]
 	cmp	rax,rcx
 	je	.acme
+	lea	rcx,[dir_table + D_SIZE*DIR_LOCALCA]
+	cmp	rax,rcx
+	je	.local_ca
 	lea	rcx,[dir_table + D_SIZE*DIR_GEOIP]
 	cmp	rax,rcx
 	je	.geoip
@@ -709,6 +712,9 @@ compile_settings:
 	jmp	.advance
 .acme:
 	call	compile_acme
+	jmp	.advance
+.local_ca:
+	call	compile_local_ca		; (localca.inc)
 	jmp	.advance
 .cache_memory:
 	mov	rax,[rbx+N_ARGS]

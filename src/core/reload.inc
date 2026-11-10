@@ -163,6 +163,7 @@ macro plan_regions action
 	action g_plan_birdpooll, 4
 	action g_plan_vrrp, VC_SIZE
 	action g_plan_acme, ACM_SIZE
+	action g_plan_lca, LCA_SIZE
 	action g_plan_ocspoff, MAX_TLS
 	action g_plan_odn, 4
 	action g_plan_od, OC_SIZE * OD_CFGS

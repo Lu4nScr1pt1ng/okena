@@ -6,7 +6,7 @@
 
 bss
 	align 8
-	g_tls_src	rb MAX_TLS		; 0 a file, 1 ACME (its files), 2 ACME (signed here meanwhile)
+	g_tls_src	rb MAX_TLS		; 0 a file, 1 ACME (its files), 2 ACME (signed here meanwhile), 3 the local CA, 4 local, no CA yet
 	g_tls_acme	rb MAX_TLS		; (1, 2: which of acme's)
 	g_cc_now	dq ?
 	g_cc_from	db ?
@@ -119,6 +119,16 @@ cli_certs:
 	test	eax,eax
 	jnz	@f
 	out_lit 'a file'
+	jmp	.eol
+@@:
+	cmp	eax,3
+	jne	@f
+	out_lit 'the local CA'
+	jmp	.eol
+@@:
+	cmp	eax,4
+	jne	@f
+	out_lit 'local (no local CA yet: signed here)'
 	jmp	.eol
 @@:
 	cmp	eax,2

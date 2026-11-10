@@ -685,7 +685,10 @@ ECN. 0-RTT off by default and, when on, only for routes marked idempotent.
   process through a ring; the certificate comes back in a shared store, no
   reload); a fleet sharing DIR (`shared=on`: a lock file per certificate,
   taken by link(2), the challenges in DIR/NAME/http-01 copied into the
-  page's second half of slots by every other instance); OCSP stapling by an okena-ocsp process (answers verified against the
+  page's second half of slots by every other instance); a local CA for
+  development names (made by the starting process before it is boxed in, its
+  leaves signed in memory at each compile, `okena trust` writing the root to
+  the system's store and running its update command); OCSP stapling by an okena-ocsp process (answers verified against the
   issuer or its delegate, shared with the workers under a seqlock, keyed by
   the leaf's hash so a reload never staples the wrong one); the account and the JWS
   (ES256) its own, files renamed into a 0700 directory, a reload of its

@@ -246,6 +246,9 @@ supervisor_main:
 	call	acme_tick			; a certificate from the CA: served
 	test	eax,eax
 	jnz	.reload
+	call	local_tick			; the local CA's: renewed
+	test	eax,eax
+	jnz	.reload
 	jmp	.wait_signal
 .reload:
 	call	supervisor_reload

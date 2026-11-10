@@ -539,7 +539,9 @@ built; both measurements are still to be made on the lab.)
   `okena certs`. A fleet sharing DIR (`shared=on`): a lock per certificate
   (link(2), stale ones moved aside), HTTP-01 challenges shared through
   DIR/NAME/http-01, the others taking the certificate from disk.
-  Still to do: the rest of the list above (the local CA).
+  The local CA: `tls { local NAME... }`, `okena { local_ca DIR }`, made at the
+  first start, leaves of 7 days signed at each compile (AKI, IP SANs), renewed
+  by a reload of its own; `okena trust [remove]` for the system's store.
   Exit: a fresh install with `tls auto` serves a valid certificate within a
   minute; a CA down, rate-limited or answering wrongly never takes a served
   certificate away; `make chaos` with the CA failed in turn passes.

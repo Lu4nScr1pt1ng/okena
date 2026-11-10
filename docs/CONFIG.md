@@ -456,6 +456,7 @@ The TLS layer:
 tls {
     cert /etc/okena/fullchain.pem key=/etc/okena/key.pem   # or one per host,
     acme example.com www.example.com   # or from a CA (ACME), okena renewing it
+    local localhost app.test 127.0.0.1 # or from okena's own CA (development)
     ocsp off                        # (OCSP stapling: on by default, below)
     on_demand *.example.com ask=http://127.0.0.1:9000/ok   # certificates as names come
     versions 1.2 1.3
@@ -558,6 +559,23 @@ A failed order is tried again
 after a minute, then twice as long each time up to six hours, the one being served
 kept meanwhile (the log says what failed). A restart finds the files and asks
 nothing until a renewal is due.
+
+**A local CA.** `local NAME...` in a tls block is a certificate for development
+names (`localhost`, `app.test`, `*.app.test`, `127.0.0.1`, `::1`) signed by a CA
+of okena's own, kept in `okena { local_ca DIR }` (by default /var/lib/okena/ca):
+`DIR/root.key` (P-256, 0600) and `DIR/root.pem` (10 years), made at the first
+start that needs them, DIR 0700 and the `user`'s. Its certificates are signed
+in memory at each start or reload: a new key, 7 days, renewed by a reload of
+okena's own two thirds of the way. `okena trust` puts `DIR/root.pem` in the
+system's trust store and brings its bundle up to date
+(/usr/local/share/ca-certificates and update-ca-certificates on Debian, Ubuntu
+and Alpine; /etc/pki/ca-trust/source/anchors and update-ca-trust on Fedora and
+RHEL; /etc/pki/trust/anchors on openSUSE; trust extract-compat on Arch), making
+the CA first when there is none; `okena trust remove` takes it out. Browsers
+with a store of their own (Firefox) are not touched: the command says how.
+Without a CA (a reload that finds none) the names get a certificate that signs
+itself. Keep the CA's key to this machine: whoever has it can sign for any name
+the machine trusts.
 
 **A fleet.** `shared=on` says DIR is shared by several okena instances (a volume
 they all mount, NFS included), so that one of them orders a certificate and the

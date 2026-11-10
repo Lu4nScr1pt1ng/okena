@@ -30,6 +30,7 @@ cstring str_cmd_sign, 'sign',0
 cstring str_cmd_ranges, 'ranges',0
 cstring str_cmd_cert, 'cert',0
 cstring str_cmd_certs, 'certs',0
+cstring str_cmd_trust, 'trust',0
 cstring str_flag_help, '--help',0
 cstring str_flag_version, '--version',0
 cstring str_flag_c, '-c',0
@@ -139,6 +140,12 @@ cli_main:
 	call	cstr_eq
 	test	eax,eax
 	jnz	cli_certs
+	mov	rax,[g_argv]
+	mov	rdi,[rax+8]
+	lea	rsi,[str_cmd_trust]
+	call	cstr_eq
+	test	eax,eax
+	jnz	cli_trust
 	mov	rax,[g_argv]
 	mov	rdi,[rax+8]
 	lea	rsi,[str_cmd_health]
@@ -404,6 +411,7 @@ cli_help:
 	out_lit '  okena maintenance [on|off [ROUTE]] [-c FILE]  503 and the maintenance page, for all or a route', 10
 	out_lit '  okena health [FILE]          exit 0 when the running instance is ready (/ready)', 10
 	out_lit '  okena certs [-c FILE]        the certificates served: names, issuer, expiry, ACME state', 10
+	out_lit '  okena trust [remove] [-c FILE]  the local CA (tls { local NAME... }) in the system',39,'s trust store', 10
 	out_lit '  okena cert selfsigned|csr DIR NAME... [days=N]  a key, and a certificate or a CSR', 10
 	out_lit '  okena bench URL [rate=N] ... open-loop load: latency corrected for coordinated omission', 10
 	out_lit '  okena version', 10, 10
@@ -574,6 +582,7 @@ out_count_listener:
 cli_run:
 	call	cli_load_config
 	call	plan_compile
+	call	local_ca_start			; (a local CA wanted and none: made)
 	call	pd_check			; `user`: possible from here?
 	call	tls_serve_check
 	call	tls_tickets_apply		; a ticket_keys file, if any

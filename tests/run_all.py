@@ -200,6 +200,8 @@ SUITES = [
     ("acmeod epoll", ["tests/gateway/acmeod.py", "epoll"]),
     ("acmefleet io_uring", ["tests/gateway/acmefleet.py", "io_uring"]),
     ("acmefleet epoll", ["tests/gateway/acmefleet.py", "epoll"]),
+    ("localca io_uring", ["tests/gateway/localca.py", "io_uring"]),
+    ("localca epoll", ["tests/gateway/localca.py", "epoll"]),
     ("forward io_uring", ["tests/gateway/forward.py", "io_uring"]),
     ("forward epoll", ["tests/gateway/forward.py", "epoll"]),
     ("mtls io_uring", ["tests/gateway/mtls.py", "io_uring"]),

@@ -1465,6 +1465,11 @@ check_tls:
 	call	find_child
 	test	rax,rax
 	jnz	.done
+	mov	rdi,rbx				; local NAME...: the local CA's
+	mov	ecx,DIR_TLSLOCAL
+	call	find_child
+	test	rax,rax
+	jnz	.done
 	jmp	.missing
 @@:
 	test	r13d,r13d

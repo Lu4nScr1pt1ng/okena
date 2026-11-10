@@ -568,6 +568,9 @@ compile_tls:
 	mov	rdi,r12				; acme NAME...: from the CA (acme.inc)
 	mov	edx,r13d
 	call	compile_tls_acme
+	mov	rdi,r12				; local NAME...: the local CA's (localca.inc)
+	mov	edx,r13d
+	call	compile_tls_local
 	mov	rdi,r12				; on_demand (ondemand.inc)
 	mov	ecx,DIR_ODEMAND
 	call	find_child
