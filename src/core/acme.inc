@@ -1437,8 +1437,10 @@ compile_tls_acme:
 	lea	rsi,[g_ac_kpath]
 	mov	edx,ARG_WORD
 	call	.arg
+	mov	byte [g_cc_from],1		; (okena certs: from the CA's files)
 	jmp	.load
 .selfsigned:
+	mov	byte [g_cc_from],2		; (signed here meanwhile)
 	; until the CA's comes: one signed here, for the names, 7 days
 	lea	rdi,[g_ac_names]
 	mov	rsi,[rbx+N_ARGS]
@@ -1476,6 +1478,13 @@ compile_tls_acme:
 	lea	rsi,[g_ac_karg]
 	mov	edx,r13d
 	call	compile_cert
+	mov	eax,[g_plan_tls]		; (okena certs: where it comes from)
+	dec	eax
+	mov	cl,[g_cc_from]
+	mov	[g_tls_src+rax],cl
+	mov	ecx,[g_plan_acme+ACM_NCERT]
+	dec	ecx
+	mov	[g_tls_acme+rax],cl
 .next:
 	mov	rbx,[rbx+N_NEXT]
 	jmp	.line
@@ -1707,6 +1716,8 @@ acme_main:
 .issued:
 	mov	qword [g_ac_back+rbx*8],0
 	call	acme_file_due
+	mov	edx,1
+	call	acme_status_write		; (okena certs reads it)
 	cmp	ebx,ACME_CERTS
 	jb	.reload
 	call	od_publish			; on demand: the workers take it from the store
@@ -1765,6 +1776,8 @@ acme_main:
 	call	acme_now
 	add	rax,[rsp]
 	mov	[g_ac_due+rbx*8],rax
+	xor	edx,edx
+	call	acme_status_write
 	call	log_begin
 	out_lit 'acme: '
 	call	acme_out_name

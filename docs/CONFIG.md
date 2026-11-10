@@ -1569,12 +1569,19 @@ okena top                          # live per-route/backend view
 okena bench https://localhost/v1/ rate=200k duration=60s
 okena health                       # exit 0 when ready (Docker HEALTHCHECK)
 okena check --host                 # kernel features, limits, sysctls, container
+okena certs                        # the certificates served, their expiry, ACME's state
 okena cert selfsigned DIR a.test b.test days=30   # DIR/key.pem, DIR/cert.pem
 okena cert csr DIR a.example.com   # DIR/key.pem, DIR/csr.pem, for a CA to sign
 okena sign KEYFILE /path 1h        # a signed link (signed_urls)
 okena ranges cloudflare            # a provider's ranges, as built in
 okena purge url|prefix|tag VALUE   # take cached answers back (and on the fleet)
 ```
+
+`okena certs` lists what a configuration serves, a line each: the names, the
+issuer (`itself` when self-signed), the notAfter (UTC) and the days left, and where
+it comes from: a file, ACME (with what the acme process last did and when it
+renews or tries again: it keeps that in DIR/NAME/status), one signed here until
+the CA's comes, or on demand.
 
 `okena cert` makes ECDSA P-256 keys (SEC1, mode 0600) and either a certificate that
 signs itself, for a test or a development name, or a request (CSR) for a CA. The

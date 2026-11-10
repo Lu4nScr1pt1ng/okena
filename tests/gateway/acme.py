@@ -835,6 +835,13 @@ http 127.0.0.1:{TLS} {{
         check("a token not asked for: to the routes", r.read() == b"backend /.well-known/acme-challenge/nottoken")
         orders = sum(1 for e in ST.log if e[0] == "order")
         check("  two orders: a+b, and c", orders == 2, [e for e in ST.log if e[0] == "order"])
+        r = subprocess.run([str(BIN), "certs", "-c", str(conf)], capture_output=True, text=True, timeout=20)
+        lines = [l for l in r.stdout.splitlines() if "example.test" in l]
+        ab = [l for l in lines if l.startswith("a.example.test b.example.test")]
+        check("okena certs: each certificate, its names, the CA, the days left, what acme last did",
+              r.returncode == 0 and r.stdout.startswith("NAMES") and len(lines) == 2 and ab
+              and "okena test ACME CA" in ab[0] and (" 29d " in ab[0] or " 30d " in ab[0])
+              and "acme: " in ab[0] and "got from the CA; renewal on" in ab[0], r.stdout + r.stderr)
 
         # again, from the files: nothing asked
         serial = served("a.example.test").serial_number

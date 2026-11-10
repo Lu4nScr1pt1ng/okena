@@ -145,6 +145,11 @@ http 127.0.0.1:{TLS} {{
               cert5.issuer == cert5.subject and len([e for e in st.log if e[0] == "order"]) == n, (took5, log.read_text()[-300:]))
         lst = (tmp / "acme" / "on_demand.list").read_text().split()
         check("  DIR/on_demand.list: the two names", sorted(lst) == ["yes1.od.example.test", "yes2.od.example.test"], lst)
+        r = subprocess.run([str(BIN), "certs", "-c", str(conf)], capture_output=True, text=True, timeout=20)
+        od = [l for l in r.stdout.splitlines() if l.rstrip().endswith("UTC") and "on demand: " in l]
+        check("okena certs: the placeholder, and the on-demand ones with what acme did",
+              r.returncode == 0 and len(od) == 2 and any(l.startswith("on-demand.okena.invalid") and "itself" in l
+                                                         for l in r.stdout.splitlines()), r.stdout + r.stderr)
 
         p.terminate()
         p.wait(10)
