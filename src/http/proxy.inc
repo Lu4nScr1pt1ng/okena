@@ -1989,6 +1989,7 @@ http_send_plain:
 	jnz	h3s_finish
 	test	dword [rax+S_FLAGS],SF_H2S
 	jnz	h2s_finish			; the error is the stream's whole answer
+	jmp	http_close_notify
 .close:
 	mov	edi,ebx
 	jmp	session_close
@@ -4235,7 +4236,7 @@ http_exchange_done:
 	jnz	h2s_finish			; an HTTP/2 stream: END_STREAM, then it goes
 	h_rec
 	test	dword [r15+H_FLAGS],HX_CLOSE
-	jnz	.close
+	jnz	http_close_notify		; (a TLS client is told: tls.inc)
 	jmp	http_next_request
 .close:
 	mov	edi,ebx

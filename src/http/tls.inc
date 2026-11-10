@@ -593,6 +593,8 @@ http_tls_established:
 	test	dword [rax+S_FLAGS],SF_TLS_HS
 	jnz	.tcp
 	h_rec
+	mov	rax,[r15+H_BUF]			; (its close: a close_notify, by the kernel)
+	mov	dword [rax+HB_TS+TS_FLAGS],TF_KTLS
 	xor	eax,eax
 	mov	[r15+H_INLEN],eax
 	mov	[r15+H_INOFF],eax
@@ -918,6 +920,96 @@ utls_tx_done:
 	test	rax,rax
 	jns	utls_tx_step
 	utls_deliver 4
+
+; ebx = session: closed, after a close_notify alert to a TLS client (RFC 8446
+; 6.1, RFC 5246 7.2.1), so that it can tell the end from a cut (a response the
+; close delimits; a TLS 1.2 client keeping its session for a resumption). Only
+; where nothing of ours is on its way to the client: an answer done, an idle
+; connection. Sealed here and sent raw (records here), or handed to the kernel
+; as an alert record (kTLS); then HS_TLS_ALERT closes it.
+http_close_notify:
+	call	session_ptr
+	mov	ecx,[rax+S_FLAGS]
+	test	ecx,SF_H2S or SF_H3S or SF_MIR or SF_H2C or SF_TLS_HS or SF_TUNNEL
+	jnz	.plain
+	mov	ecx,[rax+S_LST]			; a TLS listener's (its TS is this connection's)
+	imul	rcx,rcx,LS_SIZE
+	cmp	dword [g_listeners+rcx+LS_TLS],0
+	je	.plain
+	h_rec
+	mov	rax,[r15+H_BUF]
+	test	dword [rax+HB_TS+TS_FLAGS],TF_KTLS
+	jnz	.ktls
+	cmp	dword [r15+H_UTLS],0
+	je	.plain
+	mov	rsi,[r15+H_BUF]
+	lea	rsi,[rsi+HB_TXC]
+	mov	word [rsi+5],0x0001		; warning (1), close_notify (0)
+	mov	rdi,[r15+H_BUF]
+	add	rdi,HB_TS
+	mov	edx,2
+	mov	ecx,21
+	call	tls_seal
+	h_rec
+	mov	dword [r15+H_STATE],HS_TLS_ALERT
+	mov	esi,eax
+	mov	rdi,[r15+H_BUF]
+	add	rdi,HB_TXC
+	mov	ecx,SIDE_CLIENT
+	jmp	h_send_raw
+.ktls:
+	; the kernel seals it: sendmsg with a record type of 21 (TLS_SET_RECORD_TYPE),
+	; its msghdr, iovec, cmsg and the two bytes where the keys were (HB_KTLS)
+	and	dword [rax+HB_TS+TS_FLAGS],not TF_KTLS
+	mov	r8,[r15+H_BUF]
+	add	r8,HB_KTLS
+	mov	rdi,r8
+	mov	ecx,112 / 8
+	xor	eax,eax
+	rep	stosq
+	lea	rax,[r8+64]			; msg_iov: one, the alert
+	mov	[r8+16],rax
+	mov	qword [r8+24],1
+	lea	rax,[r8+80]			; msg_control: one cmsg
+	mov	[r8+32],rax
+	mov	qword [r8+40],24		; CMSG_SPACE(1)
+	lea	rax,[r8+104]
+	mov	[r8+64],rax			; iov_base
+	mov	qword [r8+72],2			; iov_len
+	mov	qword [r8+80],17		; cmsg_len: CMSG_LEN(1)
+	mov	dword [r8+88],SOL_TLS		; cmsg_level
+	mov	dword [r8+92],1			; TLS_SET_RECORD_TYPE
+	mov	byte [r8+96],21			; alert
+	mov	word [r8+104],0x0001		; warning, close_notify
+	cmp	dword [g_engine],ENGINE_EPOLL
+	je	.ktls_epoll
+	mov	[r15+H_SPTR],rax		; (h_send_more's, were it cut short)
+	mov	dword [r15+H_SLEN],2
+	mov	dword [r15+H_SSIDE],SIDE_CLIENT
+	mov	dword [r15+H_STATE],HS_TLS_ALERT
+	push	r8
+	mov	edi,OP_H_SEND_C
+	mov	esi,ebx
+	call	sess_sqe
+	pop	r8
+	mov	byte [rax+SQE_OPCODE],IORING_OP_SENDMSG
+	mov	[rax+SQE_ADDR],r8
+	mov	dword [rax+SQE_LEN],1
+	mov	dword [rax+SQE_OP_FLAGS],MSG_NOSIGNAL
+	xor	ecx,ecx
+	jmp	h_sqe_fd
+.ktls_epoll:
+	; epoll: at once, not waiting (sendmmsg: one message, its msghdr as is)
+	call	session_ptr
+	mov	edi,[rax+S_CLIENT]
+	mov	rsi,r8
+	mov	edx,1
+	mov	r10d,MSG_DONTWAIT or MSG_NOSIGNAL
+	mov	eax,SYS_sendmmsg
+	syscall
+.plain:
+	mov	edi,ebx
+	jmp	session_close
 
 ; ebx = session, r15 = record, g_hm = a request: CF when the client sent
 ; SNI and the certificate it got does not name the request's Host

@@ -106,7 +106,8 @@ TF_CCA		:= 128				; set by the caller: ask for a client certificate
 TF_CCA_REQ	:= 256				; and with none, refuse
 TF_RESUMED	:= 512				; a ticket of ours resumed it
 TF_GOT_ACME	:= 1024
-TF_T12		:= 4096				; TLS 1.2 records, sealed here (tls12_srv.inc)				; acme-tls/1 chosen: the challenge's certificate
+TF_T12		:= 4096				; TLS 1.2 records, sealed here (tls12_srv.inc)
+TF_KTLS		:= 8192				; the kernel has the keys (set after the wipe: close_notify)				; acme-tls/1 chosen: the challenge's certificate
 
 TH_MORE		:= 0
 TH_SEND		:= 1

@@ -564,7 +564,8 @@ built; both measurements are still to be made on the lab.)
   records are sealed and opened in user space (both suites), as 1.3's; a
   dual-certificate name picks by the client's 1.2 suites. Session tickets
   (RFC 5077) under the 1.3 ticket keys: abbreviated handshakes, counted as
-  resumed.
+  resumed. A close_notify when okena closes after an answer (1.2 and 1.3,
+  records here or on kTLS: an alert record through sendmsg).
 * FastCGI to PHP-FPM and others (`php` on a route: index files, the script
   path checked against the root, try-files), as nginx and Caddy do it.
 * Regular expressions in routes, `match` and `rewrite`, compiled to an

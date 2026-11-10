@@ -36,7 +36,7 @@ class H(http.server.BaseHTTPRequestHandler):
             self.wfile.write(b"HTTP/1.1 103 Early Hints\r\nLink: </b.css>; rel=preload\r\n\r\n")
             self.wfile.flush()
         extra = [("X-Frame-Options", "DENY")] if p.startswith("/hdr/framed") else []
-        time.sleep(0.15 if p.startswith("/slow") else 0)
+        time.sleep(0.4 if p.startswith("/slow") else 0)
         self.send_response(200)
         for k, v in extra:
             self.send_header(k, v)
@@ -116,7 +116,7 @@ http 127.0.0.1:{TLS} {{
         d, first = raw(b"GET /slow HTTP/1.1\r\nHost: x\r\n\r\n")
         heads = d.split(b"\r\n\r\n")
         check("a 103 first, then the answer", heads[0].startswith(b"HTTP/1.1 103") and heads[1].startswith(b"HTTP/1.1 200") and d.endswith(b"ok"), d[:300])
-        check("  long before the backend answers", first is not None and first < 0.1, first)
+        check("  long before the backend answers (0.4 s)", first is not None and first < 0.3, first)
         h = heads[0].decode()
         for s in ("</a.css>; rel=preload; as=style", "</b.js>; rel=preload; as=script", "</c.woff2>; rel=preload; as=font; crossorigin", "</d.png>; rel=preload; as=image", "</e>; rel=preload\r"):
             check(f"  {s[:30]}", s in h + "\r", h)

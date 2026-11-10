@@ -131,6 +131,34 @@ def resumed12(port, cipher, sni="okena.test", sni2=None):
         return None, repr(e).encode()
 
 
+def notified12(port, cipher="ECDHE-ECDSA-AES128-GCM-SHA256", proto=None):
+    """a request with Connection: close, read to the end with ragged EOFs refused:
+    the answer and a close_notify (else an SSLEOFError); then that session resumes"""
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    ctx.minimum_version = ctx.maximum_version = proto or ssl.TLSVersion.TLSv1_2
+    if not proto:
+        ctx.set_ciphers(cipher)
+    try:
+        with ctx.wrap_socket(socket.create_connection(("127.0.0.1", port), timeout=5), server_hostname="okena.test",
+                             suppress_ragged_eofs=False) as t:
+            t.sendall(b"GET /bye HTTP/1.1\r\nHost: okena.test\r\nConnection: close\r\n\r\n")
+            data = b""
+            while True:
+                b = t.recv(4096)
+                if not b:
+                    break
+                data += b
+            sess = t.session
+        with ctx.wrap_socket(socket.create_connection(("127.0.0.1", port), timeout=5), server_hostname="okena.test",
+                             session=sess) as t:
+            reused = t.session_reused
+        return data.startswith(b"HTTP/1.1 200"), reused
+    except (OSError, ssl.SSLError) as e:
+        return repr(e), None
+
+
 def early_close12(port):
     """A TLS 1.2 handshake whose last flight leaves together with a FIN."""
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
@@ -204,6 +232,7 @@ http 127.0.0.1:{DLST} {{
     tls {{
         cert {tmp / 'leaf.pem'} key={tmp / 'leaf.key'}
         cert {tmp / 'rsa.pem'} key={tmp / 'rsa.key'}
+        ktls on
     }}
     route /* {{ to 127.0.0.1:{BACK} }}
 }}
@@ -322,6 +351,12 @@ http 127.0.0.1:{DLST} {{
         reused, data = resumed12(port, cipher)
         check(f"a ticket resumes ({cipher}), and the connection serves",
               reused is True and data.startswith(b"HTTP/1.1 200") and b"backend:/again" in data, f"{reused} {data[:80]}")
+    for cipher in ("ECDHE-ECDSA-AES128-GCM-SHA256", "ECDHE-ECDSA-CHACHA20-POLY1305"):
+        ok, reused = notified12(LST, cipher)
+        check(f"kTLS {cipher}: Connection: close ends with a close_notify, and the session then resumes",
+              ok is True and reused is True, f"{ok} {reused}")
+    ok, _ = notified12(DLST, proto=ssl.TLSVersion.TLSv1_3)
+    check("kTLS, TLS 1.3 (ktls on): a close_notify too", ok is True, ok)
     reused, data = resumed12(SNIL, "ECDHE-ECDSA-AES128-GCM-SHA256", "a.test", "x.b.test")
     check("  a ticket of another certificate: a full handshake", reused is False and data.startswith(b"HTTP/1.1 200"),
           f"{reused} {data[:80]}")
@@ -371,6 +406,10 @@ http 127.0.0.1:{ULST} {{
               f"{ok1} {ok2} {ok3} {data[:80]}")
         reused, data = resumed12(ULST, cipher)
         check(f"  and resumed by a ticket", reused is True and b"backend:/again" in data, f"{reused} {data[:80]}")
+        ok, reused = notified12(ULST, cipher)
+        check(f"  Connection: close ends with a close_notify, then resumes", ok is True and reused is True, f"{ok} {reused}")
+    ok, _ = notified12(ULST, proto=ssl.TLSVersion.TLSv1_3)
+    check("records here, TLS 1.3: a close_notify too", ok is True, ok)
     u.terminate()
     u.wait(10)
 

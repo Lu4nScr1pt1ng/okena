@@ -49,6 +49,11 @@ the same extended master secret. A name with an ECDSA and an RSA certificate giv
 to a client whose suites take only it. Nothing in common: a handshake_failure
 alert. No CBC suites, no RSA key exchange, no SHA-1 signatures.
 
+A TLS connection okena closes once an answer is done (`Connection: close`,
+HTTP/1.0, an error) ends with a close_notify alert, 1.2 or 1.3, records sealed
+here or on kTLS: a client can tell the end from a cut, and a TLS 1.2 client
+keeps its session for a resumption.
+
 `http2 on` in an `http` listener speaks HTTP/2 to clients that ask for it:
 ALPN h2 on a TLS listener (preferred over http/1.1 when the client offers
 both), prior knowledge (the connection preface) on a plain one. Each
