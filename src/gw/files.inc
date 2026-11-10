@@ -29,7 +29,8 @@ FI_FLEN		:= 32				; d
 FI_PRE		:= 36				; d: F_BR, F_ZST, F_GZ, a byte each, in order
 FI_CC		:= 40				; q: Cache-Control's value, 0 none
 FI_CCLEN	:= 48				; d
-FI_SIZE		:= 56
+FI_PHP		:= 56				; d: `php`'s (fastcgi.inc)
+FI_SIZE		:= 64
 
 FE_BR		:= 1
 FE_ZST		:= 2
@@ -142,6 +143,9 @@ files_init:
 ; r15 = record, H_ACT: eax = 1 the route has files and it is taken care of.
 ; Keeps rbx, r12-r15.
 files_check:
+	mov	rax,[r15+H_BUF]			; (fastcgi.inc: this request's, from here)
+	mov	qword [rax+HB_FCGI],0
+	mov	dword [rax+HB_FC+FC_SET],0
 	mov	eax,[r15+H_ACT]
 	test	eax,eax
 	jz	.no
@@ -160,10 +164,17 @@ files_check:
 	mov	r13d,eax
 	imul	r12,rax,FI_SIZE
 	lea	r12,[g_files+r12]
+	cmp	dword [r12+FI_PHP],0
+	jne	.php
 	call	files_answer
 	pop	r13
 	pop	r12
 	mov	eax,1
+	ret
+.php:
+	call	php_answer			; 0: on to the pool (FastCGI)
+	pop	r13
+	pop	r12
 	ret
 
 ; rdi = g_fs_path's end: NUL it, and open what is there. CF: nothing. r13d = root.

@@ -574,6 +574,10 @@ built; both measurements are still to be made on the lab.)
   same chain checks), 1.2 tickets with the identity too.
 * FastCGI to PHP-FPM and others (`php` on a route: index files, the script
   path checked against the root, try-files), as nginx and Caddy do it.
+  Done: `protocol fastcgi` (records under h_send/h_recv on the upstream side,
+  the answer read back as HTTP/1.1 chunks, the connection kept), `php DIR
+  [index=]` (script, PATH_INFO, directory index, static files as `files`, the
+  front controller). Not yet: chunked request bodies (411).
 * Regular expressions in routes, `match` and `rewrite`, compiled to an
   automaton that runs in linear time (no backtracking, so no ReDoS), with
   captures for the rewrite.

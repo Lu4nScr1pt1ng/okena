@@ -887,6 +887,8 @@ http_request:
 	jbe	@f
 	mov	dword [g_retry_tokens+r13*4],RETRY_CAP
 @@:
+	mov	eax,r13d			; FastCGI: HB_FCGI (fastcgi.inc)
+	call	fcgi_mark
 	call	session_ptr
 	mov	[rax+S_POOL],r13d
 	mov	dword [rax+S_TRIES],0
@@ -897,6 +899,12 @@ http_request:
 	h_rec
 	call	http_write_request_head
 	jc	.head_too_large
+	call	fcgi_active
+	test	eax,eax
+	jz	@f
+	call	fcgi_head			; its records, in place of the head
+	jc	.head_too_large
+@@:
 	test	dword [r15+H_FLAGS],HX_CONTINUE
 	jz	.connect
 	; the client waits for 100 Continue before sending its body: say it
@@ -1790,7 +1798,14 @@ http_connect_failed:
 http_recv_done:
 	h_rec
 	test	ecx,ecx
-	jnz	http_recv_plain
+	jz	@f
+	push	rax
+	call	fcgi_active
+	test	eax,eax
+	pop	rax
+	jnz	fcgi_rx_done			; FastCGI records arrived
+	jmp	http_recv_plain
+@@:
 	cmp	dword [r15+H_UTLS],0
 	jne	utls_rx_done			; ciphertext arrived
 ; the same, with plaintext (or no TLS)
@@ -1941,6 +1956,8 @@ http_send_plain:
 	je	.close
 	cmp	edx,HS_TLS_NST
 	je	http_tls_fin_keys		; client_ca's ticket out: the keys now
+	cmp	edx,HS_FC_END
+	je	http_start_response		; (FastCGI: the body's end is out)
 	cmp	edx,HS_UTLS_HELLO
 	je	http_uptls_hello_sent
 	cmp	edx,HS_UTLS_FIN
@@ -2266,6 +2283,12 @@ fmt_hex32:
 ; ----------------------------------------------------------- response
 
 http_start_response:
+	h_rec
+	call	fcgi_active
+	test	eax,eax
+	jz	@f
+	call	fcgi_body_end			; (FastCGI: an empty FCGI_STDIN, once)
+@@:
 	call	session_ptr			; a stream upstream: the request ends
 	test	dword [rax+S_FLAGS],SF_UPH2
 	jz	@f

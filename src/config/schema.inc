@@ -139,7 +139,7 @@ enumdef e_priority, 'normal', 'critical', 'bulk'
 enumdef e_mirror_what, 'pool'
 enumdef e_quic_cc, 'cubic', 'bbr'
 enumdef e_h3, 'on', 'off', 'retry', 'v2'
-enumdef e_proto, 'h1', 'h2'
+enumdef e_proto, 'h1', 'h2', 'fastcgi'
 
 keysdef k_alog, 'trust', T_ANY
 keysdef k_errors, 'file', T_ANY
@@ -160,6 +160,7 @@ keysdef k_cors, 'origins', T_ANY, 'methods', T_ANY, 'headers', T_ANY, 'expose', 
 keysdef k_jwks, 'trust', T_ANY, 'refresh', T_DURATION, 'stale', T_DURATION
 keysdef k_cache, 'stale-while-revalidate', T_DURATION, 'vary', T_ANY, 'max', T_SIZE, 'shared', T_ANY, 'stale-if-error', T_DURATION, 'query', T_ANY, 'host', T_ANY, 'slice', T_SIZE
 keysdef k_files, 'index', T_ANY, 'fallback', T_ANY, 'precompressed', T_ANY, 'cache', T_ANY
+keysdef k_php, 'index', T_ANY
 keysdef k_compress, 'min', T_SIZE
 keysdef k_headers, 'preset', T_ANY
 keysdef k_rmap, 'code', T_ANY
@@ -271,6 +272,7 @@ dirdef DIR_ERRORS, 'errors',    M_HTTP or M_ROUTE, 0,  0, 1, 32, T_ANY, T_ANY, k
 dirdef DIR_MAINTENANCE, 'maintenance', M_HTTP, 0,     F_UNIQUE, 0, 0, T_NONE, T_NONE, k_maint
 dirdef DIR_REDIRECTS, 'redirects', M_ROUTE, 0,         F_UNIQUE, 1, 1, T_ANY, T_NONE, k_rmap
 dirdef DIR_FILES, 'files',      M_ROUTE,   0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, k_files
+dirdef DIR_PHP, 'php',          M_ROUTE,   0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, k_php
 dirdef DIR_MATCH, 'match',      M_ROUTE,   CTX_ROUTE,   F_BLOCK_REQ or F_FREE_KEYS, 0, 16, T_ANY, T_ANY, 0
 dirdef DIR_CACHE, 'cache',      M_ROUTE,   0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, k_cache
 dirdef DIR_SIGNED, 'signed_urls', M_ROUTE, 0,           F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_signed

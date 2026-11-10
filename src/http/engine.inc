@@ -34,6 +34,9 @@ h_recv_up:
 	jnz	idem_recv			; or a kept answer
 	test	dword [rax+S_FLAGS],SF_UPH2
 	jnz	h2u_recv
+	call	fcgi_active
+	test	eax,eax
+	jnz	fcgi_recv			; FastCGI: records, read back as HTTP/1.1
 ; the socket itself, whatever TLS is above it
 h_recv_raw:
 	cmp	dword [g_engine],ENGINE_EPOLL
@@ -105,6 +108,9 @@ h_send_up:
 	call	session_ptr
 	test	dword [rax+S_FLAGS],SF_UPH2
 	jnz	h2u_send
+	call	fcgi_active
+	test	eax,eax
+	jnz	fcgi_send			; FastCGI: in records
 ; the socket itself
 h_send_raw:
 	cmp	dword [g_engine],ENGINE_EPOLL

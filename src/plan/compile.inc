@@ -185,6 +185,7 @@ PL_QTIMEOUT	:= 728		; q: µs a request may wait for a place, 0: the connect time
 PL_HBOUND	:= 736		; d: maglev, ring-hash: a server's load at most this % of the mean, 0 none
 PL_HASMAX	:= 740		; d: a server of it has a max
 PL_TLS_CID	:= 744		; d: `tls { cert; key }`: what it shows the backends (g_tls + 1), 0 none
+PL_FCGI		:= 748		; d: 1 when its backends speak FastCGI (`protocol fastcgi`: fastcgi.inc)
 PL_SIZE		:= 768		; room for PL_TLS_ANCHOR + a PK blob (16 + 528), then PL_H2
 assert PL_TLS_ANCHOR + PK_SIZE <= PL_H2
 
@@ -1116,6 +1117,9 @@ compile_route_action:
 	lea	rcx,[dir_table + D_SIZE*DIR_FILES]
 	cmp	rax,rcx
 	je	@f
+	lea	rcx,[dir_table + D_SIZE*DIR_PHP]
+	cmp	rax,rcx
+	je	@f
 	lea	rcx,[dir_table + D_SIZE*DIR_AUTH]
 	cmp	rax,rcx
 	je	@f
@@ -1359,6 +1363,19 @@ compile_route_action:
 	pop	rbx
 	pop	r12
 .no_signed:
+	mov	rdi,r12				; php ROOT: a files entry that picks PHP's
+	mov	ecx,DIR_PHP			; scripts (fastcgi.inc)
+	call	find_child
+	test	rax,rax
+	jz	.no_php
+	push	r12
+	push	rbx
+	mov	rbx,rax
+	mov	r12,r13
+	call	compile_php
+	pop	rbx
+	pop	r12
+.no_php:
 	mov	rdi,r12
 	mov	ecx,DIR_FILES
 	call	find_child
@@ -2502,8 +2519,13 @@ compile_pool:
 	lea	rcx,[dir_table + D_SIZE*DIR_PROTOCOL]
 	cmp	rax,rcx
 	jne	.advance
-	mov	rax,[rbx+N_ARGS]		; protocol h1|h2
+	mov	rax,[rbx+N_ARGS]		; protocol h1|h2|fastcgi
 	mov	rax,[rax+A_VAL]
+	cmp	byte [rax],'f'
+	jne	@f
+	mov	dword [r13+PL_FCGI],1
+	jmp	.advance
+@@:
 	cmp	byte [rax+1],'2'
 	jne	.advance
 	mov	dword [r13+PL_H2],1

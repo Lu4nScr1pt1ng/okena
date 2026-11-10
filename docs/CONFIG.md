@@ -14,7 +14,7 @@ not built yet. A directive that is not built is refused by `okena check`
 | `udp ADDR...` | `to`, `responses N`, `limits { connections }` (flows), `timeout { idle }` |
 | `http ADDR...` | `host`, `route`, `errors CODES file= [backend]`, `maintenance file= retry= allow= except=`, `limits`, `timeout { idle; header; body_idle; response }`, `trusted_proxies`, `access_log`, `tracing`, `http2 on\|off`, `http3 on\|off\|retry\|v2`, `preferred_address`, `early_data on\|off`, `tls { cert; key; ktls on\|off }` |
 | `route PATH... [METHOD...]` | `to`, `redirect`, `rewrite path`, `signed_urls key= [key2=]`, `header set\|add\|drop`, `response header set\|add\|drop` |
-| `pool NAME` | `server ADDR [weight=N] [max=N] [backup]`, `queue timeout=`, `balance least-request\|peak-ewma\|round-robin\|least-conn\|random\|maglev\|ring-hash\|source-hash [key=] [bound=]\|first`, `sticky cookie= [ttl=] [samesite=]`, `connect timeout=`, `health tcp\|http\|grpc ...`, `slow_start`, `tls { trust FILE; sni NAME; cert FILE; key FILE }` (TLS to the backends), `protocol h1\|h2` |
+| `pool NAME` | `server ADDR [weight=N] [max=N] [backup]`, `queue timeout=`, `balance least-request\|peak-ewma\|round-robin\|least-conn\|random\|maglev\|ring-hash\|source-hash [key=] [bound=]\|first`, `sticky cookie= [ttl=] [samesite=]`, `connect timeout=`, `health tcp\|http\|grpc ...`, `slow_start`, `tls { trust FILE; sni NAME; cert FILE; key FILE }` (TLS to the backends), `protocol h1\|h2\|fastcgi` |
 
 `tls { cert FILE; key FILE }` on an `http` listener makes it HTTPS: TLS
 1.3 with a certificate chain (leaf first) and its key: EC P-256 (SEC 1 or
@@ -1397,6 +1397,37 @@ order, each up to its max, so that the last ones can be stopped while traffic
 is low; idle connections kept for reuse do not count.
 
 ## Sites, caching and the edge
+
+`php DIR` runs a PHP site through PHP-FPM, as nginx's and Caddy's usual
+configurations do; its pool speaks FastCGI:
+
+```
+pool fpm { server unix:/run/php-fpm/www.sock; protocol fastcgi }
+http :443 {
+    tls { auto }
+    host example.com { route /* { php /srv/www; to pool fpm } }
+}
+```
+
+The script is found beneath DIR (opened as `files` opens, so nothing outside it
+is reached): a path with a segment ending in `.php` is that script, and what
+follows it `PATH_INFO` (`/blog/index.php/2026/11`); a directory is its index
+(`index=`, `index.php` by default), and one asked for without its slash is
+redirected to it; any other file that is there is served as `files` serves it,
+never handed to PHP (so `/uploads/x.php.jpg` is an image); anything else goes to
+DIR's index, the front controller of Laravel, Symfony or WordPress, with the
+request's own `REQUEST_URI`. Only names ending in `.php` reach PHP.
+
+PHP gets the CGI params from the request okena would send (its header changes,
+X-Forwarded-For, the request id): `SCRIPT_FILENAME`, `SCRIPT_NAME`,
+`DOCUMENT_ROOT`, `PATH_INFO`, `REQUEST_METHOD`, `REQUEST_URI`, `QUERY_STRING`,
+`CONTENT_TYPE`, `CONTENT_LENGTH`, `REMOTE_ADDR` (the client), `SERVER_NAME`,
+`SERVER_PORT`, `HTTPS`, and each field as `HTTP_*` (never `HTTP_PROXY`). Its
+answer's CGI head becomes a status line (`Status:`, a `Location:` alone is 302),
+its body chunks, its STDERR the log's (`fastcgi: ...`). The connection to FPM is
+kept and pooled. A request body needs a length (a chunked one: 411). A pool
+with `protocol fastcgi` serves any FastCGI responder: without `php`,
+`SCRIPT_NAME` is the path. Health checks for it: `health tcp`.
 
 `files DIR` answers a route from a directory, by the request's whole path:
 `route /assets/* { files /srv/site }` serves `/srv/site/assets/...`.

@@ -90,6 +90,20 @@ def zc():
     return int(re.search(r"^okena_zero_copy_bytes_total (\d+)", t, re.M).group(1))
 
 
+def settled():
+    """the counter, once it has not moved for a publication period (a second)"""
+    last = [zc(), time.time()]
+
+    def still():
+        v = zc()
+        if v != last[0]:
+            last[:] = [v, time.time()]
+            return False
+        return time.time() - last[1] > 1.1
+    until(still, 6)
+    return last[0]
+
+
 def grew(before, by):
     """the counter (published once a second) shows at least this much more"""
     return until(lambda: zc() >= before + by, 4)
@@ -195,7 +209,7 @@ http 127.0.0.1:{UTLS} {{
               all(out) and grew(z0, 6 * len(BIG)), (out, z0, zc()))
 
         # copied as before: a small body, HTTP/2, HEAD
-        z0 = zc()
+        z0 = settled()                  # (what the clients that left still had: counted)
         s, b, _ = get("/f/small.txt")
         check("a small body: right (copied: cheaper)", s == 200 and b == b"s" * 1000)
         import h2.config
@@ -221,8 +235,7 @@ http 127.0.0.1:{UTLS} {{
         check("TLS sealed by okena (no kTLS): right (copied)", s == 200 and b == BIG, (s, len(b)))
         s, b, r = get("/f/big.bin", method="HEAD")
         check("HEAD: its length, no body", s == 200 and b == b"" and r.getheader("content-length") == str(len(BIG)))
-        time.sleep(1.2)
-        check("  and none of those went without copies", zc() == z0, (z0, zc()))
+        check("  and none of those went without copies", not until(lambda: zc() != z0, 1.3), (z0, zc()))
     finally:
         p.terminate()
         p.wait(10)
