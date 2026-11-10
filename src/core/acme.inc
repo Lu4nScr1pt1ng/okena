@@ -46,7 +46,9 @@ AS_TOK		:= 8
 AS_KA		:= 108
 AS_SIZE		:= 256
 AS_TOKMAX	:= 100
-ACME_TSLOT	:= 4096			; TLS-ALPN-01: a certificate a name
+ACME_TSLOT	:= 8192			; TLS-ALPN-01: a certificate a name
+ACME_HSLOTS	:= ACME_NAMES * 2	; HTTP-01's: this instance's, then a fleet's (acmefleet.inc)
+assert AH_SLOT + ACME_HSLOTS * AS_SIZE <= ACME_TSLOT
 AX_NLEN		:= 0			; d: the name's length, 0 a free slot (written last)
 AX_CLEN		:= 4			; d: the certificate_list's
 AX_KEY		:= 8			; 32: d
@@ -101,7 +103,8 @@ ACM_EABH	:= ACM_D4 + 160		; 64
 ACM_FBEABK	:= ACM_D4 + 224		; 128
 ACM_FBEABH	:= ACM_D4 + 352		; 64
 ACM_FBTRUST	:= ACM_D4 + 416		; fallback_trust='s anchor
-ACM_SIZE		:= (ACM_FBTRUST + PK_SIZE + 7) and not 7
+ACM_SHARED	:= ACM_FBTRUST + PK_SIZE	; d: shared=on (acmefleet.inc)
+ACM_SIZE		:= (ACM_SHARED + 4 + 7) and not 7
 
 SYS_fchownat_	:= 260
 LLF_REMOVE_FILE	:= 32
@@ -384,7 +387,7 @@ acme_challenge:
 	jne	.out
 	; rsi/ecx = the token asked for
 	lea	r9,[r9+AH_SLOT]
-	mov	r8d,ACME_NAMES
+	mov	r8d,ACME_HSLOTS
 .slot:
 	cmp	[r9+AS_TLEN],ecx
 	jne	.next
@@ -633,6 +636,13 @@ compile_acme:
 	cmp	byte [rsi+10],'1'
 	jne	.bad
 	mov	dword [g_plan_acme+ACM_CHAL],1
+	cmp	dword [g_plan_acme+ACM_SHARED],0
+	je	.ok
+	call	log_begin
+	out_lit 'acme: challenge=tls-alpn-01 cannot be shared (the handshake',39,'s certificate is on one instance): http-01 or dns-01 with shared=on'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
 .ok:
 	mov	dword [g_plan_acme+ACM_ON],1
 	ret
@@ -700,7 +710,34 @@ compile_acme_more:
 	mov	[g_plan_acme+ACM_FBEABKL],ecx
 	mov	[g_plan_acme+ACM_FBEABHL],edx
 @@:
+	mov	rdi,rbx				; shared=on: a fleet's directory (acmefleet.inc)
+	cstring .k_shared, 'shared',0
+	lea	rsi,[.k_shared]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	mov	rsi,[rax+A_VAL]
+	cmp	dword [rax+A_VLEN],3
+	je	.shared_off
+	cmp	dword [rax+A_VLEN],2
+	jne	.bad_shared
+	cmp	word [rsi],'on'
+	jne	.bad_shared
+	mov	dword [g_plan_acme+ACM_SHARED],1
+	jmp	@f
+.shared_off:
+	cmp	word [rsi],'of'
+	jne	.bad_shared
+	cmp	byte [rsi+2],'f'
+	jne	.bad_shared
+@@:
 	ret
+.bad_shared:
+	call	log_begin
+	out_lit 'acme: shared= is on or off'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
 .bad:
 	call	log_begin
 	out_lit 'acme: fallback= is another CA',39,'s directory (https://), and fallback_trust= and fallback_eab= go with it'
@@ -1689,6 +1726,33 @@ acme_main:
 	call	acme_now
 	cmp	rax,[g_ac_due+rbx*8]
 	jb	.later
+	cmp	dword [g_plan_acme+ACM_SHARED],0
+	je	.order
+	call	acme_fleet_turn			; a fleet's directory: whose order (acmefleet.inc)
+	test	eax,eax
+	jz	.order
+	cmp	eax,1
+	je	.taken
+	call	acme_now			; another instance ordering it: looked at again
+	inc	rax
+	mov	[g_ac_due+rbx*8],rax
+	jmp	.later
+.taken:
+	mov	qword [g_ac_back+rbx*8],0
+	cmp	ebx,ACME_CERTS
+	jb	@f
+	call	od_publish
+	jmp	.taken_said
+@@:
+	mov	dword [g_ac_reload],1
+.taken_said:
+	call	log_begin
+	out_lit 'acme: '
+	call	acme_out_name
+	out_lit ': renewed by another instance (the shared directory): taken'
+	call	log_end
+	jmp	.later
+.order:
 	mov	dword [g_ac_cai],0
 	call	acme_issue
 	jnc	.issued
@@ -1714,6 +1778,7 @@ acme_main:
 	mov	dword [g_ac_cai],0
 	jc	.failed
 .issued:
+	call	acme_unlock
 	mov	qword [g_ac_back+rbx*8],0
 	call	acme_file_due
 	mov	edx,1
@@ -1741,6 +1806,7 @@ acme_main:
 	call	log_end
 	jmp	.later
 .failed:
+	call	acme_unlock
 	cmp	ebx,ACME_CERTS			; on demand, and none yet: refused for a while
 	jb	.backoff
 	cmp	qword [g_ac_end+rbx*8],0
@@ -1812,6 +1878,10 @@ acme_main:
 	jmp	.cert
 .pass:
 	call	acme_clear
+	cmp	dword [g_plan_acme+ACM_SHARED],0
+	je	@f
+	call	acme_fleet_poll			; a fleet's challenges, taken again
+@@:
 	cmp	dword [g_ac_reload],0
 	je	@f
 	mov	rax,[g_acme_page]
@@ -1821,6 +1891,10 @@ acme_main:
 	sub	r13,rax
 	jg	@f
 	mov	r13d,1
+@@:
+	cmp	dword [g_plan_acme+ACM_SHARED],0
+	je	@f
+	mov	r13d,1				; a fleet's: its challenges looked at each second
 @@:
 	cmp	r13,3600
 	jbe	@f
@@ -3309,17 +3383,7 @@ acme_poll:
 	dec	ebx
 	jz	.too_long
 	mov	eax,r14d
-	xor	edx,edx
-	mov	ecx,1000
-	div	ecx
-	imul	rdx,rdx,1000000
-	push	rdx
-	push	rax
-	mov	rdi,rsp
-	xor	esi,esi
-	mov	eax,SYS_nanosleep
-	syscall
-	add	rsp,16
+	call	acme_sleep_ms
 	add	r14d,r14d
 	cmp	r14d,2000
 	jbe	.again
@@ -4196,17 +4260,7 @@ r53_insync:
 	dec	r13d
 	jz	.too_long
 	mov	eax,r14d
-	xor	edx,edx
-	mov	ecx,1000
-	div	ecx
-	imul	rdx,rdx,1000000
-	push	rdx
-	push	rax
-	mov	rdi,rsp
-	xor	esi,esi
-	mov	eax,SYS_nanosleep
-	syscall
-	add	rsp,16
+	call	acme_sleep_ms
 	add	r14d,r14d
 	cmp	r14d,5000
 	jbe	.ask
@@ -4726,17 +4780,7 @@ dns_go:
 	jc	.out
 @@:
 	mov	eax,[g_plan_acme+ACM_DNSWAIT]
-	xor	edx,edx
-	mov	ecx,1000
-	div	ecx
-	imul	rdx,rdx,1000000
-	push	rdx
-	push	rax
-	mov	rdi,rsp
-	xor	esi,esi
-	mov	eax,SYS_nanosleep
-	syscall
-	add	rsp,16
+	call	acme_sleep_ms
 	xor	r12d,r12d
 .chal:
 	cmp	r12d,[g_ac_nauthz]
@@ -5538,6 +5582,12 @@ acme_prove:
 	rep	movsb
 	mov	eax,[g_ac_tokl]
 	mov	[rbx+AS_TLEN],eax
+	cmp	dword [g_plan_acme+ACM_SHARED],0
+	je	.ready
+	push	rbx
+	mov	rbx,[rsp+8]			; (the certificate)
+	call	acme_fleet_publish		; for the other instances too
+	pop	rbx
 	jmp	.ready
 .dns_record:
 	; DNS-01's: a TXT record _acme-challenge.NAME = base64url(SHA-256(it)); the

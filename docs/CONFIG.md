@@ -559,6 +559,21 @@ after a minute, then twice as long each time up to six hours, the one being serv
 kept meanwhile (the log says what failed). A restart finds the files and asks
 nothing until a renewal is due.
 
+**A fleet.** `shared=on` says DIR is shared by several okena instances (a volume
+they all mount, NFS included), so that one of them orders a certificate and the
+others take it. A certificate due, an instance takes `DIR/NAME/lock` (written
+beside and linked there: only one link succeeds); the one holding it orders,
+then removes it. The others look each second: a certificate on disk that is not
+the one they serve is taken (a reload, as for their own), and a lock gone with
+none new (the order failed) is taken by one of them. A lock says until when it
+holds (10 minutes); one past that is an instance that died ordering, moved aside
+and ordered again. With HTTP-01 the CA may reach any instance: the one ordering
+writes its challenges to `DIR/NAME/http-01` and waits 2 seconds before telling
+the CA; the others answer them too. DNS-01 needs nothing more. TLS-ALPN-01
+cannot be shared (the proof is in one instance's handshake), and is refused
+with `shared=on`. Each instance keeps its own account (the same key when they
+start from one DIR/account.key).
+
 The application layer (http) adds its own limits and timeouts:
 
 ```

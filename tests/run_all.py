@@ -198,6 +198,8 @@ SUITES = [
     ("ocsp epoll", ["tests/gateway/ocsp.py", "epoll"]),
     ("acmeod io_uring", ["tests/gateway/acmeod.py", "io_uring"]),
     ("acmeod epoll", ["tests/gateway/acmeod.py", "epoll"]),
+    ("acmefleet io_uring", ["tests/gateway/acmefleet.py", "io_uring"]),
+    ("acmefleet epoll", ["tests/gateway/acmefleet.py", "epoll"]),
     ("forward io_uring", ["tests/gateway/forward.py", "io_uring"]),
     ("forward epoll", ["tests/gateway/forward.py", "epoll"]),
     ("mtls io_uring", ["tests/gateway/mtls.py", "io_uring"]),

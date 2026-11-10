@@ -230,6 +230,8 @@ rodata
 	sc_allow filter_supervisor, SYS_futex		; a worker wakes the cache keeper
 	sc_allow filter_supervisor, SYS_mkdirat_	; the acme process: its directories
 	sc_allow filter_supervisor, SYS_fchownat_
+	sc_allow filter_supervisor, SYS_link_		; (its lock, shared=on: acmefleet.inc)
+	sc_allow filter_supervisor, SYS_unlink_
 	sc_end filter_supervisor
 
 	; io_uring worker: the ring does the I/O
@@ -453,6 +455,7 @@ rodata
 	sc_check filter_compiler, SYS_socket, socket		; the kTLS probe
 	sc_allow filter_compiler, SYS_setsockopt
 	sc_allow filter_compiler, SYS_getrandom		; acme: a key until the CA's certificate comes
+	sc_allow filter_compiler, SYS_clock_gettime	; (and its certificate's validity, from now)
 	sc_end filter_compiler
 
 	; ocsp: the responders asked over HTTP (names resolved), nothing written
@@ -489,6 +492,8 @@ rodata
 	sc_allow filter_acme, SYS_rename_
 	sc_allow filter_acme, SYS_futex		; asleep until a revocation, or a request
 	sc_allow filter_acme, SYS_mkdirat_	; (an on-demand certificate's directory)
+	sc_allow filter_acme, SYS_link_		; a fleet's lock (acmefleet.inc)
+	sc_allow filter_acme, SYS_unlink_
 	sc_end filter_acme
 
 	align 8

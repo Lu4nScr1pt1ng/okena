@@ -536,8 +536,10 @@ built; both measurements are still to be made on the lab.)
   certificate the CA says is revoked renewed at once.
   On-demand certificates (`on_demand` patterns, `ask=`, `max=`): the handshake
   parked until the acme process has one, then served from a shared store.
-  `okena certs`.
-  Still to do: the rest of the list above (the shared lock, the local CA).
+  `okena certs`. A fleet sharing DIR (`shared=on`): a lock per certificate
+  (link(2), stale ones moved aside), HTTP-01 challenges shared through
+  DIR/NAME/http-01, the others taking the certificate from disk.
+  Still to do: the rest of the list above (the local CA).
   Exit: a fresh install with `tls auto` serves a valid certificate within a
   minute; a CA down, rate-limited or answering wrongly never takes a served
   certificate away; `make chaos` with the CA failed in turn passes.
