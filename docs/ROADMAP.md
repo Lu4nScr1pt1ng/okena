@@ -544,7 +544,9 @@ built; both measurements are still to be made on the lab.)
   by a reload of its own; `okena trust [remove]` for the system's store.
   `tls { auto }`: the host blocks' names, Let's Encrypt and /var/lib/okena/acme
   by default; plain http redirected (308) to https for every name from the CA,
-  `redirect off` to keep it.
+  `redirect off` to keep it. Renewal with jitter (up to 1/20 of the life
+  earlier); after a failure the staging CA first (`staging=`, Let's Encrypt's
+  by default for it), across restarts.
   Exit: a fresh install with `tls auto` serves a valid certificate within a
   minute; a CA down, rate-limited or answering wrongly never takes a served
   certificate away; `make chaos` with the CA failed in turn passes.

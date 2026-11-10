@@ -552,11 +552,17 @@ named as the name or its nearest parent; a name's values (a wildcard's and its
 parent's share one) go in one record set, okena waits for Route 53 to say the
 change is INSYNC before `dns_wait`, and deletes the record set after. The files are written beside and renamed over, and okena reloads
 itself: the new certificate is served, no connection dropped. A certificate is
-renewed when two thirds of its life have gone, or when the CA says so: a CA with
+renewed when two thirds of its life have gone (less a random part, up to a
+twentieth of it, so that certificates got together are not renewed together), or when the CA says so: a CA with
 ARI (RFC 9773, Let's Encrypt's renewalInfo) is asked, for each certificate,
 what window it wants it renewed in, and okena renews at a random time within it
 (earlier, say, ahead of a revocation, or later); asked again as its Retry-After
 says (an hour to a day), and the new order names the certificate it replaces.
+After a failed order the next one goes first to the CA's staging
+directory (`staging=URL`; Let's Encrypt's own when `ca=` is Let's Encrypt;
+`staging=off` for none), whose certificate is not kept: only when it succeeds
+is the CA asked, so a name that keeps failing does not use up the CA's rate
+limits. The failure is kept in DIR/NAME/status, so a restart does the same.
 A failed order is tried again
 after a minute, then twice as long each time up to six hours, the one being served
 kept meanwhile (the log says what failed). A restart finds the files and asks

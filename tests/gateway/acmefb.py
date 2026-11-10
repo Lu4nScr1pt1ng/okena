@@ -158,6 +158,32 @@ http 127.0.0.1:{TLS} {{
                            capture_output=True, text=True, timeout=10)
         check("fallback_eab= without fallback=: refused", r.returncode != 0 and "fallback" in r.stderr, r.stderr)
 
+        # the staging CA first after a failure: the first order refused (CA one); the
+        # failure kept in DIR/NAME/status, so a restart asks staging, then the CA
+        STG = BASE + 8
+        k5, c5 = ca("okena test staging CA")
+        sts = A.CAState(k5, c5, STG)
+        sts.bad_nonce_once = False
+        serve(tmp, "stg", STG, k1, c1, sts)             # (its HTTPS under CA one's anchor)
+        sconf = conf("s", f"ca=https://localhost:{CA1}/dir trust={tmp}/one-ca.pem staging=https://localhost:{STG}/dir")
+        p = start(sconf)
+        check("staging=: a first order straight to the CA (refused), its status says so",
+              A.until(lambda: "failed" in (tmp / "s" / "f.example.test" / "status").read_text(), 8)
+              and not any(e[0] == "order" for e in sts.log), (sts.log, log.read_text()[-300:]))
+        stop(p)
+        st1.fail_orders = None
+        n1 = len([e for e in st1.log if e[0] == "order"])
+        p = start(sconf)
+        check("  restarted: the staging CA first, then the CA's certificate served",
+              A.until(lambda: served("f.example.test").issuer == c1.subject, 15)
+              and any(e[0] == "order" for e in sts.log) and "the staging CA issued it: now the CA" in log.read_text(),
+              (sts.log[-4:], log.read_text()[-400:]))
+        check("  nothing of staging's kept: the file is the CA's",
+              x509.load_pem_x509_certificate((tmp / "s" / "f.example.test" / "cert.pem").read_bytes()).issuer == c1.subject
+              and len([e for e in st1.log if e[0] == "order"]) == n1 + 1)
+        stop(p)
+        st1.fail_orders = (429, "rateLimited")
+
         # ARI (RFC 9773): two certificates far from 2/3 of their life; the CA's window
         # for one is past (renew now), for the other ahead
         k3, c3 = ca("okena test CA three")

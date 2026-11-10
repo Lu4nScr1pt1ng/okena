@@ -106,7 +106,9 @@ ACM_FBEABH	:= ACM_D4 + 352		; 64
 ACM_FBTRUST	:= ACM_D4 + 416		; fallback_trust='s anchor
 ACM_SHARED	:= ACM_FBTRUST + PK_SIZE	; d: shared=on (acmefleet.inc)
 ACM_REDIRN	:= ACM_SHARED + 4	; d: certificates whose names plain http redirects
-ACM_SIZE		:= (ACM_REDIRN + 4 + 7) and not 7
+ACM_STGL	:= ACM_REDIRN + 4	; d: staging='s (acmeauto.inc), 0 none
+ACM_STG		:= ACM_REDIRN + 8	; q
+ACM_SIZE		:= (ACM_STG + 8 + 7) and not 7
 
 SYS_fchownat_	:= 260
 LLF_REMOVE_FILE	:= 32
@@ -181,7 +183,8 @@ bss
 	g_ac_dchal:	rb ACME_URL * ACME_NAMES
 	g_ac_txt:	rb 64
 	g_ac_dnamel	rd ACME_NAMES
-	g_ac_cai	dd ?			; the CA being asked: 0 ca=, 1 fallback=
+	g_ac_failed:	rb ACME_ALL		; the last order failed: staging first
+	g_ac_cai	dd ?			; the CA being asked: 0 ca=, 1 fallback=, 2 staging= (nothing kept)
 	; ARI (RFC 9773): per certificate, its CertID and when to ask again
 	align 8
 	g_ac_arinext	rq ACME_ALL
@@ -715,6 +718,7 @@ compile_acme_more:
 	mov	[g_plan_acme+ACM_FBEABKL],ecx
 	mov	[g_plan_acme+ACM_FBEABHL],edx
 @@:
+	call	compile_acme_staging		; staging=URL (acmeauto.inc)
 	mov	rdi,rbx				; shared=on: a fleet's directory (acmefleet.inc)
 	cstring .k_shared, 'shared',0
 	lea	rsi,[.k_shared]
@@ -1772,6 +1776,7 @@ acme_main:
 	cmp	ebx,ACME_ALL
 	jb	@b
 	call	od_load				; the on-demand ones kept from before
+	call	acme_failed_load		; (and which failed last: their status)
 .loop:
 	mov	dword [g_ac_reload],0
 	mov	rax,[g_acme_page]
@@ -1825,6 +1830,30 @@ acme_main:
 	call	log_end
 	jmp	.later
 .order:
+	cmp	byte [g_ac_failed+rbx],0	; it failed last: the staging CA first
+	je	.order_ca
+	cmp	dword [g_plan_acme+ACM_STGL],0
+	je	.order_ca
+	mov	dword [g_ac_cai],2
+	call	acme_issue
+	mov	dword [g_ac_cai],0
+	jnc	@f
+	call	log_begin
+	out_lit 'acme: '
+	call	acme_out_name
+	out_lit ': the staging CA first (the last order failed): it fails too ('
+	mov	rsi,[g_ac_why]
+	call	out_cstr
+	out_lit ')'
+	call	log_end
+	jmp	.failed
+@@:
+	call	log_begin
+	out_lit 'acme: '
+	call	acme_out_name
+	out_lit ': the staging CA issued it: now the CA'
+	call	log_end
+.order_ca:
 	mov	dword [g_ac_cai],0
 	call	acme_issue
 	jnc	.issued
@@ -1850,6 +1879,7 @@ acme_main:
 	mov	dword [g_ac_cai],0
 	jc	.failed
 .issued:
+	mov	byte [g_ac_failed+rbx],0
 	call	acme_unlock
 	mov	qword [g_ac_back+rbx*8],0
 	call	acme_file_due
@@ -1878,6 +1908,7 @@ acme_main:
 	call	log_end
 	jmp	.later
 .failed:
+	mov	byte [g_ac_failed+rbx],1
 	call	acme_unlock
 	cmp	ebx,ACME_CERTS			; on demand, and none yet: refused for a while
 	jb	.backoff
@@ -2372,12 +2403,34 @@ acme_file_due:
 	mov	[g_ac_end+rbx*8],rax
 	sub	rax,r12
 	jbe	.out
+	push	rax
 	add	rax,rax
 	xor	edx,edx
 	mov	ecx,3
 	div	rcx
 	add	rax,r12
-	mov	[g_ac_due+rbx*8],rax
+	mov	r12,rax
+	; jitter: up to a twentieth of the life earlier, so that certificates got
+	; together (a fleet, a restart) are not all renewed in the same second
+	sub	rsp,8
+	mov	rdi,rsp
+	mov	esi,8
+	xor	edx,edx
+	mov	eax,SYS_getrandom
+	syscall
+	pop	rax
+	pop	rcx
+	push	rax
+	mov	rax,rcx
+	xor	edx,edx
+	mov	ecx,20
+	div	rcx
+	lea	rcx,[rax+1]
+	pop	rax
+	xor	edx,edx
+	div	rcx
+	sub	r12,rdx
+	mov	[g_ac_due+rbx*8],r12
 .out:
 	pop	r12
 	ret
@@ -2937,8 +2990,8 @@ acme_request:
 	xor	edi,edi
 	cmp	dword [g_ac_dns],0
 	jne	.dns_anchor
-	cmp	dword [g_ac_cai],0
-	jne	.fb_anchor
+	cmp	dword [g_ac_cai],1		; (staging: ca='s anchor)
+	je	.fb_anchor
 	cmp	dword [g_plan_acme+ACM_HASTRUST],0
 	je	@f
 	lea	rdi,[g_plan_acme+ACM_TRUST]
@@ -4962,10 +5015,13 @@ acme_issue:
 	; the directory
 	mov	rsi,[g_plan_acme+ACM_CA]
 	mov	ecx,[g_plan_acme+ACM_CAL]
-	cmp	dword [g_ac_cai],0
-	je	@f
+	cmp	dword [g_ac_cai],1
+	jb	@f
 	mov	rsi,[g_plan_acme+ACM_FB]
 	mov	ecx,[g_plan_acme+ACM_FBL]
+	je	@f
+	mov	rsi,[g_plan_acme+ACM_STG]
+	mov	ecx,[g_plan_acme+ACM_STGL]
 @@:
 	xor	edx,edx
 	call	acme_request
@@ -5246,6 +5302,8 @@ acme_issue:
 	call	x509_locate
 	test	eax,eax
 	jz	.bad
+	cmp	dword [g_ac_cai],2		; the staging CA's: only to know it would work
+	je	.staged
 	; stored: the key, then the certificate
 	cstring .w_write, 'the files could not be written',0
 	lea	rax,[.w_write]
@@ -5272,6 +5330,7 @@ acme_issue:
 	mov	edx,[g_ac_rbl]
 	call	acme_write
 	jc	.bad
+.staged:
 	clc
 	jmp	.out
 .bad:
@@ -5311,8 +5370,8 @@ acme_eab_of:
 	mov	ecx,[g_plan_acme+ACM_EABKL]
 	lea	rdx,[g_plan_acme+ACM_EABH]
 	mov	r8d,[g_plan_acme+ACM_EABHL]
-	cmp	dword [g_ac_cai],0
-	je	@f
+	cmp	dword [g_ac_cai],1
+	jne	@f
 	lea	rsi,[g_plan_acme+ACM_FBEABK]
 	mov	ecx,[g_plan_acme+ACM_FBEABKL]
 	lea	rdx,[g_plan_acme+ACM_FBEABH]

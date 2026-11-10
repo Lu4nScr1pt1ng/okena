@@ -16,6 +16,8 @@ rodata
 	acme_le_dir	db 'https://acme-v02.api.letsencrypt.org/directory'
 	acme_le_dir.len = $ - acme_le_dir
 	acme_def_dir	db '/var/lib/okena/acme'
+	acme_le_stg	db 'https://acme-staging-v02.api.letsencrypt.org/directory'
+	acme_le_stg.len = $ - acme_le_stg
 	acme_def_dir.len = $ - acme_def_dir
 end rodata
 
@@ -30,7 +32,97 @@ acme_auto_defaults:
 	mov	[g_plan_acme+ACM_CA],rax
 	mov	dword [g_plan_acme+ACM_CAL],acme_le_dir.len
 	mov	dword [g_plan_acme+ACM_ON],1
+	lea	rax,[acme_le_stg]
+	mov	[g_plan_acme+ACM_STG],rax
+	mov	dword [g_plan_acme+ACM_STGL],acme_le_stg.len
 .out:
+	ret
+
+; rbx = the okena acme node: staging=URL (a CA that issues certificates nobody
+; trusts, with limits to spare), asked first after an order failed, so a name
+; that keeps failing does not use up the CA's; Let's Encrypt's own when ca= is
+; Let's Encrypt and none is said. staging=off: none.
+compile_acme_staging:
+	mov	rdi,rbx
+	cstring .k_stg, 'staging',0
+	lea	rsi,[.k_stg]
+	call	node_option
+	test	rax,rax
+	jz	.le
+	mov	rsi,[rax+A_VAL]
+	mov	ecx,[rax+A_VLEN]
+	cmp	ecx,3
+	jne	@f
+	cmp	word [rsi],'of'
+	jne	@f
+	cmp	byte [rsi+2],'f'
+	je	.out
+@@:
+	cmp	ecx,9
+	jb	.bad
+	cmp	ecx,ACME_URL - 1
+	ja	.bad
+	mov	rdx,'https://'
+	cmp	[rsi],rdx
+	jne	.bad
+	call	acme_safe
+	jc	.bad
+	mov	[g_plan_acme+ACM_STG],rsi
+	mov	[g_plan_acme+ACM_STGL],ecx
+.out:
+	ret
+.le:
+	cmp	dword [g_plan_acme+ACM_CAL],acme_le_dir.len
+	jne	.out
+	mov	rsi,[g_plan_acme+ACM_CA]
+	lea	rdi,[acme_le_dir]
+	mov	ecx,acme_le_dir.len
+	repe	cmpsb
+	jne	.out
+	lea	rax,[acme_le_stg]
+	mov	[g_plan_acme+ACM_STG],rax
+	mov	dword [g_plan_acme+ACM_STGL],acme_le_stg.len
+	ret
+.bad:
+	call	log_begin
+	out_lit 'acme: staging= is a CA',39,'s directory (https://), or off'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
+
+; the acme process starting: each certificate whose DIR/NAME/status says its
+; last order failed, marked so (the staging CA first, across restarts too)
+acme_failed_load:
+	push	rbx
+	xor	ebx,ebx
+.cert:
+	call	acme_more
+	jc	.done
+	cstring .f_status, '/status',0
+	lea	rsi,[.f_status]
+	call	acme_path
+	call	acme_read
+	jc	.next
+	lea	rsi,[g_ac_file]
+	mov	ecx,eax
+	sub	ecx,8
+	jle	.next
+.look:
+	cmp	dword [rsi],' fai'
+	jne	@f
+	cmp	dword [rsi+4],'led '
+	jne	@f
+	mov	byte [g_ac_failed+rbx],1
+	jmp	.next
+@@:
+	inc	rsi
+	dec	ecx
+	jnz	.look
+.next:
+	inc	ebx
+	jmp	.cert
+.done:
+	pop	rbx
 	ret
 
 ; rdi = a listener node: eax = its port (HOST:PORT, :PORT or PORT), 0 none
