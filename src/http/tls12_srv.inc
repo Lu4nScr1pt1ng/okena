@@ -102,7 +102,16 @@ http_tls12_hello:
 	call	tls12_hello
 	test	eax,eax
 	jz	http_tls_close
+	js	.refused
 	mov	dword [r15+H_STATE],HS_TLS12_FLIGHT
+	mov	esi,eax
+	mov	rdi,[r15+H_BUF]
+	add	rdi,HB_OUT
+	mov	ecx,SIDE_CLIENT
+	jmp	h_send
+.refused:
+	mov	dword [r15+H_STATE],HS_TLS_ALERT	; its alert, then closed
+	neg	eax
 	mov	esi,eax
 	mov	rdi,[r15+H_BUF]
 	add	rdi,HB_OUT
@@ -176,9 +185,10 @@ http_tls12_fin:
 http_tls12_fin2_sent:
 	mov	r8,[r15+H_BUF]
 	lea	rsi,[r8+HB_KTLS]
-	lea	rdx,[r8+HB_KTLS+KTLS_INFO]
+	lea	rdx,[r8+HB_KTLS+KTLS_SLOT]
 	lea	rdi,[r8+HB_T2]
 	call	tls12_ktls_info
+	mov	[g_t12_klen],eax		; (40 AES-128-GCM, 56 ChaCha20-Poly1305)
 	cmp	dword [g_no_ktls],0
 	jne	http_tls_close			; no module: no user-space 1.2 path (v1)
 	cmp	dword [g_engine],ENGINE_EPOLL
@@ -196,14 +206,14 @@ http_tls12_fin2_sent:
 	mov	edi,OP_S_OPT
 	mov	r9d,SOL_TLS
 	mov	r10d,TLS_TX
-	mov	r8d,KTLS_INFO
+	mov	r8d,[g_t12_klen]
 	call	.sqe
 	mov	r11,[r15+H_BUF]
-	add	r11,HB_KTLS + KTLS_INFO
+	add	r11,HB_KTLS + KTLS_SLOT
 	mov	edi,OP_H_KTLS12
 	mov	r9d,SOL_TLS
 	mov	r10d,TLS_RX
-	mov	r8d,KTLS_INFO
+	mov	r8d,[g_t12_klen]
 	call	.sqe
 	and	byte [rax+SQE_FLAGS],not IOSQE_IO_LINK
 	ret
@@ -226,7 +236,7 @@ http_tls12_fin2_sent:
 	mov	edx,TLS_TX
 	mov	r10,[r15+H_BUF]
 	add	r10,HB_KTLS
-	mov	r8d,KTLS_INFO
+	mov	r8d,[g_t12_klen]
 	mov	eax,SYS_setsockopt
 	syscall
 	pop	rdi
@@ -235,8 +245,8 @@ http_tls12_fin2_sent:
 	mov	esi,SOL_TLS
 	mov	edx,TLS_RX
 	mov	r10,[r15+H_BUF]
-	add	r10,HB_KTLS + KTLS_INFO
-	mov	r8d,KTLS_INFO
+	add	r10,HB_KTLS + KTLS_SLOT
+	mov	r8d,[g_t12_klen]
 	mov	eax,SYS_setsockopt
 	syscall
 	test	eax,eax
@@ -298,6 +308,7 @@ on_h_ktls12:
 bss
 	align 8
 	g_t12_tl	dq ?
+	g_t12_klen	dd ?
 end bss
 
 ; rsi/edx = the ClientHello record: eax = 1 when it asks for an OCSP staple

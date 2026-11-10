@@ -35,6 +35,15 @@ there is refused. Session tickets are on: a returning client resumes
 without the certificate and the signature. The ticket key rotates every
 hour and the previous one is still accepted, so a ticket lasts one to two
 hours; keys live in memory only (a restart starts afresh). For a fleet,
+A client that offers no TLS 1.3 gets TLS 1.2 (RFC 5246), on kTLS: ECDHE with
+the certificate's key, ECDSA or RSA, and AES-128-GCM or ChaCha20-Poly1305
+(the first of those in the client's order); x25519, else secp256r1 (an ECDSA
+certificate, being on secp256r1, needs that one offered); rsa_pss_rsae_sha256,
+else rsa_pkcs1_sha256, for an RSA key; the extended master secret (RFC 7627)
+whenever the client offers it; secure renegotiation said, and no
+renegotiation. Nothing in common: a handshake_failure alert. No CBC suites,
+no RSA key exchange, no SHA-1 signatures.
+
 `http2 on` in an `http` listener speaks HTTP/2 to clients that ask for it:
 ALPN h2 on a TLS listener (preferred over http/1.1 when the client offers
 both), prior knowledge (the connection preface) on a plain one. Each

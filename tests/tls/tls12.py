@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """TLS 1.2 for older clients: an http listener with tls { } accepts a TLS
-1.2 client (ECDHE-ECDSA/AES-128-GCM), hands the connection to kTLS 1.2 and
-proxies the request to the backend. Needs the kernel tls module (the 1.2
+1.2 client (ECDHE-ECDSA or ECDHE-RSA, AES-128-GCM or ChaCha20-Poly1305, x25519
+or secp256r1, ECDSA, RSA-PSS or RSA PKCS #1, the extended master secret),
+hands the connection to kTLS 1.2 and proxies the request to the backend;
+nothing in common is a handshake_failure alert. Needs the kernel tls module (the 1.2
 path is kTLS-only); skipped otherwise."""
 import atexit
 import http.server
@@ -238,6 +240,40 @@ http 127.0.0.1:{DLST} {{
     cn, data = peer_cn(SNIL, "a.test", host="evil.test")
     check("TLS 1.2 domain fronting: Host not named by the cert gets 421",
           b"421" in data[:20], data[:40])
+
+    # negotiation: what the client offers decides (openssl s_client says what was chosen)
+    def sclient(port, *opts):
+        r = subprocess.run(["openssl", "s_client", "-connect", f"127.0.0.1:{port}", "-servername", "okena.test",
+                            "-tls1_2", *opts], input=b"", capture_output=True, timeout=10)
+        return (r.stdout + r.stderr).decode(errors="replace")
+    for port, cipher in ((LST, "ECDHE-ECDSA-CHACHA20-POLY1305"), (RLST, "ECDHE-RSA-CHACHA20-POLY1305")):
+        ver, data = get12(port, "/cha", cipher=cipher)
+        check(f"TLS 1.2 {cipher}: kTLS ChaCha20-Poly1305, 200 proxied",
+              ver == "TLSv1.2" and data.startswith(b"HTTP/1.1 200") and b"backend:/cha" in data, f"{ver} {data[:80]}")
+    o = sclient(LST, "-cipher", "ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES128-GCM-SHA256")
+    check("  the client's order kept (ChaCha20 first: ChaCha20)", "Cipher is ECDHE-ECDSA-CHACHA20-POLY1305" in o, o[-300:])
+    o = sclient(LST)
+    check("x25519 when offered; the extended master secret; secure renegotiation said",
+          "X25519" in o and "TLSv1.2, Cipher is" in o and "Extended master secret: yes" in o
+          and "Secure Renegotiation IS supported" in o, o[-500:])
+    o = sclient(LST, "-curves", "P-256")
+    check("  secp256r1 for a client without x25519", "prime256v1" in o and "TLSv1.2, Cipher is ECDHE-ECDSA" in o, o[-400:])
+    o = sclient(RLST, "-curves", "X25519")
+    check("  x25519 alone, an RSA certificate: x25519", "X25519" in o and "TLSv1.2, Cipher is ECDHE-RSA" in o, o[-400:])
+    o = sclient(LST, "-curves", "X25519")
+    check("  x25519 alone, an ECDSA (secp256r1) certificate: refused, as RFC 8422 has it",
+          "alert handshake failure" in o, o[-300:])
+    o = sclient(RLST, "-sigalgs", "RSA-PSS+SHA256:RSA+SHA256")
+    check("RSA: rsa_pss_rsae_sha256 when offered", "Peer signature type: rsa_pss_rsae_sha256" in o
+          and "TLSv1.2, Cipher is" in o, o[-400:])
+    o = sclient(RLST, "-sigalgs", "RSA+SHA256")
+    check("  else rsa_pkcs1_sha256", "Peer signature type: rsa_pkcs1_sha256" in o and "TLSv1.2, Cipher is ECDHE-RSA" in o, o[-400:])
+    t0 = time.time()
+    o = sclient(LST, "-cipher", "ECDHE-ECDSA-AES256-GCM-SHA384")
+    check("nothing in common: a handshake_failure alert, at once",
+          "alert handshake failure" in o and time.time() - t0 < 5, o[-300:])
+    o = sclient(LST, "-curves", "P-384")
+    check("  no group in common: the same", "alert handshake failure" in o, o[-300:])
 
     # a few more requests (fresh connections), to shake out the handshake
     oks = sum(get12(LST, f"/n{i}")[1].startswith(b"HTTP/1.1 200") for i in range(8))

@@ -556,6 +556,11 @@ built; both measurements are still to be made on the lab.)
   minute is met against the test CA, `tests/gateway/acmeauto.py`, in seconds;
   against Let's Encrypt itself it is still to be measured on a public host.)
 * TLS 1.2, RSA certificates (signing), client-certificate auth at scale.
+  Done: the 1.2 server reads the ClientHello in full and negotiates: ECDHE
+  with ECDSA or RSA, AES-128-GCM or ChaCha20-Poly1305 (RFC 7905; kTLS for
+  both), x25519 or secp256r1, rsa_pss_rsae_sha256 or rsa_pkcs1_sha256, the
+  extended master secret (RFC 7627), renegotiation_info only when offered, a
+  handshake_failure alert when nothing is in common.
 * FastCGI to PHP-FPM and others (`php` on a route: index files, the script
   path checked against the root, try-files), as nginx and Caddy do it.
 * Regular expressions in routes, `match` and `rewrite`, compiled to an
