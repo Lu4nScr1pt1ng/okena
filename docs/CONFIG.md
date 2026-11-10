@@ -1490,10 +1490,19 @@ clients that say they take gzip. Not what is encoded already, `no-transform`, HE
 HTTP/1.0. The answer loses its `ETag` and `Accept-Ranges`, and goes chunked. The cache
 keeps the original and compresses for each client.
 
-It is built for speed: about 100 MiB/s on one core, and for text about 0.7 of what
-`gzip -1` achieves; a worker is held for some 150 µs for each 16 KiB, which counts for
-a site made of large dynamic pages. A worker has 64 of these going at once, past
-that answers go as they are. zstd is refused at load: there is none yet.
+`compress br gzip` adds Brotli: of the two, the first written that the client takes
+(`Accept-Encoding`, `q=0` meaning no); `compress br` alone, or `compress gzip br` to
+prefer gzip. Each piece of the answer is a Brotli meta-block with Huffman codes made
+for it, then brought to a whole byte: what went out decodes at once, so a stream
+(server-sent events, a slow page) is not held back. A piece that would not get
+smaller goes stored.
+
+They are built for speed: about 100 MiB/s on one core each. gzip is DEFLATE with fixed
+codes, for text about 0.7 of what `gzip -1` achieves; Brotli, on the same matcher with
+codes of its own, about 0.93 of `brotli -q1` and a quarter smaller than that gzip. A
+worker is held for some 150 µs for each 16 KiB, which counts for a site made of large
+dynamic pages. A worker has 64 of these going at once, past that answers go as they
+are. zstd is refused at load: there is none yet.
 
 Compressing an answer that holds both a secret and something the client chose can
 leak the secret to someone who sees its length (BREACH): keep those routes out of it.

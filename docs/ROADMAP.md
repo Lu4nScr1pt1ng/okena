@@ -588,7 +588,8 @@ built; both measurements are still to be made on the lab.)
   Not yet: transcoding.)
   gRPC-Web for browsers, and gRPC to JSON transcoding from the service's
   descriptors.
-* Brotli on the fly.
+* (Done: Brotli on the fly, `compress br gzip`: a meta-block a piece with its own
+  Huffman codes, flushed to a byte, stored when it does not shrink.) Brotli on the fly.
 * Consul discovery, Kubernetes Gateway API.
 * Certificate compression, Encrypted Client Hello.
 * AVX-512 paths where they pay.

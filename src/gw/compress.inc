@@ -206,22 +206,57 @@ zip_request:
 	jz	.none
 	test	dword [r15+H_FLAGS],HX_HTTP10 or HX_HEAD or HX_UPGRADE
 	jnz	.none
-	push	rdx
-	lea	rdi,[fs_precompressed.ae]
-	mov	esi,15
-	call	limit_find
-	pop	rdx
-	test	ecx,ecx
+	mov	r8d,[g_acts+rax+RA_ZENC]
+	; the first the client takes, in the order written (br: bit 31 of HB_ZOK)
+	mov	r9d,FE_GZ
+	test	r8d,4
+	jz	@f
+	mov	r9d,FE_BR
+@@:
+	call	.takes
+	jnz	.this
+	xor	r9d,FE_GZ xor FE_BR		; the other one
+	call	.takes
 	jz	.none
-	push	rdx
-	mov	eax,FE_GZ
-	call	fs_accepts
-	pop	rdx
-	test	eax,eax
-	jz	.none
+.this:
+	cmp	r9d,FE_BR
+	jne	@f
+	or	edx,1 shl 31
+@@:
 	mov	rax,[r15+H_BUF]
 	mov	[rax+HB_ZOK],edx
 .none:
+	ret
+; r9d = FE_GZ or FE_BR, r8d = what is on: NZ when on and the client takes it
+.takes:
+	mov	eax,1				; (its bit in RA_ZENC)
+	cmp	r9d,FE_GZ
+	je	@f
+	mov	eax,2
+@@:
+	test	r8d,eax
+	jz	.no
+	push	rdx
+	push	r8
+	push	r9
+	lea	rdi,[fs_precompressed.ae]
+	mov	esi,15
+	call	limit_find
+	pop	r9
+	pop	r8
+	pop	rdx
+	test	ecx,ecx
+	jz	.no
+	push	rdx
+	push	r8
+	mov	eax,r9d
+	call	fs_accepts			; (keeps r9)
+	pop	r8
+	pop	rdx
+	test	eax,eax
+	ret
+.no:
+	xor	eax,eax
 	ret
 
 ; g_hm = an answer's head, ebx, r15: g_zh, and a context, if it is to be compressed
@@ -232,6 +267,10 @@ zip_head:
 	test	edx,edx
 	jz	.none
 	mov	dword [rax+HB_ZOK],0
+	mov	ecx,edx				; gzip or br
+	shr	ecx,31
+	mov	[g_z_kind],ecx
+	and	edx,0x7FFFFFFF
 	test	dword [r15+H_FLAGS],HX_MIRROR
 	jnz	.none
 	cmp	dword [g_hm+HM_STATUS],200
@@ -337,13 +376,22 @@ zip_head:
 	mov	dword [rax+Z_DONE],0
 	mov	dword [rax+Z_HEAD],0
 	mov	dword [rax+Z_ABS],0
+	mov	ecx,[g_z_kind]
+	mov	[rax+Z_KIND],ecx
+	test	ecx,ecx
+	jz	@f
+	mov	dword [rax+Z_NBITS],0		; (br: nothing waits)
+	mov	qword [rax+Z_BITS],0
+@@:
 	lea	rdi,[rax+Z_HASH]
 	mov	ecx,1 shl Z_HBITS
 	xor	eax,eax
 	rep	stosd
 	call	session_ptr
 	or	dword [rax+S_FLAGS],SF_ZIP
-	mov	dword [g_zh],1
+	mov	eax,[g_z_kind]
+	inc	eax
+	mov	[g_zh],eax			; 1 gzip, 2 br
 	call	h_chunkout
 .none:
 	ret
@@ -375,6 +423,8 @@ zip_feed:
 	add	rax,[g_z_base]
 	mov	r12,rax				; the context
 	lea	rbp,[r12+Z_OUT+Z_FRAME]		; the cursor out
+	cmp	dword [r12+Z_KIND],0
+	jne	br_feed				; (brotli.inc)
 	call	zip_gz_head
 	test	r9d,r9d
 	jz	.frame
@@ -392,28 +442,7 @@ zip_feed:
 	dec	ecx
 	jnz	.crc
 	mov	[r12+Z_CRC],eax
-	; into the window, sliding it when it would not fit
-	mov	eax,[r12+Z_END]
-	lea	ecx,[rax+r9]
-	cmp	ecx,Z_WINCAP
-	jbe	.fits
-	lea	rsi,[r12+Z_WIN]
-	mov	ecx,eax
-	sub	ecx,32768
-	lea	rsi,[rsi+rcx]
-	lea	rdi,[r12+Z_WIN]
-	mov	eax,32768
-	sub	[r12+Z_POS],ecx
-	mov	ecx,eax
-	rep	movsb
-	mov	dword [r12+Z_END],32768
-	mov	eax,32768
-.fits:
-	lea	rdi,[r12+Z_WIN+rax]
-	mov	rsi,r8
-	mov	ecx,r9d
-	rep	movsb
-	add	[r12+Z_END],r9d
+	call	z_window
 	; rbx = the place, r13 = the end, r14 = what is on r10/r11: the bits
 	mov	ebx,[r12+Z_POS]
 	mov	r13d,[r12+Z_END]
@@ -552,6 +581,32 @@ zip_feed:
 	pop	rbx
 	ret
 
+; r12 = context, r8/r9d = a piece: into the window, sliding it when it would not
+; fit (Z_POS, Z_END follow). Keeps r8-r15.
+z_window:
+	mov	eax,[r12+Z_END]
+	lea	ecx,[rax+r9]
+	cmp	ecx,Z_WINCAP
+	jbe	.fits
+	lea	rsi,[r12+Z_WIN]
+	mov	ecx,eax
+	sub	ecx,32768
+	lea	rsi,[rsi+rcx]
+	lea	rdi,[r12+Z_WIN]
+	mov	eax,32768
+	sub	[r12+Z_POS],ecx
+	mov	ecx,eax
+	rep	movsb
+	mov	dword [r12+Z_END],32768
+	mov	eax,32768
+.fits:
+	lea	rdi,[r12+Z_WIN+rax]
+	mov	rsi,r8
+	mov	ecx,r9d
+	rep	movsb
+	add	[r12+Z_END],r9d
+	ret
+
 ; eax = code | bits << 16: out. Keeps rcx-rdx, rsi, r8, r9.
 z_put_code:
 	push	rcx
@@ -637,6 +692,11 @@ zip_finish:
 	mov	r12,rax
 	mov	dword [r12+Z_DONE],1
 	lea	rbp,[r12+Z_OUT+Z_FRAME]
+	cmp	dword [r12+Z_KIND],0
+	je	@f
+	call	br_finish			; (brotli.inc: no trailer of its own)
+	jmp	.framed
+@@:
 	call	zip_gz_head
 	mov	r10,[r12+Z_BITS]
 	mov	r11d,[r12+Z_NBITS]
@@ -672,6 +732,7 @@ zip_finish:
 	mov	eax,[r12+Z_ISIZE]
 	mov	[rbp+4],eax
 	add	rbp,8
+.framed:
 	call	zip_frame
 	test	dword [r15+H_FLAGS],HX_CHUNKOUT
 	jz	.out
@@ -726,13 +787,40 @@ compile_compress:
 	cmp	word [rcx],'of'
 	je	.out
 .gzip:
-	mov	eax,[rax+A_VLEN]
-	cmp	eax,4
-	jne	plan_bad_compress
+	; gzip, br, or both: the order is the one preferred
+	xor	edx,edx
+	mov	r8d,[r14+N_ARGC]
+	mov	rax,[r14+N_ARGS]
+.word:
+	cmp	dword [rax+A_KIND],ARG_KV
+	je	.word_next			; (min=)
+	mov	rcx,[rax+A_VAL]
+	cmp	dword [rax+A_VLEN],4
+	jne	@f
 	cmp	dword [rcx],'gzip'
 	jne	plan_bad_compress
-	cmp	dword [r14+N_ARGC],1
-	jne	.args
+	test	edx,1
+	jnz	plan_bad_compress
+	or	edx,1
+	jmp	.word_next
+@@:
+	cmp	dword [rax+A_VLEN],2
+	jne	plan_bad_compress
+	cmp	word [rcx],'br'
+	jne	plan_bad_compress
+	test	edx,2
+	jnz	plan_bad_compress
+	or	edx,2
+	test	edx,1
+	jnz	.word_next
+	or	edx,4				; before gzip
+.word_next:
+	add	rax,A_SIZE
+	dec	r8d
+	jnz	.word
+	test	edx,3
+	jz	plan_bad_compress
+	mov	[r13+RA_ZENC],edx
 .size:
 	mov	dword [r13+RA_ZMIN],256
 	mov	rdi,r14
@@ -753,22 +841,11 @@ compile_compress:
 .out:
 	pop	r14
 	ret
-.args:
-	; (min= is one of the arguments too: a second word is what is not known)
-	mov	eax,[r14+N_ARGC]
-	mov	rcx,[r14+N_ARGS]
-.a:
-	add	rcx,A_SIZE
-	dec	eax
-	jz	.size
-	cmp	dword [rcx+A_KIND],ARG_KV
-	jne	plan_bad_compress
-	jmp	.a
 cstring .k_min, 'min',0
 
 plan_bad_compress:
 	call	log_begin
-	out_lit 'compress takes gzip or off, and min=SIZE: zstd is not here yet'
+	out_lit 'compress takes gzip, br or both (the first the client takes, in that order), or off, and min=SIZE: zstd is not here yet'
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process

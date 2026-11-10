@@ -2708,7 +2708,12 @@ http_write_response_head:
 .own:
 	cmp	dword [g_zh],0
 	je	.own_plain
+	cmp	dword [g_zh],2
+	je	.own_br
 	memit_x 'Content-Encoding: gzip',13,10,'Vary: Accept-Encoding',13,10
+	jmp	.own_plain
+.own_br:
+	memit_x 'Content-Encoding: br',13,10,'Vary: Accept-Encoding',13,10
 .own_plain:
 	test	dword [r15+H_FLAGS],HX_INTERIM
 	jz	@f

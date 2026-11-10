@@ -111,6 +111,7 @@ RA_ACL		:= 160		; d: its `allow`, `deny` + 1
 RA_EFIRST	:= 164		; d: its error pages (g_eps), first
 RA_ECOUNT	:= 168		; d: and how many
 RA_WRX		:= 176		; d: rewrite ~REGEX: its regex + 1 (RA_WFROM then the source)
+RA_ZENC		:= 180		; d: `compress`: 1 gzip, 2 br, 4 br before gzip
 RA_SIZE		:= 184
 MAX_ACTS	:= MAX_ROUTES
 HD_KIND		:= 0		; d: HOP_SET, HOP_ADD, HOP_DROP
