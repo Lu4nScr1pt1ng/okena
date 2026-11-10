@@ -376,7 +376,11 @@ request head to the end of its answer), `okena_http_requests_by_protocol_total`
 failed for a handshake that failed or that its client left),
 `okena_quic_handshakes_total`, `okena_udp_datagrams_total` (`direction`);
 and `okena_udp_dropped_total`, the datagrams lost with no flow to take
-them or a socket buffer full.
+them or a socket buffer full. `okena_tls_certificate_not_after_seconds`
+is when each certificate served ends (seconds since 1970), labelled with its
+first name, `source` (file, acme, acme_pending, local, local_pending) and its
+`entry`: `(okena_tls_certificate_not_after_seconds - time()) / 86400 < 14` is
+the alert rule.
 
 `user NAME[:GROUP]` (or numbers) makes the processes that face the
 network, or read what it sends, run as that user and group with no
@@ -1464,7 +1468,7 @@ addon waf {
 alerts {
     telegram token=${env:TG_TOKEN} chat=${env:TG_CHAT}
     webhook https://hooks.example.com/okena
-    on backend_down pool_empty cert_expiring overload
+    on backend reload certificate
 }
 ```
 
@@ -1588,7 +1592,7 @@ alerts {
     webhook https://hooks.example.com/okena       # POST of JSON
     slack https://hooks.slack.com/services/T/B/X  # an incoming webhook
     telegram token=123:ABC chat=-100123            # the Bot API's sendMessage
-    on backend reload worker discovery             # the default: all of them
+    on backend reload worker discovery certificate # the default: all of them
     every 10s                                      # a message a window, at most
     name edge-1                                    # the default: the host's name
 }
@@ -1596,7 +1600,10 @@ alerts {
 
 What goes wrong, and what comes back, told to people: a backend ejected or
 back (passively or by health checks), a worker restarted, a reload refused,
-discovery that cannot be done. Any process of okena puts such a line in a ring
+discovery that cannot be done, a certificate near its end (`certificate`: one
+from a file or the ACME CA with less than 14 days left, or past it; looked at
+each hour, told once a day; ACME's are renewed at two thirds of their life, so
+this is one that has failed for weeks). Any process of okena puts such a line in a ring
 of shared memory as it logs it, with no lock, and the control process sends
 what came over each `every` window: the same line from several workers (each
 ejects a backend on its own) once, with how many times, at most 32 lines a

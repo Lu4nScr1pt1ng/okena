@@ -145,11 +145,32 @@ http 127.0.0.1:{tls} {{
         ok = A.until(lambda: serial(TX, "h.example.test", cafile) == hc.serial_number
                      and serial(TY, "h.example.test", cafile) == hc.serial_number, 10)
         check("  the certificate it left taken by both, not ordered", ok and orders(st, "h.example.test") == 0,
-              (logs[0].read_text()[-400:], logs[1].read_text()[-400:]))
+              (logs[0].read_text()[-400:], logs[1].read_text()[-400:], st.log[-6:],
+               sorted(x.name for x in (d / "h.example.test").iterdir())))
         check("  each said it waited, then took it",
               A.until(lambda: all("h.example.test: another instance is ordering it" in g.read_text()
                                   and "h.example.test: renewed by another instance" in g.read_text() for g in logs), 3),
               (logs[0].read_text()[-400:], logs[1].read_text()[-400:]))
+        # files changed under a running instance whose acme process starts again
+        # (as a reload starts it): it sees they are not what is served, and reloads
+        fk = ec.generate_private_key(ec.SECP256R1())
+        fc = A.issue(k, c, fk.public_key(), ["f.example.test"], now - datetime.timedelta(hours=1), now + datetime.timedelta(days=30))
+        (d / "f.example.test" / "key.pem").write_bytes(fk.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                                                        serialization.NoEncryption()))
+        (d / "f.example.test" / "cert.pem").write_bytes(fc.public_bytes(serialization.Encoding.PEM))
+        def child_named(ppid, comm):
+            for x in pathlib.Path("/proc").iterdir():
+                try:
+                    if x.name.isdigit() and (x / "comm").read_text().strip() == comm \
+                            and (x / "stat").read_text().rsplit(")", 1)[1].split()[1] == str(ppid):
+                        return int(x.name)
+                except OSError:                     # (gone meanwhile)
+                    pass
+        acme_pid = child_named(procs[0].pid, "okena-acme")
+        os.kill(acme_pid, 9)
+        check("files newer than what is served, the acme process started again: reloaded, served",
+              A.until(lambda: serial(TX, "f.example.test", cafile) == fc.serial_number, 10)
+              and "its files are newer than the configuration served" in logs[0].read_text(), logs[0].read_text()[-400:])
         left = sorted(str(p.relative_to(d)) for p in d.rglob("*") if p.name.startswith(("lock", "http-01")))
         check("the locks and challenges gone", A.until(lambda: not [p for p in d.rglob("*") if p.name.startswith(("lock", "http-01"))], 3),
               left)
@@ -161,7 +182,8 @@ http 127.0.0.1:{tls} {{
                 q.wait(10)
             except subprocess.TimeoutExpired:
                 q.kill()
-    t = logs[0].read_text() + logs[1].read_text()
+    t = "\n".join(l for l in (logs[0].read_text() + logs[1].read_text()).splitlines()
+                  if "acme process exited" not in l)       # (the one the test killed)
     check("no process died", "seccomp" not in t and "killed by signal" not in t and "exited, restarting" not in t, t[-400:])
     shutil.rmtree(tmp, ignore_errors=True)
     print(f"acmefleet {ENGINE}: {'all passed' if not fails else f'{fails} failed'}")

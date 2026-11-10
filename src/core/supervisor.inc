@@ -249,6 +249,7 @@ supervisor_main:
 	call	local_tick			; the local CA's: renewed
 	test	eax,eax
 	jnz	.reload
+	call	cert_tick			; certificates near their end: said
 	jmp	.wait_signal
 .reload:
 	call	supervisor_reload

@@ -546,7 +546,8 @@ built; both measurements are still to be made on the lab.)
   by default; plain http redirected (308) to https for every name from the CA,
   `redirect off` to keep it. Renewal with jitter (up to 1/20 of the life
   earlier); after a failure the staging CA first (`staging=`, Let's Encrypt's
-  by default for it), across restarts.
+  by default for it), across restarts. `okena_tls_certificate_not_after_seconds`
+  on /metrics and `alerts { on certificate }` (under 14 days left, told daily).
   Exit: a fresh install with `tls auto` serves a valid certificate within a
   minute; a CA down, rate-limited or answering wrongly never takes a served
   certificate away; `make chaos` with the CA failed in turn passes.

@@ -90,6 +90,60 @@ compile_acme_staging:
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process
 
+; the acme process, its first pass done: a certificate whose files are not
+; what the configuration serves (written after it was compiled: another
+; instance's, or this one's just before a reload started this process again)
+; asks for a reload, which loads them
+acme_served_check:
+	cmp	byte [g_ac_scheck],0
+	jne	.out
+	mov	byte [g_ac_scheck],1
+	push	rbx
+	push	r12
+	xor	r12d,r12d
+.entry:
+	cmp	r12d,[g_plan_tls]
+	jae	.done
+	movzx	eax,byte [g_tls_src+r12]
+	cmp	eax,1				; the CA's files, or signed here meanwhile
+	jb	.next
+	cmp	eax,2
+	ja	.next
+	movzx	eax,byte [g_tls_acme+r12]
+	cmp	qword [g_ac_tag+rax*8],0	; none on disk
+	je	.next
+	mov	ebx,r12d
+	call	cert_entry_leaf
+	jc	.next
+	lea	rdi,[g_ac_hash]
+	mov	rsi,rax
+	mov	edx,ecx
+	call	sha256
+	mov	rax,qword [g_ac_hash]
+	or	rax,1
+	movzx	ebx,byte [g_tls_acme+r12]
+	cmp	rax,[g_ac_tag+rbx*8]
+	je	.next
+	lea	rsi,[.f_key]			; (its key there too: else a reload would
+	call	acme_path			; serve the same, and ask again)
+	call	acme_read
+	jc	.next
+	mov	dword [g_ac_reload],1
+	call	log_begin
+	out_lit 'acme: '
+	call	acme_out_name
+	out_lit ': its files are newer than the configuration served: reloading'
+	call	log_end
+.next:
+	inc	r12d
+	jmp	.entry
+.done:
+	pop	r12
+	pop	rbx
+.out:
+	ret
+.f_key	db '/key.pem',0
+
 ; the acme process starting: each certificate whose DIR/NAME/status says its
 ; last order failed, marked so (the staging CA first, across restarts too)
 acme_failed_load:

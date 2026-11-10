@@ -26,7 +26,8 @@ AL_BACKEND	:= 1
 AL_WORKER	:= 2
 AL_RELOAD	:= 4
 AL_DISCOVERY	:= 8
-AL_ALL		:= 15
+AL_CERT		:= 16			; a certificate near its end (certexpiry.inc)
+AL_ALL		:= 31
 
 ALT_WEBHOOK	:= 0
 ALT_SLACK	:= 1
@@ -628,6 +629,7 @@ alerts_body:
 	cstring str_alk_worker, 'worker',0
 	cstring str_alk_reload, 'reload',0
 	cstring str_alk_discovery, 'discovery',0
+	cstring str_alk_certificate, 'certificate',0
 	lea	rsi,[str_alk_backend]
 	cmp	eax,AL_BACKEND
 	je	@f
@@ -638,6 +640,9 @@ alerts_body:
 	cmp	eax,AL_RELOAD
 	je	@f
 	lea	rsi,[str_alk_discovery]
+	cmp	eax,AL_DISCOVERY
+	je	@f
+	lea	rsi,[str_alk_certificate]
 @@:
 	jmp	alerts_lit
 

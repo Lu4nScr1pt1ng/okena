@@ -171,7 +171,7 @@ keysdef k_server, 'weight', T_WEIGHT, 'max', T_COUNT
 keysdef k_queue, 'timeout', T_DURATION
 keysdef k_alert, 'trust', T_ANY
 keysdef k_telegram, 'token', T_ANY, 'chat', T_ANY, 'api', T_ANY, 'trust', T_ANY
-enumdef e_alert_on, 'backend', 'worker', 'reload', 'discovery'
+enumdef e_alert_on, 'backend', 'worker', 'reload', 'discovery', 'certificate'
 keysdef k_discover, 'port', T_ANY, 'max', T_COUNT, 'label', T_ANY, 'network', T_ANY, 'socket', T_ANY, \
 	'service', T_ANY, 'api', T_ANY, 'token', T_ANY, 'ca', T_ANY, 'name', T_ANY
 enumdef e_discover, 'file', 'srv', 'docker', 'kubernetes'

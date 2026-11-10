@@ -184,6 +184,7 @@ bss
 	g_ac_txt:	rb 64
 	g_ac_dnamel	rd ACME_NAMES
 	g_ac_failed:	rb ACME_ALL		; the last order failed: staging first
+	g_ac_scheck	db ?			; acme_served_check done
 	g_ac_cai	dd ?			; the CA being asked: 0 ca=, 1 fallback=, 2 staging= (nothing kept)
 	; ARI (RFC 9773): per certificate, its CertID and when to ask again
 	align 8
@@ -1980,6 +1981,7 @@ acme_main:
 	inc	ebx
 	jmp	.cert
 .pass:
+	call	acme_served_check		; (once: the files against what is served)
 	call	acme_clear
 	cmp	dword [g_plan_acme+ACM_SHARED],0
 	je	@f

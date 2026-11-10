@@ -1206,6 +1206,7 @@ metrics_more:
 	inc	ebx
 	jmp	.t
 .t_done:
+	call	cert_metrics			; certificates' ends (certexpiry.inc)
 	memit '# HELP okena_udp_datagrams_total UDP datagrams, from clients (in) and to them (out).',10
 	memit '# TYPE okena_udp_datagrams_total counter',10
 	xor	ebx,ebx
