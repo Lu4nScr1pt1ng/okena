@@ -242,6 +242,8 @@ test-serial: $(BIN) $(HTTPH) $(KAT) $(TLSH)
 	python3 -I tests/gateway/grpcweb.py epoll
 	python3 -I tests/gateway/brotli.py io_uring
 	python3 -I tests/gateway/brotli.py epoll
+	python3 -I tests/gateway/consul.py io_uring
+	python3 -I tests/gateway/consul.py epoll
 	python3 -I tests/gateway/forward.py io_uring
 	python3 -I tests/gateway/forward.py epoll
 	python3 -I tests/gateway/mtls.py io_uring

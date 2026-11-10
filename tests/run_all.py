@@ -216,6 +216,8 @@ SUITES = [
     ("grpcweb epoll", ["tests/gateway/grpcweb.py", "epoll"]),
     ("brotli io_uring", ["tests/gateway/brotli.py", "io_uring"]),
     ("brotli epoll", ["tests/gateway/brotli.py", "epoll"]),
+    ("consul io_uring", ["tests/gateway/consul.py", "io_uring"]),
+    ("consul epoll", ["tests/gateway/consul.py", "epoll"]),
     ("forward io_uring", ["tests/gateway/forward.py", "io_uring"]),
     ("forward epoll", ["tests/gateway/forward.py", "epoll"]),
     ("mtls io_uring", ["tests/gateway/mtls.py", "io_uring"]),

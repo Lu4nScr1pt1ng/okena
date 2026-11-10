@@ -349,6 +349,8 @@ group_look:
 	je	disc_docker_poll
 	cmp	dword [g_groups+rax+GR_KIND],GK_KUBE
 	je	disc_kube_poll
+	cmp	dword [g_groups+rax+GR_KIND],GK_CONSUL
+	je	disc_consul_poll
 	jmp	group_resolve
 
 ; Supervisor: start the control process (only when there are names).

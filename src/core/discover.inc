@@ -23,6 +23,7 @@ GK_FILE		:= 1
 GK_SRV		:= 2
 GK_DOCKER	:= 3
 GK_KUBE		:= 4
+GK_CONSUL	:= 5
 
 DISC_MAX	:= 256			; servers a source may have
 DISC_SOURCES	:= 32
@@ -539,6 +540,11 @@ disc_publish:
 .docker:
 	cmp	dword [r12+GR_KIND],GK_KUBE
 	je	.kube
+	cmp	dword [r12+GR_KIND],GK_CONSUL
+	jne	@f
+	out_lit 'discover consul '
+	jmp	.named
+@@:
 	out_lit 'discover docker '
 	imul	rax,r13,DK_SIZE
 	mov	rsi,[g_plan_dk+rax+DK_LABEL]

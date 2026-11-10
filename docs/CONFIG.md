@@ -1591,6 +1591,7 @@ pool users {
     discover srv _users._tcp.service.consul
     discover docker label=okena.pool=users port=8080
     discover kubernetes service=shop/users port=http
+    discover consul service=users tag=v2
 }
 ```
 
@@ -1658,6 +1659,23 @@ port of that name, or the number given, or the slice's only port. An API
 server that does not answer, refuses (403: the service account needs `get` and
 `list` on `endpointslices` in the namespace) or is not the one it should be
 changes nothing, and is said once.
+
+`discover consul service=NAME [dc=DC] [tag=TAG] [token=PATH] [api=HOST:PORT]
+[port=N] [max=64]` takes them from Consul's catalog, as the agent's HTTP API
+gives a service's instances whose health checks pass
+(`/v1/health/service/NAME?passing=1`), asked once a second: Consul's own checks
+decide, and an instance that fails them is out within two seconds. Each is
+served at its service address, or its node's when it registered none, on the
+port it registered (`port=` for one that registered none), with its weight for
+passing checks; IPv4 and IPv6 alike, while one whose address is a name is left
+out. `dc=` asks another datacenter, `tag=` only the instances with that tag.
+`token=` is a file holding the ACL token (it needs `service:read` on the service
+and `node:read`), read again each time as it is rotated. The API is the local
+agent's, plain HTTP, at 127.0.0.1:8500 unless `api=` says otherwise (an address,
+not a name). An agent that does not answer, answers what cannot be read, or
+refuses (a 403 is said as the token's) changes nothing, and is said once; an
+empty list is believed. `discover srv NAME.service.consul` gives the same from
+Consul's DNS, without weights.
 
 The admin API changes the running state without editing files, given
 `admin unix:PATH` in the `okena` block:

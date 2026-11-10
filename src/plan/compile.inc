@@ -3726,6 +3726,8 @@ compile_discover:
 	je	.docker
 	cmp	byte [rcx],'k'			; `kubernetes`
 	je	.kube
+	cmp	byte [rcx],'c'			; `consul`
+	je	.consul
 	cmp	byte [rcx],'s'			; `srv`
 	jne	@f
 	mov	dword [rbx+GR_KIND],GK_SRV
@@ -3812,6 +3814,110 @@ compile_discover:
 	call	.printable
 	mov	[r10+DK_NET],rcx
 	mov	[r10+DK_NLEN],edx
+	jmp	.port
+	; consul: the service, its datacenter and tag, the agent, the token
+.consul:
+	mov	dword [rbx+GR_KIND],GK_CONSUL
+	mov	dword [rbx+GR_PORT],0
+	mov	eax,[rbx+GR_DISC]
+	imul	r10,rax,CS_SIZE
+	lea	r10,[g_plan_cs+r10]
+	mov	qword [r10+CS_DC],0
+	mov	qword [r10+CS_TAG],0
+	mov	qword [r10+CS_TOKEN],0
+	mov	rdi,r13
+	lea	rsi,[str_key_service]
+	push	r10
+	call	node_option
+	pop	r10
+	test	rax,rax
+	jz	plan_bad_consul
+	mov	rcx,[rax+A_VAL]
+	mov	edx,[rax+A_VLEN]
+	call	.printable
+	mov	[r10+CS_SVC],rcx
+	mov	[r10+CS_SVCLEN],edx
+	mov	[rbx+GR_NAME],rcx		; (named by it in logs, slots and `okena backend`)
+	mov	[rbx+GR_NLEN],edx
+	mov	rdi,r13
+	lea	rsi,[str_key_dc]
+	push	r10
+	call	node_option
+	pop	r10
+	test	rax,rax
+	jz	@f
+	mov	rcx,[rax+A_VAL]
+	mov	edx,[rax+A_VLEN]
+	call	.printable
+	mov	[r10+CS_DC],rcx
+	mov	[r10+CS_DCLEN],edx
+@@:
+	mov	rdi,r13
+	lea	rsi,[str_key_tag]
+	push	r10
+	call	node_option
+	pop	r10
+	test	rax,rax
+	jz	@f
+	mov	rcx,[rax+A_VAL]
+	mov	edx,[rax+A_VLEN]
+	call	.printable
+	mov	[r10+CS_TAG],rcx
+	mov	[r10+CS_TAGLEN],edx
+@@:
+	mov	rdi,r13
+	lea	rsi,[str_key_token]
+	push	r10
+	call	node_option
+	pop	r10
+	test	rax,rax
+	jz	@f
+	mov	rcx,[rax+A_VAL]
+	mov	edx,[rax+A_VLEN]
+	cmp	byte [rcx],'/'
+	jne	plan_bad_consul
+	cmp	edx,4096
+	jae	plan_bad_consul
+	mov	[r10+CS_TOKEN],rcx
+	mov	[r10+CS_TOKLEN],edx
+@@:
+	; api=HOST:PORT, else the local agent
+	lea	rdi,[str_consul_api]
+	mov	esi,str_consul_api.len
+	push	rdi
+	push	rsi
+	mov	rdi,r13
+	lea	rsi,[str_key_api]
+	push	r10
+	call	node_option
+	pop	r10
+	pop	rsi
+	pop	rdi
+	test	rax,rax
+	jz	@f
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+@@:
+	push	r10
+	lea	rdx,[g_cmp_addr]
+	xor	ecx,ecx
+	call	parse_address
+	pop	r10
+	jc	plan_bad_consul
+	mov	eax,[g_cmp_addr+AD_KIND]
+	cmp	eax,ADDR_V4
+	je	@f
+	cmp	eax,ADDR_V6
+	jne	plan_bad_consul
+@@:
+	cmp	dword [g_cmp_addr+AD_PORT],0
+	je	plan_bad_consul
+	push	r10
+	lea	rdi,[r10+CS_SA]
+	lea	rsi,[g_cmp_addr]
+	call	sockaddr_build
+	pop	r10
+	mov	[r10+CS_SALEN],eax
 	jmp	.port
 	; kubernetes: the service, the API, the credentials
 .kube:
@@ -4170,6 +4276,16 @@ compile_discover:
 	pop	r12
 	pop	rbx
 	ret
+
+plan_bad_consul:
+	call	log_begin
+	out_lit 'discover consul takes service=NAME, and may take dc=, tag=, token=/PATH, api=HOST:PORT (an IP address and a port; 127.0.0.1:8500 when not said), port=N (for instances that registered none) and max='
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
+cstring str_key_dc, 'dc',0
+cstring str_key_tag, 'tag',0
+cstring str_consul_api, '127.0.0.1:8500'
 
 plan_bad_kube:
 	call	log_begin

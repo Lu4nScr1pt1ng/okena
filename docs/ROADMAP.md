@@ -590,7 +590,8 @@ built; both measurements are still to be made on the lab.)
   descriptors.
 * (Done: Brotli on the fly, `compress br gzip`: a meta-block a piece with its own
   Huffman codes, flushed to a byte, stored when it does not shrink.) Brotli on the fly.
-* Consul discovery, Kubernetes Gateway API.
+* (Done: `discover consul`, the agent's health API: passing instances, weights,
+  dc=, tag=, the ACL token from a file.) Consul discovery, Kubernetes Gateway API.
 * Certificate compression, Encrypted Client Hello.
 * AVX-512 paths where they pay.
 
