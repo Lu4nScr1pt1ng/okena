@@ -560,7 +560,9 @@ built; both measurements are still to be made on the lab.)
   with ECDSA or RSA, AES-128-GCM or ChaCha20-Poly1305 (RFC 7905; kTLS for
   both), x25519 or secp256r1, rsa_pss_rsae_sha256 or rsa_pkcs1_sha256, the
   extended master secret (RFC 7627), renegotiation_info only when offered, a
-  handshake_failure alert when nothing is in common.
+  handshake_failure alert when nothing is in common. Without kTLS its
+  records are sealed and opened in user space (both suites), as 1.3's; a
+  dual-certificate name picks by the client's 1.2 suites.
 * FastCGI to PHP-FPM and others (`php` on a route: index files, the script
   path checked against the root, try-files), as nginx and Caddy do it.
 * Regular expressions in routes, `match` and `rewrite`, compiled to an

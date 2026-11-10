@@ -484,10 +484,8 @@ http 127.0.0.1:{DLST} {{
             ver = t12.version()
     except (ssl.SSLError, OSError) as e:
         err = str(e)
-    if USER:
-        check("TLS 1.2 without kTLS: refused", ver is None, f"ver={ver} err={err}")
-    else:
-        check("a TLS 1.2 client is accepted (ECDHE-ECDSA, kTLS 1.2)", ver == "TLSv1.2", f"ver={ver} err={err}")
+    check("a TLS 1.2 client is accepted (ECDHE-ECDSA; " + ("records here" if USER else "kTLS 1.2") + ")",
+          ver == "TLSv1.2", f"ver={ver} err={err}")
     with socket.create_connection(("127.0.0.1", LST), timeout=3) as s:
         s.sendall(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
         reply = s.recv(100)

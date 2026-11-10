@@ -46,7 +46,9 @@ T2_GROUP	:= T2_SUITE + 4			; d: 0 secp256r1, 1 x25519
 T2_SIG		:= T2_GROUP + 4			; d: the SignatureScheme (as on the wire)
 T2_EMS		:= T2_SIG + 4			; d: extended master secret
 T2_RENEG	:= T2_EMS + 4			; d: the client knows renegotiation_info
-T2_FULL		:= T2_RENEG + 4
+T2_TXSEQ	:= T2_RENEG + 4			; q: records sealed here (user space), from 1
+T2_RXSEQ	:= T2_TXSEQ + 8			; q: and opened
+T2_FULL		:= T2_RXSEQ + 8
 
 ; append [rsi, edx) to the transcript (T2_SHA); rbp = t2
 macro t2_add

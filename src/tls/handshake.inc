@@ -105,7 +105,8 @@ MTLS_NAME_MAX	:= 64				; a client certificate's name
 TF_CCA		:= 128				; set by the caller: ask for a client certificate
 TF_CCA_REQ	:= 256				; and with none, refuse
 TF_RESUMED	:= 512				; a ticket of ours resumed it
-TF_GOT_ACME	:= 1024				; acme-tls/1 chosen: the challenge's certificate
+TF_GOT_ACME	:= 1024
+TF_T12		:= 4096				; TLS 1.2 records, sealed here (tls12_srv.inc)				; acme-tls/1 chosen: the challenge's certificate
 
 TH_MORE		:= 0
 TH_SEND		:= 1
@@ -2134,6 +2135,8 @@ tls_records:
 ; edx = plaintext length (<= TLS_RECORD_MAX), ecx = content type: the
 ; record sealed in place, eax = its length (plaintext + 22).
 tls_seal:
+	test	dword [rdi+TS_FLAGS],TF_T12
+	jnz	utls12_seal
 	push	rbx
 	push	r12
 	push	r13
@@ -2170,6 +2173,8 @@ tls_seal:
 ; record), or TH_DONE with rsi = its plaintext, ecx = the plaintext
 ; length, r8d = the content type, edx = the bytes it took.
 tls_open:
+	test	dword [rdi+TS_FLAGS],TF_T12
+	jnz	utls12_open
 	push	rbx
 	push	r12
 	push	r13

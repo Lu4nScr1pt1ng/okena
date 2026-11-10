@@ -4,8 +4,8 @@
 ; ServerHello, Certificate, a signed ServerKeyExchange and ServerHelloDone;
 ; then the client's ClientKeyExchange, ChangeCipherSpec and Finished; then
 ; the server's ChangeCipherSpec and Finished; then the keys go to kTLS 1.2
-; and the connection proceeds as any other. kTLS only (no user-space 1.2
-; records); without the module the connection closes.
+; and the connection proceeds as any other; without kTLS the records are
+; sealed and opened here (utls12_seal / utls12_open), as for TLS 1.3.
 ;
 ;   HS_TLS12_FLIGHT  the ServerHello flight is out
 ;   HS_TLS12_FIN     reading ClientKeyExchange + ChangeCipherSpec + Finished
@@ -22,8 +22,6 @@ assert HB_C12 + C12_SIZE <= 1 shl HB_SHIFT
 ; from TH_TLS12 in http_tls_hello_in: build the credentials and the server
 ; flight (ServerHello..ServerHelloDone)
 http_tls12_hello:
-	cmp	dword [g_no_ktls],0		; the 1.2 path is kTLS-only
-	jne	http_tls_close
 	mov	rdi,[r15+H_BUF]			; a fresh T2 block
 	add	rdi,HB_T2
 	mov	ecx,T2_FULL
@@ -38,7 +36,8 @@ http_tls12_hello:
 .havecert:
 	test	rax,rax
 	jz	http_tls_close
-	mov	[g_t12_tl],rax			; (for its OCSP staple)
+	call	tls12_cert_fit			; (its sibling of the other key, when the
+	mov	[g_t12_tl],rax			; client's suites take that one only)
 	cmp	dword [rax+TL_KEYTYPE],2	; TLS 1.2 here signs with ECDSA or RSA
 	je	http_tls_close			; only: an Ed25519 certificate needs 1.3
 	mov	r14,[r15+H_BUF]
@@ -180,6 +179,124 @@ http_tls12_fin:
 	jae	http_tls_close
 	jmp	http_tls12_read
 
+; no kTLS: the records sealed and opened here, as for TLS 1.3 (tls_seal and
+; tls_open, seeing TF_T12, come to utls12_seal / utls12_open)
+http_utls12_start:
+	mov	r8,[r15+H_BUF]
+	or	dword [r8+HB_TS+TS_FLAGS],TF_T12
+	mov	qword [r8+HB_T2+T2_TXSEQ],1	; (the Finished each way was 0)
+	mov	qword [r8+HB_T2+T2_RXSEQ],1
+	mov	rdi,[r15+H_BUF]
+	add	rdi,HB_KTLS			; the keys meant for the kernel
+	mov	ecx,2 * KTLS_SLOT
+	call	secure_zero
+	xor	eax,eax
+	mov	[r15+H_RXC],eax
+	mov	[r15+H_PTLEN],eax
+	mov	[r15+H_TXLEN],eax
+	mov	[r15+H_INLEN],eax
+	mov	[r15+H_INOFF],eax
+	mov	dword [r15+H_UTLS],1
+	mov	rax,[r15+H_BUF]
+	test	dword [rax+HB_TS+TS_FLAGS],TF_GOT_H2
+	jz	http_next_request
+	xor	edi,edi				; ALPN chose h2
+	jmp	h2_start
+
+; tls_seal for a 1.2 session: rdi = ts, rsi = record (5 for the header, then the
+; plaintext), edx = its length, ecx = content type. eax = the record's length.
+utls12_seal:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	lea	rbx,[rdi+HB_T2-HB_TS]		; the 1.2 state
+	mov	r12,rsi
+	mov	r13d,edx
+	mov	r14d,ecx
+	mov	[r12],cl			; the header: type, 1.2, length (after)
+	mov	word [r12+1],0x0303
+	lea	r9,[r12+5]			; the plaintext where it is (ChaCha20)
+	cmp	dword [rbx+T2_SUITE],0
+	jne	@f
+	std					; AES-GCM: 8 up for the explicit nonce
+	lea	rsi,[r12+5+r13-1]
+	lea	rdi,[r12+13+r13-1]
+	mov	ecx,r13d
+	rep	movsb
+	cld
+	lea	r9,[r12+13]
+@@:
+	lea	rdi,[r12+5]
+	lea	rsi,[rbx+T2_TXGCM]
+	lea	rdx,[rbx+T2_SWIV]
+	mov	rcx,[rbx+T2_TXSEQ]
+	mov	r8d,r14d
+	mov	r10d,r13d
+	call	tls12_aseal
+	inc	qword [rbx+T2_TXSEQ]
+	mov	ecx,eax
+	rol	cx,8
+	mov	[r12+3],cx
+	add	eax,5
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; tls_open for a 1.2 session: rdi = ts, rsi = received bytes, edx = their length.
+; eax = TH_MORE, TH_FAIL, or TH_DONE with rsi = the plaintext, ecx = its
+; length, r8d = the content type (application_data or alert), edx = the bytes
+; it took.
+utls12_open:
+	push	rbx
+	push	r12
+	push	r13
+	lea	rbx,[rdi+HB_T2-HB_TS]
+	mov	r12,rsi
+	cmp	edx,5
+	jb	.more
+	movzx	eax,byte [rsi]
+	cmp	eax,23
+	je	@f
+	cmp	eax,21
+	jne	.fail				; (a handshake: renegotiation, never taken)
+@@:
+	movzx	ecx,word [rsi+3]
+	rol	cx,8
+	cmp	ecx,TLS_RECORD_MAX + 2048
+	ja	.fail
+	lea	r13d,[rcx+5]
+	cmp	edx,r13d
+	jb	.more
+	lea	rdi,[r12+5]
+	mov	esi,ecx
+	lea	rdx,[rbx+T2_RXGCM]
+	lea	rcx,[rbx+T2_CWIV]
+	mov	r8,[rbx+T2_RXSEQ]
+	movzx	r9d,byte [r12]
+	call	tls12_aopen
+	test	eax,eax
+	js	.fail
+	inc	qword [rbx+T2_RXSEQ]
+	mov	ecx,eax
+	mov	rsi,rdx
+	movzx	r8d,byte [r12]
+	mov	edx,r13d
+	mov	eax,TH_DONE
+	jmp	.out
+.more:
+	mov	eax,TH_MORE
+	jmp	.out
+.fail:
+	mov	eax,TH_FAIL
+.out:
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
 ; the server ChangeCipherSpec + Finished is out (http_send_done in
 ; HS_TLS12_FIN2): hand the keys to the kernel (kTLS 1.2)
 http_tls12_fin2_sent:
@@ -190,7 +307,7 @@ http_tls12_fin2_sent:
 	call	tls12_ktls_info
 	mov	[g_t12_klen],eax		; (40 AES-128-GCM, 56 ChaCha20-Poly1305)
 	cmp	dword [g_no_ktls],0
-	jne	http_tls_close			; no module: no user-space 1.2 path (v1)
+	jne	http_utls12_start		; no module: the records here
 	cmp	dword [g_engine],ENGINE_EPOLL
 	je	.epoll
 	mov	dword [r15+H_STATE],HS_TLS_KTLS
@@ -229,6 +346,11 @@ http_tls12_fin2_sent:
 	mov	eax,SYS_setsockopt
 	syscall
 	pop	rdi
+	cmp	eax,-ENOENT			; no tls module: the records here
+	jne	@f
+	mov	dword [g_no_ktls],1
+	jmp	http_utls12_start
+@@:
 	test	eax,eax
 	jnz	http_tls_close
 	push	rdi
@@ -294,12 +416,81 @@ on_h_ktls12:
 	cmp	dword [r15+H_ULPERR],-ENOENT	; the ULP: no tls module on this host
 	jne	.close				; else this connection only (ENOTCONN: the
 	mov	dword [g_no_ktls],1		; client left before the keys went in)
+	jmp	http_utls12_start		; (no ULP on the socket: the records here)
 .close:
 	mov	edi,ebx
 	jmp	session_close
 .closing:
 	mov	edi,ebx
 	jmp	session_maybe_free
+.out:
+	ret
+
+; rax = the entry SNI chose: rax = it, or its sibling (`cert` lines of both key
+; types for one name) when the client's 1.2 suites take only the sibling's key
+; (ECDHE_RSA alone, an ECDSA certificate first). Keeps rbx, r12-r15.
+tls12_cert_fit:
+	push	rax
+	mov	ecx,[rax+TL_KEYTYPE]
+	call	.suits
+	test	eax,eax
+	jnz	.keep
+	mov	rdi,[rsp]
+	call	tls_cert_sibling
+	test	rax,rax
+	jz	.keep
+	push	rax
+	mov	ecx,[rax+TL_KEYTYPE]
+	call	.suits
+	pop	rcx
+	test	eax,eax
+	jz	.keep
+	add	rsp,8
+	mov	rax,rcx
+	ret
+.keep:
+	pop	rax
+	ret
+; ecx = a key type: eax = 1 when the ClientHello (IN) offers a suite for it
+.suits:
+	xor	eax,eax
+	cmp	ecx,1
+	ja	.out
+	mov	rsi,[r15+H_BUF]
+	add	rsi,HB_IN
+	mov	edx,[r15+H_INLEN]
+	lea	r8,[rsi+rdx]
+	lea	rdx,[rsi+5+4+2+32]
+	cmp	rdx,r8
+	jae	.out
+	movzx	r9d,byte [rdx]			; session id
+	lea	rdx,[rdx+1+r9]
+	lea	r9,[rdx+2]
+	cmp	r9,r8
+	ja	.out
+	movzx	r9d,word [rdx]			; cipher suites
+	rol	r9w,8
+	add	rdx,2
+	lea	r9,[rdx+r9]
+	cmp	r9,r8
+	jbe	@f
+	mov	r9,r8
+@@:
+	movzx	r10d,word [tls12_suites+rcx*4]
+	movzx	r11d,word [tls12_suites+rcx*4+2]
+.suite:
+	lea	r8,[rdx+2]
+	cmp	r8,r9
+	ja	.out
+	movzx	ecx,word [rdx]
+	xchg	cl,ch
+	add	rdx,2
+	cmp	ecx,r10d
+	je	.yes
+	cmp	ecx,r11d
+	jne	.suite
+.yes:
+	mov	eax,1
 .out:
 	ret
 

@@ -242,6 +242,11 @@ od_hello:
 	xor	eax,eax
 	xor	edx,edx
 	ret
+; (no TLS 1.2 records here: TF_T12 is never set)
+utls12_seal:
+utls12_open:
+	mov	eax,TH_FAIL
+	ret
 ; (no OCSP here: nothing to staple)
 ocsp_staple:
 	mov	dword [g_oc_n],0

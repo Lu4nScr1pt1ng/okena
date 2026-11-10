@@ -21,8 +21,8 @@ import time
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BIN = ROOT / "build" / "okena"
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
-BASE = 33000 + os.getpid() % 40 * 10 + (5 if ENGINE == "epoll" else 0)
-BACK, LST, SNIL, RLST, DLST = BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4
+BASE = 33000 + os.getpid() % 40 * 20 + (10 if ENGINE == "epoll" else 0)
+BACK, LST, SNIL, RLST, DLST, ULST = BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4, BASE + 5
 tmp = pathlib.Path(tempfile.mkdtemp())
 atexit.register(shutil.rmtree, tmp, True)
 failures = 0
@@ -54,6 +54,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         body = b"backend:" + self.path.encode()
+        if self.path.startswith("/big"):
+            body = bytes(range(256)) * 1024                 # 256 KiB: many records
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self):
+        n = int(self.headers.get("content-length", 0))
+        got = self.rfile.read(n)
+        body = b"posted:%d:%d" % (len(got), sum(got) % 65521)
         self.send_response(200)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -67,7 +78,7 @@ def backend():
     http.server.ThreadingHTTPServer(("127.0.0.1", BACK), Handler).serve_forever()
 
 
-def get12(port, path="/hello", cipher="ECDHE-ECDSA-AES128-GCM-SHA256"):
+def get12(port, path="/hello", cipher="ECDHE-ECDSA-AES128-GCM-SHA256", post=None):
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
@@ -78,7 +89,11 @@ def get12(port, path="/hello", cipher="ECDHE-ECDSA-AES128-GCM-SHA256"):
         s = socket.create_connection(("127.0.0.1", port), timeout=5)
         with ctx.wrap_socket(s, server_hostname="okena.test") as t:
             ver = t.version()
-            t.sendall(f"GET {path} HTTP/1.1\r\nHost: okena.test\r\nConnection: close\r\n\r\n".encode())
+            if post is None:
+                t.sendall(f"GET {path} HTTP/1.1\r\nHost: okena.test\r\nConnection: close\r\n\r\n".encode())
+            else:
+                t.sendall(f"POST {path} HTTP/1.1\r\nHost: okena.test\r\nContent-Length: {len(post)}\r\n"
+                          "Connection: close\r\n\r\n".encode() + post)
             data = b""
             while True:
                 b = t.recv(4096)
@@ -287,6 +302,39 @@ http 127.0.0.1:{DLST} {{
         early_close12(LST)
     oks = sum(get12(LST, f"/e{i}")[1].startswith(b"HTTP/1.1 200") for i in range(8))
     check("TLS 1.2 clients leaving at their Finished do not cost the worker kTLS", oks == 8, f"{oks}/8")
+
+    # no kTLS (OKENA_KTLS=off): the 1.2 records sealed and opened by okena itself
+    uconf = tmp / "u.conf"
+    uconf.write_text(f"""okena {{ workers 1; io_engine {ENGINE} }}
+http 127.0.0.1:{ULST} {{
+    tls {{
+        cert {tmp / 'leaf.pem'} key={tmp / 'leaf.key'}
+        cert {tmp / 'rsa.pem'} key={tmp / 'rsa.key'}
+    }}
+    route /* {{ to 127.0.0.1:{BACK} }}
+}}
+""")
+    ulog = open(tmp / "u.log", "w+")
+    u = subprocess.Popen([str(BIN), "-c", str(uconf)], stderr=ulog, env=dict(os.environ, OKENA_KTLS="off"))
+    atexit.register(u.kill)
+    for _ in range(100):
+        if get12(ULST)[0] is not None:
+            break
+        time.sleep(0.05)
+    big = bytes(range(256)) * 1024
+    for cipher in ("ECDHE-ECDSA-AES128-GCM-SHA256", "ECDHE-ECDSA-CHACHA20-POLY1305", "ECDHE-RSA-AES128-GCM-SHA256",
+                   "ECDHE-RSA-CHACHA20-POLY1305"):
+        ver, data = get12(ULST, "/u", cipher=cipher)
+        ok1 = ver == "TLSv1.2" and data.startswith(b"HTTP/1.1 200") and b"backend:/u" in data
+        ver, data = get12(ULST, "/big", cipher=cipher)
+        ok2 = data.startswith(b"HTTP/1.1 200") and data.endswith(big)
+        payload = os.urandom(100000)
+        ver, data = get12(ULST, "/up", cipher=cipher, post=payload)
+        ok3 = b"posted:%d:%d" % (len(payload), sum(payload) % 65521) in data
+        check(f"no kTLS, {cipher}: records here (a request, 256 KiB down, 100 KB up)", ok1 and ok2 and ok3,
+              f"{ok1} {ok2} {ok3} {data[:80]}")
+    u.terminate()
+    u.wait(10)
 
     p.terminate()
     p.wait(10)
