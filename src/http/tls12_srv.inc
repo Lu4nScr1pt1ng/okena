@@ -38,6 +38,7 @@ http_tls12_hello:
 .havecert:
 	test	rax,rax
 	jz	http_tls_close
+	mov	[g_t12_tl],rax			; (for its OCSP staple)
 	cmp	dword [rax+TL_KEYTYPE],2	; TLS 1.2 here signs with ECDSA or RSA
 	je	http_tls_close			; only: an Ed25519 certificate needs 1.3
 	mov	r14,[r15+H_BUF]
@@ -77,6 +78,20 @@ http_tls12_hello:
 	test	eax,eax
 	jz	@f
 	or	dword [r14+HB_TS+TS_FLAGS],TF_GOT_H2	; (http_tls_established reads it)
+@@:
+	; OCSP: its staple, when the client asks (status_request)
+	mov	rcx,[rsp]
+	mov	dword [rcx+C12_OCSP],0
+	lea	rsi,[r14+HB_IN]
+	mov	edx,[r15+H_INLEN]
+	call	tls12_status_req
+	test	eax,eax
+	jz	@f
+	mov	rdi,[g_t12_tl]
+	call	ocsp_staple
+	mov	rcx,[rsp]
+	mov	eax,[g_oc_n]
+	mov	[rcx+C12_OCSP],eax
 @@:
 	pop	rcx
 	lea	rdi,[r14+HB_T2]
@@ -280,6 +295,64 @@ on_h_ktls12:
 
 ; rsi = a ClientHello record, edx = its length: eax = 1 when its ALPN
 ; offers h2. Keeps rbx, r12-r15.
+bss
+	align 8
+	g_t12_tl	dq ?
+end bss
+
+; rsi/edx = the ClientHello record: eax = 1 when it asks for an OCSP staple
+; (status_request, type ocsp)
+tls12_status_req:
+	lea	r8,[rsi+rdx]
+	lea	rcx,[rsi+5+4+2+32]
+	cmp	rcx,r8
+	jae	.no
+	movzx	eax,byte [rcx]			; session id
+	lea	rcx,[rcx+1+rax]
+	lea	rax,[rcx+2]
+	cmp	rax,r8
+	ja	.no
+	movzx	eax,word [rcx]			; cipher suites
+	xchg	al,ah
+	lea	rcx,[rcx+2+rax]
+	cmp	rcx,r8
+	jae	.no
+	movzx	eax,byte [rcx]			; compression methods
+	lea	rcx,[rcx+1+rax]
+	lea	rax,[rcx+2]
+	cmp	rax,r8
+	ja	.no
+	movzx	eax,word [rcx]			; extensions
+	xchg	al,ah
+	add	rcx,2
+	lea	r9,[rcx+rax]
+	cmp	r9,r8
+	jbe	.ext
+	mov	r9,r8
+.ext:
+	lea	rax,[rcx+4]
+	cmp	rax,r9
+	ja	.no
+	movzx	eax,word [rcx+2]
+	xchg	al,ah
+	lea	r10,[rcx+4+rax]
+	cmp	r10,r9
+	ja	.no
+	cmp	word [rcx],0x0500		; status_request
+	jne	.next
+	test	eax,eax
+	jz	.no
+	cmp	byte [rcx+4],1			; ocsp
+	jne	.no
+	mov	eax,1
+	ret
+.next:
+	mov	rcx,r10
+	jmp	.ext
+.no:
+	xor	eax,eax
+	ret
+
 tls12_alpn_h2:
 	lea	r8,[rsi+rdx]			; the end
 	lea	rcx,[rsi+5+4+2+32]		; past record, handshake header, version, random

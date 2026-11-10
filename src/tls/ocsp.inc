@@ -413,6 +413,7 @@ ocsp_main:
 	call	ocsp_out_name
 	out_lit ' is REVOKED: replace it (nothing is stapled)'
 	call	log_end
+	call	ocsp_tell_acme			; (one of its own: renewed at once)
 @@:
 	call	acme_now
 	add	rax,3600
@@ -504,6 +505,30 @@ ocsp_out_name:
 	out_lit 'entry '
 	mov	eax,ebx
 	jmp	out_u64
+
+; ebx = a revoked entry: its tag told to the acme process (a ring in its page),
+; and it woken
+ocsp_tell_acme:
+	mov	r8,[g_acme_page]
+	test	r8,r8
+	jz	.out
+	call	ocsp_tag
+	mov	r8,[g_acme_page]
+	mov	eax,[r8+AH_REVN]
+	xor	edx,edx
+	mov	ecx,AH_REVS
+	div	ecx				; (the ring's next)
+	mov	rax,[g_oc_tag+rbx*8]
+	mov	[r8+AH_REV+rdx*8],rax
+	inc	dword [r8+AH_REVN]
+	lock inc dword [r8+AH_REVSEQ]
+	lea	rdi,[r8+AH_REVSEQ]
+	mov	esi,FUTEX_WAKE
+	mov	edx,0x7FFFFFFF
+	mov	eax,SYS_futex
+	syscall
+.out:
+	ret
 
 ; ebx = an entry: its slot emptied
 ocsp_clear:

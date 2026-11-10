@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ACME with two CAs, and ARI, on one engine (argument): the first refuses the order
+"""ACME with two CAs, ARI, and OCSP's word, on one engine (argument): the first refuses the order
 (rateLimited), so okena asks the fallback at once, which wants an external account
 binding (EAB, RFC 8555 7.3.4: an HS256 JWS over the account's key, as ZeroSSL asks)
 and gets it; each CA's own anchor (trust=, fallback_trust=). A CA that wants EAB
@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import http.server
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -24,11 +25,12 @@ import acme as A  # noqa: E402
 from cryptography import x509  # noqa: E402
 from cryptography.hazmat.primitives import hashes, serialization  # noqa: E402
 from cryptography.hazmat.primitives.asymmetric import ec  # noqa: E402
+from cryptography.x509 import ocsp  # noqa: E402
 
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
 BIN = A.BIN
 BASE = 47000 + os.getpid() % 90 * 20 + (10 if ENGINE == "epoll" else 0)
-BACK, PLAIN, TLS, CA1, CA2, CA3 = BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4, BASE + 5
+BACK, PLAIN, TLS, CA1, CA2, CA3, CA4, RESP = BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4, BASE + 5, BASE + 6, BASE + 7
 A.PLAIN = PLAIN                         # (where the CAs prove HTTP-01)
 KID = "kid-zerossl-0123"
 fails = 0
@@ -193,6 +195,62 @@ http 127.0.0.1:{TLS} {{
         check("  the new one's window asked for too (ahead: nothing more)",
               A.until(lambda: ("ari", A.certid(new)) in st3.log, 5)
               and not A.until(lambda: sum(1 for e in st3.log if e[0] == "order") > 1, 1), st3.log[-6:])
+        stop(p)
+
+        # OCSP says the certificate in the directory is revoked: renewed at once,
+        # the new one stapled good
+        k4, c4 = ca("okena test CA four")
+        st4 = A.CAState(k4, c4, CA4)
+        st4.bad_nonce_once = False
+        st4.ocsp_url = f"http://127.0.0.1:{RESP}/"
+        serve(tmp, "four", CA4, k4, c4, st4)
+        revoked = set()
+
+        class Resp(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_POST(self):
+                req = ocsp.load_der_ocsp_request(self.rfile.read(int(self.headers["Content-Length"])))
+                n = datetime.datetime.now(datetime.timezone.utc)
+                bad = req.serial_number in revoked
+                rb = ocsp.OCSPResponseBuilder().add_response_by_hash(
+                    issuer_name_hash=req.issuer_name_hash, issuer_key_hash=req.issuer_key_hash, serial_number=req.serial_number,
+                    algorithm=req.hash_algorithm, cert_status=ocsp.OCSPCertStatus.REVOKED if bad else ocsp.OCSPCertStatus.GOOD,
+                    this_update=n - datetime.timedelta(minutes=5), next_update=n + datetime.timedelta(days=1),
+                    revocation_time=n - datetime.timedelta(hours=1) if bad else None,
+                    revocation_reason=x509.ReasonFlags.key_compromise if bad else None)
+                out = rb.responder_id(ocsp.OCSPResponderEncoding.NAME, c4).sign(k4, hashes.SHA256()).public_bytes(serialization.Encoding.DER)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/ocsp-response")
+                self.send_header("Content-Length", str(len(out)))
+                self.end_headers()
+                self.wfile.write(out)
+        threading.Thread(target=http.server.ThreadingHTTPServer(("127.0.0.1", RESP), Resp).serve_forever, daemon=True).start()
+        d = tmp / "r" / "r.example.test"
+        d.mkdir(parents=True)
+        key = ec.generate_private_key(ec.SECP256R1())
+        old = A.issue(k4, c4, key.public_key(), ["r.example.test"], now - datetime.timedelta(days=1), now + datetime.timedelta(days=60),
+                      st4.ocsp_url)
+        revoked.add(old.serial_number)
+        (d / "cert.pem").write_bytes(old.public_bytes(serialization.Encoding.PEM) + c4.public_bytes(serialization.Encoding.PEM))
+        (d / "key.pem").write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.TraditionalOpenSSL,
+                                                      serialization.NoEncryption()))
+        c = tmp / "r.conf"
+        c.write_text(conf("y", "").read_text().replace(f"acme {tmp}/y ", f"acme {tmp}/r ca=https://localhost:{CA4}/dir trust={tmp}/four-ca.pem ")
+                     .replace("tls { acme f.example.test }", "tls { acme r.example.test }"))
+        t0 = time.time()
+        p = start(c)
+        check("ocsp: revoked: the acme process told (not waiting out its hour), a new certificate at once",
+              A.until(lambda: served("r.example.test").serial_number != old.serial_number, 10)
+              and "OCSP says its certificate is revoked: renewing it now" in log.read_text() and time.time() - t0 < 10,
+              (st4.log[-6:], log.read_text()[-500:]))
+
+        def stapled():
+            r = subprocess.run(["openssl", "s_client", "-connect", f"127.0.0.1:{TLS}", "-servername", "r.example.test",
+                                "-status"], input="", capture_output=True, text=True, timeout=10)
+            return "Cert Status: good" in r.stdout
+        check("  the new one stapled good", A.until(stapled, 8))
         stop(p)
     finally:
         for q in procs:

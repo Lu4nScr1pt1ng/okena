@@ -137,10 +137,10 @@ class Back(http.server.BaseHTTPRequestHandler):
         pass
 
 
-def staple(port, name):
+def staple(port, name, version="-tls1_3"):
     """what openssl s_client says of the staple: its status line and the cert's"""
     r = subprocess.run(["openssl", "s_client", "-connect", f"127.0.0.1:{port}", "-servername", name, "-status",
-                        "-tls1_3"], input="", capture_output=True, text=True, timeout=10)
+                        version], input="", capture_output=True, text=True, timeout=10)
     out = r.stdout
     if "OCSP response: no response sent" in out:
         return "none"
@@ -191,6 +191,9 @@ http 127.0.0.1:{TLS2} {{
         check("stapled: the issuer's answer, good", until(lambda: staple(TLS, "good.test") == "good", 10),
               (staple(TLS, "good.test"), SEEN, log.read_text()[-400:]))
         check("  in every worker (eight handshakes)", all(staple(TLS, "good.test") == "good" for _ in range(8)))
+        check("  and over TLS 1.2 (CertificateStatus after Certificate)", staple(TLS, "good.test", "-tls1_2") == "good"
+              and staple(TLS, "deleg.test", "-tls1_2") == "good" and staple(TLS, "revoked.test", "-tls1_2") == "none",
+              staple(TLS, "good.test", "-tls1_2"))
         g = [s for s in SEEN if s[0] == "good.test"]
         check("  asked by a CertID of SHA-1 hashes of the issuer's name and key (cryptography reads it), POSTed",
               g and g[0][1] == "sha1" and g[0][2] and g[0][3] == "application/ocsp-request", g)

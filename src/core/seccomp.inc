@@ -468,6 +468,7 @@ rodata
 	sc_allow filter_ocsp, SYS_getrandom
 	sc_allow filter_ocsp, SYS_nanosleep
 	sc_allow filter_ocsp, SYS_clock_gettime
+	sc_allow filter_ocsp, SYS_futex		; the acme process woken (revoked)
 	sc_end filter_ocsp
 
 	; acme: the CA asked over HTTPS, its directory written
@@ -486,6 +487,7 @@ rodata
 	sc_allow filter_acme, SYS_ftruncate
 	sc_allow filter_acme, SYS_fdatasync
 	sc_allow filter_acme, SYS_rename_
+	sc_allow filter_acme, SYS_futex		; asleep until a revocation
 	sc_end filter_acme
 
 	align 8

@@ -34,6 +34,10 @@ ACME_DAYS_SELF	:= 7
 
 ; the shared page
 AH_RELOAD	:= 0			; d: the acme process asks for a reload
+AH_REVSEQ	:= 4			; d: OCSP said a certificate is revoked (a futex)
+AH_REVN		:= 8			; d: how many it said, ever
+AH_REV		:= 16			; their tags, a ring of AH_REVS (ocsp.inc's ocsp_tag)
+AH_REVS		:= 5
 AH_SLOT		:= 64
 AS_TLEN		:= 0			; d: the token's length, 0 a free slot (written last)
 AS_KLEN		:= 4			; d
@@ -180,6 +184,8 @@ bss
 	g_ac_certid:	rb 128 * ACME_CERTS
 	g_ac_rinfo:	rb ACME_URL
 	g_ac_t14:	rb 16
+	g_ac_tag	rq ACME_CERTS		; each certificate's tag (its leaf's SHA-256, 8 bytes)
+	g_ac_revdone	rq ACME_CERTS		; a revocation already acted on
 	g_ac_eabreq	dd ?			; its directory says externalAccountRequired
 	g_ac_dchgl	rd ACME_NAMES
 	g_ac_dchg:	rb 64 * ACME_NAMES	; (Route 53: each change, until INSYNC)
@@ -1633,6 +1639,9 @@ acme_main:
 	jb	@b
 .loop:
 	mov	dword [g_ac_reload],0
+	mov	rax,[g_acme_page]
+	mov	r14d,[rax+AH_REVSEQ]		; (what the sleep waits on)
+	call	acme_revoked
 	call	acme_now
 	lea	r13,[rax+3600]			; the next to look at
 	xor	ebx,ebx
@@ -1759,11 +1768,16 @@ acme_main:
 	jbe	@f
 	mov	r13d,3600
 @@:
-	push	0
+	push	0				; asleep until then, or a revocation
 	push	r13
-	mov	rdi,rsp
-	xor	esi,esi
-	mov	eax,SYS_nanosleep
+	mov	rdi,[g_acme_page]
+	add	rdi,AH_REVSEQ
+	mov	esi,FUTEX_WAIT			; (shared: not private)
+	mov	edx,r14d
+	mov	r10,rsp
+	xor	r8d,r8d
+	xor	r9d,r9d
+	mov	eax,SYS_futex
 	syscall
 	add	rsp,16
 	jmp	.loop
@@ -1777,6 +1791,51 @@ acme_main:
 	mov	eax,SYS_nanosleep
 	syscall
 	jmp	@b
+
+; the certificates OCSP says are revoked (the ring in the page): due now, once
+acme_revoked:
+	push	rbx
+	mov	r8,[g_acme_page]
+	mov	r9d,[r8+AH_REVN]
+	cmp	r9d,AH_REVS
+	jbe	@f
+	mov	r9d,AH_REVS
+@@:
+	xor	ebx,ebx
+.cert:
+	cmp	ebx,[g_plan_acme+ACM_NCERT]
+	jae	.out
+	mov	rax,[g_ac_tag+rbx*8]
+	test	rax,rax
+	jz	.next
+	cmp	rax,[g_ac_revdone+rbx*8]
+	je	.next
+	xor	ecx,ecx
+.ring:
+	cmp	ecx,r9d
+	jae	.next
+	cmp	rax,[r8+AH_REV+rcx*8]
+	je	.it
+	inc	ecx
+	jmp	.ring
+.it:
+	mov	[g_ac_revdone+rbx*8],rax
+	mov	qword [g_ac_due+rbx*8],0
+	push	r8
+	push	r9
+	call	log_begin
+	out_lit 'acme: '
+	call	acme_out_name
+	out_lit ': OCSP says its certificate is revoked: renewing it now'
+	call	log_end
+	pop	r9
+	pop	r8
+.next:
+	inc	ebx
+	jmp	.cert
+.out:
+	pop	rbx
+	ret
 
 ; Landlock: to read anywhere, to write in its directory only
 acme_confine:
@@ -2051,6 +2110,7 @@ acme_file_due:
 	mov	qword [g_ac_due+rbx*8],0
 	mov	qword [g_ac_end+rbx*8],0
 	mov	dword [g_ac_certidl+rbx*4],0
+	mov	qword [g_ac_tag+rbx*8],0
 	mov	dword [g_ac_arigot+rbx*4],0
 	mov	qword [g_ac_arinext+rbx*8],0
 	cstring .f_cert, '/cert.pem',0
@@ -2074,6 +2134,13 @@ acme_file_due:
 	xor	eax,eax
 @@:
 	mov	[g_ac_certidl+rbx*4],eax
+	lea	rdi,[g_ac_hash]			; its tag, as OCSP's
+	lea	rsi,[g_ac_der]
+	mov	edx,[g_ac_derl]
+	call	sha256
+	mov	rax,qword [g_ac_hash]
+	or	rax,1
+	mov	[g_ac_tag+rbx*8],rax
 	lea	rsi,[g_ac_der]
 	mov	edx,[g_ac_derl]
 	call	x509_locate

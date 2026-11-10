@@ -530,11 +530,11 @@ built; both measurements are still to be made on the lab.)
   from a minute to six hours; `okena cert` for keys, CSRs and self-signed ones.
   A fallback CA, asked at once when the first fails; external account binding
   (EAB) for either. ARI (RFC 9773): the CA's renewal window followed, the
-  order naming the certificate it replaces. OCSP stapling (TLS 1.3), for every
-  certificate with a responder, ACME's or not: issuer- or delegate-signed
-  answers only, refreshed halfway to nextUpdate.
-  Still to do: the rest of the list above (stapling on TLS 1.2, a revoked
-  certificate replaced at once, on-demand, the shared lock, `okena certs`, the local CA).
+  order naming the certificate it replaces. OCSP stapling (TLS 1.3 and 1.2),
+  for every certificate with a responder, ACME's or not: issuer- or
+  delegate-signed answers only, refreshed halfway to nextUpdate; an ACME
+  certificate the CA says is revoked renewed at once.
+  Still to do: the rest of the list above (on-demand, the shared lock, `okena certs`, the local CA).
   Exit: a fresh install with `tls auto` serves a valid certificate within a
   minute; a CA down, rate-limited or answering wrongly never takes a served
   certificate away; `make chaos` with the CA failed in turn passes.

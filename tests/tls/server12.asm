@@ -43,6 +43,7 @@ bss
 	align 16
 	g_t2:		rb T2_FULL
 	g_c12:		rb C12_SIZE
+	g_oc_tmp	rb 16			; (no OCSP here)
 	g_fd		dd ?
 	g_cli		dd ?
 	g_addr:		rb 16

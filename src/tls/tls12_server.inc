@@ -19,6 +19,7 @@ C12_RSA_N	:= 32				; q: pointer to the RSA modulus (big endian)
 C12_RSA_NLEN	:= 40				; d: its length in bytes
 C12_RSA_D	:= 48				; q: pointer to the RSA private exponent
 C12_ALPN	:= 56				; d: 1 = answer ALPN with h2 (the caller found it offered)
+C12_OCSP	:= 60				; d: an OCSP answer to staple (g_oc_tmp), its length; 0 none
 C12_SIZE	:= 64
 
 T2_ESK		:= 0				; ephemeral x25519 private key
@@ -116,6 +117,7 @@ tls12_hello:
 @@:
 	mov	byte [rdi+2],0			; compression
 	mov	word [rdi+3],0x0500		; extensions length 5
+	lea	r10,[rdi+3]			; (its place: worked out at the end)
 	mov	byte [rdi+5],0xff		; renegotiation_info (RFC 5746), empty
 	mov	byte [rdi+6],0x01
 	mov	byte [rdi+7],0x00
@@ -130,6 +132,16 @@ tls12_hello:
 	mov	byte [rdi+8],'2'
 	add	rdi,9
 @@:
+	cmp	dword [r15+C12_OCSP],0		; status_request, empty: a staple follows
+	je	@f
+	mov	dword [rdi],0x00000500
+	add	rdi,4
+@@:
+	mov	rax,rdi				; the extensions' length
+	sub	rax,r10
+	sub	eax,2
+	xchg	al,ah
+	mov	[r10],ax
 	mov	rax,rdi				; body end
 	sub	rax,r13
 	sub	eax,4				; body length
@@ -162,6 +174,21 @@ tls12_hello:
 	sub	eax,4				; message body length
 	put24	r13+1, eax
 	call	.record
+	; ---- CertificateStatus: the OCSP answer (RFC 6066 8) ----
+	mov	edx,[r15+C12_OCSP]
+	test	edx,edx
+	jz	@f
+	mov	byte [r13],22
+	lea	ecx,[rdx+4]
+	put24	r13+1, ecx
+	mov	byte [r13+4],1			; ocsp
+	put24	r13+5, edx
+	lea	rdi,[r13+8]
+	lea	rsi,[g_oc_tmp]
+	mov	ecx,edx
+	rep	movsb
+	call	.record
+@@:
 	; ---- ServerKeyExchange: ECDHE params + ECDSA signature ----
 	mov	byte [r13],12
 	mov	byte [r13+4],3			; curve_type named_curve

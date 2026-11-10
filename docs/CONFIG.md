@@ -469,18 +469,19 @@ tls passthrough {                   # tcp only: route on SNI, never decrypt
 
 **OCSP stapling.** A certificate whose chain names its issuer and whose leaf names
 an OCSP responder (Authority Information Access, http://) is stapled: okena asks
-the responder, by a CertID of SHA-1 hashes (as RFC 5019 asks), and a TLS 1.3 client
-that sends status_request gets the answer with the certificate, so it need not
-ask the CA itself. An answer is taken only when the issuer signed it, or a
+the responder, by a CertID of SHA-1 hashes (as RFC 5019 asks), and a client that
+sends status_request gets the answer with the certificate (TLS 1.3: in the
+leaf's entry; TLS 1.2: a CertificateStatus message), so it need not ask the CA
+itself. An answer is taken only when the issuer signed it, or a
 responder the issuer delegated to (its certificate, signed by the issuer, for
 OCSPSigning, carried in the answer); when it names the certificate and says it
 is good; and while it is current (thisUpdate passed, nextUpdate to come: never
 stapled past it). It is asked for again halfway to its nextUpdate; a failure is
 tried again after 5 minutes, then twice as long up to an hour, the last good
 answer kept until its nextUpdate. A revoked certificate is said in the log, and
-nothing is stapled for it. A process of its own, `okena-ocsp`, does the asking;
-`ocsp off` in a tls block keeps its certificates out of it. (TLS 1.2 handshakes
-are not stapled yet.)
+nothing is stapled for it; when it is one okena got by ACME, the acme process is
+woken and renews it at once. A process of its own, `okena-ocsp`, does the asking;
+`ocsp off` in a tls block keeps its certificates out of it.
 
 **Automatic HTTPS.** `acme NAME...` in a tls block is a certificate for those
 names from an ACME CA (RFC 8555: Let's Encrypt, ZeroSSL, a step-ca of one's own),

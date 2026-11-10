@@ -89,12 +89,15 @@ def make_ca():
     return k, c
 
 
-def issue(ca_k, ca_c, pub, names, before, after):
+def issue(ca_k, ca_c, pub, names, before, after, ocsp_url=None):
     b = (x509.CertificateBuilder().subject_name(name(names[0])).issuer_name(ca_c.subject).public_key(pub)
          .serial_number(x509.random_serial_number()).not_valid_before(before).not_valid_after(after)
          .add_extension(x509.SubjectAlternativeName([x509.DNSName(n) for n in names]), critical=False)
          .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
          .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_k.public_key()), critical=False))
+    if ocsp_url:
+        b = b.add_extension(x509.AuthorityInformationAccess([x509.AccessDescription(
+            x509.oid.AuthorityInformationAccessOID.OCSP, x509.UniformResourceIdentifier(ocsp_url))]), critical=False)
     return b.sign(ca_k, hashes.SHA256())
 
 
@@ -116,6 +119,7 @@ class CAState:
         self.eab = {}                 # kid -> HMAC key: external accounts required
         self.fail_orders = None       # (status, error) every newOrder gets
         self.ari = None               # ARI (RFC 9773): CertID -> (start, end), when served
+        self.ocsp_url = None          # put in the certificates it issues (AIA)
         self.nonces = set()
         self.accounts = {}            # thumbprint -> (id, key)
         self.by_kid = {}
@@ -674,7 +678,8 @@ class H(http.server.BaseHTTPRequestHandler):
             if sorted(san) != sorted(o["names"]):
                 return self.problem(400, "badCSR", "names")
             now = datetime.datetime.now(datetime.timezone.utc)
-            c = issue(st.ca_k, st.ca_c, csr.public_key(), o["names"], now - datetime.timedelta(minutes=1), now + datetime.timedelta(days=st.days))
+            c = issue(st.ca_k, st.ca_c, csr.public_key(), o["names"], now - datetime.timedelta(minutes=1),
+                      now + datetime.timedelta(days=st.days), st.ocsp_url)
             o["cert"] = c.public_bytes(serialization.Encoding.PEM) + st.ca_c.public_bytes(serialization.Encoding.PEM)
             if st.ari is not None:
                 st.ari[certid(c)] = (now + datetime.timedelta(days=20), now + datetime.timedelta(days=21))
