@@ -42,7 +42,10 @@ the certificate's key, ECDSA or RSA, and AES-128-GCM or ChaCha20-Poly1305
 certificate, being on secp256r1, needs that one offered); rsa_pss_rsae_sha256,
 else rsa_pkcs1_sha256, for an RSA key; the extended master secret (RFC 7627)
 whenever the client offers it; secure renegotiation said, and no
-renegotiation. A name with an ECDSA and an RSA certificate gives the RSA one
+renegotiation; session tickets (RFC 5077) under the same keys as 1.3's (their
+rotation, `ticket_keys` for a fleet), a resumed session being an abbreviated
+handshake with no signature, taken only for its certificate, its suite and
+the same extended master secret. A name with an ECDSA and an RSA certificate gives the RSA one
 to a client whose suites take only it. Nothing in common: a handshake_failure
 alert. No CBC suites, no RSA key exchange, no SHA-1 signatures.
 

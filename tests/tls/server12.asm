@@ -33,6 +33,22 @@ include '../../src/tls/keyschedule.inc'
 include '../../src/tls/tls12.inc'
 include '../../src/tls/tls12_server.inc'
 
+; (no session tickets here: handshake.inc's, stubbed; g_tks = 0 turns them off)
+TK_ID		:= 0
+TK_NONCE	:= 4
+TK_SEALED	:= 16
+TKS_CUR		:= 0
+TKS_SLOTS	:= 64
+TKS_ID		:= 0
+TKS_GCM		:= 16
+TKS_SLOT	:= (TKS_GCM + GCM_SIZE + 63) and not 63
+tls_ticket_key:
+	stc
+	ret
+tls_now_s:
+	xor	eax,eax
+	ret
+
 SBUF	:= 1 shl 16
 SOL_TLS	:= 282
 TLS_TX	:= 1
@@ -44,6 +60,8 @@ bss
 	g_t2:		rb T2_FULL
 	g_c12:		rb C12_SIZE
 	g_oc_tmp	rb 16			; (no OCSP here)
+	g_tks		dq ?
+	g_tk_life	dd ?
 	g_fd		dd ?
 	g_cli		dd ?
 	g_addr:		rb 16

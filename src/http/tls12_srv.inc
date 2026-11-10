@@ -49,6 +49,12 @@ http_tls12_hello:
 	mov	[rcx+C12_LEN],edx
 	lea	rdx,[rax+TL_KEY]		; the private key
 	mov	[rcx+C12_KEY],rdx
+	mov	rdx,[rax+TL_PUB+1]		; what a ticket names: 8 bytes of its key
+	cmp	dword [rax+TL_KEYTYPE],1
+	jne	@f
+	mov	rdx,[rax+TL_RSA_N]
+@@:
+	mov	[rcx+C12_CERTID],rdx
 	mov	edx,[rax+TL_KEYTYPE]		; EC or RSA, with the RSA key material
 	mov	[rcx+C12_KEYTYPE],edx
 	cmp	edx,1
@@ -155,7 +161,24 @@ http_tls12_fin:
 	ja	.need
 	inc	edx
 	cmp	edx,3
-	jb	.count
+	jb	.count_more
+	jmp	.whole
+.count_more:
+	cmp	edx,2				; an abbreviated handshake: two (CCS, Finished)
+	jne	.count
+	cmp	dword [r14+HB_T2+T2_RESUMED],0
+	je	.count
+	lea	rdi,[r14+HB_T2]
+	lea	rsi,[r14+HB_IN]
+	mov	ecx,[r15+H_INLEN]
+	call	tls12_resumed_fin
+	test	eax,eax
+	jz	http_tls_close
+	or	dword [r14+HB_TS+TS_FLAGS],TF_RESUMED
+	xor	eax,eax				; TLS 1.2, resumed
+	call	tls_count
+	jmp	http_tls12_fin2_sent		; the keys go in at once
+.whole:
 	; the flight is whole: finish
 	lea	rdi,[r14+HB_T2]
 	lea	rsi,[r14+HB_IN]

@@ -105,6 +105,32 @@ def get12(port, path="/hello", cipher="ECDHE-ECDSA-AES128-GCM-SHA256", post=None
         return None, repr(e).encode()
 
 
+def resumed12(port, cipher, sni="okena.test", sni2=None):
+    """a first connection with a ticket, a second offering it: (reused, its answer)"""
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    ctx.minimum_version = ctx.maximum_version = ssl.TLSVersion.TLSv1_2
+    ctx.set_ciphers(cipher)
+    try:
+        with ctx.wrap_socket(socket.create_connection(("127.0.0.1", port), timeout=5), server_hostname=sni) as t:
+            sess = t.session                                # (its ticket came in the handshake)
+        sni2 = sni2 or sni
+        with ctx.wrap_socket(socket.create_connection(("127.0.0.1", port), timeout=5), server_hostname=sni2,
+                             session=sess) as t:
+            reused = t.session_reused
+            t.sendall(f"GET /again HTTP/1.1\r\nHost: {sni2}\r\nConnection: close\r\n\r\n".encode())
+            data = b""
+            while True:
+                b = t.recv(4096)
+                if not b:
+                    break
+                data += b
+        return reused, data
+    except (OSError, ssl.SSLError) as e:
+        return None, repr(e).encode()
+
+
 def early_close12(port):
     """A TLS 1.2 handshake whose last flight leaves together with a FIN."""
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
@@ -290,6 +316,16 @@ http 127.0.0.1:{DLST} {{
     o = sclient(LST, "-curves", "P-384")
     check("  no group in common: the same", "alert handshake failure" in o, o[-300:])
 
+    # session tickets (RFC 5077): an abbreviated handshake, then a request on it
+    for port, cipher in ((LST, "ECDHE-ECDSA-AES128-GCM-SHA256"), (LST, "ECDHE-ECDSA-CHACHA20-POLY1305"),
+                         (RLST, "ECDHE-RSA-AES128-GCM-SHA256")):
+        reused, data = resumed12(port, cipher)
+        check(f"a ticket resumes ({cipher}), and the connection serves",
+              reused is True and data.startswith(b"HTTP/1.1 200") and b"backend:/again" in data, f"{reused} {data[:80]}")
+    reused, data = resumed12(SNIL, "ECDHE-ECDSA-AES128-GCM-SHA256", "a.test", "x.b.test")
+    check("  a ticket of another certificate: a full handshake", reused is False and data.startswith(b"HTTP/1.1 200"),
+          f"{reused} {data[:80]}")
+
     # a few more requests (fresh connections), to shake out the handshake
     oks = sum(get12(LST, f"/n{i}")[1].startswith(b"HTTP/1.1 200") for i in range(8))
     check("8 TLS 1.2 connections", oks == 8, f"{oks}/8")
@@ -333,6 +369,8 @@ http 127.0.0.1:{ULST} {{
         ok3 = b"posted:%d:%d" % (len(payload), sum(payload) % 65521) in data
         check(f"no kTLS, {cipher}: records here (a request, 256 KiB down, 100 KB up)", ok1 and ok2 and ok3,
               f"{ok1} {ok2} {ok3} {data[:80]}")
+        reused, data = resumed12(ULST, cipher)
+        check(f"  and resumed by a ticket", reused is True and b"backend:/again" in data, f"{reused} {data[:80]}")
     u.terminate()
     u.wait(10)
 

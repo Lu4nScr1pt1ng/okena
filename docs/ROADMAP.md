@@ -562,7 +562,9 @@ built; both measurements are still to be made on the lab.)
   extended master secret (RFC 7627), renegotiation_info only when offered, a
   handshake_failure alert when nothing is in common. Without kTLS its
   records are sealed and opened in user space (both suites), as 1.3's; a
-  dual-certificate name picks by the client's 1.2 suites.
+  dual-certificate name picks by the client's 1.2 suites. Session tickets
+  (RFC 5077) under the 1.3 ticket keys: abbreviated handshakes, counted as
+  resumed.
 * FastCGI to PHP-FPM and others (`php` on a route: index files, the script
   path checked against the root, try-files), as nginx and Caddy do it.
 * Regular expressions in routes, `match` and `rewrite`, compiled to an

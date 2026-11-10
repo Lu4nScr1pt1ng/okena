@@ -26,7 +26,20 @@ C12_RSA_NLEN	:= 40				; d: its length in bytes
 C12_RSA_D	:= 48				; q: pointer to the RSA private exponent
 C12_ALPN	:= 56				; d: 1 = answer ALPN with h2 (the caller found it offered)
 C12_OCSP	:= 60				; d: an OCSP answer to staple (g_oc_tmp), its length; 0 none
-C12_SIZE	:= 64
+C12_CERTID	:= 64				; q: 8 bytes of the certificate's key (a ticket names it)
+C12_SIZE	:= 72
+
+; TLS 1.2 session tickets (RFC 5077), sealed with the 1.3 tickets' keys (one
+; rotation, one fleet file); their own version and size, so neither takes the
+; other's: key id (4) | nonce (12) | sealed (TK12_PT) | tag (16)
+TK12P_VERSION	:= 0				; b: 2
+TK12P_SUITE	:= 1				; b
+TK12P_EMS	:= 2				; b
+TK12P_ISSUED	:= 4				; d: seconds (CLOCK_MONOTONIC)
+TK12P_CERT	:= 8				; q
+TK12P_MASTER	:= 16				; 48
+TK12_PT		:= 64
+TK12_SIZE	:= TK_SEALED + TK12_PT + 16	; 96
 
 T2_ESK		:= 0				; ephemeral x25519 private key
 T2_CR		:= 32				; client random
@@ -46,7 +59,13 @@ T2_GROUP	:= T2_SUITE + 4			; d: 0 secp256r1, 1 x25519
 T2_SIG		:= T2_GROUP + 4			; d: the SignatureScheme (as on the wire)
 T2_EMS		:= T2_SIG + 4			; d: extended master secret
 T2_RENEG	:= T2_EMS + 4			; d: the client knows renegotiation_info
-T2_TXSEQ	:= T2_RENEG + 4			; q: records sealed here (user space), from 1
+T2_RESUMED	:= T2_RENEG + 4			; d: an abbreviated handshake, from a ticket
+T2_TKWANT	:= T2_RESUMED + 4		; d: the client takes tickets: one is issued
+T2_TKLEN	:= T2_TKWANT + 4		; d: its session_ticket extension's length
+T2_TKP		:= T2_TKLEN + 4			; q: its ticket (in the ClientHello)
+T2_CERTID	:= T2_TKP + 8			; q: C12_CERTID
+T2_TICKET	:= T2_CERTID + 8		; TK12_SIZE
+T2_TXSEQ	:= T2_TICKET + TK12_SIZE	; q: records sealed here (user space), from 1
 T2_RXSEQ	:= T2_TXSEQ + 8			; q: and opened
 T2_FULL		:= T2_RXSEQ + 8
 
@@ -86,8 +105,11 @@ tls12_hello:
 	mov	ecx,32
 	rep	movsb
 	lea	rbx,[r13+4+2+32]		; session id: u8 length, bytes
+	mov	rax,[r15+C12_CERTID]
+	mov	[rbp+T2_CERTID],rax
 	call	tls12_offers			; what the client offers: suite, group, signature
 	jc	.refuse
+	call	tls12_resume_try		; its ticket, when good: T2_RESUMED
 	call	sha256_init_t2			; start the transcript
 	mov	rsi,r13				; add the ClientHello message
 	mov	edx,r14d
@@ -135,7 +157,11 @@ tls12_hello:
 	lea	rsi,[rbp+T2_SR]			; server random
 	mov	ecx,32
 	rep	movsb
-	movzx	eax,byte [rbx]			; echo the session id
+	xor	eax,eax			; the session id: the client's, echoed, when
+	cmp	dword [rbp+T2_RESUMED],0	; resuming (RFC 5077 3.4); else none (no
+	je	@f				; session is kept here: tickets only)
+	movzx	eax,byte [rbx]
+@@:
 	mov	[rdi],al
 	inc	rdi
 	lea	rsi,[rbx+1]
@@ -162,6 +188,13 @@ tls12_hello:
 	mov	dword [rdi],0x00001700
 	add	rdi,4
 @@:
+	cmp	dword [rbp+T2_RESUMED],0	; session_ticket, empty: one will come
+	jne	@f
+	cmp	dword [rbp+T2_TKWANT],0
+	je	@f
+	mov	dword [rdi],0x00002300
+	add	rdi,4
+@@:
 	cmp	dword [r15+C12_ALPN],0
 	je	@f
 	mov	dword [rdi],0x05001000		; ALPN (16), 5 bytes,
@@ -169,6 +202,8 @@ tls12_hello:
 	mov	byte [rdi+8],'2'
 	add	rdi,9
 @@:
+	cmp	dword [rbp+T2_RESUMED],0
+	jne	@f
 	cmp	dword [r15+C12_OCSP],0		; status_request, empty: a staple follows
 	je	@f
 	mov	dword [rdi],0x00000500
@@ -184,6 +219,8 @@ tls12_hello:
 	sub	eax,4				; body length
 	put24	r13+1, eax
 	call	.record				; wrap + transcript; r13..rdi -> next r13
+	cmp	dword [rbp+T2_RESUMED],0
+	jne	.resumed
 	; ---- Certificate (1.2: no context, no per-entry extensions) ----
 	mov	byte [r13],11
 	lea	r14,[r13+4+3]			; first entry (after u24 cert_list length)
@@ -314,6 +351,16 @@ tls12_hello:
 	sub	eax,r12d
 	sub	eax,5
 	jmp	.out
+.resumed:
+	; abbreviated (RFC 5077 3.1): the keys from the ticket's master secret
+	; and these randoms, then the server's ChangeCipherSpec and Finished
+	call	tls12_keys
+	lea	rdi,[r13-5]
+	call	tls12_server_fin
+	lea	rcx,[r13-5]
+	sub	rcx,r12
+	add	eax,ecx
+	jmp	.out
 .ske_fail:
 	add	rsp,8
 .fail:
@@ -364,6 +411,8 @@ tls12_offers:
 	xor	eax,eax
 	mov	[rbp+T2_EMS],eax
 	mov	[rbp+T2_RENEG],eax
+	mov	[rbp+T2_TKWANT],eax
+	mov	[rbp+T2_TKLEN],eax
 	mov	rsi,rbx
 	movzx	eax,byte [rsi]			; past the session id
 	lea	rsi,[rsi+1+rax]
@@ -443,6 +492,15 @@ tls12_offers:
 	cmp	eax,23
 	jne	@f
 	mov	dword [rbp+T2_EMS],1
+	jmp	.next
+@@:
+	cmp	eax,35				; session_ticket (RFC 5077): empty, or one
+	jne	@f
+	mov	[rbp+T2_TKP],rsi
+	mov	[rbp+T2_TKLEN],ecx
+	cmp	qword [g_tks],0
+	je	.next
+	mov	dword [rbp+T2_TKWANT],1
 	jmp	.next
 @@:
 	cmp	eax,0xff01
@@ -619,47 +677,7 @@ tls12_finished:
 	lea	rdi,[rbp+T2_SHARED]		; (the premaster: done with)
 	mov	ecx,32
 	call	secure_zero
-	mov	esi,40				; AES-128-GCM: keys of 16, salts of 4
-	cmp	dword [rbp+T2_SUITE],0
-	je	@f
-	mov	esi,88				; ChaCha20-Poly1305: keys of 32, IVs of 12
-@@:
-	lea	rdi,[rsp]
-	lea	rdx,[rbp+T2_MASTER]
-	lea	rcx,[rbp+T2_SR]
-	lea	r8,[rbp+T2_CR]
-	call	tls12_key_block
-	cmp	dword [rbp+T2_SUITE],0
-	jne	.kb_cp
-	movdqu	xmm0,[rsp]
-	movdqu	[rbp+T2_CWK],xmm0
-	movdqu	xmm0,[rsp+16]
-	movdqu	[rbp+T2_SWK],xmm0
-	mov	eax,[rsp+32]
-	mov	[rbp+T2_CWIV],eax
-	mov	eax,[rsp+36]
-	mov	[rbp+T2_SWIV],eax
-	jmp	.kb_done
-.kb_cp:
-	lea	rsi,[rsp]
-	lea	rdi,[rbp+T2_CWK]
-	mov	ecx,64				; the two keys (CWK, SWK adjoin)
-	rep	movsb
-	lea	rdi,[rbp+T2_CWIV]
-	mov	ecx,24				; and the two IVs
-	rep	movsb
-.kb_done:
-	lea	rdi,[rsp]
-	mov	ecx,88
-	call	secure_zero
-	lea	rdi,[rbp+T2_RXGCM]
-	lea	rsi,[rbp+T2_CWK]
-	mov	edx,[rbp+T2_SUITE]
-	call	aead_init
-	lea	rdi,[rbp+T2_TXGCM]
-	lea	rsi,[rbp+T2_SWK]
-	mov	edx,[rbp+T2_SUITE]
-	call	aead_init
+	call	tls12_keys
 	; expected client verify_data over the transcript through CKE
 	lea	rsi,[rbp+T2_SHA]
 	lea	rdi,[rsp]
@@ -697,40 +715,18 @@ tls12_finished:
 	mov	rsi,rbx				; add the client Finished to the transcript
 	mov	edx,16
 	t2_add
-	; server verify_data over the transcript through the client Finished
-	lea	rsi,[rbp+T2_SHA]
-	lea	rdi,[rsp]
-	mov	ecx,SHA256_CTX_SIZE
-	rep	movsb
-	lea	rdi,[rsp]
-	lea	rsi,[rsp+112]
-	call	sha256_final
-	mov	dword [rsp+156],0x0c000014	; server Finished message header
-	lea	rdi,[rsp+160]
-	lea	rsi,[rbp+T2_MASTER]
-	lea	rdx,[tls12_lbl_sfin]
-	mov	ecx,15
-	lea	r8,[rsp+112]
-	call	tls12_verify_data
-	; flight: ChangeCipherSpec, then the encrypted Finished
-	mov	byte [r12],20			; CCS record
-	mov	word [r12+1],0x0303
-	mov	word [r12+3],0x0100		; length 1
-	mov	byte [r12+5],1
-	lea	rdi,[r12+6+5]			; seal the Finished after CCS and a record header
-	lea	rsi,[rbp+T2_TXGCM]
-	lea	rdx,[rbp+T2_SWIV]
-	xor	rcx,rcx				; server record sequence 0
-	mov	r8d,22
-	lea	r9,[rsp+156]
-	mov	r10d,16
-	call	tls12_aseal			; eax = record payload length
-	mov	byte [r12+6],22
-	mov	word [r12+6+1],0x0303
-	mov	edx,eax
-	rol	dx,8
-	mov	[r12+6+3],dx
-	lea	eax,[rax+11]			; CCS (6) + record header (5) + payload
+	; a NewSessionTicket (RFC 5077 3.3), when the client takes them, then the
+	; server's ChangeCipherSpec and Finished
+	xor	ebx,ebx
+	cmp	dword [rbp+T2_TKWANT],0
+	je	@f
+	mov	rdi,r12
+	call	tls12_ticket_new
+	mov	ebx,eax
+@@:
+	lea	rdi,[r12+rbx]
+	call	tls12_server_fin
+	add	eax,ebx
 	jmp	.out
 .fail:
 	xor	eax,eax
@@ -938,4 +934,291 @@ tls12_cp_nonce:
 	mov	eax,r10d
 	rol	ax,8
 	mov	[rsp+8+16+11],ax
+	ret
+
+; rbp = t2: the key block from T2_MASTER and the randoms, into the write keys
+; and IVs (the suite's sizes), and the two AEAD contexts set up
+tls12_keys:
+	sub	rsp,104
+	mov	esi,40				; AES-128-GCM: keys of 16, salts of 4
+	cmp	dword [rbp+T2_SUITE],0
+	je	@f
+	mov	esi,88				; ChaCha20-Poly1305: keys of 32, IVs of 12
+@@:
+	lea	rdi,[rsp]
+	lea	rdx,[rbp+T2_MASTER]
+	lea	rcx,[rbp+T2_SR]
+	lea	r8,[rbp+T2_CR]
+	call	tls12_key_block
+	cmp	dword [rbp+T2_SUITE],0
+	jne	.cp
+	movdqu	xmm0,[rsp]
+	movdqu	[rbp+T2_CWK],xmm0
+	movdqu	xmm0,[rsp+16]
+	movdqu	[rbp+T2_SWK],xmm0
+	mov	eax,[rsp+32]
+	mov	[rbp+T2_CWIV],eax
+	mov	eax,[rsp+36]
+	mov	[rbp+T2_SWIV],eax
+	jmp	.done
+.cp:
+	lea	rsi,[rsp]
+	lea	rdi,[rbp+T2_CWK]
+	mov	ecx,64				; the two keys (CWK, SWK adjoin)
+	rep	movsb
+	lea	rdi,[rbp+T2_CWIV]
+	mov	ecx,24				; and the two IVs
+	rep	movsb
+.done:
+	lea	rdi,[rsp]
+	mov	ecx,88
+	call	secure_zero
+	lea	rdi,[rbp+T2_RXGCM]
+	lea	rsi,[rbp+T2_CWK]
+	mov	edx,[rbp+T2_SUITE]
+	call	aead_init
+	lea	rdi,[rbp+T2_TXGCM]
+	lea	rsi,[rbp+T2_SWK]
+	mov	edx,[rbp+T2_SUITE]
+	call	aead_init
+	add	rsp,104
+	ret
+
+; rbp = t2, rdi = out: the server's ChangeCipherSpec and Finished (over the
+; transcript so far, which then has it), sealed at sequence 0. eax = bytes.
+tls12_server_fin:
+	push	rbx
+	push	r12
+	sub	rsp,168				; ctx(112), hash(32) @112, Finished(16) @144
+	mov	r12,rdi
+	lea	rsi,[rbp+T2_SHA]
+	lea	rdi,[rsp]
+	mov	ecx,SHA256_CTX_SIZE
+	rep	movsb
+	lea	rdi,[rsp]
+	lea	rsi,[rsp+112]
+	call	sha256_final
+	mov	dword [rsp+144],0x0c000014	; Finished, 12
+	lea	rdi,[rsp+148]
+	lea	rsi,[rbp+T2_MASTER]
+	lea	rdx,[tls12_lbl_sfin]
+	mov	ecx,15
+	lea	r8,[rsp+112]
+	call	tls12_verify_data
+	lea	rsi,[rsp+144]			; (an abbreviated handshake's client
+	mov	edx,16				; Finished covers it)
+	t2_add
+	mov	byte [r12],20			; ChangeCipherSpec
+	mov	word [r12+1],0x0303
+	mov	word [r12+3],0x0100
+	mov	byte [r12+5],1
+	lea	rdi,[r12+6+5]
+	lea	rsi,[rbp+T2_TXGCM]
+	lea	rdx,[rbp+T2_SWIV]
+	xor	ecx,ecx
+	mov	r8d,22
+	lea	r9,[rsp+144]
+	mov	r10d,16
+	call	tls12_aseal
+	mov	byte [r12+6],22
+	mov	word [r12+6+1],0x0303
+	mov	edx,eax
+	rol	dx,8
+	mov	[r12+6+3],dx
+	add	eax,11				; CCS (6) + record header (5) + payload
+	add	rsp,168
+	pop	r12
+	pop	rbx
+	ret
+
+; rbp = t2, rdi = out: a NewSessionTicket record (RFC 5077 3.3), its message in
+; the transcript. eax = bytes.
+tls12_ticket_new:
+	push	rbx
+	push	r12
+	sub	rsp,8
+	mov	r12,rdi
+	lea	rbx,[rbp+T2_TICKET]
+	mov	rdi,rbx
+	mov	ecx,TK12_SIZE
+	xor	eax,eax
+	rep	stosb
+	mov	byte [rbx+TK_SEALED+TK12P_VERSION],2
+	mov	eax,[rbp+T2_SUITE]
+	mov	[rbx+TK_SEALED+TK12P_SUITE],al
+	mov	eax,[rbp+T2_EMS]
+	mov	[rbx+TK_SEALED+TK12P_EMS],al
+	call	tls_now_s
+	mov	[rbx+TK_SEALED+TK12P_ISSUED],eax
+	mov	rax,[rbp+T2_CERTID]
+	mov	[rbx+TK_SEALED+TK12P_CERT],rax
+	lea	rsi,[rbp+T2_MASTER]
+	lea	rdi,[rbx+TK_SEALED+TK12P_MASTER]
+	mov	ecx,48
+	rep	movsb
+	lea	rdi,[rbx+TK_NONCE]
+	mov	esi,12
+	xor	edx,edx
+	mov	eax,SYS_getrandom
+	syscall
+	mov	rdi,[g_tks]			; the current key
+	mov	eax,[rdi+TKS_CUR]
+	imul	eax,eax,TKS_SLOT
+	lea	rdi,[rdi+TKS_SLOTS+rax]
+	mov	eax,[rdi+TKS_ID]
+	mov	[rbx+TK_ID],eax
+	add	rdi,TKS_GCM
+	lea	rsi,[rbx+TK_NONCE]
+	lea	rdx,[rbx+TK_ID]
+	mov	ecx,4
+	lea	r8,[rbx+TK_SEALED]
+	mov	r9d,TK12_PT
+	call	gcm_seal
+	; the record: 22 03 03 | 4 + 4 + 2 + TK12_SIZE
+	mov	byte [r12],22
+	mov	word [r12+1],0x0303
+	mov	eax,4 + 4 + 2 + TK12_SIZE
+	rol	ax,8
+	mov	[r12+3],ax
+	mov	byte [r12+5],4			; new_session_ticket
+	mov	eax,4 + 2 + TK12_SIZE
+	put24	r12+6, eax
+	mov	eax,[g_tk_life]			; ticket_lifetime_hint: as long as it is taken
+	add	eax,eax
+	bswap	eax
+	mov	[r12+9],eax
+	mov	word [r12+13],(TK12_SIZE shr 8) or ((TK12_SIZE and 255) shl 8)
+	lea	rdi,[r12+15]
+	mov	rsi,rbx
+	mov	ecx,TK12_SIZE
+	rep	movsb
+	lea	rsi,[r12+5]
+	mov	edx,4 + 4 + 2 + TK12_SIZE
+	t2_add
+	mov	rdi,rbx				; (the plaintext master secret: gone)
+	mov	ecx,TK12_SIZE
+	call	secure_zero
+	mov	eax,5 + 4 + 4 + 2 + TK12_SIZE
+	add	rsp,8
+	pop	r12
+	pop	rbx
+	ret
+
+; in tls12_hello, after tls12_offers: rbx = the session id. The client's ticket,
+; when it opens under a current key, is ours (version 2), not past its life,
+; for this certificate, of the suite chosen and the same extended master
+; secret (RFC 7627 5.3), and the client sent a session id to have echoed:
+; T2_RESUMED, its master secret in T2_MASTER. Keeps rbx, rbp, r12-r15.
+tls12_resume_try:
+	mov	dword [rbp+T2_RESUMED],0
+	cmp	qword [g_tks],0
+	je	.out
+	cmp	dword [rbp+T2_TKLEN],TK12_SIZE
+	jne	.out
+	cmp	byte [rbx],0
+	je	.out
+	mov	rsi,[rbp+T2_TKP]
+	lea	rdi,[rbp+T2_TICKET]
+	mov	ecx,TK12_SIZE
+	rep	movsb
+	mov	eax,[rbp+T2_TICKET+TK_ID]
+	call	tls_ticket_key			; rdi = its key, or CF
+	jc	.no
+	lea	rsi,[rbp+T2_TICKET+TK_NONCE]
+	lea	rdx,[rbp+T2_TICKET+TK_ID]
+	mov	ecx,4
+	lea	r8,[rbp+T2_TICKET+TK_SEALED]
+	mov	r9d,TK12_PT
+	call	gcm_open
+	test	eax,eax
+	jz	.no
+	lea	r8,[rbp+T2_TICKET+TK_SEALED]
+	cmp	byte [r8+TK12P_VERSION],2
+	jne	.no
+	movzx	eax,byte [r8+TK12P_SUITE]
+	cmp	eax,[rbp+T2_SUITE]
+	jne	.no
+	movzx	eax,byte [r8+TK12P_EMS]
+	cmp	eax,[rbp+T2_EMS]
+	jne	.no
+	mov	rax,[r8+TK12P_CERT]
+	cmp	rax,[rbp+T2_CERTID]
+	jne	.no
+	call	tls_now_s
+	lea	r8,[rbp+T2_TICKET+TK_SEALED]
+	sub	eax,[r8+TK12P_ISSUED]
+	mov	ecx,[g_tk_life]
+	add	ecx,ecx
+	cmp	eax,ecx
+	ja	.no
+	lea	rsi,[r8+TK12P_MASTER]
+	lea	rdi,[rbp+T2_MASTER]
+	mov	ecx,48
+	rep	movsb
+	mov	dword [rbp+T2_RESUMED],1
+.no:
+	lea	rdi,[rbp+T2_TICKET]
+	mov	ecx,TK12_SIZE
+	call	secure_zero
+.out:
+	ret
+
+; rdi = t2 of an abbreviated handshake, rsi = the client's records after the
+; server's Finished (ChangeCipherSpec, its encrypted Finished), ecx = their
+; length: eax = 1 when its Finished is right (over the ClientHello, the
+; ServerHello and the server's Finished), else 0
+tls12_resumed_fin:
+	push	rbx
+	push	rbp
+	push	r14
+	sub	rsp,160				; ctx(112), hash(32) @112, expected(12) @144
+	mov	rbp,rdi
+	mov	r14,rsi
+	cmp	byte [r14],20			; ChangeCipherSpec
+	jne	.fail
+	movzx	eax,word [r14+3]
+	rol	ax,8
+	lea	r14,[r14+5+rax]
+	cmp	byte [r14],22
+	jne	.fail
+	lea	rsi,[rbp+T2_SHA]
+	lea	rdi,[rsp]
+	mov	ecx,SHA256_CTX_SIZE
+	rep	movsb
+	lea	rdi,[rsp]
+	lea	rsi,[rsp+112]
+	call	sha256_final
+	lea	rdi,[rsp+144]
+	lea	rsi,[rbp+T2_MASTER]
+	lea	rdx,[tls12_lbl_cfin]
+	mov	ecx,15
+	lea	r8,[rsp+112]
+	call	tls12_verify_data
+	movzx	esi,word [r14+3]
+	rol	si,8
+	lea	rdi,[r14+5]
+	lea	rdx,[rbp+T2_RXGCM]
+	lea	rcx,[rbp+T2_CWIV]
+	xor	r8d,r8d
+	mov	r9d,22
+	call	tls12_aopen
+	cmp	eax,16
+	jne	.fail
+	cmp	dword [rdx],0x0c000014
+	jne	.fail
+	lea	rdi,[rdx+4]
+	lea	rsi,[rsp+144]
+	mov	edx,12
+	call	ct_equal
+	test	eax,eax
+	jz	.fail
+	mov	eax,1
+	jmp	.out
+.fail:
+	xor	eax,eax
+.out:
+	add	rsp,160
+	pop	r14
+	pop	rbp
+	pop	rbx
 	ret

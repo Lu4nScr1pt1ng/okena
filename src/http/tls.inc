@@ -200,12 +200,13 @@ tls_count:
 	lea	ecx,[rcx*4]
 	add	ecx,edx
 	inc	qword [g_st_l_tls+rcx*8]
-	cmp	edx,1
-	jne	@f
+	cmp	edx,1				; done (1.2 or 1.3), and resumed?
+	ja	@f
 	mov	rax,[r15+H_BUF]
 	test	dword [rax+HB_TS+TS_FLAGS],TF_RESUMED
 	jz	@f
-	inc	qword [g_st_l_tls+rcx*8+8]
+	sub	ecx,edx
+	inc	qword [g_st_l_tls+rcx*8+16]
 @@:
 	pop	rdx
 	ret
