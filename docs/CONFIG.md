@@ -1219,8 +1219,13 @@ listeners), the one whose subject is what the chain's last certificate names as
 its issuer; only CAs signing, each link in date; an extended key usage, if there is one, must allow client
 authentication; the commonName must be there, with no control byte.
 
-On such a listener: TLS 1.3 only, no tickets, in either direction: a resumed session
-has no certificate to look at. Not on a `tcp` listener, and not with `http3`: it is
+On such a listener: TLS 1.3 only. Its session tickets come after the client's
+certificate is checked (the first record under the server's key), and carry who
+the client is and which CAs the listener asks: a resumption is that client again,
+with no certificate (a full handshake costs a chain and two signatures), and it
+is taken only on a listener asking the same CAs; another listener's ticket, or
+one with no one in it, is a full handshake there. A certificate revoked after
+its ticket was issued still resumes until the ticket ends (one to two hours). Not on a `tcp` listener, and not with `http3`: it is
 refused at load, because QUIC would be a way around it. A client's chain must fit
 in 16 KB.
 

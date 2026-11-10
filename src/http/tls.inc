@@ -34,6 +34,7 @@ HS_TLS_RETRY	:= 20
 HS_TLS_ALERT	:= 21
 HS_PT_HELLO	:= 22				; tls passthrough: reading the ClientHello
 HS_TLS_LAST	:= 22				; the last of them (phase expiry)
+HS_TLS_NST	:= 34				; client_ca: its ticket going out, the handshake done
 
 HB_TLS		:= 1 shl 16			; the TLS area, after the HTTP buffers
 HB_TS		:= HB_TLS			; the handshake, then the record keys
@@ -152,6 +153,7 @@ http_tls_start:
 	jz	@f
 	mov	r8,[r15+H_BUF]
 	or	dword [r8+HB_TS+TS_FLAGS],TF_CCA
+	mov	[r8+HB_TS+TS_TKCCA],ecx		; (tickets: these CAs, first | count << 16)
 	mov	edx,ecx				; (the first anchor | how many << 16)
 	shr	edx,16
 	mov	[r8+HB_TS+TS_ANCHORN],edx
@@ -356,6 +358,44 @@ http_tls_fin_in:
 	mov	rax,[r15+H_BUF]
 	mov	rax,[rax+HB_TS+TS_CERT]		; what SNI chose: Host is checked against it
 	mov	[r15+H_SNICERT],rax
+	mov	r8,[r15+H_BUF]
+	test	dword [r8+HB_TS+TS_FLAGS],TF_NST
+	jz	http_tls_fin_keys
+	; client_ca's ticket (clientauth.inc): the first record under the server's
+	; application key, sealed here before the keys go anywhere (to the kernel,
+	; from the next sequence on)
+	and	dword [r8+HB_TS+TS_FLAGS],not TF_NST
+	lea	rdi,[r8+HB_OUT+5]
+	mov	dword [rdi],NST_HDR
+	mov	eax,[g_tk_life]
+	bswap	eax
+	mov	[rdi+4],eax
+	mov	eax,[r8+HB_TS+TS_TKAGE]
+	mov	[rdi+8],eax
+	mov	byte [rdi+12],0
+	mov	word [rdi+13],NST_TKLEN
+	lea	rsi,[r8+HB_TS+TS_TKT]
+	add	rdi,15
+	mov	ecx,TK_SIZE
+	rep	movsb
+	mov	word [rdi],0
+	lea	rdi,[r8+HB_TS]
+	call	tls_records
+	mov	r8,[r15+H_BUF]
+	lea	rdi,[r8+HB_TS]
+	lea	rsi,[r8+HB_OUT]
+	mov	edx,NST_MSG
+	mov	ecx,22
+	call	tls_seal
+	h_rec
+	mov	dword [r15+H_STATE],HS_TLS_NST
+	mov	esi,eax
+	mov	rdi,[r15+H_BUF]
+	add	rdi,HB_OUT
+	mov	ecx,SIDE_CLIENT
+	jmp	h_send_raw
+; (the ticket out) the keys: to the kernel, or kept here
+http_tls_fin_keys:
 
 	; The keys for the kernel: struct tls12_crypto_info_aes_gcm_128
 	; { version, cipher, iv[8] (the IV's last 8), key[16], salt[4] (its

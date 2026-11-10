@@ -6,9 +6,10 @@
 ; in as many records as it takes. Nothing is opened in place, so that being called
 ; again with more is the same work over the same bytes.
 ;
-; A listener that asks for certificates takes no ticket and issues none: a session
-; resumed has no certificate to look at, and a ticket from another listener under
-; the same keys would be a way around this one. It speaks TLS 1.3 only.
+; A listener that asks for certificates issues its ticket after the client's flight
+; (cc_ticket), with who the client is and the listener's CAs (TKP_CCA, TKP_PEER):
+; a resumption there is that client again, and a ticket of another listener (other
+; CAs, or none) is not taken. It speaks TLS 1.3 only.
 ;
 ; The certificate: its chain up to one of the listener's anchors, none of it
 ; revoked (clientca.inc), every link in date, an
@@ -32,6 +33,7 @@ bss
 	g_cc_th:	rb 32
 	g_cc_fin:	rb 32
 	g_cc_dig:	rb 32
+	g_cc_rth:	rb 32			; the transcript through the client Finished
 	g_cc_rs:	rb 64
 	g_cc_cv:	rb CC_PREFIX + 32
 	g_cc_key:	rb PK_SIZE
@@ -277,6 +279,15 @@ cc_flight:
 	call	ct_equal
 	test	eax,eax
 	jz	.bad
+	lea	rdi,[g_cc_sha]			; through the client Finished: what the
+	mov	rsi,r12				; resumption secret covers (a ticket)
+	mov	edx,36
+	call	sha256_update
+	call	.snapshot
+	lea	rsi,[g_cc_th]
+	lea	rdi,[g_cc_rth]
+	mov	ecx,32
+	rep	movsb
 	mov	dword [rbx+TS_PEERL],0
 	test	rbp,rbp
 	jz	.good				; (none, and none is needed: `optional`)
@@ -348,6 +359,7 @@ cc_flight:
 	lea	rdi,[rbx+TS_PEER]
 	rep	movsb
 .good:
+	call	cc_ticket
 	mov	eax,1
 	jmp	.out
 .more:
@@ -483,3 +495,63 @@ cc_signature:
 .out:
 	pop	r14
 	ret
+
+; rbx = ts, the client's flight good: a ticket (RFC 8446 4.6.1) in TS_TKT, sent
+; once the handshake is done (TF_NST: http_tls_fin_in), as the first record
+; under the server's application key. Sealed as tls_hello's are, and also
+; with who the client is and the listener's CAs (a resumption there needs no
+; certificate, and is taken nowhere else). Without the ticket keys: none.
+cc_ticket:
+	cmp	qword [g_tks],0
+	je	.wipe
+	tls_label [g_cc_fin], 32, [rbx+TS_RMS], lbl_res_master, [g_cc_rth], 32
+	lea	rdi,[rbx+TS_TKT]
+	mov	ecx,TK_SIZE
+	xor	eax,eax
+	rep	stosb
+	tls_label [rbx+TS_TKT+TK_SEALED+TKP_PSK], 32, [g_cc_fin], lbl_resumption
+	mov	byte [rbx+TS_TKT+TK_SEALED+TKP_VERSION],1
+	mov	eax,[rbx+TS_TKNOW]
+	mov	[rbx+TS_TKT+TK_SEALED+TKP_ISSUED],eax
+	mov	rax,[rbx+TS_TKCERT]
+	mov	[rbx+TS_TKT+TK_SEALED+TKP_CERT],rax
+	mov	eax,[rbx+TS_TKCCA]
+	mov	[rbx+TS_TKT+TK_SEALED+TKP_CCA],eax
+	mov	ecx,[rbx+TS_PEERL]
+	mov	[rbx+TS_TKT+TK_SEALED+TKP_PEERL],ecx
+	lea	rsi,[rbx+TS_PEER]
+	lea	rdi,[rbx+TS_TKT+TK_SEALED+TKP_PEER]
+	rep	movsb
+	lea	rdi,[rbx+TS_TKAGE]		; age_add, then the nonce
+	mov	esi,4
+	xor	edx,edx
+	mov	eax,SYS_getrandom
+	syscall
+	mov	eax,[rbx+TS_TKAGE]
+	mov	[rbx+TS_TKT+TK_SEALED+TKP_AGE_ADD],eax
+	lea	rdi,[rbx+TS_TKT+TK_NONCE]
+	mov	esi,12
+	xor	edx,edx
+	mov	eax,SYS_getrandom
+	syscall
+	mov	rdi,[g_tks]			; the current key
+	mov	eax,[rdi+TKS_CUR]
+	imul	eax,eax,TKS_SLOT
+	lea	rdi,[rdi+TKS_SLOTS+rax]
+	mov	eax,[rdi+TKS_ID]
+	mov	[rbx+TS_TKT+TK_ID],eax
+	add	rdi,TKS_GCM
+	lea	rsi,[rbx+TS_TKT+TK_NONCE]
+	lea	rdx,[rbx+TS_TKT+TK_ID]
+	mov	ecx,4
+	lea	r8,[rbx+TS_TKT+TK_SEALED]
+	mov	r9d,TK_PT
+	call	gcm_seal
+	or	dword [rbx+TS_FLAGS],TF_NST
+.wipe:
+	lea	rdi,[g_cc_fin]
+	mov	ecx,32
+	call	secure_zero
+	lea	rdi,[rbx+TS_RMS]
+	mov	ecx,32
+	jmp	secure_zero

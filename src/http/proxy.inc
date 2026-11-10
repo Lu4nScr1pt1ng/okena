@@ -1939,6 +1939,8 @@ http_send_plain:
 	je	http_tls_retry_sent
 	cmp	edx,HS_TLS_ALERT
 	je	.close
+	cmp	edx,HS_TLS_NST
+	je	http_tls_fin_keys		; client_ca's ticket out: the keys now
 	cmp	edx,HS_UTLS_HELLO
 	je	http_uptls_hello_sent
 	cmp	edx,HS_UTLS_FIN

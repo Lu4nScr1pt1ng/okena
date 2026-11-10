@@ -66,7 +66,13 @@ TS_MSHA		:= TS_MCFK + 32			; the transcript through the server Finished
 TS_PEERL	:= TS_MSHA + SHA256_CTX_SIZE	; d: who the client's certificate says, 0 none
 TS_PEER		:= TS_PEERL + 4			; (MTLS_NAME_MAX)
 TS_ANCHORN	:= TS_PEER + MTLS_NAME_MAX + 4	; d: `client_ca`: how many anchors from TS_ANCHOR
-TS_SIZE		:= TS_ANCHORN + 4
+TS_TKCCA	:= TS_ANCHORN + 4		; d: `client_ca` (first | count << 16) for tickets, 0 none
+TS_TKNOW	:= TS_TKCCA + 4			; d: the hello's time (a ticket's issue)
+TS_TKCERT	:= TS_TKNOW + 4			; q: the certificate a ticket names
+TS_RMS		:= TS_TKCERT + 8		; the master secret, until the client's flight (32)
+TS_TKT		:= TS_RMS + 32			; a ticket to send after it (TK_SIZE), its
+TS_TKAGE	:= TS_TKT + TK_SIZE		; d: age_add
+TS_SIZE		:= TS_TKAGE + 4
 
 ; QUIC (RFC 9001): the handshake without records. The caller sets TF_QUIC
 ; and TS_QT; tls_hello then takes the ClientHello message itself (from
@@ -108,7 +114,8 @@ TF_CCA_REQ	:= 256				; and with none, refuse
 TF_RESUMED	:= 512				; a ticket of ours resumed it
 TF_GOT_ACME	:= 1024
 TF_T12		:= 4096				; TLS 1.2 records, sealed here (tls12_srv.inc)
-TF_KTLS		:= 8192				; the kernel has the keys (set after the wipe: close_notify)				; acme-tls/1 chosen: the challenge's certificate
+TF_KTLS		:= 8192				; the kernel has the keys (set after the wipe: close_notify)
+TF_NST		:= 16384			; TS_TKT: a ticket to send once the client's flight is good				; acme-tls/1 chosen: the challenge's certificate
 
 TH_MORE		:= 0
 TH_SEND		:= 1
@@ -133,8 +140,20 @@ TKP_AGE_ADD	:= 8
 TKP_CERT	:= 16				; 8 bytes of the certificate's key: tickets of
 						; another certificate do not resume
 TKP_PSK		:= 24				; 32
-TK_PT		:= 56
-TK_SIZE		:= TK_SEALED + TK_PT + 16	; 88
+TKP_CCA		:= 56				; d: the listener's `client_ca` (first | count << 16), 0 none:
+						; a ticket resumes only where the same CAs are asked
+TKP_PEERL	:= 60				; d: who the client's certificate said, 0 none
+TKP_PEER	:= 64				; (MTLS_NAME_MAX)
+TK_PT		:= 128
+TK_SIZE		:= TK_SEALED + TK_PT + 16	; 160
+; NewSessionTicket: lifetime (4), age_add (4), an empty nonce (1), the ticket
+; (2 + TK_SIZE), no extensions (2)
+NST_BODY	:= 13 + TK_SIZE
+NST_MSG		:= 4 + NST_BODY
+NST_HDR		:= 4 or (((NST_BODY shr 16) and 255) shl 8) or (((NST_BODY shr 8) and 255) shl 16) or ((NST_BODY and 255) shl 24)
+NST_HDR0	:= 4 or ((((NST_BODY + 8) shr 16) and 255) shl 8) or ((((NST_BODY + 8) shr 8) and 255) shl 16) or (((NST_BODY + 8) and 255) shl 24)
+NST_TKLEN	:= ((TK_SIZE and 255) shl 8) or (TK_SIZE shr 8)
+NST_RECLEN	:= (((NST_MSG + 17) and 255) shl 8) or ((NST_MSG + 17) shr 8)
 TICKET_ROTATE	:= 3600				; seconds a key issues tickets (OKENA_TICKET_ROTATE)
 ; The keys: a page shared by the supervisor and the workers (mapped before
 ; they fork), three slots. Tickets come from the current key and are
@@ -965,8 +984,6 @@ tls_hello:
 	call	tls_now_s
 	mov	[rbp+HL_NOW],eax
 .psk_check:
-	test	dword [rbx+TS_FLAGS],TF_CCA	; (see clientauth.inc)
-	jnz	.full
 	mov	eax,[rbp+HL_GOT]
 	and	eax,G_PSK or G_PSKDHE
 	cmp	eax,G_PSK or G_PSKDHE
@@ -1003,6 +1020,9 @@ tls_hello:
 	mov	rax,[r15+TL_PUB+1]
 	cmp	rax,[rbp+HL_TICKET+TK_SEALED+TKP_CERT]
 	jne	.full				; issued for another certificate
+	mov	eax,[rbx+TS_TKCCA]
+	cmp	eax,[rbp+HL_TICKET+TK_SEALED+TKP_CCA]
+	jne	.full				; another listener's CAs (or none, or some)
 	lea	rsi,[rbp+HL_TICKET+TK_SEALED+TKP_PSK]
 	lea	rdi,[rbp+HL_PSK]
 	mov	ecx,32
@@ -1047,6 +1067,20 @@ tls_hello:
 	jz	.bad_binder
 	or	dword [rbp+HL_GOT],G_RESUME
 	or	dword [rbx+TS_FLAGS],TF_RESUMED	; (counted: okena_tls_handshakes_total)
+	test	dword [rbx+TS_FLAGS],TF_CCA
+	jz	.full
+	; client certificates asked: resumed, who the client is comes from the
+	; ticket, and none is asked for (no CertificateRequest in a resumption)
+	and	dword [rbx+TS_FLAGS],not (TF_CCA or TF_CCA_REQ)
+	mov	ecx,[rbp+HL_TICKET+TK_SEALED+TKP_PEERL]
+	cmp	ecx,MTLS_NAME_MAX
+	jbe	@f
+	xor	ecx,ecx
+@@:
+	mov	[rbx+TS_PEERL],ecx
+	lea	rsi,[rbp+HL_TICKET+TK_SEALED+TKP_PEER]
+	lea	rdi,[rbx+TS_PEER]
+	rep	movsb
 .full:
 
 	; the transcript starts with the ClientHello, or after a retry with
@@ -1635,6 +1669,17 @@ tls_hello:
 	lea	rdi,[rbx+TS_MSHA]
 	mov	ecx,SHA256_CTX_SIZE
 	rep	movsb
+	; its ticket comes after the client's flight (clientauth.inc), which the
+	; resumption secret covers: what it needs from here
+	lea	rsi,[rbp+HL_MS]
+	lea	rdi,[rbx+TS_RMS]
+	mov	ecx,32
+	rep	movsb
+	mov	rax,[rbp+HL_TL]
+	mov	rax,[rax+TL_PUB+1]
+	mov	[rbx+TS_TKCERT],rax
+	mov	eax,[rbp+HL_NOW]
+	mov	[rbx+TS_TKNOW],eax
 	jmp	.no_ticket
 .no_cca:
 	cmp	qword [g_tks],0
@@ -1664,6 +1709,13 @@ tls_hello:
 	mov	rax,[rbp+HL_TL]
 	mov	rax,[rax+TL_PUB+1]
 	mov	[rbp+HL_TICKET+TK_SEALED+TKP_CERT],rax
+	mov	eax,[rbx+TS_TKCCA]		; (a resumption on client_ca's listener: who
+	mov	[rbp+HL_TICKET+TK_SEALED+TKP_CCA],eax	; it was goes on)
+	mov	ecx,[rbx+TS_PEERL]
+	mov	[rbp+HL_TICKET+TK_SEALED+TKP_PEERL],ecx
+	lea	rsi,[rbx+TS_PEER]
+	lea	rdi,[rbp+HL_TICKET+TK_SEALED+TKP_PEER]
+	rep	movsb
 	lea	rsi,[rbp+HL_RAND+64]
 	lea	rdi,[rbp+HL_TICKET+TK_NONCE]
 	mov	ecx,12
@@ -1733,15 +1785,15 @@ tls_hello:
 	; NewSessionTicket, under the server's application key (record 0)
 	mov	rdi,r15
 	mov	dword [rdi],0x00030317
-	mov	word [rdi+3],0x7A00		; 105 + type + tag = 122
-	mov	dword [rdi+5],0x65000004	; new_session_ticket, 101 bytes
+	mov	word [rdi+3],NST_RECLEN		; the message + type + tag
+	mov	dword [rdi+5],NST_HDR		; new_session_ticket
 	mov	eax,[g_tk_life]			; lifetime: at least this long
 	bswap	eax
 	mov	[rdi+9],eax
 	mov	eax,[rbp+HL_RAND+76]
 	mov	[rdi+13],eax			; ticket_age_add
 	mov	byte [rdi+17],0			; no ticket_nonce
-	mov	word [rdi+18],0x5800		; the ticket, 88 bytes
+	mov	word [rdi+18],NST_TKLEN		; the ticket
 	lea	rsi,[rbp+HL_TICKET]
 	add	rdi,20
 	mov	ecx,TK_SIZE
@@ -1757,9 +1809,9 @@ tls_hello:
 	mov	rdx,r15
 	mov	ecx,5
 	lea	r8,[r15+5]
-	mov	r9d,106
+	mov	r9d,NST_MSG + 1
 	call	aead_seal
-	add	r15,127
+	add	r15,5 + NST_MSG + 1 + 16
 	mov	qword [rbx+TS_TX_SEQ],1		; the application records follow it
 .flight_done:
 	mov	rdx,r15
@@ -1789,12 +1841,12 @@ tls_hello:
 	mov	dword [rax+QT_NSTLEN],0
 	test	dword [rbp+HL_GOT],G_TICKET
 	jz	@f
-	mov	dword [rax+QT_NSTLEN],105
-	mov	dword [rdi],0x65000004		; new_session_ticket, 101 bytes
+	mov	dword [rax+QT_NSTLEN],NST_MSG
+	mov	dword [rdi],NST_HDR		; new_session_ticket
 	test	dword [rbx+TS_FLAGS],TF_0RTT
 	jz	.nst_head
-	mov	dword [rax+QT_NSTLEN],113	; (with early_data: 0-RTT allowed)
-	mov	dword [rdi],0x6D000004		; new_session_ticket, 109 bytes
+	mov	dword [rax+QT_NSTLEN],NST_MSG + 8	; (with early_data: 0-RTT allowed)
+	mov	dword [rdi],NST_HDR0		; new_session_ticket
 .nst_head:
 	mov	eax,[g_tk_life]
 	bswap	eax
@@ -1802,7 +1854,7 @@ tls_hello:
 	mov	eax,[rbp+HL_RAND+76]
 	mov	[rdi+8],eax			; ticket_age_add
 	mov	byte [rdi+12],0			; no ticket_nonce
-	mov	word [rdi+13],0x5800		; the ticket, 88 bytes
+	mov	word [rdi+13],NST_TKLEN		; the ticket
 	lea	rsi,[rbp+HL_TICKET]
 	add	rdi,15
 	mov	ecx,TK_SIZE

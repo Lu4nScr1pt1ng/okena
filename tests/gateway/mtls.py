@@ -418,12 +418,22 @@ def main():
         check("a ticket from another listener: not in", not isinstance(r, tuple), r)
         r = req(OPT, o, "/need", session=ticket)
         check("  nor as anyone, on an optional one", isinstance(r, tuple) and r[0] == 401, r)
-        s1 = socket.create_connection(("127.0.0.1", REQ), 3)
-        t = a.wrap_socket(s1)
-        t.sendall(b"GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
-        while t.recv(4096):
-            pass
-        check("this listener issues no ticket", not (t.session and t.session.has_ticket))
+        # its own tickets: after the client's flight, with who it is; a resumption
+        # is that client again without a certificate, here only
+        r = req(REQ, a)
+        sess = r[2] if isinstance(r, tuple) else None
+        check("this listener's ticket comes after the client's certificate", sess is not None and sess.has_ticket, r)
+        s2 = socket.create_connection(("127.0.0.1", REQ), 3)
+        t = a.wrap_socket(s2, session=sess)                # (a resumption: no certificate asked, none sent)
+        reused = t.session_reused
+        t.close()
+        r2 = req(REQ, a, session=sess)
+        check("  it resumes, as the same client", reused and body(r2) == (200, "alice"), (reused, r2))
+        n = cl.ctx()
+        r3 = req(OPT, n, "/need")
+        r4 = req(REQ, n, session=r3[2] if isinstance(r3, tuple) else None)
+        check("  an optional listener's ticket, no one in it: not in on a required one",
+              isinstance(r3, tuple) and r3[0] == 401 and not isinstance(r4, tuple), (r3, r4))
         s1.close()
 
         check("optional: no certificate is fine for what asks none", req(OPT, none, "/anyone")[0] == 200)

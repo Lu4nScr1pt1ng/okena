@@ -568,7 +568,8 @@ built; both measurements are still to be made on the lab.)
   records here or on kTLS: an alert record through sendmsg). Client
   certificates: every CA in `client_ca`'s file (found by the chain's issuer
   name), `crl=` lists (signed by one of them, serials in a hash table, a
-  stale list failing shut).
+  stale list failing shut). mTLS resumption: the ticket after the client's
+  flight, with its identity and the listener's CAs.
 * FastCGI to PHP-FPM and others (`php` on a route: index files, the script
   path checked against the root, try-files), as nginx and Caddy do it.
 * Regular expressions in routes, `match` and `rewrite`, compiled to an
