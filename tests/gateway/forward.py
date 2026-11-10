@@ -224,11 +224,15 @@ def main():
             mine = [x for x in asked[n:] if x[1].get("x-forwarded-uri", "").startswith("/cached/")]
             return len(mine)
         B = dict(Cookie="s=bob")
-        for i in range(12):
-            get("/cached/a", **A)
-        n = len(asked)
-        h = hits(lambda: [get("/cached/a", **A) for i in range(8)])
-        check("cache: a yes is kept", h == 0, (h, [(x[0], x[1].get("x-forwarded-uri")) for x in asked[n:]]))
+        # (which worker takes a connection is the kernel's: under load one may take
+        # them all for a while, so it is fed until eight in a row ask nobody;
+        # a cache that keeps nothing never gets there)
+        for i in range(40):
+            n = len(asked)
+            h = hits(lambda: [get("/cached/a", **A) for i in range(8)])
+            if h == 0:
+                break
+        check("cache: a yes is kept", h == 0, (i, h, [(x[0], x[1].get("x-forwarded-uri")) for x in asked[n:]]))
         r = get("/cached/a", **B)
         check("  not for someone else", r[:2] == (200, "bob"), r[:2])
         check("  nor for another path", hits(lambda: get("/cached/other", **A)) == 1)
