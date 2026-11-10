@@ -455,6 +455,21 @@ rodata
 	sc_allow filter_compiler, SYS_getrandom		; acme: a key until the CA's certificate comes
 	sc_end filter_compiler
 
+	; ocsp: the responders asked over HTTP (names resolved), nothing written
+	sc_begin filter_ocsp
+	sc_common filter_ocsp
+	sc_check filter_ocsp, SYS_openat, read_only
+	sc_allow filter_ocsp, SYS_read
+	sc_allow filter_ocsp, SYS_fstat
+	sc_allow filter_ocsp, SYS_close
+	sc_check filter_ocsp, SYS_socket, socket
+	sc_allow filter_ocsp, SYS_connect
+	sc_allow filter_ocsp, SYS_setsockopt
+	sc_allow filter_ocsp, SYS_getrandom
+	sc_allow filter_ocsp, SYS_nanosleep
+	sc_allow filter_ocsp, SYS_clock_gettime
+	sc_end filter_ocsp
+
 	; acme: the CA asked over HTTPS, its directory written
 	sc_begin filter_acme
 	sc_common filter_acme

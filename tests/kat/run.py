@@ -668,6 +668,13 @@ for n in list(range(0, 260)) + [1000, 4096, 65537]:
     m = rng.randbytes(n)
     check(f"sha-512 len {n}", run(b"8", m), hashlib.sha512(m).hexdigest())
 
+# --- SHA-1 (OCSP's CertID): FIPS 180's vectors, then hashlib around the block and its padding
+check("sha-1 abc", run(b"!", b"abc"), "a9993e364706816aba3e25717850c26c9cd0d89d")
+check("sha-1 empty", run(b"!", b""), "da39a3ee5e6b4b0d3255bfef95601890afd80709")
+for n in list(range(0, 200)) + [1000, 4096, 65537]:
+    m = rng.randbytes(n)
+    check(f"sha-1 len {n}", run(b"!", m), hashlib.sha1(m).hexdigest())
+
 # --- Ed25519 (RFC 8032): its test vectors, then the cryptography package
 # (keys, deterministic signatures byte for byte, verification), and the
 # refusals: a flipped bit, S >= L, a key that is not on the curve

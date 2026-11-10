@@ -567,6 +567,23 @@ compile_tls:
 	mov	rdi,r12				; acme NAME...: from the CA (acme.inc)
 	mov	edx,r13d
 	call	compile_tls_acme
+	mov	rdi,r12				; ocsp off: none of the block's stapled
+	mov	ecx,DIR_OCSP
+	call	find_child
+	test	rax,rax
+	jz	.ocsp_on
+	mov	rax,[rax+N_ARGS]
+	mov	rax,[rax+A_VAL]
+	cmp	word [rax],'of'
+	jne	.ocsp_on
+	mov	eax,r13d
+@@:
+	cmp	eax,[g_plan_tls]
+	jae	.ocsp_on
+	mov	byte [g_plan_ocspoff+rax],1
+	inc	eax
+	jmp	@b
+.ocsp_on:
 	lea	eax,[r13+1]
 	jmp	.out
 .none:

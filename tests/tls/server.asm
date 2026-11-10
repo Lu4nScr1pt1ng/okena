@@ -235,6 +235,14 @@ tls_cert_select:
 acme_tls_cert:
 	xor	eax,eax
 	ret
+; (no OCSP here: nothing to staple)
+ocsp_staple:
+	mov	dword [g_oc_n],0
+	ret
+bss
+	g_oc_n		dd ?
+	g_oc_tmp	rb 16
+end bss
 
 ; edx = bytes from g_out: written, or CF.
 send_out:

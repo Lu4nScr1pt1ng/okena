@@ -456,6 +456,7 @@ The TLS layer:
 tls {
     cert /etc/okena/fullchain.pem key=/etc/okena/key.pem   # or one per host,
     acme example.com www.example.com   # or from a CA (ACME), okena renewing it
+    ocsp off                        # (OCSP stapling: on by default, below)
     versions 1.2 1.3
     alpn h2 http/1.1
     client_ca /etc/okena/clients.pem required
@@ -465,6 +466,21 @@ tls passthrough {                   # tcp only: route on SNI, never decrypt
     default reject
 }
 ```
+
+**OCSP stapling.** A certificate whose chain names its issuer and whose leaf names
+an OCSP responder (Authority Information Access, http://) is stapled: okena asks
+the responder, by a CertID of SHA-1 hashes (as RFC 5019 asks), and a TLS 1.3 client
+that sends status_request gets the answer with the certificate, so it need not
+ask the CA itself. An answer is taken only when the issuer signed it, or a
+responder the issuer delegated to (its certificate, signed by the issuer, for
+OCSPSigning, carried in the answer); when it names the certificate and says it
+is good; and while it is current (thisUpdate passed, nextUpdate to come: never
+stapled past it). It is asked for again halfway to its nextUpdate; a failure is
+tried again after 5 minutes, then twice as long up to an hour, the last good
+answer kept until its nextUpdate. A revoked certificate is said in the log, and
+nothing is stapled for it. A process of its own, `okena-ocsp`, does the asking;
+`ocsp off` in a tls block keeps its certificates out of it. (TLS 1.2 handshakes
+are not stapled yet.)
 
 **Automatic HTTPS.** `acme NAME...` in a tls block is a certificate for those
 names from an ACME CA (RFC 8555: Let's Encrypt, ZeroSSL, a step-ca of one's own),

@@ -194,6 +194,7 @@ supervisor_main:
 	call	spawn_keeper
 	call	spawn_vrrp
 	call	spawn_acme
+	call	spawn_ocsp
 	call	upgrade_ready
 	call	api_ready
 
@@ -929,6 +930,21 @@ reap_workers:
 	call	spawn_acme
 	jmp	.next
 .not_acme:
+	cmp	r12d,[g_ocsp_pid]
+	jne	.not_ocsp
+	mov	dword [g_ocsp_pid],0
+	cmp	dword [g_shutdown],0
+	jne	.next
+	call	log_begin
+	out_lit 'ocsp process exited, restarting it'
+	call	log_end
+	lea	rdi,[ts_respawn_delay]
+	xor	esi,esi
+	mov	eax,SYS_nanosleep
+	syscall
+	call	spawn_ocsp
+	jmp	.next
+.not_ocsp:
 	cmp	r12d,[g_health_pid]
 	jne	.not_health
 	mov	dword [g_health_pid],0

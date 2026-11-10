@@ -220,6 +220,8 @@ test-serial: $(BIN) $(HTTPH) $(KAT) $(TLSH)
 	python3 -I tests/gateway/acme.py epoll
 	python3 -I tests/gateway/acmefb.py io_uring
 	python3 -I tests/gateway/acmefb.py epoll
+	python3 -I tests/gateway/ocsp.py io_uring
+	python3 -I tests/gateway/ocsp.py epoll
 	python3 -I tests/gateway/forward.py io_uring
 	python3 -I tests/gateway/forward.py epoll
 	python3 -I tests/gateway/mtls.py io_uring

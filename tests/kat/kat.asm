@@ -51,6 +51,7 @@ include '../../src/core/util.inc'
 include '../../src/crypto/ct.inc'
 include '../../src/crypto/sha256.inc'
 include '../../src/crypto/sha512.inc'
+include '../../src/crypto/sha1.inc'
 include '../../src/crypto/keccak.inc'
 include '../../src/crypto/mlkem.inc'
 include '../../src/crypto/hmac.inc'
@@ -150,6 +151,8 @@ start:
 	je	.sha3_256
 	cmp	al,'8'
 	je	.sha512
+	cmp	al,'!'
+	je	.sha1
 	cmp	al,'5'
 	je	.sha3_512
 	cmp	al,'6'
@@ -263,6 +266,11 @@ start:
 	lea	rdi,[g_out]
 	call	sha512
 	mov	esi,64
+	jmp	.print
+.sha1:
+	lea	rdi,[g_out]
+	call	sha1
+	mov	esi,20
 	jmp	.print
 .sha3_256:
 	lea	rdi,[g_out]

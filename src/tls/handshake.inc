@@ -257,6 +257,7 @@ G_QTP		:= 2097152			; quic_transport_parameters (QUIC)
 G_HQ		:= 4194304			; ALPN offers hq-interop (QUIC, the interop runner)
 G_EARLY		:= 8388608			; early_data: the client sends 0-RTT data
 G_ACME		:= 16777216			; ALPN offers acme-tls/1 (TLS-ALPN-01, acme.inc)
+G_OCSP		:= 33554432			; status_request (OCSP): a staple wanted (ocsp.inc)
 
 ; the transcript: rsi = bytes, rdx = length
 macro th_add
@@ -494,12 +495,22 @@ tls_hello:
 	je	.qtp
 	cmp	eax,42
 	je	.early_ext
+	cmp	eax,5
+	je	.status_req
 .ext_next:
 	mov	rsi,r14
 	jmp	.ext
 
 .early_ext:					; early_data: empty
 	or	dword [rbp+HL_GOT],G_EARLY
+	jmp	.ext_next
+
+.status_req:					; status_request: ocsp (1), lists
+	test	ecx,ecx
+	jz	.ext_next
+	cmp	byte [rsi],1
+	jne	.ext_next
+	or	dword [rbp+HL_GOT],G_OCSP
 	jmp	.ext_next
 
 .versions:					; supported_versions: u8 length, u16s
@@ -1268,7 +1279,19 @@ tls_hello:
 	; The encrypted messages, built at the end of out: r13 = their start,
 	; r14 = the cursor.
 	mov	r15,[rbp+HL_TL]
+	mov	dword [g_oc_n],0		; OCSP: the answer to staple, if one
+	test	dword [rbp+HL_GOT],G_OCSP
+	jz	@f
+	test	dword [rbx+TS_FLAGS],TF_QUIC or TF_GOT_ACME
+	jnz	@f
+	push	rdi
+	mov	rdi,r15
+	call	ocsp_staple
+	pop	rdi
+@@:
 	mov	ecx,[r15+TL_CLEN]
+	add	ecx,[g_oc_n]
+	add	ecx,8
 	lea	eax,[rcx+192+300]		; EE (QUIC: + parameters) + Certificate
 						; + CV + Finished
 	cmp	dword [r15+TL_KEYTYPE],1		; an RSA CertificateVerify carries
@@ -1394,6 +1417,9 @@ tls_hello:
 	add	r14,19
 .no_request:
 	; Certificate: empty context, the certificate_list as loaded
+	cmp	dword [g_oc_n],0
+	jne	.stapled
+.cert_list:
 	mov	byte [r14],11
 	mov	ecx,[r15+TL_CLEN]
 	add	ecx,4
@@ -1405,6 +1431,57 @@ tls_hello:
 	mov	esi,[r15+TL_CHAIN]
 	lea	rsi,[g_tls_store+rsi]
 	rep	movsb
+	jmp	.cert_done_list
+.stapled:
+	; the leaf's entry with a status_request extension: CertificateStatus
+	; { ocsp, the OCSPResponse } (RFC 8446 4.4.2.1); the rest as loaded
+	mov	esi,[r15+TL_CHAIN]
+	lea	rsi,[g_tls_store+rsi]
+	movzx	edx,byte [rsi]
+	shl	edx,16
+	movzx	eax,word [rsi+1]
+	xchg	al,ah
+	or	edx,eax				; the leaf's length
+	lea	eax,[rdx+5]
+	cmp	eax,[r15+TL_CLEN]
+	ja	.cert_list
+	cmp	word [rsi+rdx+3],0		; (its extensions: none, as loaded)
+	jne	.cert_list
+	mov	r8d,[g_oc_n]
+	lea	r9d,[r8+8]			; the extensions' length
+	mov	ecx,[r15+TL_CLEN]
+	add	ecx,r9d
+	mov	byte [r14],11
+	lea	eax,[rcx+4]
+	put24	r14+1, eax
+	mov	byte [r14+4],0
+	put24	r14+5, ecx
+	lea	rdi,[r14+8]
+	lea	ecx,[rdx+3]			; the leaf, its length first
+	rep	movsb
+	add	rsi,2				; (past its empty extensions)
+	mov	eax,r9d
+	xchg	al,ah
+	mov	[rdi],ax
+	mov	word [rdi+2],0x0500		; status_request
+	lea	eax,[r8+4]
+	xchg	al,ah
+	mov	[rdi+4],ax
+	mov	byte [rdi+6],1			; ocsp
+	put24	rdi+7, r8d
+	add	rdi,10
+	push	rsi
+	lea	rsi,[g_oc_tmp]
+	mov	ecx,r8d
+	rep	movsb
+	pop	rsi
+	mov	ecx,[r15+TL_CHAIN]		; the rest of the chain
+	add	ecx,[r15+TL_CLEN]
+	lea	rax,[g_tls_store]
+	add	rcx,rax
+	sub	rcx,rsi
+	rep	movsb
+.cert_done_list:
 	mov	rsi,r13
 	mov	rdx,rdi
 	sub	rdx,r13
