@@ -1573,6 +1573,11 @@ h2u_block_done:
 	mov	rdx,'content-'
 	cmp	[rax],rdx
 	jne	@f
+	mov	eax,ebx				; gRPC: not kept, the body chunked, so that
+	shl	rax,H_SHIFT			; its trailers have a place
+	add	rax,[g_http_base]
+	test	dword [rax+H_FLAGS],HX_GRPC
+	jnz	.f_skip
 	mov	r9d,1
 @@:
 	mov	rsi,[r8+HP_NAME]

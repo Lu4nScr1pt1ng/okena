@@ -37,6 +37,7 @@ BASE = 59400 + os.getpid() % 90 * 20 + (10 if ENGINE == "epoll" else 0)
 GRPC, H1B, LST = BASE, BASE + 1, BASE + 2
 fails = 0
 SEEN = []
+RESETS = []
 
 
 def check(name, ok, detail=""):
@@ -80,6 +81,8 @@ def grpc_server():
                 elif isinstance(e, h2.events.DataReceived):
                     bodies[e.stream_id] += e.data
                     conn.acknowledge_received_data(e.flow_controlled_length, e.stream_id)
+                elif isinstance(e, h2.events.StreamReset):
+                    RESETS.append(e.error_code)
                 elif isinstance(e, h2.events.StreamEnded):
                     sid, h, b = e.stream_id, heads[e.stream_id], bodies[e.stream_id]
                     SEEN.append((h, b))
@@ -88,9 +91,10 @@ def grpc_server():
                                                 ("grpc-status", "5"), ("grpc-message", "no such thing")], end_stream=True)
                     else:
                         ct = h.get("content-type", "")
-                        conn.send_headers(sid, [(":status", "200"), ("content-type", ct)])
                         msgs, _ = frames(b)
                         out = b"".join(frame(m[::-1]) for _, m in msgs)
+                        sized = [("content-length", str(len(out)))] if h.get(":path") == "/svc.Echo/Sized" else []
+                        conn.send_headers(sid, [(":status", "200"), ("content-type", ct)] + sized)
                         for i in range(0, len(out), 16384):     # (within a frame's size)
                             conn.send_data(sid, out[i:i + 16384])
                         conn.send_headers(sid, [("grpc-status", "0"), ("grpc-message", "fine")], end_stream=True)
@@ -137,7 +141,7 @@ def h2_post(path, body, ctype="application/grpc-web+proto"):
     for i in range(0, len(body), 10000):                # (pieces, within a frame's size)
         conn.send_data(1, body[i:i + 10000], end_stream=i + 10000 >= len(body))
     s.sendall(conn.data_to_send())
-    heads, data, trailers, done = {}, b"", None, False
+    heads, data, trailers, done, reset = {}, b"", None, False, False
     while not done:
         d = s.recv(65536)
         if not d:
@@ -150,10 +154,13 @@ def h2_post(path, body, ctype="application/grpc-web+proto"):
                 conn.acknowledge_received_data(e.flow_controlled_length, e.stream_id)
             elif isinstance(e, h2.events.TrailersReceived):
                 trailers = e.headers
-            elif isinstance(e, h2.events.StreamEnded):
+            elif isinstance(e, (h2.events.StreamEnded, h2.events.StreamReset)):
                 done = True
+                reset = isinstance(e, h2.events.StreamReset)
         s.sendall(conn.data_to_send())
     s.close()
+    if reset:
+        heads[":reset"] = "1"
     return heads, data, trailers
 
 
@@ -221,9 +228,50 @@ http 127.0.0.1:{LST} {{
         r, d = post("/svc.Echo/Say", base64.b64encode(frame(b"a")) + base64.b64encode(frame(b"bc")),
                     ctype="application/grpc-web-text")
         h, b = SEEN[-1] if len(SEEN) > n else ({}, b"")
+        r, d = post("/svc.Echo/Sized", base64.b64encode(body), ctype="application/grpc-web-text")
+        try:
+            fs, whole = frames(base64.b64decode(d, validate=True))
+        except Exception as e:
+            fs, whole = [], str(e)
+        check("text: an answer with a Content-Length (of the bytes): encoded all the same, no length of its own",
+              r.status == 200 and r.getheader("content-length") is None and whole is True
+              and [m for f, m in fs if f == 0] == [b"olleh", big[::-1]] and fs[-1][0] == 0x80,
+              (r.status, r.getheaders(), d[:80], whole))
+        heads, data, trailers = h2_post("/svc.Echo/Sized", base64.b64encode(body), ctype="application/grpc-web-text")
+        try:
+            fs, whole = frames(base64.b64decode(data, validate=True))
+        except Exception as e:
+            fs, whole = [], str(e)
+        check("  HTTP/2: the same", "content-length" not in heads and whole is True
+              and [m for f, m in fs if f == 0] == [b"olleh", big[::-1]] and fs[-1][0] == 0x80, (heads, data[:80], whole))
+        heads, data, trailers = h2_post("/svc.Echo/Sized", frame(b"abc"), ctype="application/grpc")
+        check("plain gRPC, a backend's answer with a Content-Length: its trailers kept (grpc-status)",
+              data == frame(b"cba") and trailers is not None and (b"grpc-status", b"0") in trailers,
+              (heads, data, trailers))
+        r, d = post("/svc.Echo/Missing", base64.b64encode(frame(b"x")), ctype="application/grpc-web-text")
+        check("text: a trailers-only answer, grpc-status in its head",
+              r.status == 200 and r.getheader("grpc-status") == "5" and d == b""
+              and r.getheader("content-type") == "application/grpc-web-text+proto", (r.status, r.getheaders(), d))
         check("text: a sender's padding after each message", b == frame(b"a") + frame(b"bc") and r.status == 200, (h, b))
+        n, k = len(SEEN), len(RESETS)
+        t0 = time.time()
         r, d = post("/svc.Echo/Say", b"AAAA!!!!", ctype="application/grpc-web-text")
-        check("text: what is not base64 fails, nothing for the server", r.status >= 500 or d == b"", (r.status, d))
+        check("text: what is not base64 fails at once (UNAVAILABLE, in gRPC-Web text), the server's stream reset, not ended",
+              r.status == 200 and r.getheader("grpc-status") == "14" and d == b""
+              and r.getheader("content-type") == "application/grpc-web-text"
+              and len(SEEN) == n and time.time() - t0 < 2, (r.status, r.getheaders(), d, SEEN[n:]))
+        t0 = time.time()
+        heads, data, trailers = h2_post("/svc.Echo/Say", base64.b64encode(frame(b"x" * 12000)) + b"!!!!",
+                                        ctype="application/grpc-web-text")
+        check("  HTTP/2, base64 that goes bad halfway (the body beside the answer): the same",
+              (heads.get("grpc-status") == "14" and heads.get("content-type") == "application/grpc-web-text"
+               or ":reset" in heads) and len(SEEN) == n and time.time() - t0 < 2,
+              (heads, data[:80], SEEN[n:], time.time() - t0))
+        for _ in range(100):                            # (the server reads them on its own)
+            if len(RESETS) >= k + 2:
+                break
+            time.sleep(0.01)
+        check("  the server was told both times (RST_STREAM CANCEL)", RESETS[k:] == [8, 8], RESETS[k:])
         heads, data, trailers = h2_post("/svc.Echo/Say", base64.b64encode(body), ctype="application/grpc-web-text")
         try:
             fs, whole = frames(base64.b64decode(data, validate=True))

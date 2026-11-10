@@ -187,8 +187,11 @@ over HTTP/1.1, 2 and 3 alike; an error with no body keeps `grpc-status` in its
 head. The text mode (`application/grpc-web-text`, what a browser's grpc-web
 library sends by default) is the same in base64: the request's body is decoded on
 its way to the backend (padding after each message taken), the answer's encoded
-as it comes, the trailer frame in it, padded only at its end; a backend's answer
-with a Content-Length (gRPC servers send none) is not encoded. A pool of HTTP/1.1
+as it comes, the trailer frame in it, padded only at its end. A body that is not
+base64 resets the backend's stream (CANCEL) and the client gets UNAVAILABLE, in
+its own content-type (okena's gRPC errors to a gRPC-Web client are gRPC-Web). A
+gRPC backend's answer with a Content-Length is passed on chunked, so that its
+trailers keep a place. A pool of HTTP/1.1
 (a backend that speaks gRPC-Web itself) gets the request as it is. A page on
 another origin needs the route's `cors` (with `x-grpc-web`, `x-user-agent` and
 `grpc-timeout` allowed, and `grpc-status`, `grpc-message` exposed).

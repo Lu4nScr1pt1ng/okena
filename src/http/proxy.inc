@@ -2251,7 +2251,9 @@ http_duplex_pump:
 	cmp	byte [rax+HB_GWEB],4
 	jne	@f
 	call	gweb_decode
-	jc	.stop
+	jnc	@f
+	call	gweb_fail			; not base64: the exchange fails
+	jmp	.stop
 @@:
 	mov	[r12+U2_PP],r8
 	mov	[r12+U2_PL],r9d
@@ -2538,12 +2540,16 @@ http_resp_head:
 	call	cache_head
 	call	idem_head
 	call	zip_head
+	call	gweb_text_head
 	call	http_write_response_head
 	mov	dword [g_zh],0
 	jc	.bad
 	or	dword [r15+H_FLAGS],HX_STARTED
 	cmp	dword [r15+H_RBODY],BK_LENGTH
 	jne	.send_head
+	mov	rax,[r15+H_BUF]			; (gRPC-Web text: the pump encodes it)
+	cmp	byte [rax+HB_GWEB],4
+	je	.send_head
 	call	session_ptr
 	test	dword [rax+S_FLAGS],SF_ZIP
 	jnz	.send_head			; (http_resp_pump takes it from UP)
@@ -2757,6 +2763,9 @@ http_write_response_head:
 	memit_x 'Transfer-Encoding: chunked',13,10
 	jmp	.conn
 @@:
+	mov	rcx,[r15+H_BUF]			; gRPC-Web text: its DATA say how long
+	cmp	byte [rcx+HB_GWEB],4
+	je	.conn
 	cmp	eax,BK_LENGTH
 	je	.length
 	; no body: a HEAD response keeps the length it announces
@@ -2815,6 +2824,9 @@ http_resp_pump:
 	mov	ecx,[r15+H_UPLEN]
 	sub	ecx,[r15+H_UPOFF]
 	jnz	@f
+	mov	rax,[r15+H_BUF]
+	cmp	byte [rax+HB_GWEB],4
+	je	.read				; (gRPC-Web text: through the encoder)
 	call	zc_ok				; from a file or the disk cache: without copies?
 	jnc	zc_send
 	jmp	.read
@@ -2832,6 +2844,13 @@ http_resp_pump:
 	call	cache_tee
 	mov	rdi,rsi
 	mov	esi,ecx
+	mov	rax,[r15+H_BUF]
+	cmp	byte [rax+HB_GWEB],4
+	jne	@f
+	mov	r8,rdi
+	mov	r9d,esi
+	jmp	.gweb_text
+@@:
 	call	session_ptr
 	test	dword [rax+S_FLAGS],SF_ZIP
 	jz	.send
@@ -2844,6 +2863,9 @@ http_resp_pump:
 	jmp	h_send
 .length_done:
 	mov	dword [r15+H_RBODY],BK_NONE
+	mov	rax,[r15+H_BUF]
+	cmp	byte [rax+HB_GWEB],4
+	je	http_last_chunk			; (gRPC-Web text: its padding, its end)
 	call	session_ptr
 	test	dword [rax+S_FLAGS],SF_ZIP
 	jnz	http_last_chunk
@@ -2904,6 +2926,7 @@ http_resp_pump:
 	mov	rax,[r15+H_BUF]			; gRPC-Web text: in base64
 	cmp	byte [rax+HB_GWEB],4
 	jne	@f
+.gweb_text:
 	call	gweb_text_feed
 	jnc	.send
 	jmp	http_resp_pump
@@ -4587,7 +4610,19 @@ http_error_grpc:
 	push	rax
 	mov	rdi,[r15+H_BUF]
 	lea	rdi,[rdi+HB_OUT]
-	memit_x 'HTTP/1.1 200 OK',13,10,'content-type: application/grpc',13,10,'grpc-status: '
+	memit_x 'HTTP/1.1 200 OK',13,10,'content-type: application/grpc'
+	mov	rax,[r15+H_BUF]			; gRPC-Web: what its client asked in
+	movzx	eax,byte [rax+HB_GWEB]
+	test	eax,eax
+	jz	.ct_end
+	push	rax
+	memit_x '-web'
+	pop	rax
+	cmp	eax,4
+	jb	.ct_end
+	memit_x '-text'
+.ct_end:
+	memit_x 13,10,'grpc-status: '
 	mov	eax,[rsp]
 	lea	rsi,[.map]
 @@:

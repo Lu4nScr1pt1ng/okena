@@ -92,10 +92,8 @@ gweb_field:
 	je	@f
 	cmp	r11d,4
 	jne	.no
-	test	edx,edx				; text, the request's: its Content-Length
-	jnz	@f				; is the base64's, not passed on
-	push	rdx
-	push	rdi
+	push	rdx				; text: a Content-Length is of the other
+	push	rdi				; encoding's (not passed on either way)
 	mov	rdi,r14
 	lea	rsi,[hn_content_length]
 	call	hf_is
@@ -263,6 +261,68 @@ GWT_ENC		:= GWT_DEC + H_IN_CAP + 64	; the answer's base64 (16 before it: a chunk
 assert H_UP_CAP <= H_IN_CAP & CK_TRAIL_MAX + 8 <= H_IN_CAP
 assert HB_GWT + GWT_ENC + 16 + (H_IN_CAP + 64) * 4 / 3 + 1024 <= 1 shl HB_SHIFT
 
+; ebx = a requesting session whose body is not base64: its stream is reset
+; (CANCEL, the backend is told) and fails; a receive waiting on it ends in an
+; error (the client gets a 502, or its stream reset if the answer began).
+; Keeps everything.
+gweb_fail:
+	push	rax
+	push	rcx
+	push	rdx
+	push	rsi
+	push	rdi
+	push	r8
+	push	r9
+	push	r10
+	push	r11
+	push	rbx
+	push	rbp
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	mov	ebp,ebx
+	u2_at	r12, ebx
+	test	dword [r12+U2_F],U2F_RST
+	jnz	.out
+	test	dword [r12+U2_F],U2F_HEAD
+	jz	.failed
+	mov	edi,[r12+U2_UC]
+	mov	eax,edi
+	shl	rax,S_SHIFT
+	add	rax,[g_sess_base]
+	mov	ecx,[rax+S_GEN]
+	cmp	ecx,[r12+U2_UCG]
+	jne	.failed				; its connection is gone
+	cmp	dword [rax+S_STATE],ST_OPEN
+	jne	.failed
+	mov	ebx,edi
+	c2_regs
+	mov	esi,[r12+U2_SID]
+	mov	edx,H2E_CANCEL
+	call	h2_out_rst
+	call	h2_pump
+.failed:
+	mov	edi,ebp
+	call	h2u_fail
+.out:
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbp
+	pop	rbx
+	pop	r11
+	pop	r10
+	pop	r9
+	pop	r8
+	pop	rdi
+	pop	rsi
+	pop	rdx
+	pop	rcx
+	pop	rax
+	ret
+
 ; HB_GWEB 4, a request body piece (r8, r9d, from IN): r8/r9d = its bytes, what
 ; was kept before it decoded with it (none: r9d 0). CF: not base64.
 gweb_decode:
@@ -334,8 +394,7 @@ gweb_send_up:
 	mov	r9d,esi
 	call	gweb_decode
 	jnc	@f
-	u2_at	rax, ebx
-	or	dword [rax+U2_F],U2F_RST
+	call	gweb_fail			; (the send fails, its stream reset)
 @@:
 	mov	rdi,r8
 	mov	esi,r9d
@@ -418,6 +477,22 @@ gweb_text_out:
 	ret
 .nothing:
 	stc
+	ret
+
+; Before the answer's head, HB_GWEB 4 and a body of a known length: it goes
+; out encoded, so of another length: chunked to HTTP/1.1 (a stream's DATA say
+; it), its end in http_last_chunk. ZF: not that case.
+gweb_text_head:
+	mov	rax,[r15+H_BUF]
+	cmp	byte [rax+HB_GWEB],4
+	jne	.out
+	cmp	dword [r15+H_RBODY],BK_LENGTH
+	jne	.out
+	call	h_chunkout
+	or	eax,1				; (NZ)
+	ret
+.out:
+	xor	eax,eax
 	ret
 
 ; In http_last_chunk, HB_GWEB 4: what was kept and the trailer frame, encoded and
