@@ -1128,7 +1128,24 @@ redirect keeps the request's query unless TARGET has its own, and keeps
 the connection open (it closes it when the request had a body, which
 okena does not read). `rewrite path FROM/{*} -> TO` changes what the
 backend is asked for when the (normalized) path starts with FROM: TO
-with `{*}` = the rest, the request's query kept. Header changes apply to what goes to the backend
+with `{*}` = the rest, the request's query kept. `rewrite path ~REGEX -> TO`
+does it when the regex matches the path, `$1` to `$9` in TO its groups.
+
+**Regular expressions.** `route ~REGEX` matches the (normalized) path by a
+regular expression: such routes are tried in the order written, after an exact
+path and before any prefix (`/api/*`, `/*`), as nginx's `location ~` are; their
+methods hold as for any route. `match path=~REGEX` and `match header:NAME=~REGEX`
+(or `query:`, `cookie:`) do it in a match block. The syntax is PCRE's, a subset:
+`.`, `[a-z]`, `[^/]`, `\d \w \s` and their capitals, `^ $`, `( )` (9 groups), `(?: )`,
+`|`, `* + ? {n} {n,} {n,m}` (and lazy, with a `?` after), `(?i)` first for either
+case. It is compiled at load into an automaton run in time linear in the path
+(a Pike VM): no regex can make a worker backtrack (no ReDoS); one that does not
+read is refused at load, with why. Quote one with braces, spaces or `;` in it
+(`route "~^/a{2}$"`), and write `\\` for a `\` inside quotes.
+`okena regex PATTERN TEXT...` shows what a pattern makes of each TEXT: the match
+and its groups.
+
+Header changes apply to what goes to the backend
 (`header`) or back to the client (`response header`), in the order
 written. Names are lower-case tokens and never one okena owns itself
 (`host`, framing, `connection` and the other hop-by-hop fields,

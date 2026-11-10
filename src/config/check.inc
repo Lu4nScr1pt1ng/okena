@@ -1104,6 +1104,12 @@ cstring e_auto, 'auto',0
 check_route_arg:
 	test	esi,esi
 	jz	.bad
+	cmp	byte [rdi],'~'			; a regular expression (regex.inc: at compile)
+	jne	@f
+	cmp	esi,2
+	jb	.bad
+	jmp	.ok
+@@:
 	cmp	byte [rdi],'/'
 	jne	.method
 	xor	ecx,ecx
@@ -1985,6 +1991,8 @@ route_methods:
 	mov	rdi,[rbx+A_VAL]
 	cmp	byte [rdi],'/'
 	je	.skip
+	cmp	byte [rdi],'~'			; (a regular expression: a path too)
+	je	.skip
 	mov	esi,[rbx+A_VLEN]
 	call	method_bit
 	or	r13d,eax
@@ -2008,6 +2016,8 @@ check_route_has_path:
 	jz	.none
 	mov	rax,[rcx+A_VAL]
 	cmp	byte [rax],'/'
+	je	.ok
+	cmp	byte [rax],'~'			; (a regular expression)
 	je	.ok
 	add	rcx,A_SIZE
 	dec	edx
@@ -2638,6 +2648,8 @@ check_rewrite:
 	; FROM
 	mov	rdi,[rbx+A_SIZE+A_VAL]
 	mov	esi,[rbx+A_SIZE+A_VLEN]
+	cmp	byte [rdi],'~'			; a regular expression: $1-$9 in TO
+	je	.to_check
 	cmp	esi,4
 	jb	.bad
 	cmp	byte [rdi],'/'
@@ -2649,6 +2661,7 @@ check_rewrite:
 	sub	esi,3
 	call	.printable_no_star
 	jc	.bad
+.to_check:
 	; TO
 	mov	rdi,[rbx+3*A_SIZE+A_VAL]
 	mov	esi,[rbx+3*A_SIZE+A_VLEN]
@@ -2686,7 +2699,7 @@ check_rewrite:
 	call	arg_value_span
 	mov	edx,[rbx+A_LINE]
 	call	cfg_error
-	out_lit 'a rewrite is `rewrite path /from/{*} -> /to/{*}` (paths, the source ending with {*})'
+	out_lit 'a rewrite is `rewrite path /from/{*} -> /to/{*}` (paths, the source ending with {*}), or `rewrite path ~REGEX -> /to/$1`'
 	call	cfg_diag_end
 	call	cfg_error_limit
 .done:

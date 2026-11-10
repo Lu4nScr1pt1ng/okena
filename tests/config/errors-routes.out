@@ -34,13 +34,13 @@ errors-routes.conf:14:32: error: unknown variable: the ones a header value can u
 errors-routes.conf:14:58: error: unknown variable: the ones a header value can use are ${client.ip} ${request.id} ${time.us} ${time.s}
     14 |     route /h { header set x-a "${nope}"; header set x-b "${time.us"; to 1.1.1.1:1 }
        |                                                          ^^^^^^^^^
-errors-routes.conf:15:24: error: a rewrite is `rewrite path /from/{*} -> /to/{*}` (paths, the source ending with {*})
+errors-routes.conf:15:24: error: a rewrite is `rewrite path /from/{*} -> /to/{*}` (paths, the source ending with {*}), or `rewrite path ~REGEX -> /to/$1`
     15 |     route /e { rewrite path /a/{*} => /b; to 1.1.1.1:1 }
        |                        ^^^^
-errors-routes.conf:16:24: error: a rewrite is `rewrite path /from/{*} -> /to/{*}` (paths, the source ending with {*})
+errors-routes.conf:16:24: error: a rewrite is `rewrite path /from/{*} -> /to/{*}` (paths, the source ending with {*}), or `rewrite path ~REGEX -> /to/$1`
     16 |     route /f { rewrite path /a -> /b; to 1.1.1.1:1 }
        |                        ^^^^
-errors-routes.conf:17:24: error: a rewrite is `rewrite path /from/{*} -> /to/{*}` (paths, the source ending with {*})
+errors-routes.conf:17:24: error: a rewrite is `rewrite path /from/{*} -> /to/{*}` (paths, the source ending with {*}), or `rewrite path ~REGEX -> /to/$1`
     17 |     route /g { rewrite path /a/{*} -> /b?x=1; to 1.1.1.1:1 }
        |                        ^^^^
 13 errors in errors-routes.conf

@@ -110,7 +110,8 @@ RA_IDEM		:= 156		; d: its `idempotency` + 1
 RA_ACL		:= 160		; d: its `allow`, `deny` + 1
 RA_EFIRST	:= 164		; d: its error pages (g_eps), first
 RA_ECOUNT	:= 168		; d: and how many
-RA_SIZE		:= 176
+RA_WRX		:= 176		; d: rewrite ~REGEX: its regex + 1 (RA_WFROM then the source)
+RA_SIZE		:= 184
 MAX_ACTS	:= MAX_ROUTES
 HD_KIND		:= 0		; d: HOP_SET, HOP_ADD, HOP_DROP
 HD_PREFIX	:= 4		; d: 1 when the name ends with * (drop)
@@ -1464,7 +1465,19 @@ compile_route_action:
 	mov	rax,[rbx+A_SIZE+A_VAL]
 	mov	[r13+RA_WFROM],rax
 	mov	eax,[rbx+A_SIZE+A_VLEN]
+	mov	rcx,[rbx+A_SIZE+A_VAL]
+	cmp	byte [rcx],'~'
+	jne	.wfrom_path
+	lea	rsi,[rcx+1]			; ~REGEX: its regex + 1, $N in TO
+	lea	ecx,[rax-1]
+	call	rx_compile_or_exit
+	inc	eax
+	mov	[r13+RA_WRX],eax
+	xor	eax,eax
+	jmp	.wfrom_len
+.wfrom_path:
 	sub	eax,3				; without {*}
+.wfrom_len:
 	mov	[r13+RA_WFLEN],eax
 	mov	rax,[rbx+3*A_SIZE+A_VAL]
 	mov	[r13+RA_WTO],rax
@@ -4503,6 +4516,8 @@ compile_routes:
 	imul	rsi,r15,A_SIZE
 	add	rsi,[rbx+N_ARGS]
 	mov	rdi,[rsi+A_VAL]
+	cmp	byte [rdi],'~'
+	je	.regex
 	cmp	byte [rdi],'/'
 	jne	.arg_next
 	mov	ecx,[g_plan_routes]
@@ -4536,6 +4551,42 @@ compile_routes:
 .arg_next:
 	inc	r15d
 	jmp	.arg
+.regex:
+	; ~REGEX: a route the path is matched against, in the order written, when
+	; no exact path is (regex.inc); not in the table of paths
+	push	rsi
+	push	rdi
+	inc	rdi
+	mov	ecx,[rsi+A_VLEN]
+	dec	ecx
+	mov	rsi,rdi
+	call	rx_compile_or_exit
+	pop	rdi
+	pop	rsi
+	mov	ecx,[g_plan_routes]
+	cmp	ecx,MAX_ROUTES
+	jae	plan_too_many
+	inc	dword [g_plan_routes]
+	inc	dword [g_cmp_rcount]
+	inc	dword [g_plan_rxroutes]
+	imul	rcx,rcx,RT_SIZE
+	lea	rcx,[g_routes+rcx]
+	mov	[rcx+RT_PATH],rdi		; (its text, ~ and all, for what shows it)
+	shl	eax,8
+	or	eax,2				; a regex: 2 | which << 8
+	mov	[rcx+RT_PREFIX],eax
+	mov	eax,[rsi+A_VLEN]
+	mov	[rcx+RT_PLEN],eax
+	mov	[rcx+RT_METHODS],r14d
+	mov	[rcx+RT_POOL],r13d
+	mov	eax,[g_cmp_act]
+	mov	[rcx+RT_ACT],eax
+	push	rsi
+	push	rdi
+	call	match_entries
+	pop	rdi
+	pop	rsi
+	jmp	.arg_next
 .next:
 	mov	rbx,[rbx+N_NEXT]
 	jmp	.route

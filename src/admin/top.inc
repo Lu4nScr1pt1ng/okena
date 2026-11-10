@@ -1138,8 +1138,8 @@ status_listener:
 	mov	ecx,600
 	call	json_text
 	mov	r8,[rsp]
-	cmp	dword [r8+RT_PREFIX],0
-	je	@f
+	cmp	dword [r8+RT_PREFIX],1
+	jne	@f
 	mov	byte [rdi],'*'
 	inc	rdi
 @@:
@@ -1414,8 +1414,8 @@ status_used_by:
 	mov	ecx,600
 	call	json_text
 	pop	r8
-	cmp	dword [r8+RT_PREFIX],0
-	je	@f
+	cmp	dword [r8+RT_PREFIX],1
+	jne	@f
 	mov	byte [rdi],'*'
 	inc	rdi
 @@:

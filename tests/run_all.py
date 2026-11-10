@@ -210,6 +210,8 @@ SUITES = [
     ("mtlsca epoll", ["tests/gateway/mtlsca.py", "epoll"]),
     ("fastcgi io_uring", ["tests/gateway/fastcgi.py", "io_uring"]),
     ("fastcgi epoll", ["tests/gateway/fastcgi.py", "epoll"]),
+    ("regex io_uring", ["tests/gateway/regex.py", "io_uring"]),
+    ("regex epoll", ["tests/gateway/regex.py", "epoll"]),
     ("forward io_uring", ["tests/gateway/forward.py", "io_uring"]),
     ("forward epoll", ["tests/gateway/forward.py", "epoll"]),
     ("mtls io_uring", ["tests/gateway/mtls.py", "io_uring"]),

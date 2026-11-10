@@ -238,8 +238,8 @@ maint_check:
 	inc	r8d
 	mov	ecx,[r12+RT_PLEN]
 	mov	eax,ecx
-	cmp	dword [r12+RT_PREFIX],0
-	je	@f
+	cmp	dword [r12+RT_PREFIX],1
+	jne	@f
 	inc	eax				; and its '*'
 @@:
 	cmp	eax,[r9]
@@ -248,8 +248,8 @@ maint_check:
 	lea	rdi,[r9+4]
 	repe	cmpsb
 	jne	.route
-	cmp	dword [r12+RT_PREFIX],0
-	je	.applies
+	cmp	dword [r12+RT_PREFIX],1
+	jne	.applies
 	cmp	byte [rdi],'*'
 	jne	.route
 .applies:

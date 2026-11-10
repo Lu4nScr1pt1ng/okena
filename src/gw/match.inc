@@ -23,6 +23,8 @@ assert MC_TR + TR_SIZE <= MC_SIZE
 MM_EQ		:= 0
 MM_PREFIX	:= 1
 MM_THERE	:= 2
+MM_REGEX	:= 3				; ~REGEX: its regex in MC_VLEN (regex.inc)
+LK_MPATH	:= 8				; `path`: the normalized path
 
 MB_RT		:= 0				; d: its variant, in g_mroutes
 MB_CFIRST	:= 4				; d
@@ -107,6 +109,8 @@ mc_holds:
 	je	.cookie
 	cmp	eax,LK_QUERY
 	je	.query
+	cmp	eax,LK_MPATH
+	je	.path
 	; client.ip
 	cmp	dword [g_cr_dry],0
 	je	@f
@@ -167,6 +171,10 @@ mc_holds:
 	mov	rsi,[g_hm+HM_METHOD]
 	mov	ecx,[g_hm+HM_MLEN]
 	jmp	.compare
+.path:
+	lea	rsi,[g_npath]
+	mov	ecx,[g_npath_len]
+	jmp	.compare
 .header:
 	mov	rdi,[r12+MC_NAME]
 	mov	esi,[r12+MC_NLEN]
@@ -201,6 +209,13 @@ mc_holds:
 .compare:
 	; rsi, ecx: what the request has, ecx = 0 nothing
 	mov	eax,[r12+MC_MODE]
+	cmp	eax,MM_REGEX
+	jne	.not_rx
+	mov	eax,[r12+MC_VLEN]		; (a header not there: an empty one)
+	call	rx_match
+	mov	ecx,eax
+	jmp	.out
+.not_rx:
 	cmp	eax,MM_THERE
 	jne	@f
 	test	ecx,ecx
@@ -370,6 +385,21 @@ match_conditions:
 	mov	[rbx+MC_VAL],rax
 	mov	[rbx+MC_VLEN],edx
 	mov	dword [rbx+MC_MODE],MM_EQ
+	cmp	byte [rax],'~'			; ~REGEX
+	jne	@f
+	cmp	edx,2
+	jb	plan_bad_match
+	push	rsi
+	push	rcx
+	lea	rsi,[rax+1]
+	lea	ecx,[rdx-1]
+	call	rx_compile_or_exit
+	mov	[rbx+MC_VLEN],eax
+	mov	dword [rbx+MC_MODE],MM_REGEX
+	pop	rcx
+	pop	rsi
+	jmp	.key
+@@:
 	cmp	byte [rax+rdx-1],'*'
 	jne	.key
 	dec	dword [rbx+MC_VLEN]
@@ -380,6 +410,15 @@ match_conditions:
 	mov	ecx,[r13+A_VLEN]
 .key:
 	; rsi, ecx: what is looked at
+	cmp	ecx,4				; path: the normalized path
+	jne	@f
+	cmp	dword [rsi],'path'
+	jne	@f
+	cmp	dword [rbx+MC_MODE],MM_THERE
+	je	plan_bad_match
+	mov	dword [rbx+MC_KIND],LK_MPATH
+	jmp	.taken
+@@:
 	cmp	ecx,6
 	jne	@f
 	mov	eax,[rsi]

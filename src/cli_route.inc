@@ -66,8 +66,8 @@ cli_route:
 	mov	rsi,[r13+RT_PATH]
 	mov	edx,[r13+RT_PLEN]
 	call	out_str
-	cmp	dword [r13+RT_PREFIX],0
-	je	@f
+	cmp	dword [r13+RT_PREFIX],1		; (a prefix's *; a regex's text is its own)
+	jne	@f
 	mov	edi,'*'
 	call	out_char
 @@:

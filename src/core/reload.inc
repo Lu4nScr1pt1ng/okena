@@ -167,6 +167,13 @@ macro plan_regions action
 	action g_plan_birdpooll, 4
 	action g_plan_vrrp, VC_SIZE
 	action g_plan_acme, ACM_SIZE
+	action g_rx, RXE_SIZE * RX_MAX
+	action g_rx_prog, RI_SIZE * RX_POOL
+	action g_rx_cls, 32 * RX_CLASSES
+	action g_plan_rx, 4
+	action g_plan_rxpc, 4
+	action g_plan_rxcls, 4
+	action g_plan_rxroutes, 4
 	action g_plan_lca, LCA_SIZE
 	action g_plan_ocspoff, MAX_TLS
 	action g_plan_odn, 4

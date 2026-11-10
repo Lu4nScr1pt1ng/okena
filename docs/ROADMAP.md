@@ -578,7 +578,9 @@ built; both measurements are still to be made on the lab.)
   the answer read back as HTTP/1.1 chunks, the connection kept), `php DIR
   [index=]` (script, PATH_INFO, directory index, static files as `files`, the
   front controller). Not yet: chunked request bodies (411).
-* Regular expressions in routes, `match` and `rewrite`, compiled to an
+* (Done: `route ~REGEX`, `match ...=~REGEX`, `rewrite path ~REGEX -> /x/$1`, a
+  Pike VM over a compiled program, checked against Python's re at random;
+  `okena regex`.) Regular expressions in routes, `match` and `rewrite`, compiled to an
   automaton that runs in linear time (no backtracking, so no ReDoS), with
   captures for the rewrite.
 * gRPC-Web for browsers, and gRPC to JSON transcoding from the service's

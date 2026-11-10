@@ -1020,6 +1020,13 @@ http_route_on:
 	pop	r10
 	cmp	eax,-1
 	jne	.done
+	cmp	dword [g_plan_rxroutes],0	; then regexes, in the order written
+	je	.pfx
+	push	r10
+	call	route_regex
+	pop	r10
+	cmp	eax,-1
+	jne	.done
 .pfx:
 	dec	r10d				; then prefixes, the longest first
 	js	.none
@@ -1038,6 +1045,49 @@ http_route_on:
 	pop	r15
 	pop	r14
 	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; In http_route_on: the first route of the set whose regex (~) matches the
+; normalized path and whose methods the request's are; r13d = the method bit.
+; eax = it, or -1. Its captures in g_rx_cap.
+route_regex:
+	push	rbx
+	push	r12
+	mov	ebx,[g_rset_first]
+	mov	r12d,ebx
+	add	r12d,[g_rset_count]
+.route:
+	cmp	ebx,r12d
+	jae	.none
+	imul	rcx,rbx,RT_SIZE
+	lea	rcx,[g_routes+rcx]
+	movzx	eax,byte [rcx+RT_PREFIX]
+	cmp	eax,2
+	jne	.next
+	mov	eax,[rcx+RT_METHODS]
+	test	eax,eax
+	jz	@f
+	test	eax,r13d
+	jz	.next
+@@:
+	mov	eax,[rcx+RT_PREFIX]		; (2 | the regex << 8)
+	shr	eax,8
+	lea	rsi,[g_npath]
+	mov	ecx,[g_npath_len]
+	call	rx_match
+	test	eax,eax
+	jnz	.found
+.next:
+	inc	ebx
+	jmp	.route
+.found:
+	mov	eax,ebx
+	jmp	.out
+.none:
+	mov	eax,-1
+.out:
 	pop	r12
 	pop	rbx
 	ret
@@ -3596,6 +3646,8 @@ http_rewrite_target:
 	mov	r9,[r8+RA_WFROM]
 	test	r9,r9
 	jz	.no
+	cmp	dword [r8+RA_WRX],0
+	jne	.regex
 	mov	edx,[r8+RA_WFLEN]
 	cmp	[g_npath_len],edx
 	jb	.no
@@ -3661,6 +3713,83 @@ http_rewrite_target:
 .no:
 	stc
 	ret
+.regex:
+	; ~REGEX -> TO: TO, with $1-$9 the groups of its match (of the normalized
+	; path), then the request's query; no match, no rewrite
+	push	rsi
+	push	rcx
+	push	rdi
+	push	r8
+	mov	eax,[r8+RA_WRX]
+	dec	eax
+	lea	rsi,[g_npath]
+	mov	ecx,[g_npath_len]
+	call	rx_match
+	pop	r8
+	pop	rdi
+	pop	rcx
+	pop	rsi
+	test	eax,eax
+	jz	.no
+	mov	r10,rsi				; the query: from the first '?'
+	mov	r11d,ecx
+@@:
+	test	r11d,r11d
+	jz	@f
+	cmp	byte [r10],'?'
+	je	@f
+	inc	r10
+	dec	r11d
+	jmp	@b
+@@:
+	lea	r9,[rdi+8192]			; (a bound on what the groups make it)
+	mov	rsi,[r8+RA_WTO]
+	mov	ecx,[r8+RA_WTLEN]
+.rx_to:
+	test	ecx,ecx
+	jz	.query
+	mov	al,[rsi]
+	cmp	al,'$'
+	jne	.rx_byte
+	cmp	ecx,2
+	jb	.rx_byte
+	movzx	edx,byte [rsi+2-1]
+	sub	edx,'1'
+	cmp	edx,8
+	ja	.rx_byte
+	push	rsi
+	push	rcx
+	inc	edx				; the group
+	mov	eax,[g_rx_cap+rdx*8]		; its start, its end
+	mov	ecx,[g_rx_cap+rdx*8+4]
+	cmp	eax,-1
+	je	.rx_none
+	sub	ecx,eax
+	jbe	.rx_none
+	lea	rsi,[g_npath+rax]
+	lea	rax,[rdi+rcx]
+	cmp	rax,r9
+	ja	.rx_long
+	rep	movsb
+.rx_none:
+	pop	rcx
+	pop	rsi
+	add	rsi,2
+	sub	ecx,2
+	jmp	.rx_to
+.rx_byte:
+	cmp	rdi,r9
+	jae	.no
+	mov	[rdi],al
+	inc	rdi
+	inc	rsi
+	dec	ecx
+	jmp	.rx_to
+.rx_long:
+	pop	rcx
+	pop	rsi
+	stc
+	ret
 
 ; A route that redirects: okena answers it, the connection goes on (or
 ; closes when the request has a body okena would have to read away).
@@ -3716,8 +3845,8 @@ http_redirect:
 	jne	.tgt_byte
 	push	rsi
 	push	rcx
-	cmp	dword [r13+RT_PREFIX],0
-	je	.rest_done			; an exact route has no rest
+	cmp	dword [r13+RT_PREFIX],1
+	jne	.rest_done			; an exact route has no rest (nor a regex's)
 	mov	ecx,[g_npath_len]
 	sub	ecx,[r13+RT_PLEN]
 	jbe	.rest_done
