@@ -4,8 +4,12 @@ package): a browser's application/grpc-web+proto request reaches it as gRPC
 (content-type application/grpc+proto, te: trailers); its answer comes back as
 gRPC-Web: content-type application/grpc-web+proto, the messages, then its
 trailers (grpc-status, grpc-message) as a trailer frame; over HTTP/1.1 and
-HTTP/2. A trailers-only answer (an error) as its head. The text mode, and a pool
-of HTTP/1.1: passed on as they are."""
+HTTP/2. A trailers-only answer (an error) as its head. The text mode
+(application/grpc-web-text): the request's base64 decoded on its way (its pieces
+split anywhere, a sender's padding after each message), the answer encoded as it
+goes, padded only at its end, the trailer frame in it. A pool of HTTP/1.1:
+passed on as it is."""
+import base64
 import http.client
 import os
 import pathlib
@@ -86,7 +90,9 @@ def grpc_server():
                         ct = h.get("content-type", "")
                         conn.send_headers(sid, [(":status", "200"), ("content-type", ct)])
                         msgs, _ = frames(b)
-                        conn.send_data(sid, b"".join(frame(m[::-1]) for _, m in msgs))
+                        out = b"".join(frame(m[::-1]) for _, m in msgs)
+                        for i in range(0, len(out), 16384):     # (within a frame's size)
+                            conn.send_data(sid, out[i:i + 16384])
                         conn.send_headers(sid, [("grpc-status", "0"), ("grpc-message", "fine")], end_stream=True)
             c.sendall(conn.data_to_send())
     while True:
@@ -122,13 +128,14 @@ def post(path, body, ctype="application/grpc-web+proto", port=LST):
     return r, d
 
 
-def h2_post(path, body):
+def h2_post(path, body, ctype="application/grpc-web+proto"):
     s = socket.create_connection(("127.0.0.1", LST), 5)
     conn = h2.connection.H2Connection(h2.config.H2Configuration(client_side=True, header_encoding=None))
     conn.initiate_connection()
     conn.send_headers(1, [(":method", "POST"), (":path", path), (":scheme", "http"), (":authority", "x"),
-                          ("content-type", "application/grpc-web+proto")])
-    conn.send_data(1, body, end_stream=True)
+                          ("content-type", ctype)])
+    for i in range(0, len(body), 10000):                # (pieces, within a frame's size)
+        conn.send_data(1, body[i:i + 10000], end_stream=i + 10000 >= len(body))
     s.sendall(conn.data_to_send())
     heads, data, trailers, done = {}, b"", None, False
     while not done:
@@ -194,10 +201,38 @@ http 127.0.0.1:{LST} {{
               heads.get("content-type") == "application/grpc-web+proto" and whole
               and fs[0] == (0, b"cba") and fs[-1][0] == 0x80 and b"fine" in fs[-1][1] and trailers is None,
               (heads, data, trailers))
+        big = bytes(range(256)) * 80 + b"tail"           # (pieces end anywhere in a group)
+        body = frame(b"hello") + frame(big)
         n = len(SEEN)
-        r, d = post("/svc.Echo/Say", b"AAAABWhlbGxv", ctype="application/grpc-web-text")
+        r, d = post("/svc.Echo/Say", base64.b64encode(body), ctype="application/grpc-web-text+proto")
         h, b = SEEN[-1] if len(SEEN) > n else ({}, b"")
-        check("the text mode: passed on as it is", h.get("content-type") == "application/grpc-web-text", h)
+        check("text: the gRPC server gets gRPC, the body decoded, no content-length of the base64's",
+              h.get("content-type") == "application/grpc+proto" and b == body and "content-length" not in h,
+              (h, len(b)))
+        try:
+            fs, whole = frames(base64.b64decode(d, validate=True))
+        except Exception as e:
+            fs, whole = [], str(e)
+        check("text, HTTP/1.1: its content-type, all of it one base64 (padded at its end only), the trailer frame in it",
+              r.status == 200 and r.getheader("content-type") == "application/grpc-web-text+proto" and whole is True
+              and [m for f, m in fs if f == 0] == [b"olleh", big[::-1]] and fs[-1][0] == 0x80 and b"fine" in fs[-1][1],
+              (r.status, r.getheaders(), d[:80], whole))
+        n = len(SEEN)
+        r, d = post("/svc.Echo/Say", base64.b64encode(frame(b"a")) + base64.b64encode(frame(b"bc")),
+                    ctype="application/grpc-web-text")
+        h, b = SEEN[-1] if len(SEEN) > n else ({}, b"")
+        check("text: a sender's padding after each message", b == frame(b"a") + frame(b"bc") and r.status == 200, (h, b))
+        r, d = post("/svc.Echo/Say", b"AAAA!!!!", ctype="application/grpc-web-text")
+        check("text: what is not base64 fails, nothing for the server", r.status >= 500 or d == b"", (r.status, d))
+        heads, data, trailers = h2_post("/svc.Echo/Say", base64.b64encode(body), ctype="application/grpc-web-text")
+        try:
+            fs, whole = frames(base64.b64decode(data, validate=True))
+        except Exception as e:
+            fs, whole = [], str(e)
+        check("text, HTTP/2: the same",
+              heads.get("content-type") == "application/grpc-web-text" and whole is True
+              and [m for f, m in fs if f == 0] == [b"olleh", big[::-1]] and fs[-1][0] == 0x80 and trailers is None,
+              (heads, data[:80], whole, trailers))
         r, d = post("/h1/svc", frame(b"hi"))
         h, b = SEEN[-1]
         check("a pool of HTTP/1.1 (gRPC-Web itself): as it is",

@@ -1704,6 +1704,9 @@ http_write_request_head:
 .xfp_end:
 	memit_x 13,10
 @@:
+	mov	rax,[r15+H_BUF]			; gRPC-Web text: its length changes (decoded)
+	cmp	byte [rax+HB_GWEB],4
+	je	.conn
 	mov	eax,[r15+H_BODY]
 	cmp	eax,BK_LENGTH
 	jne	@f
@@ -2244,6 +2247,12 @@ http_duplex_pump:
 	lea	r8,[r8+HB_IN+rax]
 	mov	r9d,ecx
 .data:
+	mov	rax,[r15+H_BUF]			; gRPC-Web text: decoded first
+	cmp	byte [rax+HB_GWEB],4
+	jne	@f
+	call	gweb_decode
+	jc	.stop
+@@:
 	mov	[r12+U2_PP],r8
 	mov	[r12+U2_PL],r9d
 	or	dword [r12+U2_F],U2F_SENDING
@@ -2892,6 +2901,13 @@ http_resp_pump:
 	mov	ecx,r9d
 	call	cache_tee
 	pop	rcx
+	mov	rax,[r15+H_BUF]			; gRPC-Web text: in base64
+	cmp	byte [rax+HB_GWEB],4
+	jne	@f
+	call	gweb_text_feed
+	jnc	.send
+	jmp	http_resp_pump
+@@:
 	call	session_ptr
 	test	dword [rax+S_FLAGS],SF_ZIP
 	jz	.plain
@@ -2938,6 +2954,8 @@ http_last_chunk:
 .not_zip:
 	h_rec
 	mov	rax,[r15+H_BUF]			; gRPC-Web: its trailers as its last message
+	cmp	byte [rax+HB_GWEB],4
+	je	gweb_text_end			; (text: base64, and padded)
 	cmp	byte [rax+HB_GWEB],2
 	jne	@f
 	cmp	dword [r15+H_RCK+CK_TLEN],0

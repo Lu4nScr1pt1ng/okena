@@ -184,8 +184,12 @@ with `protocol h2` reaches it as gRPC (`application/grpc...`, `te: trailers`),
 and its answer comes back as gRPC-Web (`application/grpc-web...`), the backend's
 trailers (`grpc-status`, `grpc-message`) as the last message, a trailer frame,
 over HTTP/1.1, 2 and 3 alike; an error with no body keeps `grpc-status` in its
-head. The text mode (`application/grpc-web-text`, base64) and a pool of HTTP/1.1
-(a backend that speaks gRPC-Web itself) get the request as it is. A page on
+head. The text mode (`application/grpc-web-text`, what a browser's grpc-web
+library sends by default) is the same in base64: the request's body is decoded on
+its way to the backend (padding after each message taken), the answer's encoded
+as it comes, the trailer frame in it, padded only at its end; a backend's answer
+with a Content-Length (gRPC servers send none) is not encoded. A pool of HTTP/1.1
+(a backend that speaks gRPC-Web itself) gets the request as it is. A page on
 another origin needs the route's `cors` (with `x-grpc-web`, `x-user-agent` and
 `grpc-timeout` allowed, and `grpc-status`, `grpc-message` exposed).
 

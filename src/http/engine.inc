@@ -107,7 +107,17 @@ h_send:
 h_send_up:
 	call	session_ptr
 	test	dword [rax+S_FLAGS],SF_UPH2
-	jnz	h2u_send
+	jz	@f
+	mov	eax,ebx				; gRPC-Web text: its body decoded first
+	shl	rax,H_SHIFT
+	add	rax,[g_http_base]
+	cmp	dword [rax+H_STATE],HS_SEND_HEAD
+	je	h2u_send
+	mov	rax,[rax+H_BUF]
+	cmp	byte [rax+HB_GWEB],4
+	je	gweb_send_up
+	jmp	h2u_send
+@@:
 	call	fcgi_active
 	test	eax,eax
 	jnz	fcgi_send			; FastCGI: in records

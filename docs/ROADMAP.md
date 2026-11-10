@@ -583,8 +583,9 @@ built; both measurements are still to be made on the lab.)
   `okena regex`.) Regular expressions in routes, `match` and `rewrite`, compiled to an
   automaton that runs in linear time (no backtracking, so no ReDoS), with
   captures for the rewrite.
-* (Done: gRPC-Web, binary mode, to HTTP/2 pools: content-types turned, trailers
-  as a trailer frame over HTTP/1.1, 2 and 3. Not yet: the text mode, transcoding.)
+* (Done: gRPC-Web, binary and text (base64, streamed both ways) modes, to HTTP/2
+  pools: content-types turned, trailers as a trailer frame over HTTP/1.1, 2 and 3.
+  Not yet: transcoding.)
   gRPC-Web for browsers, and gRPC to JSON transcoding from the service's
   descriptors.
 * Brotli on the fly.
