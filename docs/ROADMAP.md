@@ -569,7 +569,9 @@ built; both measurements are still to be made on the lab.)
   certificates: every CA in `client_ca`'s file (found by the chain's issuer
   name), `crl=` lists (signed by one of them, serials in a hash table, a
   stale list failing shut). mTLS resumption: the ticket after the client's
-  flight, with its identity and the listener's CAs.
+  flight, with its identity and the listener's CAs; TLS 1.2 client
+  certificates (CertificateRequest, ECDSA / RSA-PSS / PKCS #1 verify, the
+  same chain checks), 1.2 tickets with the identity too.
 * FastCGI to PHP-FPM and others (`php` on a route: index files, the script
   path checked against the root, try-files), as nginx and Caddy do it.
 * Regular expressions in routes, `match` and `rewrite`, compiled to an

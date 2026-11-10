@@ -291,73 +291,14 @@ cc_flight:
 	mov	dword [rbx+TS_PEERL],0
 	test	rbp,rbp
 	jz	.good				; (none, and none is needed: `optional`)
-	; whose certificate
-	call	cc_chain_verify		; (clientca.inc: one of its anchors, nothing revoked)
-	test	eax,eax
-	jz	.bad
-	lea	rdi,[g_cc_time]
-	call	alog_fmt_time
-	lea	rsi,[g_cc_time]
-	lea	rdi,[g_cc_time+32]
-	lea	r9,[uptls_tdig]
-	xor	ecx,ecx
-.compact:
-	movzx	eax,byte [r9+rcx]
-	mov	al,[rsi+rax]
-	mov	[rdi+rcx],al
-	inc	ecx
-	cmp	ecx,14
-	jb	.compact
-	mov	rsi,[g_cc_list]
-	mov	edx,[g_cc_listn]
-	lea	rdi,[g_cc_time+32]
-	call	cert_chain_times
-	test	eax,eax
-	jz	.bad
-	; the leaf
-	mov	rsi,[g_cc_list]
-	mov	r8,rsi
-	mov	eax,[g_cc_listn]
-	add	r8,rax
-	call	chain_entry
-	jc	.bad
-	mov	r12,rax
-	mov	r13d,ecx
-	mov	rsi,rax
-	mov	edx,ecx
-	call	cert_client_usage
-	test	eax,eax
-	jz	.bad
-	lea	rdi,[g_cc_key]
-	mov	rsi,r12
-	mov	edx,r13d
-	call	cert_pubkey
+	; whose certificate (cc_check_cert: the chain, its times, the leaf, who)
+	call	cc_check_cert
 	test	eax,eax
 	jz	.bad
 	mov	rdi,rbp
 	call	cc_signature
 	test	eax,eax
 	jz	.bad
-	mov	rsi,r12
-	mov	edx,r13d
-	call	cert_common_name
-	test	ecx,ecx
-	jz	.bad
-	cmp	ecx,MTLS_NAME_MAX
-	ja	.bad
-	mov	rsi,rax
-	mov	edx,ecx
-.byte:
-	mov	al,[rsi+rdx-1]
-	cmp	al,0x20				; it goes into a header: nothing that ends one
-	jb	.bad
-	cmp	al,0x7F
-	je	.bad
-	dec	edx
-	jnz	.byte
-	mov	[rbx+TS_PEERL],ecx
-	lea	rdi,[rbx+TS_PEER]
-	rep	movsb
 .good:
 	call	cc_ticket
 	mov	eax,1
@@ -555,3 +496,167 @@ cc_ticket:
 	lea	rdi,[rbx+TS_RMS]
 	mov	ecx,32
 	jmp	secure_zero
+
+; rbx = ts, g_cc_list/g_cc_listn = the client's certificates (1.3 entries): their
+; chain up to one of the listener's anchors, nothing revoked (cc_chain_verify),
+; every link in date, the leaf for client authentication, its key in g_cc_key,
+; who it is in TS_PEER (its commonName, nothing that would break a header).
+; eax = 1, else 0. (TLS 1.3's flight, and 1.2's: tls12_server.inc.)
+cc_check_cert:
+	push	r12
+	push	r13
+	call	cc_chain_verify		; (clientca.inc: one of its anchors, nothing revoked)
+	test	eax,eax
+	jz	.no
+	lea	rdi,[g_cc_time]
+	call	alog_fmt_time
+	lea	rsi,[g_cc_time]
+	lea	rdi,[g_cc_time+32]
+	lea	r9,[uptls_tdig]
+	xor	ecx,ecx
+.compact:
+	movzx	eax,byte [r9+rcx]
+	mov	al,[rsi+rax]
+	mov	[rdi+rcx],al
+	inc	ecx
+	cmp	ecx,14
+	jb	.compact
+	mov	rsi,[g_cc_list]
+	mov	edx,[g_cc_listn]
+	lea	rdi,[g_cc_time+32]
+	call	cert_chain_times
+	test	eax,eax
+	jz	.no
+	; the leaf
+	mov	rsi,[g_cc_list]
+	mov	r8,rsi
+	mov	eax,[g_cc_listn]
+	add	r8,rax
+	call	chain_entry
+	jc	.no
+	mov	r12,rax
+	mov	r13d,ecx
+	mov	rsi,rax
+	mov	edx,ecx
+	call	cert_client_usage
+	test	eax,eax
+	jz	.no
+	lea	rdi,[g_cc_key]
+	mov	rsi,r12
+	mov	edx,r13d
+	call	cert_pubkey
+	test	eax,eax
+	jz	.no
+	mov	rsi,r12
+	mov	edx,r13d
+	call	cert_common_name
+	test	ecx,ecx
+	jz	.no
+	cmp	ecx,MTLS_NAME_MAX
+	ja	.no
+	mov	rsi,rax
+	mov	edx,ecx
+.byte:
+	mov	al,[rsi+rdx-1]
+	cmp	al,0x20				; it goes into a header: nothing that ends one
+	jb	.no
+	cmp	al,0x7F
+	je	.no
+	dec	edx
+	jnz	.byte
+	mov	[rbx+TS_PEERL],ecx
+	lea	rdi,[rbx+TS_PEER]
+	rep	movsb
+	mov	eax,1
+	jmp	.out
+.no:
+	xor	eax,eax
+.out:
+	pop	r13
+	pop	r12
+	ret
+
+; TLS 1.2's CertificateVerify: rdi = its body (the scheme, the signature), rsi =
+; its end; g_cc_dig = the handshake's SHA-256 through the ClientKeyExchange,
+; g_cc_key the leaf's key. eax = 1 when the signature is good under a scheme
+; the CertificateRequest named (ecdsa_secp256r1_sha256, rsa_pss_rsae_sha256,
+; rsa_pkcs1_sha256).
+cc12_signature:
+	push	r14
+	mov	r14,rsi
+	lea	rax,[rdi+4]
+	cmp	rax,r14
+	ja	.bad
+	movzx	eax,word [rdi+2]
+	rol	ax,8
+	lea	rcx,[rdi+4+rax]
+	cmp	rcx,r14
+	jne	.bad
+	mov	rsi,rdi
+	cmp	word [rsi],0x0304		; ecdsa_secp256r1_sha256
+	je	.ecdsa
+	cmp	word [rsi],0x0408		; rsa_pss_rsae_sha256
+	je	.pss
+	cmp	word [rsi],0x0104		; rsa_pkcs1_sha256
+	je	.pkcs1
+	jmp	.bad
+.ecdsa:
+	cmp	dword [g_cc_key+PK_TYPE],1
+	jne	.bad
+	add	rsi,4
+	mov	rdx,r14
+	call	der_read			; SEQUENCE { r, s }
+	jc	.bad
+	cmp	al,0x30
+	jne	.bad
+	mov	rdx,r8
+	call	der_read			; INTEGER r
+	jc	.bad
+	lea	rdi,[g_cc_rs]
+	push	r8
+	call	der_int_32
+	pop	r8
+	jc	.bad
+	mov	rsi,r8
+	call	der_read			; INTEGER s
+	jc	.bad
+	lea	rdi,[g_cc_rs+32]
+	call	der_int_32
+	jc	.bad
+	lea	rdi,[g_cc_key+PK_DATA]
+	lea	rsi,[g_cc_dig]
+	lea	rdx,[g_cc_rs]
+	lea	rcx,[g_cc_rs+32]
+	call	p256_verify
+	jmp	.out
+.pss:
+	call	.rsa_args
+	jc	.bad
+	call	rsa_pss_verify
+	jmp	.out
+.pkcs1:
+	call	.rsa_args
+	jc	.bad
+	call	rsa_pkcs1_verify
+	jmp	.out
+.bad:
+	xor	eax,eax
+.out:
+	pop	r14
+	ret
+; rsi = the body, eax = the signature's length: rsa_*_verify's arguments
+.rsa_args:
+	cmp	dword [g_cc_key+PK_TYPE],2
+	jne	.no
+	cmp	eax,[g_cc_key+PK_NLEN]
+	jne	.no
+	lea	rdx,[rsi+4]
+	lea	rdi,[g_cc_key+PK_DATA]
+	mov	esi,[g_cc_key+PK_NLEN]
+	mov	ecx,[g_cc_key+PK_E]
+	lea	r8,[g_cc_dig]
+	clc
+	ret
+.no:
+	stc
+	ret

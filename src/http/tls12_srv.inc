@@ -55,6 +55,17 @@ http_tls12_hello:
 	mov	rdx,[rax+TL_RSA_N]
 @@:
 	mov	[rcx+C12_CERTID],rdx
+	lea	rdx,[r14+HB_TS]			; client certificates (client_ca): the TS has
+	mov	[rcx+C12_TS],rdx		; the anchors, and gets who the client is
+	xor	edx,edx
+	test	dword [r14+HB_TS+TS_FLAGS],TF_CCA
+	jz	@f
+	inc	edx
+	test	dword [r14+HB_TS+TS_FLAGS],TF_CCA_REQ
+	jz	@f
+	inc	edx
+@@:
+	mov	[rcx+C12_CCA],edx
 	mov	edx,[rax+TL_KEYTYPE]		; EC or RSA, with the RSA key material
 	mov	[rcx+C12_KEYTYPE],edx
 	cmp	edx,1
@@ -146,28 +157,32 @@ http_tls12_fin:
 	mov	edi,ebx
 	call	idle_touch
 	h_rec
-	; count whole records; the client sends three (CKE, CCS, Finished)
+	; whole records, up to the client's ChangeCipherSpec and the one after it
+	; (its Finished): before it, [Certificate,] ClientKeyExchange,
+	; [CertificateVerify] in as many records as it took; nothing before it
+	; in an abbreviated handshake
 	mov	r14,[r15+H_BUF]
 	xor	ecx,ecx				; offset
-	xor	edx,edx				; whole records
+	xor	edx,edx				; 1 once the ChangeCipherSpec is whole
 .count:
 	lea	eax,[rcx+5]
 	cmp	eax,[r15+H_INLEN]
 	ja	.need
+	movzx	r8d,byte [r14+rcx]
 	movzx	eax,word [r14+rcx+3]
 	rol	ax,8
 	lea	ecx,[rcx+rax+5]
 	cmp	ecx,[r15+H_INLEN]
 	ja	.need
-	inc	edx
-	cmp	edx,3
-	jb	.count_more
-	jmp	.whole
-.count_more:
-	cmp	edx,2				; an abbreviated handshake: two (CCS, Finished)
+	test	edx,edx
+	jnz	.flight				; the record after it: all here
+	cmp	r8d,20
 	jne	.count
+	mov	edx,1
+	jmp	.count
+.flight:
 	cmp	dword [r14+HB_T2+T2_RESUMED],0
-	je	.count
+	je	.whole
 	lea	rdi,[r14+HB_T2]
 	lea	rsi,[r14+HB_IN]
 	mov	ecx,[r15+H_INLEN]

@@ -243,11 +243,7 @@ http_tls_hello_go:
 	cmp	eax,TH_WAIT
 	je	od_park				; an on-demand certificate is coming
 	cmp	eax,TH_TLS12
-	jne	@f
-	mov	rax,[r15+H_BUF]
-	test	dword [rax+HB_TS+TS_FLAGS],TF_CCA
-	jnz	http_tls_close			; (see clientauth.inc)
-	jmp	http_tls12_hello
+	je	http_tls12_hello
 @@:
 	mov	ecx,HS_TLS_FLIGHT
 	cmp	eax,TH_SEND

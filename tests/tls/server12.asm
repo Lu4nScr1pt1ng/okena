@@ -48,6 +48,16 @@ tls_ticket_key:
 tls_now_s:
 	xor	eax,eax
 	ret
+; (no client certificates here: clientauth.inc's, stubbed; C12_CCA stays 0)
+MTLS_NAME_MAX	:= 64
+TS_TKCCA	:= 0
+TS_PEERL	:= 4
+TS_PEER		:= 8
+CC_MSG_MAX	:= 16
+cc_check_cert:
+cc12_signature:
+	xor	eax,eax
+	ret
 
 SBUF	:= 1 shl 16
 SOL_TLS	:= 282
@@ -61,6 +71,10 @@ bss
 	g_c12:		rb C12_SIZE
 	g_oc_tmp	rb 16			; (no OCSP here)
 	g_tks		dq ?
+	g_cc_list	dq ?
+	g_cc_listn	dd ?
+	g_cc_dig	rb 32
+	g_cc_msg	rb CC_MSG_MAX
 	g_tk_life	dd ?
 	g_fd		dd ?
 	g_cli		dd ?

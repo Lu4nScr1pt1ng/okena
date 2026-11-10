@@ -353,7 +353,7 @@ def main():
         check("  the client's own x-user-id is dropped",
               body(req(REQ, cl.ctx([bob], bk), headers={"x-user-id": "root"})) == (200, "bob"))
         r = req(REQ, cl.ctx(version=ssl.TLSVersion.TLSv1_2, chain=[alice], sk=ak))
-        check("TLS 1.2 is refused here", not isinstance(r, tuple), r)
+        check("TLS 1.2 too, the same checks (a certificate, who it is)", body(r) == (200, "alice"), r)
 
         for what, ctx in [
                 ("another authority's certificate", cl.ctx([strangers], ak)),

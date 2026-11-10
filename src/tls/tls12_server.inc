@@ -27,7 +27,9 @@ C12_RSA_D	:= 48				; q: pointer to the RSA private exponent
 C12_ALPN	:= 56				; d: 1 = answer ALPN with h2 (the caller found it offered)
 C12_OCSP	:= 60				; d: an OCSP answer to staple (g_oc_tmp), its length; 0 none
 C12_CERTID	:= 64				; q: 8 bytes of the certificate's key (a ticket names it)
-C12_SIZE	:= 72
+C12_CCA		:= 72				; d: client certificates: 0 none, 1 optional, 2 required
+C12_TS		:= 80				; q: the session's TS (anchors, who the client is), 0 none
+C12_SIZE	:= 88
 
 ; TLS 1.2 session tickets (RFC 5077), sealed with the 1.3 tickets' keys (one
 ; rotation, one fleet file); their own version and size, so neither takes the
@@ -38,8 +40,18 @@ TK12P_EMS	:= 2				; b
 TK12P_ISSUED	:= 4				; d: seconds (CLOCK_MONOTONIC)
 TK12P_CERT	:= 8				; q
 TK12P_MASTER	:= 16				; 48
-TK12_PT		:= 64
-TK12_SIZE	:= TK_SEALED + TK12_PT + 16	; 96
+TK12P_CCA	:= 64				; d: the listener's client_ca (TKP_CCA's), 0 none
+TK12P_PEERL	:= 68				; d: who the client's certificate said
+TK12P_PEER	:= 72				; (MTLS_NAME_MAX)
+TK12_PT		:= 136
+TK12_SIZE	:= TK_SEALED + TK12_PT + 16	; 168
+
+T12_HS_MAX	:= 20480			; the client's second flight, its handshake messages
+
+bss
+	g_t12_hs:	rb T12_HS_MAX
+	g_t12_mend	dq ?			; (the message being read: its end)
+end bss
 
 T2_ESK		:= 0				; ephemeral x25519 private key
 T2_CR		:= 32				; client random
@@ -65,7 +77,10 @@ T2_TKLEN	:= T2_TKWANT + 4		; d: its session_ticket extension's length
 T2_TKP		:= T2_TKLEN + 4			; q: its ticket (in the ClientHello)
 T2_CERTID	:= T2_TKP + 8			; q: C12_CERTID
 T2_TICKET	:= T2_CERTID + 8		; TK12_SIZE
-T2_TXSEQ	:= T2_TICKET + TK12_SIZE	; q: records sealed here (user space), from 1
+T2_CCA		:= T2_TICKET + TK12_SIZE	; d: C12_CCA
+T2_TS		:= T2_CCA + 4			; q: C12_TS
+T2_SH		:= T2_TS + 8			; the transcript's hash through the ClientKeyExchange
+T2_TXSEQ	:= T2_SH + 32			; q: records sealed here (user space), from 1
 T2_RXSEQ	:= T2_TXSEQ + 8			; q: and opened
 T2_FULL		:= T2_RXSEQ + 8
 
@@ -107,6 +122,10 @@ tls12_hello:
 	lea	rbx,[r13+4+2+32]		; session id: u8 length, bytes
 	mov	rax,[r15+C12_CERTID]
 	mov	[rbp+T2_CERTID],rax
+	mov	eax,[r15+C12_CCA]
+	mov	[rbp+T2_CCA],eax
+	mov	rax,[r15+C12_TS]
+	mov	[rbp+T2_TS],rax
 	call	tls12_offers			; what the client offers: suite, group, signature
 	jc	.refuse
 	call	tls12_resume_try		; its ticket, when good: T2_RESUMED
@@ -341,6 +360,18 @@ tls12_hello:
 	lea	eax,[rax+r9+4]			; body = params + scheme(2) + length(2) + sig
 	put24	r13+1, eax
 	call	.record
+	; ---- CertificateRequest (client_ca): ECDSA or RSA, the schemes a
+	; CertificateVerify may use, no names of CAs (the client offers its own)
+	cmp	dword [r15+C12_CCA],0
+	je	@f
+	mov	dword [r13],0x0D00000D		; certificate_request, 13:
+	mov	dword [r13+4],0x00014002	; types (2): ecdsa_sign, rsa_sign; schemes (6):
+	mov	dword [r13+8],0x08030406	; 0403, 0804,
+	mov	dword [r13+12],0x00010404	; 0401; certificate_authorities: none
+	mov	byte [r13+16],0
+	lea	rdi,[r13+17]
+	call	.record
+@@:
 	; ---- ServerHelloDone ----
 	mov	byte [r13],14
 	mov	byte [r13+1],0
@@ -609,39 +640,154 @@ tls12_finished:
 	mov	rbp,rdi
 	mov	r12,r8				; out
 	mov	r14,rsi				; record cursor
-	; --- ClientKeyExchange (handshake record) ---
+	; --- the client's handshake messages, up to its ChangeCipherSpec (in as
+	; many records as it took): [Certificate,] ClientKeyExchange,
+	; [CertificateVerify] ---
+	xor	ebx,ebx				; gathered
+.gather:
+	cmp	byte [r14],20
+	je	.gathered
 	cmp	byte [r14],22
 	jne	.fail
-	movzx	r13d,word [r14+3]
-	rol	r13w,8				; its record length
-	lea	rsi,[r14+5]			; the handshake message
-	mov	edx,r13d
+	movzx	ecx,word [r14+3]
+	rol	cx,8
+	lea	eax,[rbx+rcx]
+	cmp	eax,T12_HS_MAX
+	ja	.fail
+	lea	rsi,[r14+5]
+	lea	rdi,[g_t12_hs+rbx]
+	add	ebx,ecx
+	lea	r14,[r14+5+rcx]
+	rep	movsb
+	jmp	.gather
+.gathered:
+	lea	r13,[g_t12_hs]			; the messages
+	lea	r15,[g_t12_hs+rbx]		; their end
+	mov	dword [g_cc_listn],0
+	cmp	dword [rbp+T2_CCA],0
+	je	.cke
+	; Certificate: its list, as TLS 1.3 entries (with an empty extensions
+	; field each) for the checks the 1.3 flight has
+	call	.message
+	jc	.fail
+	cmp	eax,11
+	jne	.fail
+	mov	rsi,r13
+	mov	edx,r8d
+	t2_add
+	mov	r11,[g_t12_mend]
+	lea	rsi,[r13+4+3]			; past its header and the list's length
+	lea	rdi,[g_cc_msg]
+	mov	[g_cc_list],rdi
+.entry:
+	lea	rax,[rsi+3]
+	cmp	rax,r11
+	ja	.entries
+	movzx	eax,byte [rsi]
+	shl	eax,16
+	movzx	ecx,word [rsi+1]
+	rol	cx,8
+	or	eax,ecx
+	lea	rcx,[rsi+3+rax]
+	cmp	rcx,r11
+	ja	.fail
+	lea	rcx,[rdi+3+rax+2]
+	lea	rdx,[g_cc_msg+CC_MSG_MAX]
+	cmp	rcx,rdx
+	ja	.fail
+	lea	ecx,[eax+3]
+	rep	movsb
+	mov	word [rdi],0
+	add	rdi,2
+	jmp	.entry
+.entries:
+	cmp	rsi,r11
+	jne	.fail
+	lea	rax,[g_cc_msg]
+	sub	rdi,rax
+	mov	[g_cc_listn],edi
+	mov	r13,r11				; the next message
+	test	edi,edi
+	jnz	.cke
+	cmp	dword [rbp+T2_CCA],2		; none sent, where one is required
+	je	.fail
+.cke:
+	call	.message
+	jc	.fail
+	cmp	eax,16
+	jne	.fail
+	mov	rsi,r13
+	mov	edx,r8d
 	t2_add					; add CKE to the transcript
+	mov	r11,[g_t12_mend]
+	push	r11
+	lea	rsi,[rbp+T2_SHA]		; the hash through it: the session hash (RFC
+	lea	rdi,[rsp+8]			; 7627), and what a CertificateVerify signs
+	mov	ecx,SHA256_CTX_SIZE
+	rep	movsb
+	lea	rdi,[rsp+8]
+	lea	rsi,[rbp+T2_SH]
+	call	sha256_final
+	pop	r11
 	cmp	dword [rbp+T2_GROUP],0
 	jne	.cke_x
-	cmp	byte [r14+5+4],65
+	cmp	byte [r13+4],65
 	jne	.fail
 	lea	rdi,[rbp+T2_SHARED]		; premaster = ECDH(ESK, client pubkey)
 	lea	rsi,[rbp+T2_ESK]
-	lea	rdx,[r14+5+4+1]			; past msg header (4) and pubkey length (1)
+	lea	rdx,[r13+4+1]			; past msg header (4) and pubkey length (1)
+	push	r11
 	call	p256_ecdh
+	pop	r11
 	test	eax,eax
 	jz	.fail
 	jmp	.cke_done
 .cke_x:
-	cmp	byte [r14+5+4],32
+	cmp	byte [r13+4],32
 	jne	.fail
 	lea	rdi,[rbp+T2_SHARED]
 	lea	rsi,[rbp+T2_ESK]
-	lea	rdx,[r14+5+4+1]
+	lea	rdx,[r13+4+1]
+	push	r11
 	call	x25519
+	pop	r11
 	mov	rax,[rbp+T2_SHARED]		; all zero: a small-order point
 	or	rax,[rbp+T2_SHARED+8]
 	or	rax,[rbp+T2_SHARED+16]
 	or	rax,[rbp+T2_SHARED+24]
 	jz	.fail
 .cke_done:
-	lea	r14,[r14+5+r13]			; next record
+	mov	r13,r11
+	cmp	dword [g_cc_listn],0
+	je	.messages_done
+	; CertificateVerify: the certificate checked (chain, times, who), then
+	; its signature over the handshake through the ClientKeyExchange
+	call	.message
+	jc	.fail
+	cmp	eax,15
+	jne	.fail
+	push	r11
+	mov	rbx,[rbp+T2_TS]
+	call	cc_check_cert
+	test	eax,eax
+	jz	.fail_pop
+	lea	rsi,[rbp+T2_SH]
+	lea	rdi,[g_cc_dig]
+	mov	ecx,32
+	rep	movsb
+	lea	rdi,[r13+4]
+	mov	rsi,[rsp]			; (its end)
+	call	cc12_signature
+	test	eax,eax
+	jz	.fail_pop
+	mov	rsi,r13
+	mov	rdx,[rsp]
+	sub	rdx,r13
+	t2_add
+	pop	r13
+.messages_done:
+	cmp	r13,r15
+	jne	.fail				; nothing else before the ChangeCipherSpec
 	cmp	byte [r14],20			; skip ChangeCipherSpec
 	jne	@f
 	movzx	eax,word [r14+3]
@@ -654,16 +800,9 @@ tls12_finished:
 	; ClientKeyExchange, when both said so) and the key block
 	cmp	dword [rbp+T2_EMS],0
 	je	.classic
-	lea	rsi,[rbp+T2_SHA]
-	lea	rdi,[rsp]
-	mov	ecx,SHA256_CTX_SIZE
-	rep	movsb
-	lea	rdi,[rsp]
-	lea	rsi,[rsp+112]
-	call	sha256_final
 	lea	rdi,[rbp+T2_MASTER]
 	lea	rsi,[rbp+T2_SHARED]
-	lea	rcx,[rsp+112]
+	lea	rcx,[rbp+T2_SH]			; (the session hash, through the CKE)
 	call	tls12_master_ems
 	jmp	.keys
 .classic:
@@ -728,6 +867,8 @@ tls12_finished:
 	call	tls12_server_fin
 	add	eax,ebx
 	jmp	.out
+.fail_pop:
+	add	rsp,8
 .fail:
 	xor	eax,eax
 .out:
@@ -738,6 +879,27 @@ tls12_finished:
 	pop	r13
 	pop	r12
 	pop	rbx
+	ret
+; the message at r13 (r15 = the end): eax = its type, r8d = its length with
+; the header, r11 = its end. CF: it does not fit.
+.message:
+	lea	rax,[r13+4]
+	cmp	rax,r15
+	ja	.message_short
+	mov	eax,[r13]
+	bswap	eax
+	mov	r8d,eax
+	and	r8d,0xFFFFFF
+	shr	eax,24
+	lea	r11,[r13+4+r8]
+	cmp	r11,r15
+	ja	.message_short
+	mov	[g_t12_mend],r11
+	add	r8d,4
+	clc
+	ret
+.message_short:
+	stc
 	ret
 
 ; rdi = t2, rsi = TX crypto_info out (40), rdx = RX crypto_info out (40):
@@ -1056,6 +1218,17 @@ tls12_ticket_new:
 	lea	rdi,[rbx+TK_SEALED+TK12P_MASTER]
 	mov	ecx,48
 	rep	movsb
+	mov	rsi,[rbp+T2_TS]			; client_ca: its CAs, who the client is
+	test	rsi,rsi
+	jz	@f
+	mov	eax,[rsi+TS_TKCCA]
+	mov	[rbx+TK_SEALED+TK12P_CCA],eax
+	mov	ecx,[rsi+TS_PEERL]
+	mov	[rbx+TK_SEALED+TK12P_PEERL],ecx
+	add	rsi,TS_PEER
+	lea	rdi,[rbx+TK_SEALED+TK12P_PEER]
+	rep	movsb
+@@:
 	lea	rdi,[rbx+TK_NONCE]
 	mov	esi,12
 	xor	edx,edx
@@ -1151,6 +1324,27 @@ tls12_resume_try:
 	add	ecx,ecx
 	cmp	eax,ecx
 	ja	.no
+	xor	eax,eax				; the listener's CAs, as the ticket's (0: none)
+	mov	rdi,[rbp+T2_TS]
+	test	rdi,rdi
+	jz	@f
+	mov	eax,[rdi+TS_TKCCA]
+@@:
+	cmp	eax,[r8+TK12P_CCA]
+	jne	.no
+	test	eax,eax
+	jz	@f
+	mov	ecx,[r8+TK12P_PEERL]		; who the client is, as it was
+	cmp	ecx,MTLS_NAME_MAX
+	jbe	.peer
+	xor	ecx,ecx
+.peer:
+	mov	[rdi+TS_PEERL],ecx
+	lea	rsi,[r8+TK12P_PEER]
+	add	rdi,TS_PEER
+	rep	movsb
+	lea	r8,[rbp+T2_TICKET+TK_SEALED]
+@@:
 	lea	rsi,[r8+TK12P_MASTER]
 	lea	rdi,[rbp+T2_MASTER]
 	mov	ecx,48

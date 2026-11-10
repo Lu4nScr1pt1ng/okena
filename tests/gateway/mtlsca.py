@@ -20,7 +20,7 @@ import time
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -106,8 +106,8 @@ def main():
     cj = cert("okena intermediate two-b", kj, c2.subject, k2, ca=True, aki=k2)
     clients = {}
 
-    def client(tag, cn, issuer, ikey, chain=()):
-        k = ec.generate_private_key(ec.SECP256R1())
+    def client(tag, cn, issuer, ikey, chain=(), k=None):
+        k = k or ec.generate_private_key(ec.SECP256R1())
         c = cert(cn, k, issuer.subject, ikey, aki=ikey)
         (tmp / f"{tag}.pem").write_bytes(pem(c, *chain))
         (tmp / f"{tag}.key").write_bytes(k.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
@@ -119,6 +119,7 @@ def main():
     client("two", "bob", ci, ki, (ci,))
     client("twob", "carol", cj, kj, (cj,))
     client("three", "eve", c3, k3)
+    client("rsa", "rsa-alice", c1, k1, k=rsa.generate_private_key(public_exponent=65537, key_size=2048))
     (tmp / "cas.pem").write_bytes(pem(c1, c2))
     later = NOW + datetime.timedelta(days=1)
     (tmp / "crl.pem").write_bytes(pem(crl(c1, k1, [clients["revoked"]], later), crl(c2, k2, [cj], later)))
@@ -142,14 +143,20 @@ http 127.0.0.1:{OPT} {{
     log = tmp / "log"
     p = subprocess.Popen([str(BIN), "-c", str(conf)], stdout=subprocess.DEVNULL, stderr=open(log, "w"))
 
-    def get(port, tag=None):
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        if tag:
-            ctx.load_cert_chain(tmp / f"{tag}.pem", tmp / f"{tag}.key")
+    def get(port, tag=None, v12=False, ctx=None, session=None, out=None):
+        if ctx is None:
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            if v12:
+                ctx.maximum_version = ssl.TLSVersion.TLSv1_2
+            if tag:
+                ctx.load_cert_chain(tmp / f"{tag}.pem", tmp / f"{tag}.key")
         try:
-            with ctx.wrap_socket(socket.create_connection(("127.0.0.1", port), timeout=5), server_hostname="okena.test") as t:
+            with ctx.wrap_socket(socket.create_connection(("127.0.0.1", port), timeout=5), server_hostname="okena.test",
+                                 session=session) as t:
+                if out is not None:
+                    out.append((t.session, t.session_reused))
                 t.sendall(b"GET / HTTP/1.1\r\nHost: okena.test\r\nConnection: close\r\n\r\n")
                 data = b""
                 while True:
@@ -184,6 +191,38 @@ http 127.0.0.1:{OPT} {{
         check("optional with crl=: no certificate, in", r.startswith(b"HTTP/1.1 200"), r[:120])
         r = get(OPT, "revoked")
         check("  a revoked one sent: refused", not r.startswith(b"HTTP/1.1 200"), r[:120])
+
+        # TLS 1.2 (a CertificateRequest in the server's flight, the client's
+        # Certificate and CertificateVerify in its second)
+        r = get(REQ, "one", v12=True)
+        check("TLS 1.2: a client certificate (ECDSA): in, who it is", r.startswith(b"HTTP/1.1 200") and r.endswith(b"alice"), r[:120])
+        r = get(REQ, "rsa", v12=True)
+        check("  an RSA one (rsa_pss_rsae_sha256): in", r.startswith(b"HTTP/1.1 200") and r.endswith(b"rsa-alice"), r[:120])
+        o = subprocess.run(["openssl", "s_client", "-connect", f"127.0.0.1:{REQ}", "-tls1_2", "-quiet", "-cert",
+                            str(tmp / "rsa.pem"), "-key", str(tmp / "rsa.key"), "-client_sigalgs", "RSA+SHA256"],
+                           input=b"GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n", capture_output=True, timeout=10)
+        check("  and rsa_pkcs1_sha256: in", o.stdout.startswith(b"HTTP/1.1 200") and o.stdout.endswith(b"rsa-alice"),
+              (o.stdout[:100], o.stderr[-200:]))
+        r = get(REQ, "two", v12=True)
+        check("  through an intermediate: in", r.startswith(b"HTTP/1.1 200") and r.endswith(b"bob"), r[:120])
+        for tag, what in (("revoked", "revoked"), ("twob", "under a revoked intermediate"), ("three", "of a CA not in the file"),
+                          (None, "none, where one is required")):
+            r = get(REQ, tag, v12=True)
+            check(f"  {what}: refused", not r.startswith(b"HTTP/1.1 200"), r[:120])
+        r = get(OPT, None, v12=True)
+        check("  optional, none sent: in", r.startswith(b"HTTP/1.1 200") and r.endswith(b"-"), r[:120])
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        ctx.maximum_version = ssl.TLSVersion.TLSv1_2
+        ctx.load_cert_chain(tmp / "two.pem", tmp / "two.key")
+        held = []
+        get(REQ, ctx=ctx, out=held)
+        sess = held[0][0] if held else None
+        held2 = []
+        r = get(REQ, ctx=ctx, session=sess, out=held2)
+        check("  a 1.2 ticket resumes, as the same client", bool(held2) and held2[0][1] is True
+              and r.startswith(b"HTTP/1.1 200") and r.endswith(b"bob"), (held2, r[:100]))
     finally:
         p.terminate()
         try:
