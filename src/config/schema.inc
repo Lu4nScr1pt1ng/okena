@@ -291,6 +291,8 @@ dirdef DIR_CERT, 'cert',        M_TLS,     0,           0, 1, 1, T_ANY, T_NONE, 
 dirdef DIR_KEY, 'key',          M_TLS,     0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
 dirdef DIR_TLSACME, 'acme',     M_TLS,     0,           0, 1, 15, T_ANY, T_ANY, 0
 dirdef DIR_TLSLOCAL, 'local',   M_TLS,     0,           0, 1, 15, T_ANY, T_ANY, 0
+dirdef DIR_TLSAUTO, 'auto',     M_TLS,     0,           F_UNIQUE, 0, 0, T_NONE, T_NONE, 0
+dirdef DIR_TLSREDIR, 'redirect', M_TLS,    0,           F_UNIQUE, 1, 1, e_onoff, T_NONE, 0
 dirdef DIR_OCSP, 'ocsp',        M_TLS,     0,           F_UNIQUE, 1, 1, e_onoff, T_NONE, 0
 dirdef DIR_ODEMAND, 'on_demand', M_TLS,     0,           F_UNIQUE, 0, 16, T_ANY, T_ANY, k_odemand
 dirdef DIR_CLIENT_CA, 'client_ca', M_TLS,   0,           F_UNIQUE, 1, 2, T_ANY, e_cca, 0

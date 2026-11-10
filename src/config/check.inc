@@ -1470,6 +1470,11 @@ check_tls:
 	call	find_child
 	test	rax,rax
 	jnz	.done
+	mov	rdi,rbx				; auto: the host blocks' names, from the CA
+	mov	ecx,DIR_TLSAUTO
+	call	find_child
+	test	rax,rax
+	jnz	.done
 	jmp	.missing
 @@:
 	test	r13d,r13d

@@ -69,7 +69,8 @@ ACM_EMAILL	:= 28			; d
 ACM_EMAIL	:= 32			; q
 ACM_HASTRUST	:= 40			; d
 ACM_NCERT	:= 44			; d
-ACM_CERT		:= 48			; per certificate: q its names (arguments), d how many, d -
+ACM_CERT		:= 48			; per certificate: q its names (arguments), d how many, d the https port
+				; plain http redirects them to (0: not)
 ACM_TRUST	:= ACM_CERT + ACME_CERTS * 16
 ACM_CHAL		:= ACM_TRUST + PK_SIZE	; d: 0 HTTP-01, 1 TLS-ALPN-01, 2 DNS-01
 ACM_DNS		:= ACM_CHAL + 4		; d: DNS-01's provider: 1 Cloudflare
@@ -104,7 +105,8 @@ ACM_FBEABK	:= ACM_D4 + 224		; 128
 ACM_FBEABH	:= ACM_D4 + 352		; 64
 ACM_FBTRUST	:= ACM_D4 + 416		; fallback_trust='s anchor
 ACM_SHARED	:= ACM_FBTRUST + PK_SIZE	; d: shared=on (acmefleet.inc)
-ACM_SIZE		:= (ACM_SHARED + 4 + 7) and not 7
+ACM_REDIRN	:= ACM_SHARED + 4	; d: certificates whose names plain http redirects
+ACM_SIZE		:= (ACM_REDIRN + 4 + 7) and not 7
 
 SYS_fchownat_	:= 260
 LLF_REMOVE_FILE	:= 32
@@ -121,6 +123,9 @@ bss
 	g_ac_cpath:	rb 600
 	g_ac_kpath:	rb 600
 	g_ac_kpem:	rb 600
+	g_ac_cur	dq ?			; compile_tls_acme: a certificate's names
+	g_ac_curn	dd ?
+	g_ac_redir	dd ?
 	g_ac_names:	rb 4096			; NUL between them, an empty one at the end
 	; the acme process's
 	align 8
@@ -1389,13 +1394,75 @@ compile_tls_acme:
 	push	r15
 	mov	r12,rdi
 	mov	r13d,edx
+	mov	dword [g_ac_redir],0		; plain http to https for its names, unless
+	mov	rdi,r12				; `redirect off`: the listener's port
+	mov	ecx,DIR_TLSREDIR
+	call	find_child
+	test	rax,rax
+	jz	@f
+	mov	rax,[rax+N_ARGS]
+	mov	rsi,[rax+A_VAL]
+	cmp	word [rsi],'of'
+	je	.redir_set
+@@:
+	mov	rdi,[r12+N_PARENT]
+	call	acme_listener_port
+	mov	[g_ac_redir],eax
+.redir_set:
 	mov	rbx,[r12+N_CHILD]
 .line:
 	test	rbx,rbx
-	jz	.done
+	jz	.auto
 	lea	rax,[dir_table + D_SIZE*DIR_TLSACME]
 	cmp	[rbx+N_DEF],rax
 	jne	.next
+	mov	rax,[rbx+N_ARGS]
+	mov	[g_ac_cur],rax
+	mov	eax,[rbx+N_ARGC]
+	mov	[g_ac_curn],eax
+	call	.one
+	jmp	.next
+	; `auto`: a certificate for each name of the listener's host blocks (a
+	; wildcard's with DNS-01 only), from okena's acme, or Let's Encrypt
+.auto:
+	mov	rdi,r12
+	mov	ecx,DIR_TLSAUTO
+	call	find_child
+	test	rax,rax
+	jz	.done
+	call	acme_auto_defaults
+	mov	rax,[r12+N_PARENT]
+	mov	rbx,[rax+N_CHILD]
+.host:
+	test	rbx,rbx
+	jz	.done
+	lea	rax,[dir_table + D_SIZE*DIR_HOST]
+	cmp	[rbx+N_DEF],rax
+	jne	.host_next
+	mov	rax,[rbx+N_ARGS]
+	mov	ecx,[rbx+N_ARGC]
+.host_name:
+	push	rax
+	push	rcx
+	mov	rsi,[rax+A_VAL]
+	cmp	word [rsi],'*.'
+	jne	@f
+	cmp	dword [g_plan_acme+ACM_CHAL],2
+	jne	.host_skip
+@@:
+	mov	[g_ac_cur],rax
+	mov	dword [g_ac_curn],1
+	call	.one
+.host_skip:
+	pop	rcx
+	pop	rax
+	add	rax,A_SIZE
+	dec	ecx
+	jnz	.host_name
+.host_next:
+	mov	rbx,[rbx+N_NEXT]
+	jmp	.host
+.one:
 	cmp	dword [g_plan_acme+ACM_ON],0
 	je	.no_acme
 	mov	eax,[g_plan_acme+ACM_NCERT]
@@ -1403,13 +1470,19 @@ compile_tls_acme:
 	jae	.too_many
 	inc	dword [g_plan_acme+ACM_NCERT]
 	shl	eax,4
-	mov	rcx,[rbx+N_ARGS]
+	mov	rcx,[g_ac_cur]
 	mov	[g_plan_acme+ACM_CERT+rax],rcx
-	mov	ecx,[rbx+N_ARGC]
+	mov	ecx,[g_ac_curn]
 	mov	[g_plan_acme+ACM_CERT+rax+8],ecx
+	mov	ecx,[g_ac_redir]
+	mov	[g_plan_acme+ACM_CERT+rax+12],ecx
+	test	ecx,ecx
+	jz	@f
+	inc	dword [g_plan_acme+ACM_REDIRN]
+@@:
 	; the names: letters, digits, '-' and '.', as a CA takes them
-	mov	r14,[rbx+N_ARGS]
-	mov	r15d,[rbx+N_ARGC]
+	mov	r14,[g_ac_cur]
+	mov	r15d,[g_ac_curn]
 .name:
 	mov	rsi,[r14+A_VAL]
 	mov	ecx,[r14+A_VLEN]
@@ -1453,7 +1526,7 @@ compile_tls_acme:
 	dec	r15d
 	jnz	.name
 	; DIR/NAME/cert.pem and key.pem: there?
-	mov	r14,[rbx+N_ARGS]
+	mov	r14,[g_ac_cur]
 	lea	rdi,[g_ac_cpath]
 	lea	rsi,[.f_cert]
 	call	.path
@@ -1480,8 +1553,8 @@ compile_tls_acme:
 	mov	byte [g_cc_from],2		; (signed here meanwhile)
 	; until the CA's comes: one signed here, for the names, 7 days
 	lea	rdi,[g_ac_names]
-	mov	rsi,[rbx+N_ARGS]
-	mov	edx,[rbx+N_ARGC]
+	mov	rsi,[g_ac_cur]
+	mov	edx,[g_ac_curn]
 	call	acme_names
 	call	x5_keygen
 	jc	.no_key
@@ -1522,6 +1595,7 @@ compile_tls_acme:
 	mov	ecx,[g_plan_acme+ACM_NCERT]
 	dec	ecx
 	mov	[g_tls_acme+rax],cl
+	ret
 .next:
 	mov	rbx,[rbx+N_NEXT]
 	jmp	.line
@@ -1669,11 +1743,9 @@ acme_main:
 	rep	movsb
 @@:
 	mov	byte [rdi],0
-	mov	edi,AT_FDCWD
-	lea	rsi,[g_ac_fpath]
+	lea	rsi,[g_ac_fpath]		; (and its parents: /var/lib/okena)
 	mov	edx,0x1C0			; 0700
-	mov	eax,SYS_mkdirat_
-	syscall
+	call	mkdir_p
 	cmp	dword [g_plan_user],0
 	je	@f
 	mov	edi,AT_FDCWD

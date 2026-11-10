@@ -456,6 +456,8 @@ The TLS layer:
 tls {
     cert /etc/okena/fullchain.pem key=/etc/okena/key.pem   # or one per host,
     acme example.com www.example.com   # or from a CA (ACME), okena renewing it
+    auto                            # or one from the CA for each name of the host blocks
+    redirect off                    # (plain http for those names; 308 to https by default)
     local localhost app.test 127.0.0.1 # or from okena's own CA (development)
     ocsp off                        # (OCSP stapling: on by default, below)
     on_demand *.example.com ask=http://127.0.0.1:9000/ok   # certificates as names come
@@ -559,6 +561,16 @@ A failed order is tried again
 after a minute, then twice as long each time up to six hours, the one being served
 kept meanwhile (the log says what failed). A restart finds the files and asks
 nothing until a renewal is due.
+
+**`tls { auto }`** is a certificate from the CA for each name of the listener's
+host blocks, as an `acme NAME` line for each would be (a wildcard's only with
+DNS-01). Without `okena { acme ... }`, Let's Encrypt is the CA and
+/var/lib/okena/acme the directory (made, parents included). For every name okena
+gets from the CA, `auto`'s and `acme` lines' alike, a plain http listener
+answers `308 Permanent Redirect` to `https://NAME[:PORT]` and the same target
+(the tls block's listener's port, left out when 443), after the ACME challenges;
+other names go on to the routes, and `redirect off` in the tls block keeps
+plain http for its names.
 
 **A local CA.** `local NAME...` in a tls block is a certificate for development
 names (`localhost`, `app.test`, `*.app.test`, `127.0.0.1`, `::1`) signed by a CA
@@ -764,7 +776,7 @@ production.
 
 ```
 http :443 {
-    tls { cert auto }
+    tls { auto }
     host api.example.com www.example.com {
     route /v1/users/{id} GET PUT {
         use authenticated
@@ -1391,7 +1403,7 @@ a file is still done in place; with epoll, reading too.
 
 ```
 http :443 {
-    tls { cert auto }
+    tls { auto }
     canonical example.com              # www -> apex, 301
     headers preset=secure              # HSTS, nosniff, frame and referrer policy; on a
                                        # listener, a host or a route; preset=none undoes it
@@ -1428,7 +1440,7 @@ http :443 {
 }
 
 http :443 {
-    tls { cert auto }
+    tls { auto }
     auth oidc issuer=https://accounts.google.com client=${env:OIDC_ID} secret=${env:OIDC_SECRET} allow_domain=example.com
     to grafana:3000
 }

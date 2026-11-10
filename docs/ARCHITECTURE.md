@@ -685,7 +685,9 @@ ECN. 0-RTT off by default and, when on, only for routes marked idempotent.
   process through a ring; the certificate comes back in a shared store, no
   reload); a fleet sharing DIR (`shared=on`: a lock file per certificate,
   taken by link(2), the challenges in DIR/NAME/http-01 copied into the
-  page's second half of slots by every other instance); a local CA for
+  page's second half of slots by every other instance); `tls { auto }` (the
+  host blocks' names) and the 308 to https a plain listener's worker answers
+  for every name from the CA, from the plan's list; a local CA for
   development names (made by the starting process before it is boxed in, its
   leaves signed in memory at each compile, `okena trust` writing the root to
   the system's store and running its update command); OCSP stapling by an okena-ocsp process (answers verified against the

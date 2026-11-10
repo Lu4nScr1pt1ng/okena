@@ -542,6 +542,9 @@ built; both measurements are still to be made on the lab.)
   The local CA: `tls { local NAME... }`, `okena { local_ca DIR }`, made at the
   first start, leaves of 7 days signed at each compile (AKI, IP SANs), renewed
   by a reload of its own; `okena trust [remove]` for the system's store.
+  `tls { auto }`: the host blocks' names, Let's Encrypt and /var/lib/okena/acme
+  by default; plain http redirected (308) to https for every name from the CA,
+  `redirect off` to keep it.
   Exit: a fresh install with `tls auto` serves a valid certificate within a
   minute; a CA down, rate-limited or answering wrongly never takes a served
   certificate away; `make chaos` with the CA failed in turn passes.
