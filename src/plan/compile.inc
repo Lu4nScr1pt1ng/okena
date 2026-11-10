@@ -1083,6 +1083,9 @@ compile_route_action:
 	lea	rcx,[dir_table + D_SIZE*DIR_REDIRECT]
 	cmp	rax,rcx
 	je	@f
+	lea	rcx,[dir_table + D_SIZE*DIR_RESPOND]
+	cmp	rax,rcx
+	je	@f
 	lea	rcx,[dir_table + D_SIZE*DIR_RHEADER]
 	cmp	rax,rcx
 	je	@f
@@ -1179,6 +1182,20 @@ compile_route_action:
 	push	rcx
 	imul	r13,rcx,RA_SIZE
 	lea	r13,[g_acts+r13]
+	mov	rdi,r12
+	mov	ecx,DIR_RESPOND
+	call	find_child
+	test	rax,rax
+	jz	@f
+	mov	rbx,[rax+N_ARGS]		; respond: a code, no target
+	mov	rdi,[rbx+A_VAL]
+	mov	esi,[rbx+A_VLEN]
+	call	parse_decimal
+	mov	[r13+RA_CODE],eax
+	mov	qword [r13+RA_TGT],0
+	mov	dword [r13+RA_TLEN],0
+	jmp	.ops
+@@:
 	mov	rdi,r12
 	mov	ecx,DIR_REDIRECT
 	call	find_child
@@ -4589,6 +4606,11 @@ compile_routes:
 	mov	r13d,-1				; a redirect has no pool, nor files
 	mov	rdi,rbx
 	mov	ecx,DIR_REDIRECT
+	call	find_child
+	test	rax,rax
+	jnz	@f
+	mov	rdi,rbx
+	mov	ecx,DIR_RESPOND
 	call	find_child
 	test	rax,rax
 	jnz	@f

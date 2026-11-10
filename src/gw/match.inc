@@ -298,6 +298,12 @@ compile_matches:
 	jz	@f
 	mov	r15d,-1
 @@:
+	mov	ecx,DIR_RESPOND
+	call	match_child
+	test	rax,rax
+	jz	@f
+	mov	r15d,-1
+@@:
 	mov	ecx,DIR_FILES
 	call	match_child
 	test	rax,rax
@@ -632,6 +638,9 @@ match_replaces:
 	cmp	rax,rcx
 	je	.is
 	lea	rcx,[dir_table + D_SIZE*DIR_REDIRECT]
+	cmp	rax,rcx
+	je	.is
+	lea	rcx,[dir_table + D_SIZE*DIR_RESPOND]
 	cmp	rax,rcx
 	je	.is
 	lea	rcx,[dir_table + D_SIZE*DIR_SPLIT]

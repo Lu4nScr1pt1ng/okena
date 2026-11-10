@@ -92,6 +92,8 @@ http 127.0.0.1:{lst} {{
     route /keep/* {{ header set x-set route; match header:a=1 {{ to pool canary }}; to pool main }}
     route /red/* {{ match header:a=1 {{ redirect 302 /else }}; to pool main }}
     route /unred/* {{ match header:a=1 {{ to pool main }}; redirect 302 /else }}
+    route /resp/* {{ match header:a=1 {{ to pool main }}; respond 404 }}
+    route /up/* {{ redirect 308 "https://{{host}}:8443/n/{{*}}" }}
     route /rew/* {{ match header:a=1 {{ rewrite path /rew/{{*}} -> /new/{{*}} }}; to pool main }}
     route /lim/* {{
         limit 1000/s key=client.ip
@@ -158,6 +160,15 @@ def main():
         check("a redirect in a block", r[0] == 302 and r[2].get("location") == "/else", r[:3])
         check("  not outside it", get("/red/x")[0] == 200)
         check("a `to` undoes the route's redirect", get("/unred/x", a="1")[0] == 200 and get("/unred/x")[0] == 302)
+        r = get("/resp/x")
+        check("respond 404: the code, no Location, the connection kept", r[0] == 404 and "location" not in r[2]
+              and r[2].get("connection") != "close", r[:3])
+        check("  a block's `to` undoes it", get("/resp/x", a="1")[0] == 200)
+        r = get("/up/a/b?q=1", Host="Shop.example.com:8080")
+        check("redirect to {host}: the request's name, without its port", r[0] == 308
+              and r[2].get("location") == "https://Shop.example.com:8443/n/a/b?q=1", r[:3])
+        r = get("/up/a", Host="[::1]:8080")
+        check("  an IPv6 one in brackets", r[2].get("location") == "https://[::1]:8443/n/a", r[:3])
         check("rewrite in a block", get("/rew/x", a="1")[1].split()[1] == "/new/x" and get("/rew/x")[1].split()[1] == "/rew/x", get("/rew/x", a="1")[1])
         codes = [get("/lim/x", slow="1")[0] for i in range(5)]
         check("a block's limit counts", 429 in codes, codes)

@@ -126,6 +126,7 @@ enumdef e_server_flags, 'backup'
 enumdef e_health, 'tcp', 'http', 'grpc'
 enumdef e_pp_mode, 'send'
 enumdef e_redirect_codes, '301', '302', '303', '307', '308'
+enumdef e_respond_codes, '400', '401', '403', '404', '405', '410', '421', '429', '500', '501', '502', '503', '504'
 enumdef e_header_ops, 'set', 'add', 'drop'
 enumdef e_response_what, 'header'
 enumdef e_rewrite_what, 'path'
@@ -284,6 +285,7 @@ dirdef DIR_CORS, 'cors',        M_ROUTE,   0,           F_UNIQUE or F_KEYS_BLOCK
 dirdef DIR_RLIMIT, 'limit',      M_ROUTE,   0,           F_KEYS_BLOCK, 1, 1, T_ANY, T_NONE, k_limit
 dirdef DIR_FAULT, 'fault',      M_ROUTE,   0,           F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_fault
 dirdef DIR_REDIRECT, 'redirect',  M_ROUTE,   0,           F_UNIQUE, 2, 2, e_redirect_codes, T_ANY, 0
+dirdef DIR_RESPOND, 'respond',   M_ROUTE,   0,           F_UNIQUE, 1, 1, e_respond_codes, T_NONE, 0
 dirdef DIR_REWRITE, 'rewrite',    M_ROUTE,   0,           F_UNIQUE, 4, 4, e_rewrite_what, T_ANY, 0
 dirdef DIR_RHEADER, 'header',      M_ROUTE,   0,           0, 2, 3, e_header_ops, T_ANY, 0
 dirdef DIR_RRESPONSE, 'response',  M_ROUTE,   0,           0, 3, 4, e_response_what, T_ANY, 0

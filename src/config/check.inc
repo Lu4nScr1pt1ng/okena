@@ -1796,6 +1796,25 @@ check_route_set:
 	jne	.next
 	inc	r13d
 	mov	rdi,rbx
+	mov	ecx,DIR_RESPOND
+	call	find_child
+	test	rax,rax
+	jz	@f
+	mov	rdi,rbx				; respond: it answers, nothing else to say
+	mov	ecx,DIR_TO
+	call	find_child
+	test	rax,rax
+	jz	.actions
+	mov	rdi,[rax+N_NAME]
+	mov	esi,[rax+N_NLEN]
+	mov	edx,[rax+N_LINE]
+	call	cfg_error
+	out_lit 'a route either forwards (`to`) or answers (`respond`), not both'
+	call	cfg_diag_end
+	call	cfg_error_limit
+	jmp	.actions
+@@:
+	mov	rdi,rbx
 	mov	ecx,DIR_REDIRECT
 	call	find_child
 	test	rax,rax

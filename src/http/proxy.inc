@@ -3884,8 +3884,12 @@ http_redirect:
 	mov	eax,[r12+RA_CODE]
 	call	http_reason
 	call	fmt_cstr
-	memit_x 13,10,'Location: '
-	; the target, {*} = the rest of the path after the route's prefix
+	memit_x 13,10
+	cmp	dword [r12+RA_TLEN],0
+	je	.headers_crlf			; `respond`: no target
+	memit_x 'Location: '
+	; the target, {*} = the rest of the path after the route's prefix, {host}
+	; the request's host name
 	mov	rsi,[r12+RA_TGT]
 	mov	ecx,[r12+RA_TLEN]
 	xor	r8d,r8d				; '?' in the target
@@ -3899,6 +3903,17 @@ http_redirect:
 @@:
 	cmp	al,'{'
 	jne	.tgt_byte
+	cmp	ecx,6
+	jb	@f
+	cmp	dword [rsi+1],'host'
+	jne	@f
+	cmp	byte [rsi+5],'}'
+	jne	@f
+	call	.host
+	add	rsi,6
+	sub	ecx,6
+	jmp	.tgt
+@@:
 	cmp	ecx,3
 	jb	.tgt_byte
 	cmp	word [rsi+1],'*}'
@@ -3944,6 +3959,7 @@ http_redirect:
 	rep	movsb
 .headers:
 	memit_x 13,10
+.headers_crlf:
 	call	cors_emit
 	memit_x 'Content-Length: 0',13,10,'X-Request-Id: '
 	lea	rsi,[r15+H_RID]
@@ -3964,6 +3980,62 @@ http_redirect:
 	pop	r13
 	pop	r12
 	jmp	h_send
+; rdi = out: the Host's name, without its port; only what a name or an
+; address is made of ([v6] kept whole)
+.host:
+	push	rsi
+	push	rcx
+	mov	eax,[g_hm+HM_HOST]
+	cmp	eax,-1
+	je	.host_done
+	imul	rax,rax,HF_SIZE
+	lea	rax,[g_hm+HM_HDRS+rax]
+	mov	rsi,[rax+HF_VALUE]
+	mov	ecx,[rax+HF_VLEN]
+	xor	edx,edx				; in brackets
+.host_char:
+	test	ecx,ecx
+	jz	.host_done
+	movzx	eax,byte [rsi]
+	cmp	al,'['
+	jne	@f
+	mov	edx,1
+	jmp	.host_put
+@@:
+	cmp	al,']'
+	jne	@f
+	xor	edx,edx
+	jmp	.host_put
+@@:
+	cmp	al,':'
+	jne	@f
+	test	edx,edx
+	jz	.host_done			; its port
+	jmp	.host_put
+@@:
+	cmp	al,'-'
+	je	.host_put
+	cmp	al,'.'
+	je	.host_put
+	mov	r9d,eax
+	sub	r9d,'0'
+	cmp	r9d,9
+	jbe	.host_put
+	mov	r9d,eax
+	or	r9d,0x20
+	sub	r9d,'a'
+	cmp	r9d,25
+	ja	.host_done			; not of a name: it ends there
+.host_put:
+	mov	[rdi],al
+	inc	rdi
+	inc	rsi
+	dec	ecx
+	jmp	.host_char
+.host_done:
+	pop	rcx
+	pop	rsi
+	ret
 
 ; ------------------------------------------------------ phase timeouts
 
