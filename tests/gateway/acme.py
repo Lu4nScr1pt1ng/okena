@@ -118,6 +118,7 @@ class CAState:
         self.base = f"https://localhost:{port or CA}"
         self.eab = {}                 # kid -> HMAC key: external accounts required
         self.fail_orders = None       # (status, error) every newOrder gets
+        self.garbage = False          # every answer HTML, not ACME (make chaos)
         self.ari = None               # ARI (RFC 9773): CertID -> (start, end), when served
         self.ocsp_url = None          # put in the certificates it issues (AIA)
         self.nonces = set()
@@ -493,6 +494,8 @@ class H(http.server.BaseHTTPRequestHandler):
         pass
 
     def send(self, code, body=b"", ctype="application/json", headers=(), chunked=False):
+        if self.server.st.garbage:
+            code, body, ctype, headers, chunked = 200, b"<html>a proxy's error page</html>", "text/html", (), False
         self.send_response(code)
         self.send_header("Replay-Nonce", self.server.st.nonce())
         self.send_header("Cache-Control", "no-store")

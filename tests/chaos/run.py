@@ -5,7 +5,9 @@ stopped, the control process and the logger killed, a backend killed, a
 backend black-holed (it takes the connection and never answers), the JWKS
 provider gone, the discovery file made garbage, the access log's disk full,
 the local ports run out, the DNS server silent (its names were resolved
-before: the servers known stay).
+before: the servers known stay), and the ACME CA failing in turn, a renewal
+asked of it each time (rate-limited, down, answering garbage): the
+certificate served is never taken away, TLS clients verified throughout.
 
 It passes when every request got a right answer or a fast, explicit error,
 never a hang (a client waits 4 s at most); when each fault, once undone,
@@ -31,9 +33,17 @@ import threading
 import time
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tests" / "gateway"))
+import acme as A  # noqa: E402  (its test CA)
+import datetime  # noqa: E402
+import http.server  # noqa: E402
+import ssl  # noqa: E402
+from cryptography.hazmat.primitives import serialization  # noqa: E402
+from cryptography.hazmat.primitives.asymmetric import ec  # noqa: E402
 BIN = ROOT / "build" / "okena"
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
-LST, B1, B2, JWKS, MET = 18080, 18091, 18092, 18093, 18094
+LST, B1, B2, JWKS, MET, LTLS, CAP = 18080, 18091, 18092, 18093, 18094, 18443, 18095
+NAME = "chaos.example.test"
 CLIENT_WAIT = 4.0
 fails = 0
 
@@ -127,8 +137,8 @@ def es256():
 class Load:
     """Clients asking all the time; every request's outcome, timed."""
 
-    def __init__(self, token, threads=8):
-        self.token, self.stop, self.log = token, threading.Event(), []
+    def __init__(self, token, cafile, threads=10):
+        self.token, self.cafile, self.stop, self.log = token, cafile, threading.Event(), []
         self.lock = threading.Lock()
         self.threads = [threading.Thread(target=self.run, args=(i,), daemon=True) for i in range(threads)]
 
@@ -137,6 +147,8 @@ class Load:
             t.start()
 
     def run(self, i):
+        if i >= 8:
+            return self.run_tls()
         path, hdr = (("/api/x", {"authorization": f"Bearer {self.token}"}), ("/", {}), ("/dns/x", {}))[i % 3]
         # (kept alive, as browsers and SDKs keep theirs: a new connection only
         # after an error, so a fault on okena's side is not one of the client's)
@@ -164,6 +176,27 @@ class Load:
             with self.lock:
                 self.log.append((t0, time.time() - t0, what))
             time.sleep(0.01)
+
+    def run_tls(self):
+        """the ACME name over TLS, verified against the CA, a new handshake each time"""
+        ctx = ssl.create_default_context(cafile=self.cafile)
+        while not self.stop.is_set():
+            t0 = time.time()
+            try:
+                with socket.create_connection(("127.0.0.1", LTLS), timeout=CLIENT_WAIT) as s:
+                    with ctx.wrap_socket(s, server_hostname=NAME) as t:
+                        t.sendall(f"GET / HTTP/1.1\r\nHost: {NAME}\r\nConnection: close\r\n\r\n".encode())
+                        head = t.recv(100)
+                what = "ok" if head.startswith(b"HTTP/1.1 200") else f"tls {head[:12]!r}"
+            except socket.timeout:
+                what = "hang"
+            except ssl.SSLCertVerificationError as e:
+                what = f"certificate {e.verify_message}"
+            except (OSError, ssl.SSLError) as e:
+                what = f"tls error {type(e).__name__}"
+            with self.lock:
+                self.log.append((t0, time.time() - t0, what))
+            time.sleep(0.02)
 
     def between(self, a, b):
         with self.lock:
@@ -202,10 +235,47 @@ def main():
     (tmp / "resolv.conf").write_text("nameserver 127.0.0.1\noptions timeout:1 attempts:1\n")
     subprocess.run(["mount", "--bind", str(tmp / "resolv.conf"), "/etc/resolv.conf"], check=True)
     threading.Thread(target=dns_server, daemon=True).start()
+    # the ACME CA (the acme suite's), and a certificate from it two thirds gone:
+    # a renewal is asked of it at each start of the acme process
+    ca_k, ca_c = A.make_ca()
+    (tmp / "ca.pem").write_bytes(ca_c.public_bytes(serialization.Encoding.PEM))
+    now = datetime.datetime.now(datetime.timezone.utc)
+    sk = ec.generate_private_key(ec.SECP256R1())
+    sc = A.issue(ca_k, ca_c, sk.public_key(), ["localhost"], now - datetime.timedelta(days=1), now + datetime.timedelta(days=5))
+    (tmp / "srv.pem").write_bytes(sc.public_bytes(serialization.Encoding.PEM))
+    (tmp / "srv.key").write_bytes(sk.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                                   serialization.NoEncryption()))
+    ca_st = A.CAState(ca_k, ca_c, CAP)
+    ca_st.bad_nonce_once = False
+    ca_st.fail_orders = (429, "rateLimited")      # (from the start: the one served stays)
+    ca_srv = {}
+
+    def ca_up():
+        s = http.server.ThreadingHTTPServer(("127.0.0.1", CAP), A.H)
+        s.st = ca_st
+        s.daemon_threads = True
+        sctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        sctx.load_cert_chain(tmp / "srv.pem", tmp / "srv.key")
+        s.socket = sctx.wrap_socket(s.socket, server_side=True)
+        threading.Thread(target=s.serve_forever, daemon=True).start()
+        ca_srv["s"] = s
+
+    def ca_down():
+        ca_srv["s"].shutdown()
+        ca_srv["s"].server_close()
+    ca_up()
+    adir = tmp / "acme" / NAME
+    adir.mkdir(parents=True)
+    lk = ec.generate_private_key(ec.SECP256R1())
+    lc = A.issue(ca_k, ca_c, lk.public_key(), [NAME], now - datetime.timedelta(days=20), now + datetime.timedelta(days=10))
+    (adir / "cert.pem").write_bytes(lc.public_bytes(serialization.Encoding.PEM))
+    (adir / "key.pem").write_bytes(lk.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                                    serialization.NoEncryption()))
     servers = tmp / "servers.list"
     servers.write_text(f"127.0.0.1:{B1}\n127.0.0.1:{B2}\n")
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 3; io_engine {ENGINE}; watchdog 2s; drain delay=0s timeout=2s; metrics 127.0.0.1:{MET} }}
+    conf.write_text(f"""okena {{ workers 3; io_engine {ENGINE}; watchdog 2s; drain delay=0s timeout=2s; metrics 127.0.0.1:{MET}
+    acme {tmp}/acme ca=https://localhost:{CAP}/dir trust={tmp}/ca.pem }}
 pool web {{ health tcp every=300ms fall=2 rise=1; discover file {servers} }}
 pool named {{ server api.chaos.test:{B1} }}
 http 127.0.0.1:{LST} {{
@@ -213,6 +283,10 @@ http 127.0.0.1:{LST} {{
     timeout {{ response 1s }}
     route /dns/* {{ to pool named }}
     route /api/* {{ auth jwt {{ jwks http://localhost:{JWKS}/jwks.json refresh=1s }}; to pool web }}
+    route /* {{ to pool web }}
+}}
+http 127.0.0.1:{LTLS} {{
+    tls {{ acme {NAME} }}
     route /* {{ to pool web }}
 }}
 """)
@@ -228,7 +302,7 @@ http 127.0.0.1:{LST} {{
             check("okena starts and serves, its token taken", False, log.read_text()[-400:])
             return
         check("okena starts and serves, its token taken", True)
-        load = Load(token)
+        load = Load(token, str(tmp / "ca.pem"))
         load.start()
         time.sleep(1.5)
         windows = []
@@ -267,6 +341,13 @@ http 127.0.0.1:{LST} {{
         fault("the local ports run out (10 of them)", lambda: pathlib.Path(prange).write_text("40000 40009"),
               lambda: pathlib.Path(prange).write_text(f"{old[0]} {old[1]}"))
         fault("the DNS server silent (a name resolved before)", lambda: dns_up.clear(), lambda: dns_up.set(), hold=3.0)
+        # the ACME CA failing in turn, a renewal asked each time (a reload starts
+        # the acme process again, and the certificate is due)
+        fault("the ACME CA rate-limiting (429), a renewal asked",
+              lambda: (setattr(ca_st, "fail_orders", (429, "rateLimited")), p.send_signal(signal.SIGHUP)), lambda: None)
+        fault("the ACME CA down, a renewal asked", lambda: (ca_down(), p.send_signal(signal.SIGHUP)), ca_up)
+        fault("the ACME CA answering garbage, a renewal asked",
+              lambda: (setattr(ca_st, "garbage", True), p.send_signal(signal.SIGHUP)), lambda: setattr(ca_st, "garbage", False))
         if shutil.which("tc"):
             fault("loss and delay (netem: 2% lost, 20 ms)",
                   lambda: subprocess.run(["tc", "qdisc", "add", "dev", "lo", "root", "netem", "delay", "20ms", "loss", "2%"]),
@@ -297,6 +378,13 @@ http 127.0.0.1:{LST} {{
         check("  its workers all there again (one was killed, one stopped)", until(lambda: len(kids(p.pid, "okena-worker")) == 3, 5),
               kids(p.pid, "okena-worker"))
         check("  and the access log written again once its disk had room", until(lambda: (disk / "access.log").stat().st_size > 0, 3))
+        tls = [x for x in allr if x[2] != "ok" and not x[2].startswith(("status", "error"))]
+        n_tls = len([x for x in load.log if x[2] == "ok"])
+        check("the ACME certificate never taken away: every TLS client verified it", not [x for x in tls if x[2].startswith("certificate")],
+              collections.Counter(x[2] for x in tls))
+        t = log.read_text()
+        check("  each renewal asked and failed, said", t.count(f"acme: {NAME}: the order failed") >= 4
+              and any(e[0] == "order refused" for e in ca_st.log), (t.count("the order failed"), n_tls))
     finally:
         if load:
             load.stop.set()

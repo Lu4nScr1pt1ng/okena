@@ -550,7 +550,11 @@ built; both measurements are still to be made on the lab.)
   on /metrics and `alerts { on certificate }` (under 14 days left, told daily).
   Exit: a fresh install with `tls auto` serves a valid certificate within a
   minute; a CA down, rate-limited or answering wrongly never takes a served
-  certificate away; `make chaos` with the CA failed in turn passes.
+  certificate away; `make chaos` with the CA failed in turn passes. (`make
+  chaos` now fails the CA in turn, rate-limited, down and answering garbage, a
+  renewal asked each time, with TLS clients verifying throughout: passes. The
+  minute is met against the test CA, `tests/gateway/acmeauto.py`, in seconds;
+  against Let's Encrypt itself it is still to be measured on a public host.)
 * TLS 1.2, RSA certificates (signing), client-certificate auth at scale.
 * FastCGI to PHP-FPM and others (`php` on a route: index files, the script
   path checked against the root, try-files), as nginx and Caddy do it.
