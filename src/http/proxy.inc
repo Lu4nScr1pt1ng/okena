@@ -3917,6 +3917,8 @@ http_phase_expired:
 	mov	eax,[r15+H_STATE]
 	cmp	eax,HS_TLS_QUEUED
 	je	.silent				; waited for the handshake budget
+	cmp	eax,HS_TLS_ODWAIT
+	je	.silent				; (an on-demand certificate never came)
 	cmp	eax,HS_TLS_HELLO
 	jb	@f
 	cmp	eax,HS_TLS_LAST

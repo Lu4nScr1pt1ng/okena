@@ -26,6 +26,7 @@
 ; the control process verifies its servers (the system's roots, or trust=).
 
 ACME_CERTS	:= 16
+ACME_ALL	:= ACME_CERTS + OD_MAX	; and the on-demand ones (ondemand.inc), after them
 ACME_NAMES	:= 15
 ACME_URL	:= 512
 ACME_BACK_MIN	:= 60
@@ -120,9 +121,9 @@ bss
 	g_ac_names:	rb 4096			; NUL between them, an empty one at the end
 	; the acme process's
 	align 8
-	g_ac_due	rq ACME_CERTS		; realtime second: when to renew, -1 to look
-	g_ac_back	rq ACME_CERTS		; the last wait after a failure
-	g_ac_end	rq ACME_CERTS		; its certificate's notAfter
+	g_ac_due	rq ACME_ALL		; realtime second: when to renew, -1 to look
+	g_ac_back	rq ACME_ALL		; the last wait after a failure
+	g_ac_end	rq ACME_ALL		; its certificate's notAfter
 	g_ac_why	dq ?			; what failed (NUL-ended)
 	g_ac_auth	dq ?			; the URL being asked: host[:port]
 	g_ac_path	dq ?			; and its path
@@ -175,17 +176,17 @@ bss
 	g_ac_cai	dd ?			; the CA being asked: 0 ca=, 1 fallback=
 	; ARI (RFC 9773): per certificate, its CertID and when to ask again
 	align 8
-	g_ac_arinext	rq ACME_CERTS
+	g_ac_arinext	rq ACME_ALL
 	g_ac_retry	dq ?			; the answer's Retry-After (s), 0 none
-	g_ac_certidl	rd ACME_CERTS
-	g_ac_arigot	rd ACME_CERTS		; the CA answered for it: an order "replaces" it
+	g_ac_certidl	rd ACME_ALL
+	g_ac_arigot	rd ACME_ALL		; the CA answered for it: an order "replaces" it
 	g_ac_derl	dd ?
 	g_ac_rinfol	dd ?
-	g_ac_certid:	rb 128 * ACME_CERTS
+	g_ac_certid:	rb 128 * ACME_ALL
 	g_ac_rinfo:	rb ACME_URL
 	g_ac_t14:	rb 16
-	g_ac_tag	rq ACME_CERTS		; each certificate's tag (its leaf's SHA-256, 8 bytes)
-	g_ac_revdone	rq ACME_CERTS		; a revocation already acted on
+	g_ac_tag	rq ACME_ALL		; each certificate's tag (its leaf's SHA-256, 8 bytes)
+	g_ac_revdone	rq ACME_ALL		; a revocation already acted on
 	g_ac_eabreq	dd ?			; its directory says externalAccountRequired
 	g_ac_dchgl	rd ACME_NAMES
 	g_ac_dchg:	rb 64 * ACME_NAMES	; (Route 53: each change, until INSYNC)
@@ -251,6 +252,20 @@ end rodata
 
 ; the shared page, once, before any fork
 acme_page_init:
+	cmp	qword [g_od_page],0
+	jne	@f
+	xor	edi,edi				; (ondemand.inc's)
+	mov	esi,OD_PAGE
+	mov	edx,PROT_READ or PROT_WRITE
+	mov	r10d,MAP_SHARED or MAP_ANONYMOUS
+	mov	r8,-1
+	xor	r9d,r9d
+	mov	eax,SYS_mmap
+	syscall
+	cmp	rax,-4096
+	ja	@f
+	mov	[g_od_page],rax
+@@:
 	cmp	qword [g_acme_page],0
 	jne	.out
 	xor	edi,edi
@@ -270,8 +285,9 @@ acme_page_init:
 spawn_acme:
 	cmp	dword [g_plan_acme+ACM_ON],0
 	je	.none
-	cmp	dword [g_plan_acme+ACM_NCERT],0
-	je	.none
+	mov	eax,[g_plan_acme+ACM_NCERT]
+	or	eax,[g_plan_odn]
+	jz	.none
 	cmp	qword [g_acme_page],0
 	je	.none
 	mov	eax,SYS_fork
@@ -1635,19 +1651,21 @@ acme_main:
 	mov	qword [g_ac_due+rbx*8],-1
 	mov	qword [g_ac_back+rbx*8],0
 	inc	ebx
-	cmp	ebx,ACME_CERTS
+	cmp	ebx,ACME_ALL
 	jb	@b
+	call	od_load				; the on-demand ones kept from before
 .loop:
 	mov	dword [g_ac_reload],0
 	mov	rax,[g_acme_page]
 	mov	r14d,[rax+AH_REVSEQ]		; (what the sleep waits on)
 	call	acme_revoked
+	call	od_requests			; names the workers ask for
 	call	acme_now
 	lea	r13,[rax+3600]			; the next to look at
 	xor	ebx,ebx
 .cert:
-	cmp	ebx,[g_plan_acme+ACM_NCERT]
-	jae	.pass
+	call	acme_more			; (the configured, then the on-demand ones)
+	jc	.pass
 	cmp	qword [g_ac_due+rbx*8],-1
 	jne	@f
 	call	acme_file_due
@@ -1689,7 +1707,13 @@ acme_main:
 .issued:
 	mov	qword [g_ac_back+rbx*8],0
 	call	acme_file_due
+	cmp	ebx,ACME_CERTS
+	jb	.reload
+	call	od_publish			; on demand: the workers take it from the store
+	jmp	@f
+.reload:
 	mov	dword [g_ac_reload],1
+@@:
 	call	log_begin
 	out_lit 'acme: '
 	call	acme_out_name
@@ -1706,6 +1730,27 @@ acme_main:
 	call	log_end
 	jmp	.later
 .failed:
+	cmp	ebx,ACME_CERTS			; on demand, and none yet: refused for a while
+	jb	.backoff
+	cmp	qword [g_ac_end+rbx*8],0
+	jne	.backoff
+	lea	eax,[rbx-ACME_CERTS]
+	mov	byte [g_od_active+rax],0
+	call	od_slot
+	jc	@f
+	mov	edx,3
+	call	od_slot_state
+@@:
+	call	log_begin
+	out_lit 'acme: on demand: '
+	call	acme_out_name
+	out_lit ': the order failed ('
+	mov	rsi,[g_ac_why]
+	call	out_cstr
+	out_lit '): refused for 10 minutes'
+	call	log_end
+	jmp	.later
+.backoff:
 	mov	rax,[g_ac_back+rbx*8]
 	add	rax,rax
 	jnz	@f
@@ -1803,8 +1848,8 @@ acme_revoked:
 @@:
 	xor	ebx,ebx
 .cert:
-	cmp	ebx,[g_plan_acme+ACM_NCERT]
-	jae	.out
+	call	acme_more
+	jc	.out
 	mov	rax,[g_ac_tag+rbx*8]
 	test	rax,rax
 	jz	.next
@@ -1869,9 +1914,7 @@ acme_now:
 
 ; ebx = a certificate: its first name, said
 acme_out_name:
-	mov	eax,ebx
-	shl	eax,4
-	mov	rax,[g_plan_acme+ACM_CERT+rax]
+	call	acme_cert_args
 	mov	rsi,[rax+A_VAL]
 	mov	edx,[rax+A_VLEN]
 	jmp	out_str
@@ -1888,9 +1931,10 @@ acme_path:
 	je	@f
 	mov	byte [rdi],'/'
 	inc	rdi
-	mov	eax,ebx
-	shl	eax,4
-	mov	rsi,[g_plan_acme+ACM_CERT+rax]
+	push	rdi
+	call	acme_cert_args
+	pop	rdi
+	mov	rsi,rax
 	mov	ecx,[rsi+A_VLEN]
 	mov	rsi,[rsi+A_VAL]
 	rep	movsb
@@ -4783,10 +4827,9 @@ acme_issue:
 	xor	eax,eax
 	mov	ecx,ACME_NAMES * 2		; (g_ac_didl, g_ac_dpost)
 	rep	stosd
-	mov	eax,ebx
-	shl	eax,4
-	mov	r14,[g_plan_acme+ACM_CERT+rax]	; the names
-	mov	r15d,[g_plan_acme+ACM_CERT+rax+8]
+	call	acme_cert_args
+	mov	r14,rax				; the names
+	mov	r15d,ecx
 	; the directory
 	mov	rsi,[g_plan_acme+ACM_CA]
 	mov	ecx,[g_plan_acme+ACM_CAL]

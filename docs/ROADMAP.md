@@ -534,7 +534,9 @@ built; both measurements are still to be made on the lab.)
   for every certificate with a responder, ACME's or not: issuer- or
   delegate-signed answers only, refreshed halfway to nextUpdate; an ACME
   certificate the CA says is revoked renewed at once.
-  Still to do: the rest of the list above (on-demand, the shared lock, `okena certs`, the local CA).
+  On-demand certificates (`on_demand` patterns, `ask=`, `max=`): the handshake
+  parked until the acme process has one, then served from a shared store.
+  Still to do: the rest of the list above (the shared lock, `okena certs`, the local CA).
   Exit: a fresh install with `tls auto` serves a valid certificate within a
   minute; a CA down, rate-limited or answering wrongly never takes a served
   certificate away; `make chaos` with the CA failed in turn passes.

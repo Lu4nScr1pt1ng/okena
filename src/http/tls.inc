@@ -233,6 +233,8 @@ http_tls_hello_go:
 	call	tls_hello
 	cmp	eax,TH_MORE
 	je	http_tls_read
+	cmp	eax,TH_WAIT
+	je	od_park				; an on-demand certificate is coming
 	cmp	eax,TH_TLS12
 	jne	@f
 	mov	rax,[r15+H_BUF]
@@ -924,6 +926,12 @@ http_sni_host_check:
 	mov	rax,[r15+H_SNICERT]
 	test	rax,rax
 	jz	.ok
+	lea	rcx,[g_tls]			; (one not of the plan: on demand, TLS-ALPN-01's)
+	cmp	rax,rcx
+	jb	.ok
+	add	rcx,TL_SIZE * MAX_TLS
+	cmp	rax,rcx
+	jae	.ok
 	lea	rcx,[g_hm]
 	mov	edx,[rcx+HM_HOST]
 	cmp	edx,-1

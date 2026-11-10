@@ -18,6 +18,7 @@ bss
 	g_tls:		rb TL_SIZE * MAX_TLS
 	g_tls_store:	rb TLS_STORE
 	g_acme_chain:	rb AX_CHAINMAX		; (right after it: TLS-ALPN-01's, acme.inc)
+	g_od_chain:	rb ODS_CHAINMAX		; (and on demand's, ondemand.inc)
 	; scratch while loading
 	g_tls_path	rb 1024
 	g_tls_b64	rb TLS_DER_MAX * 2
@@ -567,6 +568,15 @@ compile_tls:
 	mov	rdi,r12				; acme NAME...: from the CA (acme.inc)
 	mov	edx,r13d
 	call	compile_tls_acme
+	mov	rdi,r12				; on_demand (ondemand.inc)
+	mov	ecx,DIR_ODEMAND
+	call	find_child
+	test	rax,rax
+	jz	@f
+	mov	rdi,rax
+	mov	edx,r13d
+	call	compile_tls_od
+@@:
 	mov	rdi,r12				; ocsp off: none of the block's stapled
 	mov	ecx,DIR_OCSP
 	call	find_child

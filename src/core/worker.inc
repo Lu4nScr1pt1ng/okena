@@ -371,6 +371,7 @@ tick_work:
 	call	ph_expire
 	call	overload_tick
 	call	jwt_tick
+	call	od_tick				; handshakes waiting for an on-demand certificate
 	call	jwks_tick
 	call	retry_budget_tick
 	call	alog_tick

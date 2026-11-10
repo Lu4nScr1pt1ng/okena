@@ -109,6 +109,7 @@ include 'admin/bird.inc'
 include 'core/vrrp.inc'
 include 'core/acme.inc'
 include 'tls/ocsp.inc'
+include 'tls/ondemand.inc'
 include 'http/zc.inc'
 include 'gw/compress.inc'
 include 'gw/hints.inc'
@@ -155,5 +156,6 @@ segment readable
 segment readable writeable
 	bss_emit
 	assert g_acme_chain - g_tls_store = TLS_STORE	; (a TL_CHAIN offset reaches it)
+	assert g_od_chain - g_tls_store = TLS_STORE + AX_CHAINMAX
 
 segment gnustack

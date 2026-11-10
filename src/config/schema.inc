@@ -178,6 +178,7 @@ enumdef e_discover, 'file', 'srv', 'docker', 'kubernetes'
 keysdef k_balance, 'key', T_ANY, 'bound', T_ANY
 keysdef k_sticky, 'cookie', T_ANY, 'ttl', T_DURATION, 'samesite', T_ANY
 keysdef k_cert, 'key', T_ANY
+keysdef k_odemand, 'ask', T_ANY, 'max', T_ANY
 keysdef k_health, 'every', T_DURATION, 'timeout', T_DURATION, 'rise', T_COUNT, 'fall', T_COUNT, \
 	'expect', T_STATUSES, 'host', T_HOSTNAME
 keysdef k_uptls, 'trust', T_ANY, 'sni', T_HOSTNAME, 'cert', T_ANY, 'key', T_ANY
@@ -289,6 +290,7 @@ dirdef DIR_CERT, 'cert',        M_TLS,     0,           0, 1, 1, T_ANY, T_NONE, 
 dirdef DIR_KEY, 'key',          M_TLS,     0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
 dirdef DIR_TLSACME, 'acme',     M_TLS,     0,           0, 1, 15, T_ANY, T_ANY, 0
 dirdef DIR_OCSP, 'ocsp',        M_TLS,     0,           F_UNIQUE, 1, 1, e_onoff, T_NONE, 0
+dirdef DIR_ODEMAND, 'on_demand', M_TLS,     0,           F_UNIQUE, 0, 16, T_ANY, T_ANY, k_odemand
 dirdef DIR_CLIENT_CA, 'client_ca', M_TLS,   0,           F_UNIQUE, 1, 2, T_ANY, e_cca, 0
 dirdef DIR_KTLS, 'ktls',        M_TLS,     0,           F_UNIQUE, 1, 1, e_onoff, T_NONE, 0
 dirdef DIR_ACCESS_LOG, 'access_log', M_HTTP,   0,           F_UNIQUE, 1, 1, T_LOGDEST, T_NONE, k_alog

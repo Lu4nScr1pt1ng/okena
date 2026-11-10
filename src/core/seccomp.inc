@@ -487,7 +487,8 @@ rodata
 	sc_allow filter_acme, SYS_ftruncate
 	sc_allow filter_acme, SYS_fdatasync
 	sc_allow filter_acme, SYS_rename_
-	sc_allow filter_acme, SYS_futex		; asleep until a revocation
+	sc_allow filter_acme, SYS_futex		; asleep until a revocation, or a request
+	sc_allow filter_acme, SYS_mkdirat_	; (an on-demand certificate's directory)
 	sc_end filter_acme
 
 	align 8

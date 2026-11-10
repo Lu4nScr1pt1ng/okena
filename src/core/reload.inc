@@ -164,6 +164,8 @@ macro plan_regions action
 	action g_plan_vrrp, VC_SIZE
 	action g_plan_acme, ACM_SIZE
 	action g_plan_ocspoff, MAX_TLS
+	action g_plan_odn, 4
+	action g_plan_od, OC_SIZE * OD_CFGS
 	action g_signed, SU_SIZE * MAX_SIGNED
 	action g_plan_signed, 4
 	action g_plan_fleet_sa, 32 * MAX_FLEET

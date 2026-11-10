@@ -846,6 +846,28 @@ tls_hello:
 	mov	[rbx+TS_CERT],rax		; the chosen cert (TLS 1.2 reads it too);
 	jmp	.cert_done			; both siblings name the host for the 421 check
 .cert_default:
+	cmp	dword [rbp+HL_SNILEN],0		; on demand (ondemand.inc): a name none has
+	je	.cert_listener
+	test	dword [rbx+TS_FLAGS],TF_QUIC
+	jnz	.cert_listener
+	mov	rdi,[rbp+HL_TL]
+	mov	rsi,[rbp+HL_SNIP]
+	mov	edx,[rbp+HL_SNILEN]
+	call	od_hello			; rax = its entry, or 0 (edx = 1: one is coming)
+	test	rax,rax
+	jz	@f
+	mov	[rbp+HL_TL],rax
+	mov	[rbx+TS_CERT],rax
+	jmp	.cert_done
+@@:
+	test	edx,edx
+	jz	.cert_listener
+	test	dword [rbx+TS_FLAGS],TF_ODWAITED
+	jnz	.cert_listener
+	mov	eax,TH_WAIT			; the caller parks it, and asks again
+	xor	edx,edx
+	jmp	.out
+.cert_listener:
 	mov	rdi,[rbp+HL_TL]			; reload: tls_cert_named clobbers scratch
 	call	tls_cert_sibling		; rdi preserved, rax = sibling or 0
 	mov	rsi,rax

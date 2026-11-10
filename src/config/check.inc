@@ -1460,6 +1460,11 @@ check_tls:
 	call	find_child
 	test	rax,rax
 	jnz	.done
+	mov	rdi,rbx				; on_demand: from the CA, as they are asked for
+	mov	ecx,DIR_ODEMAND
+	call	find_child
+	test	rax,rax
+	jnz	.done
 	jmp	.missing
 @@:
 	test	r13d,r13d

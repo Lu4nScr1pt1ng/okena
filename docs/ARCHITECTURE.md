@@ -681,7 +681,9 @@ ECN. 0-RTT off by default and, when on, only for routes marked idempotent.
   API, an RFC 2136 UPDATE signed with TSIG, or Route 53 (SigV4, INSYNC
   waited for), records removed after; a fallback CA asked at once when the
   first fails, EAB for CAs that ask for it, ARI's renewal window followed;
-  OCSP stapling by an okena-ocsp process (answers verified against the
+  on-demand certificates (a worker parks the handshake and asks the acme
+  process through a ring; the certificate comes back in a shared store, no
+  reload); OCSP stapling by an okena-ocsp process (answers verified against the
   issuer or its delegate, shared with the workers under a seqlock, keyed by
   the leaf's hash so a reload never staples the wrong one); the account and the JWS
   (ES256) its own, files renamed into a 0700 directory, a reload of its

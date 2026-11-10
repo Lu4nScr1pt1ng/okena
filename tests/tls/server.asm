@@ -235,6 +235,13 @@ tls_cert_select:
 acme_tls_cert:
 	xor	eax,eax
 	ret
+; (no on-demand certificates here)
+TH_WAIT		:= 5
+TF_ODWAITED	:= 2048
+od_hello:
+	xor	eax,eax
+	xor	edx,edx
+	ret
 ; (no OCSP here: nothing to staple)
 ocsp_staple:
 	mov	dword [g_oc_n],0

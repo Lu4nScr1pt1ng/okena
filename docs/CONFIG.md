@@ -457,6 +457,7 @@ tls {
     cert /etc/okena/fullchain.pem key=/etc/okena/key.pem   # or one per host,
     acme example.com www.example.com   # or from a CA (ACME), okena renewing it
     ocsp off                        # (OCSP stapling: on by default, below)
+    on_demand *.example.com ask=http://127.0.0.1:9000/ok   # certificates as names come
     versions 1.2 1.3
     alpn h2 http/1.1
     client_ca /etc/okena/clients.pem required
@@ -466,6 +467,21 @@ tls passthrough {                   # tcp only: route on SNI, never decrypt
     default reject
 }
 ```
+
+**On-demand certificates.** `on_demand [PATTERN...] [ask=URL] [max=N]` in a tls
+block gets a certificate from the ACME CA for a name the moment a client asks for
+it (its SNI), when no certificate of the listener has it: for platforms whose
+customers bring their own domains. A pattern is a name or `*.parent` (any name
+under it); `ask=http://...` is asked first, GET URL?domain=NAME (or &domain=), and
+only a 200 lets okena ask the CA; at least one of the two is needed, so a
+stranger's names cannot make okena use up the CA's limits. `max=` caps how many
+(64 at most). The handshake waits (each second looked at again, 15 s at most)
+while the acme process gets it, then goes on with it, without a reload; a name
+refused (for 10 minutes), not allowed, past `max=`, or not served in time goes
+on at once with the listener's own certificate (one okena signs, when the block
+has none). The certificates are kept in DIR as the others, named in
+DIR/on_demand.list, served again after a restart and renewed the same way.
+(Requests whose Host differs from such a name are not answered 421.)
 
 **OCSP stapling.** A certificate whose chain names its issuer and whose leaf names
 an OCSP responder (Authority Information Access, http://) is stapled: okena asks
