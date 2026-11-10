@@ -178,6 +178,17 @@ with grpc-status (14 UNAVAILABLE for 502 and 503, 4 DEADLINE_EXCEEDED
 for 504 and 408, ...) and grpc-message; the access log keeps the HTTP
 status.
 
+gRPC-Web, for browsers, needs nothing configured: a request with content-type
+`application/grpc-web` or `application/grpc-web+proto` (`+json` alike) to a pool
+with `protocol h2` reaches it as gRPC (`application/grpc...`, `te: trailers`),
+and its answer comes back as gRPC-Web (`application/grpc-web...`), the backend's
+trailers (`grpc-status`, `grpc-message`) as the last message, a trailer frame,
+over HTTP/1.1, 2 and 3 alike; an error with no body keeps `grpc-status` in its
+head. The text mode (`application/grpc-web-text`, base64) and a pool of HTTP/1.1
+(a backend that speaks gRPC-Web itself) get the request as it is. A page on
+another origin needs the route's `cors` (with `x-grpc-web`, `x-user-agent` and
+`grpc-timeout` allowed, and `grpc-status`, `grpc-message` exposed).
+
 `okena { ticket_keys FILE }` takes the keys from a file every instance
 reads: one a line, 32 bytes of base64 (`openssl rand -base64 32`), the
 first sealing new tickets, an optional second (the previous) still

@@ -1459,6 +1459,7 @@ http_write_request_head:
 	push	r12
 	push	r13
 	push	r14
+	call	gweb_pool			; (gRPC-Web to an HTTP/2 pool: gRPC)
 	lea	r12,[g_hm]
 	mov	rdi,[r15+H_BUF]
 	lea	rdi,[rdi+HB_OUT]
@@ -1598,6 +1599,9 @@ http_write_request_head:
 	end irp
 	pop	rdi
 .copy:
+	xor	edx,edx				; gRPC-Web: its content-type as gRPC's
+	call	gweb_field
+	jc	.skip
 	mov	eax,[r14+HF_NLEN]
 	add	eax,[r14+HF_VLEN]
 	add	eax,4
@@ -2664,6 +2668,9 @@ http_write_response_head:
 	pop	rdi
 	jc	.skip
 .copy:
+	mov	edx,1				; gRPC-Web's content-type (grpcweb.inc)
+	call	gweb_field
+	jc	.skip
 	mov	eax,[r14+HF_NLEN]
 	add	eax,[r14+HF_VLEN]
 	add	eax,4
@@ -2929,6 +2936,13 @@ http_last_chunk:
 	mov	ecx,SIDE_CLIENT
 	jmp	h_send
 .not_zip:
+	h_rec
+	mov	rax,[r15+H_BUF]			; gRPC-Web: its trailers as its last message
+	cmp	byte [rax+HB_GWEB],2
+	jne	@f
+	cmp	dword [r15+H_RCK+CK_TLEN],0
+	jne	gweb_trailers
+@@:
 	call	session_ptr
 	test	dword [rax+S_FLAGS],SF_H2S or SF_H3S or SF_HSTRM
 	jnz	http_exchange_done		; a stream ends with END_STREAM (and its trailers)
@@ -4402,6 +4416,8 @@ cstring hn_content_type, 'content-type',0
 http_grpc_mark:
 	push	rbx
 	push	r12
+	mov	rax,[r15+H_BUF]			; (grpcweb.inc: none, until said)
+	mov	byte [rax+HB_GWEB],0
 	lea	r12,[g_hm]
 	xor	ebx,ebx
 .field:
@@ -4417,13 +4433,16 @@ http_grpc_mark:
 	jnz	.field
 	cmp	dword [rdi+HF_VLEN],16
 	jb	.out
+	push	rdi
 	mov	rdi,[rdi+HF_VALUE]
 	lea	rsi,[.grpc]
 	mov	edx,16
 	call	mem_eq_nocase
+	pop	rdi
 	test	eax,eax
 	jz	.out
 	or	dword [r15+H_FLAGS],HX_GRPC
+	call	gweb_mark			; and gRPC-Web? (grpcweb.inc)
 .out:
 	pop	r12
 	pop	rbx
