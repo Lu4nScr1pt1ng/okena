@@ -129,6 +129,8 @@ bss
 	g_x509_valend	dq ?
 	g_x509_subj	dq ?			; subject Name: content start / end
 	g_x509_subjend	dq ?
+	g_x509_ser	dq ?			; serialNumber: content, length
+	g_x509_serlen	dd ?
 	g_x509_iss	dq ?			; issuer Name: content start / end
 	g_x509_issend	dq ?
 	g_x509_ext	dq ?			; extensions SEQUENCE: content / end (0 if none)
@@ -411,6 +413,8 @@ x509_locate:
 	call	der_read			; serialNumber
 	jc	.no
 .haveserial:
+	mov	[g_x509_ser],rsi
+	mov	[g_x509_serlen],ecx
 	mov	rsi,r8
 	mov	rdx,r13
 	call	der_read			; signature AlgorithmIdentifier

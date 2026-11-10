@@ -1214,14 +1214,23 @@ http :443 {
 `required`, the default, refuses a connection with no good certificate in the
 handshake, whatever the route. With `optional` a client may send none, and a
 route with `auth mtls` answers 401. A certificate sent must be good in both cases.
-The chain must reach the first certificate in the file, with only CAs signing and
-each link in date; an extended key usage, if there is one, must allow client
+Every certificate in the file is a CA the chain may reach (256 over all
+listeners), the one whose subject is what the chain's last certificate names as
+its issuer; only CAs signing, each link in date; an extended key usage, if there is one, must allow client
 authentication; the commonName must be there, with no control byte.
 
 On such a listener: TLS 1.3 only, no tickets, in either direction: a resumed session
 has no certificate to look at. Not on a `tcp` listener, and not with `http3`: it is
 refused at load, because QUIC would be a way around it. A client's chain must fit
-in 16 KB. Revocation (CRL, OCSP) is not checked.
+in 16 KB.
+
+`client_ca FILE crl=FILE` checks revocation: FILE holds certificate revocation
+lists (PEM `X509 CRL` blocks, or one list in DER), each signed by one of the
+CAs (else refused at load). A chain with a certificate one of them lists,
+among those that CA signed (a client, or an intermediate and so all of its
+clients), is refused; a list past its nextUpdate refuses every client of its
+CA until a fresh one is loaded (a reload), better shut than open. 65536
+revoked certificates over all listeners; OCSP for clients is not asked.
 
 `auth forward pool=NAME path=/verify copy=a,b timeout=2s cache=30s` has another
 service decide. The request waits, and okena asks: GET on `path`, on that pool, so

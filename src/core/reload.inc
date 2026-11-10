@@ -117,7 +117,11 @@ macro plan_regions action
 	action g_jwk, JK_SIZE * MAX_JWK
 	action g_plan_jwk, 4
 	action g_jsrc, JS_SIZE * MAX_JWKS
-	action g_cca, PK_SIZE * MAX_LISTENERS
+	action g_cca, PK_SIZE * CCA_MAX
+	action g_cca_nh, 8 * CCA_MAX
+	action g_cca_next, 8 * CCA_MAX
+	action g_crl_tab, 8 * CRL_SLOTS
+	action g_plan_crln, 4
 	action g_caches, CA_SIZE * MAX_CACHES
 	action g_files, FI_SIZE * MAX_FILES
 	action g_plan_files, 4

@@ -65,7 +65,8 @@ TS_MCFK		:= TS_ANCHOR + 8		; the client's finished key (32)
 TS_MSHA		:= TS_MCFK + 32			; the transcript through the server Finished
 TS_PEERL	:= TS_MSHA + SHA256_CTX_SIZE	; d: who the client's certificate says, 0 none
 TS_PEER		:= TS_PEERL + 4			; (MTLS_NAME_MAX)
-TS_SIZE		:= TS_PEER + MTLS_NAME_MAX + 4
+TS_ANCHORN	:= TS_PEER + MTLS_NAME_MAX + 4	; d: `client_ca`: how many anchors from TS_ANCHOR
+TS_SIZE		:= TS_ANCHORN + 4
 
 ; QUIC (RFC 9001): the handshake without records. The caller sets TF_QUIC
 ; and TS_QT; tls_hello then takes the ClientHello message itself (from

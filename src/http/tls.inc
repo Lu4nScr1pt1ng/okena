@@ -152,6 +152,10 @@ http_tls_start:
 	jz	@f
 	mov	r8,[r15+H_BUF]
 	or	dword [r8+HB_TS+TS_FLAGS],TF_CCA
+	mov	edx,ecx				; (the first anchor | how many << 16)
+	shr	edx,16
+	mov	[r8+HB_TS+TS_ANCHORN],edx
+	movzx	ecx,cx
 	imul	rcx,rcx,PK_SIZE
 	lea	rcx,[g_cca+rcx]
 	mov	[r8+HB_TS+TS_ANCHOR],rcx

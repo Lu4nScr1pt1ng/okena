@@ -565,7 +565,10 @@ built; both measurements are still to be made on the lab.)
   dual-certificate name picks by the client's 1.2 suites. Session tickets
   (RFC 5077) under the 1.3 ticket keys: abbreviated handshakes, counted as
   resumed. A close_notify when okena closes after an answer (1.2 and 1.3,
-  records here or on kTLS: an alert record through sendmsg).
+  records here or on kTLS: an alert record through sendmsg). Client
+  certificates: every CA in `client_ca`'s file (found by the chain's issuer
+  name), `crl=` lists (signed by one of them, serials in a hash table, a
+  stale list failing shut).
 * FastCGI to PHP-FPM and others (`php` on a route: index files, the script
   path checked against the root, try-files), as nginx and Caddy do it.
 * Regular expressions in routes, `match` and `rewrite`, compiled to an

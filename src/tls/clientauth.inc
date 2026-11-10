@@ -10,7 +10,8 @@
 ; resumed has no certificate to look at, and a ticket from another listener under
 ; the same keys would be a way around this one. It speaks TLS 1.3 only.
 ;
-; The certificate: its chain up to the listener's anchor, every link in date, an
+; The certificate: its chain up to one of the listener's anchors, none of it
+; revoked (clientca.inc), every link in date, an
 ; extended key usage, if it has one, that allows client authentication, and a
 ; signature over this handshake. Who it is is the subject's commonName.
 
@@ -19,9 +20,7 @@ CC_PREFIX	:= 98				; 64 spaces, the label, a zero
 
 bss
 	align 8
-	g_cca:		rb PK_SIZE * MAX_LISTENERS	; `client_ca`
-	g_plan_cca	dd ?
-	g_cmp_cca	dd ?
+	; (`client_ca`'s anchors and lists: clientca.inc)
 	align 8
 	g_cc_list	dq ?
 	g_cc_listn	dd ?
@@ -282,10 +281,7 @@ cc_flight:
 	test	rbp,rbp
 	jz	.good				; (none, and none is needed: `optional`)
 	; whose certificate
-	mov	rdi,[rbx+TS_ANCHOR]
-	mov	rsi,[g_cc_list]
-	mov	edx,[g_cc_listn]
-	call	cert_chain_verify
+	call	cc_chain_verify		; (clientca.inc: one of its anchors, nothing revoked)
 	test	eax,eax
 	jz	.bad
 	lea	rdi,[g_cc_time]
@@ -487,65 +483,3 @@ cc_signature:
 .out:
 	pop	r14
 	ret
-
-; rdi = a listener: `client_ca` into g_cca, and g_cmp_cca, g_cmp_flags
-compile_client_ca:
-	push	rbx
-	mov	ecx,DIR_TLS
-	call	find_child
-	test	rax,rax
-	jz	.out
-	mov	rdi,rax
-	mov	ecx,DIR_CLIENT_CA
-	call	find_child
-	test	rax,rax
-	jz	.out
-	mov	rbx,rax
-	mov	rax,[rbx+N_ARGS]
-	mov	ecx,[rax+A_VLEN]
-	cmp	ecx,1000
-	ja	.bad
-	mov	rsi,[rax+A_VAL]
-	lea	rdi,[g_au_path]
-	rep	movsb
-	mov	byte [rdi],0
-	lea	rdi,[g_au_path]
-	lea	rsi,[g_ar_text]
-	call	read_file
-	test	rax,rax
-	js	.bad
-	mov	rsi,rax
-	mov	edx,edx
-	lea	rdi,[g_trust_der]
-	call	pem_first_cert
-	test	eax,eax
-	jz	.bad
-	lea	rsi,[g_trust_der]
-	mov	edx,eax
-	mov	ecx,[g_plan_cca]
-	cmp	ecx,MAX_LISTENERS
-	jae	.bad
-	mov	[g_cmp_cca],ecx
-	imul	rdi,rcx,PK_SIZE
-	lea	rdi,[g_cca+rdi]
-	call	cert_pubkey
-	test	eax,eax
-	jz	.bad
-	inc	dword [g_plan_cca]
-	or	dword [g_cmp_flags],LSF_CCA or LSF_CCA_REQ
-	cmp	dword [rbx+N_ARGC],2
-	jb	.out
-	mov	rax,[rbx+N_ARGS]
-	mov	rax,[rax+A_SIZE+A_VAL]
-	cmp	byte [rax],'o'			; `optional`
-	jne	.out
-	and	dword [g_cmp_flags],not LSF_CCA_REQ
-.out:
-	pop	rbx
-	ret
-.bad:
-	call	log_begin
-	out_lit 'client_ca: a PEM file with a certificate okena can read is needed'
-	call	log_end
-	mov	edi,EXIT_CONFIG
-	jmp	exit_process

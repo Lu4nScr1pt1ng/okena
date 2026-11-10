@@ -232,6 +232,8 @@ test-serial: $(BIN) $(HTTPH) $(KAT) $(TLSH)
 	python3 -I tests/gateway/acmeauto.py epoll
 	python3 -I tests/gateway/certexpiry.py io_uring
 	python3 -I tests/gateway/certexpiry.py epoll
+	python3 -I tests/gateway/mtlsca.py io_uring
+	python3 -I tests/gateway/mtlsca.py epoll
 	python3 -I tests/gateway/forward.py io_uring
 	python3 -I tests/gateway/forward.py epoll
 	python3 -I tests/gateway/mtls.py io_uring

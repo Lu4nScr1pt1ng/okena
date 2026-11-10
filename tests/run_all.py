@@ -206,6 +206,8 @@ SUITES = [
     ("acmeauto epoll", ["tests/gateway/acmeauto.py", "epoll"]),
     ("certexpiry io_uring", ["tests/gateway/certexpiry.py", "io_uring"]),
     ("certexpiry epoll", ["tests/gateway/certexpiry.py", "epoll"]),
+    ("mtlsca io_uring", ["tests/gateway/mtlsca.py", "io_uring"]),
+    ("mtlsca epoll", ["tests/gateway/mtlsca.py", "epoll"]),
     ("forward io_uring", ["tests/gateway/forward.py", "io_uring"]),
     ("forward epoll", ["tests/gateway/forward.py", "epoll"]),
     ("mtls io_uring", ["tests/gateway/mtls.py", "io_uring"]),
