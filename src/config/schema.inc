@@ -141,6 +141,8 @@ enumdef e_priority, 'normal', 'critical', 'bulk'
 enumdef e_mirror_what, 'pool'
 enumdef e_quic_cc, 'cubic', 'bbr'
 enumdef e_h3, 'on', 'off', 'retry', 'v2'
+enumdef e_tlsver, '1.2', '1.3'
+enumdef e_alpn, 'h2', 'http/1.1'
 enumdef e_proto, 'h1', 'h2', 'fastcgi'
 
 keysdef k_alog, 'trust', T_ANY
@@ -205,7 +207,7 @@ enumdef future_names, 'xdp', \
 	'concurrency', \
 	'canonical', \
 	'body', \
-	'response', 'alpn', 'cert', 'warm'
+	'response', 'cert', 'warm'
 
 rodata
 	align 8
@@ -313,6 +315,8 @@ dirdef DIR_TLSREDIR, 'redirect', M_TLS,    0,           F_UNIQUE, 1, 1, e_onoff,
 dirdef DIR_OCSP, 'ocsp',        M_TLS,     0,           F_UNIQUE, 1, 1, e_onoff, T_NONE, 0
 dirdef DIR_ODEMAND, 'on_demand', M_TLS,     0,           F_UNIQUE, 0, 16, T_ANY, T_ANY, k_odemand
 dirdef DIR_CLIENT_CA, 'client_ca', M_TLS,   0,           F_UNIQUE, 1, 2, T_ANY, e_cca, k_cca
+dirdef DIR_VERSIONS, 'versions', M_TLS,     0,           F_UNIQUE, 1, 2, e_tlsver, e_tlsver, 0
+dirdef DIR_ALPN, 'alpn',        M_TLS,     0,           F_UNIQUE, 1, 2, e_alpn, e_alpn, 0
 dirdef DIR_KTLS, 'ktls',        M_TLS,     0,           F_UNIQUE, 1, 1, e_onoff, T_NONE, 0
 dirdef DIR_ACCESS_LOG, 'access_log', M_HTTP,   0,           F_UNIQUE, 1, 1, T_LOGDEST, T_NONE, k_alog
 dirdef DIR_TRACING, 'tracing',   M_HTTP,   0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, k_tracing

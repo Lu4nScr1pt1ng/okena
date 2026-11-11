@@ -83,24 +83,56 @@ http_tls12_hello:
 	lea	rdx,[rax+TL_RSA_D]
 	mov	[rcx+C12_RSA_D],rdx
 @@:
-	; HTTP/2 over TLS 1.2 (RFC 9113 9.2: ECDHE and AEAD, which is all this
-	; offers): ALPN h2 when the listener takes it and the client asks
+	; ALPN as for TLS 1.3 (the listener's `alpn`, `http2`): HTTP/2 over TLS
+	; 1.2 (RFC 9113 9.2: ECDHE and AEAD, which is all this offers) or
+	; http/1.1, named back; offered and nothing in common: refused
 	mov	dword [rcx+C12_ALPN],0
 	push	rcx
 	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_TLS_HS
+	jnz	.alpn_done			; (tcp: no application protocol)
 	mov	eax,[rax+S_LST]
 	imul	rax,rax,LS_SIZE
-	test	dword [g_listeners+rax+LS_FLAGS],LSF_H2
-	jz	@f
+	mov	r9d,[g_listeners+rax+LS_FLAGS]
 	lea	rsi,[r14+HB_IN]
 	mov	edx,[r15+H_INLEN]
-	call	tls12_alpn_h2
+	push	r9
+	call	tls12_alpn
+	pop	r9
 	mov	rcx,[rsp]
-	mov	[rcx+C12_ALPN],eax
-	test	eax,eax
-	jz	@f
+	test	eax,4
+	jz	.alpn_done			; no ALPN: http/1.1, unnamed
+	test	r9d,LSF_H1FIRST
+	jz	.alpn_h2
+	test	eax,2
+	jnz	.alpn_h1
+.alpn_h2:
+	test	r9d,LSF_H2
+	jz	.alpn_h1
+	test	eax,1
+	jz	.alpn_h1
+	mov	dword [rcx+C12_ALPN],1
 	or	dword [r14+HB_TS+TS_FLAGS],TF_GOT_H2	; (http_tls_established reads it)
-@@:
+	jmp	.alpn_done
+.alpn_h1:
+	test	r9d,LSF_NOH1
+	jnz	.alpn_none
+	test	eax,2
+	jz	.alpn_none
+	mov	dword [rcx+C12_ALPN],2
+	jmp	.alpn_done
+.alpn_none:
+	pop	rcx				; no_application_protocol (RFC 7301)
+	mov	rdi,[r15+H_BUF]
+	mov	dword [rdi+HB_OUT],0x00030315
+	mov	word [rdi+HB_OUT+4],0x0202
+	mov	byte [rdi+HB_OUT+6],120
+	mov	dword [r15+H_STATE],HS_TLS_ALERT
+	mov	esi,7
+	add	rdi,HB_OUT
+	mov	ecx,SIDE_CLIENT
+	jmp	h_send
+.alpn_done:
 	; OCSP: its staple, when the client asks (status_request)
 	mov	rcx,[rsp]
 	mov	dword [rcx+C12_OCSP],0
@@ -609,7 +641,12 @@ tls12_status_req:
 	xor	eax,eax
 	ret
 
-tls12_alpn_h2:
+; rsi/edx = the ClientHello's record: eax = 4 when it has ALPN, | 1 for h2,
+; | 2 for http/1.1 in it
+tls12_alpn:
+	xor	r11d,r11d			; (the answer, built)
+	push	rbx
+	xor	ebx,ebx
 	lea	r8,[rsi+rdx]			; the end
 	lea	rcx,[rsi+5+4+2+32]		; past record, handshake header, version, random
 	cmp	rcx,r8
@@ -647,6 +684,7 @@ tls12_alpn_h2:
 	ja	.no
 	cmp	word [rcx],0x1000		; ALPN
 	jne	.next
+	or	ebx,4
 	lea	r11,[rcx+6]			; past the list's u16 length
 .proto:
 	cmp	r11,r10
@@ -655,16 +693,22 @@ tls12_alpn_h2:
 	cmp	eax,2
 	jne	@f
 	cmp	word [r11+1],'h2'
-	je	.yes
+	jne	@f
+	or	ebx,1
+@@:
+	cmp	eax,8
+	jne	@f
+	mov	rdx,'http/1.1'
+	cmp	[r11+1],rdx
+	jne	@f
+	or	ebx,2
 @@:
 	lea	r11,[r11+1+rax]
 	jmp	.proto
 .next:
 	mov	rcx,r10
 	jmp	.ext
-.yes:
-	mov	eax,1
-	ret
 .no:
-	xor	eax,eax
+	mov	eax,ebx
+	pop	rbx
 	ret

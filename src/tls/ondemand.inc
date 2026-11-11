@@ -52,7 +52,7 @@ OD_PAGE		:= ODP_STORE + OD_MAX * ODS_SIZE
 
 HS_TLS_ODWAIT	:= 33				; the ClientHello waits for its certificate
 TH_WAIT		:= 5				; tls_hello: an on-demand certificate is coming
-TF_ODWAITED	:= 2048				; it waited long enough: go on without one
+TF_ODWAITED	:= 65536				; it waited long enough: go on without one
 ODW_CAP		:= 256				; parked handshakes, a worker
 
 bss

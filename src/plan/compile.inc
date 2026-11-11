@@ -150,6 +150,10 @@ LSF_H3V2	:= 256		; http: `http3 v2`: a v1 client that offers v2 is moved to it
 LSF_CCA		:= 1024		; http: `client_ca`: ask for a certificate
 LSF_CCA_REQ	:= 2048		; and refuse the connection with none
 LSF_0RTT	:= 512		; http: `early_data on`: QUIC 0-RTT for safe requests
+LSF_NO12	:= 4096		; `tls { versions 1.3 }`: a TLS 1.2 client is refused
+LSF_NO13	:= 8192		; `tls { versions 1.2 }`: TLS 1.3 is not taken
+LSF_H1FIRST	:= 16384	; `tls { alpn http/1.1 h2 }`: http/1.1 when offered
+LSF_NOH1	:= 32768	; `tls { alpn h2 }`: a client asking http/1.1 only is refused
 
 ; Pool
 PL_FIRST	:= 0		; d: first server
@@ -3766,6 +3770,7 @@ compile_listener:
 	jne	@f
 	or	dword [g_cmp_flags],LSF_H3RETRY
 @@:
+	call	compile_tls_policy		; `versions`, `alpn`
 	mov	rdi,r12				; early_data on: QUIC 0-RTT
 	mov	ecx,DIR_EARLY
 	call	find_child
@@ -4043,6 +4048,103 @@ TCP_MSS_MAX	:= 32767
 plan_bad_mss:
 	call	log_begin
 	out_lit 'mss takes the largest TCP segment, in bytes: 88 to 32767 (Ethernet carries 1460 over IPv4)'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
+
+; r12 = a listener: its tls block's `versions` and `alpn`, into g_cmp_flags
+compile_tls_policy:
+	push	rbx
+	push	r14
+	mov	rdi,r12
+	mov	ecx,DIR_TLS
+	call	find_child
+	test	rax,rax
+	jz	.out
+	mov	r14,rax
+	mov	rdi,r14
+	mov	ecx,DIR_VERSIONS
+	call	find_child
+	test	rax,rax
+	jz	.alpn
+	call	.words				; ebx = bit 0 1.2, bit 1 1.3; first in bits 8..
+	cmp	bl,1
+	jne	@f
+	or	dword [g_cmp_flags],LSF_NO13
+	test	dword [g_cmp_flags],LSF_H3
+	jnz	plan_bad_tls12_h3
+@@:
+	cmp	bl,2
+	jne	.alpn
+	or	dword [g_cmp_flags],LSF_NO12
+.alpn:
+	mov	rdi,r14
+	mov	ecx,DIR_ALPN
+	call	find_child
+	test	rax,rax
+	jz	.out
+	call	.words				; bit 0 h2, bit 1 http/1.1
+	and	dword [g_cmp_flags],not LSF_H2
+	test	ebx,1
+	jz	@f
+	or	dword [g_cmp_flags],LSF_H2
+@@:
+	test	ebx,2
+	jnz	@f
+	or	dword [g_cmp_flags],LSF_NOH1
+@@:
+	cmp	bl,3
+	jne	.out
+	test	ebx,1 shl 9			; http/1.1 named first
+	jz	.out
+	or	dword [g_cmp_flags],LSF_H1FIRST
+.out:
+	pop	r14
+	pop	rbx
+	ret
+; rax = the directive: ebx = the bits of its words (enum indexes), and the
+; first word's bit again, shifted up by 8
+.words:
+	push	r12
+	push	r13
+	mov	r12,[rax+N_ARGS]
+	mov	r13d,[rax+N_ARGC]
+	mov	r8,[rax+N_DEF]
+	xor	ebx,ebx
+	xor	r9d,r9d				; first seen
+.w:
+	test	r13d,r13d
+	jz	.wdone
+	mov	rdi,[r12+A_VAL]
+	mov	esi,[r12+A_VLEN]
+	mov	rdx,[r8+D_TYPE1]
+	push	r8
+	push	r9
+	call	list_index
+	pop	r9
+	pop	r8
+	mov	ecx,eax
+	mov	eax,1
+	shl	eax,cl
+	or	ebx,eax
+	test	r9d,r9d
+	jnz	@f
+	inc	r9d
+	shl	eax,8
+	or	ebx,eax
+@@:
+	add	r12,A_SIZE
+	dec	r13d
+	jmp	.w
+.wdone:
+	and	ebx,0xFFFF
+	pop	r13
+	pop	r12
+	ret
+
+plan_bad_tls12_h3:
+	call	log_begin
+	out_lit 'tls { versions 1.2 } and http3: QUIC is TLS 1.3 only (versions 1.2 1.3, or http3 off)'
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process

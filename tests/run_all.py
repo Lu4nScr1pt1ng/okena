@@ -61,6 +61,8 @@ SUITES = [
     ("source epoll", ["tests/l4/source.py", "epoll"]),
     ("mss io_uring", ["tests/l4/mss.py", "io_uring"]),
     ("mss epoll", ["tests/l4/mss.py", "epoll"]),
+    ("tls policy io_uring", ["tests/tls/policy.py", "io_uring"]),
+    ("tls policy epoll", ["tests/tls/policy.py", "epoll"]),
     ("aes256 io_uring", ["tests/tls/aes256.py", "io_uring"]),
     ("aes256 epoll", ["tests/tls/aes256.py", "epoll"]),
     ("h2 abuse io_uring", ["tests/h2/abuse.py", "io_uring"]),

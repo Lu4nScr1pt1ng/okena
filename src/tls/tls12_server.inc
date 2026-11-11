@@ -24,7 +24,7 @@ C12_KEYTYPE	:= 24				; d: 0 = EC P-256, 1 = RSA
 C12_RSA_N	:= 32				; q: pointer to the RSA modulus (big endian)
 C12_RSA_NLEN	:= 40				; d: its length in bytes
 C12_RSA_D	:= 48				; q: pointer to the RSA private exponent
-C12_ALPN	:= 56				; d: 1 = answer ALPN with h2 (the caller found it offered)
+C12_ALPN	:= 56				; d: answer ALPN with 1 h2, 2 http/1.1 (the caller chose), 0 none
 C12_OCSP	:= 60				; d: an OCSP answer to staple (g_oc_tmp), its length; 0 none
 C12_CERTID	:= 64				; q: 8 bytes of the certificate's key (a ticket names it)
 C12_CCA		:= 72				; d: client certificates: 0 none, 1 optional, 2 required
@@ -219,12 +219,21 @@ tls12_hello:
 	mov	dword [rdi],0x00002300
 	add	rdi,4
 @@:
-	cmp	dword [r15+C12_ALPN],0
-	je	@f
+	cmp	dword [r15+C12_ALPN],1
+	jne	@f
 	mov	dword [rdi],0x05001000		; ALPN (16), 5 bytes,
 	mov	dword [rdi+4],0x68020300	; a 3-byte list, "h2"
 	mov	byte [rdi+8],'2'
 	add	rdi,9
+@@:
+	cmp	dword [r15+C12_ALPN],2
+	jne	@f
+	mov	dword [rdi],0x0b001000		; ALPN (16), 11 bytes,
+	mov	word [rdi+4],0x0900		; a 9-byte list, "http/1.1"
+	mov	byte [rdi+6],8
+	mov	rax,'http/1.1'
+	mov	[rdi+7],rax
+	add	rdi,15
 @@:
 	cmp	dword [rbp+T2_RESUMED],0
 	jne	@f

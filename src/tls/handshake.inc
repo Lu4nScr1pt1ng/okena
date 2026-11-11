@@ -117,6 +117,8 @@ TF_T12		:= 4096				; TLS 1.2 records, sealed here (tls12_srv.inc)
 TF_KTLS		:= 8192				; the kernel has the keys (set after the wipe: close_notify)
 TF_ECHHRR	:= 2048				; ECH opened before a HelloRetryRequest (its context in TS_TKT)
 TF_ECHREJ	:= 32768			; ECH not opened before it (retry_configs in the flight)
+TF_NO13		:= 131072			; set by the caller: TLS 1.3 is not taken (`versions 1.2`)
+TF_H1FIRST	:= 262144			; set by the caller: http/1.1 before h2 (`alpn http/1.1 h2`)
 TF_NST		:= 16384			; TS_TKT: a ticket to send once the client's flight is good				; acme-tls/1 chosen: the challenge's certificate
 
 TH_MORE		:= 0
@@ -631,6 +633,8 @@ tls_hello:
 	jae	.ext_next
 	cmp	word [rsi],0x0403		; TLS 1.3
 	jne	@f
+	test	dword [rbx+TS_FLAGS],TF_NO13	; (`versions 1.2`: as if not offered)
+	jnz	@f
 	or	dword [rbp+HL_GOT],G_TLS13
 @@:
 	add	rsi,2
@@ -1063,6 +1067,15 @@ tls_hello:
 	jz	.alpn_done
 	test	eax,G_ALPN
 	jz	.alpn_done
+	test	dword [rbx+TS_FLAGS],TF_H1FIRST	; (`alpn http/1.1 h2`: http/1.1 when offered)
+	jz	.alpn_h2
+	test	dword [rbx+TS_FLAGS],TF_ALPN_H1
+	jz	.alpn_h2
+	test	eax,G_H1
+	jz	.alpn_h2
+	or	dword [rbx+TS_FLAGS],TF_GOT_H1
+	jmp	.alpn_done
+.alpn_h2:
 	test	dword [rbx+TS_FLAGS],TF_ALPN_H2	; h2 first, when the listener takes it
 	jz	.alpn_h1
 	test	eax,G_H2

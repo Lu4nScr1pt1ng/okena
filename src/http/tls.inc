@@ -135,15 +135,33 @@ http_tls_start:
 	call	session_ptr
 	test	dword [rax+S_FLAGS],SF_TLS_HS
 	jnz	@f				; tcp: no application protocol to name
-	mov	rax,[r15+H_BUF]
-	mov	dword [rax+HB_TS+TS_FLAGS],TF_ALPN_H1
-	call	session_ptr			; `http2 on`: h2 is offered too
+	call	session_ptr			; `http2 on`, `alpn`: what ALPN may name
 	mov	eax,[rax+S_LST]
 	imul	rax,rax,LS_SIZE
-	test	dword [g_listeners+rax+LS_FLAGS],LSF_H2
+	mov	eax,[g_listeners+rax+LS_FLAGS]
+	xor	ecx,ecx
+	test	eax,LSF_NOH1
+	jnz	@f
+	or	ecx,TF_ALPN_H1
+@@:
+	test	eax,LSF_H2
+	jz	@f
+	or	ecx,TF_ALPN_H2
+@@:
+	test	eax,LSF_H1FIRST
+	jz	@f
+	or	ecx,TF_H1FIRST
+@@:
+	mov	rdx,[r15+H_BUF]
+	mov	[rdx+HB_TS+TS_FLAGS],ecx
+@@:
+	call	session_ptr			; `versions 1.2`: 1.3 not taken
+	mov	eax,[rax+S_LST]
+	imul	rax,rax,LS_SIZE
+	test	dword [g_listeners+rax+LS_FLAGS],LSF_NO13
 	jz	@f
 	mov	rax,[r15+H_BUF]
-	or	dword [rax+HB_TS+TS_FLAGS],TF_ALPN_H2
+	or	dword [rax+HB_TS+TS_FLAGS],TF_NO13
 @@:
 	call	session_ptr			; `client_ca`
 	mov	eax,[rax+S_LST]
@@ -244,7 +262,18 @@ http_tls_hello_go:
 	cmp	eax,TH_WAIT
 	je	od_park				; an on-demand certificate is coming
 	cmp	eax,TH_TLS12
-	je	http_tls12_hello
+	jne	@f
+	call	session_ptr			; `versions 1.3`: a 1.2 client refused
+	mov	eax,[rax+S_LST]
+	imul	rax,rax,LS_SIZE
+	test	dword [g_listeners+rax+LS_FLAGS],LSF_NO12
+	jz	http_tls12_hello
+	mov	rdi,[r15+H_BUF]
+	mov	dword [rdi+HB_OUT],0x00030315	; alert, TLS 1.2, length 2:
+	mov	word [rdi+HB_OUT+4],0x0202	; fatal
+	mov	byte [rdi+HB_OUT+6],70		; protocol_version
+	mov	edx,7
+	mov	eax,TH_FAIL
 @@:
 	mov	ecx,HS_TLS_FLIGHT
 	cmp	eax,TH_SEND
