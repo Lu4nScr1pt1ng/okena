@@ -44,7 +44,7 @@ GWL_SIZE		:= 96
 GW_MAXL		:= 256
 
 GWE_PORT		:= 0			; d
-GWE_ORIGIN	:= 4			; d: 0 Exact, 1 a prefix's own path, 2 a prefix's /*
+GWE_ORIGIN	:= 4			; d: 0 Exact, 1 a prefix's own path, 2 a prefix's /*, 3 a regular expression
 GWE_HOST		:= 8			; q (0: none)
 GWE_HOSTLEN	:= 16			; d
 GWE_OPLEN	:= 20			; d
@@ -64,6 +64,7 @@ GWE_NS		:= 96			; q: the route's namespace
 GWE_NSLEN	:= 104			; d
 GWE_PROTO	:= 108			; d: its listener's
 GWE_ROUTE	:= 112			; d: its route (GW_T_R)
+GWE_GRPC	:= 116			; d: a GRPCRoute's (its backends speak HTTP/2)
 GWE_SIZE		:= 120
 GW_MAXE		:= 4096
 
@@ -75,10 +76,12 @@ GWP2_SVCLEN	:= 24			; d
 GWP2_STATE	:= 28			; d: 1 served, 2 not to be had
 GWP2_PN		:= 32			; q: the Service port's name (0: none)
 GWP2_PNLEN	:= 40			; d
+GWP2_H2		:= 44			; d: gRPC: protocol h2
 GWP2_SIZE		:= 48
 GW_MAXP		:= 512
 
 GW_MAXH		:= 1024			; hosts on a port
+GW_MAXRX	:= 120			; regular expressions (okena takes 256)
 
 GWG_NS		:= 0			; q
 GWG_NSLEN	:= 8			; d
@@ -97,7 +100,8 @@ GWR_NAME	:= 16			; q
 GWR_GEN		:= 24			; d
 GWR_REFS	:= 28			; d: 0 its backends resolved, else why not (GRF_*)
 GWR_STATUS	:= 32			; q: its status.parents (JSON), 0 none
-GWR_SIZE	:= 40
+GWR_KIND	:= 40			; d: 0 HTTPRoute, 1 GRPCRoute
+GWR_SIZE	:= 48
 GW_MAXR		:= 1024
 GRF_NOTFOUND	:= 1			; BackendNotFound
 GRF_NOTPERMITTED := 2			; RefNotPermitted
@@ -179,6 +183,8 @@ bss
 	g_gc_name	dq ?
 	g_gc_seen	rq 64
 	g_gc_seenl	rd 64
+	g_gc_seenns	rq 64
+	g_gc_seennsl	rd 64
 	g_gp_idx	dd ?
 	g_ga_code	dd ?
 	g_ga_sum	dd ?
@@ -193,6 +199,26 @@ bss
 	g_gw_classok	dd ?		; the GatewayClass: 0 not there, 1 okena's, 2 another's
 	g_gw_classgen	dd ?
 	g_gw_lend	dq ?		; the lists' end (the status reads them after)
+	g_gw_nrx	dd ?		; regular expressions written
+	g_gl_cur	dq ?		; where the next list goes
+	g_gw_grpcl	dq ?		; the GRPCRoutes (0: none)
+	g_gw_rgl	dq ?		; the ReferenceGrants (0: none)
+	g_gr_kind	dd ?		; the routes being read: 0 HTTPRoutes, 1 GRPCRoutes
+	g_gp_ns		dq ?		; the backend asked for: its namespace
+	g_gp_nslen	dd ?
+	g_gp_h2		dd ?		; and it speaks gRPC (HTTP/2)
+	g_gc_ns		dq ?		; the Secret asked for: its namespace
+	g_gc_nslen	dd ?
+	g_rg_from	dq ?		; a ReferenceGrant looked for: from what kind
+	g_rg_fromlen	dd ?
+	g_rg_fromnslen	dd ?
+	g_rg_fromns	dq ?		; of what namespace
+	g_rg_to		dq ?		; to what kind
+	g_rg_tolen	dd ?
+	g_rg_tonlen	dd ?
+	g_rg_toname	dq ?		; by what name
+	g_rg_tons	dq ?		; in what namespace
+	g_rg_tonslen	dd ?
 end bss
 
 macro go_lit text&
@@ -650,6 +676,72 @@ gw_token_ok:
 	stc
 	ret
 
+; rdi/ecx = a regular expression (the Gateway API's: the whole of what it is
+; matched against): rdi/ecx = "~^(?:R)$" ((?i) kept first), in GW_TEXT, as okena
+; reads it. CF when okena's engine would refuse it (compiled, then given back),
+; or there are too many. Keeps rbx, r12-r15.
+gw_rx_wrap:
+	push	rbx
+	cmp	dword [g_gw_nrx],GW_MAXRX
+	jae	.bad
+	push	rdi
+	push	rcx
+	mov	edx,ecx
+	mov	rcx,rdi
+	call	gw_value_ok
+	pop	rcx
+	pop	rsi
+	jc	.bad
+	mov	rdi,[g_gw_txt]
+	mov	rbx,rdi				; (its start)
+	mov	byte [rdi],'~'
+	inc	rdi
+	cmp	ecx,4
+	jb	@f
+	cmp	dword [rsi],'(?i)'
+	jne	@f
+	movsd					; (?i) first
+	sub	ecx,4
+@@:
+	mov	dword [rdi],'^(?:'
+	add	rdi,4
+	rep	movsb
+	mov	word [rdi],')$'
+	add	rdi,2
+	mov	[g_gw_txt],rdi
+	mov	rcx,rdi
+	sub	rcx,rbx
+	; would okena's engine take it? (compiled, then given back)
+	push	rcx
+	push	qword [g_plan_rx]
+	push	qword [g_plan_rxpc]
+	lea	rsi,[rbx+1]
+	dec	ecx
+	push	r12				; (the compiler takes registers the writer keeps)
+	push	r13
+	push	r14
+	push	r15
+	call	rx_compile
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rax
+	mov	[g_plan_rxpc],eax
+	pop	rax
+	mov	[g_plan_rx],eax
+	pop	rcx
+	jc	.bad
+	inc	dword [g_gw_nrx]
+	mov	rdi,rbx
+	clc
+	pop	rbx
+	ret
+.bad:
+	stc
+	pop	rbx
+	ret
+
 ; rsi/ecx = text: copied into GW_TEXT, rdi = there. Keeps rcx.
 gw_keep:
 	mov	rdi,[g_gw_txt]
@@ -676,6 +768,7 @@ gw_render:
 	mov	dword [g_gw_ne],0
 	mov	dword [g_gw_np],0
 	mov	dword [g_gw_ng],0
+	mov	dword [g_gw_nrx],0
 	mov	dword [g_gw_nr],0
 	mov	dword [g_gw_npr],0
 	mov	dword [g_gw_seq],0
@@ -687,42 +780,51 @@ gw_render:
 	; the class: okena's, or another's (then nothing of it is served)
 	call	gw_class
 	jc	.not_now
-	; the Gateways, then the HTTPRoutes, side by side
-	call	gw_req_begin
+	; the Gateways, the HTTPRoutes, the GRPCRoutes and the ReferenceGrants, side by
+	; side (the last two may not be installed)
+	mov	rax,[g_gw_base]
+	add	rax,GW_LISTS
+	mov	[g_gl_cur],rax
 	cstring .gws, '/apis/gateway.networking.k8s.io/v1/gateways?resourceVersion=0',0
 	lea	rsi,[.gws]
-	call	gw_req_cstr
-	call	gw_get
-	jc	.not_now
-	cmp	eax,200
-	jne	.refused
-	mov	rdi,[g_gw_base]
-	add	rdi,GW_LISTS
-	cmp	ecx,GW_LISTS_CAP / 2
-	ja	.unreadable
-	mov	r12,rdi				; the Gateways
-	rep	movsb
-	mov	r14,rdi				; the HTTPRoutes
-	call	gw_req_begin
+	mov	edx,1
+	call	gw_list
+	jc	.out_cf
+	mov	r12,rax
 	cstring .hrs, '/apis/gateway.networking.k8s.io/v1/httproutes?resourceVersion=0',0
 	lea	rsi,[.hrs]
-	call	gw_req_cstr
-	call	gw_get
-	jc	.not_now
-	cmp	eax,200
-	jne	.refused
-	cmp	ecx,GW_LISTS_CAP / 2
-	ja	.unreadable
-	mov	rdi,r14
-	rep	movsb
-	mov	r13,rdi				; (the end, for the parser)
-	mov	[g_gw_lend],rdi
+	mov	edx,1
+	call	gw_list
+	jc	.out_cf
+	mov	r14,rax
+	cstring .grs, '/apis/gateway.networking.k8s.io/v1/grpcroutes?resourceVersion=0',0
+	lea	rsi,[.grs]
+	xor	edx,edx
+	call	gw_list
+	jc	.out_cf
+	mov	[g_gw_grpcl],rax
+	cstring .rgs, '/apis/gateway.networking.k8s.io/v1beta1/referencegrants?resourceVersion=0',0
+	lea	rsi,[.rgs]
+	xor	edx,edx
+	call	gw_list
+	jc	.out_cf
+	mov	[g_gw_rgl],rax
+	mov	r13,[g_gl_cur]			; (the end, for the parser)
+	mov	[g_gw_lend],r13
 	mov	rsi,r12
 	call	gw_listeners
 	jc	.unreadable
+	mov	dword [g_gr_kind],0		; HTTPRoutes
 	mov	rsi,r14
 	call	gw_routes
 	jc	.unreadable
+	mov	rsi,[g_gw_grpcl]
+	test	rsi,rsi
+	jz	@f
+	mov	dword [g_gr_kind],1		; GRPCRoutes
+	call	gw_routes
+	jc	.unreadable
+@@:
 	mov	r15,[g_gw_base]
 	add	r15,GW_OUT
 	call	gw_emit
@@ -740,6 +842,9 @@ gw_render:
 	mov	edx,str_gw_refused.len
 	call	gw_tell
 	jmp	.not_now
+.out_cf:
+	stc
+	jmp	.out
 .unreadable:
 	mov	eax,8
 	cstring str_gw_lists, ': the Gateways or the HTTPRoutes cannot be read (not such a list, or too large)'
@@ -754,6 +859,52 @@ gw_render:
 	pop	r13
 	pop	r12
 	pop	rbx
+	ret
+
+; rsi = a list's path (NUL-ended), edx = 1 when it must be there (else a 404 is
+; none of it): its body copied after the others (g_gl_cur), rax = where (0:
+; none). CF when it cannot be had now (said).
+gw_list:
+	push	rdx
+	call	gw_req_begin
+	call	gw_req_cstr
+	call	gw_get
+	pop	rdx
+	jc	.no
+	cmp	eax,404
+	jne	@f
+	test	edx,edx
+	jnz	.refused
+	xor	eax,eax
+	clc
+	ret
+@@:
+	cmp	eax,200
+	jne	.refused
+	mov	rdi,[g_gl_cur]
+	mov	rax,[g_gw_base]
+	add	rax,GW_LISTS + GW_LISTS_CAP
+	sub	rax,rdi
+	cmp	rcx,rax
+	jae	.large
+	mov	rax,rdi
+	rep	movsb
+	mov	[g_gl_cur],rdi
+	clc
+	ret
+.refused:
+	mov	eax,3
+	lea	rsi,[str_gw_refused]
+	mov	edx,str_gw_refused.len
+	call	gw_tell
+	jmp	.no
+.large:
+	mov	eax,8
+	lea	rsi,[str_gw_lists]
+	mov	edx,str_gw_lists.len
+	call	gw_tell
+.no:
+	stc
 	ret
 
 ; ------------------------------------------------------------ the listeners
@@ -1054,6 +1205,8 @@ gw_routes:
 	mov	dword [r12+GWR_GEN],0
 	mov	dword [r12+GWR_REFS],0
 	mov	qword [r12+GWR_STATUS],0
+	mov	eax,[g_gr_kind]
+	mov	[r12+GWR_KIND],eax
 	mov	rsi,rbx
 	gk	'metadata'
 	call	gj_get
@@ -1479,6 +1632,13 @@ gw_match:
 	xor	r14d,r14d			; its number
 	test	r12,r12
 	jz	.add
+	cmp	dword [g_gr_kind],1
+	jne	.http
+	mov	rsi,r12				; a GRPCRoute's: its method
+	call	gw_grpc_path			; [rsp+8..]: the path and its type; CF: not told
+	jc	.no
+	jmp	.headers
+.http:
 	mov	rsi,r12
 	gk	'path'
 	call	gj_get
@@ -1494,8 +1654,15 @@ gw_match:
 	mov	dword [rsp+16],0
 	jmp	.value
 @@:
+	cmp	ecx,17
+	jne	@f
+	cmp	dword [rdi],'Regu'
+	jne	.no
+	mov	dword [rsp+16],2		; RegularExpression
+	jmp	.value
+@@:
 	cmp	ecx,10
-	jne	.no				; (RegularExpression: not here)
+	jne	.no
 	cmp	dword [rdi],'Path'
 	jne	.no
 .value:
@@ -1558,7 +1725,20 @@ gw_match:
 	call	gj_next
 	jnc	.param
 .add:
-	; the path
+	; the path: a regular expression, as okena writes one
+	cmp	dword [rsp+16],2
+	jne	.not_rx
+	mov	rdi,[rsp]
+	mov	ecx,[rsp+8]
+	call	gw_rx_wrap
+	jc	.no
+	mov	r8,rdi
+	mov	r9d,ecx
+	mov	eax,3
+	xor	r10d,r10d
+	call	.entry
+	jmp	.no
+.not_rx:
 	mov	rcx,[rsp]
 	mov	edx,[rsp+8]
 	call	gw_path_ok
@@ -1679,10 +1859,169 @@ gw_match:
 	mov	[rcx+GWE_NSLEN],eax
 	mov	eax,[g_gw_rti]
 	mov	[rcx+GWE_ROUTE],eax
+	mov	eax,[g_gr_kind]
+	mov	[rcx+GWE_GRPC],eax
 .full:
 	ret
 cstring str_gw_slash, '/'
 cstring str_gw_all, '/*'
+; rsi = a GRPCRoute's match, [rsp+8] the caller's frame (gw_match: the path,
+; its length, its type: 0 Exact, 1 a prefix, 2 a regular expression): its method
+; ({type, service, method}) as the path gRPC asks for: /S/M, the prefix /S, or a
+; regular expression where one is missing or it is RegularExpression. CF when it
+; cannot be told.
+gw_grpc_path:
+	gk	'method'
+	call	gj_get
+	jc	.ok				; (none: every method, the prefix /)
+	mov	r8,rsi
+	xor	r10d,r10d			; RegularExpression
+	push	r8
+	gk	'type'
+	call	gj_str
+	pop	r8
+	jc	.typed
+	cmp	ecx,5
+	je	.typed
+	cmp	ecx,17
+	jne	.bad
+	mov	r10d,1
+.typed:
+	mov	qword [g_ga_scheme],0		; (scratch: the service, the method)
+	mov	qword [g_ga_host],0
+	mov	rsi,r8
+	gk	'service'
+	call	gj_str
+	jc	@f
+	mov	[g_ga_scheme],rdi
+	mov	[g_ga_slen],ecx
+@@:
+	mov	rsi,r8
+	gk	'method'
+	call	gj_str
+	jc	@f
+	mov	[g_ga_host],rdi
+	mov	[g_ga_hlen],ecx
+@@:
+	test	r10d,r10d
+	jnz	.regex
+	; Exact: names of what a gRPC path holds
+	cmp	qword [g_ga_scheme],0
+	je	@f
+	mov	rsi,[g_ga_scheme]
+	mov	ecx,[g_ga_slen]
+	call	gw_grpc_name
+	jc	.bad
+@@:
+	cmp	qword [g_ga_host],0
+	je	@f
+	mov	rsi,[g_ga_host]
+	mov	ecx,[g_ga_hlen]
+	call	gw_grpc_name
+	jc	.bad
+@@:
+	cmp	qword [g_ga_scheme],0
+	je	.method_only
+	; /S, then /M or a prefix
+	mov	r9,[g_gw_txt]
+	mov	byte [r9],'/'
+	lea	rdi,[r9+1]
+	mov	rsi,[g_ga_scheme]
+	mov	ecx,[g_ga_slen]
+	rep	movsb
+	mov	dword [rsp+8+16],1		; a prefix: /S
+	cmp	qword [g_ga_host],0
+	je	.kept
+	mov	byte [rdi],'/'
+	inc	rdi
+	mov	rsi,[g_ga_host]
+	mov	ecx,[g_ga_hlen]
+	rep	movsb
+	mov	dword [rsp+8+16],0		; Exact: /S/M
+	jmp	.kept
+.method_only:
+	cmp	qword [g_ga_host],0
+	je	.ok
+	mov	r9,[g_gw_txt]			; any service, this method
+	mov	rdi,r9
+	cstring .any, '/[^/]+/'
+	lea	rsi,[.any]
+	mov	ecx,.any.len
+	rep	movsb
+	mov	rsi,[g_ga_host]
+	mov	ecx,[g_ga_hlen]
+	rep	movsb
+	mov	dword [rsp+8+16],2
+	jmp	.kept
+.regex:
+	; /(?:S)/(?:M), [^/]+ for what is not said
+	mov	r9,[g_gw_txt]
+	mov	rdi,r9
+	irp part, scheme,host
+		mov	dword [rdi],'/(?:'
+		add	rdi,4
+		cmp	qword [g_ga_#part],0
+		jne	.part_#part
+		mov	dword [rdi],'[^/]'
+		mov	byte [rdi+4],'+'
+		add	rdi,5
+		jmp	.part_#part#_done
+	.part_#part:
+		mov	rsi,[g_ga_#part]
+		match =scheme, part
+			mov	ecx,[g_ga_slen]
+		end match
+		match =host, part
+			mov	ecx,[g_ga_hlen]
+		end match
+		rep	movsb
+	.part_#part#_done:
+		mov	byte [rdi],')'
+		inc	rdi
+	end irp
+	mov	dword [rsp+8+16],2
+.kept:
+	mov	[g_gw_txt],rdi
+	mov	[rsp+8],r9
+	mov	rax,rdi
+	sub	rax,r9
+	mov	[rsp+8+8],eax
+.ok:
+	clc
+	ret
+.bad:
+	stc
+	ret
+
+; rsi/ecx = a gRPC service or method name: letters, digits, _ and . (CF: not)
+gw_grpc_name:
+	test	ecx,ecx
+	jz	.bad
+	cmp	ecx,200
+	ja	.bad
+@@:
+	movzx	eax,byte [rsi]
+	cmp	al,'_'
+	je	.ok
+	cmp	al,'.'
+	je	.ok
+	lea	edx,[rax-'0']
+	cmp	edx,9
+	jbe	.ok
+	or	al,0x20
+	lea	edx,[rax-'a']
+	cmp	edx,25
+	ja	.bad
+.ok:
+	inc	rsi
+	dec	ecx
+	jnz	@b
+	clc
+	ret
+.bad:
+	stc
+	ret
+
 ; rsi = a header or query parameter match ({name, value, type}): CF when okena
 ; cannot tell it; eax = 1 when it is a regular expression. Keeps rbx, r12-r15.
 gw_cond_ok:
@@ -1716,6 +2055,12 @@ gw_cond_ok:
 	jne	.no
 	cmp	dword [rdi],'Regu'
 	jne	.no
+	mov	rsi,[rsp]			; (okena's engine must take it)
+	gk	'value'
+	call	gj_str
+	jc	.no
+	call	gw_rx_wrap
+	jc	.no
 	mov	r10d,1
 .yes:
 	mov	eax,r10d
@@ -1781,7 +2126,7 @@ gw_emit_port:
 	go_lit	10,'http :'
 	mov	eax,[g_gw_port]
 	call	go_u
-	go_lit	' {',10
+	go_lit	' {',10,'    http2 on',10
 	cmp	dword [g_gw_proto],2
 	jne	@f
 	call	gw_emit_tls
@@ -1938,7 +2283,13 @@ gw_emit_host:
 	go_lit	'route '
 	mov	rsi,[r12+GWE_OPATH]
 	mov	ecx,[r12+GWE_OPLEN]
+	cmp	dword [r12+GWE_ORIGIN],3
+	jne	@f
+	call	go_q				; "~^(?:R)$"
+	jmp	.route_open
+@@:
 	call	go_bytes
+.route_open:
 	go_lit	' {',10
 	inc	dword [g_gw_nroutes]
 	push	r12
@@ -2214,11 +2565,10 @@ gw_cond_out:
 	mov	rsi,rdi
 	test	eax,eax
 	jz	.plain
-	mov	word [r15],'"~'			; "~REGEX"
-	add	r15,2
-	call	go_qin
-	mov	byte [r15],'"'
-	inc	r15
+	mov	rdi,rsi				; "~^(?:R)$"
+	call	gw_rx_wrap
+	mov	rsi,rdi
+	call	go_q
 	jmp	.out
 .plain:
 	call	go_q
@@ -2611,6 +2961,11 @@ gw_redirect:
 	mov	rsi,r12
 	call	gw_path_mod			; g_ga_ptype (0 none, 1 full, 2 prefix), g_ga_pv
 	jc	.bad
+	cmp	dword [g_ga_ptype],2
+	jne	@f
+	cmp	dword [rbx+GWE_ORIGIN],3
+	je	.bad				; (a prefix's replacement: only for a prefix)
+@@:
 	; out
 	mov	ecx,r14d
 	call	go_ind
@@ -2739,6 +3094,11 @@ gw_path_out:
 	cmp	dword [g_ga_ptype],2
 	je	.prefix
 	; as asked: the route's own path, or its prefix and the rest
+	cmp	dword [rbx+GWE_ORIGIN],3
+	jne	@f
+	go_lit	'{path}'			; (a regular expression's: the whole path)
+	ret
+@@:
 	cmp	dword [rbx+GWE_ORIGIN],2
 	je	.rest
 	mov	rsi,[rbx+GWE_OPATH]
@@ -2778,6 +3138,11 @@ gw_rewrite:
 	mov	rsi,[g_ga_rewrite]
 	call	gw_path_mod
 	jc	.bad
+	cmp	dword [g_ga_ptype],2
+	jne	@f
+	cmp	dword [rbx+GWE_ORIGIN],3
+	je	.bad
+@@:
 	cmp	dword [g_ga_ptype],0
 	je	.none				; (only a hostname: not here)
 	mov	ecx,r14d
@@ -2950,6 +3315,12 @@ gw_ref_pool:
 	cmp	dword [rdi],'Serv'
 	jne	.kind
 @@:
+	mov	rax,[rbx+GWE_NS]		; the route's namespace, or one that grants it
+	mov	[g_gp_ns],rax
+	mov	eax,[rbx+GWE_NSLEN]
+	mov	[g_gp_nslen],eax
+	mov	eax,[rbx+GWE_GRPC]
+	mov	[g_gp_h2],eax
 	mov	rsi,r12
 	gk	'namespace'
 	call	gj_str
@@ -2957,7 +3328,46 @@ gw_ref_pool:
 	mov	rsi,[rbx+GWE_NS]
 	mov	edx,[rbx+GWE_NSLEN]
 	call	gw_same
-	jne	.not_permitted			; (no ReferenceGrants here)
+	je	@f
+	push	rdi
+	push	rcx
+	mov	edx,ecx
+	mov	rcx,rdi
+	call	gw_label_ok
+	pop	rcx
+	pop	rdi
+	jc	.not_permitted
+	mov	[g_gp_ns],rdi
+	mov	[g_gp_nslen],ecx
+	; a ReferenceGrant there for this route's kind, of its namespace, to Services
+	mov	rsi,r12
+	gk	'name'
+	call	gj_str
+	jc	.not_permitted
+	mov	[g_rg_toname],rdi
+	mov	[g_rg_tonlen],ecx
+	lea	rax,[str_rg_httproute]
+	mov	ecx,str_rg_httproute.len
+	cmp	dword [rbx+GWE_GRPC],0
+	je	.kind_said
+	lea	rax,[str_rg_grpcroute]
+	mov	ecx,str_rg_grpcroute.len
+.kind_said:
+	mov	[g_rg_from],rax
+	mov	[g_rg_fromlen],ecx
+	mov	rax,[rbx+GWE_NS]
+	mov	[g_rg_fromns],rax
+	mov	eax,[rbx+GWE_NSLEN]
+	mov	[g_rg_fromnslen],eax
+	lea	rax,[str_rg_service]
+	mov	[g_rg_to],rax
+	mov	dword [g_rg_tolen],str_rg_service.len
+	mov	rax,[g_gp_ns]
+	mov	[g_rg_tons],rax
+	mov	eax,[g_gp_nslen]
+	mov	[g_rg_tonslen],eax
+	call	gw_granted
+	jc	.not_permitted
 @@:
 	mov	rsi,r12
 	gk	'port'
@@ -3007,6 +3417,150 @@ gw_ref_pool:
 	pop	r12
 	ret
 
+; g_rg_*: is there a ReferenceGrant in the target's namespace (g_gp_ns, or
+; g_gc_ns for a Secret: g_rg_tons) letting from (a kind of the Gateway API's
+; group, in g_rg_fromns) refer to to (a core kind, maybe by name)? CF when not.
+; Keeps rbx, r12-r15.
+gw_granted:
+	push	rbx
+	push	r12
+	mov	rsi,[g_gw_rgl]
+	test	rsi,rsi
+	jz	.no
+	gk	'items'
+	call	gj_get
+	jc	.no
+	call	gj_first
+	jc	.no
+.grant:
+	mov	rbx,rsi
+	gk	'metadata'
+	call	gj_get
+	jc	.next
+	gk	'namespace'
+	call	gj_str
+	jc	.next
+	mov	rsi,[g_rg_tons]
+	mov	edx,[g_rg_tonslen]
+	call	gw_same
+	jne	.next
+	mov	rsi,rbx
+	gk	'spec'
+	call	gj_get
+	jc	.next
+	mov	r12,rsi
+	; from: our group, the kind, the namespace
+	gk	'from'
+	call	gj_get
+	jc	.next
+	call	gj_first
+	jc	.next
+.from:
+	push	rsi
+	call	.from_ok
+	pop	rsi
+	jnc	.to_list
+	call	gj_next
+	jnc	.from
+	jmp	.next
+.to_list:
+	mov	rsi,r12
+	gk	'to'
+	call	gj_get
+	jc	.next
+	call	gj_first
+	jc	.next
+.to:
+	push	rsi
+	call	.to_ok
+	pop	rsi
+	jnc	.yes
+	call	gj_next
+	jnc	.to
+.next:
+	mov	rsi,rbx
+	call	gj_next
+	jnc	.grant
+.no:
+	stc
+	jmp	.out
+.yes:
+	clc
+.out:
+	pop	r12
+	pop	rbx
+	ret
+.from_ok:
+	push	rsi
+	gk	'group'
+	call	gj_str
+	pop	rsi
+	jc	.f_no
+	push	rsi
+	lea	rsi,[str_rg_group]
+	mov	edx,str_rg_group.len
+	call	gw_same
+	pop	rsi
+	jne	.f_no
+	push	rsi
+	gk	'kind'
+	call	gj_str
+	pop	rsi
+	jc	.f_no
+	push	rsi
+	mov	rsi,[g_rg_from]
+	mov	edx,[g_rg_fromlen]
+	call	gw_same
+	pop	rsi
+	jne	.f_no
+	gk	'namespace'
+	call	gj_str
+	jc	.f_no
+	mov	rsi,[g_rg_fromns]
+	mov	edx,[g_rg_fromnslen]
+	call	gw_same
+	jne	.f_no
+	clc
+	ret
+.f_no:
+	stc
+	ret
+.to_ok:
+	push	rsi
+	gk	'group'
+	call	gj_str
+	pop	rsi
+	jc	.f_no
+	test	ecx,ecx
+	jnz	.f_no				; (the core group: "")
+	push	rsi
+	gk	'kind'
+	call	gj_str
+	pop	rsi
+	jc	.f_no
+	push	rsi
+	mov	rsi,[g_rg_to]
+	mov	edx,[g_rg_tolen]
+	call	gw_same
+	pop	rsi
+	jne	.f_no
+	gk	'name'
+	call	gj_str
+	jc	.t_yes				; (no name: any of them)
+	mov	rsi,[g_rg_toname]
+	mov	edx,[g_rg_tonlen]
+	call	gw_same
+	jne	.f_no
+.t_yes:
+	clc
+	ret
+cstring str_rg_group, 'gateway.networking.k8s.io'
+cstring str_rg_httproute, 'HTTPRoute'
+cstring str_rg_grpcroute, 'GRPCRoute'
+cstring str_rg_gateway, 'Gateway'
+cstring str_rg_service, 'Service'
+cstring str_rg_secret, 'Secret'
+
 ; eax = a pool: its name, out
 gw_pool_name:
 	push	rbx
@@ -3024,6 +3578,10 @@ gw_pool_name:
 	go_lit	'_'
 	mov	eax,[rbx+GWP2_PORT]
 	call	go_u
+	cmp	dword [rbx+GWP2_H2],0
+	je	@f
+	go_lit	'_h2'
+@@:
 	pop	rbx
 	ret
 
@@ -3044,6 +3602,9 @@ gw_pool:
 	add	rax,GW_T_P
 	cmp	[rax+GWP2_PORT],r14d
 	jne	.other
+	mov	edx,[g_gp_h2]
+	cmp	[rax+GWP2_H2],edx
+	jne	.other
 	mov	rsi,[rax+GWP2_SVC]
 	mov	edx,[rax+GWP2_SVCLEN]
 	call	gw_same
@@ -3052,8 +3613,8 @@ gw_pool:
 	push	rcx
 	mov	rdi,[rax+GWP2_NS]
 	mov	ecx,[rax+GWP2_NSLEN]
-	mov	rsi,[rbx+GWE_NS]
-	mov	edx,[rbx+GWE_NSLEN]
+	mov	rsi,[g_gp_ns]
+	mov	edx,[g_gp_nslen]
 	call	gw_same
 	pop	rcx
 	pop	rdi
@@ -3073,10 +3634,12 @@ gw_pool:
 	imul	r13,r12,GWP2_SIZE
 	add	r13,[g_gw_base]
 	add	r13,GW_T_P
-	mov	rax,[rbx+GWE_NS]
+	mov	rax,[g_gp_ns]
 	mov	[r13+GWP2_NS],rax
-	mov	eax,[rbx+GWE_NSLEN]
+	mov	eax,[g_gp_nslen]
 	mov	[r13+GWP2_NSLEN],eax
+	mov	eax,[g_gp_h2]
+	mov	[r13+GWP2_H2],eax
 	mov	[r13+GWP2_SVC],rdi
 	mov	[r13+GWP2_SVCLEN],ecx
 	mov	[r13+GWP2_PORT],r14d
@@ -3230,6 +3793,10 @@ gw_emit_pools:
 	mov	ecx,[g_plan_gw+GWP_NAMELEN]
 	call	go_q
 @@:
+	cmp	dword [r12+GWP2_H2],0
+	je	@f
+	go_lit	10,'    protocol h2'		; (gRPC)
+@@:
 	go_lit	10,'}',10
 .next:
 	inc	ebx
@@ -3313,15 +3880,6 @@ gw_cert_ref:
 	jnz	.no
 @@:
 	mov	rsi,rbx
-	gk	'namespace'
-	call	gj_str
-	jc	@f
-	mov	rsi,[r12+GWL_NS]
-	mov	edx,[r12+GWL_NSLEN]
-	call	gw_same
-	jne	.no
-@@:
-	mov	rsi,rbx
 	gk	'name'
 	call	gj_str
 	jc	.no
@@ -3331,6 +3889,48 @@ gw_cert_ref:
 	mov	rcx,rdi
 	call	gw_sub_ok
 	jc	.no
+	; its namespace: the Gateway's, or one whose ReferenceGrant lets it
+	mov	rax,[r12+GWL_NS]
+	mov	[g_gc_ns],rax
+	mov	eax,[r12+GWL_NSLEN]
+	mov	[g_gc_nslen],eax
+	mov	rsi,rbx
+	gk	'namespace'
+	call	gj_str
+	jc	.ns_had
+	mov	rsi,[r12+GWL_NS]
+	mov	edx,[r12+GWL_NSLEN]
+	call	gw_same
+	je	.ns_had
+	push	rdi
+	push	rcx
+	mov	edx,ecx
+	mov	rcx,rdi
+	call	gw_label_ok
+	pop	rcx
+	pop	rdi
+	jc	.no
+	mov	[g_gc_ns],rdi
+	mov	[g_gc_nslen],ecx
+	mov	[g_rg_tons],rdi
+	mov	[g_rg_tonslen],ecx
+	lea	rax,[str_rg_gateway]
+	mov	[g_rg_from],rax
+	mov	dword [g_rg_fromlen],str_rg_gateway.len
+	mov	rax,[r12+GWL_NS]
+	mov	[g_rg_fromns],rax
+	mov	eax,[r12+GWL_NSLEN]
+	mov	[g_rg_fromnslen],eax
+	lea	rax,[str_rg_secret]
+	mov	[g_rg_to],rax
+	mov	dword [g_rg_tolen],str_rg_secret.len
+	mov	rax,[g_gc_name]
+	mov	[g_rg_toname],rax
+	mov	eax,[g_gc_nlen]
+	mov	[g_rg_tonlen],eax
+	call	gw_granted
+	jc	.no
+.ns_had:
 	; written already for this port?
 	xor	eax,eax
 .seen:
@@ -3341,7 +3941,14 @@ gw_cert_ref:
 	mov	rsi,[g_gc_name]
 	mov	edx,[g_gc_nlen]
 	call	gw_same
+	jne	.seen_next
+	mov	rdi,[g_gc_seenns+rax*8]
+	mov	ecx,[g_gc_seennsl+rax*4]
+	mov	rsi,[g_gc_ns]
+	mov	edx,[g_gc_nslen]
+	call	gw_same
 	je	.had
+.seen_next:
 	inc	eax
 	jmp	.seen
 .fetch:
@@ -3351,8 +3958,8 @@ gw_cert_ref:
 	call	gw_req_begin
 	lea	rsi,[gw_pool.p1]
 	call	gw_req_cstr
-	mov	rsi,[r12+GWL_NS]
-	mov	ecx,[r12+GWL_NSLEN]
+	mov	rsi,[g_gc_ns]
+	mov	ecx,[g_gc_nslen]
 	call	gw_req_add
 	cstring .p2, '/secrets/',0
 	lea	rsi,[.p2]
@@ -3390,6 +3997,10 @@ gw_cert_ref:
 	mov	[g_gc_seen+rax*8],rcx
 	mov	ecx,[g_gc_nlen]
 	mov	[g_gc_seenl+rax*4],ecx
+	mov	rcx,[g_gc_ns]
+	mov	[g_gc_seenns+rax*8],rcx
+	mov	ecx,[g_gc_nslen]
+	mov	[g_gc_seennsl+rax*4],ecx
 	inc	dword [g_gw_ncert]
 	go_lit	'        cert "'
 	lea	r8,[str_gw_crt]
@@ -3418,8 +4029,8 @@ gw_cert_path_out:
 	mov	ecx,[g_plan_gw+GWP_DIRLEN]
 	call	go_bytes
 	go_lit	'/certs/'
-	mov	rsi,[r12+GWL_NS]
-	mov	ecx,[r12+GWL_NSLEN]
+	mov	rsi,[g_gc_ns]
+	mov	ecx,[g_gc_nslen]
 	call	go_bytes
 	go_lit	'.'
 	mov	rsi,[g_gc_name]
@@ -3462,8 +4073,8 @@ gw_cert_file:
 	mov	rax,'/certs/'
 	mov	[rdi],rax
 	add	rdi,7
-	mov	rsi,[r12+GWL_NS]
-	mov	ecx,[r12+GWL_NSLEN]
+	mov	rsi,[g_gc_ns]
+	mov	ecx,[g_gc_nslen]
 	rep	movsb
 	mov	byte [rdi],'.'
 	inc	rdi

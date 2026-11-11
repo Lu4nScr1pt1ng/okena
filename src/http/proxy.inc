@@ -3906,10 +3906,25 @@ http_redirect:
 	cmp	ecx,6
 	jb	@f
 	cmp	dword [rsi+1],'host'
+	jne	.not_host
+	cmp	byte [rsi+5],'}'
+	jne	.not_host
+	call	.host
+	add	rsi,6
+	sub	ecx,6
+	jmp	.tgt
+.not_host:
+	cmp	dword [rsi+1],'path'		; {path}: the whole (normalized) path
 	jne	@f
 	cmp	byte [rsi+5],'}'
 	jne	@f
-	call	.host
+	push	rsi
+	push	rcx
+	lea	rsi,[g_npath]
+	mov	ecx,[g_npath_len]
+	rep	movsb
+	pop	rcx
+	pop	rsi
 	add	rsi,6
 	sub	ecx,6
 	jmp	.tgt

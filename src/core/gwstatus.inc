@@ -142,7 +142,10 @@ gw_status:
 	jae	.saved
 	call	gs_route_ours			; CF: none of its parents are ours
 	jc	@f
-	mov	edx,2
+	imul	rax,rbx,GWR_SIZE		; 2 an HTTPRoute, 3 a GRPCRoute
+	add	rax,[g_gw_base]
+	mov	edx,[rax+GW_T_R+GWR_KIND]
+	add	edx,2
 	call	gs_put
 	jc	.out
 @@:
@@ -373,6 +376,11 @@ gs_path:
 	call	gw_req_add
 	cstring .hrs, '/httproutes/',0
 	lea	rsi,[.hrs]
+	cmp	r12d,3
+	jne	@f
+	cstring .grs, '/grpcroutes/',0
+	lea	rsi,[.grs]
+@@:
 	call	gw_req_cstr
 	mov	rsi,[r8+GWR_NAME]
 	mov	ecx,[r8+GWR_NLEN]
@@ -520,7 +528,7 @@ gs_gateway:
 	mov	rsi,[rax+GWL_NAME]
 	mov	ecx,[rax+GWL_NAMELEN]
 	call	go_bytes
-	gs_lit	'","supportedKinds":[{"group":"gateway.networking.k8s.io","kind":"HTTPRoute"}],"attachedRoutes":'
+	gs_lit	'","supportedKinds":[{"group":"gateway.networking.k8s.io","kind":"HTTPRoute"},{"group":"gateway.networking.k8s.io","kind":"GRPCRoute"}],"attachedRoutes":'
 	mov	rax,[rsp]
 	mov	eax,[rax+GWL_ROUTES]
 	call	go_u

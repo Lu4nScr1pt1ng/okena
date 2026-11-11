@@ -94,6 +94,7 @@ http 127.0.0.1:{lst} {{
     route /unred/* {{ match header:a=1 {{ to pool main }}; redirect 302 /else }}
     route /resp/* {{ match header:a=1 {{ to pool main }}; respond 404 }}
     route /up/* {{ redirect 308 "https://{{host}}:8443/n/{{*}}" }}
+    route "~^/rx/[0-9]+$" {{ redirect 302 "https://{{host}}{{path}}" }}
     route /rew/* {{ match header:a=1 {{ rewrite path /rew/{{*}} -> /new/{{*}} }}; to pool main }}
     route /lim/* {{
         limit 1000/s key=client.ip
@@ -169,6 +170,8 @@ def main():
               and r[2].get("location") == "https://Shop.example.com:8443/n/a/b?q=1", r[:3])
         r = get("/up/a", Host="[::1]:8080")
         check("  an IPv6 one in brackets", r[2].get("location") == "https://[::1]:8443/n/a", r[:3])
+        r = get("/rx/42?q=1", Host="a.test")
+        check("redirect to {path}: the whole path, the query kept", r[0] == 302 and r[2].get("location") == "https://a.test/rx/42?q=1", r[:3])
         check("rewrite in a block", get("/rew/x", a="1")[1].split()[1] == "/new/x" and get("/rew/x")[1].split()[1] == "/rew/x", get("/rew/x", a="1")[1])
         codes = [get("/lim/x", slow="1")[0] for i in range(5)]
         check("a block's limit counts", 429 in codes, codes)

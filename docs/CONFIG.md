@@ -862,6 +862,7 @@ split api=95% api-canary=5% sticky=cookie:okena_split
 mirror pool shadow 10%           # copy of the request, response ignored
 redirect 301 /new/{*}             # okena answers; {*} = the path after the route's prefix
 redirect 308 https://{host}{*}    # {host} = the request's host name, its port left out
+redirect 308 https://{host}{path} # {path} = the whole path (normalized), the query kept
 respond 404                       # okena answers with the code alone (4xx, 5xx)
 header set   x-env prod            # replaces what the client sent
 header add   x-via okena           # keeps it, adds one more
@@ -1711,7 +1712,7 @@ port okena just stopped listening on is let go only when the workers draining
 it are gone). The main file takes it in with `include`. The GatewayClass, when
 there is one of that name, must have `controllerName: okena.dev/gateway-controller`;
 one of another controller's is not served. The service account needs `list` on
-gateways and httproutes, `get` on gatewayclasses, services and secrets, `patch`
+gateways, httproutes, grpcroutes and referencegrants, `get` on gatewayclasses, services and secrets, `patch`
 on gatewayclasses/status, gateways/status and httproutes/status, and what
 `discover kubernetes` needs.
 
@@ -1726,8 +1727,14 @@ What it reads, and becomes:
   port narrows it), for the hostnames both allow, each one a `host` block. The
   routes of no hostname, and of a wildcard that covers a host, are under each
   host too, after its own.
-* A match's path: Exact is that route; PathPrefix /p is the routes /p and /p/*.
-  Its headers, method and queryParams are a `match` block. In a route the more
+* A match's path: Exact is that route; PathPrefix /p is the routes /p and /p/*;
+  RegularExpression is `route "~^(?:R)$"` (the whole path, okena's engine:
+  linear time; one it cannot read is left out, not the file). Its headers (a
+  RegularExpression one too), method and queryParams are a `match` block.
+* A GRPCRoute is the same on the path gRPC asks for: a method's service and
+  name are /S/M; a service alone, every method of it; a name alone, or a
+  RegularExpression, a regular expression. Its backends' pools speak HTTP/2
+  (`protocol h2`), and every listener takes HTTP/2 (`http2 on`). In a route the more
   precise come first, as the Gateway API orders them; one that cannot be chosen
   is left out, and a path with nothing for the rest answers 404.
 * Filters: RequestHeaderModifier and ResponseHeaderModifier (`header`, `response
@@ -1735,9 +1742,12 @@ What it reads, and becomes:
   RequestRedirect (`redirect`, to the request's host when it names none),
   URLRewrite's path (`rewrite path`), RequestMirror (`mirror`). Any other filter
   makes the rule answer 500.
-* backendRefs, Services of the route's own namespace, are pools that follow their
-  EndpointSlices, the Service's port found by its name; several, by weight
-  (`split`). None to be had, a Service or a port that is not there: 500.
+* backendRefs, Services of the route's own namespace or of one whose
+  ReferenceGrant lets the route's kind and namespace refer to it, are pools
+  that follow their EndpointSlices, the Service's port found by its name;
+  several, by weight (`split`). None to be had, a Service or a port that is not
+  there, another namespace's with no grant: 500. A listener's Secret of another
+  namespace needs a ReferenceGrant there too (from Gateway, to Secret).
 
 Status is written back, as merge patches of the status subresources and only
 when it changed (DIR/status.state remembers what was written): the GatewayClass
@@ -1749,9 +1759,10 @@ Accepted (or NoMatchingParent, NotAllowedByListeners,
 NoMatchingListenerHostname) and ResolvedRefs (or BackendNotFound,
 RefNotPermitted, InvalidKind), what other controllers wrote in it kept.
 
-Not there yet: regular expressions in paths and query parameters, URLRewrite's
-hostname, a backendRef's own filters, ReferenceGrants (so nothing across
-namespaces), GRPCRoute and TLSRoute.
+Not there yet: regular expressions in query parameters, URLRewrite's hostname,
+a backendRef's own filters, TLSRoute and TCPRoute. A regular expression path is
+tried after an exact path and before a prefix, as okena's own are (the Gateway
+API leaves its place to the implementation).
 
 Everything a route's author writes reaches the file only as what it is: names
 and paths are checked for what they may be made of, values are quoted and

@@ -24,6 +24,10 @@ import threading
 import time
 import urllib.parse
 
+import h2.config
+import h2.connection
+import h2.events
+
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BIN = ROOT / "build" / "okena"
@@ -67,7 +71,64 @@ def backend(name, ip, port):
 
 
 state = {"gateways": [], "routes": [], "services": {}, "secrets": {}, "slices": [], "status": 200, "seen": [],
-         "classes": {}, "patches": [], "bad_patches": []}
+         "classes": {}, "patches": [], "bad_patches": [], "grpcroutes": [], "grants": None}
+
+
+def grpc_backend(name, ip, port):
+    """an HTTP/2 (h2c) server that answers any gRPC call with its name"""
+    s = socket.socket()
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind((ip, port))
+    s.listen(16)
+
+    def handle(c):
+        conn = h2.connection.H2Connection(h2.config.H2Configuration(client_side=False, header_encoding=None))
+        conn.initiate_connection()
+        c.sendall(conn.data_to_send())
+        while True:
+            d = c.recv(65536)
+            if not d:
+                return
+            for e in conn.receive_data(d):
+                if isinstance(e, h2.events.StreamEnded):
+                    conn.send_headers(e.stream_id, [(":status", "200"), ("content-type", "application/grpc"), ("x-back", name)])
+                    conn.send_headers(e.stream_id, [("grpc-status", "0")], end_stream=True)
+            c.sendall(conn.data_to_send())
+
+    def loop():
+        while True:
+            c, _ = s.accept()
+            threading.Thread(target=handle, args=(c,), daemon=True).start()
+    threading.Thread(target=loop, daemon=True).start()
+
+
+def grpc_call(path, port=GWH, host="x.test"):
+    """a gRPC call over HTTP/2 (prior knowledge): the answer's x-back, or its status"""
+    try:
+        s = socket.create_connection(("127.0.0.1", port), 3)
+        conn = h2.connection.H2Connection(h2.config.H2Configuration(client_side=True, header_encoding=None))
+        conn.initiate_connection()
+        conn.send_headers(1, [(":method", "POST"), (":path", path), (":scheme", "http"), (":authority", host),
+                              ("content-type", "application/grpc"), ("te", "trailers")])
+        conn.send_data(1, b"\0\0\0\0\0", end_stream=True)
+        s.sendall(conn.data_to_send())
+        heads = {}
+        t0 = time.time()
+        while time.time() - t0 < 3:
+            d = s.recv(65536)
+            if not d:
+                break
+            for e in conn.receive_data(d):
+                if isinstance(e, h2.events.ResponseReceived):
+                    heads = {k.decode(): v.decode() for k, v in e.headers}
+                if isinstance(e, (h2.events.StreamEnded, h2.events.StreamReset)):
+                    s.close()
+                    return heads.get("x-back") or heads.get(":status")
+            s.sendall(conn.data_to_send())
+        s.close()
+        return heads.get("x-back") or heads.get(":status")
+    except OSError as e:
+        return repr(e)
 
 
 def merge(dst, patch):
@@ -108,6 +169,12 @@ class Api(http.server.BaseHTTPRequestHandler):
             return self.answer(200, {"kind": "GatewayList", "metadata": {"resourceVersion": "1"}, "items": state["gateways"]})
         if u.path == "/apis/gateway.networking.k8s.io/v1/httproutes":
             return self.answer(200, {"kind": "HTTPRouteList", "metadata": {"resourceVersion": "1"}, "items": state["routes"]})
+        if u.path == "/apis/gateway.networking.k8s.io/v1/grpcroutes":
+            return self.answer(200, {"kind": "GRPCRouteList", "metadata": {"resourceVersion": "1"}, "items": state["grpcroutes"]})
+        if u.path == "/apis/gateway.networking.k8s.io/v1beta1/referencegrants":
+            if state["grants"] is None:
+                return self.answer(404, {"kind": "Status", "code": 404})
+            return self.answer(200, {"kind": "ReferenceGrantList", "metadata": {"resourceVersion": "1"}, "items": state["grants"]})
         if len(parts) == 7 and parts[1:4] == ["api", "v1", "namespaces"]:
             ns, kind, name = parts[4], parts[5], parts[6]
             table = state["services"] if kind == "services" else state["secrets"] if kind == "secrets" else {}
@@ -137,7 +204,7 @@ class Api(http.server.BaseHTTPRequestHandler):
             obj = state["classes"].get(parts[5])
         elif parts[-1] == "status" and len(parts) == 9:
             ns, kind, name = parts[5], parts[6], parts[7]
-            table = state["gateways"] if kind == "gateways" else state["routes"]
+            table = state["gateways"] if kind == "gateways" else state["grpcroutes"] if kind == "grpcroutes" else state["routes"]
             obj = next((x for x in table if x["metadata"]["namespace"] == ns and x["metadata"]["name"] == name), None)
         if obj is None:
             return self.answer(404, {"kind": "Status", "code": 404})
@@ -164,6 +231,10 @@ def slice_(ns, svc, ips, ports):
     state["slices"].append({"metadata": {"name": svc + "-1", "namespace": ns, "labels": {"kubernetes.io/service-name": svc}},
                             "addressType": "IPv4", "endpoints": [{"addresses": [ip], "conditions": {"ready": True}} for ip in ips],
                             "ports": ports})
+
+
+def gw(name):
+    return next(g for g in state["gateways"] if g["metadata"]["name"] == name)
 
 
 def gateway(ns, name, listeners, cls="okena"):
@@ -233,6 +304,16 @@ def main():
                            ("v2", "127.0.0.5", 8080), ("canary", "127.0.0.6", 8080)):
         backend(name, ip, port)
     H = [{"name": "http", "port": 8080, "protocol": "TCP"}]
+    grpc_backend("grpcb", "127.0.0.8", 50051)
+    grpc_backend("grpcc", "127.0.0.9", 50051)
+    G = [{"name": "grpc", "port": 50051, "protocol": "TCP"}]
+    service("shop", "grpcb", [{"name": "grpc", "port": 50051}])
+    slice_("shop", "grpcb", ["127.0.0.8"], G)
+    service("shop", "grpcc", [{"name": "grpc", "port": 50051}])
+    slice_("shop", "grpcc", ["127.0.0.9"], G)
+    backend("far", "127.0.0.10", 8080)
+    service("other", "far", [{"name": "http", "port": 80}])
+    slice_("other", "far", ["127.0.0.10"], H)
     service("shop", "web", [{"name": "http", "port": 80, "targetPort": 8080}])
     slice_("shop", "web", ["127.0.0.2", "127.0.0.3"], H)
     service("shop", "api", [{"port": 9000}])
@@ -274,10 +355,16 @@ def main():
                 {"type": "ResponseHeaderModifier", "responseHeaderModifier": {"remove": ["x-back"]}}],
              "backendRefs": [ref("web", 80)]},
             {"matches": [prefix("/in}jected { respond 200 }")], "backendRefs": [ref("web", 80)]},
+            {"matches": [{"path": {"type": "RegularExpression", "value": "/items/[0-9]+"}}], "backendRefs": [ref("v2", 80)]},
+            {"matches": [{"path": {"type": "RegularExpression", "value": "/bad(["}}], "backendRefs": [ref("v2", 80)]},
+            {"matches": [dict(prefix("/hrx"), headers=[{"type": "RegularExpression", "name": "x-ver", "value": "v[0-9]+"}])],
+             "backendRefs": [ref("v2", 80)]},
+            {"matches": [prefix("/far")], "backendRefs": [{"name": "far", "namespace": "other", "port": 80}]},
         ]),
         route("shop", "hosted", [{"backendRefs": [ref("v2", 80)]}], hostnames=["shop.test"]),
         route("shop", "secure", [{"backendRefs": [ref("api", 9000)]}], hostnames=["secure.test"],
-              parents=[{"name": "gw", "namespace": "infra", "sectionName": "https"}]),
+              parents=[{"name": "gw", "namespace": "infra", "sectionName": "https"},
+                       {"name": "gw", "namespace": "infra", "sectionName": "shared"}]),
         route("shop", "not-same", [{"backendRefs": [ref("web", 80)]}], parents=[{"name": "own", "namespace": "infra"}]),
         route("infra", "same", [{"matches": [prefix("/own")], "backendRefs": [ref("web", 80)]}],
               parents=[{"name": "own"}]),
@@ -287,6 +374,16 @@ def main():
               parents=[{"name": "gw", "namespace": "infra", "sectionName": "https"}]),
     ]
     state["services"][("infra", "web")] = state["services"][("shop", "web")]
+    state["grpcroutes"] = [
+        {"metadata": {"namespace": "shop", "name": "echo", "generation": 1},
+         "spec": {"parentRefs": [{"name": "gw", "namespace": "infra", "sectionName": "http"}],
+                  "rules": [{"matches": [{"method": {"service": "pkg.Echo", "method": "Say"}}], "backendRefs": [ref("grpcb", 50051)]},
+                            {"matches": [{"method": {"method": "Health"}}], "backendRefs": [ref("grpcc", 50051)]},
+                            {"matches": [{"method": {"service": "pkg.Other"}}], "backendRefs": [ref("grpcc", 50051)]}]}}]
+    state["secrets"][("certs", "shared")] = {"kind": "Secret", "type": "kubernetes.io/tls", "data": site}
+    gw("gw")["spec"]["listeners"].append({"name": "shared", "port": GWS + 20, "protocol": "HTTPS", "hostname": "secure.test",
+                                          "tls": {"certificateRefs": [{"name": "shared", "namespace": "certs"}]},
+                                          "allowedRoutes": {"namespaces": {"from": "All"}}})
     state["classes"]["okena"] = {"metadata": {"name": "okena", "generation": 1},
                                  "spec": {"controllerName": "okena.dev/gateway-controller"}}
     hosted = next(r for r in state["routes"] if r["metadata"]["name"] == "hosted")
@@ -338,6 +435,20 @@ include "{gwdir}/*.conf"
         check("  ${file:...} in a value: that header left out, nothing read", "passwd" not in gen and "x-file" not in gen and "root:" not in r[1], gen[:0])
         check("  ResponseHeaderModifier remove", "x-back" not in r[2], r[2])
         check("a path that would break out of its line: left out", "injected" not in gen and get("/web/x")[0] == 200, gen[-300:])
+        check("RegularExpression path: matched whole", get("/items/42")[1].startswith("v2 ") and get("/items/42x")[0] == 404,
+              (get("/items/42"), get("/items/42x")))
+        check("  one okena cannot read: left out, the rest served", "bad([" not in gen and get("/web/x")[0] == 200)
+        check("a header by a regular expression", get("/hrx", headers={"x-ver": "v12"})[1].startswith("v2 ")
+              and get("/hrx", headers={"x-ver": "vx"})[0] == 404, (get("/hrx", headers={"x-ver": "v12"}), get("/hrx", headers={"x-ver": "vx"})))
+        check("a Service of another namespace, no ReferenceGrant: 500", get("/far")[0] == 500, get("/far"))
+        check("GRPCRoute: service and method, over HTTP/2 to an h2 pool", grpc_call("/pkg.Echo/Say") == "grpcb", grpc_call("/pkg.Echo/Say"))
+        check("  a method of any service", grpc_call("/a.B/Health") == "grpcc", grpc_call("/a.B/Health"))
+        check("  every method of a service", grpc_call("/pkg.Other/Anything") == "grpcc", grpc_call("/pkg.Other/Anything"))
+        check("  what it does not name: not it", grpc_call("/pkg.Echo/Other") != "grpcb", grpc_call("/pkg.Echo/Other"))
+        check("  its pools speak HTTP/2", "protocol h2" in gen and "gw_shop_grpcb_50051_h2" in gen, gen[-600:])
+        q = subprocess.run(["curl", "-q", "-sS", "--cacert", str(tmp / "site.crt"), "--resolve", f"secure.test:{GWS + 20}:127.0.0.1",
+                            f"https://secure.test:{GWS + 20}/x"], capture_output=True, text=True, timeout=10)
+        check("a Secret of another namespace, no ReferenceGrant: not served", q.returncode != 0, q.stdout)
         check("hostnames: shop.test gets its own route, others not", get("/", host="shop.test")[1].startswith("v2 ")
               and get("/", host="other.test")[0] == 404, (get("/", host="shop.test"), get("/", host="other.test")))
         check("  and the routes of no hostname under it too", get("/web/x", host="shop.test")[1].split()[0] in ("a", "b"))
@@ -350,10 +461,24 @@ include "{gwdir}/*.conf"
         check("HTTPS from a Secret: its certificate, its route", q.stdout.startswith("api "), (q.stdout, q.stderr))
         check("  the Secret's files are the owner's only", oct((gwdir / "certs" / "infra.site.key").stat().st_mode & 0o777) == "0o600")
 
-        # the status written back
-        def gw(name):
-            return next(g for g in state["gateways"] if g["metadata"]["name"] == name)
+        # ReferenceGrants: the backend and the Secret, granted
+        state["grants"] = [
+            {"metadata": {"namespace": "other", "name": "g1"},
+             "spec": {"from": [{"group": "gateway.networking.k8s.io", "kind": "HTTPRoute", "namespace": "shop"}],
+                      "to": [{"group": "", "kind": "Service"}]}},
+            {"metadata": {"namespace": "certs", "name": "g2"},
+             "spec": {"from": [{"group": "gateway.networking.k8s.io", "kind": "Gateway", "namespace": "infra"}],
+                      "to": [{"group": "", "kind": "Secret", "name": "shared"}]}}]
+        t = until(lambda: get("/far")[1].startswith("far "), 8)
+        check("ReferenceGrant: the Service of another namespace served", t is not None, get("/far"))
 
+        def tls_ok():
+            q = subprocess.run(["curl", "-q", "-sS", "--cacert", str(tmp / "site.crt"), "--resolve", f"secure.test:{GWS + 20}:127.0.0.1",
+                                f"https://secure.test:{GWS + 20}/x"], capture_output=True, text=True, timeout=10)
+            return q.stdout.startswith("api ")
+        check("  and the Secret of another namespace", until(tls_ok, 8) is not None)
+
+        # the status written back
         def rt(name):
             return next(r for r in state["routes"] if r["metadata"]["name"] == name)
 
@@ -370,7 +495,7 @@ include "{gwdir}/*.conf"
               and cond(g, "Programmed") == ("True", "Programmed") and g["conditions"][0]["observedGeneration"] == 3
               and g["conditions"][0]["lastTransitionTime"].endswith("Z"), g)
         h = listener(gw("gw"), "http")
-        check("  a listener: its routes counted, Accepted, ResolvedRefs, Programmed", h.get("attachedRoutes") == 2
+        check("  a listener: its routes counted (a GRPCRoute too), Accepted, ResolvedRefs, Programmed", h.get("attachedRoutes") == 3
               and cond(h, "Accepted")[0] == "True" and cond(h, "ResolvedRefs")[0] == "True" and cond(h, "Programmed")[0] == "True", h)
         check("  HTTPS with its certificate: ResolvedRefs", cond(listener(gw("gw"), "https"), "ResolvedRefs") == ("True", "ResolvedRefs"))
         check("  TCP: UnsupportedProtocol", cond(listener(gw("own"), "tcp"), "Accepted") == ("False", "UnsupportedProtocol"),
@@ -388,6 +513,8 @@ include "{gwdir}/*.conf"
         check("  no hostname in common: NoMatchingListenerHostname", cond(mine(rt("no-host")), "Accepted") == ("False", "NoMatchingListenerHostname"))
         ps = rt("hosted")["status"]["parents"]
         check("  what another controller wrote is kept", [p["controllerName"] for p in ps] == ["example.com/other", "okena.dev/gateway-controller"], ps)
+        g = next(r for r in state["grpcroutes"] if r["metadata"]["name"] == "echo")
+        check("a GRPCRoute: its status too", cond(mine(g), "Accepted") == ("True", "Accepted"), g.get("status"))
         check("  as merge patches", all(c == "application/merge-patch+json" for _, c, _ in state["patches"]))
         n = len(state["patches"])
         k = len(state["seen"])

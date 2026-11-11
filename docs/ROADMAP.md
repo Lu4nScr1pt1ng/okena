@@ -594,7 +594,8 @@ built; both measurements are still to be made on the lab.)
   dc=, tag=, the ACL token from a file. `gateway kubernetes`: Gateways and
   HTTPRoutes written as okena's configuration and reloaded; `include` and
   `respond`, `{host}` on the way; status written back (class, Gateways and
-  listeners, routes' parents). Not yet: GRPCRoute, ReferenceGrant, regex paths.) Consul discovery, Kubernetes Gateway API.
+  listeners, routes' parents); GRPCRoute, ReferenceGrant, regular expression
+  paths and headers. Not yet: TLSRoute, TCPRoute.) Consul discovery, Kubernetes Gateway API.
 * (Done: certificate compression, RFC 8879, brotli and zlib, kept per worker.)
   Certificate compression, Encrypted Client Hello.
 * AVX-512 paths where they pay.
