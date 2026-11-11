@@ -4338,6 +4338,19 @@ http_redirect:
 .headers:
 	memit_x 13,10
 .headers_crlf:
+	mov	eax,[r15+H_ACT]			; the route's response set and add (HSTS on a
+	test	eax,eax				; redirect too)
+	jz	@f
+	dec	eax
+	imul	rax,rax,RA_SIZE
+	mov	esi,[g_acts+rax+RA_PFIRST]
+	mov	edx,[g_acts+rax+RA_PCOUNT]
+	push	r13
+	mov	r13,[r15+H_BUF]			; (room kept for a respond body)
+	lea	r13,[r13+HB_OUT+H_OUT_CAP-RESPOND_BODY_MAX-512]
+	call	hdrop_emit
+	pop	r13
+@@:
 	call	cors_emit
 	cmp	dword [r12+RA_RBLEN],0
 	je	.no_body

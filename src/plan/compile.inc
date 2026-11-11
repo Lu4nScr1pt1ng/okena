@@ -1247,6 +1247,16 @@ compile_route_action:
 	call	find_child
 	test	rax,rax
 	jnz	@f
+	mov	rdi,rbx				; `header`, `response header` above the route
+	mov	ecx,DIR_RHEADER
+	call	find_child
+	test	rax,rax
+	jnz	@f
+	mov	rdi,rbx
+	mov	ecx,DIR_RRESPONSE
+	call	find_child
+	test	rax,rax
+	jnz	@f
 	mov	rbx,[rbx+N_PARENT]
 	jmp	.up
 @@:
@@ -1649,7 +1659,24 @@ compile_route_action:
 	imul	ecx,ecx,D_SIZE
 	lea	r14,[dir_table+rcx]
 	mov	r15d,edx
-	mov	rbx,[r12+N_CHILD]
+	mov	rdi,r12				; the listener's first, then a host block's,
+	call	.collect_from			; then the route's (a later set wins)
+	pop	r15
+	pop	r14
+	ret
+; rdi = a node: its ancestors' lines (below the top), then its own
+.collect_from:
+	mov	rax,[rdi+N_PARENT]
+	test	rax,rax
+	jz	.lines
+	cmp	qword [rax+N_DEF],0
+	je	.lines				; (the top: nothing of these there)
+	push	rdi
+	mov	rdi,rax
+	call	.collect_from
+	pop	rdi
+.lines:
+	mov	rbx,[rdi+N_CHILD]
 .line:
 	test	rbx,rbx
 	jz	.collected
@@ -1710,8 +1737,6 @@ compile_route_action:
 	mov	rbx,[rbx+N_NEXT]
 	jmp	.line
 .collected:
-	pop	r15
-	pop	r14
 	ret
 
 ; rcx = route entry, edx = its index: into g_rhash.

@@ -128,6 +128,8 @@ test-serial: $(BIN) $(HTTPH) $(KAT) $(TLSH)
 	python3 -I tests/gateway/rtimeout.py epoll
 	python3 -I tests/gateway/connect.py io_uring
 	python3 -I tests/gateway/connect.py epoll
+	python3 -I tests/httpproxy/hdrscope.py io_uring
+	python3 -I tests/httpproxy/hdrscope.py epoll
 	python3 -I tests/httpproxy/canonical.py io_uring
 	python3 -I tests/httpproxy/canonical.py epoll
 	python3 -I tests/httpproxy/respond.py io_uring

@@ -12,7 +12,7 @@ not built yet. A directive that is not built is refused by `okena check`
 | `vrrp IFACE` | `vrid=`, `priority=`, `address=A/N`, `advert=`, `preempt=`, `track=POOL` (a floating address, VRRP v3) |
 | `tcp ADDR...` | `to`, `mss`, `limits { connections; per_source }`, `timeout { idle }`, `proxy_protocol send v1\|v2`, `tls { cert; key }`, `tls passthrough { sni NAME... to pool P; default reject\|to pool P }` (a `default to pool` alone is enough) |
 | `udp ADDR...` | `to`, `responses N`, `limits { connections }` (flows), `timeout { idle }` |
-| `http ADDR...` | `host`, `route`, `mss`, `canonical NAME`, `errors CODES file= [backend]`, `maintenance file= retry= allow= except=`, `limits`, `timeout { idle; header; body_idle; response }`, `trusted_proxies`, `access_log`, `tracing`, `http2 on\|off`, `http3 on\|off\|retry\|v2`, `preferred_address`, `early_data on\|off`, `tls { cert; key; ktls on\|off; versions 1.2 1.3; alpn h2 http/1.1 }` |
+| `http ADDR...` | `host`, `route`, `mss`, `canonical NAME`, `header`, `response header` (for every route below), `errors CODES file= [backend]`, `maintenance file= retry= allow= except=`, `limits`, `timeout { idle; header; body_idle; response }`, `trusted_proxies`, `access_log`, `tracing`, `http2 on\|off`, `http3 on\|off\|retry\|v2`, `preferred_address`, `early_data on\|off`, `tls { cert; key; ktls on\|off; versions 1.2 1.3; alpn h2 http/1.1 }` |
 | `route PATH... [METHOD...]` | `to`, `redirect`, `respond CODE [BODY] [type=]`, `rewrite path`, `signed_urls key= [key2=]`, `header set\|add\|drop`, `response header set\|add\|drop`, `retry N [idempotent-only] [on=reset,timeout,5xx,500,502,503,504]`, `timeout try= total=` |
 | `pool NAME` | `server ADDR [weight=N] [max=N] [backup]`, `queue timeout=`, `balance least-request\|peak-ewma\|round-robin\|least-conn\|random\|maglev\|ring-hash\|source-hash [key=] [bound=]\|first`, `sticky cookie= [ttl=] [samesite=]`, `connect timeout= max= idle= warm= rate=`, `health tcp\|http\|grpc ...`, `outlier errors= eject= max_ejected=`, `retry_budget P% [min=N/s]`, `source ADDR...`, `slow_start`, `tls { trust FILE; sni NAME; cert FILE; key FILE }` (TLS to the backends), `protocol h1\|h2\|fastcgi` |
 
@@ -605,6 +605,13 @@ on` gives), `alpn http/1.1 h2` (http/1.1 when the client offers it), `alpn h2`
 (a client that offers ALPN without h2 is refused with no_application_protocol;
 one that offers no ALPN speaks HTTP/1.1, as it must), `alpn http/1.1`. TLS 1.2
 answers ALPN the same way, http/1.1 named back too.
+
+`header` and `response header` may also stand on a listener or in a host
+block: they apply to every route below it, the listener's first, then the host
+block's, then the route's own, so a route's `set` wins. Response ones apply to
+okena's own answers too (`respond`, a redirect): `response header set
+strict-transport-security "max-age=63072000"` on a TLS listener covers
+everything it answers.
 
 `canonical example.com` on an http listener makes www and the apex one site:
 a request for www.example.com gets a 301 to example.com (`canonical

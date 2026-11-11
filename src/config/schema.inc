@@ -204,10 +204,10 @@ enumdef ctx_names, 'the top level', '`okena`', '`tcp`', '`pool`', '`limits`', '`
 ; Directives of the language that this version does not implement yet.
 enumdef future_names, 'xdp', \
 	'addon', 'log', 'reload', 'profile', \
-	'acme', 'header', \
+	'acme', \
 	'concurrency', \
 	'body', \
-	'response', 'cert', 'warm'
+	'cert', 'warm'
 
 rodata
 	align 8
@@ -303,8 +303,8 @@ dirdef DIR_FAULT, 'fault',      M_ROUTE,   0,           F_UNIQUE or F_KEYS_BLOCK
 dirdef DIR_REDIRECT, 'redirect',  M_ROUTE,   0,           F_UNIQUE, 2, 2, e_redirect_codes, T_ANY, 0
 dirdef DIR_RESPOND, 'respond',   M_ROUTE,   0,           F_UNIQUE, 1, 2, T_UINT, T_ANY, k_respond
 dirdef DIR_REWRITE, 'rewrite',    M_ROUTE,   0,           F_UNIQUE, 4, 4, e_rewrite_what, T_ANY, 0
-dirdef DIR_RHEADER, 'header',      M_ROUTE,   0,           0, 2, 3, e_header_ops, T_ANY, 0
-dirdef DIR_RRESPONSE, 'response',  M_ROUTE,   0,           0, 3, 4, e_response_what, T_ANY, 0
+dirdef DIR_RHEADER, 'header',      M_ROUTE or M_HTTP or M_HOST, 0, 0, 2, 3, e_header_ops, T_ANY, 0
+dirdef DIR_RRESPONSE, 'response',  M_ROUTE or M_HTTP or M_HOST, 0, 0, 3, 4, e_response_what, T_ANY, 0
 dirdef DIR_TLS, 'tls',          M_TCP or M_HTTP, CTX_TLS,   F_BLOCK_REQ or F_UNIQUE, 0, 1, e_tls_mode, T_NONE, 0
 dirdef DIR_SNI, 'sni',          M_TLS,     0,           0, 4, 64, T_ANY, T_ANY, 0
 dirdef DIR_DEFAULT, 'default',  M_TLS,     0,           F_UNIQUE, 1, 3, T_ANY, T_ANY, 0
