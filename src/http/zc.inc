@@ -17,6 +17,13 @@
 ;
 ; epoll: sendfile, as much as the socket takes; when it is full, the rest when it
 ; is writable again.
+;
+; io_uring, where the kernel has IORING_OP_FIXED_FD_INSTALL (6.8): the same
+; sendfile, on a descriptor of the client's own the ring makes from its direct one
+; (non-blocking: io_uring's own operations on the socket do not look at that), with
+; a poll for room through the ring. A SPLICE always goes to a thread of io-wq, two
+; hand-overs for each step; on loopback that cost 5 times the CPU of sendfile for
+; each byte. The pipes stay for a kernel without it.
 
 ZC_PIPES	:= 64
 ZC_PSZ		:= 1 shl 18			; a pipe's size: what one step moves
@@ -30,6 +37,13 @@ IORING_OP_SPLICE := 30
 IORING_REGISTER_FILES_UPDATE := 6
 SQE_SPLICE_OFF_IN := 16
 SQE_SPLICE_FD_IN := 44
+IORING_OP_FIXED_FD_INSTALL := 54
+
+; HB_ZCP with a descriptor of the client's own (io_uring): ZCP_FD, and the
+; descriptor + 1 (0: not made yet); ZCP_OWN when the ring made it (closed after)
+ZCP_FD		:= 0x40000000
+ZCP_OWN		:= 0x20000000
+ZCP_FDM		:= 0x0FFFFFFF
 
 ; a pipe
 ZP_IN		:= 0				; d: bytes in it
@@ -43,6 +57,7 @@ bss
 	g_zc_room	dd ?			; slots for them in the ring's table
 	g_zc_base	dd ?			; the ring's slot of pipe 0's read end
 	g_zc_free	dd ?
+	g_zc_inst	dd ?			; the ring takes IORING_OP_FIXED_FD_INSTALL
 	g_zc_fds	rd 2 * ZC_PIPES
 	align 64
 	g_zc_sink:	rb ZC_PSZ		; what a pipe given back had in it
@@ -170,6 +185,12 @@ zc_ok:
 	mov	rax,[r15+H_BUF]
 	cmp	dword [rax+HB_ZCP],0
 	jne	.yes
+	cmp	dword [g_zc_inst],0
+	je	@f
+	mov	dword [rax+HB_ZCP],ZCP_FD	; sendfile, on a descriptor made when it goes
+	mov	dword [rax+HB_ZCF],0
+	jmp	.yes
+@@:
 	mov	ecx,[g_zc_free]
 	cmp	ecx,NIL
 	je	.no
@@ -210,6 +231,9 @@ zc_send:
 	mov	dword [r15+H_STATE],HS_RESP_SEND
 	cmp	dword [g_engine],ENGINE_EPOLL
 	je	zc_ep_try
+	mov	rax,[r15+H_BUF]
+	test	dword [rax+HB_ZCP],ZCP_FD
+	jnz	zc_fd_send
 	; room for a whole chain: one split by a flush would not be linked
 	mov	eax,[g_sq_tail]
 	mov	rdx,[g_sq_head_ptr]
@@ -387,19 +411,34 @@ zc_gone:
 .none:
 	ret
 
-; ebx, r15: the session's pipe back to the pool, emptied first if it must be.
-; Keeps rbx, r12-r15.
+; ebx, r15: the session's pipe back to the pool, emptied first if it must be; or
+; the descriptor the ring made for it, closed. Keeps rbx, r12-r15.
 zc_release:
 	mov	rax,[r15+H_BUF]
 	mov	edi,[rax+HB_ZCP]
 	test	edi,edi
 	jz	.none
 	mov	dword [rax+HB_ZCP],0
+	test	edi,ZCP_FD
+	jnz	.fd
 	dec	edi
 	imul	eax,edi,ZP_SIZE
 	cmp	dword [g_zc_pipes+rax+ZP_IN],0
 	jne	zc_drain
 	jmp	zc_put
+.fd:
+	test	edi,ZCP_OWN
+	jz	.none
+	and	edi,ZCP_FDM
+	jz	.none
+	dec	edi
+	push	rdi
+	call	ring_get_sqe
+	pop	rdi
+	mov	byte [rax+SQE_OPCODE],IORING_OP_CLOSE
+	mov	[rax+SQE_FD],edi
+	mov	rcx,OP_IGNORE shl 56
+	mov	[rax+SQE_USER_DATA],rcx
 .none:
 	ret
 
@@ -503,6 +542,10 @@ zc_ep_try:
 	jmp	.again
 .turn:
 	mov	dword [r15+H_EPOP],0
+	cmp	qword [r15+H_RREMAIN],0
+	je	@f
+	mov	dword [g_hq_later],1		; (its share spent: the rest next turn)
+@@:
 	xor	eax,eax
 	jmp	.queue
 .failed:
@@ -517,4 +560,161 @@ zc_ep_try:
 	mov	dword [r15+H_EPOP],3		; (hep_event: writable again, on)
 	mov	dword [r15+H_EPSIDE],0
 	pop	r12
+	ret
+
+; io_uring, a descriptor of the client's own: ebx, r15. Made by the ring first (a
+; normal one already, SF_RAW: that one); then a poll for room, and sendfile when it
+; comes (on_zc_poll).
+zc_fd_send:
+	mov	ecx,[rax+HB_ZCP]
+	and	ecx,ZCP_FDM
+	jnz	.poll
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_RAW
+	jz	.install
+	mov	ecx,[rax+S_CLIENT]
+	inc	ecx
+	mov	rax,[r15+H_BUF]
+	or	[rax+HB_ZCP],ecx
+	lea	edi,[rcx-1]
+	call	zc_nonblock
+	jmp	.poll
+.install:
+	mov	edi,OP_ZC_FD
+	mov	esi,ebx
+	call	sess_sqe			; (rdx = the session)
+	mov	byte [rax+SQE_OPCODE],IORING_OP_FIXED_FD_INSTALL
+	mov	byte [rax+SQE_FLAGS],IOSQE_FIXED_FILE
+	mov	ecx,[rdx+S_CLIENT]
+	mov	[rax+SQE_FD],ecx
+	jmp	.counted
+.poll:
+	mov	edi,OP_ZC_POLL
+	mov	esi,ebx
+	call	sess_sqe
+	mov	byte [rax+SQE_OPCODE],IORING_OP_POLL_ADD
+	mov	ecx,[rdx+S_CLIENT]
+	mov	[rax+SQE_FD],ecx
+	mov	byte [rax+SQE_FLAGS],IOSQE_FIXED_FILE
+	client_sqe rdx
+	mov	dword [rax+SQE_OP_FLAGS],POLLOUT_
+.counted:
+	mov	rax,[r15+H_BUF]
+	inc	dword [rax+HB_ZCF]
+	ret
+
+; edi = a descriptor: non-blocking (sendfile on it returns when the socket is full)
+zc_nonblock:
+	mov	esi,F_SETFL
+	mov	edx,O_NONBLOCK_
+	mov	eax,SYS_fcntl
+	syscall
+	ret
+
+; the ring made the descriptor: ebx = session, r12d = generation, r14 = it, or -errno
+on_zc_fd:
+	call	sess_complete
+	jc	.out
+	h_rec
+	mov	rcx,[r15+H_BUF]
+	dec	dword [rcx+HB_ZCF]
+	test	r14,r14
+	js	.failed
+	lea	edx,[r14+1]
+	or	edx,ZCP_OWN
+	or	[rcx+HB_ZCP],edx
+	cmp	dword [rax+S_STATE],ST_CLOSING
+	je	zc_closing			; (closes it)
+	mov	edi,r14d
+	call	zc_nonblock
+	jmp	zc_send
+.failed:
+	cmp	dword [rax+S_STATE],ST_CLOSING
+	je	zc_closing
+	mov	rax,-1
+	xor	ecx,ecx
+	jmp	http_send_done
+.out:
+	ret
+
+; room on the socket: ebx = session, r12d = generation, r14 = the poll's mask.
+; sendfile until the socket is full, the body is all out, or this turn's share is
+; spent; then on, as after a send (which comes back here for the rest).
+on_zc_poll:
+	call	sess_complete
+	jc	.out
+	h_rec
+	mov	rcx,[r15+H_BUF]
+	dec	dword [rcx+HB_ZCF]
+	cmp	dword [rax+S_STATE],ST_CLOSING
+	je	zc_closing
+	test	r14,r14
+	js	.failed
+	push	r12
+	mov	r12d,ZC_EP_MAX
+.again:
+	zc_source
+	mov	rcx,[r15+H_RREMAIN]
+	cmp	rcx,rdx
+	cmova	rcx,rdx
+	cmp	rcx,r12
+	cmova	rcx,r12
+	test	rcx,rcx
+	jnz	@f
+	cmp	qword [r15+H_RREMAIN],0
+	je	.turn
+	test	r12,r12
+	jz	.turn
+	jmp	.failed_r12			; (the source ended before the body)
+@@:
+	mov	r10,rcx				; count
+	lea	rdx,[r8+HB_CPOSB]		; the offset, moved on by the kernel
+	cmp	rsi,-1
+	jne	@f
+	xor	edx,edx				; (a file: where it is)
+@@:
+	mov	esi,edi
+	mov	edi,[r8+HB_ZCP]
+	and	edi,ZCP_FDM
+	dec	edi
+	mov	eax,SYS_sendfile
+	syscall
+	cmp	rax,-EAGAIN
+	je	.turn
+	cmp	rax,-EINTR
+	je	.again
+	test	rax,rax
+	jle	.failed_r12
+	sub	[r15+H_RREMAIN],rax
+	add	[r15+H_XBYTES],rax
+	add	[g_st_zc_bytes],rax
+	sub	r12,rax
+	mov	r8,[r15+H_BUF]
+	push	rax
+	call	session_ptr
+	mov	rcx,rax
+	pop	rax
+	test	dword [rcx+S_FLAGS],SF_FILE
+	jnz	.file
+	sub	[r8+HB_CLEFT],eax
+	jmp	.again
+.file:
+	sub	[r8+HB_FLEFT],rax
+	jmp	.again
+.turn:
+	pop	r12
+	cmp	qword [r15+H_RREMAIN],0
+	jne	@f
+	call	zc_release			; the whole body: its descriptor goes
+@@:
+	xor	eax,eax
+	xor	ecx,ecx
+	jmp	http_send_done
+.failed_r12:
+	pop	r12
+.failed:
+	mov	rax,-1
+	xor	ecx,ecx
+	jmp	http_send_done
+.out:
 	ret

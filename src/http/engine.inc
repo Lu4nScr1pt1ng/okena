@@ -446,6 +446,16 @@ assert H_RCK + CK_SIZE <= H_EPOP
 bss
 	g_hready_head	dd ?
 	g_hready_tail	dd ?
+	g_hlater_head	dd ?			; hep_later: for the next turn
+	g_hlater_tail	dd ?
+	g_hr_left	dd ?			; ep_http_ready: deliveries left this turn
+	g_hq_later	dd ?			; 1: hep_queue delivers on the next turn of the
+						; loop, not in this one's ep_http_ready: a body
+						; sent a share at a time (zero copy with epoll) to
+						; a client that keeps up would otherwise keep the
+						; loop from its events and its tick for as long as
+						; it goes (ticks 250 ms late, the overload manager
+						; shedding)
 	g_force_server	dd ?		; NIL, or the server the next connect uses
 	g_h_peek	dd ?		; MSG_PEEK for the next h_recv, once
 end bss
@@ -603,9 +613,26 @@ hep_queue:
 	call	session_ptr
 	mov	eax,[rax+S_GEN]
 	mov	[r15+H_RGEN],eax
+	xor	r9d,r9d
+	xchg	r9d,[g_hq_later]		; for the next turn (hep_later)
 	test	r8d,r8d
 	jnz	.queued
 	mov	dword [r15+H_RNEXT],NIL
+	test	r9d,r9d
+	jz	@f
+	mov	eax,[g_hlater_tail]
+	cmp	dword [g_hlater_head],NIL
+	jne	.later
+	mov	[g_hlater_head],ebx
+	mov	[g_hlater_tail],ebx
+	ret
+.later:
+	shl	rax,H_SHIFT
+	add	rax,[g_http_base]
+	mov	[rax+H_RNEXT],ebx
+	mov	[g_hlater_tail],ebx
+	ret
+@@:
 	mov	eax,[g_hready_tail]
 	cmp	dword [g_hready_head],NIL
 	jne	@f
@@ -620,17 +647,26 @@ hep_queue:
 .queued:
 	ret
 
-; Main loop: deliver the queued results.
+; Main loop: deliver the queued results, and what they queue in turn, up to
+; HR_BUDGET of them: the rest on the next turn of the loop (which does not sleep
+; then). A body copied to a client that keeps up is a delivery for each piece, each
+; queueing the next: without a bound the loop kept from its events and its tick for
+; as long as it went (ticks 250 ms late, the overload manager shedding).
+HR_BUDGET	:= 1024
+
 ep_http_ready:
 	push	rbx
 	push	r12
 	push	r13
 	push	r14
 	push	r15
+	mov	dword [g_hr_left],HR_BUDGET
 .next:
 	mov	ebx,[g_hready_head]
 	cmp	ebx,NIL
 	je	.done
+	dec	dword [g_hr_left]
+	js	.done
 	h_rec
 	mov	eax,[r15+H_RNEXT]
 	mov	[g_hready_head],eax
@@ -668,6 +704,24 @@ ep_http_ready:
 	call	http_send_plain
 	jmp	.next
 .done:
+	mov	eax,[g_hlater_head]		; what waited for this turn: the next one's
+	cmp	eax,NIL
+	je	.none_later
+	mov	ecx,[g_hready_tail]
+	cmp	dword [g_hready_head],NIL
+	jne	@f
+	mov	[g_hready_head],eax
+	jmp	.joined
+@@:
+	shl	rcx,H_SHIFT
+	add	rcx,[g_http_base]
+	mov	[rcx+H_RNEXT],eax
+.joined:
+	mov	eax,[g_hlater_tail]
+	mov	[g_hready_tail],eax
+	mov	dword [g_hlater_head],NIL
+	mov	dword [g_hlater_tail],NIL
+.none_later:
 	pop	r15
 	pop	r14
 	pop	r13

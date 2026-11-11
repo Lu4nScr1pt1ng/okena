@@ -240,16 +240,32 @@ rodata
 	dw IORING_RESTRICTION_SQE_FLAGS_ALLOWED
 	db IOSQE_FIXED_FILE or IOSQE_IO_LINK or IOSQE_IO_HARDLINK or IOSQE_BUFFER_SELECT or IOSQE_CQE_SKIP_SUCCESS, 0
 	dd 0, 0, 0
+	; last, so that a kernel that does not know it (before 6.8) can be given the
+	; rest: zero copy then splices
+	dw IORING_RESTRICTION_SQE_OP
+	db IORING_OP_FIXED_FD_INSTALL, 0
+	dd 0, 0, 0
 	RING_RESTRICTIONS_COUNT = ($ - ring_restrictions) / 16
 end rodata
 
 ring_lockdown:
+	mov	dword [g_zc_inst],1
 	mov	edi,[g_ring_fd]
 	mov	esi,IORING_REGISTER_RESTRICTIONS
 	lea	rdx,[ring_restrictions]
 	mov	r10d,RING_RESTRICTIONS_COUNT
 	mov	eax,SYS_io_uring_register
 	syscall
+	cmp	eax,-EINVAL
+	jne	@f
+	mov	dword [g_zc_inst],0		; (an operation it does not know)
+	mov	edi,[g_ring_fd]
+	mov	esi,IORING_REGISTER_RESTRICTIONS
+	lea	rdx,[ring_restrictions]
+	mov	r10d,RING_RESTRICTIONS_COUNT - 1
+	mov	eax,SYS_io_uring_register
+	syscall
+@@:
 	test	eax,eax
 	js	.done
 	mov	edi,[g_ring_fd]
@@ -367,7 +383,9 @@ OP_UPOLL	:= 36		; udp: its epoll is readable
 OP_ZC_IN	:= 37		; zero copy (zc.inc): file -> pipe
 OP_ZC_OUT	:= 38		; pipe -> client
 OP_ZC_DRAIN	:= 39		; a pipe given back with bytes in it
-OP_COUNT	:= 40
+OP_ZC_FD	:= 40		; zero copy: a descriptor of the client's own, made
+OP_ZC_POLL	:= 41		; and room on its socket
+OP_COUNT	:= 42
 
 rodata
 	align 8
@@ -381,6 +399,7 @@ rodata
 			dq on_h2_recv, on_h2_send, on_h2_drain, on_h2t_send
 			dq on_qpoll, on_qtimer, on_qpace, on_fdelay, on_upoll
 			dq on_zc_in, on_zc_out, on_zc_drain
+			dq on_zc_fd, on_zc_poll
 end rodata
 
 ring_reap:

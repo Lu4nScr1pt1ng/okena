@@ -170,6 +170,8 @@ http_worker_init:
 	call	retry_budget_tick		; budgets start at their floor, not empty
 	mov	dword [g_hready_head],NIL	; deliveries (epoll, user-space TLS)
 	mov	dword [g_hready_tail],NIL
+	mov	dword [g_hlater_head],NIL
+	mov	dword [g_hlater_tail],NIL
 	xor	eax,eax
 .done:
 	ret

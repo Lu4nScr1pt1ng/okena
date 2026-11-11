@@ -238,6 +238,8 @@ rodata
 	; io_uring worker: the ring does the I/O
 	sc_begin filter_worker_uring
 	sc_common filter_worker_uring
+	sc_allow filter_worker_uring, SYS_sendfile	; zero copy, on a descriptor the ring made (zc.inc)
+	sc_allow filter_worker_uring, SYS_fcntl		; (made non-blocking)
 	sc_allow filter_worker_uring, SYS_pread64		; cache_disk: a head read, a record written
 	sc_allow filter_worker_uring, SYS_pwritev
 	sc_allow filter_worker_uring, SYS_fdatasync		; (the last one out)
@@ -256,6 +258,8 @@ rodata
 	; flows' sockets are opened, and forgotten, at the speed of a datagram
 	sc_begin filter_worker_uring_u
 	sc_common filter_worker_uring_u
+	sc_allow filter_worker_uring_u, SYS_sendfile	; zero copy, on a descriptor the ring made (zc.inc)
+	sc_allow filter_worker_uring_u, SYS_fcntl		; (made non-blocking)
 	sc_allow filter_worker_uring_u, SYS_pread64		; cache_disk: a head read, a record written
 	sc_allow filter_worker_uring_u, SYS_pwritev
 	sc_allow filter_worker_uring_u, SYS_fdatasync		; (the last one out)
@@ -312,6 +316,8 @@ rodata
 	; workers with `files` routes: they open beneath their roots (files.inc)
 	sc_begin filter_worker_uring_f
 	sc_common filter_worker_uring_f
+	sc_allow filter_worker_uring_f, SYS_sendfile	; zero copy, on a descriptor the ring made (zc.inc)
+	sc_allow filter_worker_uring_f, SYS_fcntl		; (made non-blocking)
 	sc_allow filter_worker_uring_f, SYS_pread64		; cache_disk: a head read, a record written
 	sc_allow filter_worker_uring_f, SYS_pwritev
 	sc_allow filter_worker_uring_f, SYS_fdatasync		; (the last one out)

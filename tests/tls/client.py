@@ -53,7 +53,7 @@ def run_against(groups, port, ktls=False, cert="s.pem", key="s.key"):
            "-groups", groups, "-naccept", "1", "-www"]
     if ktls:
         cmd += ["-num_tickets", "0"]    # a plain read() can't drain post-handshake records
-    sp = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    sp = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     try:
         # it says ACCEPT once it listens (a fixed sleep lost the race under
         # load; a probe connection would take its one accept)
@@ -64,6 +64,7 @@ def run_against(groups, port, ktls=False, cert="s.pem", key="s.key"):
                 break
             said += more
         if b"ACCEPT" not in said:
+            last[0] = "s_server did not start: " + said.decode(errors="replace")[-300:]
             return "s_server did not start"
         r = subprocess.run([str(CLIENT)], input=struct.pack(">H", port) + bytes([1 if ktls else 0]),
                            capture_output=True, timeout=10)

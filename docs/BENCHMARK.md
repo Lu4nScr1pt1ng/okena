@@ -400,6 +400,65 @@ the worker waking up (above); with busy polling it goes. At 100k/s the p50 stays
 and nothing is behind. The flows were made before the clock started; what a new flow
 costs (a socket, a connect, an epoll entry) is not in these numbers.
 
+## Phase 8's exit: zero copy, and a purge storm (2026-11-11)
+
+`python3 tests/bench/phase8.py`: okena with 2 workers on cores 2-3, wrk (`-t4 -c32`,
+closed loop) on 8-15, one host, over loopback; Linux 7.3. Two runs; the ranges are
+both.
+
+**The hit path.** A body of 4 MiB, 5 s after 1 s of warm-up. CPU is okena's own
+processes, user and system, per GiB sent; "zero copy" is
+`okena_zero_copy_bytes_total` over the bytes wrk read.
+
+| | Gbit/s | CPU s/GiB | of it user | zero copy | p99 |
+|---|---|---|---|---|---|
+| `files`, io_uring | 81-101 | 0.15-0.21 | 0.001 | 98-99% | 18-22 ms |
+| disk cache hit, io_uring | 76-78 | 0.22 | 0.001 | 100% | 22 ms |
+| memory cache hit (copied), io_uring | 29 | 0.58 | 0.03 | 0% | 42-44 ms |
+| `files`, epoll | 81-101 | 0.15-0.20 | 0.002 | 98-100% | 18-21 ms |
+| disk cache hit, epoll | 87-88 | 0.18 | 0.002 | 97-98% | 19-24 ms |
+| memory cache hit (copied), epoll | 30 | 0.58 | 0.04 | 0% | 53 ms |
+
+From the page cache, okena's own work is next to nothing: a millisecond of user time
+per GiB, the rest is the kernel moving pages. The copy costs three times the CPU and
+gives a third of the throughput. At 10 Gbit/s this is a fifth of a core; two cores
+fill loopback at 80-100 Gbit/s, eight to ten times a 10 GbE port and three to four
+times 25 GbE. The two-host lab is not in place, so line rate on a NIC is inferred
+from this, not measured.
+
+Three defects found on the way, fixed before these numbers:
+
+* io_uring spliced through a pipe, and the kernel runs every `IORING_OP_SPLICE` on an
+  io-wq thread: 13 Gbit/s at 1.3 CPU s/GiB, six `iou-wrk` threads busy. It now makes a
+  descriptor of the client's own (`IORING_OP_FIXED_FD_INSTALL`, Linux 6.8) and uses
+  sendfile like epoll, with a poll for room through the ring. Before 6.8, the pipes.
+* epoll delivered queued results until the queue was empty, and a body to a client
+  that keeps up queues its next piece as each goes: the loop kept from its events and
+  its tick for as long as bodies went, ticks 100-250 ms late, and the overload manager
+  shed requests (503, `Connection: close`). Each turn now delivers at most 1024, and a
+  zero-copy body that has had its share waits for the next turn. Copied, p99 went from
+  507 ms to 57; zero copy from 135 ms to 14, and 7.5 to 11.9 GB/s.
+* An answer larger than `cache_memory` said `stored` and was dropped half way. Now it
+  is not kept, and says so.
+
+**A purge-and-refill storm.** 16 objects of 16 KiB, requested in turn, `cache 1h` with
+memory and disk; the origin takes 2 ms an answer. For 5 s, `okena purge prefix` every
+50 ms (about 100 purges), against 5 s without.
+
+| clients | | req/s | p99 | origin requests | per purge |
+|---|---|---|---|---|---|
+| 4 | quiet | 66k-77k | 76-95 µs | 0 | |
+| 4 | storm | 49k-62k | 2.2 ms | 2048-2519 | 20-25 |
+| 128 | quiet | 84k | 2.1 ms | 0 | |
+| 128 | storm | 96k | 4.5 ms | 3226-3228 | 32 |
+
+The origin sees at most one fetch per object and worker after each purge (16 × 2 =
+32), however many clients ask. A miss for what is being fetched waits for that fetch.
+With 32 times the clients, the origin's load is the same bound; it follows the purges,
+not the traffic. The clients barely notice: at 128 connections the rate holds. At 4,
+each connection waits behind a refill about once per purge, and p99 is the origin's 2
+ms.
+
 ## What a cache hit costs (2026-11-06)
 
 The same load, 20k requests/s on 64 connections, HTTP/1.1, 2 workers pinned as a

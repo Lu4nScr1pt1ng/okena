@@ -495,8 +495,12 @@ on a machine that can spare it).
   unsolicited Neighbor Advertisement.)
 
 Exit: hit path serves from page cache at line rate with zero copies;
-origin load stays flat during a purge-and-refill storm. (Every item is
-built; both measurements are still to be made on the lab.)
+origin load stays flat during a purge-and-refill storm. (Done, on one host
+over loopback: 80-100 Gbit/s from the page cache on two cores, 0.15-0.22
+CPU s/GiB, a millisecond of it in user space; during a purge every 50 ms the
+origin sees at most one fetch per object and worker after each, at 4 clients
+and at 128 alike. BENCHMARK.md has both, and the three defects they found. Line
+rate on a NIC is inferred, as the two-host lab is not in place.)
 
 ## Phase 9 — Breadth
 

@@ -58,6 +58,8 @@ ep_main:
 	jb	@b
 	mov	dword [g_hready_head],NIL
 	mov	dword [g_hready_tail],NIL
+	mov	dword [g_hlater_head],NIL
+	mov	dword [g_hlater_tail],NIL
 	mov	edi,EPOLL_CLOEXEC
 	mov	eax,SYS_epoll_create1
 	syscall

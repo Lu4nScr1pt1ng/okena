@@ -937,7 +937,9 @@ because the pages were in the kernel's cache, but not after a reboot. Heads are 
 and records written in place, through the page cache.
 
 A body of 64 KiB or more, from disk or from `files`, goes from the page cache to the
-socket without copies: splice through a pipe with io_uring, sendfile with epoll. This
+socket without copies: sendfile with either engine (with io_uring, on a descriptor
+the ring makes for the client, Linux 6.8 or later; before that, splice through a
+pipe, at several times the CPU). This
 needs HTTP/1.1 in the clear or with kTLS (`tls { ktls on }`), and an answer that is
 not compressed. Anything else is read into okena and sent from there, as before.
 `/metrics` counts `okena_zero_copy_bytes_total`, and for the disk
@@ -954,7 +956,7 @@ being sent).
 | `query=all\|none\|a,b` | the target's query in the key: all of it (the default), none of it, or only the parameters named, in that order, whatever order the request has them in. An absent parameter and an empty one are not the same |
 | `host=off` | the host is not in the key: one answer for every name the listener serves |
 | `slice=SIZE` | large objects kept in slices of this size (64 KiB to 64 MiB), each fetched with a Range of its own: see below |
-| `max=SIZE` | the largest answer kept, 1 MiB by default |
+| `max=SIZE` | the largest answer kept, 1 MiB by default. One larger than a worker's `cache_memory` is not kept, on disk either: use `slice=` |
 | `shared=on` | the answer is the same for everyone: see below |
 
 Kept: GET answers of 200, 301, 308, 404 and 410 with a length or chunked. HEAD reads

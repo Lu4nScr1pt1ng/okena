@@ -3,7 +3,7 @@
 cache goes from the page cache to the socket without passing through okena (splice
 through a pipe with io_uring, sendfile with epoll), in the clear and with kTLS. Every
 byte right: whole, from an offset (a range), to a slow client, again and again on one
-connection; clients that leave mid-body give their pipes back; small bodies and
+connection; clients that leave mid-body give their pipes (or descriptors) back; small bodies and
 HTTP/2 are copied, as before, and right too."""
 import hashlib
 import http.client
@@ -109,6 +109,19 @@ def grew(before, by):
     return until(lambda: zc() >= before + by, 4)
 
 
+def worker_fds(master):
+    """descriptors open in okena's workers"""
+    n = 0
+    for d in pathlib.Path("/proc").iterdir():
+        try:
+            if d.name.isdigit() and (d / "comm").read_text().strip() == "okena-worker" \
+                    and (d / "stat").read_text().rsplit(")", 1)[1].split()[1] == str(master):
+                n += len(list((d / "fd").iterdir()))
+        except OSError:
+            pass
+    return n
+
+
 def main():
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-zc-", dir="/tmp"))
     site = tmp / "site"
@@ -142,6 +155,7 @@ http 127.0.0.1:{UTLS} {{
     p = subprocess.Popen([str(BIN), "-c", str(conf)], stdout=subprocess.DEVNULL, stderr=open(log, "w"))
     try:
         check("okena starts", until(lambda: get("/f/small.txt")[0] == 200) and until(lambda: zc() >= 0), log.read_text()[-300:])
+        fds0 = worker_fds(p.pid)
         z0 = zc()
         s, b, _ = get("/f/big.bin")
         check("a file, whole: every byte", s == 200 and b == BIG, (s, len(b)))
@@ -207,6 +221,9 @@ http 127.0.0.1:{UTLS} {{
         out = [get("/f/big.bin")[1] == BIG for _ in range(6)]
         check("after 200 clients left mid-body: still right, still without copies (the pipes came back)",
               all(out) and grew(z0, 6 * len(BIG)), (out, z0, zc()))
+        if ENGINE == "io_uring":                # (epoll's clients are descriptors themselves)
+            check("  and the descriptors the ring made for them closed (sendfile on them)",
+                  until(lambda: worker_fds(p.pid) == fds0, 5), (fds0, worker_fds(p.pid)))
 
         # copied as before: a small body, HTTP/2, HEAD
         z0 = settled()                  # (what the clients that left still had: counted)

@@ -1909,6 +1909,13 @@ cache_head:
 	mov	ecx,[r12+CE_MAX]
 	cmp	rax,rcx
 	ja	.no
+	mov	rcx,[g_plan_cmem]		; more than the worker's memory: it would be
+	test	rcx,rcx				; dropped half way (and the disk is filled
+	jnz	@f				; from it)
+	mov	ecx,CACHE_MEM_DEF
+@@:
+	cmp	rax,rcx
+	jae	.no
 	jmp	.fields
 .chunked:
 	mov	qword [r12+CE_WANT],-1
