@@ -77,7 +77,8 @@ GWP2_STATE	:= 28			; d: 1 served, 2 not to be had
 GWP2_PN		:= 32			; q: the Service port's name (0: none)
 GWP2_PNLEN	:= 40			; d
 GWP2_H2		:= 44			; d: gRPC: protocol h2
-GWP2_SIZE		:= 48
+GWP2_USED	:= 48			; d: named in what was written (so it is written)
+GWP2_SIZE		:= 56
 GW_MAXP		:= 512
 
 GW_MAXH		:= 1024			; hosts on a port
@@ -183,7 +184,9 @@ bss
 	g_gc_name	dq ?
 	g_gc_seen	rq 64
 	g_gc_seenl	rd 64
-	g_gw_l4def	dd ?
+	g_gw_l4def	dq ?		; the entry that is a TLS port's default
+	g_l4c_n		dd ?		; pools of several backends to write: their entries
+	g_l4c		rq 256
 	g_gc_seenns	rq 64
 	g_gc_seennsl	rd 64
 	g_gp_idx	dd ?
@@ -2353,6 +2356,7 @@ gw_emit_l4:
 	push	r13
 	push	r14
 	mov	r13,r15				; (taken back if nothing is in it)
+	mov	dword [g_l4c_n],0
 	cmp	dword [g_gw_proto],5
 	jne	@f
 	go_lit	10,'udp :'
@@ -2396,18 +2400,19 @@ gw_emit_l4:
 	je	.next				; (named before: the first route has it)
 	push	rbx
 	mov	rbx,r12
-	call	gw_first_pool
+	call	gw_collect
 	pop	rbx
-	cmp	eax,-1
+	cmp	dword [g_ga_nb],0
 	je	.next
-	push	rax
 	go_lit	'        sni '
 	mov	rsi,[r12+GWE_HOST]
 	mov	ecx,[r12+GWE_HOSTLEN]
 	call	go_q
 	go_lit	' to pool '
-	pop	rax
-	call	gw_pool_name
+	push	rbx
+	mov	rbx,r12				; (the entry)
+	call	gw_l4_target
+	pop	rbx
 	call	go_nl
 	inc	dword [g_gw_nroutes]
 	or	r14d,1
@@ -2417,11 +2422,11 @@ gw_emit_l4:
 	jnz	.next
 	push	rbx
 	mov	rbx,r12
-	call	gw_first_pool
+	call	gw_collect
 	pop	rbx
-	cmp	eax,-1
+	cmp	dword [g_ga_nb],0
 	je	.next
-	mov	[g_gw_l4def],eax
+	mov	[g_gw_l4def],r12
 	or	r14d,2
 	inc	dword [g_gw_nroutes]
 	jmp	.next
@@ -2430,14 +2435,15 @@ gw_emit_l4:
 	jnz	.next
 	push	rbx
 	mov	rbx,r12
-	call	gw_first_pool
+	call	gw_collect
 	pop	rbx
-	cmp	eax,-1
+	cmp	dword [g_ga_nb],0
 	je	.next
-	push	rax
 	go_lit	'    to pool '
-	pop	rax
-	call	gw_pool_name
+	push	rbx
+	mov	rbx,r12
+	call	gw_l4_target
+	pop	rbx
 	call	go_nl
 	or	r14d,2
 	inc	dword [g_gw_nroutes]
@@ -2452,8 +2458,11 @@ gw_emit_l4:
 	test	r14d,2
 	jz	.reject
 	go_lit	'        default to pool '
-	mov	eax,[g_gw_l4def]
-	call	gw_pool_name
+	push	rbx
+	mov	rbx,[g_gw_l4def]
+	call	gw_collect
+	call	gw_l4_target
+	pop	rbx
 	call	go_nl
 	jmp	.closed
 .reject:
@@ -2463,12 +2472,67 @@ gw_emit_l4:
 .close:
 	go_lit	'}',10
 	inc	dword [g_gw_nports]
+	call	gw_l4_pools			; (the pools of several it named)
 	jmp	.out
 .nothing:
 	mov	r15,r13
 .out:
 	pop	r14
 	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; rbx = an entry, gw_collect done (g_ga_nb > 0): the pool it goes to, its name out:
+; one backend its own pool; several a pool of them (gw_l4_SEQ), each Service
+; with its weight as a share of it, written after the block
+gw_l4_target:
+	cmp	dword [g_ga_nb],1
+	jne	.several
+	mov	eax,[g_ga_bp]
+	jmp	gw_pool_name
+.several:
+	go_lit	'gw_l4_'
+	mov	eax,[rbx+GWE_SEQ]
+	call	go_u
+	mov	eax,[g_l4c_n]
+	cmp	eax,256
+	jae	.out
+	mov	[g_l4c+rax*8],rbx
+	inc	dword [g_l4c_n]
+.out:
+	ret
+
+; the pools of several backends the L4 block named
+gw_l4_pools:
+	push	rbx
+	push	r12
+	xor	r12d,r12d
+.each:
+	cmp	r12d,[g_l4c_n]
+	jae	.out
+	mov	rbx,[g_l4c+r12*8]
+	call	gw_collect
+	go_lit	10,'pool gw_l4_'
+	mov	eax,[rbx+GWE_SEQ]
+	call	go_u
+	go_lit	' {',10,'    balance round-robin',10	; (smooth, by weight: the shares exactly)
+	xor	ecx,ecx
+.backend:
+	cmp	ecx,[g_ga_nb]
+	jae	.closed
+	push	rcx
+	mov	eax,[g_ga_bp+rcx*4]
+	mov	edx,[g_ga_bw+rcx*4]
+	call	gw_discover_line
+	pop	rcx
+	inc	ecx
+	jmp	.backend
+.closed:
+	go_lit	'}',10
+	inc	r12d
+	jmp	.each
+.out:
 	pop	r12
 	pop	rbx
 	ret
@@ -3499,14 +3563,21 @@ gw_rewrite:
 gw_backends:
 	push	r12
 	push	r13
+	call	gw_collect
+	jmp	.chosen
+
+; rbx = the entry: g_ga_nb (8 at most), g_ga_bp, g_ga_bw, g_ga_sum: its rule's
+; backends okena can serve, with their weights
+gw_collect:
+	push	r12
 	mov	dword [g_ga_nb],0
 	mov	dword [g_ga_sum],0
 	mov	rsi,[rbx+GWE_RULE]
 	gk	'backendRefs'
 	call	gj_get
-	jc	.chosen
+	jc	.done
 	call	gj_first
-	jc	.chosen
+	jc	.done
 .ref:
 	mov	r12,rsi
 	mov	eax,1
@@ -3536,7 +3607,11 @@ gw_backends:
 	mov	rsi,r12
 	call	gj_next
 	jnc	.ref
-.chosen:
+.done:
+	pop	r12
+	ret
+
+gw_backends.chosen:
 	mov	ecx,r14d
 	call	go_ind
 	cmp	dword [g_ga_nb],0
@@ -3889,6 +3964,7 @@ gw_pool_name:
 	imul	rbx,rax,GWP2_SIZE
 	add	rbx,[g_gw_base]
 	add	rbx,GW_T_P
+	mov	dword [rbx+GWP2_USED],1
 	go_lit	'gw_'				; (labels have no _: no two alike)
 	mov	rsi,[rbx+GWP2_NS]
 	mov	ecx,[rbx+GWP2_NSLEN]
@@ -3965,6 +4041,7 @@ gw_pool:
 	mov	[r13+GWP2_SVC],rdi
 	mov	[r13+GWP2_SVCLEN],ecx
 	mov	[r13+GWP2_PORT],r14d
+	mov	dword [r13+GWP2_USED],0
 	mov	dword [r13+GWP2_STATE],2
 	mov	qword [r13+GWP2_PN],0
 	mov	dword [r13+GWP2_PNLEN],0
@@ -4069,10 +4146,36 @@ gw_emit_pools:
 	add	r12,GW_T_P
 	cmp	dword [r12+GWP2_STATE],1
 	jne	.next
+	cmp	dword [r12+GWP2_USED],0
+	je	.next				; (only in a pool of several: written there)
 	go_lit	10,'pool '
 	mov	eax,ebx
 	call	gw_pool_name
-	go_lit	' {',10,'    discover kubernetes service='
+	go_lit	' {',10
+	mov	eax,ebx
+	xor	edx,edx
+	call	gw_discover_line
+	cmp	dword [r12+GWP2_H2],0
+	je	@f
+	go_lit	'    protocol h2',10		; (gRPC)
+@@:
+	go_lit	'}',10
+.next:
+	inc	ebx
+	jmp	.pool
+.out:
+	pop	r12
+	pop	rbx
+	ret
+
+; eax = a pool, edx = a share (0: none): its `discover kubernetes` line, out
+gw_discover_line:
+	push	r12
+	push	rdx
+	imul	r12,rax,GWP2_SIZE
+	add	r12,[g_gw_base]
+	add	r12,GW_T_P
+	go_lit	'    discover kubernetes service='
 	mov	rsi,[r12+GWP2_NS]
 	mov	ecx,[r12+GWP2_NSLEN]
 	call	go_bytes
@@ -4086,6 +4189,12 @@ gw_emit_pools:
 	mov	rsi,[r12+GWP2_PN]
 	mov	ecx,[r12+GWP2_PNLEN]
 	call	go_bytes
+@@:
+	pop	rax
+	test	eax,eax
+	jz	@f
+	go_lit	' share='
+	call	go_u
 @@:
 	cmp	dword [g_plan_gw+GWP_APILEN],0
 	je	@f
@@ -4115,17 +4224,8 @@ gw_emit_pools:
 	mov	ecx,[g_plan_gw+GWP_NAMELEN]
 	call	go_q
 @@:
-	cmp	dword [r12+GWP2_H2],0
-	je	@f
-	go_lit	10,'    protocol h2'		; (gRPC)
-@@:
-	go_lit	10,'}',10
-.next:
-	inc	ebx
-	jmp	.pool
-.out:
+	call	go_nl
 	pop	r12
-	pop	rbx
 	ret
 
 ; ------------------------------------------------------------ TLS

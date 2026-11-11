@@ -177,7 +177,8 @@ keysdef k_alert, 'trust', T_ANY
 keysdef k_telegram, 'token', T_ANY, 'chat', T_ANY, 'api', T_ANY, 'trust', T_ANY
 enumdef e_alert_on, 'backend', 'worker', 'reload', 'discovery', 'certificate'
 keysdef k_discover, 'port', T_ANY, 'max', T_COUNT, 'label', T_ANY, 'network', T_ANY, 'socket', T_ANY, \
-	'service', T_ANY, 'api', T_ANY, 'token', T_ANY, 'ca', T_ANY, 'name', T_ANY, 'dc', T_ANY, 'tag', T_ANY
+	'service', T_ANY, 'api', T_ANY, 'token', T_ANY, 'ca', T_ANY, 'name', T_ANY, 'dc', T_ANY, 'tag', T_ANY, \
+	'share', T_COUNT
 enumdef e_discover, 'file', 'srv', 'docker', 'kubernetes', 'consul'
 keysdef k_balance, 'key', T_ANY, 'bound', T_ANY
 keysdef k_sticky, 'cookie', T_ANY, 'ttl', T_DURATION, 'samesite', T_ANY

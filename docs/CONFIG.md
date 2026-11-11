@@ -1607,6 +1607,14 @@ pool users {
 }
 ```
 
+Any `discover` may take `share=N` (1 to 1000000): its servers have N between them,
+however many there are (each N x 1000 / their number, as a weight), so that two
+sources in a pool are weighed as wholes: `discover kubernetes service=a/x share=1`
+and `discover kubernetes service=a/y share=3` send three times more to y's pods
+together than to x's, whether x has one pod or ten. With `balance round-robin`
+the shares are kept exactly; least-request weighs them only under load (idle
+servers tie).
+
 `discover file PATH [port=N] [max=64]` takes a pool's servers from a file, one
 `ADDRESS[:PORT] [weight=N]` a line (`#` starts a comment; `port=` for lines
 without one), so anything that can write a file can place backends:
@@ -1746,9 +1754,9 @@ What it reads, and becomes:
 * A TLS listener (Passthrough) is a `tcp` block with `tls passthrough`: a TLSRoute's
   hostnames its `sni` lines, one of none its `default`, the rest refused; a TCP
   listener a `tcp` block to its TCPRoute's backend, a UDP listener a `udp` block
-  to its UDPRoute's. The first route that names
-  a hostname has it, the first backend okena can serve is the one (weights
-  are for HTTP).
+  to its UDPRoute's. The first route that names a hostname has it. Several
+  backends are one pool, each Service a `discover` with its weight as its
+  `share`, balanced round-robin: the weights hold whatever the pods.
 * backendRefs, Services of the route's own namespace or of one whose
   ReferenceGrant lets the route's kind and namespace refer to it, are pools
   that follow their EndpointSlices, the Service's port found by its name;
@@ -1767,8 +1775,7 @@ NoMatchingListenerHostname) and ResolvedRefs (or BackendNotFound,
 RefNotPermitted, InvalidKind), what other controllers wrote in it kept.
 
 Not there yet: regular expressions in query parameters, URLRewrite's hostname,
-a backendRef's own filters, and weights between backends of a TLSRoute,
-TCPRoute or UDPRoute. A regular expression path is
+and a backendRef's own filters. A regular expression path is
 tried after an exact path and before a prefix, as okena's own are (the Gateway
 API leaves its place to the implementation).
 

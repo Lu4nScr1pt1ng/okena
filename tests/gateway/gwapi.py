@@ -416,7 +416,7 @@ def main():
                                     "rules": [{"backendRefs": [ref("dns", 53)]}]}}]
     state["tcproutes"] = [{"metadata": {"namespace": "shop", "name": "db", "generation": 1},
                            "spec": {"parentRefs": [{"name": "l4", "namespace": "infra", "sectionName": "tcp"}],
-                                    "rules": [{"backendRefs": [ref("web", 80)]}]}}]
+                                    "rules": [{"backendRefs": [ref("web", 80, 1), ref("v2", 80, 3)]}]}}]
     state["tlsroutes"] = [{"metadata": {"namespace": "shop", "name": "pass", "generation": 1},
                            "spec": {"parentRefs": [{"name": "l4", "namespace": "infra", "sectionName": "tls"}],
                                     "hostnames": ["secure.test"], "rules": [{"backendRefs": [ref("tlsback", 443)]}]}}]
@@ -491,8 +491,12 @@ include "{gwdir}/*.conf"
         q = subprocess.run(["curl", "-q", "-sS", "--cacert", str(tmp / "site.crt"), "--resolve", f"secure.test:{GWS + 20}:127.0.0.1",
                             f"https://secure.test:{GWS + 20}/x"], capture_output=True, text=True, timeout=10)
         check("a Secret of another namespace, no ReferenceGrant: not served", q.returncode != 0, q.stdout)
-        r = collections.Counter(get("/x", port=GWH + 30)[1].split()[0] for i in range(10))
-        check("TCPRoute: the TCP listener to its Service", set(r) <= {"a", "b"} and sum(r.values()) == 10, r)
+        r = collections.Counter(get("/x", port=GWH + 30)[1].split()[0] for i in range(200))
+        v2 = r["v2"] / 200
+        check("TCPRoute: weights 1:3 between two Services, whatever their pods (2 and 1)",
+              0.6 <= v2 <= 0.9 and r["a"] + r["b"] + r["v2"] == 200, r)
+        check("  one pool of both, each Service its share", "share=1\n" not in gen and " share=3 " in gen.replace("\n", " "),
+              [l for l in gen.splitlines() if "share" in l])
         def via_tls(name):
             q = subprocess.run(["curl", "-q", "-sS", "--cacert", str(tmp / "site.crt"), "--resolve", f"{name}:{GWH + 31}:127.0.0.1",
                                 f"https://{name}:{GWH + 31}/p"], capture_output=True, text=True, timeout=10)

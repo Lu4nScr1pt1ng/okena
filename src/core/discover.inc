@@ -52,6 +52,7 @@ bss
 	g_disc_stat	rq DISC_SOURCES * 3	; control: inode, size, time of the last read
 	g_disc_empty	rd DISC_SOURCES	; control: an empty read not believed yet
 	g_disc_said	rd DISC_SOURCES	; control: an error already told
+	g_plan_dshare	rd DISC_SOURCES	; share=: the source's weight, between its servers (0 none)
 	g_disc_copy:	rb DX_SIZE
 	g_disc_new:	rb DX_SIZE
 	g_disc_path:	rb 4096 + 8
@@ -499,6 +500,32 @@ disc_parse:
 ; r12 = group, r13d = source: g_disc_new is what it has now. Published when
 ; it differs, and said.
 disc_publish:
+	; share=N: N between them, each its part (1000 a share, 1 to 65535)
+	mov	ecx,[g_plan_dshare+r13*4]
+	test	ecx,ecx
+	jz	.weighed
+	mov	r8d,[g_disc_new+DX_COUNT]
+	test	r8d,r8d
+	jz	.weighed
+	imul	eax,ecx,1000
+	xor	edx,edx
+	div	r8d
+	cmp	eax,65535
+	jbe	@f
+	mov	eax,65535
+@@:
+	test	eax,eax
+	jnz	@f
+	inc	eax
+@@:
+	xor	ecx,ecx
+.share:
+	imul	rdx,rcx,DE_SIZE
+	mov	[g_disc_new+DX_E+rdx+DE_WEIGHT],eax
+	inc	ecx
+	cmp	ecx,r8d
+	jb	.share
+.weighed:
 	mov	rdi,r13
 	imul	rdi,rdi,DX_SIZE
 	add	rdi,[g_disc_tbl]

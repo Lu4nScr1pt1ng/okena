@@ -4089,6 +4089,24 @@ compile_discover:
 	mov	[rbx+GR_PORT],eax
 @@:
 .max:
+	; share=N: the source's servers have N between them, however many they are
+	mov	eax,[rbx+GR_DISC]
+	mov	dword [g_plan_dshare+rax*4],0
+	mov	rdi,r13
+	lea	rsi,[str_key_share]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_decimal
+	test	eax,eax
+	jz	plan_bad_discover
+	cmp	eax,1000000
+	ja	plan_bad_discover
+	mov	ecx,[rbx+GR_DISC]
+	mov	[g_plan_dshare+rcx*4],eax
+@@:
 	mov	dword [rbx+GR_SLOTS],DISC_DEFAULT
 	mov	rdi,r13
 	lea	rsi,[str_key_max]
@@ -4313,6 +4331,7 @@ plan_bad_consul:
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process
 cstring str_key_dc, 'dc',0
+cstring str_key_share, 'share',0
 cstring str_key_tag, 'tag',0
 cstring str_consul_api, '127.0.0.1:8500'
 
