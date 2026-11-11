@@ -116,7 +116,12 @@ RA_WRX		:= 176		; d: rewrite ~REGEX: its regex + 1 (RA_WFROM then the source)
 RA_ZENC		:= 180		; d: `compress`: 1 gzip, 2 br, 4 br before gzip
 RA_RTRY		:= 184		; d: `retry N`: N + 1, 0 = the default (1)
 RA_RON		:= 188		; d: `on=`: RON_* bits, 0 = the default
-RA_SIZE		:= 192
+RA_RBODY	:= 192		; q: `respond CODE BODY`: the body, 0 none
+RA_RBLEN	:= 200		; d
+RA_RTLEN	:= 204		; d: `type=`'s length, 0 text/plain
+RA_RTYPE	:= 208		; q
+RA_SIZE		:= 216
+RESPOND_BODY_MAX := 4096
 MAX_ACTS	:= MAX_ROUTES
 HD_KIND		:= 0		; d: HOP_SET, HOP_ADD, HOP_DROP
 HD_PREFIX	:= 4		; d: 1 when the name ends with * (drop)
@@ -1242,13 +1247,48 @@ compile_route_action:
 	call	find_child
 	test	rax,rax
 	jz	@f
-	mov	rbx,[rax+N_ARGS]		; respond: a code, no target
+	push	rax
+	mov	rbx,[rax+N_ARGS]		; respond: a code, a body perhaps, no target
 	mov	rdi,[rbx+A_VAL]
 	mov	esi,[rbx+A_VLEN]
 	call	parse_decimal
+	jc	plan_bad_respond
+	cmp	eax,200				; 2xx, 4xx, 5xx (a redirect is `redirect`)
+	jb	plan_bad_respond
+	cmp	eax,300
+	jb	.respond_code
+	cmp	eax,400
+	jb	plan_bad_respond
+	cmp	eax,599
+	ja	plan_bad_respond
+.respond_code:
 	mov	[r13+RA_CODE],eax
 	mov	qword [r13+RA_TGT],0
 	mov	dword [r13+RA_TLEN],0
+	mov	rdi,[rsp]
+	call	positional_count
+	cmp	eax,2
+	jb	.respond_type
+	cmp	dword [r13+RA_CODE],204		; (no content, by its name)
+	je	plan_bad_respond
+	mov	rax,[rbx+A_SIZE+A_VAL]
+	mov	[r13+RA_RBODY],rax
+	mov	eax,[rbx+A_SIZE+A_VLEN]
+	cmp	eax,RESPOND_BODY_MAX
+	ja	plan_bad_respond
+	mov	[r13+RA_RBLEN],eax
+.respond_type:
+	pop	rdi
+	lea	rsi,[str_key_type]
+	call	node_option
+	test	rax,rax
+	jz	.ops
+	mov	ecx,[rax+A_VLEN]
+	cmp	ecx,200
+	ja	plan_bad_respond
+	mov	[r13+RA_RTLEN],ecx
+	mov	rax,[rax+A_VAL]
+	mov	[r13+RA_RTYPE],rax
 	jmp	.ops
 @@:
 	mov	rdi,r12
@@ -2668,6 +2708,15 @@ plan_bad_retry:
 	jmp	exit_process
 
 cstring str_key_on, 'on',0
+
+plan_bad_respond:
+	call	log_begin
+	out_lit 'respond takes a status, 200 to 299 or 400 to 599 (a redirect is `redirect`), then perhaps a body of up to 4 KiB (none with 204) and type= its content type'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
+
+cstring str_key_type, 'type',0
 
 plan_bad_source:
 	call	log_begin

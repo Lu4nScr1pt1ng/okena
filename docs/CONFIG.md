@@ -13,7 +13,7 @@ not built yet. A directive that is not built is refused by `okena check`
 | `tcp ADDR...` | `to`, `mss`, `limits { connections; per_source }`, `timeout { idle }`, `proxy_protocol send v1\|v2`, `tls { cert; key }`, `tls passthrough { sni NAME... to pool P; default reject\|to pool P }` (a `default to pool` alone is enough) |
 | `udp ADDR...` | `to`, `responses N`, `limits { connections }` (flows), `timeout { idle }` |
 | `http ADDR...` | `host`, `route`, `mss`, `errors CODES file= [backend]`, `maintenance file= retry= allow= except=`, `limits`, `timeout { idle; header; body_idle; response }`, `trusted_proxies`, `access_log`, `tracing`, `http2 on\|off`, `http3 on\|off\|retry\|v2`, `preferred_address`, `early_data on\|off`, `tls { cert; key; ktls on\|off; versions 1.2 1.3; alpn h2 http/1.1 }` |
-| `route PATH... [METHOD...]` | `to`, `redirect`, `respond`, `rewrite path`, `signed_urls key= [key2=]`, `header set\|add\|drop`, `response header set\|add\|drop`, `retry N [idempotent-only] [on=reset,timeout,5xx,500,502,503,504]` |
+| `route PATH... [METHOD...]` | `to`, `redirect`, `respond CODE [BODY] [type=]`, `rewrite path`, `signed_urls key= [key2=]`, `header set\|add\|drop`, `response header set\|add\|drop`, `retry N [idempotent-only] [on=reset,timeout,5xx,500,502,503,504]` |
 | `pool NAME` | `server ADDR [weight=N] [max=N] [backup]`, `queue timeout=`, `balance least-request\|peak-ewma\|round-robin\|least-conn\|random\|maglev\|ring-hash\|source-hash [key=] [bound=]\|first`, `sticky cookie= [ttl=] [samesite=]`, `connect timeout=`, `health tcp\|http\|grpc ...`, `outlier errors= eject= max_ejected=`, `retry_budget P% [min=N/s]`, `source ADDR...`, `slow_start`, `tls { trust FILE; sni NAME; cert FILE; key FILE }` (TLS to the backends), `protocol h1\|h2\|fastcgi` |
 
 `okena { ech PUBLIC_NAME KEYFILE... }` turns on Encrypted Client Hello (the
@@ -961,7 +961,8 @@ mirror pool shadow 10%           # copy of the request, response ignored
 redirect 301 /new/{*}             # okena answers; {*} = the path after the route's prefix
 redirect 308 https://{host}{*}    # {host} = the request's host name, its port left out
 redirect 308 https://{host}{path} # {path} = the whole path (normalized), the query kept
-respond 404                       # okena answers with the code alone (4xx, 5xx)
+respond 404                       # okena answers with the code alone (2xx, 4xx, 5xx)
+respond 200 "ok"                  # or with a body (text/plain; type= for another)
 header set   x-env prod            # replaces what the client sent
 header add   x-via okena           # keeps it, adds one more
 header drop  x-internal-*          # a name, or a prefix with *
@@ -1262,9 +1263,11 @@ over the day, with no fixed hour when it resets, and starts over with a restart.
 
 A route either forwards (`to`), redirects (`redirect CODE TARGET`, with
 301, 302, 303, 307 or 308; TARGET a path or an `http(s)://` URL, where `{host}`
-is the name the request was for) or answers (`respond CODE`: 400, 401, 403,
-404, 405, 410, 421, 429, 500 to 504, with no body; in a route whose `match`
-blocks forward, it is what the others get). A
+is the name the request was for) or answers (`respond CODE [BODY] [type=TYPE]`:
+a 2xx, 4xx or 5xx status, with no body or with BODY, up to 4 KiB, as
+text/plain unless `type=` says otherwise; a HEAD gets its length and no body,
+a 204 neither; a health endpoint is `route /healthz { respond 200 "ok" }`; in a
+route whose `match` blocks forward, it is what the others get). A
 redirect keeps the request's query unless TARGET has its own, and keeps
 the connection open (it closes it when the request had a body, which
 okena does not read). `rewrite path FROM/{*} -> TO` changes what the

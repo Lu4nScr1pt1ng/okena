@@ -4322,7 +4322,30 @@ http_redirect:
 	memit_x 13,10
 .headers_crlf:
 	call	cors_emit
-	memit_x 'Content-Length: 0',13,10,'X-Request-Id: '
+	cmp	dword [r12+RA_RBLEN],0
+	je	.no_body
+	memit_x 'Content-Type: '		; `respond CODE BODY [type=]`
+	mov	ecx,[r12+RA_RTLEN]
+	test	ecx,ecx
+	jz	@f
+	mov	rsi,[r12+RA_RTYPE]
+	rep	movsb
+	jmp	.typed
+@@:
+	memit_x 'text/plain; charset=utf-8'
+.typed:
+	memit_x 13,10,'Content-Length: '
+	mov	eax,[r12+RA_RBLEN]
+	call	fmt_u64
+	memit_x 13,10,'X-Request-Id: '
+	jmp	.rid
+.no_body:
+	cmp	dword [r12+RA_CODE],204
+	je	@f				; (a 204 has no Content-Length: RFC 9110 8.6)
+	memit_x 'Content-Length: 0',13,10
+@@:
+	memit_x 'X-Request-Id: '
+.rid:
 	lea	rsi,[r15+H_RID]
 	mov	ecx,[r15+H_RIDLEN]
 	rep	movsb
@@ -4332,6 +4355,12 @@ http_redirect:
 	memit_x 'Connection: close',13,10
 @@:
 	memit_x 13,10
+	test	dword [r15+H_FLAGS],HX_HEAD
+	jnz	@f				; (HEAD: its length, no body)
+	mov	ecx,[r12+RA_RBLEN]
+	mov	rsi,[r12+RA_RBODY]
+	rep	movsb
+@@:
 	mov	rsi,[r15+H_BUF]
 	lea	rsi,[rsi+HB_OUT]
 	sub	rdi,rsi
@@ -5139,7 +5168,7 @@ macro reasons pairs&
 		end iterate
 	end rodata
 end macro
-reasons 409,'Conflict', 422,'Unprocessable Content', 301,'Moved Permanently', 302,'Found', 303,'See Other', 307,'Temporary Redirect', \
+reasons 200,'OK', 201,'Created', 202,'Accepted', 204,'No Content', 409,'Conflict', 422,'Unprocessable Content', 301,'Moved Permanently', 302,'Found', 303,'See Other', 307,'Temporary Redirect', \
 	308,'Permanent Redirect', 400,'Bad Request', 429,'Too Many Requests', 403,'Forbidden', 401,'Unauthorized', 404,'Not Found', 405,'Method Not Allowed', 408,'Request Timeout', \
 	421,'Misdirected Request', \
 	410,'Gone', 411,'Length Required', 413,'Content Too Large', 414,'URI Too Long', 415,'Unsupported Media Type', \
@@ -5161,7 +5190,12 @@ http_reason:
 	ret
 .other:
 	cstring str_reason_other, 'Error',0
+	cstring str_reason_ok, 'OK',0
 	lea	rsi,[str_reason_other]
+	cmp	eax,400
+	jae	@f
+	lea	rsi,[str_reason_ok]
+@@:
 	ret
 
 ; An error answered on a connection in the clear (HTTP/1.1): close only once the
