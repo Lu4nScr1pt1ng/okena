@@ -490,8 +490,9 @@ on a machine that can spare it).
   health-driven anycast through BIRD's control socket; VRRP v3.)
 * A floating address for a pair of instances without BGP: VRRP v3 (RFC 9568),
   with health deciding who holds it and gratuitous ARP / unsolicited NA on a
-  change, as keepalived beside HAProxy does it. (Done for IPv4, with
-  gratuitous ARP; IPv6 and unsolicited NA to come.)
+  change, as keepalived beside HAProxy does it. (Done: IPv4 with
+  gratuitous ARP, IPv6 to ff02::12 from the link-local address with an
+  unsolicited Neighbor Advertisement.)
 
 Exit: hit path serves from page cache at line rate with zero copies;
 origin load stays flat during a purge-and-refill storm. (Every item is

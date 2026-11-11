@@ -1089,8 +1089,15 @@ was changes nothing, master included.
 
 It runs in a process of its own, `okena-vrrp`, as root (raw and packet sockets; the
 address added and removed over netlink), confined by seccomp to what it does, with
-the admin process telling it whether okena can take traffic. IPv4 for now. Every
-node on the link must use the same `vrid` and `advert`.
+the admin process telling it whether okena can take traffic. Every node on the link
+must use the same `vrid` and `advert`.
+
+An IPv6 `address=` (`address=2001:db8::10/64`) makes it VRRP over IPv6: adverts go
+to ff02::12 from the interface's link-local address (which must be there when okena
+starts), received only with hop limit 255, and the address is announced with an
+unsolicited Neighbor Advertisement (Override, the interface's MAC) to ff02::1. The
+address is added without duplicate address detection, as it is already held by
+whoever adverts it. One `vrrp` carries one family.
 
 A purge takes answers back at once, from every worker's memory and from the disk:
 

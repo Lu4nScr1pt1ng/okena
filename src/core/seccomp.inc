@@ -396,6 +396,7 @@ rodata
 	sc_common filter_vrrp
 	sc_allow filter_vrrp, SYS_sendto
 	sc_allow filter_vrrp, SYS_recvfrom
+	sc_allow filter_vrrp, SYS_recvmsg		; (IPv6: the hop limit)
 	sc_allow filter_vrrp, SYS_ppoll_
 	sc_allow filter_vrrp, SYS_read
 	sc_allow filter_vrrp, SYS_close

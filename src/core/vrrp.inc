@@ -48,8 +48,10 @@ VC_PLEN		:= 36				; d
 VC_ADVERT	:= 40				; d: centiseconds
 VC_PREEMPT	:= 44				; d
 VC_TRACKL	:= 48				; d
-VC_TRACK	:= 56				; q
-VC_SIZE		:= 64
+VC_FAM		:= 52				; d: 4 or 6
+VC_ADDR6	:= 56				; 16: an IPv6 address
+VC_TRACK	:= 72				; q (last: a pointer, not compared at a reload)
+VC_SIZE		:= 80
 
 bss
 	align 8
@@ -75,6 +77,13 @@ bss
 	g_vr_pfd:	rq 2
 	g_vr_ts		rq 2
 	g_vr_sigset	dq ?
+	g_vr_me6	rb 16			; IPv6: the interface's link-local address
+	g_vr_peer6	rb 16			; and an advert's sender
+	g_vr_icmp	dd ?			; IPv6: the Neighbor Advertisements' socket
+	g_vr_ctl	rb 64			; recvmsg's control (the hop limit)
+	g_vr_name6	rb 32
+	g_vr_iov	rq 2
+	g_vr_msg	rb 56
 end bss
 
 rodata
@@ -106,7 +115,7 @@ vrrp_reload:
 	jz	spawn_vrrp
 	lea	rsi,[g_plan_vrrp]
 	lea	rdi,[g_vrrp_conf]
-	mov	ecx,VC_SIZE - 16		; (the pool's name is a pointer: its text below)
+	mov	ecx,VC_TRACK			; (the pool's name is a pointer: its text below)
 	repe	cmpsb
 	jne	.again
 	mov	ecx,[g_plan_vrrp+VC_TRACKL]
@@ -294,16 +303,22 @@ vrrp_main:
 	jc	.no_if
 	mov	eax,[g_vr_ifr+16]
 	mov	[g_vr_ifindex],eax
-	mov	eax,SIOCGIFADDR_
-	call	vr_ifioctl
-	jc	.no_addr
-	mov	eax,[g_vr_ifr+16+4]		; (sockaddr_in: its address)
-	mov	[g_vr_me],eax
 	mov	eax,SIOCGIFHWADDR_
 	call	vr_ifioctl
 	jc	.no_if
 	mov	rax,[g_vr_ifr+16+2]
 	mov	[g_vr_mac],rax
+	cmp	dword [g_plan_vrrp+VC_FAM],6
+	jne	@f
+	call	vr6_open			; IPv6: its sockets (below)
+	jc	.no_addr6
+	jmp	.sockets_done
+@@:
+	mov	eax,SIOCGIFADDR_
+	call	vr_ifioctl
+	jc	.no_addr
+	mov	eax,[g_vr_ifr+16+4]		; (sockaddr_in: its address)
+	mov	[g_vr_me],eax
 	; the adverts' socket: on this interface, in the group, TTL 255, not back to us
 	mov	edi,AF_INET
 	mov	esi,SOCK_RAW_ or SOCK_CLOEXEC
@@ -379,6 +394,7 @@ vrrp_main:
 	test	eax,eax
 	js	.no_sock
 	mov	[g_vr_pkt],eax
+.sockets_done:
 	call	ll_confine_none
 	seccomp_for filter_vrrp
 	; Initialize (RFC 9568 6.4.1): a backup, the master's interval ours
@@ -452,6 +468,10 @@ vrrp_main:
 .no_addr:
 	call	log_begin
 	out_lit 'vrrp: the interface has no IPv4 address of its own: '
+	jmp	.say_if
+.no_addr6:
+	call	log_begin
+	out_lit 'vrrp: the interface has no IPv6 link-local address (or its sockets cannot be had): '
 .say_if:
 	lea	rsi,[g_plan_vrrp+VC_IF]
 	mov	edx,[g_plan_vrrp+VC_IFLEN]
@@ -592,6 +612,8 @@ vr_out_name:
 
 ; ecx = priority: an advert (RFC 9568 5.1), the address in it
 vr_send:
+	cmp	dword [g_plan_vrrp+VC_FAM],6
+	je	vr6_send
 	lea	rdi,[g_vr_buf]
 	mov	byte [rdi],0x31			; version 3, advertisement
 	mov	eax,[g_plan_vrrp+VC_VRID]
@@ -669,6 +691,8 @@ vr_checksum:
 
 ; an advert came: what it says
 vr_receive:
+	cmp	dword [g_plan_vrrp+VC_FAM],6
+	je	vr6_receive
 	mov	edi,[g_vr_raw]
 	lea	rsi,[g_vr_buf]
 	mov	edx,2048
@@ -678,23 +702,26 @@ vr_receive:
 	mov	eax,SYS_recvfrom
 	syscall
 	cmp	eax,20 + 8
-	jl	.drop
+	jl	vr_advert.drop
 	lea	rsi,[g_vr_buf]
 	movzx	ecx,byte [rsi]
 	and	ecx,15
 	shl	ecx,2				; its IP header
 	cmp	byte [rsi+8],255		; TTL 255: from this link (RFC 9568 7.1)
-	jne	.drop
+	jne	vr_advert.drop
 	cmp	byte [rsi+9],VR_PROTO
-	jne	.drop
+	jne	vr_advert.drop
 	mov	r9d,[rsi+12]			; who sent it
 	cmp	r9d,[g_vr_me]
-	je	.drop
+	je	vr_advert.drop
 	lea	edx,[ecx+8]
 	cmp	edx,eax
-	ja	.drop
+	ja	vr_advert.drop
 	add	rsi,rcx				; the advert
 	sub	eax,ecx
+; rsi = an advert (eax its length), r9d = its sender (IPv4; IPv6: g_vr_peer6): what
+; it says
+vr_advert:
 	cmp	byte [rsi],0x31
 	jne	.drop
 	movzx	edx,byte [rsi+1]
@@ -718,6 +745,15 @@ vr_receive:
 	cmp	r10d,[g_plan_vrrp+VC_PRIO]
 	ja	.yield
 	jb	.drop
+	cmp	dword [g_plan_vrrp+VC_FAM],6	; as high: the higher address takes it
+	jne	@f
+	lea	rsi,[g_vr_peer6]
+	lea	rdi,[g_vr_me6]
+	mov	ecx,16
+	repe	cmpsb
+	jbe	.drop
+	jmp	.yield
+@@:
 	bswap	r9d
 	mov	eax,[g_vr_me]
 	bswap	eax
@@ -765,6 +801,8 @@ vr_receive:
 
 ; esi = RTM_NEWADDR or RTM_DELADDR: the address on the interface, or off it
 vr_address:
+	cmp	dword [g_plan_vrrp+VC_FAM],6
+	je	vr6_address
 	lea	rdi,[g_vr_buf]
 	mov	dword [rdi],40			; nlmsghdr: length
 	mov	[rdi+4],si			; type
@@ -814,7 +852,10 @@ vr_address:
 	ret
 
 ; a gratuitous ARP for the address: who has it, from the one that has it now
+; (IPv6: an unsolicited Neighbor Advertisement)
 vr_garp:
+	cmp	dword [g_plan_vrrp+VC_FAM],6
+	je	vr6_una
 	lea	rdi,[g_vr_buf]
 	mov	dword [rdi],-1			; to all
 	mov	word [rdi+4],-1
@@ -902,11 +943,15 @@ compile_vrrp:
 	lea	rdx,[g_tr_tmp]
 	call	parse_cidr
 	jc	.bad
-	cmp	dword [g_tr_tmp+TR_KIND],4
-	jne	.bad				; (IPv4, for now)
+	mov	eax,[g_tr_tmp+TR_KIND]
+	mov	[r12+VC_FAM],eax
 	mov	eax,dword [g_tr_tmp+TR_IP]
 	mov	[r12+VC_ADDR],eax
-	mov	eax,[g_tr_tmp+TR_BITS]		; (a bare address: /32)
+	mov	rax,qword [g_tr_tmp+TR_IP]
+	mov	qword [r12+VC_ADDR6],rax
+	mov	rax,qword [g_tr_tmp+TR_IP+8]
+	mov	qword [r12+VC_ADDR6+8],rax
+	mov	eax,[g_tr_tmp+TR_BITS]		; (a bare address: /32, /128)
 	mov	[r12+VC_PLEN],eax
 	mov	dword [r12+VC_ADVERT],100	; 1 s
 	mov	rdi,rbx
@@ -968,7 +1013,402 @@ compile_vrrp:
 	ret
 .bad:
 	call	log_begin
-	out_lit 'vrrp takes an interface (15 bytes at most), vrid= and priority= from 1 to 255, address=A.B.C.D/N (IPv4), advert= from 10ms to 40.95s, preempt=off and track=POOL if wanted'
+	out_lit 'vrrp takes an interface (15 bytes at most), vrid= and priority= from 1 to 255, address=ADDRESS/N (IPv4 or IPv6), advert= from 10ms to 40.95s, preempt=off and track=POOL if wanted'
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process
+
+; ------------------------------------------------------------- IPv6
+
+AF_INET6_	:= 10
+IPPROTO_IPV6_	:= 41
+IPPROTO_ICMPV6_	:= 58
+IPV6_CHECKSUM_	:= 7
+IPV6_MCAST_IF	:= 17
+IPV6_MCAST_HOPS	:= 18
+IPV6_MCAST_LOOP	:= 19
+IPV6_ADD_MEMB	:= 20
+IPV6_RECVHOPLIM	:= 51
+IPV6_HOPLIMIT_	:= 52
+
+rodata
+	vr6_group	db 0xFF,0x02, 13 dup 0, 0x12		; ff02::12
+	vr6_all		db 0xFF,0x02, 13 dup 0, 0x01		; ff02::1
+	vr6_proc	db '/proc/net/if_inet6',0
+end rodata
+
+; the interface's link-local address (from /proc/net/if_inet6, before the process
+; is confined), its sockets: VRRP to ff02::12 (hop limit 255, the kernel's
+; checksum, the hop limit of what comes told), ICMPv6 for Neighbor
+; Advertisements; netlink. CF when one cannot be had.
+vr6_open:
+	mov	edi,AT_FDCWD
+	lea	rsi,[vr6_proc]
+	mov	edx,O_RDONLY or O_CLOEXEC
+	xor	r10d,r10d
+	mov	eax,SYS_openat
+	syscall
+	test	eax,eax
+	js	.bad
+	push	rax
+	mov	edi,eax
+	lea	rsi,[g_vr_buf]
+	mov	edx,2047
+	xor	eax,eax
+	syscall
+	mov	r8,rax
+	pop	rdi
+	push	r8
+	mov	eax,SYS_close
+	syscall
+	pop	r8
+	test	r8,r8
+	jle	.bad
+	mov	byte [g_vr_buf+r8],0
+	; lines: 32 hex digits, index, prefix, scope, flags, name
+	lea	rsi,[g_vr_buf]
+.line:
+	cmp	byte [rsi],0
+	je	.bad
+	mov	r9,rsi				; the line's start
+@@:
+	cmp	byte [rsi],10
+	je	@f
+	cmp	byte [rsi],0
+	je	@f
+	inc	rsi
+	jmp	@b
+@@:
+	mov	r10,rsi				; its end
+	cmp	byte [rsi],0
+	je	@f
+	inc	rsi
+@@:
+	mov	rax,r10
+	sub	rax,r9
+	cmp	rax,45
+	jb	.line
+	cmp	word [r9+39],'20'		; scope: link
+	jne	.line
+	mov	rcx,r10				; its name: the last word
+@@:
+	cmp	byte [rcx-1],' '
+	je	@f
+	dec	rcx
+	jmp	@b
+@@:
+	mov	rax,r10
+	sub	rax,rcx
+	cmp	eax,[g_plan_vrrp+VC_IFLEN]
+	jne	.line
+	push	rsi
+	mov	rsi,rcx
+	lea	rdi,[g_plan_vrrp+VC_IF]
+	mov	ecx,eax
+	repe	cmpsb
+	pop	rsi
+	jne	.line
+	xor	ecx,ecx				; its address, from hex
+@@:
+	movzx	eax,byte [r9+rcx*2]
+	call	.hex
+	shl	eax,4
+	mov	edx,eax
+	movzx	eax,byte [r9+rcx*2+1]
+	call	.hex
+	or	eax,edx
+	mov	[g_vr_me6+rcx],al
+	inc	ecx
+	cmp	ecx,16
+	jb	@b
+	; VRRP's socket
+	mov	edi,AF_INET6_
+	mov	esi,SOCK_RAW_ or SOCK_CLOEXEC
+	mov	edx,VR_PROTO
+	mov	eax,SYS_socket
+	syscall
+	test	eax,eax
+	js	.bad
+	mov	[g_vr_raw],eax
+	mov	edi,eax
+	call	.bind_dev
+	sub	rsp,32
+	mov	dword [rsp],6			; the checksum at offset 6, the kernel's
+	mov	edx,IPV6_CHECKSUM_
+	call	.opt6
+	mov	dword [rsp],1
+	mov	edx,IPV6_RECVHOPLIM
+	call	.opt6
+	mov	eax,[g_vr_ifindex]
+	mov	[rsp],eax
+	mov	edx,IPV6_MCAST_IF
+	call	.opt6
+	mov	dword [rsp],255
+	mov	edx,IPV6_MCAST_HOPS
+	call	.opt6
+	mov	dword [rsp],0
+	mov	edx,IPV6_MCAST_LOOP
+	call	.opt6
+	lea	rsi,[vr6_group]			; struct ipv6_mreq: the group, the interface
+	mov	rdi,rsp
+	mov	ecx,16
+	rep	movsb
+	mov	eax,[g_vr_ifindex]
+	mov	[rsp+16],eax
+	mov	edi,[g_vr_raw]
+	mov	esi,IPPROTO_IPV6_
+	mov	edx,IPV6_ADD_MEMB
+	mov	r10,rsp
+	mov	r8d,20
+	mov	eax,SYS_setsockopt
+	syscall
+	test	eax,eax
+	js	.bad_stack
+	; ICMPv6, for the Neighbor Advertisements: hop limit 255 too
+	mov	edi,AF_INET6_
+	mov	esi,SOCK_RAW_ or SOCK_CLOEXEC
+	mov	edx,IPPROTO_ICMPV6_
+	mov	eax,SYS_socket
+	syscall
+	test	eax,eax
+	js	.bad_stack
+	mov	[g_vr_icmp],eax
+	mov	edi,eax
+	call	.bind_dev
+	mov	eax,[g_vr_ifindex]
+	mov	[rsp],eax
+	mov	edi,[g_vr_icmp]
+	mov	esi,IPPROTO_IPV6_
+	mov	edx,IPV6_MCAST_IF
+	mov	r10,rsp
+	mov	r8d,4
+	mov	eax,SYS_setsockopt
+	syscall
+	mov	dword [rsp],255
+	mov	edi,[g_vr_icmp]
+	mov	esi,IPPROTO_IPV6_
+	mov	edx,IPV6_MCAST_HOPS
+	mov	r10,rsp
+	mov	r8d,4
+	mov	eax,SYS_setsockopt
+	syscall
+	add	rsp,32
+	mov	edi,AF_NETLINK_			; netlink, for the address
+	mov	esi,SOCK_RAW_ or SOCK_CLOEXEC
+	xor	edx,edx
+	mov	eax,SYS_socket
+	syscall
+	test	eax,eax
+	js	.bad
+	mov	[g_vr_nl],eax
+	clc
+	ret
+.bad_stack:
+	add	rsp,32
+.bad:
+	stc
+	ret
+; edx = an IPPROTO_IPV6 option for the VRRP socket, [rsp+8] its int value
+.opt6:
+	mov	edi,[g_vr_raw]
+	mov	esi,IPPROTO_IPV6_
+	lea	r10,[rsp+8]
+	mov	r8d,4
+	mov	eax,SYS_setsockopt
+	syscall
+	ret
+; edi = a socket: on the interface
+.bind_dev:
+	mov	esi,SOL_SOCKET
+	mov	edx,SO_BINDDEV
+	lea	r10,[g_plan_vrrp+VC_IF]
+	mov	r8d,[g_plan_vrrp+VC_IFLEN]
+	inc	r8d
+	mov	eax,SYS_setsockopt
+	syscall
+	ret
+; eax = a hex digit's byte: its value
+.hex:
+	sub	eax,'0'
+	cmp	eax,9
+	jbe	@f
+	add	eax,'0'
+	or	eax,0x20
+	sub	eax,'a' - 10
+@@:
+	ret
+
+; ecx = priority: an advert, the IPv6 address in it, to ff02::12 (the kernel puts
+; the checksum in)
+vr6_send:
+	lea	rdi,[g_vr_buf]
+	mov	byte [rdi],0x31
+	mov	eax,[g_plan_vrrp+VC_VRID]
+	mov	[rdi+1],al
+	mov	[rdi+2],cl
+	mov	byte [rdi+3],1
+	mov	eax,[g_plan_vrrp+VC_ADVERT]
+	and	eax,0x0FFF
+	xchg	al,ah
+	mov	[rdi+4],ax
+	mov	word [rdi+6],0
+	mov	rax,qword [g_plan_vrrp+VC_ADDR6]
+	mov	[rdi+8],rax
+	mov	rax,qword [g_plan_vrrp+VC_ADDR6+8]
+	mov	[rdi+16],rax
+	sub	rsp,32				; sockaddr_in6: ff02::12 on the interface
+	mov	dword [rsp],AF_INET6_
+	mov	dword [rsp+4],0
+	mov	rax,qword [vr6_group]
+	mov	[rsp+8],rax
+	mov	rax,qword [vr6_group+8]
+	mov	[rsp+16],rax
+	mov	eax,[g_vr_ifindex]
+	mov	[rsp+24],eax
+	mov	edi,[g_vr_raw]
+	lea	rsi,[g_vr_buf]
+	mov	edx,24
+	xor	r10d,r10d
+	mov	r8,rsp
+	mov	r9d,28
+	mov	eax,SYS_sendto
+	syscall
+	add	rsp,32
+	ret
+
+; an IPv6 advert came: its hop limit 255 (from this link), not ours, then as an
+; IPv4 one
+vr6_receive:
+	lea	rax,[g_vr_buf]
+	mov	[g_vr_iov],rax
+	mov	qword [g_vr_iov+8],2048
+	lea	rdi,[g_vr_msg]
+	lea	rax,[g_vr_name6]
+	mov	[rdi],rax			; msg_name
+	mov	dword [rdi+8],28
+	lea	rax,[g_vr_iov]
+	mov	[rdi+16],rax			; msg_iov, 1
+	mov	qword [rdi+24],1
+	lea	rax,[g_vr_ctl]
+	mov	[rdi+32],rax			; msg_control
+	mov	qword [rdi+40],64
+	mov	dword [rdi+48],0
+	mov	edi,[g_vr_raw]
+	lea	rsi,[g_vr_msg]
+	mov	edx,MSG_DONTWAIT
+	mov	eax,SYS_recvmsg
+	syscall
+	cmp	eax,8 + 16
+	jl	.drop
+	mov	r11d,eax
+	; the hop limit, in its control message (level 41, type 52)
+	lea	rsi,[g_vr_ctl]
+	cmp	qword [g_vr_msg+40],20
+	jb	.drop
+	cmp	dword [rsi+8],IPPROTO_IPV6_
+	jne	.drop
+	cmp	dword [rsi+12],IPV6_HOPLIMIT_
+	jne	.drop
+	cmp	dword [rsi+16],255
+	jne	.drop
+	lea	rsi,[g_vr_name6+8]		; its sender
+	lea	rdi,[g_vr_peer6]
+	mov	ecx,16
+	rep	movsb
+	lea	rsi,[g_vr_peer6]
+	lea	rdi,[g_vr_me6]
+	mov	ecx,16
+	repe	cmpsb
+	je	.drop				; (ours)
+	lea	rsi,[g_vr_buf]
+	mov	eax,r11d
+	xor	r9d,r9d
+	jmp	vr_advert
+.drop:
+	ret
+
+; esi = RTM_NEWADDR or RTM_DELADDR: the IPv6 address on the interface (no
+; duplicate address detection: it is ours to take now), or off it
+vr6_address:
+	lea	rdi,[g_vr_buf]
+	mov	dword [rdi],44
+	mov	[rdi+4],si
+	mov	word [rdi+6],0x0001 or 0x0004 or 0x0400 or 0x0100
+	cmp	esi,RTM_DELADDR_
+	jne	@f
+	mov	word [rdi+6],0x0001 or 0x0004
+@@:
+	inc	dword [g_vr_seq]
+	mov	eax,[g_vr_seq]
+	mov	[rdi+8],eax
+	mov	dword [rdi+12],0
+	mov	byte [rdi+16],AF_INET6_
+	mov	eax,[g_plan_vrrp+VC_PLEN]
+	mov	[rdi+17],al
+	mov	byte [rdi+18],0x02		; IFA_F_NODAD
+	mov	byte [rdi+19],0			; scope universe
+	mov	eax,[g_vr_ifindex]
+	mov	[rdi+20],eax
+	mov	dword [rdi+24],0x00010014	; IFA_ADDRESS, 20
+	mov	rax,qword [g_plan_vrrp+VC_ADDR6]
+	mov	[rdi+28],rax
+	mov	rax,qword [g_plan_vrrp+VC_ADDR6+8]
+	mov	[rdi+36],rax
+	sub	rsp,16
+	mov	word [rsp],AF_NETLINK_
+	mov	word [rsp+2],0
+	mov	qword [rsp+4],0
+	mov	dword [rsp+12],0
+	mov	edi,[g_vr_nl]
+	lea	rsi,[g_vr_buf]
+	mov	edx,44
+	xor	r10d,r10d
+	mov	r8,rsp
+	mov	r9d,12
+	mov	eax,SYS_sendto
+	syscall
+	add	rsp,16
+	mov	edi,[g_vr_nl]
+	lea	rsi,[g_vr_buf]
+	mov	edx,512
+	mov	r10d,MSG_DONTWAIT
+	xor	r8d,r8d
+	xor	r9d,r9d
+	mov	eax,SYS_recvfrom
+	syscall
+	ret
+
+; an unsolicited Neighbor Advertisement (RFC 4861 7.2.6) for the address: to all
+; nodes, Override, its target link-layer address the interface's MAC
+vr6_una:
+	lea	rdi,[g_vr_buf]
+	mov	dword [rdi],136			; type 136, code 0, checksum (the kernel's)
+	mov	dword [rdi+4],0x20		; flags: Override
+	mov	rax,qword [g_plan_vrrp+VC_ADDR6]
+	mov	[rdi+8],rax
+	mov	rax,qword [g_plan_vrrp+VC_ADDR6+8]
+	mov	[rdi+16],rax
+	mov	word [rdi+24],0x0102		; option 2 (target link-layer address), 8 bytes
+	mov	eax,dword [g_vr_mac]
+	mov	[rdi+26],eax
+	mov	ax,word [g_vr_mac+4]
+	mov	[rdi+30],ax
+	sub	rsp,32
+	mov	dword [rsp],AF_INET6_
+	mov	dword [rsp+4],0
+	mov	rax,qword [vr6_all]
+	mov	[rsp+8],rax
+	mov	rax,qword [vr6_all+8]
+	mov	[rsp+16],rax
+	mov	eax,[g_vr_ifindex]
+	mov	[rsp+24],eax
+	mov	edi,[g_vr_icmp]
+	lea	rsi,[g_vr_buf]
+	mov	edx,32
+	xor	r10d,r10d
+	mov	r8,rsp
+	mov	r9d,28
+	mov	eax,SYS_sendto
+	syscall
+	add	rsp,32
+	ret
