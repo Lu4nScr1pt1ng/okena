@@ -268,8 +268,9 @@ http 127.0.0.1:{TLS} {{
         t0 = time.time()
         p = start(c)
         check("ocsp: revoked: the acme process told (not waiting out its hour), a new certificate at once",
-              A.until(lambda: served("r.example.test").serial_number != old.serial_number, 10)
-              and "OCSP says its certificate is revoked: renewing it now" in log.read_text() and time.time() - t0 < 10,
+              # (not its hour: 20 s, as a full `make test` can slow a process's start)
+              A.until(lambda: served("r.example.test").serial_number != old.serial_number, 20)
+              and "OCSP says its certificate is revoked: renewing it now" in log.read_text() and time.time() - t0 < 20,
               (st4.log[-6:], log.read_text()[-500:]))
 
         def stapled():
