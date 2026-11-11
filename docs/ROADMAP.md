@@ -599,7 +599,7 @@ built; both measurements are still to be made on the lab.)
 * (Done: certificate compression, RFC 8879, brotli and zlib, kept per worker;
   Encrypted Client Hello, 0xfe0d: HPKE X25519/HKDF-SHA256/AES-128-GCM, inner
   hello rebuilt with ech_outer_extensions, accept confirmation, retry_configs,
-  `okena ech new|print`. Not yet: ECH with HelloRetryRequest.) Certificate
+  `okena ech new|print`, and after a HelloRetryRequest.) Certificate
   compression, Encrypted Client Hello.
 * AVX-512 paths where they pay.
 

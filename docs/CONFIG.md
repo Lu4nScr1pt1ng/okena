@@ -29,8 +29,9 @@ one (0600, never over a file; `openssl genpkey -algorithm X25519` too). The
 first is the one published, the others are still opened, for a key being
 retired. `okena ech print [-c FILE]` writes the ECHConfigList in base64: the
 `ech=` parameter of the domain's HTTPS record (`example.com. HTTPS 1 . alpn=h2
-ech=...`). ECH after a HelloRetryRequest is refused (clients send an x25519 share
-at once).
+ech=...`). After a HelloRetryRequest (a client that sent no share okena takes)
+the second ClientHello is opened with the first one's context, as the draft
+says, each with its confirmation.
 
 Certificate compression (RFC 8879) needs nothing configured: a TLS 1.3 client
 that offers it with brotli (Chrome) or zlib (Firefox, Safari, OpenSSL) gets the

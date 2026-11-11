@@ -115,13 +115,15 @@ TF_RESUMED	:= 512				; a ticket of ours resumed it
 TF_GOT_ACME	:= 1024
 TF_T12		:= 4096				; TLS 1.2 records, sealed here (tls12_srv.inc)
 TF_KTLS		:= 8192				; the kernel has the keys (set after the wipe: close_notify)
+TF_ECHHRR	:= 2048				; ECH opened before a HelloRetryRequest (its context in TS_TKT)
+TF_ECHREJ	:= 32768			; ECH not opened before it (retry_configs in the flight)
 TF_NST		:= 16384			; TS_TKT: a ticket to send once the client's flight is good				; acme-tls/1 chosen: the challenge's certificate
 
 TH_MORE		:= 0
 TH_SEND		:= 1
 TH_DONE		:= 1
 TH_FAIL		:= 2
-TH_TLS12	:= 3		; the client offered no TLS 1.3: try a 1.2 handshake
+TH_TLS12	:= 4		; the client offered no TLS 1.3: try a 1.2 handshake (not TH_RETRY)
 TH_RETRY	:= 3				; tls_hello: send out, then read a second ClientHello
 
 TLS_RECORD_MAX	:= 16384			; plaintext of one record
@@ -253,7 +255,8 @@ HL_SKEY		:= HL_MLCT + MLKEM_CT		; server handshake key (16 or 32)
 HL_SIV		:= HL_SKEY + 32			; and IV (12)
 HL_ECH		:= HL_SIV + 16			; d: ECH (ech.inc): 0 none, 1 opened, 2 not (retry_configs)
 HL_ECHRND	:= HL_ECH + 16			; the ClientHelloInner's random (32)
-HL_SIZE		:= ((HL_ECHRND + 32 + 15) and not 15) + 8	; rsp 16-aligned at calls
+HL_HRRLEN	:= HL_ECHRND + 32		; d: a HelloRetryRequest's length
+HL_SIZE		:= ((HL_HRRLEN + 4 + 15) and not 15) + 8	; rsp 16-aligned at calls
 
 G_TLS13		:= 1
 G_SUITE		:= 2
@@ -414,7 +417,22 @@ tls_hello:
 .parse:
 	; Encrypted Client Hello (ech.inc): the inner hello opened, in its place
 	test	dword [rbx+TS_FLAGS],TF_HRR
-	jnz	.ech_done			; (the second hello: none)
+	jz	.ech_first
+	; the second hello: ECH as the first one had it
+	mov	dword [rbp+HL_ECH],2
+	test	dword [rbx+TS_FLAGS],TF_ECHREJ
+	jnz	.ech_done			; (not opened then: retry_configs now)
+	mov	dword [rbp+HL_ECH],0
+	test	dword [rbx+TS_FLAGS],TF_ECHHRR
+	jz	.ech_done
+	mov	dword [g_eh_second],1		; opened then: this one with the same context
+	call	ech_open
+	mov	dword [g_eh_second],0
+	mov	[rbp+HL_ECH],eax
+	cmp	eax,1
+	jne	.decrypt_error			; (it must open)
+	jmp	.ech_done
+.ech_first:
 	call	ech_open
 	mov	[rbp+HL_ECH],eax
 	cmp	eax,3
@@ -1940,8 +1958,7 @@ tls_hello:
 	jnz	.handshake			; (not over QUIC yet)
 	test	dword [rbx+TS_FLAGS],TF_HRR
 	jnz	.illegal			; asked already, and still no share
-	cmp	dword [rbp+HL_ECH],1
-	je	.handshake			; (ECH and a retry: not here)
+
 	; transcript: message_hash(Hash(ClientHello1)), then the retry request
 	lea	rdi,[rbp+HL_TH]
 	mov	rsi,r12
@@ -1961,6 +1978,11 @@ tls_hello:
 	mov	rdi,r12
 	mov	edx,[rbp+HL_SIDLEN]
 	add	edx,56
+	cmp	dword [rbp+HL_ECH],1
+	jne	@f
+	add	edx,12				; (ECH's confirmation in it)
+@@:
+	mov	[rbp+HL_HRRLEN],edx
 	mov	byte [rdi],22
 	mov	word [rdi+1],0x0303
 	mov	[rdi+3],dh
@@ -1993,10 +2015,10 @@ tls_hello:
 	mov	word [rdi+15],0x1700		; only secp256r1 offered
 @@:
 	add	rdi,17
+	call	ech_hrr				; (ech.inc: ECH's part of it, its context kept)
 	push	rdi
 	lea	rsi,[r12+5]
-	mov	edx,[rbp+HL_SIDLEN]
-	add	edx,56
+	mov	edx,[rbp+HL_HRRLEN]
 	th_add
 	pop	rdi
 	cmp	dword [rbp+HL_SIDLEN],0
@@ -2037,6 +2059,9 @@ tls_hello:
 	jmp	.alert
 .illegal:
 	mov	ecx,AL_ILLEGAL
+	jmp	.alert
+.decrypt_error:
+	mov	ecx,51				; decrypt_error
 	jmp	.alert
 .decode:
 	mov	ecx,AL_DECODE

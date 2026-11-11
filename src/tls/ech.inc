@@ -53,6 +53,8 @@ bss
 	g_eh_oexts	dq ?			; the outer hello's extensions (their length first)
 	g_eh_ocur	dq ?
 	g_eh_inner	dd ?
+	g_eh_second	dd ?			; the hello after a HelloRetryRequest
+	g_eh_cfgid	dd ?
 end bss
 
 rodata
@@ -476,6 +478,8 @@ ech_open:
 	lea	rax,[rsi+8+rcx+2]
 	cmp	rax,r15
 	ja	.malformed
+	cmp	dword [g_eh_second],0
+	jne	.second
 	cmp	ecx,32
 	jne	.reject
 	lea	r8,[rsi+8]			; enc
@@ -501,9 +505,36 @@ ech_open:
 	inc	ecx
 	jmp	@b
 @@:
+	mov	[g_eh_cfgid],ebx
 	mov	rsi,r8
 	call	eh_setup			; g_eh_key, g_eh_nonce
 	jc	.reject
+	jmp	.opened_ctx
+.second:
+	; after a HelloRetryRequest: no enc, the same config, the context kept (its
+	; nonce for the second message: sequence 1)
+	test	ecx,ecx
+	jnz	.malformed
+	mov	rax,[rbp+HL_TS]
+	movzx	edx,byte [rax+TS_TKT+28]
+	cmp	ebx,edx
+	jne	.malformed
+	movzx	ecx,word [rsi+8]
+	rol	cx,8
+	lea	r9,[rsi+8+2]
+	lea	rdx,[r9+rcx]
+	cmp	rdx,r15
+	jne	.malformed
+	cmp	ecx,17
+	jb	.malformed
+	mov	[g_eh_payload],r9
+	mov	[g_eh_plen],ecx
+	lea	rsi,[rax+TS_TKT]
+	lea	rdi,[g_eh_key]
+	mov	ecx,28
+	rep	movsb
+	xor	byte [g_eh_nonce+11],1
+.opened_ctx:
 	; the AAD: the outer hello (no handshake header), its payload zeroed
 	mov	ecx,[rbp+HL_MLEN]
 	sub	ecx,4
@@ -535,7 +566,7 @@ ech_open:
 	sub	r9d,16
 	call	gcm_open
 	test	eax,eax
-	jz	.reject
+	jz	.second_failed
 	; EncodedClientHelloInner -> ClientHelloInner, built where the AAD was
 	mov	r8,r12
 	add	r8,CH_MAX * 2			; the plaintext
@@ -695,6 +726,9 @@ ech_open:
 .none:
 	xor	eax,eax
 	jmp	.out
+.second_failed:
+	cmp	dword [g_eh_second],0
+	jne	.malformed			; (the second must open: decrypt_error)
 .reject:
 	mov	eax,2
 	jmp	.out
@@ -936,3 +970,67 @@ cli_ech:
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process
+
+; rdi = past a HelloRetryRequest's extensions, r12 + 5 = the message, rbp the hello's
+; frame: ECH opened, its encrypted_client_hello with the confirmation
+; (HKDF-Expand-Label(HKDF-Extract(0, ClientHelloInner1.random), "hrr ech accept
+; confirmation", H(message_hash(ClientHelloInner1) | HelloRetryRequest with it
+; zero), 8)), the HPKE context kept for the second hello (TS_TKT, unused until
+; the flight); not opened, TF_ECHREJ. rdi past what was added.
+ech_hrr:
+	mov	rax,[rbp+HL_TS]
+	cmp	dword [rbp+HL_ECH],2
+	jne	@f
+	or	dword [rax+TS_FLAGS],TF_ECHREJ
+	ret
+@@:
+	cmp	dword [rbp+HL_ECH],1
+	jne	.out
+	push	rdi
+	movzx	ecx,byte [r12+5+4+2+32]		; (the legacy_session_id's length)
+	mov	byte [r12+rcx+5+4+2+32+1+4],24	; the extensions: 12 + 12
+	mov	dword [rdi],0x08000DFE		; encrypted_client_hello, 8 bytes, zero
+	mov	qword [rdi+4],0
+	; H(transcript so far | this HelloRetryRequest with them zero)
+	lea	rsi,[rbp+HL_SHA]
+	lea	rdi,[rbp+HL_SHA2]
+	mov	ecx,SHA256_CTX_SIZE
+	rep	movsb
+	lea	rdi,[rbp+HL_SHA2]
+	lea	rsi,[r12+5]
+	mov	edx,[rbp+HL_HRRLEN]
+	call	sha256_update
+	lea	rdi,[rbp+HL_SHA2]
+	lea	rsi,[rbp+HL_TMP]
+	call	sha256_final
+	lea	rdi,[g_eh_prk]
+	lea	rsi,[sha256_zero32]
+	mov	edx,32
+	lea	rcx,[rbp+HL_ECHRND]
+	mov	r8d,32
+	call	hkdf_extract
+	mov	rdi,[rsp]
+	add	rdi,4
+	mov	esi,8
+	lea	rdx,[g_eh_prk]
+	lea	rcx,[lbl_ech_hrr]
+	lea	r8,[rbp+HL_TMP]
+	mov	r9d,32
+	call	tls13_expand_label
+	; the context, for the second hello
+	mov	rax,[rbp+HL_TS]
+	lea	rdi,[rax+TS_TKT]
+	lea	rsi,[g_eh_key]
+	mov	ecx,28
+	rep	movsb
+	mov	ecx,[g_eh_cfgid]
+	mov	[rax+TS_TKT+28],cl
+	or	dword [rax+TS_FLAGS],TF_ECHHRR
+	pop	rdi
+	add	rdi,12
+.out:
+	ret
+
+rodata
+	lbl_ech_hrr	db 'hrr ech accept confirmation',0
+end rodata

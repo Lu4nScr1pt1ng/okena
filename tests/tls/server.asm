@@ -266,7 +266,11 @@ ech_open:
 	ret
 ech_confirm:
 ech_retry_configs:
+ech_hrr:
 	ret
+bss
+	g_eh_second	dd ?
+end bss
 
 ; edx = bytes from g_out: written, or CF.
 send_out:
