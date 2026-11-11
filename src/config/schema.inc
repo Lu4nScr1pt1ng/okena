@@ -202,7 +202,6 @@ enumdef ctx_names, 'the top level', '`okena`', '`tcp`', '`pool`', '`limits`', '`
 enumdef future_names, 'xdp', \
 	'addon', 'log', 'reload', 'profile', \
 	'acme', 'header', \
-	'source', \
 	'concurrency', \
 	'canonical', \
 	'body', \
@@ -322,6 +321,7 @@ dirdef DIR_BODY_IDLE, 'body_idle', M_TIMEOUT, 0,           F_UNIQUE, 1, 1, T_DUR
 dirdef DIR_SERVER, 'server',      M_POOL,    0,           0, 1, 2, T_BACKEND, e_server_flags, k_server
 dirdef DIR_DISCOVER, 'discover', M_POOL,    0,           0, 1, 2, e_discover, T_ANY, k_discover
 dirdef DIR_QUEUE, 'queue',       M_POOL,    0,           F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_queue
+dirdef DIR_SOURCE, 'source',     M_POOL,    0,           F_UNIQUE, 1, 8, T_ANY, T_ANY, 0
 dirdef DIR_OUTLIER, 'outlier',   M_POOL,    0,           F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_outlier
 dirdef DIR_RETRY_BUDGET, 'retry_budget', M_POOL, 0,      F_UNIQUE, 1, 1, T_PERCENT, T_NONE, k_rbudget
 dirdef DIR_STICKY, 'sticky',     M_POOL,    0,           F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_sticky

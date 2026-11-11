@@ -1697,6 +1697,42 @@ server_pick:
 
 ; ---------------------------------------------------------------- connect
 
+bss
+	g_src_next	rd MAX_POOLS	; each pool's next `source` address, in this worker
+end bss
+
+; edi = pool, esi = the server's family: rax = the `source` slot its next
+; connection leaves from (sockaddr, then its length at +28), 0 for none of
+; that family. Keeps all but rax.
+pool_source:
+	push	rcx
+	push	rdx
+	push	r8
+	imul	r8,rdi,PL_SIZE
+	lea	r8,[g_pools+r8]
+	mov	ecx,[r8+PL_SRCN]
+	test	ecx,ecx
+	jz	.none
+.try:
+	mov	eax,[g_src_next+rdi*4]
+	inc	dword [g_src_next+rdi*4]
+	xor	edx,edx
+	div	dword [r8+PL_SRCN]
+	imul	eax,edx,PL_SRCSZ
+	lea	rax,[r8+PL_SRC+rax]
+	movzx	edx,word [rax]
+	cmp	edx,esi
+	je	.out
+	dec	ecx
+	jnz	.try
+.none:
+	xor	eax,eax
+.out:
+	pop	r8
+	pop	rdx
+	pop	rcx
+	ret
+
 ; edi = session: (re)connect to a server of its listener's pool.
 session_connect:
 	push	rbx
@@ -1778,6 +1814,40 @@ session_connect:
 	mov	dword [rax+SQE_OPTLEN],4
 	lea	rcx,[one_int]
 	mov	[rax+SQE_OPTVAL],rcx
+	; the pool's `source`: bound to the next address, the port left to the
+	; connect (so a port is free per destination, not per host)
+	cmp	dword [g_uring_bind],0
+	je	.connect
+	mov	edi,[r12+S_POOL]
+	mov	esi,[r13+SV_FAMILY]
+	call	pool_source
+	test	rax,rax
+	jz	.connect
+	push	rax
+	mov	edi,OP_S_OPT
+	mov	esi,ebx
+	call	sess_sqe
+	mov	byte [rax+SQE_OPCODE],IORING_OP_URING_CMD
+	mov	byte [rax+SQE_FLAGS],IOSQE_FIXED_FILE or IOSQE_IO_HARDLINK
+	mov	ecx,[g_upslot+rbx*4]
+	mov	[rax+SQE_FD],ecx
+	mov	dword [rax+SQE_CMD_OP],SOCKET_URING_OP_SETSOCKOPT
+	mov	dword [rax+SQE_LEVEL],IPPROTO_IP
+	mov	dword [rax+SQE_OPTNAME],IP_BIND_ADDRESS_NO_PORT
+	mov	dword [rax+SQE_OPTLEN],4
+	lea	rcx,[one_int]
+	mov	[rax+SQE_OPTVAL],rcx
+	mov	edi,OP_S_OPT
+	mov	esi,ebx
+	call	sess_sqe
+	pop	rcx
+	mov	byte [rax+SQE_OPCODE],IORING_OP_BIND	; (failing, it fails the connect)
+	mov	byte [rax+SQE_FLAGS],IOSQE_FIXED_FILE or IOSQE_IO_LINK
+	mov	edx,[g_upslot+rbx*4]
+	mov	[rax+SQE_FD],edx
+	mov	[rax+SQE_ADDR],rcx
+	mov	edx,[rcx+28]
+	mov	[rax+SQE_ADDR2],rdx
 .connect:
 	mov	edi,OP_S_CONNECT
 	mov	esi,ebx

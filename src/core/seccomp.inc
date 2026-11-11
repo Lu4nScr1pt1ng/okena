@@ -300,6 +300,7 @@ rodata
 	sc_allow filter_worker_epoll, SYS_close
 	sc_check filter_worker_epoll, SYS_socket, socket
 	sc_allow filter_worker_epoll, SYS_connect
+	sc_allow filter_worker_epoll, SYS_bind		; (a pool's `source`)
 	sc_allow filter_worker_epoll, SYS_setsockopt
 	sc_allow filter_worker_epoll, SYS_getsockopt
 	sc_allow filter_worker_epoll, SYS_shutdown
@@ -351,6 +352,7 @@ rodata
 	sc_allow filter_worker_epoll_f, SYS_close
 	sc_check filter_worker_epoll_f, SYS_socket, socket
 	sc_allow filter_worker_epoll_f, SYS_connect
+	sc_allow filter_worker_epoll_f, SYS_bind		; (a pool's `source`)
 	sc_allow filter_worker_epoll_f, SYS_setsockopt
 	sc_allow filter_worker_epoll_f, SYS_getsockopt
 	sc_allow filter_worker_epoll_f, SYS_shutdown

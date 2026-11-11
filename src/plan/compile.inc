@@ -198,7 +198,11 @@ PL_OMAX		:= 760		; d: `outlier max_ejected=`: hundredths of a percent of its ser
 PL_RBPCT	:= 764		; d: `retry_budget P%`: what a request adds, in 1/10000 of a retry
 PL_RBMIN	:= 768		; d: `min=`: the floor each second, in 1/10000 of a retry
 PL_RBCAP	:= 772		; d: the most it holds
-PL_SIZE		:= 784		; room for PL_TLS_ANCHOR + a PK blob (16 + 528), then PL_H2
+PL_SRCN		:= 776		; d: `source`: how many addresses
+PL_SRC		:= 784		; PL_SRCMAX of { sockaddr (28), its length (d) }
+PL_SRCSZ	:= 32
+PL_SRCMAX	:= 8
+PL_SIZE		:= PL_SRC + PL_SRCMAX * PL_SRCSZ		; room for PL_TLS_ANCHOR + a PK blob (16 + 528), then PL_H2
 assert PL_TLS_ANCHOR + PK_SIZE <= PL_H2
 
 ; Server
@@ -279,6 +283,8 @@ bss
 	g_cmp_pt	dd ?
 	g_cmp_alog	dd ?
 	g_cmp_trace	dd ?
+	align 8
+	g_cmp_tr	rb TR_SIZE		; (`source`: an address)
 	g_cmp_efirst	dd ?
 	g_cmp_ecount	dd ?
 	g_cmp_maint	dd ?
@@ -2647,6 +2653,13 @@ plan_bad_retry:
 
 cstring str_key_on, 'on',0
 
+plan_bad_source:
+	call	log_begin
+	out_lit 'source takes up to 8 addresses of this host (10.0.0.2, 2001:db8::2), no port and no range: each connection to a server of the pool leaves from the next one of its family'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
+
 plan_bad_outlier:
 	call	log_begin
 	out_lit 'outlier takes errors=N (failing answers in a row, 0 to 1000; 0 never ejects on them), eject= (whole seconds, 1s to 24h) and max_ejected=P%'
@@ -2700,6 +2713,9 @@ compile_pool:
 	lea	rcx,[dir_table + D_SIZE*DIR_OUTLIER]
 	cmp	rax,rcx
 	je	.outlier
+	lea	rcx,[dir_table + D_SIZE*DIR_SOURCE]
+	cmp	rax,rcx
+	je	.source
 	lea	rcx,[dir_table + D_SIZE*DIR_RETRY_BUDGET]
 	cmp	rax,rcx
 	je	.rbudget
@@ -2859,6 +2875,58 @@ compile_pool:
 	mov	rdi,r13
 	mov	rsi,rbx
 	call	compile_discover
+	jmp	.advance
+.source:
+	; `source A B ...`: the addresses its connections leave from, in turn
+	push	r12
+	push	r14
+	mov	r12,[rbx+N_ARGS]
+	mov	r14d,[rbx+N_ARGC]
+.source_one:
+	test	r14d,r14d
+	jz	.source_done
+	mov	rdi,[r12+A_VAL]
+	mov	esi,[r12+A_VLEN]
+	lea	rdx,[g_cmp_tr]
+	call	parse_cidr
+	jc	plan_bad_source
+	mov	eax,dword [g_cmp_tr+TR_BITS]		; an address, not a range
+	cmp	dword [g_cmp_tr+TR_KIND],4
+	jne	@f
+	cmp	eax,32
+	jne	plan_bad_source
+	jmp	.source_in
+@@:
+	cmp	eax,128
+	jne	plan_bad_source
+.source_in:
+	mov	eax,[r13+PL_SRCN]
+	cmp	eax,PL_SRCMAX
+	jae	plan_bad_source
+	inc	dword [r13+PL_SRCN]
+	imul	eax,eax,PL_SRCSZ
+	lea	rdi,[r13+PL_SRC+rax]
+	cmp	dword [g_cmp_tr+TR_KIND],4
+	jne	.source6
+	mov	word [rdi],AF_INET		; port 0: the kernel's, at connect
+	mov	eax,dword [g_cmp_tr+TR_IP]
+	mov	[rdi+4],eax
+	mov	dword [rdi+28],16
+	jmp	.source_next
+.source6:
+	mov	word [rdi],AF_INET6
+	mov	rax,qword [g_cmp_tr+TR_IP]
+	mov	[rdi+8],rax
+	mov	rax,qword [g_cmp_tr+TR_IP+8]
+	mov	[rdi+16],rax
+	mov	dword [rdi+28],28
+.source_next:
+	add	r12,A_SIZE
+	dec	r14d
+	jmp	.source_one
+.source_done:
+	pop	r14
+	pop	r12
 	jmp	.advance
 .outlier:
 	mov	rdi,rbx

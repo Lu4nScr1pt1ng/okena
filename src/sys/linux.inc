@@ -112,6 +112,7 @@ AF_INET6	:= 10
 IPPROTO_IPV6	:= 41
 IPV6_V6ONLY	:= 26
 IPPROTO_IP	:= 0
+IP_BIND_ADDRESS_NO_PORT := 24	; the port chosen at connect, by the whole 4-tuple
 SOL_UDP		:= 17
 UDP_SEGMENT	:= 103
 UDP_GRO		:= 104

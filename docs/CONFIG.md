@@ -14,7 +14,7 @@ not built yet. A directive that is not built is refused by `okena check`
 | `udp ADDR...` | `to`, `responses N`, `limits { connections }` (flows), `timeout { idle }` |
 | `http ADDR...` | `host`, `route`, `mss`, `errors CODES file= [backend]`, `maintenance file= retry= allow= except=`, `limits`, `timeout { idle; header; body_idle; response }`, `trusted_proxies`, `access_log`, `tracing`, `http2 on\|off`, `http3 on\|off\|retry\|v2`, `preferred_address`, `early_data on\|off`, `tls { cert; key; ktls on\|off }` |
 | `route PATH... [METHOD...]` | `to`, `redirect`, `respond`, `rewrite path`, `signed_urls key= [key2=]`, `header set\|add\|drop`, `response header set\|add\|drop`, `retry N [idempotent-only] [on=reset,timeout,5xx,500,502,503,504]` |
-| `pool NAME` | `server ADDR [weight=N] [max=N] [backup]`, `queue timeout=`, `balance least-request\|peak-ewma\|round-robin\|least-conn\|random\|maglev\|ring-hash\|source-hash [key=] [bound=]\|first`, `sticky cookie= [ttl=] [samesite=]`, `connect timeout=`, `health tcp\|http\|grpc ...`, `outlier errors= eject= max_ejected=`, `retry_budget P% [min=N/s]`, `slow_start`, `tls { trust FILE; sni NAME; cert FILE; key FILE }` (TLS to the backends), `protocol h1\|h2\|fastcgi` |
+| `pool NAME` | `server ADDR [weight=N] [max=N] [backup]`, `queue timeout=`, `balance least-request\|peak-ewma\|round-robin\|least-conn\|random\|maglev\|ring-hash\|source-hash [key=] [bound=]\|first`, `sticky cookie= [ttl=] [samesite=]`, `connect timeout=`, `health tcp\|http\|grpc ...`, `outlier errors= eject= max_ejected=`, `retry_budget P% [min=N/s]`, `source ADDR...`, `slow_start`, `tls { trust FILE; sni NAME; cert FILE; key FILE }` (TLS to the backends), `protocol h1\|h2\|fastcgi` |
 
 `okena { ech PUBLIC_NAME KEYFILE... }` turns on Encrypted Client Hello (the
 draft's version 0xfe0d) for every TLS listener: a client that has okena's
@@ -1469,6 +1469,15 @@ failed connects; `errors=0` leaves answers alone (an API whose 503s are its
 own). `max_ejected` is the most of a pool that may be out at once, so that a
 fault everyone shares (a database behind them all) cannot empty it; `100%`
 lets it. A server out by it is asked again when the time is up.
+
+`source 10.0.0.2 10.0.0.3` (up to 8 addresses of this host) makes the pool's
+connections leave from them in turn, each server's from the addresses of its
+family (none of it: the kernel's choice). The port is left to the connect
+(`IP_BIND_ADDRESS_NO_PORT`), so each address adds its own ~28 000 ports
+towards every server: for a busy proxy whose backends are few, where one
+address runs out of ports (EADDRNOTAVAIL, a failed connect). An address the
+host does not have fails each connect the same way. With io_uring it needs
+Linux 6.11 (IORING_OP_BIND); an older kernel connects from the kernel's choice.
 
 `retry_budget 20% min=10/s` (the defaults) bounds the retries and hedges sent
 to a pool, in each worker: each request adds that share of a retry, and the

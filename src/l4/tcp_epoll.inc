@@ -567,6 +567,29 @@ ep_connect:
 	mov	edx,EK_UPSTREAM
 	call	ep_session_data
 	call	ep_add
+	; the pool's `source`: bound to the next address, the port left to the
+	; connect (so a port is free per destination, not per host)
+	mov	edi,[r12+S_POOL]
+	mov	esi,[r13+SV_FAMILY]
+	call	pool_source
+	test	rax,rax
+	jz	.bound
+	push	rax
+	mov	edi,[r12+S_UPFD]
+	mov	esi,IPPROTO_IP
+	mov	edx,IP_BIND_ADDRESS_NO_PORT
+	lea	r10,[one_int]
+	mov	r8d,4
+	mov	eax,SYS_setsockopt
+	syscall
+	pop	rsi
+	mov	edi,[r12+S_UPFD]
+	mov	edx,[rsi+28]
+	mov	eax,SYS_bind
+	syscall
+	test	eax,eax
+	jnz	.failed				; (an address not this host's: as a refusal)
+.bound:
 	mov	edi,[r12+S_UPFD]
 	lea	rsi,[r13+SV_SA]
 	mov	edx,[r13+SV_SALEN]

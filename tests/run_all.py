@@ -55,6 +55,8 @@ SUITES = [
     ("retry epoll", ["tests/gateway/retry.py", "epoll"]),
     ("outlier io_uring", ["tests/gateway/outlier.py", "io_uring"]),
     ("outlier epoll", ["tests/gateway/outlier.py", "epoll"]),
+    ("source io_uring", ["tests/l4/source.py", "io_uring"]),
+    ("source epoll", ["tests/l4/source.py", "epoll"]),
     ("mss io_uring", ["tests/l4/mss.py", "io_uring"]),
     ("mss epoll", ["tests/l4/mss.py", "epoll"]),
     ("aes256 io_uring", ["tests/tls/aes256.py", "io_uring"]),

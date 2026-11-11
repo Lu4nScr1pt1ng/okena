@@ -101,6 +101,8 @@ CQE_SIZE	:= 16
 
 ; added for okena
 IORING_OP_SOCKET		:= 45
+IORING_OP_BIND			:= 56
+SQE_ADDR2			:= 8	; u64 (bind: the address's length)
 IOSQE_IO_HARDLINK		:= 1 shl 3
 IOSQE_BUFFER_SELECT		:= 1 shl 5
 IORING_CQE_F_BUFFER		:= 1 shl 0

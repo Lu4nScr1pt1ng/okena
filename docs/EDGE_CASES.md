@@ -26,7 +26,7 @@ the connection closed when its framing can no longer be trusted.
 | IPv6, dual stack, IPv4-mapped addresses | normalised to one form for limits, logs and ACLs (RFC 5952 text); a backend's name gives every A and AAAA address as a server of the pool, one that fails ejected (instead of happy eyeballs per connection) |
 | MTU/PMTU black holes | QUIC starts at 1200 bytes and probes 1350 and 1452 (RFC 9000 14.3), a lost probe costing nothing; TCP is the kernel's, clamped by `mss N` on a listener when tunnels on the path drop ICMP |
 | Clients behind proxies that send PROXY protocol | accepted only from `proxy_protocol accept from=`; v1 and v2 with TLVs (TLS info, unique ID) |
-| Upstream port exhaustion | connections to backends kept alive and pooled, the kernel choosing source ports at connect (shared across destinations); several source addresses and free ports as a pressure signal: not built |
+| Upstream port exhaustion | connections to backends kept alive and pooled, the kernel choosing source ports at connect (shared across destinations); `source` on a pool adds addresses, each with its own ports per destination (IP_BIND_ADDRESS_NO_PORT); running out is a failed connect, retried elsewhere |
 | Backend black-holed (no RST, no answer) | connect deadline, `TCP_USER_TIMEOUT`, keepalive, response deadline |
 | Backend IP changes (container recreated, DNS failover) | re-resolve on TTL and immediately on connect failure |
 | Conntrack table full on the host | not detected by okena yet (an `okena check --host` with `NOTRACK` guidance: not built) |

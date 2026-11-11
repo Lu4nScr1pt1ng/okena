@@ -240,16 +240,25 @@ rodata
 	dw IORING_RESTRICTION_SQE_FLAGS_ALLOWED
 	db IOSQE_FIXED_FILE or IOSQE_IO_LINK or IOSQE_IO_HARDLINK or IOSQE_BUFFER_SELECT or IOSQE_CQE_SKIP_SUCCESS, 0
 	dd 0, 0, 0
-	; last, so that a kernel that does not know it (before 6.8) can be given the
-	; rest: zero copy then splices
+	; last, so that a kernel that does not know them can be given the rest:
+	; without FIXED_FD_INSTALL (6.8) zero copy splices, without BIND (6.11)
+	; a pool's `source` is not used
 	dw IORING_RESTRICTION_SQE_OP
 	db IORING_OP_FIXED_FD_INSTALL, 0
+	dd 0, 0, 0
+	dw IORING_RESTRICTION_SQE_OP
+	db IORING_OP_BIND, 0
 	dd 0, 0, 0
 	RING_RESTRICTIONS_COUNT = ($ - ring_restrictions) / 16
 end rodata
 
+bss
+	g_uring_bind	dd ?		; the ring takes IORING_OP_BIND
+end bss
+
 ring_lockdown:
 	mov	dword [g_zc_inst],1
+	mov	dword [g_uring_bind],1
 	mov	edi,[g_ring_fd]
 	mov	esi,IORING_REGISTER_RESTRICTIONS
 	lea	rdx,[ring_restrictions]
@@ -258,11 +267,20 @@ ring_lockdown:
 	syscall
 	cmp	eax,-EINVAL
 	jne	@f
-	mov	dword [g_zc_inst],0		; (an operation it does not know)
+	mov	dword [g_uring_bind],0		; (an operation it does not know)
 	mov	edi,[g_ring_fd]
 	mov	esi,IORING_REGISTER_RESTRICTIONS
 	lea	rdx,[ring_restrictions]
 	mov	r10d,RING_RESTRICTIONS_COUNT - 1
+	mov	eax,SYS_io_uring_register
+	syscall
+	cmp	eax,-EINVAL
+	jne	@f
+	mov	dword [g_zc_inst],0
+	mov	edi,[g_ring_fd]
+	mov	esi,IORING_REGISTER_RESTRICTIONS
+	lea	rdx,[ring_restrictions]
+	mov	r10d,RING_RESTRICTIONS_COUNT - 2
 	mov	eax,SYS_io_uring_register
 	syscall
 @@:
