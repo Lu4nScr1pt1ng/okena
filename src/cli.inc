@@ -3,6 +3,7 @@
 ;   okena [run] [-c FILE]          serve (default file /etc/okena/okena.conf)
 ;   okena check [FILE]             validate a configuration
 ;   okena check --host [FILE]      what of the host would hold okena back
+;   okena fmt [-w] FILE            its layout made canonical (cli_fmt.inc)
 ;   okena bench URL [key=value...] open-loop load (src/bench/bench.inc)
 ;   okena tcp :5432 to db:5432     the configuration itself, on the line
 ;   okena version | help
@@ -69,6 +70,12 @@ cli_main:
 	call	cstr_eq
 	test	eax,eax
 	jnz	cli_route
+	mov	rax,[g_argv]
+	mov	rdi,[rax+8]
+	lea	rsi,[str_cmd_fmt]
+	call	cstr_eq
+	test	eax,eax
+	jnz	cli_fmt
 	mov	rax,[g_argv]
 	mov	rdi,[rax+8]
 	lea	rsi,[str_cmd_upgrade]

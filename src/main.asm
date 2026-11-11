@@ -157,6 +157,7 @@ include 'bench/bench.inc'
 include 'bench/h3.inc'
 include 'cli.inc'
 include 'cli_route.inc'
+include 'cli_fmt.inc'
 
 start:
 	; At entry: [rsp] = argc, then argv[], NULL, envp[], NULL.

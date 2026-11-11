@@ -70,6 +70,7 @@ test-serial: $(BIN) $(HTTPH) $(KAT) $(TLSH)
 	python3 -I tests/http/run.py 5000
 	python3 -I tests/config/run.py
 	python3 -I tests/config/host.py
+	python3 -I tests/config/fmt.py
 	python3 -I tests/config/fuzz.py 2000
 	python3 -I tests/tls/run.py
 	python3 -I tests/tls/handshake.py

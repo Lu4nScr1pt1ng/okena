@@ -2039,7 +2039,7 @@ network. Up to 8 targets; Telegram's `api=URL` points it elsewhere.
 ```
 okena check okena.conf             # validate; non-zero exit on error
 okena check --diff                 # what a reload would change
-okena fmt -w okena.conf            # canonical formatting
+okena fmt [-w] okena.conf          # canonical layout (stdout, or -w: in place)
 okena explain                      # effective config, defaults included
 okena route 'GET https://api.example.com/v1/users/42 x-canary:yes'
 okena top                          # live per-route/backend view
@@ -2053,6 +2053,13 @@ okena sign KEYFILE /path 1h        # a signed link (signed_urls)
 okena ranges cloudflare            # a provider's ranges, as built in
 okena purge url|prefix|tag VALUE   # take cached answers back (and on the fleet)
 ```
+
+`okena fmt [-w] FILE` gives the file its canonical layout: each line indented
+four spaces for each block it is in, trailing blanks removed, empty lines
+collapsed to one, none at the start; what each line says, its spacing inside
+and its comments, stay as written. A file with errors is not touched (they are
+shown, exit 2). Without -w the result goes to stdout; with it, the file is
+replaced whole, its mode kept.
 
 `okena check --host [FILE]` looks at the host, a line for each thing, `ok` or
 `warn` with what to do, and exits 1 when anything warns: the conntrack table
