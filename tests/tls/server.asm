@@ -254,7 +254,12 @@ ocsp_staple:
 bss
 	g_oc_n		dd ?
 	g_oc_tmp	rb 16
+	g_ccz_msg	dq ?
+	g_ccz_alg	dd ?
 end bss
+; (no certificate compression here: the Certificate as it is)
+cert_compress:
+	ret
 
 ; edx = bytes from g_out: written, or CF.
 send_out:

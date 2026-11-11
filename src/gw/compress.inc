@@ -44,6 +44,7 @@ bss
 	g_z_free	dd ?
 	g_zh		dd ?			; the head being written is of such an answer
 	g_plan_zip	dd ?
+	g_z_tables	dd ?
 	g_z_lit		rd 288			; code | bits << 16, as the writer wants them
 	g_z_dist	rb 32
 	g_z_lcode	rw 259			; a length's symbol, its extra bits in the top byte
@@ -100,6 +101,20 @@ zip_init:
 	jnz	.link
 	mov	dword [rdi+Z_NEXT],NIL
 	mov	dword [g_z_free],0
+	call	zip_tables
+.out:
+	pop	r12
+	pop	rbx
+.none:
+	ret
+
+; the fixed codes and the CRC's table, once (compress, and TLS's certificates)
+zip_tables:
+	cmp	dword [g_z_tables],0
+	jne	.done
+	mov	dword [g_z_tables],1
+	push	rbx
+	push	r12
 	; the literal and length codes
 	xor	ebx,ebx
 .lit:
@@ -185,10 +200,9 @@ zip_init:
 	inc	ecx
 	cmp	ecx,256
 	jb	.c
-.out:
 	pop	r12
 	pop	rbx
-.none:
+.done:
 	ret
 
 ; g_hm = the request, r15: whether this answer may be compressed, for when its head
@@ -443,6 +457,156 @@ zip_feed:
 	jnz	.crc
 	mov	[r12+Z_CRC],eax
 	call	z_window
+	call	zip_block
+.frame:
+	call	zip_frame
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbp
+	pop	rbx
+	ret
+
+; r12 = context, r8/r9d = a piece: into the window, sliding it when it would not
+; fit (Z_POS, Z_END follow). Keeps r8-r15.
+z_window:
+	mov	eax,[r12+Z_END]
+	lea	ecx,[rax+r9]
+	cmp	ecx,Z_WINCAP
+	jbe	.fits
+	lea	rsi,[r12+Z_WIN]
+	mov	ecx,eax
+	sub	ecx,32768
+	lea	rsi,[rsi+rcx]
+	lea	rdi,[r12+Z_WIN]
+	mov	eax,32768
+	sub	[r12+Z_POS],ecx
+	mov	ecx,eax
+	rep	movsb
+	mov	dword [r12+Z_END],32768
+	mov	eax,32768
+.fits:
+	lea	rdi,[r12+Z_WIN+rax]
+	mov	rsi,r8
+	mov	ecx,r9d
+	rep	movsb
+	add	[r12+Z_END],r9d
+	ret
+
+; rsi/ecx = bytes (H_UP_CAP at most), rdi = out: a zlib stream of them (RFC 1950:
+; 78 01, DEFLATE in fixed codes, Adler-32), eax = its length. brotli.inc's
+; one-shot context. CF when there is none.
+zlib_oneshot:
+	push	rbx
+	push	rbp
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	push	rsi
+	push	rcx
+	push	rdi
+	call	zip_tables			; (it takes rdi)
+	pop	rdi
+	mov	rbp,rdi
+	mov	r15,rdi				; (where it starts: zip_block keeps r15)
+	mov	word [rbp],0x0178		; CMF, FLG (no dictionary, fastest)
+	add	rbp,2
+	call	br_one_context			; r12
+	jc	.none
+	mov	r9d,[rsp]
+	mov	r8,[rsp+8]
+	xor	eax,eax
+	mov	[r12+Z_POS],eax
+	mov	[r12+Z_END],eax
+	mov	[r12+Z_ABS],eax
+	mov	dword [r12+Z_NBITS],3
+	mov	qword [r12+Z_BITS],2		; a block, not the last, of fixed codes
+	call	z_window
+	call	zip_block
+	call	zip_close
+	; Adler-32, big-endian
+	pop	rcx
+	pop	rsi
+	mov	r8d,1				; a
+	xor	r9d,r9d				; b
+	mov	r10d,65521
+.adler:
+	test	ecx,ecx
+	jz	.adlered
+	movzx	eax,byte [rsi]
+	add	eax,r8d
+	xor	edx,edx
+	div	r10d
+	mov	r8d,edx
+	mov	eax,r9d
+	add	eax,r8d
+	xor	edx,edx
+	div	r10d
+	mov	r9d,edx
+	inc	rsi
+	dec	ecx
+	jmp	.adler
+.adlered:
+	shl	r9d,16
+	or	r9d,r8d
+	bswap	r9d
+	mov	[rbp],r9d
+	add	rbp,4
+	mov	rax,rbp
+	sub	rax,r15
+	jmp	.out
+.none:
+	add	rsp,16
+	stc
+	jmp	.ret
+.out:
+	clc
+.ret:
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbp
+	pop	rbx
+	ret
+
+; r12 = context, rbp = out: the block ended, an empty last one, to a whole byte,
+; out
+zip_close:
+	mov	r10,[r12+Z_BITS]
+	mov	r11d,[r12+Z_NBITS]
+	mov	eax,[g_z_lit+256*4]		; the end of the block
+	call	z_put_code
+	mov	eax,3				; another, the last, empty
+	mov	ecx,3
+	call	z_put
+	mov	eax,[g_z_lit+256*4]
+	call	z_put_code
+	; to a whole byte
+	mov	ecx,r11d
+	neg	ecx
+	and	ecx,7
+	xor	eax,eax
+	test	ecx,ecx
+	jz	@f
+	call	z_put
+@@:
+	; (what is left is whole bytes)
+.byte:
+	test	r11d,r11d
+	jz	.closed
+	mov	[rbp],r10b
+	inc	rbp
+	shr	r10,8
+	sub	r11d,8
+	jmp	.byte
+.closed:
+	ret
+
+; r12 = context, rbp = out, the window filled: its LZ77 in fixed codes, from Z_POS
+; to Z_END, out (Z_BITS, Z_NBITS kept). rax-r11, r13, r14 and rbx are free.
+zip_block:
 	; rbx = the place, r13 = the end, r14 = what is on r10/r11: the bits
 	mov	ebx,[r12+Z_POS]
 	mov	r13d,[r12+Z_END]
@@ -572,39 +736,6 @@ zip_feed:
 	mov	[r12+Z_POS],ebx
 	mov	[r12+Z_BITS],r10
 	mov	[r12+Z_NBITS],r11d
-.frame:
-	call	zip_frame
-	pop	r14
-	pop	r13
-	pop	r12
-	pop	rbp
-	pop	rbx
-	ret
-
-; r12 = context, r8/r9d = a piece: into the window, sliding it when it would not
-; fit (Z_POS, Z_END follow). Keeps r8-r15.
-z_window:
-	mov	eax,[r12+Z_END]
-	lea	ecx,[rax+r9]
-	cmp	ecx,Z_WINCAP
-	jbe	.fits
-	lea	rsi,[r12+Z_WIN]
-	mov	ecx,eax
-	sub	ecx,32768
-	lea	rsi,[rsi+rcx]
-	lea	rdi,[r12+Z_WIN]
-	mov	eax,32768
-	sub	[r12+Z_POS],ecx
-	mov	ecx,eax
-	rep	movsb
-	mov	dword [r12+Z_END],32768
-	mov	eax,32768
-.fits:
-	lea	rdi,[r12+Z_WIN+rax]
-	mov	rsi,r8
-	mov	ecx,r9d
-	rep	movsb
-	add	[r12+Z_END],r9d
 	ret
 
 ; eax = code | bits << 16: out. Keeps rcx-rdx, rsi, r8, r9.
@@ -698,33 +829,7 @@ zip_finish:
 	jmp	.framed
 @@:
 	call	zip_gz_head
-	mov	r10,[r12+Z_BITS]
-	mov	r11d,[r12+Z_NBITS]
-	mov	eax,[g_z_lit+256*4]		; the end of the block
-	call	z_put_code
-	mov	eax,3				; another, the last, empty
-	mov	ecx,3
-	call	z_put
-	mov	eax,[g_z_lit+256*4]
-	call	z_put_code
-	; to a whole byte
-	mov	ecx,r11d
-	neg	ecx
-	and	ecx,7
-	xor	eax,eax
-	test	ecx,ecx
-	jz	@f
-	call	z_put
-@@:
-	; (what is left is whole bytes)
-.byte:
-	test	r11d,r11d
-	jz	.bytes
-	mov	[rbp],r10b
-	inc	rbp
-	shr	r10,8
-	sub	r11d,8
-	jmp	.byte
+	call	zip_close
 .bytes:
 	mov	eax,[r12+Z_CRC]
 	not	eax

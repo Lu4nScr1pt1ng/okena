@@ -75,6 +75,7 @@ worker_main:
 	call	cache_init
 	call	files_init
 	call	zip_init
+	call	certcomp_init			; (certcomp.inc: before seccomp, which allows no mmap)
 	call	groups_refresh
 	call	hs_init
 	cmp	dword [g_plan_engine],2

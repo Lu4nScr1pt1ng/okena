@@ -279,6 +279,8 @@ G_QTP		:= 2097152			; quic_transport_parameters (QUIC)
 G_HQ		:= 4194304			; ALPN offers hq-interop (QUIC, the interop runner)
 G_EARLY		:= 8388608			; early_data: the client sends 0-RTT data
 G_ACME		:= 16777216			; ALPN offers acme-tls/1 (TLS-ALPN-01, acme.inc)
+G_CCOMP		:= 67108864			; compress_certificate offers brotli (certcomp.inc)
+G_CCZLIB	:= 134217728			; or zlib
 G_OCSP		:= 33554432			; status_request (OCSP): a staple wanted (ocsp.inc)
 
 ; the transcript: rsi = bytes, rdx = length
@@ -519,6 +521,8 @@ tls_hello:
 	je	.early_ext
 	cmp	eax,5
 	je	.status_req
+	cmp	eax,27
+	je	.compress_cert
 .ext_next:
 	mov	rsi,r14
 	jmp	.ext
@@ -526,6 +530,29 @@ tls_hello:
 .early_ext:					; early_data: empty
 	or	dword [rbp+HL_GOT],G_EARLY
 	jmp	.ext_next
+
+.compress_cert:					; compress_certificate: u8 length, u16s
+	test	ecx,ecx
+	jz	.ext_next
+	movzx	edx,byte [rsi]
+	lea	rax,[rsi+rdx+1]
+	cmp	rax,r14
+	ja	.ext_next
+	lea	rax,[rsi+1]
+.cc_alg:
+	cmp	edx,2
+	jb	.ext_next
+	cmp	word [rax],0x0200		; brotli
+	jne	.cc_zlib
+	or	dword [rbp+HL_GOT],G_CCOMP
+.cc_zlib:
+	cmp	word [rax],0x0100		; zlib
+	jne	.cc_next
+	or	dword [rbp+HL_GOT],G_CCZLIB
+.cc_next:
+	add	rax,2
+	sub	edx,2
+	jmp	.cc_alg
 
 .status_req:					; status_request: ocsp (1), lists
 	test	ecx,ecx
@@ -1476,6 +1503,7 @@ tls_hello:
 	add	r14,19
 .no_request:
 	; Certificate: empty context, the certificate_list as loaded
+	mov	[g_ccz_msg],r14
 	cmp	dword [g_oc_n],0
 	jne	.stapled
 .cert_list:
@@ -1541,6 +1569,16 @@ tls_hello:
 	sub	rcx,rsi
 	rep	movsb
 .cert_done_list:
+	mov	dword [g_ccz_alg],2		; brotli offered (or zlib): CompressedCertificate
+	test	dword [rbp+HL_GOT],G_CCOMP
+	jnz	.compress_it
+	mov	dword [g_ccz_alg],1
+	test	dword [rbp+HL_GOT],G_CCZLIB
+	jz	@f
+.compress_it:
+	mov	rsi,[g_ccz_msg]
+	call	cert_compress			; rdi = the end
+@@:
 	mov	rsi,r13
 	mov	rdx,rdi
 	sub	rdx,r13

@@ -29,6 +29,7 @@ bss
 	g_br_rwb	dq ?
 	g_br_rwn	dd ?
 	g_z_kind	dd ?			; zip_request to zip_head: which one
+	g_br_one	dq ?			; br_oneshot's context
 	; the histograms, one after the other (cleared together)
 	g_br_hl		rd 256
 	g_br_hc		rd 704
@@ -66,8 +67,14 @@ end rodata
 ; zip_feed, a br context: r12, rbp as there, r8/r9d = the piece. Ends in zip_feed's
 ; .frame (its pushes).
 br_feed:
+	call	br_block
+	jmp	zip_feed.frame
+
+; r12 = a br context, rbp = out, r8/r9d = a piece (H_UP_CAP at most): its
+; meta-block, out. rbx, r13 and rax-r11 are free.
+br_block:
 	test	r9d,r9d
-	jz	zip_feed.frame
+	jz	.empty
 	mov	[g_br_mlen],r9d
 	mov	eax,[r12+Z_POS]
 	call	z_window
@@ -329,7 +336,92 @@ br_feed:
 .done:
 	mov	[r12+Z_BITS],r10
 	mov	[r12+Z_NBITS],r11d
-	jmp	zip_feed.frame
+.empty:
+	ret
+
+; r12 = the one-shot context (a worker's, made the first time). CF when there is
+; none to be had. Keeps all but r12, rax and flags.
+br_one_context:
+	mov	r12,[g_br_one]
+	test	r12,r12
+	jnz	.have
+	push	rcx
+	push	rdx
+	push	rsi
+	push	rdi
+	push	r8
+	push	r9
+	push	r10
+	push	r11
+	xor	edi,edi
+	mov	esi,Z_SIZE
+	mov	edx,PROT_READ or PROT_WRITE
+	mov	r10d,MAP_PRIVATE or MAP_ANONYMOUS or MAP_NORESERVE
+	mov	r8,-1
+	xor	r9d,r9d
+	mov	eax,SYS_mmap
+	syscall
+	pop	r11
+	pop	r10
+	pop	r9
+	pop	r8
+	pop	rdi
+	pop	rsi
+	pop	rdx
+	pop	rcx
+	cmp	rax,-4096
+	ja	.none
+	mov	r12,rax
+	mov	[g_br_one],rax
+.have:
+	clc
+	ret
+.none:
+	stc
+	ret
+
+; rsi/ecx = bytes (H_UP_CAP at most), rdi = out: a whole Brotli stream of them,
+; eax = its length. Its own context (a worker's, made the first time). CF when
+; there is none to be had.
+br_oneshot:
+	push	rbx
+	push	rbp
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	mov	rbp,rdi
+	mov	r8,rsi
+	mov	r9d,ecx
+	call	br_one_context
+	jc	.none
+	; a stream of its own (the hash's old places are checked against the bytes)
+	xor	eax,eax
+	mov	[r12+Z_POS],eax
+	mov	[r12+Z_END],eax
+	mov	[r12+Z_ABS],eax
+	mov	[r12+Z_HEAD],eax
+	mov	[r12+Z_NBITS],eax
+	mov	qword [r12+Z_BITS],0
+	mov	dword [r12+Z_KIND],1
+	push	rbp
+	call	br_block
+	call	br_finish
+	pop	rax
+	sub	rbp,rax
+	mov	eax,ebp
+	clc
+	jmp	.out
+.none:
+	stc
+.out:
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbp
+	pop	rbx
+	ret
 
 ; zip_finish, a br context: r12, rbp: the last meta-block (ISLAST, ISLASTEMPTY), the
 ; header before it if nothing went yet

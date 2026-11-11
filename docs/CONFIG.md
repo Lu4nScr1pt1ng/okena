@@ -16,6 +16,12 @@ not built yet. A directive that is not built is refused by `okena check`
 | `route PATH... [METHOD...]` | `to`, `redirect`, `respond`, `rewrite path`, `signed_urls key= [key2=]`, `header set\|add\|drop`, `response header set\|add\|drop` |
 | `pool NAME` | `server ADDR [weight=N] [max=N] [backup]`, `queue timeout=`, `balance least-request\|peak-ewma\|round-robin\|least-conn\|random\|maglev\|ring-hash\|source-hash [key=] [bound=]\|first`, `sticky cookie= [ttl=] [samesite=]`, `connect timeout=`, `health tcp\|http\|grpc ...`, `slow_start`, `tls { trust FILE; sni NAME; cert FILE; key FILE }` (TLS to the backends), `protocol h1\|h2\|fastcgi` |
 
+Certificate compression (RFC 8879) needs nothing configured: a TLS 1.3 client
+that offers it with brotli (Chrome) or zlib (Firefox, Safari, OpenSSL) gets the
+chain compressed, brotli first; about a third smaller for a leaf and its
+intermediate, compressed once per worker for each chain (and staple), not for
+each handshake.
+
 `tls { cert FILE; key FILE }` on an `http` listener makes it HTTPS: TLS
 1.3 with a certificate chain (leaf first) and its key: EC P-256 (SEC 1 or
 PKCS #8), RSA (PKCS #1 or #8) or Ed25519 (PKCS #8; served to clients that
