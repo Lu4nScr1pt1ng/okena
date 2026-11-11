@@ -47,6 +47,8 @@ SUITES = [
     ("admin edges", ["tests/admin/edges.py"]),
     ("fdlimit io_uring", ["tests/httpproxy/fdlimit.py", "io_uring"]),
     ("fdlimit epoll", ["tests/httpproxy/fdlimit.py", "epoll"]),
+    ("h3 edges io_uring", ["tests/h3/edges.py", "io_uring"]),
+    ("h3 edges epoll", ["tests/h3/edges.py", "epoll"]),
     ("hello io_uring", ["tests/tls/hello.py", "io_uring"]),
     ("hello epoll", ["tests/tls/hello.py", "epoll"]),
     ("h2 abuse io_uring", ["tests/h2/abuse.py", "io_uring"]),

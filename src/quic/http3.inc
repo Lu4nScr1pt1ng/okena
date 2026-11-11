@@ -1176,10 +1176,13 @@ h3_req_bytes:
 	stc
 	jmp	.out
 .excessive:
-	mov	qword [r15+QC_ERR],H3E_EXCESSIVE
-	or	dword [r15+QC_FLAGS],QF_APP_ERR
-	stc
-	jmp	.out
+	; a HEADERS frame larger than we gather: that stream alone is refused
+	; (H3_EXCESSIVE_LOAD), what more it sends ignored; the connection goes on
+	; (nothing of QPACK's table changes in a field section)
+	mov	rdi,r12
+	mov	eax,H3E_EXCESSIVE
+	call	qst_refuse
+	jmp	.done
 .unexpected:
 	mov	qword [r15+QC_ERR],H3E_FRAME_UNEXPECTED
 	or	dword [r15+QC_FLAGS],QF_APP_ERR
@@ -1678,7 +1681,12 @@ qp_string:
 	pop	r8				; the start
 	pop	rsi
 	pop	rdx
-	jc	.bad
+	jnc	@f
+	cmp	eax,HPE_TOO_BIG
+	jne	.bad
+	mov	dword [g_qp_big],1		; (no room: larger than we take, not malformed)
+	jmp	.bad
+@@:
 	mov	[g_h3sp],rax
 	mov	rcx,rax
 	sub	rcx,r8
@@ -1692,6 +1700,7 @@ qp_string:
 bss
 	g_h3sp		dq ?
 	g_qp_ric	dq ?			; the field section's Required Insert Count
+	g_qp_big	dd ?			; the section is larger than we take
 	g_qp_base	dq ?			; and Base
 	g_qptmp:	rb QP_CAPACITY
 end bss
@@ -1876,6 +1885,20 @@ qd_section_ack:
 .out:
 	ret
 
+; rax = a stream whose field section used the table and was not taken: Stream
+; Cancellation (RFC 9204 4.4.2), so the client's encoder lets its references go
+qd_stream_cancel:
+	push	rax
+	call	qd_room
+	pop	rax
+	jc	.out
+	mov	cl,6
+	mov	dl,0x40
+	call	hp_put_int
+	jmp	qd_written
+.out:
+	ret
+
 ; rdi = a client's unidirectional stream's entry whose type has not come,
 ; or its encoder stream's; rsi = bytes in order, rcx = how many. The type
 ; decides: anything but QPACK's encoder stream is read and ignored; its
@@ -2048,10 +2071,13 @@ qp_uni_bytes:
 	ret
 
 ; rsi = a field section, edx = its length: its field lines into g_h3f
-; (HP_* entries). eax = how many, or -1 (a decompression error).
+; (HP_* entries). eax = how many, -1 (a decompression error), or -2 (more than
+; g_h3f or g_h3s hold: nothing of the table changes in a field section, so
+; only that request is refused).
 qpack_decode:
 	push	rbx
 	push	r12
+	mov	dword [g_qp_big],0
 	lea	rdx,[rsi+rdx]
 	lea	rax,[g_h3s]
 	mov	[g_h3sp],rax
@@ -2103,7 +2129,7 @@ qpack_decode:
 	cmp	rsi,rdx
 	jae	.done
 	cmp	ebx,H3_FIELDS_MAX
-	jae	.bad
+	jae	.too_many
 	imul	r12d,ebx,HP_SIZE
 	lea	r12,[g_h3f+r12]
 	movzx	eax,byte [rsi]
@@ -2200,8 +2226,14 @@ qpack_decode:
 .done:
 	mov	eax,ebx
 	jmp	.out
+.too_many:
+	mov	dword [g_qp_big],1
 .bad:
 	mov	eax,-1
+	cmp	dword [g_qp_big],0
+	je	@f
+	mov	eax,-2				; larger than we take: the stream's alone
+@@:
 .out:
 	pop	r12
 	pop	rbx
@@ -2253,6 +2285,8 @@ h3_request_new:
 	call	qpack_decode
 	cmp	eax,-1
 	je	.decompression
+	cmp	eax,-2
+	je	.too_big
 	mov	[rsp+H3N_N],eax
 	cmp	qword [g_qp_ric],0		; the dynamic table used: the client hears
 	je	@f
@@ -2702,6 +2736,20 @@ h3_request_new:
 	jmp	.out
 .early_line	db 'Early-Data: 1',13,10
 .early_line.len = $ - .early_line
+.too_big:
+	; a head larger than we take: that stream reset (H3_EXCESSIVE_LOAD), the
+	; connection goes on; the client's encoder told the section is abandoned
+	cmp	qword [g_qp_ric],0
+	je	@f
+	mov	rax,[rsp+H3N_ENTRY]
+	mov	rax,[rax+QST_ID]
+	call	qd_stream_cancel
+@@:
+	mov	rdi,[rsp+H3N_ENTRY]
+	mov	eax,H3E_EXCESSIVE
+	call	qst_refuse
+	clc
+	jmp	.out
 .decompression:
 	mov	qword [r15+QC_ERR],QPACK_DECOMPRESSION
 	or	dword [r15+QC_FLAGS],QF_APP_ERR

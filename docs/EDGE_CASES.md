@@ -7,7 +7,7 @@ checked line by line against a running okena by `tests/httpproxy/edge.py`
 `tests/httpproxy/routing.py`, client identity by `tests/httpproxy/identity.py`, failing backends and
 misbehaving clients by `tests/httpproxy/failures.py`, streams and tunnels by
 `tests/httpproxy/streaming.py`, the cache's edges by `tests/gateway/cachedge.py`, `tcp`'s by `tests/l4/edges.py`, the metrics address by `tests/admin/edges.py`, running out of descriptors by
-`tests/httpproxy/fdlimit.py`, odd ClientHellos by `tests/tls/hello.py`, HTTP/2 abuse by `tests/h2/abuse.py` (with h2spec for
+`tests/httpproxy/fdlimit.py`, HTTP/3's by `tests/h3/edges.py`, odd ClientHellos by `tests/tls/hello.py`, HTTP/2 abuse by `tests/h2/abuse.py` (with h2spec for
 conformance), and its parser against a reference by `tests/http/run.py`. "Reject" means a 4xx/5xx with
 the connection closed when its framing can no longer be trusted.
 
@@ -140,6 +140,7 @@ the connection closed when its framing can no longer be trusted.
 | Session resumption over QUIC | a ticket at 1-RTT after the handshake; a ticket of ours resumes |
 | 0-RTT | off unless `early_data on`; then a ticket's age within 11 s, only GET/HEAD/OPTIONS in early data (replayable: `Early-Data: 1` to the backend), anything else REQUEST_REJECTED |
 | QPACK | a dynamic table of 2048 bytes for the client's inserts, no blocked streams; a reference outside it is QPACK_DECOMPRESSION_FAILED, a bad instruction QPACK_ENCODER_STREAM_ERROR; responses use the static table |
+| A request head larger than okena takes over HTTP/3 (16 KiB of frame or of decoded strings, its fields) | that stream reset (H3_EXCESSIVE_LOAD), its further bytes ignored, the connection goes on; the client's encoder told by Stream Cancellation when the section used the table |
 | Rapid reset over HTTP/3 | more than 200 requests a second cancelled by the client (STOP_SENDING, RESET_STREAM): CONNECTION_CLOSE H3_EXCESSIVE_LOAD |
 | Slowloris over HTTP/3 (a request head that never ends, the connection kept alive with PINGs) | `timeout { header }` per stream: RESET_STREAM H3_REQUEST_INCOMPLETE; a stalled body: `body_idle`, 408 |
 | HEADERS frames split across packets on several streams at once | one gathered at a time, the others' bytes wait with the data held ahead of a gap and go on when it is done; refused (H3_REQUEST_REJECTED) only when that room is full |
