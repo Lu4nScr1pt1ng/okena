@@ -8,7 +8,7 @@ not built yet. A directive that is not built is refused by `okena check`
 
 | Block | Directives |
 |---|---|
-| `okena` | `workers`, `io_engine`, `busy_poll`, `watchdog`, `drain delay= timeout=`, `metrics [token=]`, `user`, `ticket_keys`, `handshake_budget wait=`, `quic_server_id HEX`, `cache_memory`, `cache_disk PATH size=`, `fleet ADDR...`, `cdn_loop NAME [max=]`, `bird PATH protocol= [pool=]` |
+| `okena` | `workers`, `io_engine`, `last_good on\|off`, `busy_poll`, `watchdog`, `drain delay= timeout=`, `metrics [token=]`, `user`, `ticket_keys`, `handshake_budget wait=`, `quic_server_id HEX`, `cache_memory`, `cache_disk PATH size=`, `fleet ADDR...`, `cdn_loop NAME [max=]`, `bird PATH protocol= [pool=]` |
 | `vrrp IFACE` | `vrid=`, `priority=`, `address=A/N`, `advert=`, `preempt=`, `track=POOL` (a floating address, VRRP v3) |
 | `tcp ADDR...` | `to`, `mss`, `limits { connections; per_source }`, `timeout { idle }`, `proxy_protocol send v1\|v2`, `tls { cert; key }`, `tls passthrough { sni NAME... to pool P; default reject\|to pool P }` (a `default to pool` alone is enough) |
 | `udp ADDR...` | `to`, `responses N`, `limits { connections }` (flows), `timeout { idle }` |
@@ -391,6 +391,7 @@ okena {
     io_engine auto            # auto | io_uring | epoll
     busy_poll 50us            # poll this long after activity instead of sleeping
     watchdog 2s               # a worker stuck this long is replaced
+    last_good on              # FILE broken at startup: start on FILE.good, the last that ran
     drain delay=2s timeout=7s # fits inside docker stop's 10 s
     metrics :9464             # /metrics, /status, /dashboard, /live, /ready
     # metrics :9464 token=/etc/okena/metrics.token   # all but /live and /ready behind it
@@ -463,6 +464,17 @@ is when each certificate served ends (seconds since 1970), labelled with its
 first name, `source` (file, acme, acme_pending, local, local_pending) and its
 `entry`: `(okena_tls_certificate_not_after_seconds - time()) / 86400 < 14` is
 the alert rule.
+
+`last_good on` keeps the configuration that last started or reloaded as
+FILE.good, beside the file (0600, written whole then renamed over the old
+one), with its `include`d files written into it so that it stands alone. When
+FILE does not compile at startup (its errors are shown as `okena check` shows
+them) and FILE.good is there, okena starts on FILE.good and says so; the next
+reload reads FILE again, so a fix goes in as usual. A reload that fails always
+keeps the running configuration, with or without it. Off by default: a
+directory okena may not write to leaves the copy unwritten, said once a start.
+Paths in the configuration (certificates, keys) are read again from where
+they are, so the copy keeps working while they do.
 
 `user NAME[:GROUP]` (or numbers) makes the processes that face the
 network, or read what it sends, run as that user and group with no

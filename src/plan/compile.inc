@@ -341,6 +341,7 @@ plan_compile:
 	call	errpage_plan_init		; (g_eps[0]: maintenance's text)
 	mov	qword [g_plan_drain_timeout],DEFAULT_DRAIN_US
 	mov	qword [g_plan_watchdog],2000000
+	mov	dword [g_plan_last_good],0
 	mov	qword [g_plan_hs_budget],DEFAULT_HS_BUDGET_US
 	mov	qword [g_plan_hs_wait],DEFAULT_HS_WAIT_US
 	; pools first, so listeners can refer to them
@@ -528,6 +529,9 @@ compile_settings:
 	lea	rcx,[dir_table + D_SIZE*DIR_WATCHDOG]
 	cmp	rax,rcx
 	je	.watchdog
+	lea	rcx,[dir_table + D_SIZE*DIR_LAST_GOOD]
+	cmp	rax,rcx
+	je	.last_good
 	lea	rcx,[dir_table + D_SIZE*DIR_CACHE_MEM]
 	cmp	rax,rcx
 	je	.cache_memory
@@ -760,6 +764,14 @@ compile_settings:
 	mov	rdi,rbx
 	call	node_duration
 	mov	[g_plan_watchdog],rax
+	jmp	.advance
+.last_good:
+	mov	rax,[rbx+N_ARGS]
+	mov	rax,[rax+A_VAL]
+	xor	ecx,ecx
+	cmp	word [rax],'on'
+	sete	cl
+	mov	[g_plan_last_good],ecx
 	jmp	.advance
 .drain:
 	mov	rdi,rbx

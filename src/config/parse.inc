@@ -386,6 +386,7 @@ cfg_begin:
 	mov	[g_diag_end],rsi
 	mov	dword [g_cfg_nfiles],1
 	mov	dword [g_inc_depth],0
+	call	cfg_flat_begin			; (rdi: the text) last_good's copy
 	cmp	qword [g_ar_nodes+AR_BASE],0
 	jne	.ready
 	lea	rdi,[g_ar_nodes]
@@ -817,6 +818,8 @@ cfg_parse:
 	mov	rdi,rax
 	xor	esi,esi				; depth
 	call	parse_block
+	mov	rdi,[g_cfg_end]
+	call	cfg_flat_to
 	pop	rbx
 	ret
 
@@ -1072,6 +1075,8 @@ parse_include:
 	mov	r12,rsi
 	mov	r14,[g_tok_raw]			; (for messages: the directive)
 	mov	r15d,[g_tok_line]
+	mov	rdi,r14				; last_good's copy: up to the line
+	call	cfg_flat_to
 	call	lex_next
 	mov	eax,[g_tok_kind]
 	cmp	eax,TK_STRING
@@ -1185,6 +1190,8 @@ parse_include:
 	call	cfg_error_limit
 	call	parse_skip_line
 .out:
+	mov	rax,[g_lex_pos]			; last_good's copy: on after the line
+	mov	[g_flat_from],rax
 	mov	rax,r12
 	pop	r15
 	pop	r14
@@ -1371,6 +1378,9 @@ parse_include_file:
 	mov	[g_cfg_files+rcx+16],r13
 	inc	dword [g_cfg_nfiles]
 	; into a node of its own, its children then moved here
+	push	qword [g_flat_from]		; (last_good's copy: this file, whole)
+	mov	rax,[g_cfg_src]
+	mov	[g_flat_from],rax
 	lea	rdi,[g_ar_nodes]
 	mov	esi,N_SIZE
 	call	arena_alloc
@@ -1380,7 +1390,11 @@ parse_include_file:
 	inc	dword [g_inc_depth]
 	call	parse_block
 	dec	dword [g_inc_depth]
+	mov	rdi,[g_cfg_end]
+	call	cfg_flat_to
+	call	cfg_flat_nl
 	pop	rax
+	pop	qword [g_flat_from]
 	mov	dword [g_lex_pushed],0
 	pop	qword [g_lex_line]
 	pop	qword [g_lex_pos]

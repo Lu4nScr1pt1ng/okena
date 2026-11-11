@@ -228,7 +228,7 @@ the connection closed when its framing can no longer be trusted.
 | Control process crash | workers keep last backend sets, keys and health; restarted |
 | DNS returns nothing or fails | last addresses kept (stale), pool never emptied by DNS |
 | JWKS endpoint down | cached keys valid for `stale`; new key IDs retried with backoff |
-| Invalid configuration at startup | refused with every error at line:column, nothing started (a `last_good` fallback: not built); on reload the running one stays |
+| Invalid configuration at startup | refused with every error at line:column; with `last_good on`, started on FILE.good (the last configuration that ran, includes inlined) and said so; on reload the running one stays |
 | Disk cache I/O errors | cache bypassed, requests go to origin |
 | Supervisor crash | systemd socket activation / restart policy; sockets outlive it |
 | Disk full (cache, logs) | cache stops admitting, logs drop and count, traffic unaffected |

@@ -71,6 +71,7 @@ SUITES = [
     ("overload io_uring", ["tests/overload/run.py", "io_uring"]),
     ("overload epoll", ["tests/overload/run.py", "epoll"]),
     ("reload", ["tests/reload/run.py"]),
+    ("lastgood", ["tests/reload/lastgood.py"]),
     ("health", ["tests/health/run.py"]),
     ("lb", ["tests/lb/run.py"]),
     ("admin io_uring", ["tests/admin/run.py", "io_uring"]),

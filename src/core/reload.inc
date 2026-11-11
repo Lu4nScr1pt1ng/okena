@@ -64,6 +64,7 @@ macro plan_regions action
 	action g_plan_drain_delay, 8
 	action g_plan_drain_timeout, 8
 	action g_plan_watchdog, 8
+	action g_plan_last_good, 4
 	action g_plan_busy_poll, 8
 	action g_plan_qcc, 4
 	action g_plan_qlb_len, 4
@@ -446,6 +447,7 @@ supervisor_reload:
 	push	rdi
 	mov	edi,1
 	call	gw_reload_result
+	call	lg_save				; FILE.good, when last_good is on
 	pop	rdi
 	call	log_begin
 	out_lit 'configuration reloaded: '

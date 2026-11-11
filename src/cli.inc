@@ -595,8 +595,11 @@ out_count_listener:
 	ret
 
 cli_run:
+	call	lg_pick				; FILE not valid: its last good copy?
 	call	cli_load_config
 	call	plan_compile
+	call	lg_loaded
+	call	lg_save
 	call	local_ca_start			; (a local CA wanted and none: made)
 	call	pd_check			; `user`: possible from here?
 	call	tls_serve_check
