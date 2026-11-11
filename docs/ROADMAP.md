@@ -591,7 +591,10 @@ built; both measurements are still to be made on the lab.)
 * (Done: Brotli on the fly, `compress br gzip`: a meta-block a piece with its own
   Huffman codes, flushed to a byte, stored when it does not shrink.) Brotli on the fly.
 * (Done: `discover consul`, the agent's health API: passing instances, weights,
-  dc=, tag=, the ACL token from a file.) Consul discovery, Kubernetes Gateway API.
+  dc=, tag=, the ACL token from a file. `gateway kubernetes`: Gateways and
+  HTTPRoutes written as okena's configuration and reloaded; `include` and
+  `respond`, `{host}` on the way. Not yet: status conditions, GRPCRoute,
+  ReferenceGrant, regex paths.) Consul discovery, Kubernetes Gateway API.
 * Certificate compression, Encrypted Client Hello.
 * AVX-512 paths where they pay.
 

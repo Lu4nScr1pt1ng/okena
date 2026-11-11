@@ -1,0 +1,7 @@
+exit: 2
+--- stdout
+--- stderr
+include_missing.conf:1:1: error: cannot read include.d/missing.conf
+     1 | include "include.d/missing.conf"
+       | ^^^^^^^
+1 error in include_missing.conf

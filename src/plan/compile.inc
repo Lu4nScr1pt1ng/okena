@@ -531,6 +531,9 @@ compile_settings:
 	lea	rcx,[dir_table + D_SIZE*DIR_LOCALCA]
 	cmp	rax,rcx
 	je	.local_ca
+	lea	rcx,[dir_table + D_SIZE*DIR_GATEWAY]
+	cmp	rax,rcx
+	je	.gateway
 	lea	rcx,[dir_table + D_SIZE*DIR_GEOIP]
 	cmp	rax,rcx
 	je	.geoip
@@ -718,6 +721,9 @@ compile_settings:
 	jmp	.advance
 .local_ca:
 	call	compile_local_ca		; (localca.inc)
+	jmp	.advance
+.gateway:
+	call	compile_gateway			; (gateway.inc)
 	jmp	.advance
 .cache_memory:
 	mov	rax,[rbx+N_ARGS]
@@ -4014,177 +4020,7 @@ compile_discover:
 	mov	[r10+KB_PNAME],rcx
 	mov	[r10+KB_PNLEN],edx
 .kube_api:
-	; api=HOST:PORT, else the pod's KUBERNETES_SERVICE_HOST and _PORT
-	mov	rdi,r13
-	lea	rsi,[str_key_api]
-	push	r10
-	call	node_option
-	pop	r10
-	test	rax,rax
-	jz	.api_env
-	mov	rdi,[rax+A_VAL]
-	mov	esi,[rax+A_VLEN]
-	jmp	.api_parse
-.api_env:
-	push	r10
-	lea	rdi,[str_env_kube_host]
-	mov	esi,str_env_kube_host.len
-	call	getenv
-	pop	r10
-	test	rax,rax
-	jz	plan_no_kube_api
-	lea	rdi,[g_trust_path]		; (a scratch: "[host]:port")
-	mov	rsi,rax
-	xor	r8d,r8d				; a colon: IPv6
-	xor	ecx,ecx
-@@:
-	mov	dl,[rsi+rcx]
-	test	dl,dl
-	jz	@f
-	cmp	dl,':'
-	sete	r9b
-	or	r8b,r9b
-	inc	ecx
-	cmp	ecx,64
-	ja	plan_no_kube_api
-	jmp	@b
-@@:
-	test	r8b,r8b
-	jz	@f
-	mov	byte [rdi],'['
-	inc	rdi
-@@:
-	rep	movsb
-	test	r8b,r8b
-	jz	@f
-	mov	byte [rdi],']'
-	inc	rdi
-@@:
-	mov	byte [rdi],':'
-	inc	rdi
-	push	rdi
-	push	r10
-	lea	rdi,[str_env_kube_port]
-	mov	esi,str_env_kube_port.len
-	call	getenv
-	pop	r10
-	pop	rdi
-	lea	rsi,[str_kube_443]
-	test	rax,rax
-	cmovnz	rsi,rax
-@@:
-	mov	dl,[rsi]
-	test	dl,dl
-	jz	@f
-	mov	[rdi],dl
-	inc	rsi
-	inc	rdi
-	jmp	@b
-@@:
-	lea	rsi,[g_trust_path]
-	sub	rdi,rsi
-	mov	esi,edi
-	lea	rdi,[g_trust_path]
-.api_parse:
-	push	r10
-	lea	rdx,[g_cmp_addr]
-	xor	ecx,ecx
-	call	parse_address
-	pop	r10
-	jc	plan_bad_kube
-	mov	eax,[g_cmp_addr+AD_KIND]
-	cmp	eax,ADDR_V4
-	je	@f
-	cmp	eax,ADDR_V6
-	jne	plan_bad_kube
-@@:
-	push	r10
-	lea	rdi,[r10+KB_SA]
-	lea	rsi,[g_cmp_addr]
-	call	sockaddr_build
-	pop	r10
-	mov	[r10+KB_SALEN],eax
-	; the name its certificate must have
-	lea	rcx,[str_kb_sni]
-	mov	[r10+KB_SNI],rcx
-	mov	dword [r10+KB_SNILEN],str_kb_sni.len
-	mov	rdi,r13
-	lea	rsi,[str_key_name]
-	push	r10
-	call	node_option
-	pop	r10
-	test	rax,rax
-	jz	@f
-	mov	rcx,[rax+A_VAL]
-	mov	edx,[rax+A_VLEN]
-	call	.printable
-	mov	[r10+KB_SNI],rcx
-	mov	[r10+KB_SNILEN],edx
-@@:
-	; the token's path
-	lea	rcx,[str_kb_token]
-	mov	[r10+KB_TOKEN],rcx
-	mov	dword [r10+KB_TOKLEN],str_kb_token.len
-	mov	rdi,r13
-	lea	rsi,[str_key_token]
-	push	r10
-	call	node_option
-	pop	r10
-	test	rax,rax
-	jz	@f
-	mov	rcx,[rax+A_VAL]
-	mov	edx,[rax+A_VLEN]
-	cmp	byte [rcx],'/'
-	jne	plan_bad_kube
-	cmp	edx,4096
-	jae	plan_bad_kube
-	mov	[r10+KB_TOKEN],rcx
-	mov	[r10+KB_TOKLEN],edx
-@@:
-	; the CA, read now: its key is the anchor
-	lea	rsi,[str_kb_ca]
-	mov	ecx,str_kb_ca.len
-	mov	rdi,r13
-	push	rsi
-	push	rcx
-	push	r10
-	lea	rsi,[str_key_ca]
-	call	node_option
-	pop	r10
-	pop	rcx
-	pop	rsi
-	test	rax,rax
-	jz	@f
-	mov	rsi,[rax+A_VAL]
-	mov	ecx,[rax+A_VLEN]
-	cmp	ecx,4096
-	jae	plan_bad_kube
-@@:
-	lea	rdi,[g_trust_path]
-	push	rcx
-	rep	movsb
-	pop	rcx
-	mov	byte [g_trust_path+rcx],0
-	push	r10
-	lea	rdi,[g_trust_path]
-	lea	rsi,[g_ar_text]
-	call	read_file
-	test	rax,rax
-	js	plan_kube_ca
-	mov	rsi,rax
-	mov	edx,edx
-	lea	rdi,[g_trust_der]
-	call	pem_first_cert
-	test	eax,eax
-	jz	plan_kube_ca
-	mov	r10,[rsp]
-	lea	rsi,[g_trust_der]
-	mov	edx,eax
-	lea	rdi,[r10+KB_ANCHOR]
-	call	cert_pubkey
-	test	eax,eax
-	jz	plan_kube_ca
-	pop	r10
+	call	kube_api_options
 	jmp	.port
 ; rcx/edx = a DNS label: 1 to 63 of a-z, 0-9 and -, no - at an end
 .dns_label:
@@ -4292,6 +4128,182 @@ compile_discover:
 	pop	r13
 	pop	r12
 	pop	rbx
+	ret
+
+; r13 = a node, r10 = a KB block: api=, name=, token=, ca= into it (as a pod has
+; them when not said). Keeps r10, r13.
+kube_api_options:
+	; api=HOST:PORT, else the pod's KUBERNETES_SERVICE_HOST and _PORT
+	mov	rdi,r13
+	lea	rsi,[str_key_api]
+	push	r10
+	call	node_option
+	pop	r10
+	test	rax,rax
+	jz	.api_env
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	jmp	.api_parse
+.api_env:
+	push	r10
+	lea	rdi,[str_env_kube_host]
+	mov	esi,str_env_kube_host.len
+	call	getenv
+	pop	r10
+	test	rax,rax
+	jz	plan_no_kube_api
+	lea	rdi,[g_trust_path]		; (a scratch: "[host]:port")
+	mov	rsi,rax
+	xor	r8d,r8d				; a colon: IPv6
+	xor	ecx,ecx
+@@:
+	mov	dl,[rsi+rcx]
+	test	dl,dl
+	jz	@f
+	cmp	dl,':'
+	sete	r9b
+	or	r8b,r9b
+	inc	ecx
+	cmp	ecx,64
+	ja	plan_no_kube_api
+	jmp	@b
+@@:
+	test	r8b,r8b
+	jz	@f
+	mov	byte [rdi],'['
+	inc	rdi
+@@:
+	rep	movsb
+	test	r8b,r8b
+	jz	@f
+	mov	byte [rdi],']'
+	inc	rdi
+@@:
+	mov	byte [rdi],':'
+	inc	rdi
+	push	rdi
+	push	r10
+	lea	rdi,[str_env_kube_port]
+	mov	esi,str_env_kube_port.len
+	call	getenv
+	pop	r10
+	pop	rdi
+	lea	rsi,[str_kube_443]
+	test	rax,rax
+	cmovnz	rsi,rax
+@@:
+	mov	dl,[rsi]
+	test	dl,dl
+	jz	@f
+	mov	[rdi],dl
+	inc	rsi
+	inc	rdi
+	jmp	@b
+@@:
+	lea	rsi,[g_trust_path]
+	sub	rdi,rsi
+	mov	esi,edi
+	lea	rdi,[g_trust_path]
+.api_parse:
+	push	r10
+	lea	rdx,[g_cmp_addr]
+	xor	ecx,ecx
+	call	parse_address
+	pop	r10
+	jc	plan_bad_kube
+	mov	eax,[g_cmp_addr+AD_KIND]
+	cmp	eax,ADDR_V4
+	je	@f
+	cmp	eax,ADDR_V6
+	jne	plan_bad_kube
+@@:
+	push	r10
+	lea	rdi,[r10+KB_SA]
+	lea	rsi,[g_cmp_addr]
+	call	sockaddr_build
+	pop	r10
+	mov	[r10+KB_SALEN],eax
+	; the name its certificate must have
+	lea	rcx,[str_kb_sni]
+	mov	[r10+KB_SNI],rcx
+	mov	dword [r10+KB_SNILEN],str_kb_sni.len
+	mov	rdi,r13
+	lea	rsi,[str_key_name]
+	push	r10
+	call	node_option
+	pop	r10
+	test	rax,rax
+	jz	@f
+	mov	rcx,[rax+A_VAL]
+	mov	edx,[rax+A_VLEN]
+	call	compile_discover.printable
+	mov	[r10+KB_SNI],rcx
+	mov	[r10+KB_SNILEN],edx
+@@:
+	; the token's path
+	lea	rcx,[str_kb_token]
+	mov	[r10+KB_TOKEN],rcx
+	mov	dword [r10+KB_TOKLEN],str_kb_token.len
+	mov	rdi,r13
+	lea	rsi,[str_key_token]
+	push	r10
+	call	node_option
+	pop	r10
+	test	rax,rax
+	jz	@f
+	mov	rcx,[rax+A_VAL]
+	mov	edx,[rax+A_VLEN]
+	cmp	byte [rcx],'/'
+	jne	plan_bad_kube
+	cmp	edx,4096
+	jae	plan_bad_kube
+	mov	[r10+KB_TOKEN],rcx
+	mov	[r10+KB_TOKLEN],edx
+@@:
+	; the CA, read now: its key is the anchor
+	lea	rsi,[str_kb_ca]
+	mov	ecx,str_kb_ca.len
+	mov	rdi,r13
+	push	rsi
+	push	rcx
+	push	r10
+	lea	rsi,[str_key_ca]
+	call	node_option
+	pop	r10
+	pop	rcx
+	pop	rsi
+	test	rax,rax
+	jz	@f
+	mov	rsi,[rax+A_VAL]
+	mov	ecx,[rax+A_VLEN]
+	cmp	ecx,4096
+	jae	plan_bad_kube
+@@:
+	lea	rdi,[g_trust_path]
+	push	rcx
+	rep	movsb
+	pop	rcx
+	mov	byte [g_trust_path+rcx],0
+	push	r10
+	lea	rdi,[g_trust_path]
+	lea	rsi,[g_ar_text]
+	call	read_file
+	test	rax,rax
+	js	plan_kube_ca
+	mov	rsi,rax
+	mov	edx,edx
+	lea	rdi,[g_trust_der]
+	call	pem_first_cert
+	test	eax,eax
+	jz	plan_kube_ca
+	mov	r10,[rsp]
+	lea	rsi,[g_trust_der]
+	mov	edx,eax
+	lea	rdi,[r10+KB_ANCHOR]
+	call	cert_pubkey
+	test	eax,eax
+	jz	plan_kube_ca
+	pop	r10
 	ret
 
 plan_bad_consul:

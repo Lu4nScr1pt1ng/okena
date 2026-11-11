@@ -218,6 +218,8 @@ SUITES = [
     ("brotli epoll", ["tests/gateway/brotli.py", "epoll"]),
     ("consul io_uring", ["tests/gateway/consul.py", "io_uring"]),
     ("consul epoll", ["tests/gateway/consul.py", "epoll"]),
+    ("gwapi io_uring", ["tests/gateway/gwapi.py", "io_uring"]),
+    ("gwapi epoll", ["tests/gateway/gwapi.py", "epoll"]),
     ("forward io_uring", ["tests/gateway/forward.py", "io_uring"]),
     ("forward epoll", ["tests/gateway/forward.py", "epoll"]),
     ("mtls io_uring", ["tests/gateway/mtls.py", "io_uring"]),

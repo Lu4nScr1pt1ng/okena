@@ -195,6 +195,7 @@ supervisor_main:
 	call	spawn_vrrp
 	call	spawn_acme
 	call	spawn_ocsp
+	call	spawn_gateway
 	call	upgrade_ready
 	call	api_ready
 
@@ -247,6 +248,9 @@ supervisor_main:
 	test	eax,eax
 	jnz	.reload
 	call	local_tick			; the local CA's: renewed
+	test	eax,eax
+	jnz	.reload
+	call	gw_tick				; the cluster's Gateways: written anew
 	test	eax,eax
 	jnz	.reload
 	call	cert_tick			; certificates near their end: said
@@ -949,6 +953,21 @@ reap_workers:
 	call	spawn_ocsp
 	jmp	.next
 .not_ocsp:
+	cmp	r12d,[g_gw_pid]
+	jne	.not_gateway
+	mov	dword [g_gw_pid],0
+	cmp	dword [g_shutdown],0
+	jne	.next
+	call	log_begin
+	out_lit 'gateway process exited, restarting it'
+	call	log_end
+	lea	rdi,[ts_respawn_delay]
+	xor	esi,esi
+	mov	eax,SYS_nanosleep
+	syscall
+	call	spawn_gateway
+	jmp	.next
+.not_gateway:
 	cmp	r12d,[g_health_pid]
 	jne	.not_health
 	mov	dword [g_health_pid],0

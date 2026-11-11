@@ -148,6 +148,8 @@ keysdef k_maint, 'file', T_ANY, 'retry', T_DURATION, 'allow', T_ANY, 'except', T
 keysdef k_metrics, 'token', T_ANY
 keysdef k_cdnloop, 'max', T_ANY
 keysdef k_bird, 'protocol', T_ANY, 'pool', T_ANY
+keysdef k_gateway, 'class', T_ANY, 'dir', T_ANY, 'api', T_ANY, 'token', T_ANY, 'ca', T_ANY, 'name', T_ANY
+enumdef e_gateway, 'kubernetes'
 keysdef k_acme, 'ca', T_ANY, 'email', T_ANY, 'trust', T_ANY, 'challenge', T_ANY, 'dns', T_ANY, 'dns_token', T_ANY, 'dns_api', T_ANY, 'dns_wait', T_DURATION, 'dns_trust', T_ANY, 'dns_server', T_ANY, 'dns_key', T_ANY, 'fallback', T_ANY, 'fallback_trust', T_ANY, 'eab', T_ANY, 'fallback_eab', T_ANY, 'shared', T_ANY, 'staging', T_ANY
 keysdef k_vrrp, 'vrid', T_ANY, 'priority', T_ANY, 'address', T_ANY, 'advert', T_DURATION, 'preempt', T_ANY, 'track', T_ANY
 keysdef k_cdisk, 'size', T_SIZE
@@ -193,7 +195,7 @@ enumdef ctx_names, 'the top level', '`okena`', '`tcp`', '`pool`', '`limits`', '`
 
 ; Directives of the language that this version does not implement yet.
 enumdef future_names, 'xdp', \
-	'addon', 'include', 'log', 'reload', 'profile', \
+	'addon', 'log', 'reload', 'profile', \
 	'acme', 'header', \
 	'source', \
 	'concurrency', 'retry_budget', 'retry', 'outlier', \
@@ -219,6 +221,7 @@ dirdef DIR_CDNLOOP, 'cdn_loop',  M_OKENA,   0,           F_UNIQUE, 1, 1, T_ANY, 
 dirdef DIR_BIRD, 'bird',        M_OKENA,   0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, k_bird
 dirdef DIR_ACME, 'acme',        M_OKENA,   0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, k_acme
 dirdef DIR_LOCALCA, 'local_ca', M_OKENA,  0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
+dirdef DIR_GATEWAY, 'gateway',   M_OKENA,   0,           F_UNIQUE, 1, 1, e_gateway, T_NONE, k_gateway
 dirdef DIR_WATCHDOG, 'watchdog',    M_OKENA,   0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
 dirdef DIR_METRICS, 'metrics',     M_OKENA,   0,           F_UNIQUE, 1, 1, T_LISTEN, T_NONE, k_metrics
 dirdef DIR_BUSY_POLL, 'busy_poll',   M_OKENA,   0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0

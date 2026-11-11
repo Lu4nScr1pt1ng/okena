@@ -47,6 +47,7 @@ macro plan_regions action
 	action g_plan_dk, DK_SIZE * DISC_SOURCES
 	action g_plan_kb, KB_SIZE * DISC_SOURCES
 	action g_plan_cs, CS_SIZE * DISC_SOURCES
+	action g_plan_gw, GWP_SIZE
 	action g_plan_al_n, 4
 	action g_plan_al_on, 4
 	action g_plan_al_every, 4
@@ -422,6 +423,7 @@ supervisor_reload:
 	call	keeper_reload			; the store may have changed
 	call	vrrp_reload			; (kept when it is as it was: its state too)
 	call	acme_reload
+	call	gateway_reload
 	call	ocsp_reload
 	mov	edi,SG_RELOADS
 	call	stats_global_inc

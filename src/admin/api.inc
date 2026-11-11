@@ -70,6 +70,7 @@ end rodata
 ; before any fork, and for each generation
 api_table_init:
 	call	acme_page_init			; (acme.inc: shared before any fork)
+	call	gw_page_init			; (gateway.inc: the same)
 	call	ocsp_page_init			; (ocsp.inc: the staples)
 	cmp	qword [g_api_ov],0
 	jne	.list_there

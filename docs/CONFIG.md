@@ -1682,6 +1682,64 @@ refuses (a 403 is said as the token's) changes nothing, and is said once; an
 empty list is believed. `discover srv NAME.service.consul` gives the same from
 Consul's DNS, without weights.
 
+## The Kubernetes Gateway API
+
+```
+okena {
+    gateway kubernetes dir=/var/lib/okena/gateway     # class=okena unless said
+}
+http :8081 { route /healthz { respond 404 } }          # (what is not the cluster's)
+include "/var/lib/okena/gateway/*.conf"
+```
+
+`gateway kubernetes dir=DIR [class=NAME] [api=HOST:PORT] [token=PATH] [ca=PATH]
+[name=HOST]` makes okena the implementation of the Gateway API for the Gateways
+whose `gatewayClassName` is NAME (okena). A process of its own reads the
+Gateways and the HTTPRoutes once a second from the API server, over the same
+verified TLS and with the same credentials as `discover kubernetes` (inside a
+pod the defaults are all it needs), and writes them as okena's configuration in
+DIR/gateway.conf. When that changes, okena reloads: what it serves is always a
+configuration `okena check` passes, and one that does not pass is refused
+whole, the running one kept. The main file takes it in with `include`. The
+service account needs `list` on gateways and httproutes, `get` on services and
+secrets, and what `discover kubernetes` needs.
+
+What it reads, and becomes:
+
+* A listener (HTTP or HTTPS, its port, maybe its hostname) is an `http :PORT`
+  block. An HTTPS listener's certificateRefs, Secrets of its namespace, are
+  written to DIR/certs (0600) and are the block's `tls` certificates; a
+  certificate renewed is served within two seconds. `allowedRoutes` from
+  `Same` (the default) or `All`.
+* An HTTPRoute attaches to the listeners its parentRefs name (a sectionName or a
+  port narrows it), for the hostnames both allow, each one a `host` block. The
+  routes of no hostname, and of a wildcard that covers a host, are under each
+  host too, after its own.
+* A match's path: Exact is that route; PathPrefix /p is the routes /p and /p/*.
+  Its headers, method and queryParams are a `match` block. In a route the more
+  precise come first, as the Gateway API orders them; one that cannot be chosen
+  is left out, and a path with nothing for the rest answers 404.
+* Filters: RequestHeaderModifier and ResponseHeaderModifier (`header`, `response
+  header`; a header okena writes itself, Host among them, is left alone),
+  RequestRedirect (`redirect`, to the request's host when it names none),
+  URLRewrite's path (`rewrite path`), RequestMirror (`mirror`). Any other filter
+  makes the rule answer 500.
+* backendRefs, Services of the route's own namespace, are pools that follow their
+  EndpointSlices, the Service's port found by its name; several, by weight
+  (`split`). None to be had, a Service or a port that is not there: 500.
+
+Not there yet: regular expressions in paths and query parameters, URLRewrite's
+hostname, a backendRef's own filters, ReferenceGrants (so nothing across
+namespaces), GRPCRoute, TLSRoute, and status: okena writes no conditions back,
+so `kubectl get gateway` does not say it is programmed.
+
+Everything a route's author writes reaches the file only as what it is: names
+and paths are checked for what they may be made of, values are quoted and
+escaped, a value with `${` in it is left out (it could otherwise read okena's
+environment or files), and what cannot be told is left out, not guessed. The API
+server not answering, refusing or answering what cannot be read changes nothing,
+and is said once.
+
 The admin API changes the running state without editing files, given
 `admin unix:PATH` in the `okena` block:
 

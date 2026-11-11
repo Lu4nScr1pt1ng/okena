@@ -164,6 +164,7 @@ rodata
 	sc_allow filter_supervisor, SYS_close
 	sc_allow filter_supervisor, SYS_fstat
 	sc_check filter_supervisor, SYS_openat, append_only	; config; access logs (logger)
+	sc_allow filter_supervisor, 217			; getdents64: `include "DIR/*.conf"`
 	sc_check filter_supervisor, SYS_mmap, no_exec
 	sc_allow filter_supervisor, SYS_madvise
 	sc_allow filter_supervisor, SYS_fork
@@ -449,6 +450,7 @@ rodata
 	sc_check filter_compiler, SYS_mmap, no_exec
 	sc_allow filter_compiler, SYS_madvise
 	sc_check filter_compiler, SYS_openat, read_only	; certificates and keys
+	sc_allow filter_compiler, 217			; getdents64: `include "DIR/*.conf"`
 	sc_allow filter_compiler, SYS_read
 	sc_allow filter_compiler, SYS_fstat
 	sc_allow filter_compiler, SYS_close
@@ -473,6 +475,24 @@ rodata
 	sc_allow filter_ocsp, SYS_clock_gettime
 	sc_allow filter_ocsp, SYS_futex		; the acme process woken (revoked)
 	sc_end filter_ocsp
+
+	; gateway: the API server asked over HTTPS, its directory written
+	sc_begin filter_gateway
+	sc_common filter_gateway
+	sc_check filter_gateway, SYS_openat, append_only
+	sc_allow filter_gateway, SYS_read
+	sc_allow filter_gateway, SYS_close
+	sc_allow filter_gateway, SYS_fstat
+	sc_check filter_gateway, SYS_socket, socket
+	sc_allow filter_gateway, SYS_connect
+	sc_allow filter_gateway, SYS_setsockopt
+	sc_allow filter_gateway, SYS_getrandom
+	sc_allow filter_gateway, SYS_nanosleep
+	sc_allow filter_gateway, SYS_clock_gettime
+	sc_allow filter_gateway, SYS_ftruncate
+	sc_allow filter_gateway, SYS_fdatasync
+	sc_allow filter_gateway, SYS_rename_
+	sc_end filter_gateway
 
 	; acme: the CA asked over HTTPS, its directory written
 	sc_begin filter_acme

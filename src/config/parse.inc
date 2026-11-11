@@ -85,7 +85,20 @@ bss
 	g_ar_nodes:	rq 3
 	g_ar_args:	rq 3
 	g_ar_text:	rq 3
+	; the files read (the first, then those included): for messages
+	g_cfg_nfiles	dd ?
+	g_inc_depth	dd ?
+	g_cfg_files	rq CFG_FILES * 3	; source, end, name
+	g_diag_src	dq ?			; the one a message is about
+	g_diag_end	dq ?
+	g_inc_dir	rb 4096
+	g_inc_pat	rb 256
+	g_inc_dents	rb 8192
 end bss
+
+CFG_FILES	:= 256
+CFG_INC_DEPTH	:= 8
+SYS_getdents64_	:= 217
 
 ; ---------------------------------------------------------------- errors
 
@@ -122,7 +135,8 @@ cfg_diag_head:
 	mov	[g_err_len],eax
 	mov	eax,[rsp+8]
 	mov	[g_err_line],eax
-	mov	rsi,[g_cfg_name]
+	mov	rdi,[g_err_ptr]
+	call	cfg_diag_buf			; rsi = its file's name
 	call	out_cstr
 	out_lit ':'
 	mov	eax,[g_err_line]
@@ -132,6 +146,35 @@ cfg_diag_head:
 	call	cfg_column
 	call	out_u64
 	out_lit ': '
+	ret
+
+; rdi = a pointer into a source: g_diag_src/end, the file it is in (the one
+; being read when it is in none: a value unescaped elsewhere), rsi = its name
+cfg_diag_buf:
+	mov	rax,[g_cfg_src]
+	mov	[g_diag_src],rax
+	mov	rax,[g_cfg_end]
+	mov	[g_diag_end],rax
+	mov	rsi,[g_cfg_name]
+	xor	ecx,ecx
+.file:
+	cmp	ecx,[g_cfg_nfiles]
+	jae	.out
+	imul	eax,ecx,24
+	cmp	rdi,[g_cfg_files+rax]
+	jb	.next
+	cmp	rdi,[g_cfg_files+rax+8]
+	ja	.next
+	mov	rdx,[g_cfg_files+rax]
+	mov	[g_diag_src],rdx
+	mov	rdx,[g_cfg_files+rax+8]
+	mov	[g_diag_end],rdx
+	mov	rsi,[g_cfg_files+rax+16]
+	ret
+.next:
+	inc	ecx
+	jmp	.file
+.out:
 	ret
 
 ; rdi = pointer into the source. rax = 1-based column (characters).
@@ -155,7 +198,7 @@ cfg_column:
 ; rdi = pointer into the source. rax = start of its line. Keeps rdi.
 cfg_line_start:
 	mov	rax,rdi
-	mov	rdx,[g_cfg_src]
+	mov	rdx,[g_diag_src]
 .back:
 	cmp	rax,rdx
 	jbe	.done
@@ -182,7 +225,7 @@ cfg_diag_end:
 	call	cfg_gutter_number
 	; the line itself, up to 200 bytes
 	mov	r12,rbx
-	mov	rdx,[g_cfg_end]
+	mov	rdx,[g_diag_end]
 .measure:
 	cmp	r12,rdx
 	jae	.measured
@@ -336,6 +379,13 @@ cfg_begin:
 	mov	dword [g_chk_listeners],0
 	mov	dword [g_chk_pools],0
 	mov	dword [g_chk_servers],0
+	mov	[g_cfg_files],rdi		; the first file
+	mov	[g_cfg_files+8],rsi
+	mov	[g_cfg_files+16],rdx
+	mov	[g_diag_src],rdi
+	mov	[g_diag_end],rsi
+	mov	dword [g_cfg_nfiles],1
+	mov	dword [g_inc_depth],0
 	cmp	qword [g_ar_nodes+AR_BASE],0
 	jne	.ready
 	lea	rdi,[g_ar_nodes]
@@ -847,6 +897,21 @@ parse_block:
 	call	lex_push_back			; let outer levels see the end too
 	jmp	.done
 .directive:
+	test	r12d,r12d			; `include` at the top: the files' directives here
+	jnz	.not_include
+	cmp	dword [g_tok_len],7
+	jne	.not_include
+	mov	rax,[g_tok_ptr]
+	cmp	dword [rax],'incl'
+	jne	.not_include
+	cmp	dword [rax+3],'lude'
+	jne	.not_include
+	mov	rdi,rbx
+	mov	rsi,r13
+	call	parse_include			; rax = the last child now
+	mov	r13,rax
+	jmp	.next
+.not_include:
 	lea	rdi,[g_ar_nodes]
 	mov	esi,N_SIZE
 	call	arena_alloc
@@ -990,6 +1055,437 @@ parse_block:
 	pop	r13
 	pop	r12
 	pop	rbx
+	ret
+
+; `include "PATH"` (the name read): rdi = the parent (the top), rsi = its last
+; child. The files PATH names (a * or ? in its last part: those that match, in
+; sorted order, none being fine; else the one, which must be there), relative
+; to the file that includes them, parsed as if written here. rax = the last
+; child after them.
+parse_include:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	mov	rbx,rdi
+	mov	r12,rsi
+	mov	r14,[g_tok_raw]			; (for messages: the directive)
+	mov	r15d,[g_tok_line]
+	call	lex_next
+	mov	eax,[g_tok_kind]
+	cmp	eax,TK_STRING
+	je	@f
+	cmp	eax,TK_WORD
+	jne	.shape
+@@:
+	mov	ecx,[g_tok_len]
+	test	ecx,ecx
+	jz	.shape
+	cmp	ecx,3000
+	ja	.shape
+	; the path: from the including file's directory when not from /
+	lea	rdi,[g_inc_dir]
+	mov	rsi,[g_tok_ptr]
+	cmp	byte [rsi],'/'
+	je	.absolute
+	cmp	dword [g_cfg_inline],0
+	jne	.absolute
+	mov	rsi,[g_cfg_name]
+	xor	edx,edx				; after the last /
+	xor	eax,eax
+@@:
+	cmp	byte [rsi+rax],0
+	je	@f
+	inc	eax
+	cmp	byte [rsi+rax-1],'/'
+	jne	@b
+	mov	edx,eax
+	cmp	eax,1000
+	jb	@b
+@@:
+	mov	ecx,edx
+	rep	movsb
+.absolute:
+	mov	rsi,[g_tok_ptr]
+	mov	ecx,[g_tok_len]
+	rep	movsb
+	mov	byte [rdi],0
+	push	rdi
+	call	lex_next			; the end of the line
+	pop	rdi
+	mov	eax,[g_tok_kind]
+	cmp	eax,TK_EOL
+	je	@f
+	cmp	eax,TK_EOF
+	jne	.shape
+	call	lex_push_back
+@@:
+	cmp	dword [g_inc_depth],CFG_INC_DEPTH
+	jae	.deep
+	; its last part: a pattern?
+	lea	r13,[g_inc_dir]
+	mov	rsi,rdi
+@@:
+	dec	rsi
+	cmp	byte [rsi],'/'
+	jne	@b
+	lea	r13,[rsi+1]			; (the last part)
+	xor	eax,eax
+	mov	rdx,r13
+@@:
+	mov	cl,[rdx]
+	test	cl,cl
+	jz	@f
+	cmp	cl,'*'
+	je	.pattern
+	cmp	cl,'?'
+	je	.pattern
+	inc	rdx
+	jmp	@b
+@@:
+	lea	rdi,[g_inc_dir]			; one file
+	call	parse_include_file
+	jmp	.out
+.pattern:
+	; the pattern apart, the directory alone
+	lea	rdi,[g_inc_pat]
+	mov	rsi,r13
+@@:
+	lodsb
+	stosb
+	test	al,al
+	jz	@f
+	cmp	rdi,g_inc_pat + 250
+	jb	@b
+	jmp	.shape
+@@:
+	mov	byte [r13],0			; g_inc_dir: "DIR/"
+	call	parse_include_glob
+	jmp	.out
+.deep:
+	mov	rdi,r14
+	mov	esi,7
+	mov	edx,r15d
+	call	cfg_error
+	out_lit 'files include each other too deeply (the limit is 8)'
+	call	cfg_diag_end
+	call	cfg_error_limit
+	jmp	.out
+.shape:
+	mov	rdi,r14
+	mov	esi,7
+	mov	edx,r15d
+	call	cfg_error
+	out_lit '`include` takes a path, alone on its line'
+	call	cfg_diag_end
+	call	cfg_note
+	out_lit 'help: `include "conf.d/*.conf"`'
+	call	cfg_note_end
+	call	cfg_error_limit
+	call	parse_skip_line
+.out:
+	mov	rax,r12
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+; (rbx = parent, r12 = last child, r14/r15d = the directive: kept by both below)
+
+; g_inc_dir = "DIR/", g_inc_pat = a pattern: the files that match, sorted
+parse_include_glob:
+	mov	edi,AT_FDCWD
+	lea	rsi,[g_inc_dir]
+	mov	edx,O_RDONLY or O_DIRECTORY_ or O_CLOEXEC
+	xor	r10d,r10d
+	mov	eax,SYS_openat
+	syscall
+	test	eax,eax
+	js	.none				; (no directory: no files)
+	push	rax
+	; the names that match, kept in the text arena, then sorted
+	sub	rsp,8 * 256 + 8
+	mov	qword [rsp],0			; how many
+.read:
+	mov	edi,[rsp + 8 * 256 + 8]
+	lea	rsi,[g_inc_dents]
+	mov	edx,8192
+	mov	eax,SYS_getdents64_
+	syscall
+	test	rax,rax
+	jle	.listed
+	lea	r8,[g_inc_dents]
+	lea	r9,[r8+rax]
+.dent:
+	cmp	r8,r9
+	jae	.read
+	movzx	eax,word [r8+16]		; d_reclen
+	lea	r10,[r8+19]			; d_name
+	add	r8,rax
+	cmp	byte [r10],'.'
+	jne	@f
+	cmp	byte [g_inc_pat],'.'
+	jne	.dent				; (hidden: only when asked for)
+@@:
+	mov	rdi,r10
+	lea	rsi,[g_inc_pat]
+	call	glob_match
+	jne	.dent
+	mov	rcx,[rsp]
+	cmp	ecx,256
+	jae	.dent
+	; kept
+	xor	ecx,ecx
+@@:
+	cmp	byte [r10+rcx],0
+	je	@f
+	inc	ecx
+	jmp	@b
+@@:
+	push	r8
+	push	r9
+	push	r10
+	push	rcx
+	lea	rdi,[g_ar_text]
+	lea	rsi,[rcx+1]
+	call	arena_alloc
+	pop	rcx
+	pop	rsi
+	mov	rdi,rax
+	inc	ecx
+	rep	movsb
+	pop	r9
+	pop	r8
+	mov	rcx,[rsp]
+	mov	[rsp+8+rcx*8],rax
+	inc	qword [rsp]
+	jmp	.dent
+.listed:
+	mov	edi,[rsp + 8 * 256 + 8]
+	mov	eax,SYS_close
+	syscall
+	; sorted (insertion: a directory's few files)
+	mov	r8d,1
+.sort:
+	cmp	r8,[rsp]
+	jae	.sorted
+	mov	r9,[rsp+8+r8*8]
+	mov	r10,r8
+.sift:
+	test	r10,r10
+	jz	.place
+	mov	rsi,[rsp+8+r10*8-8]
+	mov	rdi,r9
+	call	str_before			; CF: rdi before rsi
+	jnc	.place
+	mov	rax,[rsp+8+r10*8-8]
+	mov	[rsp+8+r10*8],rax
+	dec	r10
+	jmp	.sift
+.place:
+	mov	[rsp+8+r10*8],r9
+	inc	r8
+	jmp	.sort
+.sorted:
+	; each, as DIR/NAME
+	xor	r8d,r8d
+.each:
+	cmp	r8,[rsp]
+	jae	.done
+	push	r8
+	lea	rdi,[g_inc_dir]
+	xor	eax,eax
+@@:
+	cmp	byte [rdi],0
+	je	@f
+	inc	rdi
+	jmp	@b
+@@:
+	push	rdi				; (where DIR/ ends)
+	mov	rsi,[rsp+16+8+r8*8]
+@@:
+	lodsb
+	stosb
+	test	al,al
+	jnz	@b
+	lea	rdi,[g_inc_dir]
+	call	parse_include_file
+	pop	rdi
+	mov	byte [rdi],0			; back to DIR/
+	pop	r8
+	inc	r8
+	jmp	.each
+.done:
+	add	rsp,8 * 256 + 8 + 8
+.none:
+	ret
+
+; rdi = a NUL-ended path: its directives parsed after r12 under rbx (r12 the
+; last after them)
+parse_include_file:
+	push	r13
+	; its name, kept for messages
+	mov	r13,rdi
+	xor	ecx,ecx
+@@:
+	cmp	byte [r13+rcx],0
+	je	@f
+	inc	ecx
+	jmp	@b
+@@:
+	push	rcx
+	lea	rdi,[g_ar_text]
+	lea	rsi,[rcx+1]
+	call	arena_alloc
+	pop	rcx
+	inc	ecx
+	mov	rdi,rax
+	mov	rsi,r13
+	rep	movsb
+	mov	r13,rax
+	mov	rdi,r13
+	lea	rsi,[g_ar_text]
+	call	read_file
+	test	rax,rax
+	js	.unreadable
+	cmp	dword [g_cfg_nfiles],CFG_FILES
+	jae	.many
+	; the lexer on it, then back
+	push	qword [g_cfg_src]
+	push	qword [g_cfg_end]
+	push	qword [g_cfg_name]
+	push	qword [g_lex_pos]
+	push	qword [g_lex_line]
+	mov	[g_cfg_src],rax
+	mov	[g_lex_pos],rax
+	add	rdx,rax
+	mov	[g_cfg_end],rdx
+	mov	[g_cfg_name],r13
+	mov	dword [g_lex_line],1
+	mov	ecx,[g_cfg_nfiles]
+	imul	ecx,ecx,24
+	mov	[g_cfg_files+rcx],rax
+	mov	[g_cfg_files+rcx+8],rdx
+	mov	[g_cfg_files+rcx+16],r13
+	inc	dword [g_cfg_nfiles]
+	; into a node of its own, its children then moved here
+	lea	rdi,[g_ar_nodes]
+	mov	esi,N_SIZE
+	call	arena_alloc
+	push	rax
+	mov	rdi,rax
+	xor	esi,esi
+	inc	dword [g_inc_depth]
+	call	parse_block
+	dec	dword [g_inc_depth]
+	pop	rax
+	mov	dword [g_lex_pushed],0
+	pop	qword [g_lex_line]
+	pop	qword [g_lex_pos]
+	pop	qword [g_cfg_name]
+	pop	qword [g_cfg_end]
+	pop	qword [g_cfg_src]
+	mov	rcx,[rax+N_CHILD]
+.move:
+	test	rcx,rcx
+	jz	.out
+	mov	[rcx+N_PARENT],rbx
+	test	r12,r12
+	jz	.first
+	mov	[r12+N_NEXT],rcx
+	jmp	.linked
+.first:
+	mov	[rbx+N_CHILD],rcx
+.linked:
+	mov	r12,rcx
+	mov	rcx,[rcx+N_NEXT]
+	mov	qword [r12+N_NEXT],0
+	test	rcx,rcx
+	jz	.out
+	jmp	.move
+.many:
+.unreadable:
+	mov	rdi,r14
+	mov	esi,7
+	mov	edx,r15d
+	call	cfg_error
+	out_lit 'cannot read '
+	mov	rsi,r13
+	call	out_cstr
+	call	cfg_diag_end
+	call	cfg_error_limit
+.out:
+	pop	r13
+	ret
+
+; rdi = a name, rsi = a pattern (* any run, ? one byte), both NUL-ended: ZF when
+; it matches. Keeps r8-r15.
+glob_match:
+	xor	edx,edx				; after the last *: where in the pattern
+	xor	ecx,ecx				; and in the name
+.next:
+	mov	al,[rsi]
+	cmp	al,'*'
+	je	.star
+	mov	ah,[rdi]
+	test	ah,ah
+	jz	.name_end
+	cmp	al,'?'
+	je	.one
+	cmp	al,ah
+	jne	.back
+.one:
+	inc	rsi
+	inc	rdi
+	jmp	.next
+.star:
+	inc	rsi
+	mov	rdx,rsi
+	mov	rcx,rdi
+	jmp	.next
+.back:
+	test	rdx,rdx
+	jz	.no
+	mov	rsi,rdx
+	inc	rcx
+	mov	rdi,rcx
+	cmp	byte [rdi-1],0
+	je	.no
+	jmp	.next
+.name_end:
+	; the rest of the pattern only *
+@@:
+	cmp	byte [rsi],'*'
+	jne	@f
+	inc	rsi
+	jmp	@b
+@@:
+	cmp	byte [rsi],0
+	jne	.no
+	cmp	eax,eax				; ZF
+	ret
+.no:
+	or	eax,1				; NZ
+	ret
+
+; rdi, rsi = NUL-ended: CF when rdi sorts before rsi (by byte)
+str_before:
+.c:
+	mov	al,[rdi]
+	mov	ah,[rsi]
+	cmp	al,ah
+	jne	.differ
+	test	al,al
+	jz	.equal
+	inc	rdi
+	inc	rsi
+	jmp	.c
+.differ:
+	ret					; (CF from the compare)
+.equal:
+	clc
 	ret
 
 ; Skip to the end of the current line (after an error).

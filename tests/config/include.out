@@ -1,0 +1,10 @@
+exit: 2
+--- stdout
+--- stderr
+include.d/20-http.conf:3:17: error: there is no pool named `nosuch`
+     3 |         to pool nosuch
+       |                 ^^^^^^
+include.d/10-pools.conf:2:6: warning: pool `app` is not used by any listener
+     2 | pool app { server 127.0.0.1:9000 }
+       |      ^^^
+1 error in include.conf
