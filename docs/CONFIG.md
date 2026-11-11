@@ -14,7 +14,7 @@ not built yet. A directive that is not built is refused by `okena check`
 | `udp ADDR...` | `to`, `responses N`, `limits { connections }` (flows), `timeout { idle }` |
 | `http ADDR...` | `host`, `route`, `mss`, `canonical NAME`, `header`, `response header` (for every route below), `errors CODES file= [backend]`, `maintenance file= retry= allow= except=`, `limits`, `timeout { idle; header; body_idle; response }`, `trusted_proxies`, `access_log`, `tracing`, `http2 on\|off`, `http3 on\|off\|retry\|v2`, `preferred_address`, `early_data on\|off`, `tls { cert; key; ktls on\|off; versions 1.2 1.3; alpn h2 http/1.1 }` |
 | `route PATH... [METHOD...]` | `to`, `redirect`, `respond CODE [BODY] [type=]`, `rewrite path`, `signed_urls key= [key2=]`, `header set\|add\|drop`, `response header set\|add\|drop`, `retry N [idempotent-only] [on=reset,timeout,5xx,500,502,503,504]`, `timeout try= total=` |
-| `pool NAME` | `server ADDR [weight=N] [max=N] [backup]`, `queue timeout=`, `balance least-request\|peak-ewma\|round-robin\|least-conn\|random\|maglev\|ring-hash\|source-hash [key=] [bound=]\|first`, `sticky cookie= [ttl=] [samesite=]`, `connect timeout= max= idle= warm= rate=`, `health tcp\|http\|grpc ...`, `outlier errors= eject= max_ejected=`, `retry_budget P% [min=N/s]`, `source ADDR...`, `slow_start`, `tls { trust FILE; sni NAME; cert FILE; key FILE }` (TLS to the backends), `protocol h1\|h2\|fastcgi` |
+| `pool NAME` | `server ADDR [weight=N] [max=N] [backup]`, `queue timeout=`, `balance least-request\|peak-ewma\|round-robin\|least-conn\|random\|maglev\|ring-hash\|source-hash [key=] [bound=]\|first`, `sticky cookie= [ttl=] [samesite=]`, `connect timeout= max= idle= warm= rate=`, `health tcp\|http\|grpc ...`, `outlier errors= eject= max_ejected=`, `retry_budget P% [min=N/s]`, `concurrency N\|adaptive [min=] [max=]`, `source ADDR...`, `slow_start`, `tls { trust FILE; sni NAME; cert FILE; key FILE }` (TLS to the backends), `protocol h1\|h2\|fastcgi` |
 
 `okena { ech PUBLIC_NAME KEYFILE... }` turns on Encrypted Client Hello (the
 draft's version 0xfe0d) for every TLS listener: a client that has okena's
@@ -1560,6 +1560,19 @@ towards every server: for a busy proxy whose backends are few, where one
 address runs out of ports (EADDRNOTAVAIL, a failed connect). An address the
 host does not have fails each connect the same way. With io_uring it needs
 Linux 6.11 (IORING_OP_BIND); an older kernel connects from the kernel's choice.
+
+`concurrency 256` caps the requests at the pool's servers at once, the
+instance's (shared out among the workers); past it a request is answered 503
+at once instead of piling onto a backend that is already full, so a spike is
+shed at the edge and the backend keeps its latency. `concurrency adaptive
+[min=4] [max=1024]` finds the cap itself, as Netflix's concurrency-limits
+(Gradient2) and Envoy's adaptive concurrency do: each second, from the time to
+an answer's head, the limit becomes limit × (2 × usual time / time now, kept
+between 0.5 and 1) plus its square root, so it grows while answers stay quick
+and halves in a second when they slow; the usual time is a slow average (a
+sixteenth of each second's), so a loaded host's noise does not shrink it and a
+backend that became slower for good becomes its usual in time. It starts at
+32 (within min and max).
 
 `retry_budget 20% min=10/s` (the defaults) bounds the retries and hedges sent
 to a pool, in each worker: each request adds that share of a retry, and the

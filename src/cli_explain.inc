@@ -131,6 +131,21 @@ explain_print:
 	div	ecx
 	call	out_u64
 	out_lit '/s'
+	cmp	dword [r12+PL_CCMODE],CC_FIXED
+	jne	@f
+	out_lit 10,'    concurrency '
+	mov	eax,[r12+PL_CCN]
+	call	out_u64
+@@:
+	cmp	dword [r12+PL_CCMODE],CC_ADAPTIVE
+	jne	@f
+	out_lit 10,'    concurrency adaptive min='
+	mov	eax,[r12+PL_CCMIN]
+	call	out_u64
+	out_lit ' max='
+	mov	eax,[r12+PL_CCMAX]
+	call	out_u64
+@@:
 	cmp	dword [r12+PL_SLOW],0
 	je	@f
 	out_lit 10,'    slow_start '

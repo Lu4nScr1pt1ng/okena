@@ -220,7 +220,11 @@ PL_SRCMAX	:= 8
 PL_CIDLE	:= PL_SRC + PL_SRCMAX * PL_SRCSZ	; d: `idle=`: seconds one is kept
 PL_CWARM	:= PL_CIDLE + 4	; d: `warm=`: kept open ahead of need, per server (a worker's)
 PL_CRATE	:= PL_CWARM + 4	; d: `rate=`: new connections a second per server, 0 no limit
-PL_SIZE		:= PL_CWARM + 12		; room for PL_TLS_ANCHOR + a PK blob (16 + 528), then PL_H2
+PL_CCMODE	:= PL_CWARM + 8	; d: `concurrency`: CC_FIXED, CC_ADAPTIVE, 0 none
+PL_CCN		:= PL_CWARM + 12	; d: N (fixed), or where adaptive starts
+PL_CCMIN	:= PL_CWARM + 16	; d: adaptive: the instance's limit at least
+PL_CCMAX	:= PL_CWARM + 20	; d: and at most
+PL_SIZE		:= PL_CWARM + 28		; room for PL_TLS_ANCHOR + a PK blob (16 + 528), then PL_H2
 assert PL_TLS_ANCHOR + PK_SIZE <= PL_H2
 
 ; Server
@@ -2856,6 +2860,13 @@ plan_bad_respond:
 
 cstring str_key_type, 'type',0
 
+plan_bad_concurrency:
+	call	log_begin
+	out_lit 'concurrency takes a number of requests at the pool at once (1 to 10000000), or adaptive with min= and max= (min not past max)'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
+
 plan_bad_source:
 	call	log_begin
 	out_lit 'source takes up to 8 addresses of this host (10.0.0.2, 2001:db8::2), no port and no range: each connection to a server of the pool leaves from the next one of its family'
@@ -2919,6 +2930,9 @@ compile_pool:
 	lea	rcx,[dir_table + D_SIZE*DIR_SOURCE]
 	cmp	rax,rcx
 	je	.source
+	lea	rcx,[dir_table + D_SIZE*DIR_CONCURRENCY]
+	cmp	rax,rcx
+	je	.concurrency
 	lea	rcx,[dir_table + D_SIZE*DIR_RETRY_BUDGET]
 	cmp	rax,rcx
 	je	.rbudget
@@ -3078,6 +3092,63 @@ compile_pool:
 	mov	rdi,r13
 	mov	rsi,rbx
 	call	compile_discover
+	jmp	.advance
+.concurrency:
+	; `concurrency N` or `concurrency adaptive [min=] [max=]`
+	mov	dword [r13+PL_CCMIN],CC_MIN
+	mov	dword [r13+PL_CCMAX],CC_MAX
+	mov	rax,[rbx+N_ARGS]
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	cmp	esi,8
+	jne	.cc_fixed
+	mov	rax,'adaptive'
+	cmp	[rdi],rax
+	jne	.cc_fixed
+	mov	dword [r13+PL_CCMODE],CC_ADAPTIVE
+	mov	rdi,rbx
+	lea	rsi,[str_key_min]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_decimal
+	mov	[r13+PL_CCMIN],eax
+@@:
+	mov	rdi,rbx
+	lea	rsi,[str_key_max]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_decimal
+	mov	[r13+PL_CCMAX],eax
+@@:
+	mov	eax,[r13+PL_CCMIN]
+	cmp	eax,[r13+PL_CCMAX]
+	ja	plan_bad_concurrency
+	mov	eax,CC_INITIAL			; where it starts, within min .. max
+	cmp	eax,[r13+PL_CCMIN]
+	jae	@f
+	mov	eax,[r13+PL_CCMIN]
+@@:
+	cmp	eax,[r13+PL_CCMAX]
+	jbe	@f
+	mov	eax,[r13+PL_CCMAX]
+@@:
+	mov	[r13+PL_CCN],eax
+	jmp	.advance
+.cc_fixed:
+	call	parse_decimal
+	jc	plan_bad_concurrency
+	test	rax,rax
+	jz	plan_bad_concurrency
+	cmp	rax,10000000
+	ja	plan_bad_concurrency
+	mov	dword [r13+PL_CCMODE],CC_FIXED
+	mov	[r13+PL_CCN],eax
 	jmp	.advance
 .source:
 	; `source A B ...`: the addresses its connections leave from, in turn

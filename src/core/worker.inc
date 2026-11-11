@@ -377,6 +377,7 @@ tick_work:
 	call	od_tick				; handshakes waiting for an on-demand certificate
 	call	jwks_tick
 	call	retry_budget_tick
+	call	cc_tick				; `concurrency adaptive`
 	call	alog_tick
 	call	h2_drain_tick			; GOAWAY to HTTP/2 clients when draining
 	cmp	dword [g_draining],0

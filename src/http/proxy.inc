@@ -977,6 +977,13 @@ http_request:
 .pool_chosen:
 	test	dword [r15+H_FLAGS],HX_MIRROR	; hedge: a time for the second try
 	jnz	.not_hedged
+	mov	edi,r13d			; `concurrency`: room at the pool?
+	call	cc_admit
+	jc	@f
+	or	dword [r15+H_FLAGS],HX_CLOSE	; (its body, if any, is not read)
+	mov	edi,503
+	jmp	http_error
+@@:
 	mov	eax,[r15+H_ACT]
 	test	eax,eax
 	jz	.not_hedged
@@ -2648,7 +2655,10 @@ http_start_response:
 	mov	eax,[rax+S_POOL]
 	imul	rax,rax,PL_SIZE
 	cmp	dword [g_pools+rax+PL_BALANCE],BAL_PEAK_EWMA
+	je	.timed
+	cmp	dword [g_pools+rax+PL_CCMODE],CC_ADAPTIVE
 	jne	@f
+.timed:
 	rdtsc					; the backend's latency starts now
 	shl	rdx,32
 	or	rax,rdx
@@ -3316,6 +3326,11 @@ http_latency_sample:
 	xor	edx,edx
 	div	qword [g_tsc_per_us]
 	mov	rsi,rax
+	call	session_ptr
+	push	rsi
+	mov	edi,[rax+S_POOL]		; `concurrency adaptive`: the pool's time
+	call	cc_observe
+	pop	rsi
 	call	session_ptr
 	mov	edi,[rax+S_SERVER]
 	cmp	edi,NIL

@@ -53,6 +53,8 @@ SUITES = [
     ("hello epoll", ["tests/tls/hello.py", "epoll"]),
     ("quarantine io_uring", ["tests/gateway/quarantine.py", "io_uring"]),
     ("quarantine epoll", ["tests/gateway/quarantine.py", "epoll"]),
+    ("concurrency io_uring", ["tests/gateway/concurrency.py", "io_uring"]),
+    ("concurrency epoll", ["tests/gateway/concurrency.py", "epoll"]),
     ("rtimeout io_uring", ["tests/gateway/rtimeout.py", "io_uring"]),
     ("rtimeout epoll", ["tests/gateway/rtimeout.py", "epoll"]),
     ("connect io_uring", ["tests/gateway/connect.py", "io_uring"]),

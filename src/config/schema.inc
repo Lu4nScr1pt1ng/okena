@@ -181,6 +181,7 @@ keysdef k_retry, 'on', T_ANY
 keysdef k_rtimeout, 'total', T_DURATION, 'try', T_DURATION
 keysdef k_outlier, 'errors', T_UINT, 'eject', T_DURATION, 'max_ejected', T_PERCENT
 keysdef k_rbudget, 'min', T_RATE
+keysdef k_concurrency, 'min', T_COUNT, 'max', T_COUNT
 keysdef k_alert, 'trust', T_ANY
 keysdef k_telegram, 'token', T_ANY, 'chat', T_ANY, 'api', T_ANY, 'trust', T_ANY
 enumdef e_alert_on, 'backend', 'worker', 'reload', 'discovery', 'certificate'
@@ -206,7 +207,6 @@ enumdef ctx_names, 'the top level', '`okena`', '`tcp`', '`pool`', '`limits`', '`
 enumdef future_names, 'xdp', \
 	'addon', 'log', 'profile', \
 	'acme', \
-	'concurrency', \
 	'body', \
 	'cert', 'warm'
 
@@ -332,6 +332,7 @@ dirdef DIR_DISCOVER, 'discover', M_POOL,    0,           0, 1, 2, e_discover, T_
 dirdef DIR_QUEUE, 'queue',       M_POOL,    0,           F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_queue
 dirdef DIR_SOURCE, 'source',     M_POOL,    0,           F_UNIQUE, 1, 8, T_ANY, T_ANY, 0
 dirdef DIR_OUTLIER, 'outlier',   M_POOL,    0,           F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_outlier
+dirdef DIR_CONCURRENCY, 'concurrency', M_POOL, 0,       F_UNIQUE, 1, 1, T_ANY, T_NONE, k_concurrency
 dirdef DIR_RETRY_BUDGET, 'retry_budget', M_POOL, 0,      F_UNIQUE, 1, 1, T_PERCENT, T_NONE, k_rbudget
 dirdef DIR_STICKY, 'sticky',     M_POOL,    0,           F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_sticky
 dirdef DIR_SLOW_START, 'slow_start', M_POOL,   0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
