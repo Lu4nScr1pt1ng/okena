@@ -72,6 +72,7 @@ worker_main:
 	call	sessions_init
 	test	eax,eax
 	js	.no_memory
+	call	qz_worker_init			; a crash notes the request it was on
 	call	cache_init
 	call	files_init
 	call	zip_init

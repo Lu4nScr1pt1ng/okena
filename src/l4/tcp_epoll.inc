@@ -308,6 +308,7 @@ ep_dispatch:
 	shr	r9,32
 	and	r9d,0xFFFFFF
 	mov	ebx,esi
+	mov	[g_cur_sess],ebx		; (for quarantine.inc, should it crash)
 	call	session_ptr
 	mov	ecx,[rax+S_GEN]
 	and	ecx,0xFFFFFF

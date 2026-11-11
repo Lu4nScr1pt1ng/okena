@@ -223,7 +223,7 @@ the connection closed when its framing can no longer be trusted.
 | Binary upgrade | listeners handed over, old workers drain |
 | Worker crash | only its connections lost; queued connections wait for the replacement |
 | Worker hung (infinite loop) | heartbeat watchdog kills and replaces it after 2 s |
-| The same request crashes workers repeatedly | the worker is replaced each time and the others serve meanwhile (a fingerprint quarantine after two crashes: not built) |
+| The same request crashes workers repeatedly | the worker is replaced each time and the others serve meanwhile; its crash handler (or the watchdog's SIGABRT, for one stuck) notes the hash of the HTTP/1.x head it was on, and at the second crash on the same head that head is answered 503 for 10 minutes without being parsed; a head one byte apart is not touched |
 | Parser bug in the configuration | compiler child dies, supervisor and running config unaffected |
 | Control process crash | workers keep last backend sets, keys and health; restarted |
 | DNS returns nothing or fails | last addresses kept (stale), pool never emptied by DNS |

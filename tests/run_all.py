@@ -51,6 +51,8 @@ SUITES = [
     ("h3 edges epoll", ["tests/h3/edges.py", "epoll"]),
     ("hello io_uring", ["tests/tls/hello.py", "io_uring"]),
     ("hello epoll", ["tests/tls/hello.py", "epoll"]),
+    ("quarantine io_uring", ["tests/gateway/quarantine.py", "io_uring"]),
+    ("quarantine epoll", ["tests/gateway/quarantine.py", "epoll"]),
     ("retry io_uring", ["tests/gateway/retry.py", "io_uring"]),
     ("retry epoll", ["tests/gateway/retry.py", "epoll"]),
     ("outlier io_uring", ["tests/gateway/outlier.py", "io_uring"]),

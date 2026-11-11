@@ -193,6 +193,8 @@ rodata
 	sc_allow filter_supervisor, SYS_setsockopt
 	; children starting
 	sc_check filter_supervisor, SYS_prctl, prctl
+	sc_allow filter_supervisor, SYS_rt_sigaction	; a worker's crash handlers (quarantine.inc)
+	sc_allow filter_supervisor, SYS_sigaltstack
 	sc_allow filter_supervisor, SYS_getppid
 	sc_allow filter_supervisor, SYS_sched_setaffinity
 	sc_allow filter_supervisor, SYS_signalfd4

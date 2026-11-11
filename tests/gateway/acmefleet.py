@@ -147,9 +147,11 @@ http 127.0.0.1:{tls} {{
         check("  the certificate it left taken by both, not ordered", ok and orders(st, "h.example.test") == 0,
               (logs[0].read_text()[-400:], logs[1].read_text()[-400:], st.log[-6:],
                sorted(x.name for x in (d / "h.example.test").iterdir())))
-        check("  each said it waited, then took it",
-              A.until(lambda: all("h.example.test: another instance is ordering it" in g.read_text()
-                                  and "h.example.test: renewed by another instance" in g.read_text() for g in logs), 10),
+        check("  each said it waited, then took it",       # (or its acme process, started again by a
+              A.until(lambda: all("h.example.test: another instance is ordering it" in g.read_text()   # reload, found the files
+                                  and ("h.example.test: renewed by another instance" in g.read_text()   # newer than served)
+                                       or "h.example.test: its files are newer than the configuration served" in g.read_text())
+                                  for g in logs), 10),
               (logs[0].read_text()[-400:], logs[1].read_text()[-400:]))
         # files changed under a running instance whose acme process starts again
         # (as a reload starts it): it sees they are not what is served, and reloads

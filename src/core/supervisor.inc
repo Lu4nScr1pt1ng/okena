@@ -65,6 +65,7 @@ supervisor_main:
 	cmp	rax,-4096
 	ja	.no_signalfd
 	mov	[g_hb],rax
+	call	qz_init				; requests that crash workers (quarantine.inc)
 	mov	rax,[g_plan_watchdog]
 	add	rax,999999
 	xor	edx,edx
@@ -241,6 +242,7 @@ supervisor_main:
 	call	upgrade_tick
 	call	api_tick
 	call	watchdog_check
+	call	qz_tick
 	call	old_workers_check
 	call	tls_tickets_tick		; the ticket key, once a period
 	call	tk_watch			; a fleet's keys file, changed
@@ -765,6 +767,10 @@ watchdog_check:
 .stale:
 	inc	dword [g_hb_stale+rbx*4]
 	mov	eax,[g_hb_stale+rbx*4]
+	mov	ecx,[g_watchdog_s]
+	add	ecx,2
+	cmp	eax,ecx
+	je	.kill				; SIGABRT did not end it
 	cmp	eax,[g_watchdog_s]
 	jne	.skip				; exactly once per stall
 	call	log_begin
@@ -779,6 +785,12 @@ watchdog_check:
 	call	out_u64
 	out_lit ' s, killing it'
 	call	log_end
+	mov	edi,[g_worker_pid+rbx*4]	; SIGABRT first: its handler notes the
+	mov	esi,SIGABRT_			; request it is stuck on (quarantine.inc)
+	mov	eax,SYS_kill
+	syscall
+	jmp	.skip
+.kill:
 	mov	edi,[g_worker_pid+rbx*4]
 	mov	esi,SIGKILL
 	mov	eax,SYS_kill
@@ -1100,6 +1112,10 @@ reap_workers:
 	jmp	.next
 .crashed:
 	mov	dword [g_spawn_delay+rbx*4],0
+	cmp	dword [g_siginfo+SI_CODE],CLD_EXITED
+	je	@f
+	call	qz_crashed			; the request it died on, if any
+@@:
 	call	log_begin
 	out_lit 'worker '
 	mov	eax,ebx

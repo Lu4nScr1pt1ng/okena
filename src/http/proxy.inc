@@ -76,6 +76,7 @@ H_UPKTLS	:= 456		; d: 1 when the upstream is a kTLS TLS socket
 H_URBUF		:= 460		; q: last upstream recv buffer (to retry after a drain)
 H_URROOM	:= 468		; d: its room
 H_RETRIES	:= 364		; d: times this request was sent again (after H_RID)
+; H_HEADN	:= 380		  d: the head being parsed's length (quarantine.inc)
 assert H_ULPERR + 4 <= 1 shl H_SHIFT
 assert H_BUF + 8 <= 1 shl H_SHIFT
 assert H_RID + RID_MAX <= H_RETRIES & H_RETRIES + 4 <= H_BUF
@@ -596,6 +597,24 @@ http_request:
 	push	rax
 	mov	edi,ebx
 	call	ph_disarm			; the head is all here
+	h_rec
+	mov	esi,[rsp]
+	mov	[r15+H_HEADN],esi		; what a crash from here on is put down to
+	mov	rax,[g_qz]
+	test	rax,rax
+	jz	@f
+	cmp	dword [rax+QZ_LIVE],0
+	je	@f
+	mov	rdi,[r15+H_BUF]
+	lea	rdi,[rdi+HB_IN]
+	call	qz_hit
+	jnc	@f
+	add	rsp,8
+	h_rec
+	or	dword [r15+H_FLAGS],HX_CLOSE
+	mov	edi,503				; it crashed workers twice: never parsed again
+	jmp	http_error
+@@:
 	h_rec
 	mov	rdi,[r15+H_BUF]
 	lea	rdi,[rdi+HB_IN]

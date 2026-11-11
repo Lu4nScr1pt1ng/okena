@@ -376,6 +376,7 @@ on_h_recv_c:
 on_h_recv_u:
 	mov	ecx,SIDE_UP
 on_h_recv:
+	mov	[g_cur_sess],ebx		; (for quarantine.inc, should it crash)
 	push	rcx
 	call	sess_complete
 	pop	rcx
@@ -401,6 +402,7 @@ on_h_recv:
 
 on_h_send_c:
 on_h_send_u:
+	mov	[g_cur_sess],ebx		; (for quarantine.inc, should it crash)
 	call	sess_complete
 	jc	.out
 	cmp	dword [rax+S_STATE],ST_CLOSING

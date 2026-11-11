@@ -122,6 +122,8 @@ test-serial: $(BIN) $(HTTPH) $(KAT) $(TLSH)
 	python3 -I tests/h3/edges.py epoll
 	python3 -I tests/tls/hello.py io_uring
 	python3 -I tests/tls/hello.py epoll
+	python3 -I tests/gateway/quarantine.py io_uring
+	python3 -I tests/gateway/quarantine.py epoll
 	python3 -I tests/gateway/retry.py io_uring
 	python3 -I tests/gateway/retry.py epoll
 	python3 -I tests/gateway/outlier.py io_uring

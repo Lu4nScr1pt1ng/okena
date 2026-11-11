@@ -465,6 +465,16 @@ first name, `source` (file, acme, acme_pending, local, local_pending) and its
 `entry`: `(okena_tls_certificate_not_after_seconds - time()) / 86400 < 14` is
 the alert rule.
 
+A request that kills a worker twice is quarantined, with nothing to
+configure: each worker notes the request head it is on, and when it dies of a
+fault (or is stuck, and the watchdog's SIGABRT comes before its SIGKILL) the
+supervisor counts the hash of that head; at the second death on the same head
+every worker answers it 503 for 10 minutes, before parsing it. The hash is of
+the whole head, so only that exact request is refused, and the log says each
+death and the quarantine. HTTP/1.x requests (HTTP/2 and 3 heads are decoded
+elsewhere). The watchdog gives a stuck worker two seconds between the two
+signals.
+
 `last_good on` keeps the configuration that last started or reloaded as
 FILE.good, beside the file (0600, written whole then renamed over the old
 one), with its `include`d files written into it so that it stands alone. When
