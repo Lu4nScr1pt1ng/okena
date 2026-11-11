@@ -6,7 +6,8 @@ head larger than okena takes is that stream's alone: 431 for it (and NO_ERROR wh
 it meant to send a body), the next request on the connection served, the HPACK
 table still the client's (decoded to the end, a scratch area for what is dropped);
 indexed references past that cost nothing; insertions that would make a few bytes
-copy megabytes are a bomb (GOAWAY ENHANCE_YOUR_CALM)."""
+copy megabytes are a bomb (GOAWAY ENHANCE_YOUR_CALM). A stream given no window
+for body_idle is let go, with its backend."""
 import http.server
 import os
 import pathlib
@@ -33,6 +34,7 @@ BASE = 31500 + os.getpid() % 90 * 10 + (5 if ENGINE == "epoll" else 0)
 L, B = BASE, BASE + 1
 PRE = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
 fails = 0
+DROPPED = []
 
 
 def check(name, ok, detail=""):
@@ -45,6 +47,17 @@ class H(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def do_GET(self):
+        if self.path == "/big":                 # to a client that gives no window
+            self.send_response(200)
+            self.send_header("Content-Length", str(32 << 20))
+            self.end_headers()
+            t0 = time.time()
+            try:
+                for _ in range(512):
+                    self.wfile.write(b"x" * 65536)
+            except OSError:
+                DROPPED.append(time.time() - t0)
+            return
         self.send_response(200)
         self.send_header("Content-Length", "2")
         self.end_headers()
@@ -119,7 +132,7 @@ def main():
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-h2abuse-"))
     conf = tmp / "okena.conf"
     conf.write_text(f"okena {{ workers 1; io_engine {ENGINE} }}\npool b {{ server 127.0.0.1:{B} }}\n"
-                    f"http 127.0.0.1:{L} {{ http2 on; route /* {{ to pool b }} }}\n")
+                    f"http 127.0.0.1:{L} {{ http2 on; timeout {{ body_idle 1s }}; route /* {{ to pool b }} }}\n")
     log = tmp / "log"
     p = subprocess.Popen([str(BIN), "-c", str(conf)], stderr=open(log, "w"))
     try:
@@ -162,6 +175,13 @@ def main():
         block = hdrs() + first + (b"\x7e\x00" * 300)        # each: index 62 (that name), empty value, inserted again
         r = go(BASE_IN + fr(1, 5, 1, block))
         check("insertions that copy 4 KB per 2 bytes: GOAWAY ENHANCE_YOUR_CALM", r["goaway"] == [11], r)
+        k = socket.create_connection(("127.0.0.1", L))
+        k.sendall(PRE + fr(4, 0, 0, struct.pack(">HI", 4, 0)) + fr(1, 5, 1, hdrs("/big")))   # window 0, never raised
+        t0 = time.time()
+        while not DROPPED and time.time() - t0 < 8:
+            time.sleep(0.05)
+        k.close()
+        check("a stream that gets no window for body_idle: let go, its backend too", DROPPED and DROPPED[0] < 4, DROPPED)
         r = go(BASE_IN + fr(1, 5, 1, hdrs()))
         check("still serving", r["status"] == {1: "200"}, r)
     finally:

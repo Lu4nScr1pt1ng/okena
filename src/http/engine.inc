@@ -79,6 +79,7 @@ h_send:
 	add	rax,[g_http_base]
 	mov	r8d,esi
 	add	[rax+H_XBYTES],r8
+	call	h_send_clock			; (HTTP/2 and 3 streams too: their windows)
 	push	rax
 	call	session_ptr
 	test	dword [rax+S_FLAGS],SF_H3S
@@ -91,6 +92,7 @@ h_send:
 	cmp	dword [rax+H_UTLS],0
 	jne	utls_send
 	jmp	h_send_raw
+
 .h3:
 	pop	rax
 	jmp	h3s_send			; an HTTP/3 stream: frames on its connection
@@ -770,3 +772,34 @@ hep_event:
 hep_connect:
 	mov	edi,ebx
 	jmp	ep_connect
+
+; rax = record of a client (HTTP/1.1, or a stream of 2 or 3): writing an answer,
+; each piece starts the clock of body_idle again: a client that takes no byte
+; (or gives no window) for that long is closed, or its stream (a slow read holds
+; the connection and its backend's). Keeps the registers.
+h_send_clock:
+	mov	edx,[rax+H_STATE]
+	cmp	edx,HS_RESP_SEND
+	je	.arm
+	cmp	edx,HS_ERROR_SEND
+	je	.arm
+	cmp	edx,HS_SELF_SEND
+	je	.arm
+	cmp	edx,HS_INTERIM_SEND
+	jne	.out
+.arm:
+	push	rax
+	push	rcx
+	push	rsi
+	push	rdi
+	push	r8
+	mov	edi,ebx
+	mov	esi,PH_BODY
+	call	ph_arm
+	pop	r8
+	pop	rdi
+	pop	rsi
+	pop	rcx
+	pop	rax
+.out:
+	ret

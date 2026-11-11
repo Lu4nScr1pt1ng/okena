@@ -688,6 +688,14 @@ access_log /var/log/okena/access.log   # or stdout, stderr, off (default), or a 
 # access_log otlp+https://collector:4318/v1/logs trust=/etc/okena/ca.pem
 ```
 
+`timeout { body_idle T }` (30 s by default) is how long a body may stall, either way:
+a request body that stops coming gets 408; an answer the client takes no byte of
+(an HTTP/2 or 3 stream: no window) for that long is let go, connection or stream,
+and its backend with it, so a slow reader cannot hold them. Waiting on a backend
+that pauses (a stream of events with long gaps) does not count. `header` bounds a
+request head, `response` the backend's first answer, `idle` a connection between
+requests.
+
 `limits { body_size SIZE }` is the largest request body taken (none by default, up
 to 4 GiB). A `Content-Length` past it is answered 413 before anything reaches a
 backend (and a client waiting on `Expect: 100-continue` gets the 413 instead of a

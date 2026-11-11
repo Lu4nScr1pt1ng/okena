@@ -274,7 +274,10 @@ http_next_request:
 	mov	dword [r15+H_INOFF],0
 	call	session_ptr
 	cmp	dword [rax+S_PH_KIND],0
+	je	@f
+	cmp	dword [rax+S_PH_KIND],PH_BODY	; (the answer's own clock: it is all sent)
 	jne	.read				; a new connection: its header clock runs
+@@:
 	mov	edi,ebx
 	mov	esi,PH_TRIM
 	call	ph_arm
@@ -4481,8 +4484,22 @@ http_phase_expired:
 	jmp	session_close
 .body:
 	; the client stopped sending its body (a stall, or slow upload abuse)
-	cmp	dword [r15+H_STATE],HS_REQ_READ
-	jne	.out
+	mov	eax,[r15+H_STATE]
+	cmp	eax,HS_REQ_READ
+	je	.body_408
+	; or taking ours: no byte of the answer taken for body_idle (a slow
+	; read). Waiting for the backend instead (a stream with long gaps) is not
+	; the client's doing: nothing then
+	cmp	eax,HS_RESP_SEND
+	je	.silent
+	cmp	eax,HS_ERROR_SEND
+	je	.silent
+	cmp	eax,HS_SELF_SEND
+	je	.silent
+	cmp	eax,HS_INTERIM_SEND
+	je	.silent
+	jmp	.out
+.body_408:
 	mov	edi,408
 	jmp	http_error
 .trim:

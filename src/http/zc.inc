@@ -229,6 +229,8 @@ end macro
 ; ebx, r15: the next piece of the body, without copies (zc_ok said yes)
 zc_send:
 	mov	dword [r15+H_STATE],HS_RESP_SEND
+	mov	rax,r15
+	call	h_send_clock			; (body_idle: the client must take bytes)
 	cmp	dword [g_engine],ENGINE_EPOLL
 	je	zc_ep_try
 	mov	rax,[r15+H_BUF]

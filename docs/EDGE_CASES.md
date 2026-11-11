@@ -16,7 +16,7 @@ the connection closed when its framing can no longer be trusted.
 | SYN flood | kernel SYN cookies; optional XDP per-source SYN rate; accept queue sized by `somaxconn` |
 | Connection that never sends a byte | `TCP_DEFER_ACCEPT` for HTTP; handshake deadline |
 | Slowloris (headers a byte at a time) | header progress and total deadlines; linear-time resumable parsing |
-| Slow read (client never reads the response) | write progress deadline; backpressure to the upstream stream, not buffering |
+| Slow read (client never reads the response) | write progress deadline (`body_idle`: no byte taken, or no HTTP/2 or 3 window, for that long closes it, or its stream, and the backend's connection); backpressure to the upstream stream, not buffering |
 | Half-close (client sends FIN, still reads) | kept open in `tcp` mode until both sides close; in HTTP, the response is still delivered |
 | RST in the middle of a response | upstream stream cancelled, upstream connection reused only if its framing is intact |
 | Client IP behind NAT (thousands of users, one address) | per-source connection limits configurable, and keyable by other attributes |

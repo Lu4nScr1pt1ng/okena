@@ -6,7 +6,8 @@ cut); a kept connection the backend closes under the next request (a GET is sent
 again on a new one, a POST never is); a head sent a byte at a time and a body that
 stops (408); limits { body_size }: a Content-Length past it (413, before the
 backend, Expect: 100-continue too) and a chunked body that grows past it (413); a
-client that half-closes after its request still gets the answer."""
+client that half-closes after its request still gets the answer; one that takes
+no byte of the answer for body_idle is let go, and its backend with it."""
 import os
 import re
 import pathlib
@@ -22,7 +23,7 @@ ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BIN = ROOT / "build" / "okena"
 BASE = 30000 + os.getpid() % 90 * 10 + (5 if ENGINE == "epoll" else 0)
-L, B_OK, B_DEAD, B_FLAKY, B_RST, B_DOWN = BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4, BASE + 5
+L, B_OK, B_DEAD, B_FLAKY, B_RST, B_DOWN, B_BIG = BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4, BASE + 5, BASE + 6
 fails = 0
 seen = []
 posts = []
@@ -93,6 +94,22 @@ def flaky(c):
         pass
 
 
+dropped = []
+
+
+def big(c):
+    """32 MiB to a client that will not read them: when okena lets go"""
+    read_req(c)
+    t0 = time.time()
+    try:
+        c.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 33554432\r\n\r\n")
+        for _ in range(512):
+            c.sendall(b"x" * 65536)
+    except OSError:
+        dropped.append(time.time() - t0)
+    c.close()
+
+
 def rst(c):
     read_req(c)
     c.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 100000\r\n\r\n" + b"x" * 1000)
@@ -141,6 +158,7 @@ def main():
     listen(B_OK, ok)
     listen(B_FLAKY, flaky)
     listen(B_RST, rst)
+    listen(B_BIG, big)
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-failures-"))
     conf = tmp / "okena.conf"
     conf.write_text(f"""okena {{ workers 1; io_engine {ENGINE} }}
@@ -149,6 +167,7 @@ pool dead {{ server 127.0.0.1:{B_DEAD} }}
 pool flaky {{ server 127.0.0.1:{B_FLAKY} }}
 pool rst {{ server 127.0.0.1:{B_RST} }}
 pool down {{ server 127.0.0.1:{B_DOWN}; health tcp every=100ms fall=1 rise=1 }}
+pool big {{ server 127.0.0.1:{B_BIG} }}
 http 127.0.0.1:{L} {{
     limits {{ body_size 1KiB }}
     timeout {{ header 1s; body_idle 1s; response 2s }}
@@ -157,6 +176,7 @@ http 127.0.0.1:{L} {{
     route /flaky {{ to pool flaky }}
     route /rst {{ to pool rst }}
     route /down {{ to pool down }}
+    route /big {{ to pool big }}
 }}
 """)
     log = tmp / "log"
@@ -216,6 +236,15 @@ http 127.0.0.1:{L} {{
         check("  a chunked body within it: taken", res["chunked ok"][0] == [200], res["chunked ok"][:3])
         check("  Expect: 100-continue past it: 413, no 100", res["expect"][0] == [413], res["expect"][:3])
         check("a client that half-closes after its request: answered", res["half"][0] == [200], res["half"][:3])
+        k = socket.create_connection(("127.0.0.1", L))
+        k.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+        k.sendall(G("/big"))                    # and never read
+        t0 = time.time()
+        while not dropped and time.time() - t0 < 8:
+            time.sleep(0.05)
+        k.close()
+        check("a client that takes no byte of the answer for body_idle: let go, its backend too",
+              dropped and dropped[0] < 4, dropped)
     finally:
         t0 = time.time()
         p.terminate()

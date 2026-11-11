@@ -31,6 +31,9 @@ def check(name, ok, detail=""):
     fails += not ok
 
 
+busy = [0]
+
+
 def serve(c):
     c.settimeout(5)
     data = b""
@@ -41,6 +44,8 @@ def serve(c):
                 break
             data += d
             if b"\r\n\r\n" in data:
+                with lock:
+                    busy[0] += 1                # (a request being noted: send() waits)
                 time.sleep(0.02)                # (the body that follows)
                 try:
                     c.settimeout(0.05)
@@ -50,6 +55,7 @@ def serve(c):
                 c.settimeout(5)
                 with lock:
                     seen.append(data)
+                    busy[0] -= 1
                 c.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
                 data = b""
     except OSError:
@@ -71,6 +77,9 @@ HIDE = (b"X-Request-Id", b"X-Forwarded-For", b"X-Forwarded-Proto")
 
 
 def send(raw):
+    t0 = time.time()                            # the last case's backend done with it
+    while busy[0] and time.time() - t0 < 6:
+        time.sleep(0.01)
     with lock:
         seen.clear()
     k = socket.create_connection(("127.0.0.1", L))
