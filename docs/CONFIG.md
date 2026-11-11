@@ -2063,6 +2063,14 @@ listener (limits, timeouts, TLS versions and ALPN, HTTP/2 and 3) and its routes
 (methods, where they go, the retries they get and their timeouts). Inline
 targets (`to ADDR`) show as pools of their own.
 
+`okena check --diff [FILE]` says what a reload with FILE would change in the
+instance running now (asked over its `admin` socket, which answers with its
+own `explain`): both are explained and compared block by block, the okena
+block, each pool, each listener; `~` heads a block that changes, with `-` for
+its lines that go and `+` for those that come, and a block that comes or goes
+whole is all `+` or all `-`. Nothing is reloaded. Exit 0 when a reload would
+change nothing, 1 when it would.
+
 `okena fmt [-w] FILE` gives the file its canonical layout: each line indented
 four spaces for each block it is in, trailing blanks removed, empty lines
 collapsed to one, none at the start; what each line says, its spacing inside

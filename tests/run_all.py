@@ -87,6 +87,7 @@ SUITES = [
     ("reload", ["tests/reload/run.py"]),
     ("lastgood", ["tests/reload/lastgood.py"]),
     ("onchange", ["tests/reload/onchange.py"]),
+    ("check diff", ["tests/reload/diff.py"]),
     ("health", ["tests/health/run.py"]),
     ("lb", ["tests/lb/run.py"]),
     ("admin io_uring", ["tests/admin/run.py", "io_uring"]),

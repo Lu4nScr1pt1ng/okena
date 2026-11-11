@@ -13,12 +13,23 @@ cli_explain:
 	call	plan_compile
 	mov	edi,1
 	call	out_select
+	call	explain_print
+	xor	edi,edi
+	jmp	exit_process
+
+; The plan in memory, said on the selected output (the CLI's stdout; the
+; admin process's answer to `explain`, for `okena check --diff`)
+explain_print:
 	push	rbx
 	push	r12
 	push	r13
 	; ---- okena
 	out_lit 'okena {',10,'    workers '
+	mov	eax,[g_workers]			; (a running instance: what it has)
+	test	eax,eax
+	jnz	@f
 	call	cpu_worker_count
+@@:
 	call	out_u64
 	out_lit 10,'    io_engine '
 	mov	eax,[g_plan_engine]
@@ -358,8 +369,7 @@ cli_explain:
 	pop	r13
 	pop	r12
 	pop	rbx
-	xor	edi,edi
-	jmp	exit_process
+	ret
 
 ; edi = first route, esi = how many, edx = indentation
 .routes:
@@ -663,3 +673,443 @@ cli_explain:
 .rl_signal	db 'signal',0
 .rl_change	db 'on-change',0
 .ron_names	db 'reset',0,'timeout',0,'5xx',0,'500',0,'502',0,'503',0,'504',0,0
+
+; `okena check --diff [FILE]`: what a reload with FILE would change in the
+; running instance (its admin socket): both said as `okena explain` says
+; them, compared block by block (the okena block, each pool, each listener):
+; "+ " a block or a line FILE adds, "- " one it takes away, "~ " the head of a
+; block that changes. Exit 0 when nothing would, 1 when something would.
+SYS_memfd_create := 319
+
+bss
+	g_df_new	dq ?		; FILE's explanation
+	g_df_newlen	dq ?
+	g_df_lines	dq ?		; (start, length) for every line, both texts
+	g_df_changes	dd ?
+end bss
+
+cli_check_diff:
+	mov	edi,3
+	call	cli_source_from_args
+	call	cli_load_config
+	call	plan_compile
+	; FILE explained into a memfd, then read back
+	cstring str_df_name, 'okena-diff',0
+	lea	rdi,[str_df_name]
+	xor	esi,esi
+	mov	eax,SYS_memfd_create
+	syscall
+	test	eax,eax
+	js	.fail
+	push	rax
+	mov	edi,eax
+	call	out_select
+	call	explain_print
+	call	out_flush
+	mov	edi,1
+	call	out_select
+	mov	edi,[rsp]
+	xor	esi,esi
+	mov	edx,2				; SEEK_END: its length
+	mov	eax,SYS_lseek_
+	syscall
+	mov	[g_df_newlen],rax
+	lea	rsi,[rax+16]
+	xor	edi,edi
+	mov	edx,PROT_READ or PROT_WRITE
+	mov	r10d,MAP_PRIVATE or MAP_ANONYMOUS
+	mov	r8,-1
+	xor	r9d,r9d
+	mov	eax,SYS_mmap
+	syscall
+	mov	[g_df_new],rax
+	mov	edi,[rsp]
+	mov	rsi,rax
+	mov	rdx,[g_df_newlen]
+	xor	r10d,r10d
+	mov	eax,SYS_pread64
+	syscall
+	pop	rdi
+	mov	eax,SYS_close
+	syscall
+	; the running one's
+	call	api_cli_open
+	cstring str_api_explain_l, 'explain',10
+	lea	rsi,[str_api_explain_l]
+	mov	edx,str_api_explain_l.len
+	call	api_call			; g_admin_buf: "ok\n" then it
+	push	rax
+	; room for the lines of both
+	mov	rsi,[g_df_newlen]
+	add	rsi,[rsp]
+	shl	rsi,4
+	add	rsi,4096
+	xor	edi,edi
+	mov	edx,PROT_READ or PROT_WRITE
+	mov	r10d,MAP_PRIVATE or MAP_ANONYMOUS or MAP_NORESERVE
+	mov	r8,-1
+	xor	r9d,r9d
+	mov	eax,SYS_mmap
+	syscall
+	mov	[g_df_lines],rax
+	pop	rdx
+	mov	rsi,[g_admin_buf]
+	add	rsi,3
+	sub	rdx,3				; the running text: rsi/rdx
+	mov	rdi,[g_df_new]
+	mov	rcx,[g_df_newlen]		; FILE's: rdi/rcx
+	call	diff_texts
+	mov	edi,1
+	call	out_select
+	cmp	dword [g_df_changes],0
+	jne	@f
+	out_lit 'no change: a reload with it keeps everything as it runs now',10
+	xor	edi,edi
+	jmp	exit_process
+@@:
+	mov	edi,1
+	jmp	exit_process
+.fail:
+	call	log_begin
+	out_lit 'check --diff: no memfd'
+	call	log_end
+	mov	edi,EXIT_FAILURE
+	jmp	exit_process
+
+; rsi/rdx = old text, rdi/rcx = new text: their blocks compared, said on stdout
+diff_texts:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	push	rbp
+	; lines of old, then of new, into g_df_lines: r12 = old's count, r13 = new's
+	mov	r8,[g_df_lines]
+	push	rdi
+	push	rcx
+	call	.split
+	mov	r12d,eax
+	pop	rdx
+	pop	rsi
+	call	.split
+	mov	r13d,eax
+	mov	edi,1
+	call	out_select
+	; each old block: its counterpart in new (the same head)
+	xor	ebx,ebx				; old line
+.old_block:
+	cmp	ebx,r12d
+	jae	.new_blocks
+	mov	edi,ebx
+	call	.is_head
+	jnc	.old_next
+	mov	edi,ebx
+	lea	esi,[r12]			; new lines: r12 .. r12+r13
+	lea	edx,[r12+r13]
+	call	.find_head			; eax = its line in new, -1 none
+	cmp	eax,-1
+	je	.old_gone
+	mov	r14d,ebx			; the two blocks: compared line by line
+	mov	r15d,eax
+	mov	edi,r14d
+	call	.block_end
+	mov	ebp,eax				; old's end
+	mov	edi,r15d
+	call	.block_end			; new's end (eax)
+	push	rax
+	mov	ecx,ebp
+	sub	ecx,r14d
+	mov	edx,eax
+	sub	edx,r15d
+	cmp	ecx,edx
+	jne	.differs
+	xor	ecx,ecx
+@@:
+	lea	edi,[r14+rcx]
+	cmp	edi,ebp
+	jae	.same_block
+	lea	esi,[r15+rcx]
+	call	.line_eq
+	jnc	.differs
+	inc	ecx
+	jmp	@b
+.same_block:
+	pop	rax
+	mov	ebx,ebp
+	jmp	.old_block
+.differs:
+	pop	rax
+	push	rax
+	inc	dword [g_df_changes]
+	mov	edi,r14d
+	lea	rsi,[.p_change]
+	call	.say
+	; lines of old not in new's block: -; of new not in old's: +
+	lea	ecx,[r14+1]
+.minus:
+	cmp	ecx,ebp
+	jae	.plus_start
+	push	rcx
+	mov	edi,ecx
+	lea	esi,[r15+1]
+	mov	edx,[rsp+8]
+	call	.line_in
+	pop	rcx
+	jc	@f
+	push	rcx
+	mov	edi,ecx
+	lea	rsi,[.p_minus]
+	call	.say
+	pop	rcx
+@@:
+	inc	ecx
+	jmp	.minus
+.plus_start:
+	pop	rax
+	lea	ecx,[r15+1]
+	push	rax
+.plus:
+	cmp	ecx,[rsp]
+	jae	.plus_done
+	push	rcx
+	mov	edi,ecx
+	lea	esi,[r14+1]
+	mov	edx,ebp
+	call	.line_in
+	pop	rcx
+	jc	@f
+	push	rcx
+	mov	edi,ecx
+	lea	rsi,[.p_plus]
+	call	.say
+	pop	rcx
+@@:
+	inc	ecx
+	jmp	.plus
+.plus_done:
+	pop	rax
+	mov	ebx,ebp
+	jmp	.old_block
+.old_gone:
+	inc	dword [g_df_changes]
+	mov	edi,ebx
+	call	.block_end
+	mov	ebp,eax
+@@:
+	cmp	ebx,ebp
+	jae	.old_block
+	mov	edi,ebx
+	lea	rsi,[.p_minus]
+	call	.say
+	inc	ebx
+	jmp	@b
+.old_next:
+	inc	ebx
+	jmp	.old_block
+.new_blocks:
+	mov	ebx,r12d			; each new block with no old counterpart
+.new_block:
+	lea	eax,[r12+r13]
+	cmp	ebx,eax
+	jae	.done
+	mov	edi,ebx
+	call	.is_head
+	jnc	.new_next
+	mov	edi,ebx
+	xor	esi,esi
+	mov	edx,r12d
+	call	.find_head
+	cmp	eax,-1
+	jne	.new_next
+	inc	dword [g_df_changes]
+	mov	edi,ebx
+	call	.block_end
+	mov	ebp,eax
+@@:
+	cmp	ebx,ebp
+	jae	.new_block
+	mov	edi,ebx
+	lea	rsi,[.p_plus]
+	call	.say
+	inc	ebx
+	jmp	@b
+.new_next:
+	inc	ebx
+	jmp	.new_block
+.done:
+	pop	rbp
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+; rsi/rdx = text, r8 = where its lines go (start q, length q): r8 past them,
+; eax = how many
+.split:
+	xor	eax,eax
+	lea	r9,[rsi+rdx]
+.sl:
+	cmp	rsi,r9
+	jae	.sl_done
+	mov	[r8],rsi
+	mov	rcx,rsi
+@@:
+	cmp	rcx,r9
+	jae	@f
+	cmp	byte [rcx],10
+	je	@f
+	inc	rcx
+	jmp	@b
+@@:
+	mov	rdx,rcx
+	sub	rdx,rsi
+	mov	[r8+8],rdx
+	add	r8,16
+	inc	eax
+	lea	rsi,[rcx+1]
+	jmp	.sl
+.sl_done:
+	ret
+; edi = line: rsi = its start, rdx = its length
+.line:
+	mov	rax,[g_df_lines]
+	shl	rdi,4
+	mov	rsi,[rax+rdi]
+	mov	rdx,[rax+rdi+8]
+	ret
+; edi = line: CF when it heads a block (at the left edge, not "}" nor empty)
+.is_head:
+	call	.line
+	test	rdx,rdx
+	jz	.no
+	cmp	byte [rsi],' '
+	je	.no
+	cmp	byte [rsi],'}'
+	je	.no
+	stc
+	ret
+.no:
+	clc
+	ret
+; edi = a block's head: eax = the line after its "}" (or the end of its text)
+.block_end:
+	push	rdi
+	lea	eax,[r12+r13]
+	cmp	edi,r12d
+	jae	@f
+	mov	eax,r12d
+@@:
+	mov	ecx,eax
+	pop	rdi
+	mov	eax,edi
+.be:
+	inc	eax
+	cmp	eax,ecx
+	jae	.be_done
+	push	rax
+	push	rcx
+	mov	edi,eax
+	call	.line
+	pop	rcx
+	pop	rax
+	cmp	rdx,1
+	jne	.be
+	cmp	byte [rsi],'}'
+	jne	.be
+	inc	eax
+.be_done:
+	ret
+; edi = a head, esi .. edx = where to look: eax = the same head there, or -1
+.find_head:
+	push	rbx
+	mov	ebx,esi
+.fh:
+	cmp	ebx,edx
+	jae	.fh_none
+	push	rdi
+	push	rdx
+	mov	esi,ebx
+	call	.line_eq
+	pop	rdx
+	pop	rdi
+	jc	.fh_found
+	inc	ebx
+	jmp	.fh
+.fh_none:
+	mov	eax,-1
+	pop	rbx
+	ret
+.fh_found:
+	push	rdi
+	push	rdx
+	mov	edi,ebx
+	call	.is_head
+	pop	rdx
+	pop	rdi
+	jnc	@f
+	mov	eax,ebx
+	pop	rbx
+	ret
+@@:
+	inc	ebx
+	jmp	.fh
+; edi, esi = lines: CF when the same. Keeps rcx.
+.line_eq:
+	push	rcx
+	push	rsi
+	call	.line
+	mov	r10,rsi
+	mov	r11,rdx
+	pop	rdi
+	call	.line
+	pop	rcx
+	cmp	rdx,r11
+	jne	.ne
+	push	rcx
+	mov	rcx,rdx
+	mov	rdi,r10
+	repe	cmpsb
+	pop	rcx
+	jne	.ne
+	stc
+	ret
+.ne:
+	clc
+	ret
+; edi = a line, esi .. edx = lines: CF when it is one of them
+.line_in:
+	push	rbx
+	mov	ebx,esi
+.li:
+	cmp	ebx,edx
+	jae	.li_no
+	push	rdi
+	push	rdx
+	mov	esi,ebx
+	call	.line_eq
+	pop	rdx
+	pop	rdi
+	jc	.li_yes
+	inc	ebx
+	jmp	.li
+.li_no:
+	clc
+	pop	rbx
+	ret
+.li_yes:
+	pop	rbx
+	ret
+; edi = a line, rsi = its mark: said
+.say:
+	push	rdi
+	call	out_cstr
+	pop	rdi
+	call	.line
+	call	out_str
+	mov	edi,10
+	jmp	out_char
+.p_plus		db '+ ',0
+.p_minus	db '- ',0
+.p_change	db '~ ',0

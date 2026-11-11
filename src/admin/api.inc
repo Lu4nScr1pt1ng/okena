@@ -377,6 +377,7 @@ api_serve:
 	api_cmd 'maintenance', .maintenance
 	api_cmd 'purge', .purge
 	api_cmd 'top', .top
+	api_cmd 'explain', .explain
 	api_cmd 'state', .state
 	api_cmd 'reload', .reload
 	api_cmd 'drain', .drain_instance
@@ -410,6 +411,23 @@ api_serve:
 	memit 'ok',10
 	call	top_table
 	jmp	.send
+.explain:
+	; the plan this instance runs, as `okena explain` says it: straight onto
+	; the socket (`okena check --diff` compares it with a file)
+	pop	rdi
+	mov	rsi,[g_admin_buf]
+	mov	word [rsi],'ok'
+	mov	byte [rsi+2],10
+	mov	edi,ebx
+	mov	edx,3
+	call	write_all
+	mov	edi,ebx
+	call	out_select
+	call	explain_print
+	call	out_flush
+	mov	edi,2
+	call	out_select
+	jmp	.out
 .state:
 	pop	rdi
 	memit 'ok '

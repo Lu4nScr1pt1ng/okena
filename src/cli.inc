@@ -5,6 +5,7 @@
 ;   okena check --host [FILE]      what of the host would hold okena back
 ;   okena fmt [-w] FILE            its layout made canonical (cli_fmt.inc)
 ;   okena explain [FILE]           as it will run, defaults written out
+;   okena check --diff [FILE]      what a reload with it would change
 ;   okena bench URL [key=value...] open-loop load (src/bench/bench.inc)
 ;   okena tcp :5432 to db:5432     the configuration itself, on the line
 ;   okena version | help
@@ -243,6 +244,13 @@ cli_main:
 	call	cstr_eq
 	test	eax,eax
 	jnz	cli_check_host
+	mov	rax,[g_argv]
+	mov	rdi,[rax+16]
+	cstring str_flag_diff, '--diff',0
+	lea	rsi,[str_flag_diff]
+	call	cstr_eq
+	test	eax,eax
+	jnz	cli_check_diff
 @@:
 	mov	edi,2
 	call	cli_source_from_args
