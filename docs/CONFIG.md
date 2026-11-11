@@ -419,6 +419,11 @@ nothing. `okena top [-c FILE]` shows the same as a table, over the admin
 socket, a fresh frame a second; `okena top once` prints it one time, for
 scripts.
 
+The address reads requests as they come, up to 128 connections at once with two
+seconds each to say what they want; when all are taken, the one waiting longest
+gives way, so silent connections cannot keep a health check out. HEAD is answered
+as GET without the body.
+
 `token=FILE` puts everything on that address but `/live` and `/ready` (the
 probes) behind a token, the file's first line, 16 to 255 printable bytes. It
 is accepted as `Authorization: Bearer TOKEN`, as Prometheus' `authorization`

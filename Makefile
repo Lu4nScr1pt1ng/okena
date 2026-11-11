@@ -113,6 +113,7 @@ test-serial: $(BIN) $(HTTPH) $(KAT) $(TLSH)
 	python3 -I tests/gateway/cachedge.py epoll
 	python3 -I tests/l4/edges.py io_uring
 	python3 -I tests/l4/edges.py epoll
+	python3 -I tests/admin/edges.py
 	python3 -I tests/tls/hello.py io_uring
 	python3 -I tests/tls/hello.py epoll
 	python3 -I tests/h2/abuse.py io_uring

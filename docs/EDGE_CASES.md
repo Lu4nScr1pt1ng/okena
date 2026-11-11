@@ -6,7 +6,7 @@ checked line by line against a running okena by `tests/httpproxy/edge.py`
 (both engines), the upstream responses table by `tests/httpproxy/upstream.py`, paths and hosts by
 `tests/httpproxy/routing.py`, client identity by `tests/httpproxy/identity.py`, failing backends and
 misbehaving clients by `tests/httpproxy/failures.py`, streams and tunnels by
-`tests/httpproxy/streaming.py`, the cache's edges by `tests/gateway/cachedge.py`, `tcp`'s by `tests/l4/edges.py`, odd ClientHellos by `tests/tls/hello.py`, HTTP/2 abuse by `tests/h2/abuse.py` (with h2spec for
+`tests/httpproxy/streaming.py`, the cache's edges by `tests/gateway/cachedge.py`, `tcp`'s by `tests/l4/edges.py`, the metrics address by `tests/admin/edges.py`, odd ClientHellos by `tests/tls/hello.py`, HTTP/2 abuse by `tests/h2/abuse.py` (with h2spec for
 conformance), and its parser against a reference by `tests/http/run.py`. "Reject" means a 4xx/5xx with
 the connection closed when its framing can no longer be trusted.
 
@@ -213,6 +213,8 @@ the connection closed when its framing can no longer be trusted.
 | Case | Behaviour |
 |---|---|
 | Invalid config on reload | rejected, running config kept, error with line:column |
+| A crowd of silent connections to the metrics address | requests read as they come, 128 at once, two seconds each; all slots taken, the one waiting longest gives way: `/live` and `/ready` keep answering |
+| HEAD on the metrics address | answered as GET, without the body |
 | Reload during heavy traffic | no dropped connections; old generations freed as connections finish |
 | Binary upgrade | listeners handed over, old workers drain |
 | Worker crash | only its connections lost; queued connections wait for the replacement |

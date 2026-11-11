@@ -2,11 +2,18 @@
 ; the `metrics` address. It reads the workers' statistics pages and sums
 ; them when scraped, so a scrape costs the workers nothing.
 ;
-; One request per connection, with two-second socket timeouts, so a
-; slow or silent client can hold it at most that long. /ready answers 503
-; once the instance drains, so orchestrators stop sending traffic first.
+; One request per connection. Requests are read as they come, up to ADM_SLOTS
+; connections at once, each given two seconds to say what it wants (then what
+; came is taken); a request is answered once it is whole. All slots taken, the
+; one waiting longest goes for the newcomer, so a crowd of silent connections
+; cannot keep a health check out. /ready answers 503 once the instance drains,
+; so orchestrators stop sending traffic first. HEAD is answered as GET, without
+; the body.
 
 ADMIN_BUF	:= 8 shl 20
+ADM_SLOTS	:= 128
+ADM_BUFSZ	:= 4096
+ADM_WAIT_MS	:= 2000
 
 bss
 	align 8
@@ -15,6 +22,16 @@ bss
 	g_admin_buf	dq ?		; response being built
 	g_admin_req:	rb 4096
 	g_admin_b64:	rb 512		; a Basic credential, decoded
+	align 8
+	g_adm_fd	rd ADM_SLOTS	; connections being read: descriptor + 1, 0 free
+	g_adm_len	rd ADM_SLOTS	; bytes read
+	g_adm_due	rq ADM_SLOTS	; ms (monotonic) it has to say what it wants
+	g_adm_pfds:	rq 2 + ADM_SLOTS ; what the loop polls
+	g_adm_slot	rd 2 + ADM_SLOTS ; the slot each polled connection is
+	g_adm_now	dq ?
+	g_adm_npoll	dd ?
+	g_adm_head	dd ?		; a HEAD: the body not sent
+	g_adm_bufs:	rb ADM_SLOTS * ADM_BUFSZ
 end bss
 
 rodata
@@ -166,26 +183,37 @@ admin_main:
 	call	top_sample			; (rates for `top` and /status)
 	call	bird_tick			; (the anycast address, announced or not: bird.inc)
 	call	vrrp_ready_tick			; (and whether vrrp may hold its address)
-	lea	rdi,[g_admin_pfd]
-	mov	esi,2
+	call	adm_poll_set			; ecx = how many to poll
+	mov	[g_adm_npoll],ecx
+	lea	rdi,[g_adm_pfds]
+	mov	esi,ecx
 	lea	rdx,[ts_admin_tick]
+	cmp	ecx,2
+	jbe	@f
+	lea	rdx,[ts_admin_short]		; (connections being read: their deadlines)
+@@:
 	xor	r10d,r10d
 	xor	r8d,r8d
 	mov	eax,SYS_ppoll_
 	syscall
+	push	rax
+	call	adm_clock
+	pop	rax
 	test	eax,eax
-	jle	.loop
-	cmp	word [g_admin_pfd+6],0
+	jle	.expire
+	cmp	word [g_adm_pfds+6],0
 	je	@f
-	mov	edi,[g_metrics_fd]
-	lea	r12,[admin_serve]
-	call	.one
+	call	adm_accept			; new connections, to be read
 @@:
-	cmp	word [g_admin_pfd+14],0
-	je	.loop
+	cmp	word [g_adm_pfds+14],0
+	je	@f
 	mov	edi,[g_api_fd]
 	lea	r12,[api_serve]
 	call	.one
+@@:
+	call	adm_read_ready
+.expire:
+	call	adm_expire			; those out of time: what came is taken
 	jmp	.loop
 ; edi = a listening socket, r12 = who serves what came
 .one:
@@ -218,6 +246,15 @@ admin_main:
 	syscall
 .none_came:
 	ret
+
+; edi = connection, esi = the bytes of its request already in g_admin_req: answer
+; it
+admin_serve_req:
+	push	rbx
+	push	r12
+	mov	ebx,edi
+	mov	r12d,esi
+	jmp	admin_serve.parse
 
 ; edi = connection: read one request, answer it.
 admin_serve:
@@ -258,6 +295,19 @@ admin_serve:
 	mov	byte [g_admin_req+r12],0
 	cmp	r12d,5
 	jb	.out
+	mov	dword [g_adm_head],0
+	cmp	dword [g_admin_req],'HEAD'
+	jne	@f
+	cmp	byte [g_admin_req+4],' '
+	jne	@f
+	mov	dword [g_adm_head],1		; HEAD: as GET, the body not sent
+	mov	dword [g_admin_req+1],'GET '
+	lea	rdi,[g_admin_req]
+	lea	rsi,[g_admin_req+1]
+	mov	ecx,r12d
+	rep	movsb
+	dec	r12d
+@@:
 	cmp	dword [g_admin_req],'POST'
 	je	.post
 	cmp	dword [g_admin_req],'GET '
@@ -382,6 +432,20 @@ admin_serve:
 	mov	r8d,str_ct_html.len
 	call	admin_framed
 .send:
+	cmp	dword [g_adm_head],0
+	je	.write
+	xor	ecx,ecx				; HEAD: the head alone
+@@:
+	lea	eax,[rcx+4]
+	cmp	eax,edx
+	ja	.write
+	cmp	dword [rsi+rcx],0x0A0D0A0D
+	je	@f
+	inc	ecx
+	jmp	@b
+@@:
+	lea	edx,[rcx+4]
+.write:
 	mov	edi,ebx
 	call	write_all
 .out:
@@ -1509,3 +1573,256 @@ cli_health:
 	out_lit 'not ready',10
 	mov	edi,1
 	jmp	exit_process
+
+rodata
+	align 8
+	ts_admin_short	dq 0, 100000000
+end rodata
+
+; g_adm_now = ms, monotonic
+adm_clock:
+	sub	rsp,16
+	mov	edi,CLOCK_MONOTONIC
+	mov	rsi,rsp
+	mov	eax,SYS_clock_gettime
+	syscall
+	imul	rax,[rsp],1000
+	mov	rcx,rax
+	mov	rax,[rsp+8]
+	xor	edx,edx
+	mov	r8d,1000000
+	div	r8
+	add	rax,rcx
+	mov	[g_adm_now],rax
+	add	rsp,16
+	ret
+
+; the poll set: the metrics socket, the API's, then each connection being read.
+; ecx = how many
+adm_poll_set:
+	mov	eax,[g_metrics_fd]
+	mov	[g_adm_pfds],eax
+	mov	dword [g_adm_pfds+4],POLLIN_
+	mov	eax,[g_api_fd]
+	mov	[g_adm_pfds+8],eax
+	mov	dword [g_adm_pfds+12],POLLIN_
+	mov	ecx,2
+	xor	edx,edx
+.slot:
+	cmp	edx,ADM_SLOTS
+	jae	.out
+	mov	eax,[g_adm_fd+rdx*4]
+	test	eax,eax
+	jz	.next
+	dec	eax
+	mov	[g_adm_pfds+rcx*8],eax
+	mov	dword [g_adm_pfds+rcx*8+4],POLLIN_
+	mov	[g_adm_slot+rcx*4],edx
+	inc	ecx
+.next:
+	inc	edx
+	jmp	.slot
+.out:
+	ret
+
+; the metrics socket is readable: what has come, each into a slot (the oldest
+; one given up when none is free)
+adm_accept:
+	push	rbx
+	push	r12
+	mov	r12d,1				; (one a turn: the socket blocks, and the poll
+						; comes back at once while more wait)
+.next:
+	mov	edi,[g_metrics_fd]
+	xor	esi,esi
+	xor	edx,edx
+	mov	r10d,SOCK_CLOEXEC
+	mov	eax,SYS_accept4
+	syscall
+	test	eax,eax
+	js	.out
+	mov	ebx,eax
+	mov	edi,ebx				; writes: blocking, two seconds at most
+	mov	esi,SOL_SOCKET
+	mov	edx,SO_SNDTIMEO
+	lea	r10,[ts_admin_io]
+	mov	r8d,16
+	mov	eax,SYS_setsockopt
+	syscall
+	call	adm_free_slot			; edx = it
+	lea	eax,[rbx+1]
+	mov	[g_adm_fd+rdx*4],eax
+	mov	dword [g_adm_len+rdx*4],0
+	mov	rax,[g_adm_now]
+	add	rax,ADM_WAIT_MS
+	mov	[g_adm_due+rdx*8],rax
+	dec	r12d
+	jnz	.next
+.out:
+	pop	r12
+	pop	rbx
+	ret
+
+; edx = a free slot, the one waiting longest closed when none is
+adm_free_slot:
+	xor	edx,edx
+	mov	ecx,-1
+	mov	r8,-1				; (the earliest deadline)
+.find:
+	cmp	edx,ADM_SLOTS
+	jae	.full
+	cmp	dword [g_adm_fd+rdx*4],0
+	je	.out
+	mov	rax,[g_adm_due+rdx*8]
+	cmp	rax,r8
+	jae	@f
+	mov	r8,rax
+	mov	ecx,edx
+@@:
+	inc	edx
+	jmp	.find
+.full:
+	mov	edx,ecx
+	push	rdx
+	mov	edi,[g_adm_fd+rdx*4]
+	dec	edi
+	mov	eax,SYS_close
+	syscall
+	pop	rdx
+	mov	dword [g_adm_fd+rdx*4],0
+.out:
+	ret
+
+; connections the poll said have something: read; a whole request answered
+adm_read_ready:
+	push	rbx
+	push	r12
+	push	r13
+	mov	r13d,2
+.next:
+	mov	eax,r13d
+	sub	eax,2
+	cmp	eax,ADM_SLOTS
+	jae	.out
+	cmp	r13d,[g_adm_npoll]
+	jae	.out
+	cmp	word [g_adm_pfds+r13*8+6],0
+	je	.skip
+	mov	r12d,[g_adm_slot+r13*4]
+	mov	ebx,[g_adm_fd+r12*4]
+	test	ebx,ebx
+	jz	.skip
+	dec	ebx
+	mov	eax,r12d
+	shl	eax,12
+	lea	rsi,[g_adm_bufs+rax]
+	mov	ecx,[g_adm_len+r12*4]
+	add	rsi,rcx
+	mov	edx,ADM_BUFSZ - 1
+	sub	edx,ecx
+	jz	.whole
+	mov	edi,ebx
+	mov	r10d,MSG_DONTWAIT
+	xor	r8d,r8d
+	xor	r9d,r9d
+	mov	eax,SYS_recvfrom
+	syscall
+	cmp	rax,-EAGAIN
+	je	.skip
+	test	rax,rax
+	jle	.whole				; closed, or failed: what came
+	add	[g_adm_len+r12*4],eax
+	mov	edi,r12d
+	call	adm_complete
+	jnc	.skip
+.whole:
+	mov	edi,r12d
+	call	adm_answer
+.skip:
+	inc	r13d
+	jmp	.next
+.out:
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; edi = a slot: CF when its request is whole: its request line, or with a token
+; its head (the Authorization)
+adm_complete:
+	mov	eax,edi
+	shl	eax,12
+	lea	rsi,[g_adm_bufs+rax]
+	mov	r8d,[g_adm_len+rdi*4]
+	xor	ecx,ecx
+.at:
+	cmp	ecx,r8d
+	jae	.no
+	cmp	byte [rsi+rcx],10
+	jne	.on
+	cmp	dword [g_plan_mtlen],0
+	je	.yes
+	cmp	ecx,2
+	jb	.on
+	cmp	byte [rsi+rcx-1],10
+	je	.yes
+	cmp	word [rsi+rcx-2],0x0D0A
+	je	.yes
+.on:
+	inc	ecx
+	jmp	.at
+.no:
+	clc
+	ret
+.yes:
+	stc
+	ret
+
+; edi = a slot: its request answered (admin_serve's way), the connection closed,
+; the slot free. Keeps rbx, r12-r15.
+adm_answer:
+	push	rbx
+	push	r12
+	push	r13
+	mov	r13d,edi
+	mov	ebx,[g_adm_fd+r13*4]
+	dec	ebx
+	mov	r12d,[g_adm_len+r13*4]
+	mov	eax,r13d
+	shl	eax,12
+	lea	rsi,[g_adm_bufs+rax]
+	lea	rdi,[g_admin_req]
+	mov	ecx,r12d
+	rep	movsb
+	mov	edi,ebx
+	mov	esi,r12d
+	call	admin_serve_req
+	mov	edi,ebx
+	mov	eax,SYS_close
+	syscall
+	mov	dword [g_adm_fd+r13*4],0
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; connections whose two seconds are up: what came is taken
+adm_expire:
+	push	r12
+	xor	r12d,r12d
+.next:
+	cmp	r12d,ADM_SLOTS
+	jae	.out
+	cmp	dword [g_adm_fd+r12*4],0
+	je	.skip
+	mov	rax,[g_adm_now]
+	cmp	rax,[g_adm_due+r12*8]
+	jb	.skip
+	mov	edi,r12d
+	call	adm_answer
+.skip:
+	inc	r12d
+	jmp	.next
+.out:
+	pop	r12
+	ret

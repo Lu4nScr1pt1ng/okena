@@ -425,6 +425,7 @@ rodata
 	sc_begin filter_admin
 	sc_common filter_admin
 	sc_allow filter_admin, SYS_accept4
+	sc_allow filter_admin, SYS_recvfrom		; (requests read as they come, many at once)
 	sc_allow filter_admin, SYS_read
 	sc_allow filter_admin, SYS_close
 	sc_allow filter_admin, SYS_setsockopt
