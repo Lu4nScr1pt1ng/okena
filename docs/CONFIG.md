@@ -13,7 +13,7 @@ not built yet. A directive that is not built is refused by `okena check`
 | `tcp ADDR...` | `to`, `mss`, `limits { connections; per_source }`, `timeout { idle }`, `proxy_protocol send v1\|v2`, `tls { cert; key }`, `tls passthrough { sni NAME... to pool P; default reject\|to pool P }` (a `default to pool` alone is enough) |
 | `udp ADDR...` | `to`, `responses N`, `limits { connections }` (flows), `timeout { idle }` |
 | `http ADDR...` | `host`, `route`, `mss`, `errors CODES file= [backend]`, `maintenance file= retry= allow= except=`, `limits`, `timeout { idle; header; body_idle; response }`, `trusted_proxies`, `access_log`, `tracing`, `http2 on\|off`, `http3 on\|off\|retry\|v2`, `preferred_address`, `early_data on\|off`, `tls { cert; key; ktls on\|off; versions 1.2 1.3; alpn h2 http/1.1 }` |
-| `route PATH... [METHOD...]` | `to`, `redirect`, `respond CODE [BODY] [type=]`, `rewrite path`, `signed_urls key= [key2=]`, `header set\|add\|drop`, `response header set\|add\|drop`, `retry N [idempotent-only] [on=reset,timeout,5xx,500,502,503,504]` |
+| `route PATH... [METHOD...]` | `to`, `redirect`, `respond CODE [BODY] [type=]`, `rewrite path`, `signed_urls key= [key2=]`, `header set\|add\|drop`, `response header set\|add\|drop`, `retry N [idempotent-only] [on=reset,timeout,5xx,500,502,503,504]`, `timeout try= total=` |
 | `pool NAME` | `server ADDR [weight=N] [max=N] [backup]`, `queue timeout=`, `balance least-request\|peak-ewma\|round-robin\|least-conn\|random\|maglev\|ring-hash\|source-hash [key=] [bound=]\|first`, `sticky cookie= [ttl=] [samesite=]`, `connect timeout= max= idle= warm= rate=`, `health tcp\|http\|grpc ...`, `outlier errors= eject= max_ejected=`, `retry_budget P% [min=N/s]`, `source ADDR...`, `slow_start`, `tls { trust FILE; sni NAME; cert FILE; key FILE }` (TLS to the backends), `protocol h1\|h2\|fastcgi` |
 
 `okena { ech PUBLIC_NAME KEYFILE... }` turns on Encrypted Client Hello (the
@@ -122,6 +122,14 @@ routes answer 503 with `Retry-After: 1`. Level 4, 97% or 1 s: so do `normal`
 ones, which is the default, and only `critical` goes on. Each worker decides for
 itself, once a second; the level rises at once and falls one step at a time, after 3
 quiet seconds and 5 points below where it rose. Changes are logged.
+
+On a route, `timeout try=2s` is the time a backend has for its answer's head,
+each try, in place of the listener's `timeout { response }`: past it a 504, or
+another try when `retry on=timeout` allows one. `total=5s` is how long after
+the request was first sent a retry may still start, so a request with retries
+takes at most about `total` plus one `try`. Both are whole seconds (rounded
+up, 1 s to 1 h; the clock ticks each second, so an answer is cut between N and
+N + 1 seconds), at most 32 different `try` values in a configuration.
 
 On a route, `retry N on=LIST` says how many more times (0 to 5) a request
 goes to another server, and on what: `reset` (the backend closed before any
@@ -970,7 +978,7 @@ response header set strict-transport-security "max-age=63072000"
 response header drop server
 rewrite path /v1/{*} -> /{*}       # the backend sees /users for /v1/users
 priority critical                # critical | normal | bulk (shedding order)
-timeout total=5s try=2s          # whole request incl. retries / one attempt
+timeout total=5s try=2s          # no retry starts after total / one try's answer head
 retry 2 on=connect,reset,503 idempotent-only
 hedge after=p95 max=1            # tail cutting for idempotent requests
 cache 30s stale-while-revalidate=5m vary=accept-encoding max=1MiB

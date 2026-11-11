@@ -177,6 +177,7 @@ keysdef k_quic_sid, 'key', T_ANY, 'rotation', T_ANY
 keysdef k_server, 'weight', T_WEIGHT, 'max', T_COUNT
 keysdef k_queue, 'timeout', T_DURATION
 keysdef k_retry, 'on', T_ANY
+keysdef k_rtimeout, 'total', T_DURATION, 'try', T_DURATION
 keysdef k_outlier, 'errors', T_UINT, 'eject', T_DURATION, 'max_ejected', T_PERCENT
 keysdef k_rbudget, 'min', T_RATE
 keysdef k_alert, 'trust', T_ANY
@@ -282,6 +283,7 @@ dirdef DIR_IDEMPOTENCY, 'idempotency', M_ROUTE, 0,     F_UNIQUE or F_KEYS_BLOCK,
 dirdef DIR_ALLOW, 'allow',      M_ROUTE,   0,           0, 1, 64, T_ANY, T_ANY, 0
 dirdef DIR_DENY, 'deny',        M_ROUTE,   0,           0, 1, 64, T_ANY, T_ANY, 0
 dirdef DIR_HOLD, 'hold',        M_ROUTE,   0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
+dirdef DIR_RTIMEOUT, 'timeout',  M_ROUTE,   0,           F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_rtimeout
 dirdef DIR_RETRY, 'retry',      M_ROUTE,   0,           F_UNIQUE, 1, 2, T_UINT, e_retry_mode, k_retry
 dirdef DIR_ERRORS, 'errors',    M_HTTP or M_ROUTE, 0,  0, 1, 32, T_ANY, T_ANY, k_errors
 dirdef DIR_MAINTENANCE, 'maintenance', M_HTTP, 0,     F_UNIQUE, 0, 0, T_NONE, T_NONE, k_maint

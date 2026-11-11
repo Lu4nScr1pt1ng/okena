@@ -120,7 +120,10 @@ RA_RBODY	:= 192		; q: `respond CODE BODY`: the body, 0 none
 RA_RBLEN	:= 200		; d
 RA_RTLEN	:= 204		; d: `type=`'s length, 0 text/plain
 RA_RTYPE	:= 208		; q
-RA_SIZE		:= 216
+RA_TRYC		:= 216		; d: `timeout try=`: its class (g_try_secs) + 1, 0 = the listener's response
+RA_TOTAL	:= 220		; d: `timeout total=`: seconds after which no retry starts, 0 none
+RA_SIZE		:= 224
+MAX_TRYC	:= 32		; distinct try= values
 RESPOND_BODY_MAX := 4096
 MAX_ACTS	:= MAX_ROUTES
 HD_KIND		:= 0		; d: HOP_SET, HOP_ADD, HOP_DROP
@@ -355,6 +358,7 @@ plan_compile:
 	mov	qword [g_plan_drain_timeout],DEFAULT_DRAIN_US
 	mov	qword [g_plan_watchdog],2000000
 	mov	dword [g_plan_last_good],0
+	mov	dword [g_plan_tryc],0
 	mov	qword [g_plan_hs_budget],DEFAULT_HS_BUDGET_US
 	mov	qword [g_plan_hs_wait],DEFAULT_HS_WAIT_US
 	; pools first, so listeners can refer to them
@@ -1206,6 +1210,9 @@ compile_route_action:
 	lea	rcx,[dir_table + D_SIZE*DIR_RETRY]
 	cmp	rax,rcx
 	je	@f
+	lea	rcx,[dir_table + D_SIZE*DIR_RTIMEOUT]
+	cmp	rax,rcx
+	je	@f
 	lea	rcx,[dir_table + D_SIZE*DIR_ALLOW]
 	cmp	rax,rcx
 	je	@f
@@ -1513,6 +1520,7 @@ compile_route_action:
 	call	compile_hints
 	call	compile_hold
 	call	compile_retry
+	call	compile_rtimeout
 	call	compile_acl
 	call	compile_idem
 	call	compile_rmap
@@ -2605,6 +2613,80 @@ plan_too_many:
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process
+
+; r12 = a route's node, r13 = the action: `timeout try= total=`, whole
+; seconds (rounded up), each try= a class of its own clock list
+compile_rtimeout:
+	push	rbx
+	mov	rdi,r12
+	mov	ecx,DIR_RTIMEOUT
+	call	find_child
+	test	rax,rax
+	jz	.none
+	mov	rbx,rax
+	mov	rdi,rbx
+	lea	rsi,[str_key_try]
+	call	node_option
+	test	rax,rax
+	jz	.total
+	call	.secs
+	; its class: the same seconds share one
+	xor	ecx,ecx
+@@:
+	cmp	ecx,[g_plan_tryc]
+	jae	.new
+	cmp	[g_try_secs+rcx*4],eax
+	je	.class
+	inc	ecx
+	jmp	@b
+.new:
+	cmp	ecx,MAX_TRYC
+	jae	plan_bad_rtimeout
+	mov	[g_try_secs+rcx*4],eax
+	inc	dword [g_plan_tryc]
+.class:
+	inc	ecx
+	mov	[r13+RA_TRYC],ecx
+.total:
+	mov	rdi,rbx
+	lea	rsi,[str_key_total]
+	call	node_option
+	test	rax,rax
+	jz	.none
+	call	.secs
+	mov	[r13+RA_TOTAL],eax
+.none:
+	pop	rbx
+	ret
+; rax = an option: eax = its seconds, rounded up, 1 to 3600
+.secs:
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_duration
+	add	rax,999999
+	xor	edx,edx
+	mov	ecx,1000000
+	div	rcx
+	test	rax,rax
+	jz	plan_bad_rtimeout
+	cmp	rax,3600
+	ja	plan_bad_rtimeout
+	ret
+
+plan_bad_rtimeout:
+	call	log_begin
+	out_lit 'a route',27h,'s timeout takes try= (the backend',27h,'s time for its answer head, each try) and total= (no retry starts after it), each 1s to 1h in whole seconds; at most 32 different try= values'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
+
+cstring str_key_try, 'try',0
+cstring str_key_total, 'total',0
+
+bss
+	g_try_secs	rd MAX_TRYC
+	g_plan_tryc	dd ?
+end bss
 
 ; Retries: what sends a request once more, to another server.
 RON_RESET	:= 1		; the backend closed before any answer

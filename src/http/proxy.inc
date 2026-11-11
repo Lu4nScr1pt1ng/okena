@@ -76,6 +76,7 @@ H_UPKTLS	:= 456		; d: 1 when the upstream is a kTLS TLS socket
 H_URBUF		:= 460		; q: last upstream recv buffer (to retry after a drain)
 H_URROOM	:= 468		; d: its room
 H_RETRIES	:= 364		; d: times this request was sent again (after H_RID)
+H_TSENT		:= 164		; d: the tick it was first sent (`timeout total=`)
 ; H_HEADN	:= 380		  d: the head being parsed's length (quarantine.inc)
 assert H_ULPERR + 4 <= 1 shl H_SHIFT
 assert H_BUF + 8 <= 1 shl H_SHIFT
@@ -3514,6 +3515,21 @@ http_may_retry:
 .policy:
 	cmp	[r15+H_RETRIES],ecx
 	jae	.no
+	mov	eax,[r15+H_ACT]			; `timeout total=`: no retry starts past it
+	test	eax,eax
+	jz	@f
+	dec	eax
+	imul	rax,rax,RA_SIZE
+	mov	eax,[g_acts+rax+RA_TOTAL]
+	test	eax,eax
+	jz	@f
+	push	rcx
+	mov	ecx,[g_tick]
+	sub	ecx,[r15+H_TSENT]
+	cmp	ecx,eax
+	pop	rcx
+	jae	.no
+@@:
 	mov	eax,RON_RESET
 	test	esi,esi
 	jz	.why
@@ -4445,26 +4461,65 @@ PH_BODY		:= 4		; the request body must keep coming: `body_idle`
 PH_KINDS	:= 4
 TRIM_SECS	:= 2
 
+PH_CLASSES	:= MAX_LISTENERS * PH_KINDS	; then a route's `timeout try=` lists, by class
+
 bss
-	g_ph_head	rd MAX_LISTENERS * PH_KINDS
-	g_ph_tail	rd MAX_LISTENERS * PH_KINDS
+	g_ph_head	rd PH_CLASSES + MAX_TRYC
+	g_ph_tail	rd PH_CLASSES + MAX_TRYC
 end bss
 
-; edi = session, esi = PH_*: start that clock now.
+; edi = session, esi = S_PH_KIND (PH_* | class << 8): ecx = its list. Keeps
+; all but rcx.
+ph_list:
+	mov	ecx,esi
+	shr	ecx,8
+	jz	@f
+	add	ecx,PH_CLASSES - 1		; a route's try= class
+	ret
+@@:
+	push	rax
+	mov	eax,edi
+	shl	rax,S_SHIFT
+	add	rax,[g_sess_base]
+	mov	ecx,[rax+S_LST]
+	lea	ecx,[rcx*4+rsi-1]
+	pop	rax
+	ret
+
+; edi = session, esi = PH_*: start that clock now. The response clock of a
+; request whose route says `timeout try=` is on its class's list.
 ph_arm:
 	push	rsi
 	push	rdi
 	call	ph_disarm
 	pop	rdi
 	pop	rsi
+	cmp	esi,PH_RESPONSE
+	jne	.kind
+	mov	eax,edi
+	shl	rax,H_SHIFT
+	add	rax,[g_http_base]
+	cmp	dword [rax+H_RETRIES],0
+	jne	@f
+	mov	ecx,[g_tick]			; (first sent: `timeout total=` counts from here)
+	mov	[rax+H_TSENT],ecx
+@@:
+	mov	ecx,[rax+H_ACT]
+	test	ecx,ecx
+	jz	.kind
+	dec	ecx
+	imul	rcx,rcx,RA_SIZE
+	mov	ecx,[g_acts+rcx+RA_TRYC]
+	shl	ecx,8
+	or	esi,ecx
+.kind:
 	mov	eax,edi
 	shl	rax,S_SHIFT
 	add	rax,[g_sess_base]
 	mov	[rax+S_PH_KIND],esi
 	mov	ecx,[g_tick]
 	mov	[rax+S_PH_AT],ecx
-	mov	ecx,[rax+S_LST]
-	lea	ecx,[rcx*4+rsi-1]
+	call	ph_list
 	mov	edx,[g_ph_tail+rcx*4]
 	mov	[rax+S_PH_PREV],edx
 	mov	dword [rax+S_PH_NEXT],NIL
@@ -4488,8 +4543,7 @@ ph_disarm:
 	test	esi,esi
 	jz	.none
 	mov	dword [rax+S_PH_KIND],0
-	mov	ecx,[rax+S_LST]
-	lea	ecx,[rcx*4+rsi-1]
+	call	ph_list
 	mov	edx,[rax+S_PH_PREV]
 	mov	r8d,[rax+S_PH_NEXT]
 	cmp	edx,NIL
@@ -4574,6 +4628,39 @@ ph_expire:
 	inc	r12d
 	jmp	.listener
 .done:
+	; a route's `timeout try=`: one list a class, its seconds
+	xor	r12d,r12d
+.class:
+	cmp	r12d,[g_plan_tryc]
+	jae	.classes_done
+	mov	r13d,[g_try_secs+r12*4]
+.class_oldest:
+	lea	ecx,[r12+PH_CLASSES]
+	mov	ebx,[g_ph_head+rcx*4]
+	cmp	ebx,NIL
+	je	.class_next
+	call	session_ptr
+	mov	ecx,[g_tick]
+	sub	ecx,[rax+S_PH_AT]
+	cmp	ecx,r13d
+	jbe	.class_next			; never early
+	mov	edi,ebx
+	call	ph_disarm
+	push	r12
+	push	r13
+	push	rbx
+	push	rbx
+	mov	esi,PH_RESPONSE
+	call	http_phase_expired
+	pop	rbx
+	pop	rbx
+	pop	r13
+	pop	r12
+	jmp	.class_oldest
+.class_next:
+	inc	r12d
+	jmp	.class
+.classes_done:
 	pop	r14
 	pop	r13
 	pop	r12

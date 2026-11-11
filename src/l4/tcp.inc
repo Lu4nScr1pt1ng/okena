@@ -170,7 +170,17 @@ sessions_init:
 	mov	dword [g_ph_tail+rcx*4+12],NIL
 	inc	ebx
 	jmp	.listener
+.ph_classes:
+	xor	ecx,ecx				; a route's `timeout try=` lists
+@@:
+	mov	dword [g_ph_head+PH_CLASSES*4+rcx*4],NIL
+	mov	dword [g_ph_tail+PH_CLASSES*4+rcx*4],NIL
+	inc	ecx
+	cmp	ecx,MAX_TRYC
+	jb	@b
+	ret
 .sized:
+	call	.ph_classes
 	test	r12d,r12d			; (only `udp`: no sessions, but they are mapped)
 	jnz	@f
 	inc	r12d
@@ -907,7 +917,7 @@ idle_expire:
 	mov	ecx,[g_tick]
 	sub	ecx,[rax+S_LAST]
 	jz	.fresh
-	cmp	dword [rax+S_PH_KIND],PH_RESPONSE
+	cmp	byte [rax+S_PH_KIND],PH_RESPONSE	; (a class in the bits above)
 	jne	.fresh
 	mov	edi,ebx				; waiting on its backend: not idle,
 	call	idle_touch			; the response timeout owns it
