@@ -14,7 +14,7 @@ not built yet. A directive that is not built is refused by `okena check`
 | `udp ADDR...` | `to`, `responses N`, `limits { connections }` (flows), `timeout { idle }` |
 | `http ADDR...` | `host`, `route`, `mss`, `errors CODES file= [backend]`, `maintenance file= retry= allow= except=`, `limits`, `timeout { idle; header; body_idle; response }`, `trusted_proxies`, `access_log`, `tracing`, `http2 on\|off`, `http3 on\|off\|retry\|v2`, `preferred_address`, `early_data on\|off`, `tls { cert; key; ktls on\|off; versions 1.2 1.3; alpn h2 http/1.1 }` |
 | `route PATH... [METHOD...]` | `to`, `redirect`, `respond CODE [BODY] [type=]`, `rewrite path`, `signed_urls key= [key2=]`, `header set\|add\|drop`, `response header set\|add\|drop`, `retry N [idempotent-only] [on=reset,timeout,5xx,500,502,503,504]` |
-| `pool NAME` | `server ADDR [weight=N] [max=N] [backup]`, `queue timeout=`, `balance least-request\|peak-ewma\|round-robin\|least-conn\|random\|maglev\|ring-hash\|source-hash [key=] [bound=]\|first`, `sticky cookie= [ttl=] [samesite=]`, `connect timeout=`, `health tcp\|http\|grpc ...`, `outlier errors= eject= max_ejected=`, `retry_budget P% [min=N/s]`, `source ADDR...`, `slow_start`, `tls { trust FILE; sni NAME; cert FILE; key FILE }` (TLS to the backends), `protocol h1\|h2\|fastcgi` |
+| `pool NAME` | `server ADDR [weight=N] [max=N] [backup]`, `queue timeout=`, `balance least-request\|peak-ewma\|round-robin\|least-conn\|random\|maglev\|ring-hash\|source-hash [key=] [bound=]\|first`, `sticky cookie= [ttl=] [samesite=]`, `connect timeout= max= idle= warm=`, `health tcp\|http\|grpc ...`, `outlier errors= eject= max_ejected=`, `retry_budget P% [min=N/s]`, `source ADDR...`, `slow_start`, `tls { trust FILE; sni NAME; cert FILE; key FILE }` (TLS to the backends), `protocol h1\|h2\|fastcgi` |
 
 `okena { ech PUBLIC_NAME KEYFILE... }` turns on Encrypted Client Hello (the
 draft's version 0xfe0d) for every TLS listener: a client that has okena's
@@ -1497,6 +1497,17 @@ pool api {
     slow_start 30s
 }
 ```
+
+`connect` says how connections to the pool's servers are made and kept, in
+each worker: `timeout=` for a connect (2 s), `max=` idle connections kept for
+reuse per server (512; 0 keeps none, each request its own connection),
+`idle=` how long one is kept unused (50 s, below the usual keep-alive of
+backends so that okena closes first, never the backend in the middle of a
+reuse), and `warm=N` connections opened ahead of need per server, so that the
+first requests after a quiet spell, or after a server comes back, find one
+(plain HTTP/1.1 pools: TLS, h2 and FastCGI connect on demand). Warm ones that
+fail to connect leave the pool by themselves, as do idle ones the backend
+closes.
 
 `outlier errors=5 eject=10s max_ejected=50%` (the defaults) is passive health,
 in each worker: a server that gives `errors` failing answers in a row (5xx, or

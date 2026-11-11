@@ -364,6 +364,7 @@ tick_work:
 	call	health_follow
 	call	hash_tick
 	call	pool_expire
+	call	pool_warm			; `connect warm=`
 	call	stats_publish
 	call	udp_tick
 	mov	eax,[g_hb_slot]

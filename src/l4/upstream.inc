@@ -175,8 +175,11 @@ upslot_free:
 ; edi = server, esi = handle (slot or descriptor). CF when the pool is
 ; full (the caller closes the connection then).
 pool_put:
+	mov	eax,[g_sv_pool+rdi*4]		; the pool's `connect max=`
+	imul	rax,rax,PL_SIZE
+	mov	ecx,[g_pools+rax+PL_CMAX]
 	mov	eax,[g_pool_n+rdi*4]
-	cmp	eax,POOL_MAX
+	cmp	eax,ecx
 	jae	.full
 	imul	ecx,edi,POOL_MAX
 	add	ecx,eax
@@ -251,8 +254,8 @@ pool_close_handle:
 	syscall
 	ret
 
-; Tick: close idle connections parked longer than POOL_IDLE (they sit at
-; the bottom of each stack).
+; Tick: close idle connections parked longer than their pool's `connect idle=`
+; (POOL_IDLE; they sit at the bottom of each stack).
 pool_expire:
 	push	rbx
 	push	r12
@@ -264,9 +267,12 @@ pool_expire:
 	cmp	dword [g_pool_n+rbx*4],0
 	je	.next
 	imul	r12d,ebx,POOL_MAX
+	mov	eax,[g_sv_pool+rbx*4]		; the pool's `connect idle=`
+	imul	rax,rax,PL_SIZE
+	mov	ecx,[g_pools+rax+PL_CIDLE]
 	mov	eax,[g_tick]
 	sub	eax,[g_pool_t+r12*4]
-	cmp	eax,POOL_IDLE
+	cmp	eax,ecx
 	jbe	.next
 	mov	edi,[g_pool_h+r12*4]
 	push	rdi
@@ -293,6 +299,224 @@ pool_expire:
 	inc	ebx
 	jmp	.server
 .done:
+	pop	r12
+	pop	rbx
+	ret
+
+; Tick: `connect warm=N`: each server of such a pool (plain HTTP/1.1, up and
+; chosen by the balancer's rules) has N connections open in each worker
+; before any request needs one. Opened here and parked at once: one whose
+; connect fails is seen by its watch (an error) and leaves the pool, as one
+; the backend closed; one taken before its connect is done waits for it.
+pool_warm:
+	push	rbx
+	push	r12
+	push	r13
+	xor	r12d,r12d			; pool
+.pool:
+	cmp	r12d,[g_plan_pools]
+	jae	.done
+	imul	r13,r12,PL_SIZE
+	lea	r13,[g_pools+r13]
+	cmp	dword [r13+PL_CWARM],0
+	je	.next_pool
+	mov	eax,[r13+PL_TLS]
+	or	eax,[r13+PL_H2]
+	or	eax,[r13+PL_FCGI]
+	jnz	.next_pool			; (a handshake or a preface first: not here)
+	mov	ebx,[r13+PL_FIRST]
+.server:
+	mov	eax,[r13+PL_FIRST]
+	add	eax,[r13+PL_COUNT]
+	cmp	ebx,eax
+	jae	.next_pool
+	mov	edi,ebx
+	mov	esi,2
+	call	server_eligible			; up, not drained, not ejected
+	jnc	.next_server
+	imul	rax,rbx,SV_SIZE
+	cmp	dword [g_servers+rax+SV_FAMILY],AF_UNIX
+	je	@f
+	cmp	dword [g_servers+rax+SV_SALEN],0
+	je	.next_server			; (a name not resolved yet)
+@@:
+	mov	eax,[g_pool_n+rbx*4]
+	cmp	eax,[r13+PL_CWARM]
+	jae	.next_server
+	mov	edi,ebx
+	call	warm_one
+	jnc	@b
+.next_server:
+	inc	ebx
+	jmp	.server
+.next_pool:
+	inc	r12d
+	jmp	.pool
+.done:
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; edi = server: a connection to it, into its pool. CF when none could be made.
+warm_one:
+	push	rbx
+	push	r12
+	push	r13
+	mov	ebx,edi
+	imul	r13,rbx,SV_SIZE
+	lea	r13,[g_servers+r13]
+	cmp	dword [g_engine],ENGINE_EPOLL
+	je	.epoll
+	call	upslot_alloc
+	cmp	eax,NIL
+	je	.fail
+	mov	r12d,eax
+	call	ring_get_sqe
+	mov	byte [rax+SQE_OPCODE],IORING_OP_SOCKET
+	mov	byte [rax+SQE_FLAGS],IOSQE_IO_LINK
+	mov	ecx,[r13+SV_FAMILY]
+	mov	[rax+SQE_FD],ecx
+	mov	qword [rax+SQE_OFF],SOCK_STREAM
+	lea	ecx,[r12+1]
+	mov	[rax+SQE_FILE_INDEX],ecx
+	mov	rcx,OP_IGNORE shl 56
+	mov	[rax+SQE_USER_DATA],rcx
+	cmp	dword [r13+SV_FAMILY],AF_UNIX
+	je	.u_connect
+	call	ring_get_sqe
+	mov	byte [rax+SQE_OPCODE],IORING_OP_URING_CMD
+	mov	byte [rax+SQE_FLAGS],IOSQE_FIXED_FILE or IOSQE_IO_HARDLINK
+	mov	[rax+SQE_FD],r12d
+	mov	dword [rax+SQE_CMD_OP],SOCKET_URING_OP_SETSOCKOPT
+	mov	dword [rax+SQE_LEVEL],IPPROTO_TCP
+	mov	dword [rax+SQE_OPTNAME],TCP_NODELAY
+	mov	dword [rax+SQE_OPTLEN],4
+	lea	rcx,[one_int]
+	mov	[rax+SQE_OPTVAL],rcx
+	mov	rcx,OP_IGNORE shl 56
+	mov	[rax+SQE_USER_DATA],rcx
+	cmp	dword [g_uring_bind],0
+	je	.u_connect
+	mov	edi,[g_sv_pool+rbx*4]
+	mov	esi,[r13+SV_FAMILY]
+	call	pool_source
+	test	rax,rax
+	jz	.u_connect
+	push	rax
+	call	ring_get_sqe
+	mov	byte [rax+SQE_OPCODE],IORING_OP_URING_CMD
+	mov	byte [rax+SQE_FLAGS],IOSQE_FIXED_FILE or IOSQE_IO_HARDLINK
+	mov	[rax+SQE_FD],r12d
+	mov	dword [rax+SQE_CMD_OP],SOCKET_URING_OP_SETSOCKOPT
+	mov	dword [rax+SQE_LEVEL],IPPROTO_IP
+	mov	dword [rax+SQE_OPTNAME],IP_BIND_ADDRESS_NO_PORT
+	mov	dword [rax+SQE_OPTLEN],4
+	lea	rcx,[one_int]
+	mov	[rax+SQE_OPTVAL],rcx
+	mov	rcx,OP_IGNORE shl 56
+	mov	[rax+SQE_USER_DATA],rcx
+	call	ring_get_sqe
+	pop	rcx
+	mov	byte [rax+SQE_OPCODE],IORING_OP_BIND
+	mov	byte [rax+SQE_FLAGS],IOSQE_FIXED_FILE or IOSQE_IO_LINK
+	mov	[rax+SQE_FD],r12d
+	mov	[rax+SQE_ADDR],rcx
+	mov	edx,[rcx+28]
+	mov	[rax+SQE_ADDR2],rdx
+	mov	rcx,OP_IGNORE shl 56
+	mov	[rax+SQE_USER_DATA],rcx
+.u_connect:
+	; the connect, then (hard-linked: whatever it gave) the pool's watch, which
+	; would see a socket not yet connecting as hung up if it ran first
+	call	ring_get_sqe
+	mov	byte [rax+SQE_OPCODE],IORING_OP_CONNECT
+	mov	byte [rax+SQE_FLAGS],IOSQE_FIXED_FILE or IOSQE_IO_HARDLINK
+	mov	[rax+SQE_FD],r12d
+	lea	rcx,[r13+SV_SA]
+	mov	[rax+SQE_ADDR],rcx
+	mov	ecx,[r13+SV_SALEN]
+	mov	[rax+SQE_OFF],rcx
+	mov	rcx,OP_IGNORE shl 56
+	mov	[rax+SQE_USER_DATA],rcx
+	mov	edi,ebx
+	mov	esi,r12d
+	call	pool_put			; (its watch: the next SQE, linked)
+	jnc	.ok
+	mov	edi,r12d			; (not reached: room was looked at)
+	call	pool_close_handle
+	jmp	.fail
+.epoll:
+	mov	edi,[r13+SV_FAMILY]
+	mov	esi,SOCK_STREAM or SOCK_NONBLOCK or SOCK_CLOEXEC
+	xor	edx,edx
+	mov	eax,SYS_socket
+	syscall
+	test	eax,eax
+	js	.fail
+	mov	r12d,eax
+	cmp	dword [r13+SV_FAMILY],AF_UNIX
+	je	.e_connect
+	mov	edi,r12d
+	mov	esi,IPPROTO_TCP
+	mov	edx,TCP_NODELAY
+	lea	r10,[one_int]
+	mov	r8d,4
+	mov	eax,SYS_setsockopt
+	syscall
+	mov	edi,[g_sv_pool+rbx*4]
+	mov	esi,[r13+SV_FAMILY]
+	call	pool_source
+	test	rax,rax
+	jz	.e_connect
+	push	rax
+	mov	edi,r12d
+	mov	esi,IPPROTO_IP
+	mov	edx,IP_BIND_ADDRESS_NO_PORT
+	lea	r10,[one_int]
+	mov	r8d,4
+	mov	eax,SYS_setsockopt
+	syscall
+	pop	rsi
+	mov	edi,r12d
+	mov	edx,[rsi+28]
+	mov	eax,SYS_bind
+	syscall
+	test	eax,eax
+	jnz	.e_close
+.e_connect:
+	mov	edi,r12d
+	lea	rsi,[r13+SV_SA]
+	mov	edx,[r13+SV_SALEN]
+	mov	eax,SYS_connect
+	syscall
+	test	eax,eax
+	jz	@f
+	cmp	eax,-EINPROGRESS
+	jne	.e_close
+@@:
+	mov	edi,r12d			; registered as a pooled one (EK_POOL)
+	mov	esi,EPOLLIN or EPOLLRDHUP or EPOLLET
+	mov	edx,r12d
+	mov	rcx,EK_POOL shl 56
+	or	rdx,rcx
+	call	ep_add
+	mov	[g_hd_server+r12*4],ebx
+	mov	edi,ebx
+	mov	esi,r12d
+	call	pool_put			; (its ep_mod: the same registration)
+	jnc	.ok
+.e_close:
+	mov	edi,r12d
+	mov	eax,SYS_close
+	syscall
+.fail:
+	stc
+	jmp	.out
+.ok:
+	clc
+.out:
+	pop	r13
 	pop	r12
 	pop	rbx
 	ret

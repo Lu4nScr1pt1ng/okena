@@ -194,8 +194,8 @@ keysdef k_cca, 'crl', T_ANY
 keysdef k_health, 'every', T_DURATION, 'timeout', T_DURATION, 'rise', T_COUNT, 'fall', T_COUNT, \
 	'expect', T_STATUSES, 'host', T_HOSTNAME
 keysdef k_uptls, 'trust', T_ANY, 'sni', T_HOSTNAME, 'cert', T_ANY, 'key', T_ANY
-keysdef k_connect, 'timeout', T_DURATION, 'max', T_FUTURE, 'idle', T_FUTURE, \
-	'warm', T_FUTURE, 'rate', T_FUTURE
+keysdef k_connect, 'timeout', T_DURATION, 'max', T_UINT, 'idle', T_DURATION, \
+	'warm', T_UINT, 'rate', T_FUTURE
 
 ; Names of the contexts, for messages, in CTX_* order starting at 1.
 enumdef ctx_names, 'the top level', '`okena`', '`tcp`', '`pool`', '`limits`', '`timeout`', '`http`', '`route`', '`host`', '`tls`', '`auth`', '`udp`', '`alerts`'

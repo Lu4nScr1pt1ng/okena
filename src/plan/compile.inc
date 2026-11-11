@@ -208,10 +208,13 @@ PL_RBPCT	:= 764		; d: `retry_budget P%`: what a request adds, in 1/10000 of a re
 PL_RBMIN	:= 768		; d: `min=`: the floor each second, in 1/10000 of a retry
 PL_RBCAP	:= 772		; d: the most it holds
 PL_SRCN		:= 776		; d: `source`: how many addresses
+PL_CMAX		:= 780		; d: `connect max=`: idle connections kept per server (a worker's)
 PL_SRC		:= 784		; PL_SRCMAX of { sockaddr (28), its length (d) }
 PL_SRCSZ	:= 32
 PL_SRCMAX	:= 8
-PL_SIZE		:= PL_SRC + PL_SRCMAX * PL_SRCSZ		; room for PL_TLS_ANCHOR + a PK blob (16 + 528), then PL_H2
+PL_CIDLE	:= PL_SRC + PL_SRCMAX * PL_SRCSZ	; d: `idle=`: seconds one is kept
+PL_CWARM	:= PL_CIDLE + 4	; d: `warm=`: kept open ahead of need, per server (a worker's)
+PL_SIZE		:= PL_CWARM + 12		; room for PL_TLS_ANCHOR + a PK blob (16 + 528), then PL_H2
 assert PL_TLS_ANCHOR + PK_SIZE <= PL_H2
 
 ; Server
@@ -827,6 +830,8 @@ pool_new:
 	mov	qword [rax+PL_TIMEOUT+8],(DEFAULT_CONNECT_US mod 1000000) * 1000
 	mov	dword [rax+PL_BALANCE],BAL_LEAST_REQ
 	mov	dword [rax+PL_OERR],5
+	mov	dword [rax+PL_CMAX],POOL_MAX
+	mov	dword [rax+PL_CIDLE],POOL_IDLE
 	mov	dword [rax+PL_OEJECT],10
 	mov	dword [rax+PL_OMAX],5000
 	mov	dword [rax+PL_RBPCT],2000	; a fifth of the requests
@@ -2709,6 +2714,16 @@ plan_bad_retry:
 
 cstring str_key_on, 'on',0
 
+plan_bad_connect:
+	call	log_begin
+	out_lit 'connect takes timeout=, max= (idle connections kept per server in each worker, 0 to 512), idle= (whole seconds, 1s to 1h) and warm= (opened ahead of need, 0 to 64 and not past max=)'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
+
+cstring str_key_idle, 'idle',0
+cstring str_key_warm, 'warm',0
+
 plan_bad_respond:
 	call	log_begin
 	out_lit 'respond takes a status, 200 to 299 or 400 to 599 (a redirect is `redirect`), then perhaps a body of up to 4 KiB (none with 204) and type= its content type'
@@ -3307,7 +3322,7 @@ compile_pool:
 	lea	rsi,[str_key_timeout]
 	call	node_option
 	test	rax,rax
-	jz	.advance
+	jz	.connect_max
 	mov	rdi,[rax+A_VAL]
 	mov	esi,[rax+A_VLEN]
 	call	parse_duration
@@ -3317,6 +3332,51 @@ compile_pool:
 	mov	[r13+PL_TIMEOUT],rax
 	imul	rdx,rdx,1000
 	mov	[r13+PL_TIMEOUT+8],rdx
+.connect_max:
+	mov	rdi,rbx				; max=: idle connections kept, per server
+	lea	rsi,[str_key_max]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_decimal
+	cmp	rax,POOL_MAX
+	ja	plan_bad_connect
+	mov	[r13+PL_CMAX],eax
+@@:
+	mov	rdi,rbx				; idle=: how long one is kept
+	lea	rsi,[str_key_idle]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_duration
+	xor	edx,edx
+	mov	ecx,1000000
+	div	rcx
+	test	rdx,rdx
+	jnz	plan_bad_connect
+	test	rax,rax
+	jz	plan_bad_connect
+	cmp	rax,3600
+	ja	plan_bad_connect
+	mov	[r13+PL_CIDLE],eax
+@@:
+	mov	rdi,rbx				; warm=: open ahead of need
+	lea	rsi,[str_key_warm]
+	call	node_option
+	test	rax,rax
+	jz	.advance
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_decimal
+	cmp	rax,64
+	ja	plan_bad_connect
+	cmp	eax,[r13+PL_CMAX]
+	ja	plan_bad_connect
+	mov	[r13+PL_CWARM],eax
 	jmp	.advance
 .uptls:
 	mov	dword [r13+PL_TLS],1
