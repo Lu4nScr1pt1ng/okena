@@ -107,6 +107,7 @@ SUITES = [
     ("peer epoll", ["tests/peer/run.py", "epoll"]),
     ("config fuzz", ["tests/config/fuzz.py", "2000"]),
     ("config", ["tests/config/run.py"]),
+    ("host check", ["tests/config/host.py"]),
     ("bench", ["tests/bench/run.py"]),
     ("hpack", ["tests/h2/hpack_suite.py"]),
     ("h2 io_uring", ["tests/h2/run.py", "io_uring"]),

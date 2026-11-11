@@ -2,6 +2,7 @@
 ;
 ;   okena [run] [-c FILE]          serve (default file /etc/okena/okena.conf)
 ;   okena check [FILE]             validate a configuration
+;   okena check --host [FILE]      what of the host would hold okena back
 ;   okena bench URL [key=value...] open-loop load (src/bench/bench.inc)
 ;   okena tcp :5432 to db:5432     the configuration itself, on the line
 ;   okena version | help
@@ -36,6 +37,7 @@ cstring str_cmd_ech, 'ech',0
 cstring str_flag_help, '--help',0
 cstring str_flag_version, '--version',0
 cstring str_flag_c, '-c',0
+cstring str_flag_host, '--host',0
 cstring str_default_conf, '/etc/okena/okena.conf',0
 cstring str_name_cmdline, '<command line>',0
 cstring str_name_env, 'OKENA_CONFIG',0
@@ -219,6 +221,15 @@ cli_main:
 	call	cli_source_from_args
 	jmp	cli_run
 .check:
+	cmp	qword [g_argc],3
+	jb	@f
+	mov	rax,[g_argv]
+	mov	rdi,[rax+16]
+	lea	rsi,[str_flag_host]
+	call	cstr_eq
+	test	eax,eax
+	jnz	cli_check_host
+@@:
 	mov	edi,2
 	call	cli_source_from_args
 	jmp	cli_check
