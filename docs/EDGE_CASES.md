@@ -3,7 +3,7 @@
 What okena does in the situations that break proxies. Each line is a
 behaviour to implement and a test to keep. The HTTP/1.x parsing table is
 checked line by line against a running okena by `tests/httpproxy/edge.py`
-(both engines), and its parser against a reference by `tests/http/run.py`. "Reject" means a 4xx/5xx with
+(both engines), the upstream responses table by `tests/httpproxy/upstream.py`, and its parser against a reference by `tests/http/run.py`. "Reject" means a 4xx/5xx with
 the connection closed when its framing can no longer be trusted.
 
 ## Network and TCP
@@ -78,13 +78,17 @@ the connection closed when its framing can no longer be trusted.
 
 | Case | Behaviour |
 |---|---|
-| Malformed response (bad framing, invalid headers) | 502, upstream connection closed |
+| Malformed response (bad framing, invalid headers, bare LF, obs-fold, a status under 100, a version other than 1.0/1.1) | 502, upstream connection closed |
+| Status line without a reason (`HTTP/1.1 200`, its space missing too) | accepted: servers send it, and the reason means nothing |
+| Field values with bytes above 0x7F (obs-text) | kept as they came |
+| A 101 the request did not ask for | 502 |
 | Response to `HEAD`, 204, 304 with a body or `Content-Length` | no body forwarded; connection to the backend closed if it sent one anyway |
 | Response delimited by connection close | supported; converted to chunked or DATA frames for the client |
 | Several 1xx before the final response | forwarded (103 Early Hints included) or dropped per route |
 | Response before the request body was fully sent | request body stopped, response forwarded, upstream connection not reused |
 | Backend closes a reused keep-alive connection | retry once on a new connection if no response byte arrived and the request is safe to repeat |
-| `Content-Length` shorter or longer than the body | 502 if detected before the response started; connection reset to the client after, so it cannot cache a truncated body |
+| `Content-Length` shorter or longer than the body | 502 if detected before the response started; after, the client's connection is closed before the body's end (a length not met, no last chunk), so it cannot take a truncated body for a whole one |
+| Bytes after a response (past its length, a body on 204/304/HEAD), even arriving late | never read as the next response: the pooled connection is looked at before reuse and dropped if anything is waiting on it |
 | Upstream sends `Transfer-Encoding` and `Content-Length` | treated as invalid, 502 |
 | Huge response headers | limit, 502 |
 | Backend sets hop-by-hop headers or `Upgrade` without being asked | stripped |

@@ -275,7 +275,8 @@ http_parse_response:
 	mov	r12d,esi
 	mov	r13,rdx
 	call	hm_reset
-	; "HTTP/1.x SP 3DIGIT SP reason CRLF" (the reason may be empty)
+	; "HTTP/1.x SP 3DIGIT SP reason CRLF" (the reason may be empty, and its
+	; space missing)
 	cmp	r12d,14
 	jb	.bad
 	cmp	dword [rbx],'HTTP'
@@ -308,9 +309,13 @@ http_parse_response:
 	cmp	eax,100
 	jb	.bad
 	mov	[r13+HM_STATUS],eax
-	cmp	byte [rbx+12],' '
-	jne	.bad
 	mov	ecx,13
+	cmp	byte [rbx+12],' '
+	je	@f
+	cmp	byte [rbx+12],13		; "HTTP/1.1 200" and its CRLF: no reason, nor
+	jne	.bad				; its space (servers send it so; a client
+	mov	ecx,12				; ignores the reason anyway)
+@@:
 	lea	rax,[rbx+rcx]
 	mov	[r13+HM_TARGET],rax
 .reason:
@@ -329,7 +334,9 @@ http_parse_response:
 	inc	ecx
 	jmp	.reason
 .reason_end:
-	lea	eax,[rcx-13]
+	mov	rax,rbx
+	add	rax,rcx
+	sub	rax,[r13+HM_TARGET]
 	mov	[r13+HM_TLEN],eax
 	cmp	byte [rbx+rcx+1],10
 	jne	.bad

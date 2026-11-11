@@ -261,9 +261,9 @@ def parse_response(h):
     if h[8] != 32 or not all(48 <= c <= 57 for c in h[9:12]):
         raise Err(400)
     status = int(h[9:12])
-    if status < 100 or h[12] != 32:
+    if status < 100 or h[12] not in (32, 13):
         raise Err(400)
-    i = 13
+    i = 13 if h[12] == 32 else 12
     while h[i] != 13:
         c = h[i]
         if c != 9 and (c < 32 or c == 0x7F):
@@ -448,7 +448,9 @@ CORPUS = [
     ("Q", b"GET / HTTP/1.1\r\n" + R + b"Connection: host\r\n\r\n", "ok"),            # cannot hide Host
     ("S", b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n", "ok"),
     ("S", b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nTransfer-Encoding: chunked\r\n\r\n", "error 400"),
-    ("S", b"HTTP/1.1 200\r\n\r\n", "error 400"),
+    ("S", b"HTTP/1.1 200\r\n\r\n", "ok"),                                         # no reason, nor its space
+    ("S", b"HTTP/1.1 200\rX\r\n\r\n", "error 400"),
+    ("S", b"HTTP/1.1 2000\r\n\r\n", "error 400"),
     ("S", b"HTTP/1.1 200 \r\n\r\n", "ok"),
     ("S", b"HTTP/1.1 099 x\r\n\r\n", "error 400"),
     ("S", b"HTTP/1.0 204 No Content\r\n\r\n", "ok"),
