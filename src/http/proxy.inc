@@ -964,11 +964,14 @@ http_request:
 	call	hedge_arm
 	h_rec
 .not_hedged:
-	add	dword [g_retry_tokens+r13*4],RETRY_PER_REQ	; the pool's budget grows with its traffic
-	cmp	dword [g_retry_tokens+r13*4],RETRY_CAP
+	imul	rax,r13,PL_SIZE			; the pool's budget grows with its traffic
+	mov	ecx,[g_pools+rax+PL_RBPCT]
+	add	ecx,[g_retry_tokens+r13*4]
+	cmp	ecx,[g_pools+rax+PL_RBCAP]
 	jbe	@f
-	mov	dword [g_retry_tokens+r13*4],RETRY_CAP
+	mov	ecx,[g_pools+rax+PL_RBCAP]
 @@:
+	mov	[g_retry_tokens+r13*4],ecx
 	mov	eax,r13d			; FastCGI: HB_FCGI (fastcgi.inc)
 	call	fcgi_mark
 	call	session_ptr
@@ -3299,23 +3302,20 @@ http_latency_sample:
 ; ------------------------------------------------- retries and outliers
 
 ; Outlier ejection (per worker, like the connect failures): a server that
-; answers OUTLIER_5XX 5xx in a row (or times out) is ejected for
-; EJECT_TICKS; any other answer resets its count.
+; answers its pool's `outlier errors=` 5xx in a row (5; or times out) is
+; ejected for `eject=` (10 s), never more than `max_ejected=` of the pool
+; (50%); any other answer resets its count.
 ;
 ; Retries: a request that is idempotent and has no body goes once more
 ; to another server when the backend answers 502, 503 or 504 or closes
 ; before any response byte. A budget keeps retries from multiplying a
-; failure: per worker, at most a fifth of the requests plus 10 per second
-; (tokens in tenths of a retry).
-OUTLIER_5XX	:= 5
-RETRY_COST	:= 10
-RETRY_PER_REQ	:= 2
-RETRY_FLOOR	:= 100
-RETRY_CAP	:= 1000
+; failure: per worker, `retry_budget` (a fifth) of the requests plus `min=`
+; (10) a second, in tokens of 1/10000 of a retry.
+RETRY_COST	:= 10000
 
 bss
 	g_sv_5xx	rd MAX_SERVERS
-	g_retry_tokens	rd MAX_POOLS		; per pool, tenths of a retry
+	g_retry_tokens	rd MAX_POOLS		; per pool, 1/10000 of a retry
 end bss
 
 ; Tick: the budget's floor.
@@ -3324,9 +3324,11 @@ retry_budget_tick:
 .pool:
 	cmp	ecx,[g_plan_pools]
 	jae	.done
-	cmp	dword [g_retry_tokens+rcx*4],RETRY_FLOOR
+	imul	rax,rcx,PL_SIZE
+	mov	eax,[g_pools+rax+PL_RBMIN]
+	cmp	[g_retry_tokens+rcx*4],eax
 	jae	@f
-	mov	dword [g_retry_tokens+rcx*4],RETRY_FLOOR
+	mov	[g_retry_tokens+rcx*4],eax
 @@:
 	inc	ecx
 	jmp	.pool
@@ -3337,29 +3339,52 @@ retry_budget_tick:
 server_5xx:
 	cmp	edi,NIL
 	je	.done
+	mov	ecx,[g_sv_pool+rdi*4]
+	imul	rcx,rcx,PL_SIZE
+	mov	ecx,[g_pools+rcx+PL_OERR]
+	test	ecx,ecx
+	jz	.done				; (errors=0: answers never eject)
 	inc	dword [g_sv_5xx+rdi*4]
-	cmp	dword [g_sv_5xx+rdi*4],OUTLIER_5XX
+	cmp	[g_sv_5xx+rdi*4],ecx
 	jb	.done
 	mov	dword [g_sv_5xx+rdi*4],0
 	mov	ecx,[g_sv_down+rdi*4]
 	cmp	ecx,[g_tick]
 	ja	.done				; already ejected
-	call	eject_share_full		; never more than half a pool
+	call	eject_share_full		; never more than max_ejected of a pool
 	jc	.done
-	mov	ecx,[g_tick]
-	add	ecx,EJECT_TICKS
-	mov	[g_sv_down+rdi*4],ecx
 	push	rax
 	push	rdi
+	call	sv_eject_secs
+	add	eax,[g_tick]
+	mov	rdi,[rsp]
+	mov	[g_sv_down+rdi*4],eax
 	call	log_begin
 	out_lit 'backend '
 	mov	rdi,[rsp]
 	call	log_server
-	out_lit ' ejected for 10 s after 5 failing answers in a row'
+	out_lit ' ejected for '
+	mov	rdi,[rsp]
+	call	sv_eject_secs
+	call	out_u64
+	out_lit ' s after '
+	mov	rdi,[rsp]
+	mov	eax,[g_sv_pool+rdi*4]
+	imul	rax,rax,PL_SIZE
+	mov	eax,[g_pools+rax+PL_OERR]
+	call	out_u64
+	out_lit ' failing answers in a row'
 	call	log_end
 	pop	rdi
 	pop	rax
 .done:
+	ret
+
+; edi = server: eax = its pool's `outlier eject=`, seconds. Keeps all but rax.
+sv_eject_secs:
+	mov	eax,[g_sv_pool+rdi*4]
+	imul	rax,rax,PL_SIZE
+	mov	eax,[g_pools+rax+PL_OEJECT]
 	ret
 
 ; ebx = session (its S_POOL), edi = server about to be ejected. CF when
@@ -3388,9 +3413,11 @@ eject_share_full:
 	inc	ecx
 	jmp	@b
 @@:
-	inc	edx				; with this one
-	add	edx,edx
-	cmp	edx,[r8+PL_COUNT]
+	inc	edx				; with this one: past max_ejected?
+	imul	edx,edx,10000
+	mov	eax,[r8+PL_COUNT]
+	imul	eax,[r8+PL_OMAX]
+	cmp	edx,eax
 	pop	rdi
 	pop	rax
 	ja	.full

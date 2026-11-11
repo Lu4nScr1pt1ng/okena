@@ -2060,8 +2060,8 @@ server_failed:
 	mov	eax,[g_sv_down+rdi*4]
 	cmp	eax,[g_tick]
 	ja	.done				; already ejected
-	mov	eax,[g_tick]
-	add	eax,EJECT_TICKS
+	call	sv_eject_secs			; the pool's `outlier eject=`
+	add	eax,[g_tick]
 	mov	[g_sv_down+rdi*4],eax
 	mov	dword [g_sv_fails+rdi*4],0
 	push	rdi
@@ -2070,7 +2070,11 @@ server_failed:
 	out_lit 'backend '
 	mov	rdi,[rsp+8]
 	call	log_server
-	out_lit ' ejected for 10 s after 3 failed connects ('
+	out_lit ' ejected for '
+	mov	rdi,[rsp+8]
+	call	sv_eject_secs
+	call	out_u64
+	out_lit ' s after 3 failed connects ('
 	pop	rax
 	neg	rax
 	call	errno_text

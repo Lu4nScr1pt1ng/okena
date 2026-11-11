@@ -120,6 +120,8 @@ test-serial: $(BIN) $(HTTPH) $(KAT) $(TLSH)
 	python3 -I tests/h3/edges.py epoll
 	python3 -I tests/tls/hello.py io_uring
 	python3 -I tests/tls/hello.py epoll
+	python3 -I tests/gateway/outlier.py io_uring
+	python3 -I tests/gateway/outlier.py epoll
 	python3 -I tests/l4/mss.py io_uring
 	python3 -I tests/l4/mss.py epoll
 	python3 -I tests/tls/aes256.py io_uring

@@ -173,6 +173,8 @@ keysdef k_fault, 'abort', T_COUNT, 'percent', T_COUNT, 'delay', T_DURATION
 keysdef k_quic_sid, 'key', T_ANY, 'rotation', T_ANY
 keysdef k_server, 'weight', T_WEIGHT, 'max', T_COUNT
 keysdef k_queue, 'timeout', T_DURATION
+keysdef k_outlier, 'errors', T_UINT, 'eject', T_DURATION, 'max_ejected', T_PERCENT
+keysdef k_rbudget, 'min', T_RATE
 keysdef k_alert, 'trust', T_ANY
 keysdef k_telegram, 'token', T_ANY, 'chat', T_ANY, 'api', T_ANY, 'trust', T_ANY
 enumdef e_alert_on, 'backend', 'worker', 'reload', 'discovery', 'certificate'
@@ -199,7 +201,7 @@ enumdef future_names, 'xdp', \
 	'addon', 'log', 'reload', 'profile', \
 	'acme', 'header', \
 	'source', \
-	'concurrency', 'retry_budget', 'retry', 'outlier', \
+	'concurrency', 'retry', \
 	'canonical', \
 	'body', \
 	'response', 'alpn', 'cert', 'warm'
@@ -317,6 +319,8 @@ dirdef DIR_BODY_IDLE, 'body_idle', M_TIMEOUT, 0,           F_UNIQUE, 1, 1, T_DUR
 dirdef DIR_SERVER, 'server',      M_POOL,    0,           0, 1, 2, T_BACKEND, e_server_flags, k_server
 dirdef DIR_DISCOVER, 'discover', M_POOL,    0,           0, 1, 2, e_discover, T_ANY, k_discover
 dirdef DIR_QUEUE, 'queue',       M_POOL,    0,           F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_queue
+dirdef DIR_OUTLIER, 'outlier',   M_POOL,    0,           F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_outlier
+dirdef DIR_RETRY_BUDGET, 'retry_budget', M_POOL, 0,      F_UNIQUE, 1, 1, T_PERCENT, T_NONE, k_rbudget
 dirdef DIR_STICKY, 'sticky',     M_POOL,    0,           F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_sticky
 dirdef DIR_SLOW_START, 'slow_start', M_POOL,   0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
 dirdef DIR_BALANCE, 'balance',     M_POOL,    0,           F_UNIQUE, 1, 1, e_balance, T_NONE, k_balance

@@ -190,7 +190,13 @@ PL_HBOUND	:= 736		; d: maglev, ring-hash: a server's load at most this % of the 
 PL_HASMAX	:= 740		; d: a server of it has a max
 PL_TLS_CID	:= 744		; d: `tls { cert; key }`: what it shows the backends (g_tls + 1), 0 none
 PL_FCGI		:= 748		; d: 1 when its backends speak FastCGI (`protocol fastcgi`: fastcgi.inc)
-PL_SIZE		:= 768		; room for PL_TLS_ANCHOR + a PK blob (16 + 528), then PL_H2
+PL_OERR		:= 752		; d: `outlier errors=`: failing answers in a row that eject, 0 never
+PL_OEJECT	:= 756		; d: `outlier eject=`: seconds out (failed connects too)
+PL_OMAX		:= 760		; d: `outlier max_ejected=`: hundredths of a percent of its servers
+PL_RBPCT	:= 764		; d: `retry_budget P%`: what a request adds, in 1/10000 of a retry
+PL_RBMIN	:= 768		; d: `min=`: the floor each second, in 1/10000 of a retry
+PL_RBCAP	:= 772		; d: the most it holds
+PL_SIZE		:= 784		; room for PL_TLS_ANCHOR + a PK blob (16 + 528), then PL_H2
 assert PL_TLS_ANCHOR + PK_SIZE <= PL_H2
 
 ; Server
@@ -791,6 +797,12 @@ pool_new:
 	mov	qword [rax+PL_TIMEOUT],DEFAULT_CONNECT_US / 1000000
 	mov	qword [rax+PL_TIMEOUT+8],(DEFAULT_CONNECT_US mod 1000000) * 1000
 	mov	dword [rax+PL_BALANCE],BAL_LEAST_REQ
+	mov	dword [rax+PL_OERR],5
+	mov	dword [rax+PL_OEJECT],10
+	mov	dword [rax+PL_OMAX],5000
+	mov	dword [rax+PL_RBPCT],2000	; a fifth of the requests
+	mov	dword [rax+PL_RBMIN],10 * RETRY_COST	; and 10 a second
+	mov	dword [rax+PL_RBCAP],100 * RETRY_COST
 	ret
 
 ; Access log destinations. The table only grows while the supervisor
@@ -2520,6 +2532,25 @@ plan_too_many:
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process
 
+plan_bad_outlier:
+	call	log_begin
+	out_lit 'outlier takes errors=N (failing answers in a row, 0 to 1000; 0 never ejects on them), eject= (whole seconds, 1s to 24h) and max_ejected=P%'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
+
+plan_bad_rbudget:
+	call	log_begin
+	out_lit 'retry_budget takes a share of the requests (20%) and may take min=N/s, from 1 to 100000 a second'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
+
+cstring str_key_errors, 'errors',0
+cstring str_key_eject, 'eject',0
+cstring str_key_max_ejected, 'max_ejected',0
+cstring str_key_min, 'min',0
+
 ; rdi = pool node.
 compile_pool:
 	push	rbx
@@ -2551,6 +2582,12 @@ compile_pool:
 	lea	rcx,[dir_table + D_SIZE*DIR_QUEUE]
 	cmp	rax,rcx
 	je	.queue
+	lea	rcx,[dir_table + D_SIZE*DIR_OUTLIER]
+	cmp	rax,rcx
+	je	.outlier
+	lea	rcx,[dir_table + D_SIZE*DIR_RETRY_BUDGET]
+	cmp	rax,rcx
+	je	.rbudget
 	lea	rcx,[dir_table + D_SIZE*DIR_DISCOVER]
 	cmp	rax,rcx
 	je	.discover
@@ -2707,6 +2744,76 @@ compile_pool:
 	mov	rdi,r13
 	mov	rsi,rbx
 	call	compile_discover
+	jmp	.advance
+.outlier:
+	mov	rdi,rbx
+	lea	rsi,[str_key_errors]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_decimal
+	jc	plan_bad_outlier
+	cmp	rax,1000
+	ja	plan_bad_outlier
+	mov	[r13+PL_OERR],eax
+@@:
+	mov	rdi,rbx
+	lea	rsi,[str_key_eject]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_duration
+	xor	edx,edx
+	mov	ecx,1000000
+	div	rcx				; whole seconds, 1 at least
+	test	rdx,rdx
+	jnz	plan_bad_outlier
+	test	rax,rax
+	jz	plan_bad_outlier
+	cmp	rax,86400
+	ja	plan_bad_outlier
+	mov	[r13+PL_OEJECT],eax
+@@:
+	mov	rdi,rbx
+	lea	rsi,[str_key_max_ejected]
+	call	node_option
+	test	rax,rax
+	jz	.advance
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_percent
+	mov	[r13+PL_OMAX],eax
+	jmp	.advance
+.rbudget:
+	mov	rax,[rbx+N_ARGS]
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_percent			; hundredths of a percent: 1/10000 of a retry each
+	mov	[r13+PL_RBPCT],eax
+	mov	rdi,rbx
+	lea	rsi,[str_key_min]
+	call	node_option
+	test	rax,rax
+	jz	.advance
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_rate			; rax a period of rdx seconds
+	mov	rcx,rdx
+	xor	edx,edx
+	div	rcx
+	test	rax,rax
+	jz	plan_bad_rbudget		; (less than one a second)
+	cmp	rax,100000
+	ja	plan_bad_rbudget
+	imul	eax,eax,RETRY_COST
+	mov	[r13+PL_RBMIN],eax
+	cmp	eax,[r13+PL_RBCAP]
+	jbe	.advance
+	mov	[r13+PL_RBCAP],eax
 	jmp	.advance
 .queue:
 	mov	rdi,rbx

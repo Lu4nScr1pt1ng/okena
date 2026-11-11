@@ -14,7 +14,7 @@ not built yet. A directive that is not built is refused by `okena check`
 | `udp ADDR...` | `to`, `responses N`, `limits { connections }` (flows), `timeout { idle }` |
 | `http ADDR...` | `host`, `route`, `mss`, `errors CODES file= [backend]`, `maintenance file= retry= allow= except=`, `limits`, `timeout { idle; header; body_idle; response }`, `trusted_proxies`, `access_log`, `tracing`, `http2 on\|off`, `http3 on\|off\|retry\|v2`, `preferred_address`, `early_data on\|off`, `tls { cert; key; ktls on\|off }` |
 | `route PATH... [METHOD...]` | `to`, `redirect`, `respond`, `rewrite path`, `signed_urls key= [key2=]`, `header set\|add\|drop`, `response header set\|add\|drop` |
-| `pool NAME` | `server ADDR [weight=N] [max=N] [backup]`, `queue timeout=`, `balance least-request\|peak-ewma\|round-robin\|least-conn\|random\|maglev\|ring-hash\|source-hash [key=] [bound=]\|first`, `sticky cookie= [ttl=] [samesite=]`, `connect timeout=`, `health tcp\|http\|grpc ...`, `slow_start`, `tls { trust FILE; sni NAME; cert FILE; key FILE }` (TLS to the backends), `protocol h1\|h2\|fastcgi` |
+| `pool NAME` | `server ADDR [weight=N] [max=N] [backup]`, `queue timeout=`, `balance least-request\|peak-ewma\|round-robin\|least-conn\|random\|maglev\|ring-hash\|source-hash [key=] [bound=]\|first`, `sticky cookie= [ttl=] [samesite=]`, `connect timeout=`, `health tcp\|http\|grpc ...`, `outlier errors= eject= max_ejected=`, `retry_budget P% [min=N/s]`, `slow_start`, `tls { trust FILE; sni NAME; cert FILE; key FILE }` (TLS to the backends), `protocol h1\|h2\|fastcgi` |
 
 `okena { ech PUBLIC_NAME KEYFILE... }` turns on Encrypted Client Hello (the
 draft's version 0xfe0d) for every TLS listener: a client that has okena's
@@ -1450,6 +1450,19 @@ pool api {
     slow_start 30s
 }
 ```
+
+`outlier errors=5 eject=10s max_ejected=50%` (the defaults) is passive health,
+in each worker: a server that gives `errors` failing answers in a row (5xx, or
+a backend that closed without one) is out for `eject`, and so is one with three
+failed connects; `errors=0` leaves answers alone (an API whose 503s are its
+own). `max_ejected` is the most of a pool that may be out at once, so that a
+fault everyone shares (a database behind them all) cannot empty it; `100%`
+lets it. A server out by it is asked again when the time is up.
+
+`retry_budget 20% min=10/s` (the defaults) bounds the retries and hedges sent
+to a pool, in each worker: each request adds that share of a retry, and the
+budget is topped up to `min` each second, so a pool in trouble gets at most a
+fifth more load and not a storm. `retry_budget 0% min=1/s` all but stops them.
 
 `cert` and `key` in a pool's `tls` block are the certificate okena shows a backend
 that asks for one, so that an origin can let in its CDN's edges and no one else:
