@@ -8,7 +8,7 @@ not built yet. A directive that is not built is refused by `okena check`
 
 | Block | Directives |
 |---|---|
-| `okena` | `workers`, `io_engine`, `last_good on\|off`, `reload on-change\|signal`, `busy_poll`, `watchdog`, `drain delay= timeout=`, `metrics [token=]`, `user`, `ticket_keys`, `handshake_budget wait=`, `quic_server_id HEX`, `cache_memory`, `cache_disk PATH size=`, `fleet ADDR...`, `cdn_loop NAME [max=]`, `bird PATH protocol= [pool=]` |
+| `okena` | `workers`, `io_engine`, `profile`, `last_good on\|off`, `reload on-change\|signal`, `busy_poll`, `watchdog`, `drain delay= timeout=`, `metrics [token=]`, `user`, `ticket_keys`, `handshake_budget wait=`, `quic_server_id HEX`, `cache_memory`, `cache_disk PATH size=`, `fleet ADDR...`, `cdn_loop NAME [max=]`, `bird PATH protocol= [pool=]` |
 | `vrrp IFACE` | `vrid=`, `priority=`, `address=A/N`, `advert=`, `preempt=`, `track=POOL` (a floating address, VRRP v3) |
 | `tcp ADDR...` | `to`, `mss`, `limits { connections; per_source }`, `timeout { idle }`, `proxy_protocol send v1\|v2`, `tls { cert; key }`, `tls passthrough { sni NAME... to pool P; default reject\|to pool P }` (a `default to pool` alone is enough) |
 | `udp ADDR...` | `to`, `responses N`, `limits { connections }` (flows), `timeout { idle }` |
@@ -410,7 +410,6 @@ okena {
     acme /var/lib/okena/acme ca=https://acme-v02.api.letsencrypt.org/directory email=ops@example.com
                               # automatic HTTPS: `tls { acme NAME... }` (below)
     reload on-change          # reload when the files change (else SIGHUP, `okena reload`)
-    # planned:
     profile balanced          # balanced | latency | throughput | memory-lean
 }
 ```
@@ -514,10 +513,15 @@ a token) the user's to read. A name is looked up in /etc/passwd and
 /etc/group; with no group, the user's own. Started by anyone but root,
 okena may only name itself.
 
-Profiles set groups of defaults: `latency` enables busy polling, NAPI
-polling and smaller batches; `throughput` larger batches and `SEND_ZC`
-thresholds; `memory-lean` smaller pools and earlier trimming. Any single
-setting can still be overridden.
+Profiles set groups of defaults, each still overridden by its own setting:
+`latency` makes workers poll 50 µs after activity (`busy_poll 50us`) and asks
+the kernel to busy-poll the listeners' queues (SO_BUSY_POLL, SO_PREFER_BUSY_POLL:
+granted to a process that may, ignored otherwise), for the last microseconds
+at the cost of a core kept busy; `throughput` keeps polling off (the default:
+the loop sleeps when there is nothing to do); `memory-lean` keeps 32 idle
+connections per server instead of 512 and a quarter of the default memory
+cache; `balanced` is the defaults as written. `okena explain` shows what a
+profile set.
 
 ## Listeners
 

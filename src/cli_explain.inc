@@ -31,10 +31,17 @@ explain_print:
 	call	cpu_worker_count
 @@:
 	call	out_u64
+	out_lit 10,'    profile '
+	mov	eax,[g_plan_profile]
+	lea	rsi,[.profiles]
+	call	.word_n
 	out_lit 10,'    io_engine '
 	mov	eax,[g_plan_engine]
 	lea	rsi,[.engines]
 	call	.word_n
+	out_lit 10,'    busy_poll '
+	mov	rax,[g_plan_busy_poll]
+	call	.dur
 	out_lit 10,'    watchdog '
 	mov	rax,[g_plan_watchdog]
 	call	.dur
@@ -680,6 +687,7 @@ explain_print:
 	out_lit 'us'
 	ret
 .engines	db 'auto',0,'io_uring',0,'epoll',0
+.profiles	db 'balanced',0,'latency',0,'throughput',0,'memory-lean',0
 .balances	db 'round-robin',0,'least-conn',0,'random',0,'least-request',0,'peak-ewma',0,'maglev',0,'ring-hash',0,'source-hash',0,'first',0
 .kinds		db 'tcp',0,'http',0,'udp',0
 .h_tcp		db 'tcp',0

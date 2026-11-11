@@ -368,6 +368,7 @@ plan_compile:
 	mov	dword [g_plan_tryc],0
 	mov	qword [g_plan_hs_budget],DEFAULT_HS_BUDGET_US
 	mov	qword [g_plan_hs_wait],DEFAULT_HS_WAIT_US
+	call	profile_scan			; (before the pools: their defaults follow it)
 	; pools first, so listeners can refer to them
 	mov	rax,[g_cfg_root]
 	mov	rbx,[rax+N_CHILD]
@@ -425,8 +426,64 @@ plan_compile:
 	mov	rbx,[rbx+N_NEXT]
 	jmp	.listeners
 .done:
+	; `profile`: what it sets that was not set
+	cmp	dword [g_plan_profile],PROFILE_LATENCY
+	jne	@f
+	cmp	qword [g_plan_busy_poll],0
+	jne	@f
+	mov	qword [g_plan_busy_poll],PROFILE_BUSY_US
+@@:
+	cmp	dword [g_plan_profile],PROFILE_LEAN
+	jne	@f
+	cmp	qword [g_plan_cmem],0
+	jne	@f
+	mov	qword [g_plan_cmem],CACHE_MEM_DEF / 4
+@@:
 	pop	r12
 	pop	rbx
+	ret
+
+; `okena { profile NAME }`: groups of defaults, any of them overridden by
+; its own setting. latency: workers poll PROFILE_BUSY_US after activity
+; (busy_poll) and the listeners' sockets busy-poll their queue
+; (SO_BUSY_POLL, SO_PREFER_BUSY_POLL, when the kernel lets them);
+; throughput: no polling (the default); memory-lean: 32 idle connections
+; kept per server, not 512, and a quarter of the default memory cache.
+PROFILE_BALANCED := 0
+PROFILE_LATENCY	:= 1
+PROFILE_THROUGHPUT := 2
+PROFILE_LEAN	:= 3
+PROFILE_BUSY_US	:= 50
+PROFILE_LEAN_POOL := 32
+
+bss
+	g_plan_profile	dd ?
+end bss
+
+profile_scan:
+	mov	dword [g_plan_profile],PROFILE_BALANCED
+	mov	rax,[g_cfg_root]
+	mov	rdi,[rax+N_CHILD]
+.top:
+	test	rdi,rdi
+	jz	.out
+	lea	rax,[dir_table + D_SIZE*DIR_OKENA]
+	cmp	[rdi+N_DEF],rax
+	je	.okena
+	mov	rdi,[rdi+N_NEXT]
+	jmp	.top
+.okena:
+	mov	ecx,DIR_PROFILE
+	call	find_child
+	test	rax,rax
+	jz	.out
+	mov	rax,[rax+N_ARGS]
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	lea	rdx,[e_profile]
+	call	list_index
+	mov	[g_plan_profile],eax
+.out:
 	ret
 
 ; Value helpers: rdi = node; first positional value parsed.
@@ -854,6 +911,10 @@ pool_new:
 	mov	dword [rax+PL_BALANCE],BAL_LEAST_REQ
 	mov	dword [rax+PL_OERR],5
 	mov	dword [rax+PL_CMAX],POOL_MAX
+	cmp	dword [g_plan_profile],PROFILE_LEAN
+	jne	@f
+	mov	dword [rax+PL_CMAX],PROFILE_LEAN_POOL
+@@:
 	mov	dword [rax+PL_CIDLE],POOL_IDLE
 	mov	dword [rax+PL_OEJECT],10
 	mov	dword [rax+PL_OMAX],5000

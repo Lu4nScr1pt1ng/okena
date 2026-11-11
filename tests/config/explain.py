@@ -29,5 +29,23 @@ with tempfile.NamedTemporaryFile("w", suffix=".conf") as f:
     f.flush()
     r = subprocess.run([str(BIN), "explain", f.name], capture_output=True, text=True, timeout=10)
     check("a file with errors: its errors, exit 2", r.returncode == 2 and "error" in r.stderr, r.returncode)
+def explain(text):
+    with tempfile.NamedTemporaryFile("w", suffix=".conf") as f:
+        f.write(text)
+        f.flush()
+        return subprocess.run([str(BIN), "explain", f.name], capture_output=True, text=True, timeout=10).stdout
+
+
+base = "pool p { server 127.0.0.1:9 }\nhttp 127.0.0.1:9000 { route /* { to pool p } }\n"
+o = explain("okena { workers 1; profile latency }\n" + base)
+check("profile latency: busy_poll 50us", "profile latency" in o and "busy_poll 50us" in o, o[:300])
+o = explain("okena { workers 1; profile latency; busy_poll 10us }\n" + base)
+check("  a busy_poll of its own wins", "busy_poll 10us" in o, o[:300])
+o = explain("okena { workers 1; profile memory-lean }\n" + base)
+check("profile memory-lean: 32 idle connections a server", "max=32 " in o and "busy_poll 0s" in o, o)
+o = explain("okena { workers 1; profile memory-lean }\npool p { server 127.0.0.1:9; connect max=100 }\nhttp 127.0.0.1:9000 { route /* { to pool p } }\n")
+check("  a pool's own max= wins", "max=100 " in o, o)
+o = explain("okena { workers 1 }\n" + base)
+check("no profile: balanced, as before", "profile balanced" in o and "max=512 " in o and "busy_poll 0s" in o, o[:300])
 print("explain: " + ("all passed" if not fails else f"{fails} failed"))
 sys.exit(1 if fails else 0)

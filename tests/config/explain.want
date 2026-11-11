@@ -1,6 +1,8 @@
 okena {
     workers 2
+    profile balanced
     io_engine auto
+    busy_poll 0s
     watchdog 2s
     drain delay=0s timeout=8s
     last_good on

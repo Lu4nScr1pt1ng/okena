@@ -66,6 +66,7 @@ macro plan_regions action
 	action g_plan_watchdog, 8
 	action g_plan_last_good, 4
 	action g_plan_reload_watch, 4
+	action g_plan_profile, 4
 	action g_plan_tryc, 4
 	action g_try_secs, 4 * MAX_TRYC
 	action g_plan_busy_poll, 8

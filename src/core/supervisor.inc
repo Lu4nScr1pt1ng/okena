@@ -721,6 +721,7 @@ listener_open:
 listener_tune:
 	cmp	dword [rdi+LS_KIND],LK_UDP
 	je	.out
+	push	rsi
 	lea	r10,[rdi+LS_MSS]		; (0 takes a clamp back)
 	mov	edi,esi
 	mov	esi,IPPROTO_TCP
@@ -728,8 +729,31 @@ listener_tune:
 	mov	r8d,4
 	mov	eax,SYS_setsockopt
 	syscall
+	pop	rdi
+	cmp	dword [g_plan_profile],PROFILE_LATENCY
+	jne	.out
+	push	rdi				; `profile latency`: the kernel polls the
+	mov	esi,SOL_SOCKET			; queue for the socket (its connections
+	mov	edx,SO_BUSY_POLL_		; inherit it); refused without the right:
+	lea	r10,[busy_poll_us]		; nothing lost
+	mov	r8d,4
+	mov	eax,SYS_setsockopt
+	syscall
+	pop	rdi
+	mov	esi,SOL_SOCKET
+	mov	edx,SO_PREFER_BUSY_POLL_
+	lea	r10,[one_int]
+	mov	r8d,4
+	mov	eax,SYS_setsockopt
+	syscall
 .out:
 	ret
+
+SO_BUSY_POLL_	:= 46
+SO_PREFER_BUSY_POLL_ := 69
+rodata
+	busy_poll_us	dd PROFILE_BUSY_US
+end rodata
 
 ; A worker whose heartbeat has not moved for the watchdog time is stuck
 ; (a loop, a syscall that never returns, SIGSTOP): kill it, and the reaper
