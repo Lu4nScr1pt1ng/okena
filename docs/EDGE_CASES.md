@@ -6,7 +6,7 @@ checked line by line against a running okena by `tests/httpproxy/edge.py`
 (both engines), the upstream responses table by `tests/httpproxy/upstream.py`, paths and hosts by
 `tests/httpproxy/routing.py`, client identity by `tests/httpproxy/identity.py`, failing backends and
 misbehaving clients by `tests/httpproxy/failures.py`, streams and tunnels by
-`tests/httpproxy/streaming.py`, odd ClientHellos by `tests/tls/hello.py`, HTTP/2 abuse by `tests/h2/abuse.py` (with h2spec for
+`tests/httpproxy/streaming.py`, the cache's edges by `tests/gateway/cachedge.py`, odd ClientHellos by `tests/tls/hello.py`, HTTP/2 abuse by `tests/h2/abuse.py` (with h2spec for
 conformance), and its parser against a reference by `tests/http/run.py`. "Reject" means a 4xx/5xx with
 the connection closed when its framing can no longer be trusted.
 
@@ -199,7 +199,9 @@ the connection closed when its framing can no longer be trusted.
 | `Set-Cookie` on a cacheable response | not cached unless the route says the cookie is safe to drop |
 | `Authorization` on the request | not cached unless `Cache-Control: public` or route says so |
 | `Vary: *`, `Vary` on high-cardinality headers | not cached / normalised variants only |
-| Cache poisoning through unkeyed headers (`X-Forwarded-Host`, `X-Original-URL`) | such headers stripped before reaching the origin unless keyed |
+| Cache poisoning through unkeyed headers (`X-Forwarded-Host`, `X-Original-URL`, `X-Rewrite-URL`) | dropped before the origin unless the peer is a trusted proxy (they make a server answer for another host or path than the key's) |
+| Conditional requests on a hit (browsers revalidating) | 304 when the validators match what is kept (If-None-Match weak, lists, `*`; If-Modified-Since exact), from memory or disk |
+| `Expires` without `max-age` | past or not a date: not kept; ahead: kept for that long |
 | Thundering herd on expiry | request collapsing, `stale-while-revalidate` |
 | Origin down | `stale-if-error` |
 | Range on an uncached large object | slice fetching; first slice served while the rest fills |

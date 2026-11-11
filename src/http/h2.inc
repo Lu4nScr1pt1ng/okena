@@ -187,6 +187,15 @@ HB_SVGEN	:= HB_EH + 4		; d: the generation of the server slot its upstream was m
 HB_ZCP		:= HB_CK + 8		; d: zero copy: its pipe + 1, 0 none (zc.inc). A hit from
 HB_ZCF		:= HB_CK + 12		; d: disk or a file is past its key. Operations in flight
 HB_H2Q		:= (HB_SVGEN + 4 + 63) and not 63
+; `cache`: the request's validators, for a hit's 304 (cond_fix), at the end of
+; HB_TRAIL: that holds a backend's trailers, and a request served from the
+; cache has no backend answer
+HB_INM_MAX	:= 120
+HB_INML		:= HB_TRAIL + CK_TRAIL_MAX - 160	; d: If-None-Match: how long (0 none)
+HB_INM		:= HB_INML + 4		; and it (HB_INM_MAX)
+HB_IMSL		:= HB_INM + HB_INM_MAX	; d: If-Modified-Since: how long
+HB_IMS		:= HB_IMSL + 4		; and it (32)
+assert HB_IMS + 32 <= HB_TRAIL + CK_TRAIL_MAX
 Q_LEN		:= 0
 Q_OFF		:= 4
 Q_DST		:= 8				; q: a receive parked here

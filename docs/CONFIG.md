@@ -982,7 +982,11 @@ Kept: GET answers of 200, 301, 308, 404 and 410 with a length or chunked. HEAD r
 them. Not kept: `Cache-Control` no-store, private or no-cache, `Set-Cookie`, `Vary`
 naming a field not in `vary=`, or a body with no length, as a cut would look like
 its end. A request with a body goes to the backend; a conditional one reads what is
-kept and gets a 200, and on a miss is not kept. A `Range` of bytes (`a-b`, `a-`,
+kept: a 304 when its validators match (If-None-Match by weak comparison, `*` and
+lists; else If-Modified-Since the very Last-Modified kept, as nginx's default), a
+200 otherwise; on a miss it is not kept. `Expires` counts when no `max-age` or
+`s-maxage` does: past, or not a date (`0`), and the answer is not kept; ahead, for
+as long. A `Range` of bytes (`a-b`, `a-`,
 `-n`) on a kept 200 is answered from the cache: a 206 with `Content-Range`, or a 416
 past its end. Several ranges, another unit or an `If-Range` get the whole answer, a
 200, as a server may always give. A `Range` of what is not kept yet goes to the

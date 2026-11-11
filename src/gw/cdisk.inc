@@ -971,6 +971,7 @@ cd_serve:
 	rep	movsb
 	mov	eax,[g_cd_buf+RH_BLEN]
 	call	range_fix			; a Range: a 206 of it
+	call	cond_fix			; its validators matched: a 304
 	mov	eax,[g_cd_buf+RH_BLEN]
 	call	slice_fix			; a slice: the object's head
 	mov	rax,[g_c_skip]

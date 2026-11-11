@@ -871,14 +871,30 @@ cache_check:
 	cmp	dword [g_acts+rax+RA_AUTH],0
 	jne	.o_bypass
 .conditional:
-	; a conditional request reads what is kept, but its answer may be a 304
+	; a conditional request reads what is kept, but its answer may be a 304: its
+	; validators kept for when the hit is served (cond_fix; maybe after a wait)
+	mov	rax,[r15+H_BUF]
+	mov	dword [rax+HB_INML],0
+	mov	dword [rax+HB_IMSL],0
 	has_field 'if-none-match'
 	jz	@f
 	mov	r13d,1
+	cmp	ecx,HB_INM_MAX
+	ja	@f				; (a longer list: a 200, as before)
+	mov	rax,[r15+H_BUF]
+	mov	[rax+HB_INML],ecx
+	lea	rdi,[rax+HB_INM]
+	rep	movsb
 @@:
 	has_field 'if-modified-since'
 	jz	@f
 	mov	r13d,1
+	cmp	ecx,32
+	ja	@f
+	mov	rax,[r15+H_BUF]
+	mov	[rax+HB_IMSL],ecx
+	lea	rdi,[rax+HB_IMS]
+	rep	movsb
 @@:
 	call	ck_make
 	cmp	dword [r12+CA_SLICE],0		; a sliced route: its first slice is looked for
@@ -1386,6 +1402,175 @@ range_fix:
 .s206	db 'HTTP/1.1 206 Partial Content',13,10,0
 .s416	db 'HTTP/1.1 416 Range Not Satisfiable',13,10,0
 
+; rdi = past a hit's head in HB_UP (r15), after range_fix: a request whose
+; validators match what is kept gets a 304 in place of the 200 (RFC 9110 13.1):
+; If-None-Match by weak comparison, `*` too; else If-Modified-Since the very
+; Last-Modified kept (as nginx's `if_modified_since exact`). The head keeps its
+; fields but the Content-Length the cache wrote; nothing of the body goes.
+; Keeps rbx, r12-r15.
+bss
+	g_cond_end	dq ?			; cond_fix: the head's end (rdi, given back)
+end bss
+cond_fix:
+	mov	[g_cond_end],rdi
+	mov	r10,[r15+H_BUF]
+	mov	eax,[r10+HB_INML]
+	or	eax,[r10+HB_IMSL]
+	jz	.out
+	add	r10,HB_UP
+	cmp	dword [r10],'HTTP'
+	jne	.out
+	cmp	dword [r10+8],' 200'
+	jne	.out				; (a 206 made of it stays one)
+	mov	r8,[r15+H_BUF]
+	cmp	dword [r8+HB_INML],0
+	je	.since
+	lea	rsi,[.n_etag]
+	mov	edx,4
+	call	.field
+	test	ecx,ecx
+	jz	.out
+	call	.weak				; rsi/ecx: the tag kept, W/ off
+	mov	r9,rsi
+	mov	r11d,ecx
+	mov	r8,[r15+H_BUF]
+	lea	rsi,[r8+HB_INM]
+	mov	ecx,[r8+HB_INML]
+.tag:
+	test	ecx,ecx
+	jz	.out
+	mov	al,[rsi]
+	cmp	al,' '
+	je	.skip1
+	cmp	al,9
+	je	.skip1
+	cmp	al,','
+	je	.skip1
+	cmp	al,'*'
+	je	.match
+	call	.weak
+	cmp	byte [rsi],'"'			; this tag: to its closing quote
+	jne	.out
+	mov	edx,1
+@@:
+	cmp	edx,ecx
+	jae	.out
+	cmp	byte [rsi+rdx],'"'
+	je	@f
+	inc	edx
+	jmp	@b
+@@:
+	inc	edx				; its length, quotes in
+	cmp	edx,r11d
+	jne	.next_tag
+	push	rsi
+	push	rcx
+	mov	rdi,r9
+	mov	ecx,edx
+	repe	cmpsb
+	pop	rcx
+	pop	rsi
+	mov	rdi,[g_cond_end]
+	je	.match
+.next_tag:
+	add	rsi,rdx
+	sub	ecx,edx
+	jmp	.tag
+.skip1:
+	inc	rsi
+	dec	ecx
+	jmp	.tag
+.since:
+	lea	rsi,[.n_lm]
+	mov	edx,13
+	call	.field
+	mov	r8,[r15+H_BUF]
+	cmp	ecx,[r8+HB_IMSL]
+	jne	.out
+	lea	rdi,[r8+HB_IMS]
+	repe	cmpsb
+	jne	.out
+.match:
+	mov	rdi,[g_cond_end]
+	call	range_fix.split			; the fields but the Content-Length
+	jc	.out
+	lea	rdi,[.s304]
+	call	range_fix.status		; (rdi: past the 304's fields)
+	mov	qword [g_c_skip],0
+	mov	qword [g_c_take],0
+	ret
+.out:
+	mov	rdi,[g_cond_end]
+	ret
+; rsi = a lower-case name, edx = its length: its value in the head [r10, rdi):
+; rsi/ecx, ecx 0 when it is not there
+.field:
+	push	rbx
+	push	r12
+	mov	r11,r10
+.line:
+	cmp	r11,rdi
+	jae	.none
+	cmp	byte [r11],10			; to the next line's start
+	je	.at
+	inc	r11
+	jmp	.line
+.at:
+	inc	r11
+	lea	rax,[r11+rdx]
+	cmp	rax,rdi
+	jae	.none
+	cmp	byte [rax],':'
+	jne	.line
+	xor	ecx,ecx
+@@:
+	movzx	eax,byte [r11+rcx]
+	or	al,0x20
+	cmp	al,[rsi+rcx]
+	jne	.line
+	inc	ecx
+	cmp	ecx,edx
+	jb	@b
+	lea	rsi,[r11+rdx+1]
+@@:
+	cmp	byte [rsi],' '
+	jne	@f
+	inc	rsi
+	jmp	@b
+@@:
+	mov	rax,rsi
+@@:
+	cmp	rax,rdi
+	jae	.none
+	cmp	byte [rax],13
+	je	@f
+	inc	rax
+	jmp	@b
+@@:
+	mov	rcx,rax
+	sub	rcx,rsi
+	pop	r12
+	pop	rbx
+	ret
+.none:
+	xor	ecx,ecx
+	pop	r12
+	pop	rbx
+	ret
+; rsi/ecx: past a W/ (a weak tag compares as its strong one)
+.weak:
+	cmp	ecx,2
+	jb	@f
+	cmp	word [rsi],'W/'
+	jne	@f
+	add	rsi,2
+	sub	ecx,2
+@@:
+	ret
+.n_etag	db 'etag'
+.n_lm	db 'last-modified'
+.s304	db 'HTTP/1.1 304 Not Modified',13,10,0
+
 ; rdi = a hit's head, past Age's value: its Cache-Status up to `ttl=`: a hit, or a
 ; stale copy answering for a backend that failed (g_c_fwd, then cleared). Keeps r12-r15.
 cache_status_head:
@@ -1758,6 +1943,7 @@ cache_serve:
 .head_done:
 	mov	eax,[r13+CE_BLEN]
 	call	range_fix
+	call	cond_fix
 	mov	eax,[r13+CE_BLEN]
 	call	slice_fix
 	memit_x 'Age: '
@@ -1972,6 +2158,8 @@ cache_fields:
 	push	rbx
 	push	r13
 	push	r14
+	mov	dword [g_c_ccage],0		; (max-age or s-maxage said: Expires does not count)
+	mov	qword [g_c_expp],0
 	mov	r14d,[r12+CE_SWR]
 	; the status line
 	sub	rsp,48
@@ -2016,6 +2204,19 @@ cache_fields:
 	jc	.no
 	jmp	.keep
 @@:
+	cmp	dword [r13+HF_NLEN],7
+	jne	@f
+	mov	rdi,[r13+HF_NAME]
+	lea	rsi,[.n_exp]
+	mov	edx,7
+	call	.same
+	jz	@f
+	mov	rax,[r13+HF_VALUE]		; (looked at once the fields are read)
+	mov	[g_c_expp],rax
+	mov	eax,[r13+HF_VLEN]
+	mov	[g_c_expl],eax
+	jmp	.keep
+@@:
 	cmp	dword [r13+HF_NLEN],4
 	jne	.not_vary
 	mov	rdi,[r13+HF_NAME]
@@ -2057,6 +2258,32 @@ cache_fields:
 	jc	.no
 	jmp	.field
 .done:
+	; Expires, when no max-age or s-maxage said (RFC 9111 5.3): past, or not a
+	; date ("0" is one way of saying it), and it is not kept; ahead, for as long
+	cmp	qword [g_c_expp],0
+	je	.no_expires
+	cmp	dword [g_c_ccage],0
+	jne	.no_expires
+	mov	rsi,[g_c_expp]
+	mov	ecx,[g_c_expl]
+	call	http_date_parse
+	jc	.no
+	push	rax
+	sub	rsp,16				; the wall clock, seconds
+	mov	edi,CLOCK_REALTIME
+	mov	rsi,rsp
+	mov	eax,SYS_clock_gettime
+	syscall
+	mov	rax,[rsp]
+	add	rsp,16
+	pop	rcx
+	sub	rcx,rax				; seconds ahead
+	jle	.no
+	mov	eax,0x7FFFFFFF
+	cmp	rcx,rax
+	cmova	rcx,rax
+	mov	[r12+CE_TTL],ecx
+.no_expires:
 	call	pm_tags				; its tags, for a purge
 	jc	.no
 	mov	[r12+CE_SWR],r14d
@@ -2081,6 +2308,7 @@ cache_fields:
 	db 10,'keep-alive',12,'cache-status',0
 .n_setc	db 'set-cookie'
 .n_cc	db 'cache-control'
+.n_exp	db 'expires'
 .n_vary	db 'vary'
 .sep	db ': '
 .eol	db 13,10
@@ -2195,6 +2423,7 @@ cache_control:
 	jz	.not_max
 	call	.seconds
 	jc	.refuse
+	mov	dword [g_c_ccage],1
 	cmp	rbx,-1
 	jne	.value_end			; (s-maxage said)
 	mov	[r12+CE_TTL],eax
@@ -2237,6 +2466,7 @@ cache_control:
 	jz	.value_end
 	call	.seconds
 	jc	.refuse
+	mov	dword [g_c_ccage],1
 	mov	rbx,rax
 	mov	[r12+CE_TTL],eax
 .value_end:
@@ -2837,3 +3067,147 @@ plan_bad_cache:
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process
+
+bss
+	g_c_ccage	dd ?			; cache_fields: max-age or s-maxage was said
+	g_c_expl	dd ?			; Expires: its length
+	g_c_expp	dq ?			; and value, 0 none
+end bss
+
+rodata
+	hd_months	db 'JanFebMarAprMayJunJulAugSepOctNovDec'
+end rodata
+
+; rsi/ecx = an HTTP-date in IMF-fixdate ("Sun, 06 Nov 1994 08:49:37 GMT", RFC 9110
+; 5.6.7): rax = seconds since the epoch. CF for anything else (the obsolete forms
+; included: a cache may take them as already past). Keeps rbx, r12-r15.
+http_date_parse:
+	cmp	ecx,29
+	jne	.bad
+	cmp	byte [rsi+3],','
+	jne	.bad
+	cmp	dword [rsi+25],' GMT'
+	jne	.bad
+	mov	rdi,rsi
+	lea	rsi,[rdi+5]
+	mov	ecx,2
+	call	.num				; day
+	jc	.bad
+	mov	r8d,eax
+	mov	edx,[rdi+8]			; month
+	and	edx,0x00FFFFFF
+	xor	ecx,ecx
+@@:
+	mov	eax,dword [hd_months+rcx*3]
+	and	eax,0x00FFFFFF
+	cmp	eax,edx
+	je	@f
+	inc	ecx
+	cmp	ecx,12
+	jb	@b
+	jmp	.bad
+@@:
+	lea	r9d,[rcx+1]			; month 1..12
+	lea	rsi,[rdi+12]
+	mov	ecx,4
+	call	.num				; year
+	jc	.bad
+	mov	r10d,eax
+	lea	rsi,[rdi+17]
+	mov	ecx,2
+	call	.num
+	jc	.bad
+	mov	r11d,eax			; hour
+	lea	rsi,[rdi+20]
+	mov	ecx,2
+	call	.num
+	jc	.bad
+	push	rax				; minute
+	lea	rsi,[rdi+23]
+	mov	ecx,2
+	call	.num
+	pop	rdx
+	jc	.bad
+	cmp	byte [rdi+16],' '
+	jne	.bad
+	cmp	byte [rdi+19],':'
+	jne	.bad
+	cmp	byte [rdi+22],':'
+	jne	.bad
+	; days from the civil date (H. Hinnant's days_from_civil), then seconds
+	push	rax
+	push	rdx
+	mov	eax,r10d			; y, less one if the month is Jan or Feb
+	cmp	r9d,2
+	ja	@f
+	dec	eax
+@@:
+	mov	ecx,eax				; era = y / 400 (y >= 0 here)
+	push	rax
+	xor	edx,edx
+	mov	esi,400
+	div	esi
+	mov	r10d,eax			; era
+	pop	rax
+	imul	ecx,r10d,400
+	sub	eax,ecx				; yoe
+	mov	ecx,r9d				; doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1
+	add	ecx,9
+	cmp	r9d,2
+	jbe	@f
+	sub	ecx,12
+@@:
+	imul	ecx,ecx,153
+	add	ecx,2
+	push	rax
+	mov	eax,ecx
+	xor	edx,edx
+	mov	esi,5
+	div	esi
+	lea	ecx,[rax+r8-1]			; doy
+	pop	rax
+	imul	edx,eax,365			; doe = yoe * 365 + yoe/4 - yoe/100 + doy
+	mov	esi,eax
+	shr	esi,2
+	add	edx,esi
+	push	rdx
+	xor	edx,edx
+	mov	esi,100
+	div	esi
+	pop	rdx
+	sub	edx,eax
+	add	edx,ecx
+	imul	rax,r10,146097			; days = era * 146097 + doe - 719468
+	add	rax,rdx
+	sub	rax,719468
+	imul	rax,rax,86400
+	imul	rcx,r11,3600
+	add	rax,rcx
+	pop	rdx				; minute
+	imul	rdx,rdx,60
+	add	rax,rdx
+	pop	rdx				; second
+	add	rax,rdx
+	clc
+	ret
+.bad:
+	stc
+	ret
+; rsi = ecx digits: eax. CF when one is not
+.num:
+	xor	eax,eax
+@@:
+	movzx	edx,byte [rsi]
+	sub	edx,'0'
+	cmp	edx,9
+	ja	.nan
+	imul	eax,eax,10
+	add	eax,edx
+	inc	rsi
+	dec	ecx
+	jnz	@b
+	clc
+	ret
+.nan:
+	stc
+	ret
