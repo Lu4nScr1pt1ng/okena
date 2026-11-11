@@ -3386,6 +3386,38 @@ pool_used:
 	pop	rdi
 	jc	.used
 .uses_auth:
+	push	rdi
+	mov	ecx,DIR_SPLIT			; `split NAME=N% ...`: its keys
+	call	find_child
+	pop	rdi
+	test	rax,rax
+	jz	.uses_auth2
+	mov	ecx,[rax+N_ARGC]
+	mov	r8,[rax+N_ARGS]
+.split_arg:
+	test	ecx,ecx
+	jz	.uses_auth2
+	cmp	dword [r8+A_KIND],ARG_KV
+	jne	.split_next
+	mov	edx,[r8+A_KLEN]
+	cmp	edx,[r12+A_VLEN]
+	jne	.split_next
+	push	rdi
+	push	rcx
+	mov	rsi,[r8+A_KEY]
+	mov	rdi,[r12+A_VAL]
+	mov	ecx,edx
+	repe	cmpsb
+	pop	rcx
+	pop	rdi
+	jne	.split_next
+	stc
+	ret
+.split_next:
+	add	r8,A_SIZE
+	dec	ecx
+	jmp	.split_arg
+.uses_auth2:
 	mov	ecx,DIR_AUTH			; `auth forward pool=NAME`
 	call	find_child
 	test	rax,rax
