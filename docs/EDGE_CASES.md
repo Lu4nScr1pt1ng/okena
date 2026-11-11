@@ -5,7 +5,8 @@ behaviour to implement and a test to keep. The HTTP/1.x parsing table is
 checked line by line against a running okena by `tests/httpproxy/edge.py`
 (both engines), the upstream responses table by `tests/httpproxy/upstream.py`, paths and hosts by
 `tests/httpproxy/routing.py`, client identity by `tests/httpproxy/identity.py`, failing backends and
-misbehaving clients by `tests/httpproxy/failures.py`, odd ClientHellos by `tests/tls/hello.py`, and its parser against a reference by `tests/http/run.py`. "Reject" means a 4xx/5xx with
+misbehaving clients by `tests/httpproxy/failures.py`, odd ClientHellos by `tests/tls/hello.py`, HTTP/2 abuse by `tests/h2/abuse.py` (with h2spec for
+conformance), and its parser against a reference by `tests/http/run.py`. "Reject" means a 4xx/5xx with
 the connection closed when its framing can no longer be trusted.
 
 ## Network and TCP
@@ -117,6 +118,7 @@ the connection closed when its framing can no longer be trusted.
 | Case | Behaviour |
 |---|---|
 | Rapid reset, CONTINUATION flood, HPACK bomb, SETTINGS/PING/PRIORITY floods, zero window, empty DATA frames | cost model per connection, GOAWAY and close |
+| A request head larger than okena takes (16 KiB decoded, 128 fields) | that stream's alone: 431 (and RST_STREAM NO_ERROR when a body was to follow); the block is decoded to its end so the HPACK table stays the client's, and the connection goes on. A compressed block past 16 KiB, or insertions that would copy more than 256 KiB past that point, is GOAWAY ENHANCE_YOUR_CALM |
 | Pseudo-headers missing, duplicated, after regular headers, uppercase header names | stream error PROTOCOL_ERROR |
 | `Connection`-specific headers in h2 | stream error |
 | `TE` other than `trailers` | stream error |

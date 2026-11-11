@@ -6,7 +6,12 @@
 ;   hpack_decode(rdi ctx, rsi block, edx length, rcx out): decodes one
 ;       header block into out (HO_*): eax = 0, HPE_COMPRESSION (the peer
 ;       broke the format: a connection error) or HPE_TOO_BIG (more fields
-;       or bytes than out holds: the request is refused, 431).
+;       or bytes than out holds: the request is refused, 431). A block too
+;       big is still decoded to its end, for the table's sake: past the
+;       first field that does not fit, each one is decoded into a scratch
+;       area the size of the table and dropped (a string too large even
+;       for that is skipped, as one the table could not hold either), so
+;       the connection goes on with the table as the peer has it.
 ;   hpack_encode(rdi dst, rsi name, edx name length, rcx value, r8d value
 ;       length): appends one field; rax = dst after it. Stateless (no
 ;       dynamic table): an indexed field when the static table has the
@@ -43,7 +48,11 @@ HPO_COUNT	:= 12				; d: how many were decoded
 HPO_BUF		:= 16				; q: the strings
 HPO_BCAP		:= 24				; d
 HPO_BLEN		:= 28				; d: bytes used
-HPO_SIZE		:= 32
+HPO_OVER		:= 32				; d: (hpack_decode's) past what out holds
+HPO_SCR		:= 40				; q: (hpack_decode's) its scratch area
+HPO_SIZE		:= 48
+HP_SCR		:= HPACK_TABLE_MAX + 64		; what a field the table could hold needs
+HP_HUGE		:= 1 shl 20			; the length of a string skipped: more than any table
 
 ; a decoded field
 HP_NAME		:= 0				; q
@@ -56,6 +65,8 @@ HPF_NEVER	:= 1				; never indexed: a proxy keeps it so (RFC 7541 6.2.3)
 
 HPE_COMPRESSION	:= 1
 HPE_TOO_BIG	:= 2
+HPE_BOMB	:= 3				; past out, more copying than any head needs
+HP_OVER_BUDGET	:= 256 shl 10
 
 ; rdi = ctx, esi = limit
 hpack_init:
@@ -82,15 +93,23 @@ hpack_decode:
 	push	r13
 	push	r14
 	push	r15
-	sub	rsp,40				; [rsp]: name ptr, +8 name len, +16 value ptr, +24 value len, +32 flags
+	sub	rsp,40 + HP_SCR			; [rsp]: name ptr, +8 name len, +16 value ptr, +24 value len, +32 flags;
+						; +40 the scratch area
 	mov	rbx,rdi
 	mov	r12,rsi
 	lea	r13,[rsi+rdx]
 	mov	r14,rcx
 	mov	dword [r14+HPO_COUNT],0
 	mov	dword [r14+HPO_BLEN],0
+	mov	dword [r14+HPO_OVER],0
+	lea	rax,[rsp+40]
+	mov	[r14+HPO_SCR],rax
 	mov	r15d,1
 .next:
+	cmp	dword [r14+HPO_OVER],0
+	je	@f
+	mov	dword [r14+HPO_BLEN],0		; past it: each field from the scratch's start
+@@:
 	cmp	r12,r13
 	jae	.ok
 	movzx	eax,byte [r12]
@@ -125,6 +144,11 @@ hpack_decode:
 	mov	esi,eax
 	call	.entry				; rax/rdx name, r8/r9 value
 	jc	.bad
+	cmp	dword [r14+HPO_OVER],0
+	je	@f
+	xor	r15d,r15d			; past out: it changes nothing, nothing to copy
+	jmp	.next
+@@:
 	mov	[rsp+16],r8
 	mov	[rsp+24],r9
 	mov	rcx,rax
@@ -178,6 +202,9 @@ hpack_decode:
 	jmp	.next
 .ok:
 	xor	eax,eax
+	cmp	dword [r14+HPO_OVER],0
+	je	.out
+	mov	eax,HPE_TOO_BIG			; all of it read, the table right: too big
 	jmp	.out
 .bad:
 	mov	eax,HPE_COMPRESSION
@@ -185,7 +212,7 @@ hpack_decode:
 .err:
 	; eax holds the error from the helper
 .out:
-	add	rsp,40
+	add	rsp,40 + HP_SCR
 	pop	r15
 	pop	r14
 	pop	r13
@@ -285,6 +312,9 @@ hpack_decode:
 	jmp	.copy
 .str_huff:
 	mov	ecx,eax
+.str_huff_again:
+	push	rsi
+	push	rcx
 	mov	rdi,[r14+HPO_BUF]
 	mov	eax,[r14+HPO_BLEN]
 	add	rdi,rax
@@ -294,7 +324,28 @@ hpack_decode:
 	add	r8,rax
 	call	huff_decode
 	pop	rdx
-	jc	.str_ret			; eax = the error
+	pop	rcx
+	pop	rsi
+	jnc	.str_huff_ok
+	cmp	eax,HPE_TOO_BIG
+	jne	.str_err			; eax = the error
+	call	.over
+	jnc	.str_huff_again			; (into the scratch area)
+	mov	rax,[r14+HPO_BUF]		; too large for any table: skipped
+	mov	edx,HP_HUGE
+	clc
+	ret
+.str_err:
+	stc
+	ret
+.str_huff_ok:
+	cmp	dword [r14+HPO_OVER],0
+	je	@f
+	mov	r8,rax
+	sub	r8,rdx
+	sub	[r14+HPO_FMAX],r8d
+	js	.copy_bomb
+@@:
 	mov	rcx,rax				; the end
 	sub	rcx,[r14+HPO_BUF]
 	mov	[r14+HPO_BLEN],ecx
@@ -311,10 +362,15 @@ hpack_decode:
 ; rcx = bytes, r8 = length: copied to out. rax = where, rdx = length,
 ; CF and eax = HPE_TOO_BIG when out is full.
 .copy:
+	cmp	dword [r14+HPO_OVER],0
+	je	@f
+	sub	[r14+HPO_FMAX],r8d		; past out: within the budget
+	js	.copy_bomb
+@@:
 	mov	eax,[r14+HPO_BLEN]
 	lea	rdx,[rax+r8]
 	cmp	edx,[r14+HPO_BCAP]
-	ja	.copy_full
+	ja	.copy_over
 	mov	[r14+HPO_BLEN],edx
 	mov	rdi,[r14+HPO_BUF]
 	add	rdi,rax
@@ -326,8 +382,36 @@ hpack_decode:
 	mov	rdx,r8
 	clc
 	ret
-.copy_full:
-	mov	eax,HPE_TOO_BIG
+.copy_bomb:
+	mov	eax,HPE_BOMB
+	stc
+	ret
+.copy_over:
+	push	rcx
+	push	r8
+	call	.over
+	pop	r8
+	pop	rcx
+	jnc	.copy				; (into the scratch area)
+	mov	rax,[r14+HPO_BUF]		; too large for any table: skipped
+	mov	edx,HP_HUGE
+	clc
+	ret
+
+; out is full: from here on, fields go to the scratch area and are dropped.
+; CF when that is so already (what does not fit is too large for any table).
+.over:
+	cmp	dword [r14+HPO_OVER],0
+	jne	.over_already
+	mov	dword [r14+HPO_OVER],1
+	mov	dword [r14+HPO_FMAX],HP_OVER_BUDGET	; (fields are not kept: the budget)
+	mov	rax,[r14+HPO_SCR]
+	mov	[r14+HPO_BUF],rax
+	mov	dword [r14+HPO_BCAP],HP_SCR
+	mov	dword [r14+HPO_BLEN],0
+	clc
+	ret
+.over_already:
 	stc
 	ret
 
@@ -370,6 +454,8 @@ hpack_decode:
 
 ; the field in the caller's frame ([rsp+8..]) to out's list
 .emit:
+	cmp	dword [r14+HPO_OVER],0
+	jne	.emit_drop
 	mov	eax,[r14+HPO_COUNT]
 	cmp	eax,[r14+HPO_FMAX]
 	jae	.emit_full
@@ -390,8 +476,10 @@ hpack_decode:
 	clc
 	ret
 .emit_full:
-	mov	eax,HPE_TOO_BIG
-	stc
+	call	.over				; (more fields than out holds)
+.emit_drop:
+	xor	r15d,r15d
+	clc
 	ret
 
 ; rdi = ctx, esi = bytes about to be added: the oldest entries go until the

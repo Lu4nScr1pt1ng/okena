@@ -349,6 +349,22 @@ h2_frame:
 	add	rdi,9
 	ret
 
+; esi = stream: a whole answer of 431 (HEADERS, END_STREAM), when there is room.
+; ":status" is index 8 of the static table; 431 is not there: a literal.
+h2_out_431:
+	call	h2_room
+	cmp	eax,14 + H2_RESERVE
+	jb	.out
+	mov	r8d,esi
+	mov	esi,5
+	mov	dl,H2F_HEADERS
+	mov	cl,H2_END_STREAM or H2_END_HEADERS
+	call	h2_frame
+	mov	dword [rdi],0x33340308		; 08 03 '4' '3'
+	mov	byte [rdi+4],'1'
+.out:
+	ret
+
 ; esi = stream, edx = error: RST_STREAM, when there is room
 h2_out_rst:
 	call	h2_room
@@ -1882,15 +1898,22 @@ h2_block_done:
 	add	rsp,HPO_SIZE
 	cmp	eax,HPE_COMPRESSION
 	je	.compression
-	test	eax,eax
-	jnz	.calm				; larger than we take (the table is
-						; mid-block: the connection cannot go on)
 	test	dword [r13+C2_FLAGS],C2F_CLIENT
-	jz	@f
+	jz	.server
+	test	eax,eax
+	jnz	.calm				; a backend's head larger than we take
+	jmp	@f
+.server:
+	cmp	eax,HPE_TOO_BIG
+	je	.too_big			; (decoded to its end: the table is right)
+	test	eax,eax
+	jnz	.calm				; a bomb: stopped mid-block
+	jmp	.decoded
+@@:
 	mov	eax,r12d			; client mode: a response's head or trailers
 	call	h2u_block_done
 	jmp	.out
-@@:
+.decoded:
 	push	rcx
 	mov	eax,r12d
 	call	h2_find
@@ -1962,6 +1985,29 @@ h2_block_done:
 .compression:
 	mov	edx,H2E_COMPRESSION
 	call	h2_goaway
+	jmp	.out
+.too_big:
+	; a head larger than we take, on this stream only: 431 for a new one (and
+	; the rest of its body refused), its trailers too large reset an open one
+	mov	eax,r12d
+	call	h2_find
+	cmp	edi,NIL
+	je	@f
+	mov	esi,r12d
+	mov	edx,H2E_CALM
+	call	h2_stream_reset
+	jmp	.out
+@@:
+	cmp	r12d,[r13+C2_LASTSID]
+	jbe	.closed_stream
+	mov	[r13+C2_LASTSID],r12d
+	mov	esi,r12d
+	call	h2_out_431
+	cmp	dword [r13+C2_HBEND],0
+	jne	.out
+	mov	esi,r12d			; it was to send a body: not wanted
+	xor	edx,edx				; (NO_ERROR, RFC 9113 8.1)
+	call	h2_out_rst
 	jmp	.out
 .calm:
 	mov	edx,H2E_CALM
