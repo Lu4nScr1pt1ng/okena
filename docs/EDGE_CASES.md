@@ -6,7 +6,7 @@ checked line by line against a running okena by `tests/httpproxy/edge.py`
 (both engines), the upstream responses table by `tests/httpproxy/upstream.py`, paths and hosts by
 `tests/httpproxy/routing.py`, client identity by `tests/httpproxy/identity.py`, failing backends and
 misbehaving clients by `tests/httpproxy/failures.py`, streams and tunnels by
-`tests/httpproxy/streaming.py`, the cache's edges by `tests/gateway/cachedge.py`, odd ClientHellos by `tests/tls/hello.py`, HTTP/2 abuse by `tests/h2/abuse.py` (with h2spec for
+`tests/httpproxy/streaming.py`, the cache's edges by `tests/gateway/cachedge.py`, `tcp`'s by `tests/l4/edges.py`, odd ClientHellos by `tests/tls/hello.py`, HTTP/2 abuse by `tests/h2/abuse.py` (with h2spec for
 conformance), and its parser against a reference by `tests/http/run.py`. "Reject" means a 4xx/5xx with
 the connection closed when its framing can no longer be trusted.
 
@@ -20,6 +20,7 @@ the connection closed when its framing can no longer be trusted.
 | Slow read (client never reads the response) | write progress deadline (`body_idle`: no byte taken, or no HTTP/2 or 3 window, for that long closes it, or its stream, and the backend's connection); backpressure to the upstream stream, not buffering |
 | Half-close (client sends FIN, still reads) | kept open in `tcp` mode until both sides close; in HTTP, the response is still delivered |
 | RST in the middle of a response | upstream stream cancelled, upstream connection reused only if its framing is intact |
+| `tcp`: a backend that resets mid-stream | the client gets what came, then a close (FIN, as HAProxy and Envoy do in TCP mode); a client that resets lets the backend's connection go at once |
 | Client IP behind NAT (thousands of users, one address) | per-source connection limits configurable, and keyable by other attributes |
 | IPv6, dual stack, IPv4-mapped addresses | normalised to one form for limits, logs and ACLs; happy eyeballs to dual-stack backends |
 | MTU/PMTU black holes | `TCP_MSS` clamp option; QUIC starts at 1200 bytes and probes 1350 and 1452 (RFC 9000 14.3), a lost probe costing nothing |

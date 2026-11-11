@@ -42,6 +42,8 @@ SUITES = [
     ("streaming epoll", ["tests/httpproxy/streaming.py", "epoll"]),
     ("cachedge io_uring", ["tests/gateway/cachedge.py", "io_uring"]),
     ("cachedge epoll", ["tests/gateway/cachedge.py", "epoll"]),
+    ("l4 edges io_uring", ["tests/l4/edges.py", "io_uring"]),
+    ("l4 edges epoll", ["tests/l4/edges.py", "epoll"]),
     ("hello io_uring", ["tests/tls/hello.py", "io_uring"]),
     ("hello epoll", ["tests/tls/hello.py", "epoll"]),
     ("h2 abuse io_uring", ["tests/h2/abuse.py", "io_uring"]),
