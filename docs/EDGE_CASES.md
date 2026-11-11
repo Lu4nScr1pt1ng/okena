@@ -5,7 +5,8 @@ behaviour to implement and a test to keep. The HTTP/1.x parsing table is
 checked line by line against a running okena by `tests/httpproxy/edge.py`
 (both engines), the upstream responses table by `tests/httpproxy/upstream.py`, paths and hosts by
 `tests/httpproxy/routing.py`, client identity by `tests/httpproxy/identity.py`, failing backends and
-misbehaving clients by `tests/httpproxy/failures.py`, odd ClientHellos by `tests/tls/hello.py`, HTTP/2 abuse by `tests/h2/abuse.py` (with h2spec for
+misbehaving clients by `tests/httpproxy/failures.py`, streams and tunnels by
+`tests/httpproxy/streaming.py`, odd ClientHellos by `tests/tls/hello.py`, HTTP/2 abuse by `tests/h2/abuse.py` (with h2spec for
 conformance), and its parser against a reference by `tests/http/run.py`. "Reject" means a 4xx/5xx with
 the connection closed when its framing can no longer be trusted.
 
@@ -156,11 +157,11 @@ the connection closed when its framing can no longer be trusted.
 
 | Case | Behaviour |
 |---|---|
-| WebSocket over h1, h2, h3 | all supported, any combination with the backend |
-| Idle WebSocket | own idle timeout (`websocket idle=`), ping not injected unless configured |
-| Server-Sent Events, long polling, streamed LLM responses | no buffering, flush per write, no total timeout unless set |
+| WebSocket over h1, h2, h3 | all supported, any combination with the backend; a half-close reaches the other side |
+| Idle WebSocket | the listener's `timeout idle` when nothing moves either way (body_idle does not apply to a tunnel); no ping injected |
+| Server-Sent Events, long polling, streamed LLM responses | no buffering, flush per write, no total timeout; `response` bounds the head only, a backend's pauses do not count against the client; a client that leaves lets the backend go at once |
 | gRPC streaming, deadlines (`grpc-timeout`) | honoured as the request timeout when shorter; trailers carried |
-| Graceful drain with long-lived connections | new connections stop, h2 `GOAWAY`, WebSocket closed with 1001 after `drain_timeout` |
+| Graceful drain with long-lived connections | new connections stop, h2 `GOAWAY`; a WebSocket tunnel (bytes okena does not frame) closed at the drain timeout, so the application's own reconnect takes over |
 | Large uploads on slow networks | `limits { body_size }` per listener (413 before the backend for a `Content-Length` past it, counted as it goes for chunked), body progress deadline (`body_idle`, 408) instead of a short total deadline |
 
 ## Load balancing and backends

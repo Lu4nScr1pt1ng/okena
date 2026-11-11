@@ -38,6 +38,8 @@ SUITES = [
     ("identity epoll", ["tests/httpproxy/identity.py", "epoll"]),
     ("failures io_uring", ["tests/httpproxy/failures.py", "io_uring"]),
     ("failures epoll", ["tests/httpproxy/failures.py", "epoll"]),
+    ("streaming io_uring", ["tests/httpproxy/streaming.py", "io_uring"]),
+    ("streaming epoll", ["tests/httpproxy/streaming.py", "epoll"]),
     ("hello io_uring", ["tests/tls/hello.py", "io_uring"]),
     ("hello epoll", ["tests/tls/hello.py", "epoll"]),
     ("h2 abuse io_uring", ["tests/h2/abuse.py", "io_uring"]),
