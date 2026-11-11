@@ -1,7 +1,7 @@
 ; TLS 1.2 server handshake (RFC 5246 + RFC 8422). The ClientHello read in
 ; full: of its suites, the first this offers (ECDHE with the certificate's key,
-; ECDSA or RSA, and AES-128-GCM or ChaCha20-Poly1305, RFC 7905), the client's
-; order kept; x25519 when it has it, else secp256r1; the signature as its
+; ECDSA or RSA, and AES-128-GCM, ChaCha20-Poly1305 (RFC 7905) or AES-256-GCM
+; with SHA-384 as its PRF and transcript hash), the client's order kept; x25519 when it has it, else secp256r1; the signature as its
 ; signature_algorithms allow (ecdsa_secp256r1_sha256; rsa_pss_rsae_sha256, else
 ; rsa_pkcs1_sha256); the extended master secret (RFC 7627) when it offers it;
 ; renegotiation_info (RFC 5746) only when it said it knows it (never a
@@ -66,7 +66,7 @@ T2_CWIV		:= T2_SWK + 32			; client write IV (4 salt; 12 ChaCha20),
 T2_SWIV		:= T2_CWIV + 12			; server write IV
 T2_RXGCM	:= T2_SWIV + 12			; client -> server records (an AEAD context)
 T2_TXGCM	:= T2_RXGCM + AEAD_SIZE		; server -> client records
-T2_SUITE	:= T2_TXGCM + AEAD_SIZE		; d: 0 AES-128-GCM, 1 ChaCha20-Poly1305
+T2_SUITE	:= T2_TXGCM + AEAD_SIZE		; d: T12_* (the AEAD type: aead_init's)
 T2_GROUP	:= T2_SUITE + 4			; d: 0 secp256r1, 1 x25519
 T2_SIG		:= T2_GROUP + 4			; d: the SignatureScheme (as on the wire)
 T2_EMS		:= T2_SIG + 4			; d: extended master secret
@@ -82,12 +82,18 @@ T2_TS		:= T2_CCA + 4			; q: C12_TS
 T2_SH		:= T2_TS + 8			; the transcript's hash through the ClientKeyExchange
 T2_TXSEQ	:= T2_SH + 32			; q: records sealed here (user space), from 1
 T2_RXSEQ	:= T2_TXSEQ + 8			; q: and opened
-T2_FULL		:= T2_RXSEQ + 8
+T2_SHA384	:= T2_RXSEQ + 8			; the transcript with SHA-384 too (its suites' PRF)
+T2_SH384	:= T2_SHA384 + SHA512_CTX_SIZE	; and the session hash with it (48)
+T2_FULL		:= T2_SH384 + 48
 
-; append [rsi, edx) to the transcript (T2_SHA); rbp = t2
+T12_AES128	:= 0				; TLS_ECDHE_*_WITH_AES_128_GCM_SHA256
+T12_CHACHA	:= 1				; TLS_ECDHE_*_WITH_CHACHA20_POLY1305_SHA256
+T12_AES256	:= 2				; TLS_ECDHE_*_WITH_AES_256_GCM_SHA384
+T12_SUITES	:= 3
+
+; append [rsi, edx) to the transcript (T2_SHA, and T2_SHA384); rbp = t2
 macro t2_add
-	lea	rdi,[rbp+T2_SHA]
-	call	sha256_update
+	call	t2_add_fn
 end macro
 
 ; rdi = t2, rsi = credentials (a C12 block), rdx = ClientHello records,
@@ -187,8 +193,7 @@ tls12_hello:
 	mov	ecx,eax
 	rep	movsb
 	; the suite: ECDHE_ECDSA or ECDHE_RSA, AES-128-GCM or ChaCha20-Poly1305
-	mov	eax,[r15+C12_KEYTYPE]
-	shl	eax,1
+	imul	eax,[r15+C12_KEYTYPE],T12_SUITES
 	add	eax,[rbp+T2_SUITE]
 	mov	ax,[tls12_suites+rax*2]
 	xchg	al,ah
@@ -432,7 +437,7 @@ tls12_hello:
 	ret
 
 ; the suites, as on the wire: ECDSA's AES-128-GCM and ChaCha20-Poly1305, then RSA's
-tls12_suites	dw 0xC02B, 0xCCA9, 0xC02F, 0xCCA8
+tls12_suites	dw 0xC02B, 0xCCA9, 0xC02C, 0xC02F, 0xCCA8, 0xC030	; T12_SUITES a key type
 
 ; In tls12_hello: rbx = the ClientHello's session id, r14 = its end, rbp = t2,
 ; r15 = the credentials. T2_SUITE, T2_GROUP, T2_SIG, T2_EMS and T2_RENEG from
@@ -473,16 +478,17 @@ tls12_offers:
 @@:
 	cmp	r9d,-1
 	jne	.suite
-	movzx	edx,word [tls12_suites+r10*4]
-	cmp	eax,edx
-	jne	@f
-	xor	r9d,r9d
+	imul	edx,r10d,T12_SUITES * 2		; the suites for the certificate's key
+	xor	ecx,ecx
+.suite_try:
+	cmp	ax,[tls12_suites+rdx+rcx*2]
+	je	.suite_ours
+	inc	ecx
+	cmp	ecx,T12_SUITES
+	jb	.suite_try
 	jmp	.suite
-@@:
-	movzx	edx,word [tls12_suites+r10*4+2]
-	cmp	eax,edx
-	jne	.suite
-	mov	r9d,1
+.suite_ours:
+	mov	r9d,ecx				; (T12_*: the table's order)
 	jmp	.suite
 .suites_done:
 	cmp	r9d,-1
@@ -619,9 +625,70 @@ sha256_init_t2:
 	push	rdx
 	lea	rdi,[rbp+T2_SHA]
 	call	sha256_init
+	lea	rdi,[rbp+T2_SHA384]
+	call	sha384_init
 	pop	rdx
 	pop	rsi
 	pop	rbx
+	ret
+
+; rbp = t2, rsi/edx = bytes: into both transcripts. Keeps rbx, rbp, r8-r15.
+t2_add_fn:
+	push	r8
+	push	r9
+	push	r10
+	push	r11
+	push	rsi
+	push	rdx
+	lea	rdi,[rbp+T2_SHA]
+	call	sha256_update
+	pop	rdx
+	pop	rsi
+	lea	rdi,[rbp+T2_SHA384]
+	mov	edx,edx
+	call	sha512_update
+	pop	r11
+	pop	r10
+	pop	r9
+	pop	r8
+	ret
+
+; rbp = t2: the PRF's hash for its suite (g_prf384). Keeps the registers but rax.
+t2_prf:
+	xor	eax,eax
+	cmp	dword [rbp+T2_SUITE],T12_AES256
+	sete	al
+	mov	[g_prf384],eax
+	ret
+
+; rbp = t2: the transcript so far, hashed with its suite's PRF hash, into
+; g_t2_dig (32 or 48); the PRF set for it. Keeps rbx, rbp, r12-r15.
+bss
+	g_t2_dig	rb 48
+end bss
+t2_digest:
+	call	t2_prf
+	sub	rsp,SHA512_CTX_SIZE + 8
+	cmp	dword [g_prf384],0
+	jne	.h384
+	lea	rsi,[rbp+T2_SHA]
+	mov	rdi,rsp
+	mov	ecx,SHA256_CTX_SIZE
+	rep	movsb
+	mov	rdi,rsp
+	lea	rsi,[g_t2_dig]
+	call	sha256_final
+	jmp	.out
+.h384:
+	lea	rsi,[rbp+T2_SHA384]
+	mov	rdi,rsp
+	mov	ecx,SHA512_CTX_SIZE
+	rep	movsb
+	mov	rdi,rsp
+	lea	rsi,[g_t2_dig]
+	call	sha384_final
+.out:
+	add	rsp,SHA512_CTX_SIZE + 8
 	ret
 
 ; rdi = t2, rsi = the client's records after the flight (ClientKeyExchange,
@@ -728,6 +795,18 @@ tls12_finished:
 	lea	rdi,[rsp+8]
 	lea	rsi,[rbp+T2_SH]
 	call	sha256_final
+	cmp	dword [rbp+T2_SUITE],T12_AES256
+	jne	.sh_done
+	sub	rsp,SHA512_CTX_SIZE		; and with SHA-384, its suites' session hash
+	lea	rsi,[rbp+T2_SHA384]
+	mov	rdi,rsp
+	mov	ecx,SHA512_CTX_SIZE
+	rep	movsb
+	mov	rdi,rsp
+	lea	rsi,[rbp+T2_SH384]
+	call	sha384_final
+	add	rsp,SHA512_CTX_SIZE
+.sh_done:
 	pop	r11
 	cmp	dword [rbp+T2_GROUP],0
 	jne	.cke_x
@@ -798,11 +877,16 @@ tls12_finished:
 	jne	.fail
 	; master secret (RFC 7627: over the session hash, through the
 	; ClientKeyExchange, when both said so) and the key block
+	call	t2_prf
 	cmp	dword [rbp+T2_EMS],0
 	je	.classic
 	lea	rdi,[rbp+T2_MASTER]
 	lea	rsi,[rbp+T2_SHARED]
 	lea	rcx,[rbp+T2_SH]			; (the session hash, through the CKE)
+	cmp	dword [g_prf384],0
+	je	.ems_h
+	lea	rcx,[rbp+T2_SH384]
+.ems_h:
 	call	tls12_master_ems
 	jmp	.keys
 .classic:
@@ -818,18 +902,12 @@ tls12_finished:
 	call	secure_zero
 	call	tls12_keys
 	; expected client verify_data over the transcript through CKE
-	lea	rsi,[rbp+T2_SHA]
-	lea	rdi,[rsp]
-	mov	ecx,SHA256_CTX_SIZE
-	rep	movsb
-	lea	rdi,[rsp]
-	lea	rsi,[rsp+112]
-	call	sha256_final
+	call	t2_digest
 	lea	rdi,[rsp+144]
 	lea	rsi,[rbp+T2_MASTER]
 	lea	rdx,[tls12_lbl_cfin]
 	mov	ecx,15
-	lea	r8,[rsp+112]
+	lea	r8,[g_t2_dig]
 	call	tls12_verify_data
 	; decrypt the Finished record in place and check it
 	movzx	esi,word [r14+3]
@@ -908,10 +986,36 @@ tls12_finished:
 ; write key/IV, both at record sequence 1 (after the Finished). The layout
 ; is proven against the kernel in tests/tls/server12.asm.
 tls12_ktls_info:
-	cmp	dword [rdi+T2_SUITE],0
+	cmp	dword [rdi+T2_SUITE],T12_AES256
+	je	.aes256
+	cmp	dword [rdi+T2_SUITE],T12_AES128
 	jne	.chacha
 	call	.aes
 	mov	eax,40
+	ret
+.aes256:
+	; struct tls12_crypto_info_aes_gcm_256: info, iv[8], key[32], salt[4], rec_seq[8]
+	push	rdx
+	lea	r8,[rdi+T2_SWK]
+	mov	r9d,[rdi+T2_SWIV]
+	call	.a256_one
+	pop	rsi
+	lea	r8,[rdi+T2_CWK]
+	mov	r9d,[rdi+T2_CWIV]
+	call	.a256_one
+	mov	eax,56
+	ret
+.a256_one:
+	mov	dword [rsi],0x00340303		; TLS 1.2, AES_GCM_256
+	mov	qword [rsi+4],0			; iv = explicit nonce, big-endian 1
+	mov	byte [rsi+11],1
+	movdqu	xmm0,[r8]
+	movdqu	[rsi+12],xmm0
+	movdqu	xmm0,[r8+16]
+	movdqu	[rsi+28],xmm0
+	mov	[rsi+44],r9d			; salt = the write IV
+	mov	qword [rsi+48],0		; rec_seq = 1
+	mov	byte [rsi+55],1
 	ret
 .chacha:
 	; struct tls12_crypto_info_chacha20_poly1305: info, iv[12], key[32], rec_seq[8]
@@ -972,22 +1076,26 @@ tls12_master_ems:
 	mov	r12,rdi
 	mov	r13,rsi
 	mov	rbx,rcx
-	sub	rsp,64
+	sub	rsp,80
 	lea	rdi,[rsp]
 	lea	rsi,[.label]
 	mov	ecx,22
 	rep	movsb
 	mov	rsi,rbx
 	mov	ecx,32
+	cmp	dword [g_prf384],0
+	je	.hlen_ok
+	mov	ecx,48
+.hlen_ok:
+	lea	r9d,[rcx+22]
 	rep	movsb
 	mov	rdi,r12
 	mov	esi,48
 	mov	rdx,r13
 	mov	ecx,32
 	lea	r8,[rsp]
-	mov	r9d,54
 	call	p_sha256
-	add	rsp,64
+	add	rsp,80
 	pop	r13
 	pop	r12
 	pop	rbx
@@ -1101,9 +1209,13 @@ tls12_cp_nonce:
 ; rbp = t2: the key block from T2_MASTER and the randoms, into the write keys
 ; and IVs (the suite's sizes), and the two AEAD contexts set up
 tls12_keys:
+	call	t2_prf
 	sub	rsp,104
 	mov	esi,40				; AES-128-GCM: keys of 16, salts of 4
-	cmp	dword [rbp+T2_SUITE],0
+	cmp	dword [rbp+T2_SUITE],T12_AES128
+	je	@f
+	mov	esi,72				; AES-256-GCM: keys of 32, salts of 4
+	cmp	dword [rbp+T2_SUITE],T12_AES256
 	je	@f
 	mov	esi,88				; ChaCha20-Poly1305: keys of 32, IVs of 12
 @@:
@@ -1112,7 +1224,9 @@ tls12_keys:
 	lea	rcx,[rbp+T2_SR]
 	lea	r8,[rbp+T2_CR]
 	call	tls12_key_block
-	cmp	dword [rbp+T2_SUITE],0
+	cmp	dword [rbp+T2_SUITE],T12_AES256
+	je	.aes256
+	cmp	dword [rbp+T2_SUITE],T12_AES128
 	jne	.cp
 	movdqu	xmm0,[rsp]
 	movdqu	[rbp+T2_CWK],xmm0
@@ -1121,6 +1235,16 @@ tls12_keys:
 	mov	eax,[rsp+32]
 	mov	[rbp+T2_CWIV],eax
 	mov	eax,[rsp+36]
+	mov	[rbp+T2_SWIV],eax
+	jmp	.done
+.aes256:
+	lea	rsi,[rsp]
+	lea	rdi,[rbp+T2_CWK]
+	mov	ecx,64				; the two keys (CWK, SWK adjoin)
+	rep	movsb
+	mov	eax,[rsp+64]
+	mov	[rbp+T2_CWIV],eax
+	mov	eax,[rsp+68]
 	mov	[rbp+T2_SWIV],eax
 	jmp	.done
 .cp:
@@ -1153,19 +1277,13 @@ tls12_server_fin:
 	push	r12
 	sub	rsp,168				; ctx(112), hash(32) @112, Finished(16) @144
 	mov	r12,rdi
-	lea	rsi,[rbp+T2_SHA]
-	lea	rdi,[rsp]
-	mov	ecx,SHA256_CTX_SIZE
-	rep	movsb
-	lea	rdi,[rsp]
-	lea	rsi,[rsp+112]
-	call	sha256_final
+	call	t2_digest
 	mov	dword [rsp+144],0x0c000014	; Finished, 12
 	lea	rdi,[rsp+148]
 	lea	rsi,[rbp+T2_MASTER]
 	lea	rdx,[tls12_lbl_sfin]
 	mov	ecx,15
-	lea	r8,[rsp+112]
+	lea	r8,[g_t2_dig]
 	call	tls12_verify_data
 	lea	rsi,[rsp+144]			; (an abbreviated handshake's client
 	mov	edx,16				; Finished covers it)
@@ -1375,18 +1493,12 @@ tls12_resumed_fin:
 	lea	r14,[r14+5+rax]
 	cmp	byte [r14],22
 	jne	.fail
-	lea	rsi,[rbp+T2_SHA]
-	lea	rdi,[rsp]
-	mov	ecx,SHA256_CTX_SIZE
-	rep	movsb
-	lea	rdi,[rsp]
-	lea	rsi,[rsp+112]
-	call	sha256_final
+	call	t2_digest
 	lea	rdi,[rsp+144]
 	lea	rsi,[rbp+T2_MASTER]
 	lea	rdx,[tls12_lbl_cfin]
 	mov	ecx,15
-	lea	r8,[rsp+112]
+	lea	r8,[g_t2_dig]
 	call	tls12_verify_data
 	movzx	esi,word [r14+3]
 	rol	si,8

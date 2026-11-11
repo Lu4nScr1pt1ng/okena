@@ -255,8 +255,8 @@ utls12_seal:
 	mov	[r12],cl			; the header: type, 1.2, length (after)
 	mov	word [r12+1],0x0303
 	lea	r9,[r12+5]			; the plaintext where it is (ChaCha20)
-	cmp	dword [rbx+T2_SUITE],0
-	jne	@f
+	cmp	dword [rbx+T2_SUITE],T12_CHACHA
+	je	@f
 	std					; AES-GCM: 8 up for the explicit nonce
 	lea	rsi,[r12+5+r13-1]
 	lea	rdi,[r12+13+r13-1]
@@ -343,7 +343,7 @@ http_tls12_fin2_sent:
 	lea	rdx,[r8+HB_KTLS+KTLS_SLOT]
 	lea	rdi,[r8+HB_T2]
 	call	tls12_ktls_info
-	mov	[g_t12_klen],eax		; (40 AES-128-GCM, 56 ChaCha20-Poly1305)
+	mov	[g_t12_klen],eax		; (40 AES-128-GCM, 56 ChaCha20-Poly1305 or AES-256-GCM)
 	cmp	dword [g_no_ktls],0
 	jne	http_utls12_start		; no module: the records here
 	cmp	dword [g_engine],ENGINE_EPOLL
@@ -514,8 +514,7 @@ tls12_cert_fit:
 	jbe	@f
 	mov	r9,r8
 @@:
-	movzx	r10d,word [tls12_suites+rcx*4]
-	movzx	r11d,word [tls12_suites+rcx*4+2]
+	imul	r10d,ecx,T12_SUITES * 2		; the key type's suites in the table
 .suite:
 	lea	r8,[rdx+2]
 	cmp	r8,r9
@@ -523,10 +522,14 @@ tls12_cert_fit:
 	movzx	ecx,word [rdx]
 	xchg	cl,ch
 	add	rdx,2
-	cmp	ecx,r10d
+	xor	r11d,r11d
+.ours:
+	cmp	cx,[tls12_suites+r10+r11*2]
 	je	.yes
-	cmp	ecx,r11d
-	jne	.suite
+	inc	r11d
+	cmp	r11d,T12_SUITES
+	jb	.ours
+	jmp	.suite
 .yes:
 	mov	eax,1
 .out:

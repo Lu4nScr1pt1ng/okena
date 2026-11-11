@@ -1257,12 +1257,14 @@ tlsc12_flight:
 	mov	edx,32
 	lea	rcx,[rbx+TC_RANDOM]
 	lea	r8,[rbx+TC12_SRAND]
+	mov	dword [g_prf384],0		; (the client offers SHA-256 suites only)
 	call	tls12_master
 	lea	rdi,[rbx+TC12_CWK]		; key block
 	mov	esi,40
 	lea	rdx,[rbx+TC12_MASTER]
 	lea	rcx,[rbx+TC12_SRAND]
 	lea	r8,[rbx+TC_RANDOM]
+	mov	dword [g_prf384],0		; (the client offers SHA-256 suites only)
 	call	tls12_key_block
 	lea	rdi,[rbx+TC12_TX]		; client-write / server-write GCM
 	lea	rsi,[rbx+TC12_CWK]
@@ -1314,6 +1316,7 @@ tlsc12_flight:
 	lea	rdx,[tls12_lbl_cfin]
 	mov	ecx,15
 	lea	r8,[rbx+TC_THX]
+	mov	dword [g_prf384],0		; (the client offers SHA-256 suites only)
 	call	tls12_verify_data
 	lea	rsi,[rbx+TC_FIN]		; add the Finished message to the transcript
 	mov	edx,16
@@ -1405,6 +1408,7 @@ tlsc12_server_finished:
 	lea	rdx,[tls12_lbl_sfin]
 	mov	ecx,15
 	lea	r8,[rbx+TC_THX]
+	mov	dword [g_prf384],0		; (the client offers SHA-256 suites only)
 	call	tls12_verify_data
 	lea	rdi,[rbx+TC_FIN]
 	lea	rsi,[r12+5+8+4]			; the received verify_data

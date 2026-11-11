@@ -11,7 +11,11 @@
 
 ; rdi = out, esi = output length, rdx = secret, ecx = secret length,
 ; r8 = seed (the label joined with the seed), r9d = seed length.
-; Writes esi bytes of P_SHA256 to out. seed length must be <= 160.
+; Writes esi bytes of P_SHA256 to out (P_SHA384 when [g_prf384]: the suites
+; with SHA-384). seed length must be <= 160.
+bss
+	g_prf384	dd ?			; the PRF's hash for what follows: 1 SHA-384
+end bss
 p_sha256:
 	push	rbx
 	push	r12
@@ -25,42 +29,49 @@ p_sha256:
 	mov	r15d,ecx			; secret length
 	mov	ebx,r9d				; seed length
 	mov	rbp,rsp
-	sub	rsp,256
+	sub	rsp,320
 	and	rsp,-16
-	; [rsp] = A (32), [rsp+32] = seed; [rsp+192] = one HMAC block
-	lea	rdi,[rsp+32]
+	; [rsp] = A (32 or 48), [rsp+48] = seed (A and seed adjoin from
+	; [rsp+48-hlen]); [rsp+256] = one HMAC block
+	lea	rdi,[rsp+48]
 	mov	rsi,r8
 	mov	ecx,ebx
 	rep	movsb
-	mov	rdi,rsp				; A(1) = HMAC(secret, seed)
+	call	.hlen				; A(1) = HMAC(secret, seed)
+	lea	rdi,[rsp+48]
+	sub	rdi,rax
 	mov	rsi,r14
 	mov	edx,r15d
-	lea	rcx,[rsp+32]
+	lea	rcx,[rsp+48]
 	mov	r8d,ebx
-	call	hmac_sha256
+	call	.mac
 .block:
-	lea	rdi,[rsp+192]			; HMAC(secret, A | seed)
+	call	.hlen				; HMAC(secret, A | seed)
+	lea	rcx,[rsp+48]
+	sub	rcx,rax
+	lea	r8d,[rbx+rax]
+	lea	rdi,[rsp+256]
 	mov	rsi,r14
 	mov	edx,r15d
-	mov	rcx,rsp
-	lea	r8d,[rbx+32]
-	call	hmac_sha256
-	mov	eax,32				; copy min(32, remaining)
-	cmp	r13d,32
+	call	.mac
+	call	.hlen				; copy min(hlen, remaining)
+	cmp	r13d,eax
 	cmovb	eax,r13d
-	lea	rsi,[rsp+192]
+	lea	rsi,[rsp+256]
 	mov	rdi,r12
 	mov	ecx,eax
 	rep	movsb
 	mov	r12,rdi
 	sub	r13d,eax
 	jz	.done
-	mov	rdi,rsp				; A = HMAC(secret, A)
+	call	.hlen				; A = HMAC(secret, A)
+	lea	rdi,[rsp+48]
+	sub	rdi,rax
+	mov	rcx,rdi
+	mov	r8d,eax
 	mov	rsi,r14
 	mov	edx,r15d
-	mov	rcx,rsp
-	mov	r8d,32
-	call	hmac_sha256
+	call	.mac
 	jmp	.block
 .done:
 	mov	rsp,rbp
@@ -71,6 +82,19 @@ p_sha256:
 	pop	r12
 	pop	rbx
 	ret
+; eax = the PRF hash's length
+.hlen:
+	mov	eax,32
+	cmp	dword [g_prf384],0
+	je	@f
+	mov	eax,48
+@@:
+	ret
+; HMAC with the PRF's hash (hmac_sha256's arguments)
+.mac:
+	cmp	dword [g_prf384],0
+	jne	hmac_sha384
+	jmp	hmac_sha256
 
 rodata
 	tls12_lbl_master	db 'master secret'
@@ -160,8 +184,8 @@ tls12_key_block:
 	ret
 
 ; rdi = out[12], rsi = master_secret[48], rdx = label, ecx = label length,
-; r8 = Hash(handshake_messages)[32]: verify_data = PRF(master, label,
-; hash)[0..12], for a 1.2 Finished.
+; r8 = Hash(handshake_messages)[32, 48 with SHA-384]: verify_data =
+; PRF(master, label, hash)[0..12], for a 1.2 Finished.
 tls12_verify_data:
 	push	rbx
 	push	r12
@@ -173,22 +197,26 @@ tls12_verify_data:
 	mov	r14,rdx
 	mov	r15d,ecx
 	mov	rbx,r8
-	sub	rsp,64
+	sub	rsp,80
 	lea	rdi,[rsp]			; seed = label | hash
 	mov	rsi,r14
 	mov	ecx,r15d
 	rep	movsb
 	mov	rsi,rbx				; the transcript hash
 	mov	ecx,32
+	cmp	dword [g_prf384],0
+	je	@f
+	mov	ecx,48
+@@:
+	lea	r9d,[r15+rcx]			; seed length
 	rep	movsb
-	lea	r9d,[r15+32]			; seed length
 	mov	rdi,r12
 	mov	esi,12
 	mov	rdx,r13
 	mov	ecx,48
 	lea	r8,[rsp]
 	call	p_sha256
-	add	rsp,64
+	add	rsp,80
 	pop	r15
 	pop	r14
 	pop	r13

@@ -60,8 +60,9 @@ hour and the previous one is still accepted, so a ticket lasts one to two
 hours; keys live in memory only (a restart starts afresh). For a fleet,
 A client that offers no TLS 1.3 gets TLS 1.2 (RFC 5246), on kTLS when the host
 has it, else its records sealed and opened by okena as 1.3's are: ECDHE with
-the certificate's key, ECDSA or RSA, and AES-128-GCM or ChaCha20-Poly1305
-(the first of those in the client's order); x25519, else secp256r1 (an ECDSA
+the certificate's key, ECDSA or RSA, and AES-128-GCM, ChaCha20-Poly1305 or
+AES-256-GCM with SHA-384 (its PRF and transcript hash), the first of those in
+the client's order (many clients put AES-256 first); x25519, else secp256r1 (an ECDSA
 certificate, being on secp256r1, needs that one offered); rsa_pss_rsae_sha256,
 else rsa_pkcs1_sha256, for an RSA key; the extended master secret (RFC 7627)
 whenever the client offers it; secure renegotiation said, and no

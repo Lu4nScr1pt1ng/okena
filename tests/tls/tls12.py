@@ -316,12 +316,15 @@ http 127.0.0.1:{DLST} {{
         r = subprocess.run(["openssl", "s_client", "-connect", f"127.0.0.1:{port}", "-servername", "okena.test",
                             "-tls1_2", *opts], input=b"", capture_output=True, timeout=10)
         return (r.stdout + r.stderr).decode(errors="replace")
-    for port, cipher in ((LST, "ECDHE-ECDSA-CHACHA20-POLY1305"), (RLST, "ECDHE-RSA-CHACHA20-POLY1305")):
+    for port, cipher in ((LST, "ECDHE-ECDSA-CHACHA20-POLY1305"), (RLST, "ECDHE-RSA-CHACHA20-POLY1305"),
+                         (LST, "ECDHE-ECDSA-AES256-GCM-SHA384"), (RLST, "ECDHE-RSA-AES256-GCM-SHA384")):
         ver, data = get12(port, "/cha", cipher=cipher)
-        check(f"TLS 1.2 {cipher}: kTLS ChaCha20-Poly1305, 200 proxied",
+        check(f"TLS 1.2 {cipher}: kTLS, 200 proxied",
               ver == "TLSv1.2" and data.startswith(b"HTTP/1.1 200") and b"backend:/cha" in data, f"{ver} {data[:80]}")
     o = sclient(LST, "-cipher", "ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES128-GCM-SHA256")
     check("  the client's order kept (ChaCha20 first: ChaCha20)", "Cipher is ECDHE-ECDSA-CHACHA20-POLY1305" in o, o[-300:])
+    o = sclient(LST, "-cipher", "ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES128-GCM-SHA256")
+    check("  (AES-256 first: AES-256, with SHA-384)", "Cipher is ECDHE-ECDSA-AES256-GCM-SHA384" in o, o[-300:])
     o = sclient(LST)
     check("x25519 when offered; the extended master secret; secure renegotiation said",
           "X25519" in o and "TLSv1.2, Cipher is" in o and "Extended master secret: yes" in o
@@ -339,19 +342,20 @@ http 127.0.0.1:{DLST} {{
     o = sclient(RLST, "-sigalgs", "RSA+SHA256")
     check("  else rsa_pkcs1_sha256", "Peer signature type: rsa_pkcs1_sha256" in o and "TLSv1.2, Cipher is ECDHE-RSA" in o, o[-400:])
     t0 = time.time()
-    o = sclient(LST, "-cipher", "ECDHE-ECDSA-AES256-GCM-SHA384")
-    check("nothing in common: a handshake_failure alert, at once",
+    o = sclient(LST, "-cipher", "ECDHE-ECDSA-AES128-SHA256:ECDHE-ECDSA-AES256-SHA")
+    check("nothing in common (CBC only): a handshake_failure alert, at once",
           "alert handshake failure" in o and time.time() - t0 < 5, o[-300:])
     o = sclient(LST, "-curves", "P-384")
     check("  no group in common: the same", "alert handshake failure" in o, o[-300:])
 
     # session tickets (RFC 5077): an abbreviated handshake, then a request on it
     for port, cipher in ((LST, "ECDHE-ECDSA-AES128-GCM-SHA256"), (LST, "ECDHE-ECDSA-CHACHA20-POLY1305"),
-                         (RLST, "ECDHE-RSA-AES128-GCM-SHA256")):
+                         (RLST, "ECDHE-RSA-AES128-GCM-SHA256"), (LST, "ECDHE-ECDSA-AES256-GCM-SHA384"),
+                         (RLST, "ECDHE-RSA-AES256-GCM-SHA384")):
         reused, data = resumed12(port, cipher)
         check(f"a ticket resumes ({cipher}), and the connection serves",
               reused is True and data.startswith(b"HTTP/1.1 200") and b"backend:/again" in data, f"{reused} {data[:80]}")
-    for cipher in ("ECDHE-ECDSA-AES128-GCM-SHA256", "ECDHE-ECDSA-CHACHA20-POLY1305"):
+    for cipher in ("ECDHE-ECDSA-AES128-GCM-SHA256", "ECDHE-ECDSA-CHACHA20-POLY1305", "ECDHE-ECDSA-AES256-GCM-SHA384"):
         ok, reused = notified12(LST, cipher)
         check(f"kTLS {cipher}: Connection: close ends with a close_notify, and the session then resumes",
               ok is True and reused is True, f"{ok} {reused}")
@@ -394,7 +398,7 @@ http 127.0.0.1:{ULST} {{
         time.sleep(0.05)
     big = bytes(range(256)) * 1024
     for cipher in ("ECDHE-ECDSA-AES128-GCM-SHA256", "ECDHE-ECDSA-CHACHA20-POLY1305", "ECDHE-RSA-AES128-GCM-SHA256",
-                   "ECDHE-RSA-CHACHA20-POLY1305"):
+                   "ECDHE-RSA-CHACHA20-POLY1305", "ECDHE-ECDSA-AES256-GCM-SHA384", "ECDHE-RSA-AES256-GCM-SHA384"):
         ver, data = get12(ULST, "/u", cipher=cipher)
         ok1 = ver == "TLSv1.2" and data.startswith(b"HTTP/1.1 200") and b"backend:/u" in data
         ver, data = get12(ULST, "/big", cipher=cipher)
