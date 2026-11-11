@@ -396,6 +396,11 @@ gs_path:
 	cstring .tcr, '/tcproutes/',0
 	lea	rsi,[.tcr]
 @@:
+	cmp	r12d,6
+	jne	@f
+	cstring .udr, '/udproutes/',0
+	lea	rsi,[.udr]
+@@:
 	call	gw_req_cstr
 	mov	rsi,[r8+GWR_NAME]
 	mov	ecx,[r8+GWR_NLEN]
@@ -550,6 +555,8 @@ gs_gateway:
 	je	.k_tls
 	cmp	eax,4
 	je	.k_tcp
+	cmp	eax,5
+	je	.k_udp
 	gs_lit	'{"group":"gateway.networking.k8s.io","kind":"HTTPRoute"},{"group":"gateway.networking.k8s.io","kind":"GRPCRoute"}'
 	jmp	.kinds
 .k_tls:
@@ -557,6 +564,9 @@ gs_gateway:
 	jmp	.kinds
 .k_tcp:
 	gs_lit	'{"group":"gateway.networking.k8s.io","kind":"TCPRoute"}'
+	jmp	.kinds
+.k_udp:
+	gs_lit	'{"group":"gateway.networking.k8s.io","kind":"UDPRoute"}'
 .kinds:
 	gs_lit	'],"attachedRoutes":'
 	mov	rax,[rsp]

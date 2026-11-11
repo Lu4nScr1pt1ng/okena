@@ -1712,7 +1712,8 @@ port okena just stopped listening on is let go only when the workers draining
 it are gone). The main file takes it in with `include`. The GatewayClass, when
 there is one of that name, must have `controllerName: okena.dev/gateway-controller`;
 one of another controller's is not served. The service account needs `list` on
-gateways, httproutes, grpcroutes, tlsroutes, tcproutes and referencegrants, `get` on gatewayclasses, services and secrets, `patch`
+gateways, httproutes, grpcroutes, tlsroutes, tcproutes, udproutes and
+referencegrants, `get` on gatewayclasses, services and secrets, `patch`
 on gatewayclasses/status, gateways/status and httproutes/status, and what
 `discover kubernetes` needs.
 
@@ -1744,7 +1745,8 @@ What it reads, and becomes:
   makes the rule answer 500.
 * A TLS listener (Passthrough) is a `tcp` block with `tls passthrough`: a TLSRoute's
   hostnames its `sni` lines, one of none its `default`, the rest refused; a TCP
-  listener a `tcp` block to its TCPRoute's backend. The first route that names
+  listener a `tcp` block to its TCPRoute's backend, a UDP listener a `udp` block
+  to its UDPRoute's. The first route that names
   a hostname has it, the first backend okena can serve is the one (weights
   are for HTTP).
 * backendRefs, Services of the route's own namespace or of one whose
@@ -1765,8 +1767,8 @@ NoMatchingListenerHostname) and ResolvedRefs (or BackendNotFound,
 RefNotPermitted, InvalidKind), what other controllers wrote in it kept.
 
 Not there yet: regular expressions in query parameters, URLRewrite's hostname,
-a backendRef's own filters, UDPRoute, and weights between backends of a
-TLSRoute or TCPRoute. A regular expression path is
+a backendRef's own filters, and weights between backends of a TLSRoute,
+TCPRoute or UDPRoute. A regular expression path is
 tried after an exact path and before a prefix, as okena's own are (the Gateway
 API leaves its place to the implementation).
 

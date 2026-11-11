@@ -206,7 +206,8 @@ bss
 	g_gw_rgl	dq ?		; the ReferenceGrants (0: none)
 	g_gw_tlsl	dq ?		; the TLSRoutes (0: none)
 	g_gw_tcpl	dq ?		; the TCPRoutes (0: none)
-	g_gr_kind	dd ?		; the routes being read: 0 HTTP, 1 GRPC, 2 TLS, 3 TCP
+	g_gw_udpl	dq ?		; the UDPRoutes (0: none)
+	g_gr_kind	dd ?		; the routes being read: 0 HTTP, 1 GRPC, 2 TLS, 3 TCP, 4 UDP
 	g_gp_ns		dq ?		; the backend asked for: its namespace
 	g_gp_nslen	dd ?
 	g_gp_h2		dd ?		; and it speaks gRPC (HTTP/2)
@@ -818,6 +819,12 @@ gw_render:
 	call	gw_list
 	jc	.out_cf
 	mov	[g_gw_tcpl],rax
+	cstring .udp, '/apis/gateway.networking.k8s.io/v1alpha2/udproutes?resourceVersion=0',0
+	lea	rsi,[.udp]
+	xor	edx,edx
+	call	gw_list
+	jc	.out_cf
+	mov	[g_gw_udpl],rax
 	cstring .rgs, '/apis/gateway.networking.k8s.io/v1beta1/referencegrants?resourceVersion=0',0
 	lea	rsi,[.rgs]
 	xor	edx,edx
@@ -851,6 +858,13 @@ gw_render:
 	test	rsi,rsi
 	jz	@f
 	mov	dword [g_gr_kind],3		; TCPRoutes
+	call	gw_routes
+	jc	.unreadable
+@@:
+	mov	rsi,[g_gw_udpl]
+	test	rsi,rsi
+	jz	@f
+	mov	dword [g_gr_kind],4		; UDPRoutes
 	call	gw_routes
 	jc	.unreadable
 @@:
@@ -1118,6 +1132,12 @@ gw_listener:
 @@:
 	mov	dword [r12+GWL_PROTO],4
 	cmp	word [rdi],'TC'
+	jne	@f
+	cmp	byte [rdi+2],'P'
+	je	.proto
+@@:
+	mov	dword [r12+GWL_PROTO],5		; UDP
+	cmp	word [rdi],'UD'
 	jne	.unsupported
 	cmp	byte [rdi+2],'P'
 	je	.proto
@@ -1441,7 +1461,7 @@ gw_parent:
 	jne	.other
 @@:
 	; a kind of route this listener takes? (HTTP, gRPC: HTTP and HTTPS; TLSRoute:
-	; TLS; TCPRoute: TCP)
+	; TLS; TCPRoute: TCP; UDPRoute: UDP)
 	mov	eax,[g_gr_kind]
 	mov	ecx,[r14+GWL_PROTO]
 	cmp	eax,2
@@ -1450,7 +1470,7 @@ gw_parent:
 	jbe	.kind_ok
 	jmp	.kind_not
 .l4_kind:
-	add	eax,1				; 2 -> 3, 3 -> 4
+	add	eax,1				; 2 -> 3, 3 -> 4, 4 -> 5
 	cmp	eax,ecx
 	je	.kind_ok
 .kind_not:
@@ -2321,7 +2341,8 @@ gw_emit_port:
 	pop	rbx
 	ret
 
-; g_gw_port, g_gw_proto 3 (TLS, passed through by SNI) or 4 (TCP): its tcp block.
+; g_gw_port, g_gw_proto 3 (TLS, passed through by SNI), 4 (TCP) or 5 (UDP): its tcp
+; or udp block.
 ; A TLS port: an sni line for each hostname (the first route that names it), a
 ; route of none the default; a TCP port: the first route's. Each its rule's
 ; first backend okena can serve (weights are for HTTP). Nothing to be had: no
@@ -2332,7 +2353,13 @@ gw_emit_l4:
 	push	r13
 	push	r14
 	mov	r13,r15				; (taken back if nothing is in it)
+	cmp	dword [g_gw_proto],5
+	jne	@f
+	go_lit	10,'udp :'
+	jmp	.port_said
+@@:
 	go_lit	10,'tcp :'
+.port_said:
 	mov	eax,[g_gw_port]
 	call	go_u
 	go_lit	' {',10
@@ -2356,7 +2383,7 @@ gw_emit_l4:
 	cmp	eax,[g_gw_proto]
 	jne	.next
 	cmp	dword [g_gw_proto],4
-	je	.tcp
+	jae	.tcp				; (TCP, UDP: the first route's)
 	mov	ecx,[r12+GWE_HOSTLEN]
 	test	ecx,ecx
 	jz	.default
@@ -3843,11 +3870,12 @@ gw_granted:
 	clc
 	ret
 align 8
-gw_kind_names	dq gw_kn0, gw_kn1, gw_kn2, gw_kn3
+gw_kind_names	dq gw_kn0, gw_kn1, gw_kn2, gw_kn3, gw_kn4
 gw_kn0		db 9,'HTTPRoute'
 gw_kn1		db 9,'GRPCRoute'
 gw_kn2		db 8,'TLSRoute'
 gw_kn3		db 8,'TCPRoute'
+gw_kn4		db 8,'UDPRoute'
 cstring str_rg_group, 'gateway.networking.k8s.io'
 cstring str_rg_httproute, 'HTTPRoute'
 cstring str_rg_grpcroute, 'GRPCRoute'

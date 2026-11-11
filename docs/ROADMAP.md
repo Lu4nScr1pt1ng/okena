@@ -595,7 +595,7 @@ built; both measurements are still to be made on the lab.)
   HTTPRoutes written as okena's configuration and reloaded; `include` and
   `respond`, `{host}` on the way; status written back (class, Gateways and
   listeners, routes' parents); GRPCRoute, ReferenceGrant, regular expression
-  paths and headers, TLSRoute (passthrough) and TCPRoute. Not yet: UDPRoute.) Consul discovery, Kubernetes Gateway API.
+  paths and headers, TLSRoute (passthrough), TCPRoute and UDPRoute.) Consul discovery, Kubernetes Gateway API.
 * (Done: certificate compression, RFC 8879, brotli and zlib, kept per worker.)
   Certificate compression, Encrypted Client Hello.
 * AVX-512 paths where they pay.
