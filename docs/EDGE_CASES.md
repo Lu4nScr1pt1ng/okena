@@ -6,7 +6,8 @@ checked line by line against a running okena by `tests/httpproxy/edge.py`
 (both engines), the upstream responses table by `tests/httpproxy/upstream.py`, paths and hosts by
 `tests/httpproxy/routing.py`, client identity by `tests/httpproxy/identity.py`, failing backends and
 misbehaving clients by `tests/httpproxy/failures.py`, streams and tunnels by
-`tests/httpproxy/streaming.py`, the cache's edges by `tests/gateway/cachedge.py`, `tcp`'s by `tests/l4/edges.py`, the metrics address by `tests/admin/edges.py`, odd ClientHellos by `tests/tls/hello.py`, HTTP/2 abuse by `tests/h2/abuse.py` (with h2spec for
+`tests/httpproxy/streaming.py`, the cache's edges by `tests/gateway/cachedge.py`, `tcp`'s by `tests/l4/edges.py`, the metrics address by `tests/admin/edges.py`, running out of descriptors by
+`tests/httpproxy/fdlimit.py`, odd ClientHellos by `tests/tls/hello.py`, HTTP/2 abuse by `tests/h2/abuse.py` (with h2spec for
 conformance), and its parser against a reference by `tests/http/run.py`. "Reject" means a 4xx/5xx with
 the connection closed when its framing can no longer be trusted.
 
@@ -22,13 +23,13 @@ the connection closed when its framing can no longer be trusted.
 | RST in the middle of a response | upstream stream cancelled, upstream connection reused only if its framing is intact |
 | `tcp`: a backend that resets mid-stream | the client gets what came, then a close (FIN, as HAProxy and Envoy do in TCP mode); a client that resets lets the backend's connection go at once |
 | Client IP behind NAT (thousands of users, one address) | per-source connection limits configurable, and keyable by other attributes |
-| IPv6, dual stack, IPv4-mapped addresses | normalised to one form for limits, logs and ACLs; happy eyeballs to dual-stack backends |
-| MTU/PMTU black holes | `TCP_MSS` clamp option; QUIC starts at 1200 bytes and probes 1350 and 1452 (RFC 9000 14.3), a lost probe costing nothing |
+| IPv6, dual stack, IPv4-mapped addresses | normalised to one form for limits, logs and ACLs (RFC 5952 text); a backend's name gives every A and AAAA address as a server of the pool, one that fails ejected (instead of happy eyeballs per connection) |
+| MTU/PMTU black holes | QUIC starts at 1200 bytes and probes 1350 and 1452 (RFC 9000 14.3), a lost probe costing nothing; TCP is the kernel's (a `TCP_MSS` clamp option: not built) |
 | Clients behind proxies that send PROXY protocol | accepted only from `proxy_protocol accept from=`; v1 and v2 with TLVs (TLS info, unique ID) |
-| Upstream port exhaustion | `IP_BIND_ADDRESS_NO_PORT`, several source addresses, free ports as a pressure signal |
+| Upstream port exhaustion | connections to backends kept alive and pooled, the kernel choosing source ports at connect (shared across destinations); several source addresses and free ports as a pressure signal: not built |
 | Backend black-holed (no RST, no answer) | connect deadline, `TCP_USER_TIMEOUT`, keepalive, response deadline |
 | Backend IP changes (container recreated, DNS failover) | re-resolve on TTL and immediately on connect failure |
-| Conntrack table full on the host | detected by `okena check --host`; `NOTRACK` guidance |
+| Conntrack table full on the host | not detected by okena yet (an `okena check --host` with `NOTRACK` guidance: not built) |
 
 ## TLS
 
@@ -219,16 +220,16 @@ the connection closed when its framing can no longer be trusted.
 | Binary upgrade | listeners handed over, old workers drain |
 | Worker crash | only its connections lost; queued connections wait for the replacement |
 | Worker hung (infinite loop) | heartbeat watchdog kills and replaces it after 2 s |
-| The same request crashes workers repeatedly | fingerprint quarantined after two crashes, 400 for an hour, alert |
+| The same request crashes workers repeatedly | the worker is replaced each time and the others serve meanwhile (a fingerprint quarantine after two crashes: not built) |
 | Parser bug in the configuration | compiler child dies, supervisor and running config unaffected |
 | Control process crash | workers keep last backend sets, keys and health; restarted |
 | DNS returns nothing or fails | last addresses kept (stale), pool never emptied by DNS |
 | JWKS endpoint down | cached keys valid for `stale`; new key IDs retried with backoff |
-| Invalid configuration at startup | `last_good` starts the last configuration that compiled |
+| Invalid configuration at startup | refused with every error at line:column, nothing started (a `last_good` fallback: not built); on reload the running one stays |
 | Disk cache I/O errors | cache bypassed, requests go to origin |
 | Supervisor crash | systemd socket activation / restart policy; sockets outlive it |
 | Disk full (cache, logs) | cache stops admitting, logs drop and count, traffic unaffected |
 | Clock jumps (NTP step, VM migration) | monotonic clock for deadlines; wall clock only for `Date`, logs, certificates and JWT `exp` (with leeway) |
-| Running out of file descriptors | limit checked at start against `limits connections`, 503 before `EMFILE` |
+| Running out of file descriptors | connections past what the descriptors allow are refused, no busy loop on `accept`, service whole again as they close |
 | Container limits | cgroup CPU and memory respected, epoll engine where io_uring is blocked |
 | Leap seconds, DST | irrelevant to monotonic time; logs in UTC |
