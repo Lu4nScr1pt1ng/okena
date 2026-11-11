@@ -3567,6 +3567,7 @@ check_passthrough:
 	cmp	dword [r13+N_ARGC],3
 	jne	.bad_default
 	call	.to_pool
+	inc	r15d				; (a default to a pool is enough on its own)
 	jmp	.next_line
 .bad_default:
 	mov	rdi,r13
@@ -3642,4 +3643,4 @@ cstring str_pt_to, 'a tls passthrough listener sends each connection where its s
 cstring str_pt_cert, 'tls passthrough does not decrypt: no certificate or key here',0
 cstring str_pt_form, 'write it as: sni NAME... to pool POOL',0
 cstring str_pt_default, 'write it as: default reject, or default to pool POOL',0
-cstring str_pt_none, 'tls passthrough needs at least one `sni NAME... to pool POOL` line',0
+cstring str_pt_none, 'tls passthrough needs an `sni NAME... to pool POOL` line, or a `default to pool POOL`',0

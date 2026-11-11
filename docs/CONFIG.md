@@ -10,7 +10,7 @@ not built yet. A directive that is not built is refused by `okena check`
 |---|---|
 | `okena` | `workers`, `io_engine`, `busy_poll`, `watchdog`, `drain delay= timeout=`, `metrics [token=]`, `user`, `ticket_keys`, `handshake_budget wait=`, `quic_server_id HEX`, `cache_memory`, `cache_disk PATH size=`, `fleet ADDR...`, `cdn_loop NAME [max=]`, `bird PATH protocol= [pool=]` |
 | `vrrp IFACE` | `vrid=`, `priority=`, `address=A/N`, `advert=`, `preempt=`, `track=POOL` (a floating address, VRRP v3) |
-| `tcp ADDR...` | `to`, `limits { connections; per_source }`, `timeout { idle }`, `proxy_protocol send v1\|v2`, `tls { cert; key }`, `tls passthrough { sni NAME... to pool P; default reject\|to pool P }` |
+| `tcp ADDR...` | `to`, `limits { connections; per_source }`, `timeout { idle }`, `proxy_protocol send v1\|v2`, `tls { cert; key }`, `tls passthrough { sni NAME... to pool P; default reject\|to pool P }` (a `default to pool` alone is enough) |
 | `udp ADDR...` | `to`, `responses N`, `limits { connections }` (flows), `timeout { idle }` |
 | `http ADDR...` | `host`, `route`, `errors CODES file= [backend]`, `maintenance file= retry= allow= except=`, `limits`, `timeout { idle; header; body_idle; response }`, `trusted_proxies`, `access_log`, `tracing`, `http2 on\|off`, `http3 on\|off\|retry\|v2`, `preferred_address`, `early_data on\|off`, `tls { cert; key; ktls on\|off }` |
 | `route PATH... [METHOD...]` | `to`, `redirect`, `respond`, `rewrite path`, `signed_urls key= [key2=]`, `header set\|add\|drop`, `response header set\|add\|drop` |
@@ -1712,7 +1712,7 @@ port okena just stopped listening on is let go only when the workers draining
 it are gone). The main file takes it in with `include`. The GatewayClass, when
 there is one of that name, must have `controllerName: okena.dev/gateway-controller`;
 one of another controller's is not served. The service account needs `list` on
-gateways, httproutes, grpcroutes and referencegrants, `get` on gatewayclasses, services and secrets, `patch`
+gateways, httproutes, grpcroutes, tlsroutes, tcproutes and referencegrants, `get` on gatewayclasses, services and secrets, `patch`
 on gatewayclasses/status, gateways/status and httproutes/status, and what
 `discover kubernetes` needs.
 
@@ -1742,6 +1742,11 @@ What it reads, and becomes:
   RequestRedirect (`redirect`, to the request's host when it names none),
   URLRewrite's path (`rewrite path`), RequestMirror (`mirror`). Any other filter
   makes the rule answer 500.
+* A TLS listener (Passthrough) is a `tcp` block with `tls passthrough`: a TLSRoute's
+  hostnames its `sni` lines, one of none its `default`, the rest refused; a TCP
+  listener a `tcp` block to its TCPRoute's backend. The first route that names
+  a hostname has it, the first backend okena can serve is the one (weights
+  are for HTTP).
 * backendRefs, Services of the route's own namespace or of one whose
   ReferenceGrant lets the route's kind and namespace refer to it, are pools
   that follow their EndpointSlices, the Service's port found by its name;
@@ -1760,7 +1765,8 @@ NoMatchingListenerHostname) and ResolvedRefs (or BackendNotFound,
 RefNotPermitted, InvalidKind), what other controllers wrote in it kept.
 
 Not there yet: regular expressions in query parameters, URLRewrite's hostname,
-a backendRef's own filters, TLSRoute and TCPRoute. A regular expression path is
+a backendRef's own filters, UDPRoute, and weights between backends of a
+TLSRoute or TCPRoute. A regular expression path is
 tried after an exact path and before a prefix, as okena's own are (the Gateway
 API leaves its place to the implementation).
 

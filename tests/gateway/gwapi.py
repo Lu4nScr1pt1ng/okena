@@ -71,7 +71,7 @@ def backend(name, ip, port):
 
 
 state = {"gateways": [], "routes": [], "services": {}, "secrets": {}, "slices": [], "status": 200, "seen": [],
-         "classes": {}, "patches": [], "bad_patches": [], "grpcroutes": [], "grants": None}
+         "classes": {}, "patches": [], "bad_patches": [], "grpcroutes": [], "grants": None, "tlsroutes": [], "tcproutes": []}
 
 
 def grpc_backend(name, ip, port):
@@ -171,6 +171,10 @@ class Api(http.server.BaseHTTPRequestHandler):
             return self.answer(200, {"kind": "HTTPRouteList", "metadata": {"resourceVersion": "1"}, "items": state["routes"]})
         if u.path == "/apis/gateway.networking.k8s.io/v1/grpcroutes":
             return self.answer(200, {"kind": "GRPCRouteList", "metadata": {"resourceVersion": "1"}, "items": state["grpcroutes"]})
+        if u.path == "/apis/gateway.networking.k8s.io/v1alpha2/tlsroutes":
+            return self.answer(200, {"kind": "TLSRouteList", "metadata": {"resourceVersion": "1"}, "items": state["tlsroutes"]})
+        if u.path == "/apis/gateway.networking.k8s.io/v1alpha2/tcproutes":
+            return self.answer(200, {"kind": "TCPRouteList", "metadata": {"resourceVersion": "1"}, "items": state["tcproutes"]})
         if u.path == "/apis/gateway.networking.k8s.io/v1beta1/referencegrants":
             if state["grants"] is None:
                 return self.answer(404, {"kind": "Status", "code": 404})
@@ -204,7 +208,8 @@ class Api(http.server.BaseHTTPRequestHandler):
             obj = state["classes"].get(parts[5])
         elif parts[-1] == "status" and len(parts) == 9:
             ns, kind, name = parts[5], parts[6], parts[7]
-            table = state["gateways"] if kind == "gateways" else state["grpcroutes"] if kind == "grpcroutes" else state["routes"]
+            table = {"gateways": state["gateways"], "grpcroutes": state["grpcroutes"], "tlsroutes": state["tlsroutes"],
+                     "tcproutes": state["tcproutes"]}.get(kind, state["routes"])
             obj = next((x for x in table if x["metadata"]["namespace"] == ns and x["metadata"]["name"] == name), None)
         if obj is None:
             return self.answer(404, {"kind": "Status", "code": 404})
@@ -331,7 +336,7 @@ def main():
                                  "tls": {"mode": "Terminate", "certificateRefs": [{"kind": "Secret", "name": "site"}]},
                                  "allowedRoutes": {"namespaces": {"from": "All"}}}]),
         gateway("infra", "own", [{"name": "same", "port": GWH + 10, "protocol": "HTTP"},
-                                 {"name": "tcp", "port": GWH + 11, "protocol": "TCP"},
+                                 {"name": "tcp", "port": GWH + 11, "protocol": "UDP"},
                                  {"name": "nocert", "port": GWH + 12, "protocol": "HTTPS",
                                   "tls": {"certificateRefs": [{"name": "nosuch"}]}}]),
         gateway("infra", "theirs", [{"name": "x", "port": GWH + 20, "protocol": "HTTP"}], cls="nginx")]
@@ -380,6 +385,27 @@ def main():
                   "rules": [{"matches": [{"method": {"service": "pkg.Echo", "method": "Say"}}], "backendRefs": [ref("grpcb", 50051)]},
                             {"matches": [{"method": {"method": "Health"}}], "backendRefs": [ref("grpcc", 50051)]},
                             {"matches": [{"method": {"service": "pkg.Other"}}], "backendRefs": [ref("grpcc", 50051)]}]}}]
+    # TLS passed through by SNI, and plain TCP
+    tctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    tctx.load_cert_chain(tmp / "site.crt", tmp / "site.key")
+    tb = S(("127.0.0.11", 8443), Back)
+    tb.name = "tlsback"
+    tb.socket = tctx.wrap_socket(tb.socket, server_side=True)
+    threading.Thread(target=tb.serve_forever, daemon=True).start()
+    service("shop", "tlsback", [{"name": "https", "port": 443}])
+    slice_("shop", "tlsback", ["127.0.0.11"], [{"name": "https", "port": 8443, "protocol": "TCP"}])
+    state["gateways"].append(gateway("infra", "l4", [
+        {"name": "tcp", "port": GWH + 30, "protocol": "TCP", "allowedRoutes": {"namespaces": {"from": "All"}}},
+        {"name": "tls", "port": GWH + 31, "protocol": "TLS", "tls": {"mode": "Passthrough"},
+         "allowedRoutes": {"namespaces": {"from": "All"}}}]))
+    state["tcproutes"] = [{"metadata": {"namespace": "shop", "name": "db", "generation": 1},
+                           "spec": {"parentRefs": [{"name": "l4", "namespace": "infra", "sectionName": "tcp"}],
+                                    "rules": [{"backendRefs": [ref("web", 80)]}]}}]
+    state["tlsroutes"] = [{"metadata": {"namespace": "shop", "name": "pass", "generation": 1},
+                           "spec": {"parentRefs": [{"name": "l4", "namespace": "infra", "sectionName": "tls"}],
+                                    "hostnames": ["secure.test"], "rules": [{"backendRefs": [ref("tlsback", 443)]}]}}]
+    state["routes"].append(route("shop", "web-on-tcp", [{"backendRefs": [ref("web", 80)]}],
+                                 parents=[{"name": "l4", "namespace": "infra", "sectionName": "tcp"}]))
     state["secrets"][("certs", "shared")] = {"kind": "Secret", "type": "kubernetes.io/tls", "data": site}
     gw("gw")["spec"]["listeners"].append({"name": "shared", "port": GWS + 20, "protocol": "HTTPS", "hostname": "secure.test",
                                           "tls": {"certificateRefs": [{"name": "shared", "namespace": "certs"}]},
@@ -449,6 +475,15 @@ include "{gwdir}/*.conf"
         q = subprocess.run(["curl", "-q", "-sS", "--cacert", str(tmp / "site.crt"), "--resolve", f"secure.test:{GWS + 20}:127.0.0.1",
                             f"https://secure.test:{GWS + 20}/x"], capture_output=True, text=True, timeout=10)
         check("a Secret of another namespace, no ReferenceGrant: not served", q.returncode != 0, q.stdout)
+        r = collections.Counter(get("/x", port=GWH + 30)[1].split()[0] for i in range(10))
+        check("TCPRoute: the TCP listener to its Service", set(r) <= {"a", "b"} and sum(r.values()) == 10, r)
+        def via_tls(name):
+            q = subprocess.run(["curl", "-q", "-sS", "--cacert", str(tmp / "site.crt"), "--resolve", f"{name}:{GWH + 31}:127.0.0.1",
+                                f"https://{name}:{GWH + 31}/p"], capture_output=True, text=True, timeout=10)
+            return q.stdout
+        check("TLSRoute: passed through by its SNI, the backend's own certificate", via_tls("secure.test").startswith("tlsback "),
+              via_tls("secure.test"))
+        check("  another name: refused", via_tls("other.test") == "", via_tls("other.test"))
         check("hostnames: shop.test gets its own route, others not", get("/", host="shop.test")[1].startswith("v2 ")
               and get("/", host="other.test")[0] == 404, (get("/", host="shop.test"), get("/", host="other.test")))
         check("  and the routes of no hostname under it too", get("/web/x", host="shop.test")[1].split()[0] in ("a", "b"))
@@ -498,7 +533,7 @@ include "{gwdir}/*.conf"
         check("  a listener: its routes counted (a GRPCRoute too), Accepted, ResolvedRefs, Programmed", h.get("attachedRoutes") == 3
               and cond(h, "Accepted")[0] == "True" and cond(h, "ResolvedRefs")[0] == "True" and cond(h, "Programmed")[0] == "True", h)
         check("  HTTPS with its certificate: ResolvedRefs", cond(listener(gw("gw"), "https"), "ResolvedRefs") == ("True", "ResolvedRefs"))
-        check("  TCP: UnsupportedProtocol", cond(listener(gw("own"), "tcp"), "Accepted") == ("False", "UnsupportedProtocol"),
+        check("  UDP: UnsupportedProtocol", cond(listener(gw("own"), "tcp"), "Accepted") == ("False", "UnsupportedProtocol"),
               listener(gw("own"), "tcp"))
         check("  a Secret that is not there: InvalidCertificateRef, not Programmed",
               cond(listener(gw("own"), "nocert"), "ResolvedRefs") == ("False", "InvalidCertificateRef")
@@ -513,6 +548,13 @@ include "{gwdir}/*.conf"
         check("  no hostname in common: NoMatchingListenerHostname", cond(mine(rt("no-host")), "Accepted") == ("False", "NoMatchingListenerHostname"))
         ps = rt("hosted")["status"]["parents"]
         check("  what another controller wrote is kept", [p["controllerName"] for p in ps] == ["example.com/other", "okena.dev/gateway-controller"], ps)
+        check("an HTTPRoute on a TCP listener: NotAllowedByListeners",
+              cond(mine(rt("web-on-tcp")), "Accepted") == ("False", "NotAllowedByListeners"), mine(rt("web-on-tcp")))
+        check("TCPRoute and TLSRoute: their status", cond(mine(state["tcproutes"][0]), "Accepted") == ("True", "Accepted")
+              and cond(mine(state["tlsroutes"][0]), "Accepted") == ("True", "Accepted"),
+              (state["tcproutes"][0].get("status"), state["tlsroutes"][0].get("status")))
+        check("  listeners say the kind they take", listener(gw("l4"), "tls").get("supportedKinds") == [
+            {"group": "gateway.networking.k8s.io", "kind": "TLSRoute"}], listener(gw("l4"), "tls"))
         g = next(r for r in state["grpcroutes"] if r["metadata"]["name"] == "echo")
         check("a GRPCRoute: its status too", cond(mine(g), "Accepted") == ("True", "Accepted"), g.get("status"))
         check("  as merge patches", all(c == "application/merge-patch+json" for _, c, _ in state["patches"]))

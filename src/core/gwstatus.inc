@@ -338,6 +338,11 @@ gs_path:
 	call	gw_req_begin
 	cstring .api, '/apis/gateway.networking.k8s.io/v1/',0
 	lea	rsi,[.api]
+	cmp	r12d,4
+	jb	@f
+	cstring .alpha, '/apis/gateway.networking.k8s.io/v1alpha2/',0
+	lea	rsi,[.alpha]			; (TLSRoute, TCPRoute)
+@@:
 	call	gw_req_cstr
 	test	r12d,r12d
 	jnz	.namespaced
@@ -380,6 +385,16 @@ gs_path:
 	jne	@f
 	cstring .grs, '/grpcroutes/',0
 	lea	rsi,[.grs]
+@@:
+	cmp	r12d,4
+	jne	@f
+	cstring .tlr, '/tlsroutes/',0
+	lea	rsi,[.tlr]
+@@:
+	cmp	r12d,5
+	jne	@f
+	cstring .tcr, '/tcproutes/',0
+	lea	rsi,[.tcr]
 @@:
 	call	gw_req_cstr
 	mov	rsi,[r8+GWR_NAME]
@@ -528,7 +543,22 @@ gs_gateway:
 	mov	rsi,[rax+GWL_NAME]
 	mov	ecx,[rax+GWL_NAMELEN]
 	call	go_bytes
-	gs_lit	'","supportedKinds":[{"group":"gateway.networking.k8s.io","kind":"HTTPRoute"},{"group":"gateway.networking.k8s.io","kind":"GRPCRoute"}],"attachedRoutes":'
+	gs_lit	'","supportedKinds":['
+	mov	rax,[rsp]
+	mov	eax,[rax+GWL_PROTO]
+	cmp	eax,3
+	je	.k_tls
+	cmp	eax,4
+	je	.k_tcp
+	gs_lit	'{"group":"gateway.networking.k8s.io","kind":"HTTPRoute"},{"group":"gateway.networking.k8s.io","kind":"GRPCRoute"}'
+	jmp	.kinds
+.k_tls:
+	gs_lit	'{"group":"gateway.networking.k8s.io","kind":"TLSRoute"}'
+	jmp	.kinds
+.k_tcp:
+	gs_lit	'{"group":"gateway.networking.k8s.io","kind":"TCPRoute"}'
+.kinds:
+	gs_lit	'],"attachedRoutes":'
 	mov	rax,[rsp]
 	mov	eax,[rax+GWL_ROUTES]
 	call	go_u

@@ -183,6 +183,7 @@ bss
 	g_gc_name	dq ?
 	g_gc_seen	rq 64
 	g_gc_seenl	rd 64
+	g_gw_l4def	dd ?
 	g_gc_seenns	rq 64
 	g_gc_seennsl	rd 64
 	g_gp_idx	dd ?
@@ -203,7 +204,9 @@ bss
 	g_gl_cur	dq ?		; where the next list goes
 	g_gw_grpcl	dq ?		; the GRPCRoutes (0: none)
 	g_gw_rgl	dq ?		; the ReferenceGrants (0: none)
-	g_gr_kind	dd ?		; the routes being read: 0 HTTPRoutes, 1 GRPCRoutes
+	g_gw_tlsl	dq ?		; the TLSRoutes (0: none)
+	g_gw_tcpl	dq ?		; the TCPRoutes (0: none)
+	g_gr_kind	dd ?		; the routes being read: 0 HTTP, 1 GRPC, 2 TLS, 3 TCP
 	g_gp_ns		dq ?		; the backend asked for: its namespace
 	g_gp_nslen	dd ?
 	g_gp_h2		dd ?		; and it speaks gRPC (HTTP/2)
@@ -803,6 +806,18 @@ gw_render:
 	call	gw_list
 	jc	.out_cf
 	mov	[g_gw_grpcl],rax
+	cstring .tls, '/apis/gateway.networking.k8s.io/v1alpha2/tlsroutes?resourceVersion=0',0
+	lea	rsi,[.tls]
+	xor	edx,edx
+	call	gw_list
+	jc	.out_cf
+	mov	[g_gw_tlsl],rax
+	cstring .tcp, '/apis/gateway.networking.k8s.io/v1alpha2/tcproutes?resourceVersion=0',0
+	lea	rsi,[.tcp]
+	xor	edx,edx
+	call	gw_list
+	jc	.out_cf
+	mov	[g_gw_tcpl],rax
 	cstring .rgs, '/apis/gateway.networking.k8s.io/v1beta1/referencegrants?resourceVersion=0',0
 	lea	rsi,[.rgs]
 	xor	edx,edx
@@ -822,6 +837,20 @@ gw_render:
 	test	rsi,rsi
 	jz	@f
 	mov	dword [g_gr_kind],1		; GRPCRoutes
+	call	gw_routes
+	jc	.unreadable
+@@:
+	mov	rsi,[g_gw_tlsl]
+	test	rsi,rsi
+	jz	@f
+	mov	dword [g_gr_kind],2		; TLSRoutes
+	call	gw_routes
+	jc	.unreadable
+@@:
+	mov	rsi,[g_gw_tcpl]
+	test	rsi,rsi
+	jz	@f
+	mov	dword [g_gr_kind],3		; TCPRoutes
 	call	gw_routes
 	jc	.unreadable
 @@:
@@ -1079,6 +1108,21 @@ gw_listener:
 	cmp	dword [rdi],'HTTP'
 	je	.proto
 @@:
+	cmp	ecx,3				; TLS (passed through by SNI), TCP
+	jne	.not_l4
+	mov	dword [r12+GWL_PROTO],3
+	cmp	word [rdi],'TL'
+	jne	@f
+	cmp	byte [rdi+2],'S'
+	je	.proto
+@@:
+	mov	dword [r12+GWL_PROTO],4
+	cmp	word [rdi],'TC'
+	jne	.unsupported
+	cmp	byte [rdi+2],'P'
+	je	.proto
+	jmp	.unsupported
+.not_l4:
 	mov	dword [r12+GWL_PROTO],2
 	cmp	ecx,5
 	jne	.unsupported
@@ -1120,6 +1164,21 @@ gw_listener:
 	mov	dword [r12+GWL_ALL],1
 .allowed:
 	mov	qword [r12+GWL_TLS],0
+	cmp	dword [r12+GWL_PROTO],3
+	jne	.not_passthrough
+	mov	rsi,rbx				; TLS: Passthrough only (Terminate is HTTPS's)
+	gk	'tls'
+	call	gj_get
+	jc	.unsupported
+	gk	'mode'
+	call	gj_str
+	jc	.unsupported
+	cmp	ecx,11
+	jne	.unsupported
+	cmp	dword [rdi],'Pass'
+	jne	.unsupported
+	jmp	.taken
+.not_passthrough:
 	cmp	dword [r12+GWL_PROTO],2
 	jne	.taken
 	mov	rsi,rbx
@@ -1381,6 +1440,24 @@ gw_parent:
 	cmp	eax,[r14+GWL_PORT]
 	jne	.other
 @@:
+	; a kind of route this listener takes? (HTTP, gRPC: HTTP and HTTPS; TLSRoute:
+	; TLS; TCPRoute: TCP)
+	mov	eax,[g_gr_kind]
+	mov	ecx,[r14+GWL_PROTO]
+	cmp	eax,2
+	jae	.l4_kind
+	cmp	ecx,2
+	jbe	.kind_ok
+	jmp	.kind_not
+.l4_kind:
+	add	eax,1				; 2 -> 3, 3 -> 4
+	cmp	eax,ecx
+	je	.kind_ok
+.kind_not:
+	mov	edx,2				; NotAllowedByListeners
+	call	gw_pr_why
+	jmp	.other
+.kind_ok:
 	; the listener takes routes from here?
 	cmp	dword [r14+GWL_ALL],0
 	jne	.takes
@@ -1586,6 +1663,12 @@ gw_rules:
 .rule:
 	mov	rbx,rsi
 	mov	[g_gr_rule],rsi
+	cmp	dword [g_gr_kind],2
+	jb	.http_rule
+	call	gw_l4_entry			; (TLSRoute, TCPRoute: no matches)
+	jmp	.next
+.http_rule:
+	mov	rsi,rbx
 	gk	'matches'
 	call	gj_get
 	jc	.no_matches
@@ -1611,6 +1694,50 @@ gw_rules:
 .out:
 	pop	r12
 	pop	rbx
+	ret
+
+; the rule g_gr_rule of a TLSRoute or TCPRoute, on g_gr_li, for g_gr_host: its
+; entry (origin 4: no path)
+gw_l4_entry:
+	mov	ecx,[g_gw_ne]
+	cmp	ecx,GW_MAXE
+	jae	.full
+	inc	dword [g_gw_ne]
+	imul	rcx,rcx,GWE_SIZE
+	add	rcx,[g_gw_base]
+	add	rcx,GW_T_E
+	mov	dword [rcx+GWE_ORIGIN],4
+	mov	qword [rcx+GWE_OPATH],0
+	mov	dword [rcx+GWE_OPLEN],0
+	mov	dword [rcx+GWE_NCOND],0
+	mov	dword [rcx+GWE_MLEN],0
+	mov	dword [rcx+GWE_NH],0
+	mov	dword [rcx+GWE_NQ],0
+	mov	eax,[g_gr_li]
+	imul	rax,rax,GWL_SIZE
+	add	rax,[g_gw_base]
+	mov	edx,[rax+GW_T_L+GWL_PORT]
+	mov	[rcx+GWE_PORT],edx
+	mov	edx,[rax+GW_T_L+GWL_PROTO]
+	mov	[rcx+GWE_PROTO],edx
+	mov	rax,[g_gr_host]
+	mov	[rcx+GWE_HOST],rax
+	mov	eax,[g_gr_hostlen]
+	mov	[rcx+GWE_HOSTLEN],eax
+	mov	eax,[g_gw_seq]
+	inc	dword [g_gw_seq]
+	mov	[rcx+GWE_SEQ],eax
+	mov	rax,[g_gr_rule]
+	mov	[rcx+GWE_RULE],rax
+	mov	rax,[g_gr_ns]
+	mov	[rcx+GWE_NS],rax
+	mov	eax,[g_gr_nslen]
+	mov	[rcx+GWE_NSLEN],eax
+	mov	eax,[g_gw_rti]
+	mov	[rcx+GWE_ROUTE],eax
+	mov	eax,[g_gr_kind]
+	mov	[rcx+GWE_GRPC],eax
+.full:
 	ret
 
 ; rsi = a match (0: the default, PathPrefix /): its entries
@@ -2110,7 +2237,12 @@ gw_emit:
 	je	.pools
 	mov	[g_gw_port],r8d
 	mov	[g_gw_proto],r12d
+	cmp	r12d,3
+	jae	.l4
 	call	gw_emit_port
+	jmp	.port
+.l4:
+	call	gw_emit_l4			; (TLS passed through, TCP)
 	jmp	.port
 .pools:
 	call	gw_emit_pools
@@ -2187,6 +2319,162 @@ gw_emit_port:
 .out:
 	pop	r12
 	pop	rbx
+	ret
+
+; g_gw_port, g_gw_proto 3 (TLS, passed through by SNI) or 4 (TCP): its tcp block.
+; A TLS port: an sni line for each hostname (the first route that names it), a
+; route of none the default; a TCP port: the first route's. Each its rule's
+; first backend okena can serve (weights are for HTTP). Nothing to be had: no
+; block.
+gw_emit_l4:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	mov	r13,r15				; (taken back if nothing is in it)
+	go_lit	10,'tcp :'
+	mov	eax,[g_gw_port]
+	call	go_u
+	go_lit	' {',10
+	cmp	dword [g_gw_proto],3
+	jne	@f
+	go_lit	'    tls passthrough {',10
+@@:
+	mov	dword [g_gw_nh],0		; (the hostnames written)
+	xor	r14d,r14d			; written: lines, 2 the default/to
+	xor	ebx,ebx
+.entry:
+	cmp	ebx,[g_gw_ne]
+	jae	.entries
+	imul	r12,rbx,GWE_SIZE
+	add	r12,[g_gw_base]
+	add	r12,GW_T_E
+	mov	eax,[r12+GWE_PORT]
+	cmp	eax,[g_gw_port]
+	jne	.next
+	mov	eax,[r12+GWE_PROTO]
+	cmp	eax,[g_gw_proto]
+	jne	.next
+	cmp	dword [g_gw_proto],4
+	je	.tcp
+	mov	ecx,[r12+GWE_HOSTLEN]
+	test	ecx,ecx
+	jz	.default
+	; a hostname not written yet
+	mov	rdi,[r12+GWE_HOST]
+	push	qword [g_gw_nh]
+	call	gw_host_add			; (rax its)
+	pop	rax
+	cmp	eax,[g_gw_nh]
+	je	.next				; (named before: the first route has it)
+	push	rbx
+	mov	rbx,r12
+	call	gw_first_pool
+	pop	rbx
+	cmp	eax,-1
+	je	.next
+	push	rax
+	go_lit	'        sni '
+	mov	rsi,[r12+GWE_HOST]
+	mov	ecx,[r12+GWE_HOSTLEN]
+	call	go_q
+	go_lit	' to pool '
+	pop	rax
+	call	gw_pool_name
+	call	go_nl
+	inc	dword [g_gw_nroutes]
+	or	r14d,1
+	jmp	.next
+.default:
+	test	r14d,2
+	jnz	.next
+	push	rbx
+	mov	rbx,r12
+	call	gw_first_pool
+	pop	rbx
+	cmp	eax,-1
+	je	.next
+	mov	[g_gw_l4def],eax
+	or	r14d,2
+	inc	dword [g_gw_nroutes]
+	jmp	.next
+.tcp:
+	test	r14d,2
+	jnz	.next
+	push	rbx
+	mov	rbx,r12
+	call	gw_first_pool
+	pop	rbx
+	cmp	eax,-1
+	je	.next
+	push	rax
+	go_lit	'    to pool '
+	pop	rax
+	call	gw_pool_name
+	call	go_nl
+	or	r14d,2
+	inc	dword [g_gw_nroutes]
+.next:
+	inc	ebx
+	jmp	.entry
+.entries:
+	test	r14d,r14d
+	jz	.nothing
+	cmp	dword [g_gw_proto],3
+	jne	.close
+	test	r14d,2
+	jz	.reject
+	go_lit	'        default to pool '
+	mov	eax,[g_gw_l4def]
+	call	gw_pool_name
+	call	go_nl
+	jmp	.closed
+.reject:
+	go_lit	'        default reject',10
+.closed:
+	go_lit	'    }',10
+.close:
+	go_lit	'}',10
+	inc	dword [g_gw_nports]
+	jmp	.out
+.nothing:
+	mov	r15,r13
+.out:
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; rbx = an entry: eax = its rule's first backend okena can serve, -1 none
+gw_first_pool:
+	push	r12
+	mov	rsi,[rbx+GWE_RULE]
+	gk	'backendRefs'
+	call	gj_get
+	jc	.none
+	call	gj_first
+	jc	.none
+.ref:
+	mov	r12,rsi
+	gk	'weight'
+	call	gj_num
+	jc	@f
+	test	eax,eax
+	jz	.next				; (0: none of it)
+@@:
+	mov	rsi,r12
+	call	gw_ref_pool
+	cmp	eax,-1
+	jne	.out
+.next:
+	mov	rsi,r12
+	call	gj_next
+	jnc	.ref
+.none:
+	mov	eax,-1
+.out:
+	pop	r12
 	ret
 
 ; rdi/ecx = a host: into the port's list, once
@@ -3319,7 +3607,9 @@ gw_ref_pool:
 	mov	[g_gp_ns],rax
 	mov	eax,[rbx+GWE_NSLEN]
 	mov	[g_gp_nslen],eax
-	mov	eax,[rbx+GWE_GRPC]
+	xor	eax,eax				; (a GRPCRoute's: HTTP/2)
+	cmp	dword [rbx+GWE_GRPC],1
+	sete	al
 	mov	[g_gp_h2],eax
 	mov	rsi,r12
 	gk	'namespace'
@@ -3346,13 +3636,11 @@ gw_ref_pool:
 	jc	.not_permitted
 	mov	[g_rg_toname],rdi
 	mov	[g_rg_tonlen],ecx
-	lea	rax,[str_rg_httproute]
-	mov	ecx,str_rg_httproute.len
-	cmp	dword [rbx+GWE_GRPC],0
-	je	.kind_said
-	lea	rax,[str_rg_grpcroute]
-	mov	ecx,str_rg_grpcroute.len
-.kind_said:
+	mov	eax,[rbx+GWE_GRPC]		; the route's kind, as a grant names it
+	mov	rcx,[gw_kind_names+rax*8]
+	movzx	eax,byte [rcx]
+	inc	rcx
+	xchg	rax,rcx
 	mov	[g_rg_from],rax
 	mov	[g_rg_fromlen],ecx
 	mov	rax,[rbx+GWE_NS]
@@ -3554,6 +3842,12 @@ gw_granted:
 .t_yes:
 	clc
 	ret
+align 8
+gw_kind_names	dq gw_kn0, gw_kn1, gw_kn2, gw_kn3
+gw_kn0		db 9,'HTTPRoute'
+gw_kn1		db 9,'GRPCRoute'
+gw_kn2		db 8,'TLSRoute'
+gw_kn3		db 8,'TCPRoute'
 cstring str_rg_group, 'gateway.networking.k8s.io'
 cstring str_rg_httproute, 'HTTPRoute'
 cstring str_rg_grpcroute, 'GRPCRoute'
