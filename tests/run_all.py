@@ -51,6 +51,8 @@ SUITES = [
     ("h3 edges epoll", ["tests/h3/edges.py", "epoll"]),
     ("hello io_uring", ["tests/tls/hello.py", "io_uring"]),
     ("hello epoll", ["tests/tls/hello.py", "epoll"]),
+    ("aes256 io_uring", ["tests/tls/aes256.py", "io_uring"]),
+    ("aes256 epoll", ["tests/tls/aes256.py", "epoll"]),
     ("h2 abuse io_uring", ["tests/h2/abuse.py", "io_uring"]),
     ("h2 abuse epoll", ["tests/h2/abuse.py", "epoll"]),
     ("l4 io_uring core", ["tests/l4/run.py", "io_uring", "core"]),

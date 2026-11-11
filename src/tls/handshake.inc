@@ -40,25 +40,25 @@
 ; a handshake_failure alert.
 ; Client certificates are in clientauth.inc.
 
-; a traffic key is 16 bytes (AES-128-GCM) or 32 (ChaCha20-Poly1305), its
-; IV (12) TS_IVOFF after it
+; a traffic key is 16 bytes (AES-128-GCM) or 32 (ChaCha20-Poly1305,
+; AES-256-GCM), its IV (12) TS_IVOFF after it
 TS_IVOFF	:= 32
 TS_CHS_KEY	:= 0				; client handshake traffic: key
 TS_CHS_IV	:= TS_CHS_KEY + TS_IVOFF	; and IV (12)
-TS_CFIN		:= 48				; the client Finished expected (32)
-TS_RX_KEY	:= 80				; client application traffic
+TS_CFIN		:= 48				; the client Finished expected (32, 48 with SHA-384)
+TS_RX_KEY	:= 96				; client application traffic
 TS_RX_IV	:= TS_RX_KEY + TS_IVOFF
-TS_TX_KEY	:= 128				; server application traffic
+TS_TX_KEY	:= 144				; server application traffic
 TS_TX_IV	:= TS_TX_KEY + TS_IVOFF
-TS_RX_SEQ	:= 176				; q: records opened
-TS_TX_SEQ	:= 184				; q: records sealed
-TS_FLAGS	:= 192				; d: TF_*
-TS_SUITE	:= 196				; d: 0 TLS_AES_128_GCM_SHA256, 1 TLS_CHACHA20_POLY1305_SHA256
-TS_KEYLEN	:= 200				; d: its key length
-TS_RX_GCM	:= 208				; user-space records only (tls_records)
+TS_RX_SEQ	:= 192				; q: records opened
+TS_TX_SEQ	:= 200				; q: records sealed
+TS_FLAGS	:= 208				; d: TF_*
+TS_SUITE	:= 212				; d: TS13_* (the AEAD type: aead_init's)
+TS_KEYLEN	:= 216				; d: its key length
+TS_RX_GCM	:= 224				; user-space records only (tls_records)
 TS_TX_GCM	:= TS_RX_GCM + AEAD_SIZE
 TS_HRR_SHA	:= TS_TX_GCM + AEAD_SIZE	; after a HelloRetryRequest: the transcript so far
-TS_CERT		:= TS_HRR_SHA + SHA256_CTX_SIZE	; q: the entry SNI chose, 0 = the default
+TS_CERT		:= TS_HRR_SHA + SHA512_CTX_SIZE	; q: the entry SNI chose, 0 = the default
 TS_QT		:= TS_CERT + 8			; q: QUIC (TF_QUIC): its QT block
 TS_ANCHOR	:= TS_QT + 8			; q: `client_ca`: its public key
 TS_MCFK		:= TS_ANCHOR + 8		; the client's finished key (32)
@@ -216,22 +216,22 @@ HL_KS		:= 96				; the client's x25519 share (32)
 HL_RAND		:= 128				; server random (32) | x25519 secret (32) | ticket nonce (12) | age_add (4)
 HL_PUB		:= 208
 HL_SHARED	:= 240
-HL_HS		:= 272				; handshake secret
-HL_MS		:= 304				; master secret
-HL_CHT		:= 336				; client / server handshake traffic
-HL_SHT		:= 368
-HL_TMP		:= 400
-HL_SFK		:= 432				; finished keys
-HL_CFK		:= 464
-HL_TH		:= 496				; a transcript hash
-HL_NONCE	:= 560
-HL_SIG		:= 576				; r | s
-HL_DIG		:= 640
-HL_SHA		:= 672				; the transcript
-HL_SHA2		:= HL_SHA + SHA256_CTX_SIZE
-HL_GCM		:= HL_SHA2 + SHA256_CTX_SIZE
-HL_CV		:= HL_GCM + AEAD_SIZE		; the content CertificateVerify signs (130)
-HL_TICKET	:= HL_CV + 136			; a ticket (TK_SIZE): the client's, opened; then ours
+HL_HS		:= 272				; handshake secret (secrets: 32 bytes, 48 with SHA-384)
+HL_MS		:= 336				; master secret
+HL_CHT		:= 400				; client / server handshake traffic
+HL_SHT		:= 464
+HL_TMP		:= 528
+HL_SFK		:= 592				; finished keys
+HL_CFK		:= 656
+HL_TH		:= 720				; a transcript hash
+HL_NONCE	:= 784
+HL_SIG		:= 800				; r | s
+HL_DIG		:= 864
+HL_SHA		:= 896				; the transcript (SHA-256 or SHA-384)
+HL_SHA2		:= HL_SHA + SHA512_CTX_SIZE
+HL_GCM		:= HL_SHA2 + SHA512_CTX_SIZE
+HL_CV		:= HL_GCM + AEAD_SIZE		; the content CertificateVerify signs (130, 146)
+HL_TICKET	:= HL_CV + 152			; a ticket (TK_SIZE): the client's, opened; then ours
 HL_PSK		:= HL_TICKET + 96
 HL_EARLY	:= HL_PSK + 32			; early secret, from the PSK
 HL_IDP		:= HL_EARLY + 32		; q: the client's first PSK identity
@@ -287,26 +287,48 @@ G_ACME		:= 16777216			; ALPN offers acme-tls/1 (TLS-ALPN-01, acme.inc)
 G_CCOMP		:= 67108864			; compress_certificate offers brotli (certcomp.inc)
 G_CCZLIB	:= 134217728			; or zlib
 G_OCSP		:= 33554432			; status_request (OCSP): a staple wanted (ocsp.inc)
+G_AES256	:= 268435456			; TLS_AES_256_GCM_SHA384 offered
 
-; the transcript: rsi = bytes, rdx = length
+TS13_AES128	:= 0				; TS_SUITE: TLS_AES_128_GCM_SHA256
+TS13_CHACHA	:= 1				; TLS_CHACHA20_POLY1305_SHA256
+TS13_AES256	:= 2				; TLS_AES_256_GCM_SHA384
+
+; the transcript: rsi = bytes, rdx = length (its suite's hash: hs_*)
 macro th_add
 	lea	rdi,[rbp+HL_SHA]
-	call	sha256_update
+	call	thx_update
 end macro
 
 ; HL_TH = the hash of the transcript so far (the transcript goes on)
 macro th_snapshot
 	lea	rsi,[rbp+HL_SHA]
 	lea	rdi,[rbp+HL_SHA2]
-	mov	ecx,SHA256_CTX_SIZE
+	mov	ecx,SHA512_CTX_SIZE
 	rep	movsb
 	lea	rdi,[rbp+HL_SHA2]
 	lea	rsi,[rbp+HL_TH]
-	call	sha256_final
+	call	thx_final
+end macro
+
+; tls_label with the handshake's hash (thx_label): n and clen may be [g_hlen]
+macro thx_tlabel out*, n*, secret*, label*, ctx, clen
+	lea	rdi,out
+	mov	esi,n
+	lea	rdx,secret
+	lea	rcx,[label]
+	match , ctx
+		xor	r8d,r8d
+		xor	r9d,r9d
+	else
+		lea	r8,ctx
+		mov	r9d,clen
+	end match
+	call	thx_label
 end macro
 
 
 tls_hello:
+	call	thx_sha256			; (until the suite says otherwise)
 	push	rbx
 	push	rbp
 	push	r12
@@ -486,6 +508,10 @@ tls_hello:
 	cmp	rax,rdx
 	jne	@f
 	or	dword [rbp+HL_GOT],G_CHACHA1	; the client's first suite
+@@:
+	cmp	word [rsi],0x0213		; TLS_AES_256_GCM_SHA384
+	jne	@f
+	or	dword [rbp+HL_GOT],G_AES256
 @@:
 	add	rsi,2
 	cmp	rsi,rdx
@@ -957,16 +983,30 @@ tls_hello:
 	jz	.version
 	; the suite: AES-128-GCM (AES-NI here), unless ChaCha20-Poly1305 is
 	; the client's first choice or the only one it shares
-	mov	dword [rbx+TS_SUITE],0
+	mov	dword [rbx+TS_SUITE],TS13_AES128
 	mov	dword [rbx+TS_KEYLEN],16
 	test	eax,G_CHACHA1
 	jnz	.chacha
 	test	eax,G_SUITE
 	jnz	.suite_done
 	test	eax,G_CHACHA
+	jnz	.chacha
+	; AES-256-GCM with SHA-384: for a client that offers neither of those (a
+	; policy that takes AES-256 only); not over QUIC, with ECH or with client
+	; certificates asked (those keep SHA-256), and never resumed (no PSK, no
+	; ticket)
+	test	eax,G_AES256
 	jz	.handshake
+	test	dword [rbx+TS_FLAGS],TF_QUIC or TF_CCA
+	jnz	.handshake
+	cmp	dword [rbp+HL_ECH],1
+	je	.handshake
+	mov	dword [rbx+TS_SUITE],TS13_AES256
+	mov	dword [rbx+TS_KEYLEN],32
+	call	thx_select
+	jmp	.suite_done
 .chacha:
-	mov	dword [rbx+TS_SUITE],1
+	mov	dword [rbx+TS_SUITE],TS13_CHACHA
 	mov	dword [rbx+TS_KEYLEN],32
 .suite_done:
 	mov	rcx,[rbp+HL_TL]
@@ -1039,6 +1079,8 @@ tls_hello:
 	call	tls_now_s
 	mov	[rbp+HL_NOW],eax
 .psk_check:
+	cmp	dword [rbx+TS_SUITE],TS13_AES256
+	je	.full				; (SHA-384: not resumed)
 	mov	eax,[rbp+HL_GOT]
 	and	eax,G_PSK or G_PSKDHE
 	cmp	eax,G_PSK or G_PSKDHE
@@ -1143,18 +1185,18 @@ tls_hello:
 	test	dword [rbx+TS_FLAGS],TF_HRR
 	jnz	.second_hello
 	lea	rdi,[rbp+HL_SHA]
-	call	sha256_init
+	call	thx_init
 	jmp	.hello_hashed
 .second_hello:
 	lea	rsi,[rbx+TS_HRR_SHA]
 	lea	rdi,[rbp+HL_SHA]
-	mov	ecx,SHA256_CTX_SIZE
+	mov	ecx,SHA512_CTX_SIZE
 	rep	movsb
 .hello_hashed:
 	lea	rdi,[rbp+HL_SHA]
 	mov	rsi,r12
 	mov	edx,[rbp+HL_MLEN]
-	call	sha256_update
+	call	thx_update
 	; QUIC 0-RTT (RFC 9001 4.6): a resumption that asks for it, where the
 	; caller takes it and the ticket's age is what the client says (within
 	; 11 s: replays from long ago are not): client_early_traffic_secret
@@ -1288,10 +1330,9 @@ tls_hello:
 	lea	rsi,[rbp+HL_SID]
 	rep	movsb
 	mov	dword [rdi],0x00000113		; the suite, null compression, ...
-	cmp	dword [rbx+TS_SUITE],0
-	je	@f
-	mov	byte [rdi+1],0x03		; TLS_CHACHA20_POLY1305_SHA256
-@@:
+	mov	eax,[rbx+TS_SUITE]
+	mov	al,[ts13_codes+rax]
+	mov	[rdi+1],al			; (13 01, 13 03 or 13 02)
 	mov	eax,[rbp+HL_SHLEN]
 	sub	eax,[rbp+HL_SIDLEN]
 	sub	eax,44
@@ -1351,13 +1392,17 @@ tls_hello:
 
 	; the handshake secrets; resumed, the early secret is the PSK's
 	lea	rsi,[tls13_derived_early]
+	cmp	dword [g_h384],0
+	je	@f
+	lea	rsi,[tls13_derived_early384]
+@@:
 	test	dword [rbp+HL_GOT],G_RESUME
 	jz	@f
 	tls_label [rbp+HL_TMP], 32, [rbp+HL_EARLY], lbl_derived, [sha256_empty], 32
 	lea	rsi,[rbp+HL_TMP]
 @@:
 	lea	rdi,[rbp+HL_HS]
-	mov	edx,32
+	mov	edx,[g_hlen]
 	lea	rcx,[rbp+HL_SHARED]
 	mov	r8d,32
 	cmp	dword [rbp+HL_GROUP],2
@@ -1365,22 +1410,22 @@ tls_hello:
 	lea	rcx,[rbp+HL_SH64]		; the hybrid: 64 bytes
 	mov	r8d,64
 @@:
-	call	hkdf_extract
-	tls_label [rbp+HL_CHT], 32, [rbp+HL_HS], lbl_c_hs, [rbp+HL_TH], 32
-	tls_label [rbp+HL_SHT], 32, [rbp+HL_HS], lbl_s_hs, [rbp+HL_TH], 32
-	tls_label [rbp+HL_TMP], 32, [rbp+HL_HS], lbl_derived, [sha256_empty], 32
+	call	thx_extract
+	thx_tlabel [rbp+HL_CHT], [g_hlen], [rbp+HL_HS], lbl_c_hs, [rbp+HL_TH], [g_hlen]
+	thx_tlabel [rbp+HL_SHT], [g_hlen], [rbp+HL_HS], lbl_s_hs, [rbp+HL_TH], [g_hlen]
+	thx_tlabel [rbp+HL_TMP], [g_hlen], [rbp+HL_HS], lbl_derived, [g_hs_empty], [g_hlen]
 	lea	rdi,[rbp+HL_MS]
 	lea	rsi,[rbp+HL_TMP]
-	mov	edx,32
-	lea	rcx,[tls13_zero32]
-	mov	r8d,32
-	call	hkdf_extract
-	tls_label [rbp+HL_SKEY], [rbx+TS_KEYLEN], [rbp+HL_SHT], lbl_key
-	tls_label [rbp+HL_SIV], 12, [rbp+HL_SHT], lbl_iv
-	tls_label [rbx+TS_CHS_KEY], [rbx+TS_KEYLEN], [rbp+HL_CHT], lbl_key
-	tls_label [rbx+TS_CHS_IV], 12, [rbp+HL_CHT], lbl_iv
-	tls_label [rbp+HL_SFK], 32, [rbp+HL_SHT], lbl_finished
-	tls_label [rbp+HL_CFK], 32, [rbp+HL_CHT], lbl_finished
+	mov	edx,[g_hlen]
+	lea	rcx,[tls13_zero48]
+	mov	r8d,[g_hlen]
+	call	thx_extract
+	thx_tlabel [rbp+HL_SKEY], [rbx+TS_KEYLEN], [rbp+HL_SHT], lbl_key
+	thx_tlabel [rbp+HL_SIV], 12, [rbp+HL_SHT], lbl_iv
+	thx_tlabel [rbx+TS_CHS_KEY], [rbx+TS_KEYLEN], [rbp+HL_CHT], lbl_key
+	thx_tlabel [rbx+TS_CHS_IV], 12, [rbp+HL_CHT], lbl_iv
+	thx_tlabel [rbp+HL_SFK], [g_hlen], [rbp+HL_SHT], lbl_finished
+	thx_tlabel [rbp+HL_CFK], [g_hlen], [rbp+HL_CHT], lbl_finished
 
 	; middlebox compatibility (RFC 8446 D.4): a ChangeCipherSpec after the
 	; ServerHello when the client sent a session id
@@ -1628,11 +1673,12 @@ tls_hello:
 	mov	ecx,TLS13_CV_PREFIX
 	rep	movsb
 	lea	rsi,[rbp+HL_TH]
-	mov	ecx,32
+	mov	ecx,[g_hlen]
 	rep	movsb
 	lea	rdi,[rbp+HL_DIG]
 	lea	rsi,[rbp+HL_CV]
-	mov	edx,TLS13_CV_PREFIX + 32
+	mov	edx,TLS13_CV_PREFIX
+	add	edx,[g_hlen]
 	call	sha256
 	cmp	dword [r15+TL_KEYTYPE],1
 	je	.cv_rsa
@@ -1658,7 +1704,8 @@ tls_hello:
 	lea	rsi,[r15+TL_KEY]
 	lea	rdx,[r15+TL_PUB]
 	lea	rcx,[rbp+HL_CV]
-	mov	r8d,TLS13_CV_PREFIX + 32
+	mov	r8d,TLS13_CV_PREFIX
+	add	r8d,[g_hlen]
 	call	ed25519_sign
 	mov	byte [r14],15
 	mov	ecx,64 + 4
@@ -1689,23 +1736,27 @@ tls_hello:
 	th_add
 	th_snapshot				; H(ClientHello..CertificateVerify)
 .finished:
-	mov	dword [r14],0x20000014
+	mov	eax,[g_hlen]			; Finished, of the hash's length
+	shl	eax,24
+	or	eax,0x14
+	mov	[r14],eax
 	lea	rdi,[r14+4]
 	lea	rsi,[rbp+HL_SFK]
-	mov	edx,32
+	mov	edx,[g_hlen]
 	lea	rcx,[rbp+HL_TH]
-	mov	r8d,32
-	call	hmac_sha256
+	mov	r8d,[g_hlen]
+	call	thx_hmac
 	mov	rsi,r14
-	mov	edx,36
-	add	r14,36
+	mov	edx,[g_hlen]
+	add	edx,4
+	add	r14,rdx
 	th_add
 	th_snapshot				; H(ClientHello..server Finished)
 
 	; the application secrets and the client Finished to expect
-	tls_label [rbp+HL_TMP], 32, [rbp+HL_MS], lbl_c_ap, [rbp+HL_TH], 32
-	tls_label [rbx+TS_RX_KEY], [rbx+TS_KEYLEN], [rbp+HL_TMP], lbl_key
-	tls_label [rbx+TS_RX_IV], 12, [rbp+HL_TMP], lbl_iv
+	thx_tlabel [rbp+HL_TMP], [g_hlen], [rbp+HL_MS], lbl_c_ap, [rbp+HL_TH], [g_hlen]
+	thx_tlabel [rbx+TS_RX_KEY], [rbx+TS_KEYLEN], [rbp+HL_TMP], lbl_key
+	thx_tlabel [rbx+TS_RX_IV], 12, [rbp+HL_TMP], lbl_iv
 	test	dword [rbx+TS_FLAGS],TF_QUIC
 	jz	@f
 	mov	rdi,[rbx+TS_QT]
@@ -1714,15 +1765,15 @@ tls_hello:
 	mov	ecx,32
 	rep	movsb
 @@:
-	tls_label [rbp+HL_TMP], 32, [rbp+HL_MS], lbl_s_ap, [rbp+HL_TH], 32
-	tls_label [rbx+TS_TX_KEY], [rbx+TS_KEYLEN], [rbp+HL_TMP], lbl_key
-	tls_label [rbx+TS_TX_IV], 12, [rbp+HL_TMP], lbl_iv
+	thx_tlabel [rbp+HL_TMP], [g_hlen], [rbp+HL_MS], lbl_s_ap, [rbp+HL_TH], [g_hlen]
+	thx_tlabel [rbx+TS_TX_KEY], [rbx+TS_KEYLEN], [rbp+HL_TMP], lbl_key
+	thx_tlabel [rbx+TS_TX_IV], 12, [rbp+HL_TMP], lbl_iv
 	lea	rdi,[rbx+TS_CFIN]
 	lea	rsi,[rbp+HL_CFK]
-	mov	edx,32
+	mov	edx,[g_hlen]
 	lea	rcx,[rbp+HL_TH]
-	mov	r8d,32
-	call	hmac_sha256
+	mov	r8d,[g_hlen]
+	call	thx_hmac
 	xor	eax,eax
 	mov	[rbx+TS_RX_SEQ],rax
 	mov	[rbx+TS_TX_SEQ],rax
@@ -1759,6 +1810,8 @@ tls_hello:
 .no_cca:
 	cmp	qword [g_tks],0
 	je	.no_ticket
+	cmp	dword [rbx+TS_SUITE],TS13_AES256
+	je	.no_ticket			; (SHA-384: not resumed)
 	; the ticket: resumption_master_secret over the transcript through the
 	; client Finished we expect, the PSK from it, sealed with the key
 	mov	dword [rbp+HL_CV],0x20000014
@@ -1897,8 +1950,11 @@ tls_hello:
 	; QUIC: the secrets, then out = ServerHello | EE .. Finished, and after
 	; it (not counted in the flight) a NewSessionTicket
 	mov	rdi,[rbx+TS_QT]
-	lea	rsi,[rbp+HL_CHT]
-	mov	ecx,64				; CHT, SHT: adjacent here and in QT
+	lea	rsi,[rbp+HL_CHT]		; CHT, then SHT (QUIC: 32 bytes each)
+	mov	ecx,32
+	rep	movsb
+	lea	rsi,[rbp+HL_SHT]
+	mov	ecx,32
 	rep	movsb
 	mov	rdi,r12				; the ServerHello without its record header
 	lea	rsi,[r12+5]
@@ -1963,16 +2019,20 @@ tls_hello:
 	lea	rdi,[rbp+HL_TH]
 	mov	rsi,r12
 	mov	edx,[rbp+HL_MLEN]
-	call	sha256
+	call	thx_oneshot
 	lea	rdi,[rbp+HL_SHA]
-	call	sha256_init
-	mov	dword [rbp+HL_CV],0x200000FE	; message_hash, 32 bytes
+	call	thx_init
+	mov	eax,[g_hlen]			; message_hash, of the hash's length
+	shl	eax,24
+	or	eax,0xFE
+	mov	[rbp+HL_CV],eax
 	lea	rsi,[rbp+HL_TH]
 	lea	rdi,[rbp+HL_CV+4]
-	mov	ecx,32
+	mov	ecx,[g_hlen]
 	rep	movsb
 	lea	rsi,[rbp+HL_CV]
-	mov	edx,36
+	mov	edx,[g_hlen]
+	add	edx,4
 	th_add
 	; the HelloRetryRequest: a ServerHello with the special random
 	mov	rdi,r12
@@ -2001,10 +2061,9 @@ tls_hello:
 	lea	rsi,[rbp+HL_SID]
 	rep	movsb
 	mov	dword [rdi],0x00000113		; the suite, null compression, ...
-	cmp	dword [rbx+TS_SUITE],0
-	je	@f
-	mov	byte [rdi+1],0x03		; TLS_CHACHA20_POLY1305_SHA256
-@@:
+	mov	eax,[rbx+TS_SUITE]
+	mov	al,[ts13_codes+rax]
+	mov	[rdi+1],al			; (13 01, 13 03 or 13 02)
 	mov	byte [rdi+4],12			; ... 12 bytes of extensions
 	mov	dword [rdi+5],0x02002B00	; supported_versions: TLS 1.3
 	mov	word [rdi+9],0x0403
@@ -2030,7 +2089,7 @@ tls_hello:
 	push	rdi
 	lea	rsi,[rbp+HL_SHA]
 	lea	rdi,[rbx+TS_HRR_SHA]
-	mov	ecx,SHA256_CTX_SIZE
+	mov	ecx,SHA512_CTX_SIZE
 	rep	movsb
 	pop	rdi
 	or	dword [rbx+TS_FLAGS],TF_HRR
@@ -2111,6 +2170,7 @@ FN_SIZE		:= AEAD_SIZE + 16 + 8		; rsp 16-aligned at calls
 tls_finished:
 	test	dword [rdi+TS_FLAGS],TF_CCA
 	jnz	tls_client_flight
+	call	thx_of_ts			; (the hash of its suite)
 	push	rbx
 	push	r12
 	push	r13
@@ -2167,13 +2227,17 @@ tls_finished:
 	cmp	byte [rdi],22			; handshake
 	jne	.fail				; (an alert from the client)
 	sub	rdi,rsi
-	cmp	rdi,36				; Finished, and nothing else
+	mov	eax,[g_hlen]
+	lea	ecx,[rax+4]
+	cmp	rdi,rcx				; Finished, and nothing else
 	jne	.fail
-	cmp	dword [rsi],0x20000014
+	shl	eax,24
+	or	eax,0x14
+	cmp	[rsi],eax
 	jne	.fail
 	lea	rdi,[rsi+4]
 	lea	rsi,[rbx+TS_CFIN]
-	mov	edx,32
+	mov	edx,[g_hlen]
 	call	ct_equal
 	test	eax,eax
 	jz	.fail
@@ -2680,3 +2744,106 @@ tls_ext_peek:
 	pop	r12
 	pop	rbx
 	ret
+
+; --------------------------------------------- the handshake's hash (SHA-256 or SHA-384)
+;
+; Set by the suite once it is chosen (thx_select; thx_of_ts later), read by what
+; follows: SHA-256 unless TLS_AES_256_GCM_SHA384. The plain SHA-256 functions
+; stay as they are for the TLS client and QUIC.
+
+rodata
+	tls13_derived_early384	db 0x15,0x91,0xda,0xc5,0xcb,0xbf,0x03,0x30,0xa4,0xa8,0x4d,0xe9,0xc7,0x53,0x33,0x0e
+				db 0x92,0xd0,0x1f,0x0a,0x88,0x21,0x4b,0x44,0x64,0x97,0x2f,0xd6,0x68,0x04,0x9e,0x93
+				db 0xe5,0x2f,0x2b,0x16,0xfa,0xd9,0x22,0xfd,0xc0,0x58,0x44,0x78,0x42,0x8f,0x28,0x2b
+	sha384_empty		db 0x38,0xb0,0x60,0xa7,0x51,0xac,0x96,0x38,0x4c,0xd9,0x32,0x7e,0xb1,0xb1,0xe3,0x6a
+				db 0x21,0xfd,0xb7,0x11,0x14,0xbe,0x07,0x43,0x4c,0x0c,0xc7,0xbf,0x63,0xf6,0xe1,0xda
+				db 0x27,0x4e,0xde,0xbf,0xe7,0x6f,0x65,0xfb,0xd5,0x1a,0xd2,0xf1,0x48,0x98,0xb9,0x5b
+	tls13_zero48		db 48 dup 0
+	ts13_codes		db 0x01, 0x03, 0x02	; TS13_*: the suite's low byte
+end rodata
+
+bss
+	g_h384		dd ?			; 1: SHA-384 (TLS_AES_256_GCM_SHA384)
+	g_hlen		dd ?			; 32 or 48
+	g_hs_empty	rb 48			; the hash of nothing, with it
+end bss
+
+; SHA-256 for what follows. Keeps the registers.
+thx_sha256:
+	mov	dword [g_h384],0
+	mov	dword [g_hlen],32
+	push	rsi
+	push	rdi
+	push	rcx
+	lea	rsi,[sha256_empty]
+	lea	rdi,[g_hs_empty]
+	mov	ecx,32
+	rep	movsb
+	pop	rcx
+	pop	rdi
+	pop	rsi
+	ret
+
+; SHA-384 for what follows (the suite chosen). Keeps the registers.
+thx_select:
+	mov	dword [g_h384],1
+	mov	dword [g_hlen],48
+	push	rsi
+	push	rdi
+	push	rcx
+	lea	rsi,[sha384_empty]
+	lea	rdi,[g_hs_empty]
+	mov	ecx,48
+	rep	movsb
+	pop	rcx
+	pop	rdi
+	pop	rsi
+	ret
+
+; rdi = TS: its suite's hash for what follows. Keeps the registers.
+thx_of_ts:
+	cmp	dword [rdi+TS_SUITE],TS13_AES256
+	je	thx_select
+	jmp	thx_sha256
+
+; rdi = a transcript context: begun
+thx_init:
+	cmp	dword [g_h384],0
+	jne	sha384_init
+	jmp	sha256_init
+
+; rdi = context, rsi = bytes, rdx = length
+thx_update:
+	cmp	dword [g_h384],0
+	jne	sha512_update
+	jmp	sha256_update
+
+; rdi = context, rsi = out (32 or 48)
+thx_final:
+	cmp	dword [g_h384],0
+	jne	sha384_final
+	jmp	sha256_final
+
+; rdi = out, rsi = data, rdx = length
+thx_oneshot:
+	cmp	dword [g_h384],0
+	jne	sha384
+	jmp	sha256
+
+; hmac_sha256's arguments
+thx_hmac:
+	cmp	dword [g_h384],0
+	jne	hmac_sha384
+	jmp	hmac_sha256
+
+; hkdf_extract's arguments
+thx_extract:
+	cmp	dword [g_h384],0
+	jne	hkdf384_extract
+	jmp	hkdf_extract
+
+; tls13_expand_label's arguments
+thx_label:
+	cmp	dword [g_h384],0
+	jne	tls13_expand_label384
+	jmp	tls13_expand_label

@@ -276,6 +276,7 @@ http_tls_flight_sent:
 ; peek at what the client sent after what IN holds
 http_tls_peek:
 	mov	dword [r15+H_STATE],HS_TLS_FIN
+http_tls_peek_on:
 	mov	esi,H_IN_CAP
 	sub	esi,[r15+H_INLEN]
 	jz	http_tls_close
@@ -328,7 +329,12 @@ http_tls_fin_peeked:
 .take:
 	mov	esi,eax
 	sub	esi,[r15+H_INLEN]
-	mov	dword [r15+H_STATE],HS_TLS_TAKE
+	mov	eax,HS_TLS_TAKE
+	cmp	dword [r15+H_STATE],HS_TLS12_RFIN
+	jne	@f
+	mov	eax,HS_TLS12_RTAKE		; (a resumed TLS 1.2 client's, the same way)
+@@:
+	mov	[r15+H_STATE],eax
 	mov	edi,[r15+H_INLEN]
 	add	rdi,[r15+H_BUF]
 	mov	ecx,SIDE_CLIENT
@@ -422,9 +428,15 @@ http_tls_fin_keys:
 	jz	http_utls_start
 .kernel:
 	mov	r8,[r15+H_BUF]
-	cmp	dword [r8+HB_TS+TS_SUITE],0
+	cmp	dword [r8+HB_TS+TS_SUITE],TS13_AES128
 	je	@f
+	cmp	dword [r8+HB_TS+TS_SUITE],TS13_AES256
+	je	.k256
 	cmp	dword [g_no_ktls_cp],0		; the kernel has no ChaCha20-Poly1305
+	jne	http_utls_start
+	jmp	@f
+.k256:
+	cmp	dword [g_no_ktls_256],0		; nor AES-256-GCM
 	jne	http_utls_start
 @@:
 	cmp	dword [g_engine],ENGINE_EPOLL
@@ -498,7 +510,9 @@ http_tls_fin_keys:
 ; buffers (the suite). Keeps r8.
 .info:
 	bswap	rdx				; rec_seq, big endian
-	cmp	dword [r8+HB_TS+TS_SUITE],0
+	cmp	dword [r8+HB_TS+TS_SUITE],TS13_AES256
+	je	.info_256
+	cmp	dword [r8+HB_TS+TS_SUITE],TS13_AES128
 	jne	.info_cp
 	mov	dword [rdi],0x00330304		; TLS 1.3, TLS_CIPHER_AES_GCM_128
 	mov	rax,[rsi+TS_IVOFF+4]
@@ -508,6 +522,18 @@ http_tls_fin_keys:
 	mov	eax,[rsi+TS_IVOFF]
 	mov	[rdi+28],eax
 	mov	[rdi+32],rdx
+	ret
+.info_256:
+	mov	dword [rdi],0x00340304		; TLS 1.3, TLS_CIPHER_AES_GCM_256
+	mov	rax,[rsi+TS_IVOFF+4]		; iv[8]
+	mov	[rdi+4],rax
+	movdqu	xmm0,[rsi]			; key[32]
+	movdqu	[rdi+12],xmm0
+	movdqu	xmm0,[rsi+16]
+	movdqu	[rdi+28],xmm0
+	mov	eax,[rsi+TS_IVOFF]		; salt[4]
+	mov	[rdi+44],eax
+	mov	[rdi+48],rdx
 	ret
 .info_cp:
 	mov	dword [rdi],0x00360304		; TLS 1.3, TLS_CIPHER_CHACHA20_POLY1305
@@ -564,10 +590,7 @@ http_tls_fin_keys:
 ; the kernel took the ULP but not the keys: no kTLS for this suite, then
 .tx_refused:
 	mov	rax,[r15+H_BUF]
-	cmp	dword [rax+HB_TS+TS_SUITE],0
-	je	.refused
-	mov	dword [g_no_ktls_cp],1		; ChaCha20-Poly1305 only: AES still goes
-	jmp	http_utls_start
+	jmp	ktls_suite_refused
 
 ; completion of the RX key (io_uring): ebx = session, r12d = generation,
 ; r14 = res (-ECANCELED when an earlier link failed)
@@ -587,10 +610,7 @@ on_h_ktls:
 	test	eax,eax
 	jnz	http_tls_close			; the ULP failed for this connection only
 	mov	rax,[r15+H_BUF]			; (ENOTCONN: the client left); else TX
-	cmp	dword [rax+HB_TS+TS_SUITE],0	; refused: for every suite, or for
-	je	.no_module			; ChaCha20-Poly1305 only
-	mov	dword [g_no_ktls_cp],1
-	jmp	http_utls_start
+	jmp	ktls_suite_refused		; refused: for every suite, or for one
 .no_module:
 	mov	dword [g_no_ktls],1
 	jmp	http_utls_start
@@ -1167,3 +1187,24 @@ http_pt_in:
 	cmp	dword [g_engine],ENGINE_EPOLL
 	je	ep_connect
 	jmp	session_connect
+
+; rax = the session's buffers: the kernel took the ULP but not this suite's keys:
+; AES-128-GCM refused is no kTLS at all; ChaCha20-Poly1305 or AES-256-GCM, that
+; one alone. The records here from now on.
+bss
+	g_no_ktls_256	dd ?			; the kernel has no AES-256-GCM for TLS
+end bss
+ktls_suite_refused:
+	mov	ecx,[rax+HB_TS+TS_SUITE]
+	cmp	ecx,TS13_AES128
+	jne	@f
+	mov	dword [g_no_ktls],1
+	jmp	http_utls_start
+@@:
+	cmp	ecx,TS13_AES256
+	jne	@f
+	mov	dword [g_no_ktls_256],1
+	jmp	http_utls_start
+@@:
+	mov	dword [g_no_ktls_cp],1
+	jmp	http_utls_start

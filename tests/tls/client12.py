@@ -47,7 +47,7 @@ def run_against(port, cipher, cert="s.pem", key="s.key", ktls=False, tickets=Tru
            "-key", str(tmp / key), "-tls1_2", "-cipher", cipher, "-naccept", "1", "-www"]
     if not tickets:
         cmd += ["-no_ticket"]
-    sp = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    sp = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     try:
         # it says ACCEPT once it listens (a fixed sleep lost the race under
         # load; a probe connection would take its one accept)
@@ -58,31 +58,32 @@ def run_against(port, cipher, cert="s.pem", key="s.key", ktls=False, tickets=Tru
                 break
             said += more
         if b"ACCEPT" not in said:
-            return "s_server did not start"
+            return "s_server did not start: " + said.decode(errors="replace")[-200:]
         r = subprocess.run([str(CLIENT)], input=struct.pack(">H", port) + bytes([1 if ktls else 0]),
                            capture_output=True, timeout=10)
     finally:
         sp.kill()
-    return r.stdout.decode().strip()
+    out = r.stdout.decode().strip()
+    return out if out == "1" else f"{out!r} (exit {r.returncode}) {r.stderr.decode(errors='replace')[-200:]}"
 
 
 def main():
     if not shutil.which("openssl"):
         print("skip tls 1.2 client: openssl not found")
         return 0
-    check("ECDHE-ECDSA: handshake and HTTP response decrypted",
-          run_against(34560, "ECDHE-ECDSA-AES128-GCM-SHA256") == "1")
-    check("ECDHE-RSA: the ServerKeyExchange signature (rsa_pkcs1_sha256) verifies",
-          run_against(34561, "ECDHE-RSA-AES128-GCM-SHA256", cert="rsa.pem", key="rsa.key") == "1")
+    res = run_against(34560, "ECDHE-ECDSA-AES128-GCM-SHA256")
+    check("ECDHE-ECDSA: handshake and HTTP response decrypted", res == "1", res)
+    res = run_against(34561, "ECDHE-RSA-AES128-GCM-SHA256", cert="rsa.pem", key="rsa.key")
+    check("ECDHE-RSA: the ServerKeyExchange signature (rsa_pkcs1_sha256) verifies", res == "1", res)
     # kTLS 1.2: the keys go to the kernel; falls back to user-space records
     # (still "1") when the tls module is absent
-    check("kTLS 1.2: ECDHE-ECDSA over the kernel's TLS",
-          run_against(34562, "ECDHE-ECDSA-AES128-GCM-SHA256", ktls=True) == "1")
-    check("kTLS 1.2: ECDHE-RSA over the kernel's TLS",
-          run_against(34563, "ECDHE-RSA-AES128-GCM-SHA256", cert="rsa.pem", key="rsa.key", ktls=True) == "1")
+    res = run_against(34562, "ECDHE-ECDSA-AES128-GCM-SHA256", ktls=True)
+    check("kTLS 1.2: ECDHE-ECDSA over the kernel's TLS", res == "1", res)
+    res = run_against(34563, "ECDHE-RSA-AES128-GCM-SHA256", cert="rsa.pem", key="rsa.key", ktls=True)
+    check("kTLS 1.2: ECDHE-RSA over the kernel's TLS", res == "1", res)
     # a server that sends no NewSessionTicket (the Finished transcript differs)
-    check("ECDHE-ECDSA without a session ticket",
-          run_against(34564, "ECDHE-ECDSA-AES128-GCM-SHA256", tickets=False) == "1")
+    res = run_against(34564, "ECDHE-ECDSA-AES128-GCM-SHA256", tickets=False)
+    check("ECDHE-ECDSA without a session ticket", res == "1", res)
     print(f"tls 1.2 client: {'all passed' if not failures else f'{failures} failed'}")
     return 1 if failures else 0
 

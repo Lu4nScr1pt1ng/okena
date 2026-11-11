@@ -10,10 +10,16 @@
 ;   HS_TLS12_FLIGHT  the ServerHello flight is out
 ;   HS_TLS12_FIN     reading ClientKeyExchange + ChangeCipherSpec + Finished
 ;   HS_TLS12_FIN2    the server ChangeCipherSpec + Finished is out
+;   HS_TLS12_RFIN    resumed: peeking at the ChangeCipherSpec + Finished
+;   HS_TLS12_RTAKE   and taking them, no further (as TLS 1.3's HS_TLS_FIN and
+;                    HS_TLS_TAKE): in an abbreviated handshake the client's
+;                    Finished is its last word, its request may come with it
 
 HS_TLS12_FLIGHT	:= 27
 HS_TLS12_FIN	:= 28
 HS_TLS12_FIN2	:= 29
+HS_TLS12_RFIN	:= 46
+HS_TLS12_RTAKE	:= 47
 
 HB_T2		:= HB_TXC + UTLS_TX_CAP		; the 1.2 handshake state
 HB_C12		:= HB_T2 + T2_FULL		; the credentials block
@@ -138,6 +144,9 @@ http_tls12_hello:
 ; the client's ClientKeyExchange, ChangeCipherSpec and Finished
 http_tls12_flight_sent:
 	mov	dword [r15+H_INLEN],0
+	mov	rax,[r15+H_BUF]
+	cmp	dword [rax+HB_T2+T2_RESUMED],0
+	jne	http_tls12_rpeek
 	mov	dword [r15+H_STATE],HS_TLS12_FIN
 http_tls12_read:
 	mov	esi,H_IN_CAP
@@ -215,7 +224,11 @@ http_tls12_fin:
 .need:
 	cmp	dword [r15+H_INLEN],H_IN_CAP
 	jae	http_tls_close
-	jmp	http_tls12_read
+	cmp	dword [r14+HB_T2+T2_RESUMED],0
+	je	http_tls12_read
+http_tls12_rpeek:
+	mov	dword [r15+H_STATE],HS_TLS12_RFIN
+	jmp	http_tls_peek_on
 
 ; no kTLS: the records sealed and opened here, as for TLS 1.3 (tls_seal and
 ; tls_open, seeing TF_T12, come to utls12_seal / utls12_open)

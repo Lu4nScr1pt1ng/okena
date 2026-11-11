@@ -93,7 +93,7 @@ def main():
     held = []
     threading.Thread(target=lambda: [held.append(t.accept()) for _ in iter(int, 1)], daemon=True).start()
     conf.write_text(f"""okena {{ drain delay=0s timeout=1s; workers 4; io_engine {ENGINE} }}
-pool lim {{ server {a[1]} max=2; server {b[1]} max=2 }}
+pool lim {{ queue timeout=30s; server {a[1]} max=2; server {b[1]} max=2 }}
 pool short {{ queue timeout=300ms; server {a[1]} max=1 }}
 pool fst {{ balance first; {''.join(f'server {x[1]} max=2; ' for x in f)}}}
 pool tl {{ server 127.0.0.1:{t.getsockname()[1]} max=1 }}
@@ -121,10 +121,10 @@ http 127.0.0.1:{FAIR} {{ route /* {{ to pool fair }} }}
         check("  and both were used to the full", a[0].most == 2 and b[0].most == 2, (a[0].most, b[0].most))
         check("  in turns: about four of 0.4 s", 1.5 <= dt <= 2.6, round(dt, 2))
         reset(a, b)
-        with ThreadPoolExecutor(96) as ex:              # workers racing for the last place
+        with ThreadPoolExecutor(96) as ex:              # workers racing for the last place (30 s to wait: a loaded host is slow)
             r = list(ex.map(lambda i: get(LIM, "/?s=0.01"), range(800)))
         check("800 short ones, 96 at a time: all served, never past the max", r.count((200, "a")) + r.count((200, "b")) == 800 and a[0].most <= 2 and b[0].most <= 2,
-              (collections.Counter(x[0] for x in r), a[0].most, b[0].most))
+              (collections.Counter(x[0] for x in r), a[0].most, b[0].most, [x[1][:200] for x in r if x[0] != 200][:2]))
 
         # first in, first out across workers: 96 at once on 4 places of 10 ms
         # wait about 240 ms each; nobody waits it out (the queue's 30 s)

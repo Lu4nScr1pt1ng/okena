@@ -576,7 +576,12 @@ rate on a NIC is inferred, as the two-host lab is not in place.)
   stale list failing shut). mTLS resumption: the ticket after the client's
   flight, with its identity and the listener's CAs; TLS 1.2 client
   certificates (CertificateRequest, ECDSA / RSA-PSS / PKCS #1 verify, the
-  same chain checks), 1.2 tickets with the identity too.
+  same chain checks), 1.2 tickets with the identity too. TLS 1.3
+  TLS_AES_256_GCM_SHA384 (tests/tls/aes256.py): the key schedule, Finished,
+  CertificateVerify and HRR's message_hash on SHA-384, its records here or on
+  kTLS; taken only when the client offers neither AES-128 nor ChaCha20, and
+  not resumed (tickets and binders stay SHA-256), nor with client
+  certificates, ECH or QUIC.
 * FastCGI to PHP-FPM and others (`php` on a route: index files, the script
   path checked against the root, try-files), as nginx and Caddy do it.
   Done: `protocol fastcgi` (records under h_send/h_recv on the upstream side,

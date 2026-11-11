@@ -2129,6 +2129,10 @@ http_recv_plain:
 	je	http_uptls12_rx
 	cmp	edx,HS_TLS12_FIN
 	je	http_tls12_fin
+	cmp	edx,HS_TLS12_RFIN
+	je	http_tls_fin_peeked
+	cmp	edx,HS_TLS12_RTAKE
+	je	http_tls12_fin
 	cmp	edx,HS_H2TUN
 	je	http_h2tun_recv
 	cmp	edx,HS_LINGER

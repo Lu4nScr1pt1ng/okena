@@ -49,6 +49,8 @@ the connection closed when its framing can no longer be trusted.
 | Wildcard and multi-domain certificates, thousands of domains | name index with wildcard lookup; IDNA via punycode |
 | Client certificate optional on some routes | handshake requests it per listener; routes decide whether it is required; post-handshake auth not used |
 | Upstream with a self-signed or private CA | `tls ca=` per pool; never "verify off" silently (`insecure` must be spelled out and is logged at startup) |
+| A resumed TLS 1.2 client whose request comes with its Finished (one segment) | the Finished taken to its end and no further (as TLS 1.3's), the request left for the records here or for kTLS |
+| A TLS 1.3 client offering only TLS_AES_256_GCM_SHA384 (FIPS-style policies) | served with it, SHA-384 through the key schedule, HRR included; a full handshake each time (no ticket); AES-128 kept whenever offered too |
 | kTLS unsupported for the cipher or key update | user-space record layer for that connection |
 | TLS passthrough to backends that need the client address | PROXY protocol v2 out |
 

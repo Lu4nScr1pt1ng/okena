@@ -60,7 +60,14 @@ def serve(c):
                 pass
             ev.append(time.time() - t0)
         elif m == "pp":
-            ev.append(c.recv(200))
+            c.settimeout(5)
+            got = b""
+            while not got.endswith(b"DATA"):          # (the header and the data may come apart)
+                x = c.recv(200)
+                if not x:
+                    break
+                got += x
+            ev.append(got)
             c.close()
     except OSError:
         pass

@@ -57,7 +57,12 @@ TLS always runs on kTLS, its bytes going through the kernel; `ktls off`
 there is refused. Session tickets are on: a returning client resumes
 without the certificate and the signature. The ticket key rotates every
 hour and the previous one is still accepted, so a ticket lasts one to two
-hours; keys live in memory only (a restart starts afresh). For a fleet,
+hours; keys live in memory only (a restart starts afresh). TLS 1.3 suites:
+TLS_AES_128_GCM_SHA256, TLS_CHACHA20_POLY1305_SHA256 (when it is the client's
+first) and TLS_AES_256_GCM_SHA384 for a client that offers neither of those
+(its records here or on kTLS); that one is never resumed (no ticket, no
+0-RTT: tickets are SHA-256's) and not taken with client certificates, ECH or
+QUIC, whose clients all offer AES-128. For a fleet,
 A client that offers no TLS 1.3 gets TLS 1.2 (RFC 5246), on kTLS when the host
 has it, else its records sealed and opened by okena as 1.3's are: ECDHE with
 the certificate's key, ECDSA or RSA, and AES-128-GCM, ChaCha20-Poly1305 or
