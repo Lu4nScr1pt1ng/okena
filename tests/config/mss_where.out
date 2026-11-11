@@ -1,0 +1,8 @@
+exit: 2
+--- stdout
+--- stderr
+mss_where.conf:1:22: error: `mss` is not allowed in `udp`
+     1 | udp 127.0.0.1:9000 { mss 1000; to 127.0.0.1:9 }
+       |                      ^^^
+       = help: `mss` belongs in `tcp`
+1 error in mss_where.conf

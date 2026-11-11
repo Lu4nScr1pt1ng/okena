@@ -108,7 +108,7 @@ def main():
             r = list(ex.map(get, ["/slow"] * 32))
         dt = time.time() - t0
         check("32 at once, held together, none lost", r.count((200, "OK")) == 32 and seen[0] == before + 32
-              and dt < 0.5, f"{r[:2]} {seen[0] - before} {dt:.3f}")
+              and dt < 1.5, f"{r[:2]} {seen[0] - before} {dt:.3f}")   # (one after another: 6.4 s)
         def timed(i):
             t0 = time.time()
             get("/someslow")

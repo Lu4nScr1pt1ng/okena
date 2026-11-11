@@ -633,6 +633,9 @@ listener_open:
 	test	eax,eax
 	js	.failed
 .bound:
+	mov	rdi,rbx
+	mov	esi,r12d
+	call	listener_tune
 	mov	eax,r12d
 	pop	r14
 	pop	r13
@@ -640,7 +643,14 @@ listener_open:
 	pop	rbx
 	ret
 .sd_given:
+	push	rax
+	imul	rdi,rdi,LS_SIZE
+	lea	rdi,[g_listeners+rdi]
+	mov	esi,eax
+	call	listener_tune
+	pop	rax
 	ret
+
 
 .setsockopt:
 	mov	edi,r12d
@@ -697,6 +707,21 @@ listener_open:
 	pop	r13
 	pop	r12
 	pop	rbx
+	ret
+
+; rdi = listener, esi = its socket: what may change on a reload, set again on
+; a socket that stays. Keeps nothing.
+listener_tune:
+	cmp	dword [rdi+LS_KIND],LK_UDP
+	je	.out
+	lea	r10,[rdi+LS_MSS]		; (0 takes a clamp back)
+	mov	edi,esi
+	mov	esi,IPPROTO_TCP
+	mov	edx,TCP_MAXSEG
+	mov	r8d,4
+	mov	eax,SYS_setsockopt
+	syscall
+.out:
 	ret
 
 ; A worker whose heartbeat has not moved for the watchdog time is stuck

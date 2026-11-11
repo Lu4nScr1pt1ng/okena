@@ -578,6 +578,12 @@ reload_sockets:
 	add	eax,ebx
 	mov	byte [g_taken+rax],1
 	mov	ecx,[g_prev_lfd+rax*4]
+	push	rcx
+	imul	rdi,r12,LS_SIZE
+	lea	rdi,[g_listeners+rdi]
+	mov	esi,ecx
+	call	listener_tune			; (its `mss` may have changed)
+	pop	rcx
 	jmp	.store
 .open:
 	mov	edi,r12d

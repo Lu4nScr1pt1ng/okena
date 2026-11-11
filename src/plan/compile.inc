@@ -41,7 +41,8 @@ LS_EFIRST	:= 184		; d: http: its error pages (g_eps), first
 LS_ECOUNT	:= 188		; d: and how many
 LS_MAINT	:= 192		; d: http: its `maintenance` (g_maints) + 1, 0 none
 LS_BODYMAX	:= 196		; d: http: `limits { body_size }`, bytes, 0 = no limit
-LS_SIZE		:= 200
+LS_MSS		:= 200		; d: `mss`: TCP_MAXSEG for its connections, 0 = the kernel's
+LS_SIZE		:= 208
 assert LS_PA6 + 28 <= LS_RESP
 
 ; Host block name (http): routes for requests to that host
@@ -265,6 +266,7 @@ bss
 	g_cmp_addr:	rb AD_SIZE
 	g_cmp_flags	dd ?
 	g_cmp_per_source dd ?
+	g_cmp_mss	dd ?
 	g_cmp_t_header	dd ?
 	g_cmp_pt	dd ?
 	g_cmp_alog	dd ?
@@ -3334,6 +3336,22 @@ compile_listener:
 	mov	[g_cmp_per_source],eax
 	or	dword [g_cmp_flags],LSF_PEER
 @@:
+	; `mss`: what its connections' segments carry at most (a path whose
+	; tunnels eat into 1500 and drop ICMP: clamp it here)
+	mov	dword [g_cmp_mss],0
+	mov	rdi,r12
+	mov	ecx,DIR_MSS
+	call	find_child
+	test	rax,rax
+	jz	@f
+	mov	rdi,rax
+	call	node_decimal
+	cmp	eax,TCP_MSS_MIN
+	jb	plan_bad_mss
+	cmp	eax,TCP_MSS_MAX
+	ja	plan_bad_mss
+	mov	[g_cmp_mss],eax
+@@:
 	mov	dword [g_cmp_body_max],0
 	mov	rdi,r12
 	mov	ecx,DIR_LIMITS
@@ -3684,6 +3702,8 @@ compile_listener:
 	mov	[rcx+LS_FLAGS],eax
 	mov	eax,[g_cmp_per_source]
 	mov	[rcx+LS_PER_SOURCE],eax
+	mov	eax,[g_cmp_mss]
+	mov	[rcx+LS_MSS],eax
 	xor	eax,eax
 	lea	rdx,[dir_table + D_SIZE*DIR_HTTP]
 	cmp	[r12+N_DEF],rdx
@@ -3714,6 +3734,16 @@ compile_listener:
 	pop	r12
 	pop	rbx
 	ret
+
+TCP_MSS_MIN	:= 88			; the kernel's bounds for TCP_MAXSEG
+TCP_MSS_MAX	:= 32767
+
+plan_bad_mss:
+	call	log_begin
+	out_lit 'mss takes the largest TCP segment, in bytes: 88 to 32767 (Ethernet carries 1460 over IPv4)'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
 
 ; r12 = a listener: g_cmp_resp, from `responses`
 compile_udp:
