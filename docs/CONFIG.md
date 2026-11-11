@@ -2054,6 +2054,15 @@ okena ranges cloudflare            # a provider's ranges, as built in
 okena purge url|prefix|tag VALUE   # take cached answers back (and on the fleet)
 ```
 
+`okena explain [FILE]` prints the configuration as okena will run it, from the
+compiled plan, every default written out: the okena block (workers as this
+host gives them, engine, watchdog, drain, last_good, reload), each pool (its
+balancing, connect timeout=, max=, idle=, warm=, rate=, its queue, outlier and
+retry budget, health check, servers with their weight, max and backup), each
+listener (limits, timeouts, TLS versions and ALPN, HTTP/2 and 3) and its routes
+(methods, where they go, the retries they get and their timeouts). Inline
+targets (`to ADDR`) show as pools of their own.
+
 `okena fmt [-w] FILE` gives the file its canonical layout: each line indented
 four spaces for each block it is in, trailing blanks removed, empty lines
 collapsed to one, none at the start; what each line says, its spacing inside

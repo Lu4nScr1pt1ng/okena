@@ -1,0 +1,4 @@
+exit: 0
+--- stdout
+placeholders.conf: ok (1 listener, 0 pools, 0 servers)
+--- stderr

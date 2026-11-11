@@ -124,6 +124,7 @@ SUITES = [
     ("config", ["tests/config/run.py"]),
     ("host check", ["tests/config/host.py"]),
     ("fmt", ["tests/config/fmt.py"]),
+    ("explain", ["tests/config/explain.py"]),
     ("bench", ["tests/bench/run.py"]),
     ("hpack", ["tests/h2/hpack_suite.py"]),
     ("h2 io_uring", ["tests/h2/run.py", "io_uring"]),

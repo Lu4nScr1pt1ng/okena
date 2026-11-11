@@ -1,0 +1,47 @@
+okena {
+    workers 2
+    io_engine auto
+    watchdog 2s
+    drain delay=0s timeout=8s
+    last_good on
+    reload signal
+}
+
+pool api {
+    balance least-request
+    connect timeout=2s max=512 idle=50s warm=2 rate=50/s
+    queue timeout=2s
+    outlier errors=3 eject=10s max_ejected=50%
+    retry_budget 10% min=5/s
+    health http every=2s timeout=1s rise=2 fall=3
+    server 10.0.0.1:80 weight=2 max=100
+    server 10.0.0.2:80 weight=1 backup
+}
+
+pool (inline 1) {
+    balance least-request
+    connect timeout=2s max=512 idle=50s warm=0
+    queue timeout=2s
+    outlier errors=5 eject=10s max_ejected=50%
+    retry_budget 20% min=10/s
+    server 10.0.0.9:5432 weight=1
+}
+
+http :8080 {
+    limits { connections 65536 }
+    timeout { idle 60s; header 10s; body_idle 30s; response 30s }
+    canonical example.com
+    http2 off
+    http3 off
+    route /api/* GET POST { to pool api; retry 2 on=reset,503; timeout try=3s total=10s }
+    route /healthz { respond 200 "ok" }
+    host www.example.com {
+        route /* { redirect 301 https://example.com{path} }
+    }
+}
+
+tcp :5432 {
+    limits { connections 65536 }
+    timeout { idle 3600s }
+    to pool (inline)
+}

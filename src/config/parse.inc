@@ -553,8 +553,8 @@ lex_next:
 	movzx	eax,byte [rsi]
 	cmp	al,'='
 	je	.equals
-	; "{*}" inside a word is part of it (a redirect target: /new/{*});
-	; a block opens with a '{' of its own
+	; "{*}" and "{name}" inside a word are part of it (a redirect target:
+	; /new/{*}, https://{host}{path}); a block opens with a '{' of its own
 	cmp	al,'{'
 	jne	.not_star
 	cmp	rsi,rdi
@@ -563,8 +563,45 @@ lex_next:
 	cmp	rax,[g_cfg_end]
 	ja	.not_star
 	cmp	word [rsi+1],'*}'
-	jne	.not_star
+	jne	.placeholder
 	add	rsi,3
+	xor	r8d,r8d
+	jmp	.word_loop
+.placeholder:
+	lea	rcx,[rsi+1]			; a name: letters, digits, _ . -, then '}'
+.ph_char:
+	cmp	rcx,[g_cfg_end]
+	jae	.not_star
+	movzx	eax,byte [rcx]
+	cmp	al,'}'
+	je	.ph_end
+	mov	edx,eax
+	or	edx,0x20
+	sub	edx,'a'
+	cmp	edx,25
+	jbe	.ph_ok
+	cmp	al,'0'
+	jb	.ph_other
+	cmp	al,'9'
+	jbe	.ph_ok
+.ph_other:
+	cmp	al,'_'
+	je	.ph_ok
+	cmp	al,'.'
+	je	.ph_ok
+	cmp	al,'-'
+	jne	.not_star
+.ph_ok:
+	inc	rcx
+	lea	rax,[rsi+34]
+	cmp	rcx,rax
+	jb	.ph_char
+	jmp	.not_star
+.ph_end:
+	lea	rax,[rsi+1]
+	cmp	rcx,rax
+	je	.not_star			; ("{}": not a name)
+	lea	rsi,[rcx+1]
 	xor	r8d,r8d
 	jmp	.word_loop
 .not_star:

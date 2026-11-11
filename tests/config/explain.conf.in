@@ -1,0 +1,9 @@
+okena { workers 2; last_good on }
+pool api { server 10.0.0.1:80 weight=2 max=100; server 10.0.0.2:80 backup; health http /healthz; outlier errors=3; retry_budget 10% min=5/s; connect warm=2 rate=50/s }
+http :8080 {
+    canonical example.com
+    route /api/* GET POST { to pool api; retry 2 on=reset,503; timeout try=3s total=10s }
+    route /healthz { respond 200 "ok" }
+    host www.example.com { route /* { redirect 301 https://example.com{path} } }
+}
+tcp :5432 { to 10.0.0.9:5432 }
