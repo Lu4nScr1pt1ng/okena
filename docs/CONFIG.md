@@ -677,7 +677,7 @@ start from one DIR/account.key).
 The application layer (http) adds its own limits and timeouts:
 
 ```
-limits { header_size 32KiB; body_size 10MiB; h2_streams 128 }
+limits { body_size 10MiB }           # a request body past it: 413
 timeout { header 10s; body_idle 30s; response 30s }
 trusted_proxies 10.0.0.0/8          # believe X-Forwarded-For from these
 access_log /var/log/okena/access.log   # or stdout, stderr, off (default), or a URL:
@@ -687,6 +687,16 @@ access_log /var/log/okena/access.log   # or stdout, stderr, off (default), or a 
 # access_log otlp://collector:4318      OpenTelemetry logs over OTLP/HTTP
 # access_log otlp+https://collector:4318/v1/logs trust=/etc/okena/ca.pem
 ```
+
+`limits { body_size SIZE }` is the largest request body taken (none by default, up
+to 4 GiB). A `Content-Length` past it is answered 413 before anything reaches a
+backend (and a client waiting on `Expect: 100-continue` gets the 413 instead of a
+100); a chunked body is counted as it goes, and 413 when it grows past it (the
+backend sees the body cut). HTTP/2 and HTTP/3 requests count the same. Not counted:
+the bodies of an HTTP/2 client's streams to an HTTP/2 pool, which go both ways at
+once (gRPC streams), but their `content-length` is. A request head is 16 KiB at
+most (431 past it, 414 when the request line alone fills it), and an HTTP/2
+connection 100 streams at once.
 
 `trusted_proxies` names the peers whose forwarding headers count (load
 balancers, CDNs in front of okena). From any other peer,

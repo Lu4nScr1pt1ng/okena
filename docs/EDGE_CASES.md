@@ -4,7 +4,8 @@ What okena does in the situations that break proxies. Each line is a
 behaviour to implement and a test to keep. The HTTP/1.x parsing table is
 checked line by line against a running okena by `tests/httpproxy/edge.py`
 (both engines), the upstream responses table by `tests/httpproxy/upstream.py`, paths and hosts by
-`tests/httpproxy/routing.py`, client identity by `tests/httpproxy/identity.py`, and its parser against a reference by `tests/http/run.py`. "Reject" means a 4xx/5xx with
+`tests/httpproxy/routing.py`, client identity by `tests/httpproxy/identity.py`, failing backends and
+misbehaving clients by `tests/httpproxy/failures.py`, and its parser against a reference by `tests/http/run.py`. "Reject" means a 4xx/5xx with
 the connection closed when its framing can no longer be trusted.
 
 ## Network and TCP
@@ -68,7 +69,7 @@ the connection closed when its framing can no longer be trusted.
 | Request line or headers too large | 414 (the line alone fills the buffer) / 431 |
 | Too many headers | 431 |
 | Huge cookies (many `Cookie` lines) | combined per RFC, size-limited |
-| `Expect: 100-continue` | forwarded or answered by okena when the body would be rejected anyway (size, auth) |
+| `Expect: 100-continue` | answered by okena: 100 when the request goes on, 413 when its length is past `body_size` |
 | Pipelined requests | answered in order; a request with an error closes after earlier responses are sent |
 | An error answered with bytes still unread (a body, a head too large) | lingering close: the writing side shut, what comes read and dropped until the client closes or the header timeout passes, so no reset takes the answer with it |
 | Request body on GET/DELETE | forwarded as framed; never assumed empty |
@@ -157,13 +158,13 @@ the connection closed when its framing can no longer be trusted.
 | Server-Sent Events, long polling, streamed LLM responses | no buffering, flush per write, no total timeout unless set |
 | gRPC streaming, deadlines (`grpc-timeout`) | honoured as the request timeout when shorter; trailers carried |
 | Graceful drain with long-lived connections | new connections stop, h2 `GOAWAY`, WebSocket closed with 1001 after `drain_timeout` |
-| Large uploads on slow networks | per-route body size, body progress deadline instead of a short total deadline |
+| Large uploads on slow networks | `limits { body_size }` per listener (413 before the backend for a `Content-Length` past it, counted as it goes for chunked), body progress deadline (`body_idle`, 408) instead of a short total deadline |
 
 ## Load balancing and backends
 
 | Case | Behaviour |
 |---|---|
-| All backends down | panic mode for health (try them anyway), `hold` while a pool is restarting, then 503 with `Retry-After` |
+| All backends down | panic mode for health (try them anyway), `hold` while a pool is restarting; then 503 with `Retry-After: 1` when health says every server is down, 502 when a server refused by itself |
 | Flapping backend | health hysteresis (rise/fall counts), slow start |
 | One slow backend | `peak-ewma`, outlier ejection, hedging |
 | New backend added under load | slow start, connection rate limit |

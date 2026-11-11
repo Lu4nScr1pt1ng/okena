@@ -1277,6 +1277,26 @@ type_help:
 .none:
 	ret
 
+; rdi = a tcp or udp listener: `limits { body_size }` is for http's requests
+check_no_body_size:
+	mov	ecx,DIR_LIMITS
+	call	find_child
+	test	rax,rax
+	jz	.none
+	mov	rdi,rax
+	mov	ecx,DIR_BODY_SIZE
+	call	find_child
+	test	rax,rax
+	jz	.none
+	mov	rdi,[rax+N_NAME]
+	mov	esi,[rax+N_NLEN]
+	mov	edx,[rax+N_LINE]
+	call	cfg_error
+	out_lit 'body_size limits HTTP request bodies: for http listeners only'
+	call	cfg_diag_end
+.none:
+	ret
+
 ; ------------------------------------------------------------- semantics
 
 ; Rules across directives. Runs only on a tree without structural errors.
@@ -1317,6 +1337,8 @@ check_semantics:
 	mov	rdi,rbx
 	call	check_tcp_timeouts
 	mov	rdi,rbx
+	call	check_no_body_size
+	mov	rdi,rbx
 	mov	ecx,DIR_LIMITS
 	call	find_child
 	test	rax,rax
@@ -1341,6 +1363,8 @@ check_semantics:
 	call	check_tcp_timeouts
 	mov	rdi,rbx
 	call	check_tls
+	mov	rdi,rbx
+	call	check_no_body_size
 	jmp	.advance
 .pool:
 	inc	dword [g_chk_pools]

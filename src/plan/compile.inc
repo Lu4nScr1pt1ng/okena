@@ -40,6 +40,7 @@ LS_TSAMPLE	:= 180		; d: and the share of new traces kept, in millionths
 LS_EFIRST	:= 184		; d: http: its error pages (g_eps), first
 LS_ECOUNT	:= 188		; d: and how many
 LS_MAINT	:= 192		; d: http: its `maintenance` (g_maints) + 1, 0 none
+LS_BODYMAX	:= 196		; d: http: `limits { body_size }`, bytes, 0 = no limit
 LS_SIZE		:= 200
 assert LS_PA6 + 28 <= LS_RESP
 
@@ -282,6 +283,7 @@ bss
 	g_cmp_tcount	dd ?
 	g_cmp_t_response dd ?
 	g_cmp_t_body	dd ?
+	g_cmp_body_max	dd ?
 	g_cmp_rfirst	dd ?
 	g_cmp_rcount	dd ?
 	g_plan_routes	dd ?
@@ -3332,6 +3334,30 @@ compile_listener:
 	mov	[g_cmp_per_source],eax
 	or	dword [g_cmp_flags],LSF_PEER
 @@:
+	mov	dword [g_cmp_body_max],0
+	mov	rdi,r12
+	mov	ecx,DIR_LIMITS
+	call	find_child
+	test	rax,rax
+	jz	@f
+	mov	rdi,rax
+	mov	ecx,DIR_BODY_SIZE
+	call	find_child
+	test	rax,rax
+	jz	@f
+	mov	rax,[rax+N_ARGS]
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_size
+	mov	ecx,-1				; (4 GiB at most)
+	cmp	rax,rcx
+	cmova	rax,rcx
+	test	eax,eax
+	jnz	.body_max
+	inc	eax				; (0 B: 1 byte, not "no limit")
+.body_max:
+	mov	[g_cmp_body_max],eax
+@@:
 	mov	rdi,r12
 	mov	ecx,DIR_PROXY_PROTOCOL
 	call	find_child
@@ -3586,6 +3612,8 @@ compile_listener:
 	mov	[rcx+LS_T_RESPONSE],eax
 	mov	eax,[g_cmp_t_body]
 	mov	[rcx+LS_T_BODY],eax
+	mov	eax,[g_cmp_body_max]
+	mov	[rcx+LS_BODYMAX],eax
 	mov	eax,[g_cmp_alog]
 	mov	[rcx+LS_ALOG],eax
 	mov	eax,[g_cmp_trace]

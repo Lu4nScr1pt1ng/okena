@@ -672,6 +672,13 @@ http_request:
 	xor	eax,eax
 	mov	ecx,CK_SIZE
 	rep	stosb
+	; chunked: H_REMAIN is what the body may still bring (body_size)
+	call	http_body_max
+	test	rax,rax
+	jnz	@f
+	mov	rax,0x7FFFFFFFFFFFFFFF
+@@:
+	mov	[r15+H_REMAIN],rax
 	jmp	.route
 .length:
 	mov	rax,[r14+HM_LENGTH]
@@ -681,6 +688,13 @@ http_request:
 	jz	.route
 	mov	dword [r15+H_BODY],BK_LENGTH
 	mov	[r15+H_REMAIN],rax
+	call	http_body_max
+	test	rax,rax
+	jz	.route
+	cmp	[r15+H_REMAIN],rax
+	jbe	.route
+	mov	edi,413				; more than the listener takes: said before
+	jmp	http_error			; a byte goes on (Expect: 100-continue too)
 .route:
 	cmp	dword [r15+H_BODY],BK_NONE
 	jne	@f
@@ -2020,14 +2034,47 @@ http_connect_failed:
 	jnc	@f
 	ret
 @@:
-	h_rec
+	call	session_ptr			; no connect under way any more: the client's
+	mov	dword [rax+S_STATE],ST_OPEN	; events are its again (epoll drops a
+	h_rec					; connecting session's)
 	call	idem_release			; nothing reached a backend
-	mov	edi,502
-	cmp	dword [g_pick_full],0
-	je	@f
 	mov	edi,503				; there are servers, all full
-@@:
+	cmp	dword [g_pick_full],0
+	jne	http_error
+	call	session_ptr			; health says every server is down (they were
+	mov	eax,[rax+S_POOL]		; tried anyway): 503 and when to come back; a
+	call	pool_all_down			; server that refused, by itself, is a 502
+	mov	edi,502
+	jnc	http_error
+	mov	dword [g_ep_retry],1
+	mov	edi,503
 	jmp	http_error
+
+; eax = pool: CF when it has active health checks and none of its servers is up.
+pool_all_down:
+	cmp	eax,NIL
+	je	.no
+	imul	rax,rax,PL_SIZE
+	lea	rdx,[g_pools+rax]
+	cmp	dword [rdx+PL_HEALTH],0
+	je	.no
+	mov	ecx,[rdx+PL_FIRST]
+	mov	r8d,ecx
+	add	r8d,[rdx+PL_COUNT]
+	mov	rdx,[g_health_tbl]
+.server:
+	cmp	ecx,r8d
+	jae	.down
+	cmp	dword [rdx+rcx*8],HC_UP
+	je	.no
+	inc	ecx
+	jmp	.server
+.down:
+	stc
+	ret
+.no:
+	clc
+	ret
 
 ; ebx = session, ecx = side, rax = bytes read (0 = end, < 0 = error).
 http_recv_done:
@@ -2334,6 +2381,15 @@ http_req_pump:
 	mov	edi,400				; a broken chunked body
 	jmp	http_error
 .chunk_data:
+	mov	eax,r9d				; within body_size?
+	sub	[r15+H_REMAIN],rax
+	jns	@f
+	mov	edi,413
+	test	dword [r15+H_FLAGS],HX_STARTED
+	jz	http_error			; (the backend gets a cut body: it fails)
+	mov	edi,ebx				; the answer has begun: only a close is left
+	jmp	session_close
+@@:
 	call	session_ptr
 	test	dword [rax+S_FLAGS],SF_UPH2
 	jz	@f
@@ -4826,6 +4882,16 @@ http_error:
 	rep	movsb
 	memit_x 13,10
 	call	cors_emit
+	mov	eax,[g_ep_retry]		; (a pool with every server down: when to come back)
+	test	eax,eax
+	jz	@f
+	push	rax
+	memit_x 'Retry-After: '
+	pop	rax
+	call	fmt_u64
+	memit_x 13,10
+	mov	dword [g_ep_retry],0
+@@:
 	memit_x 'Content-Length: '
 	mov	rsi,[rsp]
 	xor	eax,eax
@@ -4983,6 +5049,11 @@ http_reason:
 ; end of the answer), what comes is read and dropped until the client closes or
 ; the header timeout passes. ebx = session.
 http_linger:
+	call	session_ptr			; (whatever the backend side was doing is over:
+	cmp	dword [rax+S_STATE],ST_CONNECTING ; the client's events are wanted, and
+	jne	@f				; epoll drops a connecting session's)
+	mov	dword [rax+S_STATE],ST_OPEN
+@@:
 	h_rec
 	mov	dword [r15+H_STATE],HS_LINGER
 	cmp	dword [g_engine],ENGINE_EPOLL
@@ -5022,3 +5093,14 @@ http_linger_read:
 	lea	rdi,[rdi+HB_IN]
 	mov	esi,H_IN_CAP
 	jmp	h_recv
+
+; ebx = session: its listener's body_size in rax, 0 = no limit. Keeps the others
+; but rax.
+http_body_max:
+	push	rcx
+	call	session_ptr
+	mov	eax,[rax+S_LST]
+	imul	rax,rax,LS_SIZE
+	mov	eax,[g_listeners+rax+LS_BODYMAX]
+	pop	rcx
+	ret

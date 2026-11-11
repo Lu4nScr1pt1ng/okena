@@ -105,6 +105,8 @@ test-serial: $(BIN) $(HTTPH) $(KAT) $(TLSH)
 	python3 -I tests/httpproxy/routing.py epoll
 	python3 -I tests/httpproxy/identity.py io_uring
 	python3 -I tests/httpproxy/identity.py epoll
+	python3 -I tests/httpproxy/failures.py io_uring
+	python3 -I tests/httpproxy/failures.py epoll
 	python3 -I tests/bench/run.py
 	python3 -I tests/h2/hpack_suite.py
 	python3 -I tests/h2/run.py io_uring
