@@ -4,7 +4,7 @@ What okena does in the situations that break proxies. Each line is a
 behaviour to implement and a test to keep. The HTTP/1.x parsing table is
 checked line by line against a running okena by `tests/httpproxy/edge.py`
 (both engines), the upstream responses table by `tests/httpproxy/upstream.py`, paths and hosts by
-`tests/httpproxy/routing.py`, and its parser against a reference by `tests/http/run.py`. "Reject" means a 4xx/5xx with
+`tests/httpproxy/routing.py`, client identity by `tests/httpproxy/identity.py`, and its parser against a reference by `tests/http/run.py`. "Reject" means a 4xx/5xx with
 the connection closed when its framing can no longer be trusted.
 
 ## Network and TCP
@@ -178,9 +178,11 @@ the connection closed when its framing can no longer be trusted.
 
 | Case | Behaviour |
 |---|---|
-| Spoofed `X-Forwarded-For` | ignored unless the peer is in `trusted_proxies`; rightmost untrusted address is the client |
+| Spoofed `X-Forwarded-For` | ignored unless the peer is in `trusted_proxies`; rightmost untrusted address is the client (ports, brackets, IPv4-mapped, several lines; an entry that is not an address stops the walk) |
+| Spoofed `X-Real-IP`, `True-Client-IP`, `CF-Connecting-IP` | dropped unless the peer is trusted: a backend that reads them would take the client's word for its address |
 | Behind a CDN | provider ranges loaded and refreshed; provider header trusted only from them |
-| `Forwarded` vs `X-Forwarded-*` | both supported, one canonical set written upstream |
+| `Forwarded` vs `X-Forwarded-*` | `X-Forwarded-*` read and written; `Forwarded` passed on from a trusted peer, dropped from others (the client is taken from `X-Forwarded-For`) |
+| IPv6 addresses in logs, `${client.ip}`, the PROXY protocol | RFC 5952's form (`2001:db8::1`) |
 | Request IDs from clients | kept if valid and trusted, otherwise replaced; always in logs |
 | Trace context | W3C `traceparent` propagated or started |
 | Header injection through rewrites using client values | values validated (no CR/LF/NUL) before writing |

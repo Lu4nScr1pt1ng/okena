@@ -382,7 +382,8 @@ fmt_u:
 	ret
 
 ; rdi = output, rsi = 16 address bytes, edx = 4 or 6. rdi = after it.
-; IPv6 as eight hex groups (valid, and simplest to read back).
+; IPv6 in RFC 5952's form: lower-case groups without leading zeros, the
+; longest run of two or more zero groups (the first of equals) as "::".
 fmt_ip:
 	push	rbx
 	push	r12
@@ -400,15 +401,63 @@ fmt_ip:
 	inc	rdi
 	jmp	.octet
 .v6:
-	movzx	eax,word [rbx+r12*2]
-	xchg	al,ah
-	call	fmt_hex
-	inc	r12d
+	; the longest run of zero groups: r8d its start, r9d its length
+	xor	r8d,r8d
+	xor	r9d,r9d
+	xor	ecx,ecx
+.scan:
+	cmp	ecx,8
+	jae	.scanned
+	cmp	word [rbx+rcx*2],0
+	jne	.scan_next
+	mov	edx,ecx				; a run starts
+@@:
+	inc	ecx
+	cmp	ecx,8
+	jae	@f
+	cmp	word [rbx+rcx*2],0
+	je	@b
+@@:
+	mov	eax,ecx
+	sub	eax,edx
+	cmp	eax,r9d
+	jbe	.scan
+	mov	r8d,edx
+	mov	r9d,eax
+	jmp	.scan
+.scan_next:
+	inc	ecx
+	jmp	.scan
+.scanned:
+	cmp	r9d,2
+	jae	.group
+	xor	r9d,r9d				; (one zero group stays "0")
+	mov	r8d,8
+.group:
+	cmp	r12d,r8d
+	jne	.hex
+	mov	word [rdi],'::'			; the run
+	add	rdi,2
+	add	r12d,r9d
 	cmp	r12d,8
 	je	.done
+	jmp	.hex_only
+.hex:
+	test	r12d,r12d
+	jz	.hex_only
 	mov	byte [rdi],':'
 	inc	rdi
-	jmp	.v6
+.hex_only:
+	movzx	eax,word [rbx+r12*2]
+	xchg	al,ah
+	push	r8
+	push	r9
+	call	fmt_hex
+	pop	r9
+	pop	r8
+	inc	r12d
+	cmp	r12d,8
+	jb	.group
 .done:
 	pop	r12
 	pop	rbx

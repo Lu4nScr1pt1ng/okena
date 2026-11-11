@@ -1702,6 +1702,14 @@ http_write_request_head:
 	call	hf_is
 	pop	rdi
 	jz	.copy
+	push	rdi				; so do its Forwarded and the fields that name
+	irp name, hn_forwarded, hn_x_real_ip, hn_true_client_ip, hn_cf_connecting_ip
+		mov	rdi,r14			; the client
+		lea	rsi,[name]
+		call	hf_is
+		jz	.copy_pop
+	end irp
+	pop	rdi
 	push	rdi
 	mov	rdi,r14
 	lea	rsi,[hn_x_request_id]
@@ -1723,13 +1731,19 @@ http_write_request_head:
 	pop	rdi
 	jmp	.copy
 .untrusted:
+	; from anyone else, nothing that claims to say who the client is (a backend
+	; that reads X-Real-IP would take the client's word for its own address)
 	push	rdi
-	irp name, hn_x_forwarded_for, hn_x_forwarded_proto, hn_x_forwarded_host, hn_forwarded, hn_expect, hn_x_request_id
+	irp name, hn_x_forwarded_for, hn_x_forwarded_proto, hn_x_forwarded_host, hn_forwarded, hn_expect, hn_x_request_id, \
+		hn_x_real_ip, hn_true_client_ip, hn_cf_connecting_ip
 		mov	rdi,r14
 		lea	rsi,[name]
 		call	hf_is
 		jz	.skip_pop
 	end irp
+	pop	rdi
+	jmp	.copy
+.copy_pop:
 	pop	rdi
 .copy:
 	xor	edx,edx				; gRPC-Web: its content-type as gRPC's
@@ -1906,6 +1920,9 @@ cstring hn_accept_ranges, 'accept-ranges',0
 cstring hn_etag, 'etag',0
 cstring hn_x_forwarded_proto, 'x-forwarded-proto',0
 cstring hn_x_forwarded_host, 'x-forwarded-host',0
+cstring hn_x_real_ip, 'x-real-ip',0
+cstring hn_true_client_ip, 'true-client-ip',0
+cstring hn_cf_connecting_ip, 'cf-connecting-ip',0
 cstring hn_forwarded, 'forwarded',0
 cstring hn_x_request_id, 'x-request-id',0
 
