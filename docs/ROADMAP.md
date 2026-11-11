@@ -606,16 +606,10 @@ rate on a NIC is inferred, as the two-host lab is not in place.)
   hello rebuilt with ech_outer_extensions, accept confirmation, retry_configs,
   `okena ech new|print`, and after a HelloRetryRequest.) Certificate
   compression, Encrypted Client Hello.
-* AVX-512 paths where they pay.
-
-## Phase 10 — Kernel fast paths
-
-* `xdp` listener: Maglev in eBPF, IPIP/GUE encapsulation, DSR,
-  connection tracking table, backend health from user space.
-* XDP pre-filter for the other engines: drop lists, per-source SYN rate.
-* zcrx zero-copy receive on supported NICs; NIC TLS offload.
-
-Exit: packets/s per core comparable to Katran.
+* AVX-512 paths where they pay. (Deferred, 2026-11-11: the development machine
+  is Zen 3, without AVX-512, and QEMU's TCG does not run it, so neither the
+  code nor its gain can be checked here. Picked up with Intel's SDE for
+  correctness and AVX-512 hardware for the measurement.)
 
 ## Phase 11 — Proof at scale: benchmarks, performance, no needless limits
 
@@ -803,3 +797,17 @@ measured, so that the claim that okena can replace it stands on numbers.
 
 Exit: an addon that answers immediately adds under 5 us at p99; a crashing
 or hanging addon never affects routes that do not use it.
+
+## Later — Kernel fast paths (was phase 10)
+
+Moved after the others on 2026-11-11: loading eBPF needs privileges the
+development machine does not give (no unprivileged BPF, no root), and its exit
+is measured on NICs that are not here. Until then, phase 11's comparisons with
+IPVS and Katran, and its XDP pre-filter, wait for this.
+
+* `xdp` listener: Maglev in eBPF, IPIP/GUE encapsulation, DSR,
+  connection tracking table, backend health from user space.
+* XDP pre-filter for the other engines: drop lists, per-source SYN rate.
+* zcrx zero-copy receive on supported NICs; NIC TLS offload.
+
+Exit: packets/s per core comparable to Katran.
