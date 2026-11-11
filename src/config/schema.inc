@@ -206,7 +206,6 @@ enumdef future_names, 'xdp', \
 	'addon', 'log', 'reload', 'profile', \
 	'acme', 'header', \
 	'concurrency', \
-	'canonical', \
 	'body', \
 	'response', 'cert', 'warm'
 
@@ -241,6 +240,7 @@ dirdef DIR_DRAIN, 'drain',       M_OKENA,   0,           F_UNIQUE or F_KEYS_BLOC
 dirdef DIR_HS_BUDGET, 'handshake_budget', M_OKENA, 0,    F_UNIQUE or F_KEYS_BLOCK, 1, 1, T_DURATION, T_NONE, k_hs_budget
 dirdef DIR_UDP, 'udp',         M_TOP,     CTX_UDP,     F_BLOCK_REQ, 1, 16, T_LISTEN, T_LISTEN, 0
 dirdef DIR_RESPONSES, 'responses', M_UDP,   0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
+dirdef DIR_CANONICAL, 'canonical', M_HTTP,  0,           F_UNIQUE, 1, 1, T_HOSTNAME, T_NONE, 0
 dirdef DIR_MSS, 'mss',         M_TCP or M_HTTP, 0,         F_UNIQUE, 1, 1, T_UINT, T_NONE, 0
 dirdef DIR_TCP, 'tcp',         M_TOP,     CTX_TCP,     F_BLOCK_REQ, 1, 16, T_LISTEN, T_LISTEN, 0
 dirdef DIR_HTTP, 'http',        M_TOP,     CTX_HTTP,    F_BLOCK_REQ, 1, 16, T_LISTEN, T_LISTEN, 0

@@ -42,7 +42,9 @@ LS_ECOUNT	:= 188		; d: and how many
 LS_MAINT	:= 192		; d: http: its `maintenance` (g_maints) + 1, 0 none
 LS_BODYMAX	:= 196		; d: http: `limits { body_size }`, bytes, 0 = no limit
 LS_MSS		:= 200		; d: `mss`: TCP_MAXSEG for its connections, 0 = the kernel's
-LS_SIZE		:= 208
+LS_CANONLEN	:= 204		; d: `canonical NAME`: its length, 0 none
+LS_CANON	:= 208		; q: and it
+LS_SIZE		:= 216
 assert LS_PA6 + 28 <= LS_RESP
 
 ; Host block name (http): routes for requests to that host
@@ -3856,6 +3858,8 @@ compile_listener:
 	; `mss`: what its connections' segments carry at most (a path whose
 	; tunnels eat into 1500 and drop ICMP: clamp it here)
 	mov	dword [g_cmp_mss],0
+	mov	qword [g_cmp_canon],0		; (`canonical`: http listeners set it below)
+	mov	dword [g_cmp_canonlen],0
 	mov	rdi,r12
 	mov	ecx,DIR_MSS
 	call	find_child
@@ -3982,6 +3986,7 @@ compile_listener:
 	or	dword [g_cmp_flags],LSF_H3RETRY
 @@:
 	call	compile_tls_policy		; `versions`, `alpn`
+	call	compile_canonical		; (canonical.inc)
 	mov	rdi,r12				; early_data on: QUIC 0-RTT
 	mov	ecx,DIR_EARLY
 	call	find_child
@@ -4222,6 +4227,10 @@ compile_listener:
 	mov	[rcx+LS_PER_SOURCE],eax
 	mov	eax,[g_cmp_mss]
 	mov	[rcx+LS_MSS],eax
+	mov	eax,[g_cmp_canonlen]
+	mov	[rcx+LS_CANONLEN],eax
+	mov	rax,[g_cmp_canon]
+	mov	[rcx+LS_CANON],rax
 	xor	eax,eax
 	lea	rdx,[dir_table + D_SIZE*DIR_HTTP]
 	cmp	[r12+N_DEF],rdx

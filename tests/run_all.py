@@ -57,6 +57,8 @@ SUITES = [
     ("rtimeout epoll", ["tests/gateway/rtimeout.py", "epoll"]),
     ("connect io_uring", ["tests/gateway/connect.py", "io_uring"]),
     ("connect epoll", ["tests/gateway/connect.py", "epoll"]),
+    ("canonical io_uring", ["tests/httpproxy/canonical.py", "io_uring"]),
+    ("canonical epoll", ["tests/httpproxy/canonical.py", "epoll"]),
     ("respond io_uring", ["tests/httpproxy/respond.py", "io_uring"]),
     ("respond epoll", ["tests/httpproxy/respond.py", "epoll"]),
     ("retry io_uring", ["tests/gateway/retry.py", "io_uring"]),

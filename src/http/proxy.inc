@@ -754,6 +754,7 @@ http_request:
 	test	rax,rax
 	jnz	acme_answer
 	call	acme_redirect			; then a name from the CA: to https (acmeauto.inc)
+	call	canonical_redirect		; www and the apex: one (canonical.inc)
 	call	http_route			; eax = route entry, -1 none, -2 unsafe path
 	cmp	eax,-1
 	je	.no_route
