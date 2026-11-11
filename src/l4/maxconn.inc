@@ -169,6 +169,124 @@ sv_live_sum:
 	pop	rcx
 	ret
 
+; `connect rate=N/s`: new connections to a server, in each worker its share,
+; from a bucket that fills as time passes (a second's worth at most). A
+; server with an idle connection to reuse is not held by it; one with none and
+; an empty bucket is full, as by max= (chosen by no pass; http waits in line).
+bss
+	g_cr_tok	rd MAX_SERVERS		; tokens, in thousandths
+	align 8
+	g_cr_at		rq MAX_SERVERS		; µs of the last fill, 0 never
+end bss
+
+; edi = server: eax = its pool's rate for this worker, thousandths of a
+; connection a second; 0 for none. Keeps all but rax.
+sv_rate_per:
+	push	rcx
+	push	rdx
+	mov	eax,[g_sv_pool+rdi*4]
+	imul	rax,rax,PL_SIZE
+	mov	eax,[g_pools+rax+PL_CRATE]
+	test	eax,eax
+	jz	.out
+	imul	rax,rax,1000
+	mov	ecx,[g_workers]
+	test	ecx,ecx
+	jz	.out
+	xor	edx,edx
+	div	rcx
+	test	eax,eax
+	jnz	.out
+	mov	eax,1
+.out:
+	pop	rdx
+	pop	rcx
+	ret
+
+; edi = server with a rate: its bucket filled to now; eax = its tokens
+; (thousandths). Keeps all but rax.
+sv_rate_fill:
+	push	rcx
+	push	rdx
+	push	rsi
+	push	rdi
+	push	r8
+	push	r9
+	call	sv_rate_per
+	mov	r9d,eax				; a second's worth: the most it holds
+	cmp	r9d,1000
+	jae	@f
+	mov	r9d,1000
+@@:
+	push	rax
+	call	qs_clock			; rax = µs
+	pop	r8				; the rate
+	mov	rdi,[rsp+16]
+	mov	rcx,[g_cr_at+rdi*8]
+	mov	[g_cr_at+rdi*8],rax
+	test	rcx,rcx
+	jz	.full				; first look: full
+	sub	rax,rcx
+	jbe	.have
+	cmp	rax,10000000
+	jbe	@f
+	mov	eax,10000000
+@@:
+	imul	rax,r8
+	xor	edx,edx
+	mov	ecx,1000000
+	div	rcx
+	add	eax,[g_cr_tok+rdi*4]
+	cmp	eax,r9d
+	jbe	@f
+.full:
+	mov	eax,r9d
+@@:
+	mov	[g_cr_tok+rdi*4],eax
+.have:
+	mov	eax,[g_cr_tok+rdi*4]
+	pop	r9
+	pop	r8
+	pop	rdi
+	pop	rsi
+	pop	rdx
+	pop	rcx
+	ret
+
+; edi = server: CF when a new connection to it may be made now (or it has
+; an idle one to reuse). Not: g_pick_full. Keeps all but rax.
+sv_rate_ok:
+	call	sv_rate_per
+	test	eax,eax
+	jz	.yes
+	cmp	dword [g_pool_n+rdi*4],0
+	jne	.yes
+	call	sv_rate_fill
+	cmp	eax,1000
+	jae	.yes
+	mov	dword [g_pick_full],1
+	clc
+	ret
+.yes:
+	stc
+	ret
+
+; edi = server, a new connection to it under way: a token. Keeps all.
+sv_rate_take:
+	push	rax
+	call	sv_rate_per
+	test	eax,eax
+	jz	.out
+	call	sv_rate_fill
+	sub	eax,1000
+	jnc	@f
+	xor	eax,eax
+@@:
+	mov	[g_cr_tok+rdi*4],eax
+.out:
+	pop	rax
+	ret
+
 ; edi = server with a max: CF when it has room; eax = its connections in
 ; use. Keeps all but rax.
 sv_has_room:
@@ -532,6 +650,20 @@ queue_places:
 	pop	rdx
 	pop	rcx
 	jnc	.full
+	mov	edi,ecx			; `connect rate=`: what its bucket holds, and
+	call	sv_rate_per			; what idle connections it has
+	test	eax,eax
+	jz	.no_rate
+	call	sv_rate_fill
+	xor	edx,edx
+	mov	r9d,1000
+	div	r9d
+	add	eax,[g_pool_n+rcx*4]
+	add	r8d,eax
+	mov	edx,[rbx+PL_FIRST]		; (the loop's end, again)
+	add	edx,[rbx+PL_COUNT]
+	jmp	.full
+.no_rate:
 	imul	rax,rcx,SV_SIZE
 	mov	r9d,[g_servers+rax+SV_MAX]
 	test	r9d,r9d

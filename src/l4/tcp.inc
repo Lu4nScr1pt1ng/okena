@@ -1142,6 +1142,10 @@ sv_connect_start:
 	push	rax
 	push	rdx
 	push	rcx
+	push	rdi
+	mov	edi,[r12+S_SERVER]		; `connect rate=`: its token
+	call	sv_rate_take
+	pop	rdi
 	mov	qword [r12+S_T0],0
 	mov	eax,[r12+S_LST]
 	imul	rax,rax,LS_SIZE
@@ -1209,8 +1213,10 @@ server_eligible:
 	je	@f
 	call	sv_has_room			; full: not by any pass
 	jnc	.no
-	imul	rax,rdi,SV_SIZE
 @@:
+	call	sv_rate_ok			; `connect rate=`: no token, nothing to reuse
+	jnc	.no
+	imul	rax,rdi,SV_SIZE
 	cmp	dword [g_servers+rax+SV_ACTIVE],0
 	je	.no				; a name slot without an address
 	mov	ecx,[g_servers+rax+SV_BACKUP]

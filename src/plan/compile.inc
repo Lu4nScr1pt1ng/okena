@@ -214,6 +214,7 @@ PL_SRCSZ	:= 32
 PL_SRCMAX	:= 8
 PL_CIDLE	:= PL_SRC + PL_SRCMAX * PL_SRCSZ	; d: `idle=`: seconds one is kept
 PL_CWARM	:= PL_CIDLE + 4	; d: `warm=`: kept open ahead of need, per server (a worker's)
+PL_CRATE	:= PL_CWARM + 4	; d: `rate=`: new connections a second per server, 0 no limit
 PL_SIZE		:= PL_CWARM + 12		; room for PL_TLS_ANCHOR + a PK blob (16 + 528), then PL_H2
 assert PL_TLS_ANCHOR + PK_SIZE <= PL_H2
 
@@ -2716,13 +2717,14 @@ cstring str_key_on, 'on',0
 
 plan_bad_connect:
 	call	log_begin
-	out_lit 'connect takes timeout=, max= (idle connections kept per server in each worker, 0 to 512), idle= (whole seconds, 1s to 1h) and warm= (opened ahead of need, 0 to 64 and not past max=)'
+	out_lit 'connect takes timeout=, max= (idle connections kept per server in each worker, 0 to 512), idle= (whole seconds, 1s to 1h) and warm= (opened ahead of need, 0 to 64 and not past max=) and rate= (new connections a second per server, 1/s to 1000000/s)'
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process
 
 cstring str_key_idle, 'idle',0
 cstring str_key_warm, 'warm',0
+cstring str_key_rate, 'rate',0
 
 plan_bad_respond:
 	call	log_begin
@@ -3363,6 +3365,24 @@ compile_pool:
 	cmp	rax,3600
 	ja	plan_bad_connect
 	mov	[r13+PL_CIDLE],eax
+@@:
+	mov	rdi,rbx				; rate=: new connections a second, per server
+	lea	rsi,[str_key_rate]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_rate			; rax a period of rdx seconds
+	jc	plan_bad_connect
+	mov	rcx,rdx
+	xor	edx,edx
+	div	rcx
+	test	rax,rax
+	jz	plan_bad_connect		; (less than one a second)
+	cmp	rax,1000000
+	ja	plan_bad_connect
+	mov	[r13+PL_CRATE],eax
 @@:
 	mov	rdi,rbx				; warm=: open ahead of need
 	lea	rsi,[str_key_warm]

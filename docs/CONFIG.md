@@ -14,7 +14,7 @@ not built yet. A directive that is not built is refused by `okena check`
 | `udp ADDR...` | `to`, `responses N`, `limits { connections }` (flows), `timeout { idle }` |
 | `http ADDR...` | `host`, `route`, `mss`, `errors CODES file= [backend]`, `maintenance file= retry= allow= except=`, `limits`, `timeout { idle; header; body_idle; response }`, `trusted_proxies`, `access_log`, `tracing`, `http2 on\|off`, `http3 on\|off\|retry\|v2`, `preferred_address`, `early_data on\|off`, `tls { cert; key; ktls on\|off; versions 1.2 1.3; alpn h2 http/1.1 }` |
 | `route PATH... [METHOD...]` | `to`, `redirect`, `respond CODE [BODY] [type=]`, `rewrite path`, `signed_urls key= [key2=]`, `header set\|add\|drop`, `response header set\|add\|drop`, `retry N [idempotent-only] [on=reset,timeout,5xx,500,502,503,504]` |
-| `pool NAME` | `server ADDR [weight=N] [max=N] [backup]`, `queue timeout=`, `balance least-request\|peak-ewma\|round-robin\|least-conn\|random\|maglev\|ring-hash\|source-hash [key=] [bound=]\|first`, `sticky cookie= [ttl=] [samesite=]`, `connect timeout= max= idle= warm=`, `health tcp\|http\|grpc ...`, `outlier errors= eject= max_ejected=`, `retry_budget P% [min=N/s]`, `source ADDR...`, `slow_start`, `tls { trust FILE; sni NAME; cert FILE; key FILE }` (TLS to the backends), `protocol h1\|h2\|fastcgi` |
+| `pool NAME` | `server ADDR [weight=N] [max=N] [backup]`, `queue timeout=`, `balance least-request\|peak-ewma\|round-robin\|least-conn\|random\|maglev\|ring-hash\|source-hash [key=] [bound=]\|first`, `sticky cookie= [ttl=] [samesite=]`, `connect timeout= max= idle= warm= rate=`, `health tcp\|http\|grpc ...`, `outlier errors= eject= max_ejected=`, `retry_budget P% [min=N/s]`, `source ADDR...`, `slow_start`, `tls { trust FILE; sni NAME; cert FILE; key FILE }` (TLS to the backends), `protocol h1\|h2\|fastcgi` |
 
 `okena { ech PUBLIC_NAME KEYFILE... }` turns on Encrypted Client Hello (the
 draft's version 0xfe0d) for every TLS listener: a client that has okena's
@@ -1507,7 +1507,13 @@ reuse), and `warm=N` connections opened ahead of need per server, so that the
 first requests after a quiet spell, or after a server comes back, find one
 (plain HTTP/1.1 pools: TLS, h2 and FastCGI connect on demand). Warm ones that
 fail to connect leave the pool by themselves, as do idle ones the backend
-closes.
+closes. `rate=200/s` caps new connections to each server (the instance's,
+shared out among the workers), so that a cold start or a burst after a
+backend restart does not open thousands at once: a server with an idle
+connection to reuse is not held back by it, one with none and no token left
+is full, as by `max=`, and an http request waits in the pool's line (`queue
+timeout=`) for the next token; a `tcp` connection is closed, as when every
+server is full.
 
 `outlier errors=5 eject=10s max_ejected=50%` (the defaults) is passive health,
 in each worker: a server that gives `errors` failing answers in a row (5xx, or

@@ -3,7 +3,9 @@
 three connections open to the server before any request, and a request goes
 on one of them (no new one); max=0 keeps none (each request its own); idle=1s
 closes a parked one within about two seconds; warm= toward a server that is
-not there costs nothing (requests elsewhere served, no worker lost)."""
+not there costs nothing (requests elsewhere served, no worker lost); rate=5/s
+lets 15 new connections through in about two seconds (five at once, then five
+a second), the requests waiting in line, none refused."""
 import os
 import pathlib
 import shutil
@@ -18,7 +20,7 @@ ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BIN = ROOT / "build" / "okena"
 BASE = 44000 + os.getpid() % 90 * 10 + (5 if ENGINE == "epoll" else 0)
-LW, LM, LI, LD = BASE, BASE + 1, BASE + 2, BASE + 3
+LW, LM, LI, LD, LR = BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4
 fails = 0
 
 
@@ -90,7 +92,7 @@ def until(f, t=5):
 
 
 def main():
-    w, m, i = Back(), Back(), Back()
+    w, m, i, rb = Back(), Back(), Back(), Back()
     dead = socket.socket()
     dead.bind(("127.0.0.1", 0))
     dport = dead.getsockname()[1]
@@ -102,10 +104,12 @@ pool w {{ server 127.0.0.1:{w.port}; connect warm=3 }}
 pool m {{ server 127.0.0.1:{m.port}; connect max=0 }}
 pool i {{ server 127.0.0.1:{i.port}; connect idle=1s }}
 pool d {{ server 127.0.0.1:{dport}; connect warm=2 }}
+pool r {{ server 127.0.0.1:{rb.port}; connect max=0 rate=5/s; queue timeout=10s }}
 http 127.0.0.1:{LW} {{ route /* {{ to pool w }} }}
 http 127.0.0.1:{LM} {{ route /* {{ to pool m }} }}
 http 127.0.0.1:{LI} {{ route /* {{ to pool i }} }}
 http 127.0.0.1:{LD} {{ route /* {{ to pool d }} }}
+http 127.0.0.1:{LR} {{ route /* {{ to pool r }} }}
 """)
     log = tmp / "log"
     p = subprocess.Popen([str(BIN), "-c", str(conf)], stderr=open(log, "w"))
@@ -121,6 +125,13 @@ http 127.0.0.1:{LD} {{ route /* {{ to pool d }} }}
         r = get(LI)
         check("idle=1s: a parked connection closed within about two seconds", r.endswith(b"ok") and until(lambda: i.closed == 1, 4) and i.accepted == 1,
               (i.accepted, i.closed))
+        from concurrent.futures import ThreadPoolExecutor
+        t0 = time.time()
+        with ThreadPoolExecutor(15) as ex:
+            rs = list(ex.map(lambda _: get(LR), range(15)))
+        dt = time.time() - t0
+        check("rate=5/s: 15 new connections in about two seconds, all answered", all(x.endswith(b"ok") for x in rs) and 1.5 <= dt <= 4.5
+              and rb.accepted == 15, (round(dt, 2), rb.accepted, [x[:12] for x in rs if not x.endswith(b"ok")][:3]))
         r = get(LD)
         check("warm= toward a server not there: 502 for its requests, nothing else", r.startswith(b"HTTP/1.1 502") and get(LW).endswith(b"ok"), r[:40])
     finally:

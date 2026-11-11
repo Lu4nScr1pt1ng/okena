@@ -17,9 +17,6 @@ values-units.conf:8:21: error: invalid value `0.0001s`
      8 |     connect timeout=0.0001s rate=100/s warm=0 idle=5m
        |                     ^^^^^^^
        = help: expected a duration with its unit: 250ms, 30s, 5m, 1h (units: us ms s m h d)
-values-units.conf:8:29: error: option `rate` is not supported by this version of okena yet
-     8 |     connect timeout=0.0001s rate=100/s warm=0 idle=5m
-       |                             ^^^^
 values-units.conf:9:22: error: invalid value `30`
      9 |     health tcp every=30 fall=3
        |                      ^^
@@ -40,4 +37,4 @@ values-units.conf:14:52: error: invalid value `99`
     14 | pool hc5 { server 1.1.1.1:6; health http /x expect=99 }
        |                                                    ^^
        = help: expected an HTTP status or a range of them: 200, 200..299
-10 errors in values-units.conf
+9 errors in values-units.conf

@@ -343,7 +343,15 @@ pool_warm:
 	mov	eax,[g_pool_n+rbx*4]
 	cmp	eax,[r13+PL_CWARM]
 	jae	.next_server
-	mov	edi,ebx
+	mov	edi,ebx				; warm ones spend `rate=` too
+	call	sv_rate_per
+	test	eax,eax
+	jz	.warm
+	call	sv_rate_fill
+	cmp	eax,1000
+	jb	.next_server
+	call	sv_rate_take
+.warm:
 	call	warm_one
 	jnc	@b
 .next_server:
