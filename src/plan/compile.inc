@@ -114,7 +114,9 @@ RA_EFIRST	:= 164		; d: its error pages (g_eps), first
 RA_ECOUNT	:= 168		; d: and how many
 RA_WRX		:= 176		; d: rewrite ~REGEX: its regex + 1 (RA_WFROM then the source)
 RA_ZENC		:= 180		; d: `compress`: 1 gzip, 2 br, 4 br before gzip
-RA_SIZE		:= 184
+RA_RTRY		:= 184		; d: `retry N`: N + 1, 0 = the default (1)
+RA_RON		:= 188		; d: `on=`: RON_* bits, 0 = the default
+RA_SIZE		:= 192
 MAX_ACTS	:= MAX_ROUTES
 HD_KIND		:= 0		; d: HOP_SET, HOP_ADD, HOP_DROP
 HD_PREFIX	:= 4		; d: 1 when the name ends with * (drop)
@@ -1168,6 +1170,9 @@ compile_route_action:
 	lea	rcx,[dir_table + D_SIZE*DIR_HOLD]
 	cmp	rax,rcx
 	je	@f
+	lea	rcx,[dir_table + D_SIZE*DIR_RETRY]
+	cmp	rax,rcx
+	je	@f
 	lea	rcx,[dir_table + D_SIZE*DIR_ALLOW]
 	cmp	rax,rcx
 	je	@f
@@ -1439,6 +1444,7 @@ compile_route_action:
 	call	compile_compress
 	call	compile_hints
 	call	compile_hold
+	call	compile_retry
 	call	compile_acl
 	call	compile_idem
 	call	compile_rmap
@@ -2531,6 +2537,115 @@ plan_too_many:
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process
+
+; Retries: what sends a request once more, to another server.
+RON_RESET	:= 1		; the backend closed before any answer
+RON_TIMEOUT	:= 2		; no answer within the response timeout
+RON_5XX		:= 4		; any 5xx
+RON_500		:= 8
+RON_502		:= 16
+RON_503		:= 32
+RON_504		:= 64
+RON_DEFAULT	:= RON_RESET or RON_502 or RON_503 or RON_504
+RETRY_MAX	:= 5
+
+; r12 = a route's node, r13 = the action: `retry N [idempotent-only] [on=...]`
+compile_retry:
+	push	rbx
+	mov	rdi,r12
+	mov	ecx,DIR_RETRY
+	call	find_child
+	test	rax,rax
+	jz	.none
+	mov	rbx,rax
+	mov	rax,[rbx+N_ARGS]
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_decimal
+	jc	plan_bad_retry
+	cmp	rax,RETRY_MAX
+	ja	plan_bad_retry
+	inc	eax
+	mov	[r13+RA_RTRY],eax
+	mov	dword [r13+RA_RON],RON_DEFAULT
+	mov	rdi,rbx
+	lea	rsi,[str_key_on]
+	call	node_option
+	test	rax,rax
+	jz	.none
+	mov	rsi,[rax+A_VAL]
+	mov	ecx,[rax+A_VLEN]
+	xor	r8d,r8d				; the bits
+.word:
+	mov	rdi,rsi				; a word, to the next comma
+	xor	edx,edx
+@@:
+	cmp	edx,ecx
+	jae	@f
+	cmp	byte [rsi+rdx],','
+	je	@f
+	inc	edx
+	jmp	@b
+@@:
+	push	rcx
+	push	rsi
+	push	rdx
+	call	.bit
+	pop	rdx
+	pop	rsi
+	pop	rcx
+	test	eax,eax
+	jz	plan_bad_retry
+	or	r8d,eax
+	sub	ecx,edx
+	add	rsi,rdx
+	test	ecx,ecx
+	jz	.done
+	inc	rsi				; (the comma)
+	dec	ecx
+	jz	plan_bad_retry			; one at the end
+	jmp	.word
+.done:
+	mov	[r13+RA_RON],r8d
+.none:
+	pop	rbx
+	ret
+; rdi/edx = a word: eax = its bit, 0 none
+.bit:
+	lea	r9,[.words]
+	mov	r10d,1
+.try:
+	movzx	ecx,byte [r9]
+	test	ecx,ecx
+	jz	.unknown
+	cmp	ecx,edx
+	jne	.skip
+	push	rdi
+	push	rcx
+	lea	rsi,[r9+1]
+	repe	cmpsb
+	pop	rcx
+	pop	rdi
+	jne	.skip
+	mov	eax,r10d
+	ret
+.skip:
+	lea	r9,[r9+rcx+1]
+	shl	r10d,1
+	jmp	.try
+.unknown:
+	xor	eax,eax
+	ret
+.words:	db 5,'reset',7,'timeout',3,'5xx',3,'500',3,'502',3,'503',3,'504',0
+
+plan_bad_retry:
+	call	log_begin
+	out_lit 'retry takes how many more tries (0 to 5), may say idempotent-only (it always is: a request with a body is never sent twice), and on= a list of reset, timeout, 5xx, 500, 502, 503, 504'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
+
+cstring str_key_on, 'on',0
 
 plan_bad_outlier:
 	call	log_begin

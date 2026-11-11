@@ -292,6 +292,7 @@ h2u_new:
 	mov	[r15+H_INLEN],ecx
 	mov	[r15+H_INOFF],ecx
 	mov	[r15+H_FLAGS],ecx
+	mov	[r15+H_RETRIES],ecx
 	mov	[r15+H_UTLS],ecx
 	mov	[r15+H_EPOP],ecx
 	mov	[r15+H_UPKTLS],ecx

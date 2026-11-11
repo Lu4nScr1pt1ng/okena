@@ -133,6 +133,7 @@ enumdef e_rewrite_what, 'path'
 enumdef e_pp_version, 'v1', 'v2'
 enumdef e_tls_mode, 'passthrough'
 enumdef e_onoff, 'on', 'off'
+enumdef e_retry_mode, 'idempotent-only'
 enumdef e_cors_flags, 'credentials'
 enumdef e_auth, 'api_key', 'basic', 'jwt', 'mtls', 'forward'
 enumdef e_cca, 'required', 'optional'
@@ -173,6 +174,7 @@ keysdef k_fault, 'abort', T_COUNT, 'percent', T_COUNT, 'delay', T_DURATION
 keysdef k_quic_sid, 'key', T_ANY, 'rotation', T_ANY
 keysdef k_server, 'weight', T_WEIGHT, 'max', T_COUNT
 keysdef k_queue, 'timeout', T_DURATION
+keysdef k_retry, 'on', T_ANY
 keysdef k_outlier, 'errors', T_UINT, 'eject', T_DURATION, 'max_ejected', T_PERCENT
 keysdef k_rbudget, 'min', T_RATE
 keysdef k_alert, 'trust', T_ANY
@@ -201,7 +203,7 @@ enumdef future_names, 'xdp', \
 	'addon', 'log', 'reload', 'profile', \
 	'acme', 'header', \
 	'source', \
-	'concurrency', 'retry', \
+	'concurrency', \
 	'canonical', \
 	'body', \
 	'response', 'alpn', 'cert', 'warm'
@@ -278,6 +280,7 @@ dirdef DIR_IDEMPOTENCY, 'idempotency', M_ROUTE, 0,     F_UNIQUE or F_KEYS_BLOCK,
 dirdef DIR_ALLOW, 'allow',      M_ROUTE,   0,           0, 1, 64, T_ANY, T_ANY, 0
 dirdef DIR_DENY, 'deny',        M_ROUTE,   0,           0, 1, 64, T_ANY, T_ANY, 0
 dirdef DIR_HOLD, 'hold',        M_ROUTE,   0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
+dirdef DIR_RETRY, 'retry',      M_ROUTE,   0,           F_UNIQUE, 1, 2, T_UINT, e_retry_mode, k_retry
 dirdef DIR_ERRORS, 'errors',    M_HTTP or M_ROUTE, 0,  0, 1, 32, T_ANY, T_ANY, k_errors
 dirdef DIR_MAINTENANCE, 'maintenance', M_HTTP, 0,     F_UNIQUE, 0, 0, T_NONE, T_NONE, k_maint
 dirdef DIR_REDIRECTS, 'redirects', M_ROUTE, 0,         F_UNIQUE, 1, 1, T_ANY, T_NONE, k_rmap

@@ -1,0 +1,4 @@
+exit: 2
+--- stdout
+--- stderr
+okena: retry takes how many more tries (0 to 5), may say idempotent-only (it always is: a request with a body is never sent twice), and on= a list of reset, timeout, 5xx, 500, 502, 503, 504

@@ -2314,6 +2314,7 @@ h2_stream_new:
 	mov	[r15+H_INLEN],eax
 	mov	[r15+H_INOFF],eax
 	mov	[r15+H_FLAGS],eax
+	mov	[r15+H_RETRIES],eax
 	mov	[r15+H_UTLS],eax
 	mov	[r15+H_EPOP],eax		; (H_READY stays: the slot may still be queued)
 	mov	rax,[r10+H_SNICERT]

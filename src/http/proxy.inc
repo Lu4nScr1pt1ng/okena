@@ -75,8 +75,10 @@ H_UHLEN		:= 452		; d: upstream TLS handshake message length to send
 H_UPKTLS	:= 456		; d: 1 when the upstream is a kTLS TLS socket
 H_URBUF		:= 460		; q: last upstream recv buffer (to retry after a drain)
 H_URROOM	:= 468		; d: its room
+H_RETRIES	:= 364		; d: times this request was sent again (after H_RID)
 assert H_ULPERR + 4 <= 1 shl H_SHIFT
 assert H_BUF + 8 <= 1 shl H_SHIFT
+assert H_RID + RID_MAX <= H_RETRIES & H_RETRIES + 4 <= H_BUF
 HB_LTEXT_M	:= HB_UP + H_UP_CAP	; access log: method
 H_LTEXT_M_CAP	:= 16
 HB_LTEXT_H	:= HB_LTEXT_M + 16	; host
@@ -229,6 +231,7 @@ http_start:
 	mov	[r15+H_INLEN],eax
 	mov	[r15+H_INOFF],eax
 	mov	[r15+H_FLAGS],eax
+	mov	[r15+H_RETRIES],eax
 	mov	[r15+H_UTLS],eax
 	mov	[r15+H_SNICERT],rax
 	mov	edi,ebx
@@ -906,6 +909,7 @@ http_request:
 	push	rcx
 	call	zip_request
 	call	hints_request
+	mov	dword [r15+H_RETRIES],0
 	pop	rcx
 	push	rcx
 	call	idem_check
@@ -3308,7 +3312,8 @@ http_latency_sample:
 ;
 ; Retries: a request that is idempotent and has no body goes once more
 ; to another server when the backend answers 502, 503 or 504 or closes
-; before any response byte. A budget keeps retries from multiplying a
+; before any response byte; a route's `retry N on=` says how many times, and
+; on what (RON_*). A budget keeps retries from multiplying a
 ; failure: per worker, `retry_budget` (a fifth) of the requests plus `min=`
 ; (10) a second, in tokens of 1/10000 of a retry.
 RETRY_COST	:= 10000
@@ -3446,10 +3451,7 @@ http_backend_status:
 	mov	edi,ecx
 	call	server_5xx
 	pop	rdi
-	cmp	edi,502
-	jb	.done
-	cmp	edi,504
-	ja	.done
+	mov	esi,edi
 	call	http_may_retry
 	jnc	.done
 	add	rsp,16				; rax, and we do not return
@@ -3461,6 +3463,7 @@ http_gateway_failed:
 	call	session_ptr
 	mov	edi,[rax+S_SERVER]
 	call	server_5xx
+	xor	esi,esi				; (reset)
 	call	http_may_retry
 	jnc	.no
 	add	rsp,8
@@ -3468,14 +3471,58 @@ http_gateway_failed:
 .no:
 	ret
 
-; ebx = session. CF when its request may be sent once more (and the
-; budget is charged).
+; ebx = session, esi = why: 0 the backend closed, 1 no answer in time, else
+; its status. CF when its request may be sent once more (and the budget is
+; charged): the route's `retry` allows it.
 http_may_retry:
 	h_rec
 	mov	eax,[r15+H_FLAGS]
-	and	eax,HX_NOBODY or HX_IDEMPOTENT or HX_RETRIED or HX_STARTED or HX_UPGRADE
+	and	eax,HX_NOBODY or HX_IDEMPOTENT or HX_STARTED or HX_UPGRADE
 	cmp	eax,HX_NOBODY or HX_IDEMPOTENT
 	jne	.no
+	mov	ecx,1				; the default: once, RON_DEFAULT
+	mov	edx,RON_DEFAULT
+	mov	eax,[r15+H_ACT]
+	test	eax,eax
+	jz	.policy
+	dec	eax
+	imul	rax,rax,RA_SIZE
+	cmp	dword [g_acts+rax+RA_RTRY],0
+	je	.policy
+	mov	ecx,[g_acts+rax+RA_RTRY]
+	dec	ecx
+	mov	edx,[g_acts+rax+RA_RON]
+.policy:
+	cmp	[r15+H_RETRIES],ecx
+	jae	.no
+	mov	eax,RON_RESET
+	test	esi,esi
+	jz	.why
+	mov	eax,RON_TIMEOUT
+	cmp	esi,1
+	je	.why
+	cmp	esi,500
+	jb	.no
+	cmp	esi,599
+	ja	.no
+	mov	eax,RON_5XX
+	test	edx,eax
+	jnz	.why
+	mov	eax,RON_500
+	cmp	esi,500
+	je	.why
+	mov	eax,RON_502
+	cmp	esi,502
+	je	.why
+	mov	eax,RON_503
+	cmp	esi,503
+	je	.why
+	mov	eax,RON_504
+	cmp	esi,504
+	jne	.no
+.why:
+	test	edx,eax
+	jz	.no
 	call	session_ptr
 	mov	eax,[rax+S_POOL]
 	cmp	dword [g_retry_tokens+rax*4],RETRY_COST
@@ -3491,6 +3538,7 @@ http_may_retry:
 ; server, on a new or pooled connection.
 http_retry_other:
 	h_rec
+	inc	dword [r15+H_RETRIES]
 	or	dword [r15+H_FLAGS],HX_RETRIED or HX_AVOID
 	and	dword [r15+H_FLAGS],not (HX_REUSED or HX_UPKEEP)
 	call	session_ptr
@@ -4576,6 +4624,9 @@ http_phase_expired:
 	call	session_ptr
 	mov	edi,[rax+S_SERVER]
 	call	server_5xx			; a silent backend counts as failing
+	mov	esi,1				; `retry on=timeout`: elsewhere
+	call	http_may_retry
+	jc	http_retry_other
 	mov	edi,504
 	jmp	http_error
 .out:

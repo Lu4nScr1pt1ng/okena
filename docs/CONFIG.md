@@ -13,7 +13,7 @@ not built yet. A directive that is not built is refused by `okena check`
 | `tcp ADDR...` | `to`, `mss`, `limits { connections; per_source }`, `timeout { idle }`, `proxy_protocol send v1\|v2`, `tls { cert; key }`, `tls passthrough { sni NAME... to pool P; default reject\|to pool P }` (a `default to pool` alone is enough) |
 | `udp ADDR...` | `to`, `responses N`, `limits { connections }` (flows), `timeout { idle }` |
 | `http ADDR...` | `host`, `route`, `mss`, `errors CODES file= [backend]`, `maintenance file= retry= allow= except=`, `limits`, `timeout { idle; header; body_idle; response }`, `trusted_proxies`, `access_log`, `tracing`, `http2 on\|off`, `http3 on\|off\|retry\|v2`, `preferred_address`, `early_data on\|off`, `tls { cert; key; ktls on\|off }` |
-| `route PATH... [METHOD...]` | `to`, `redirect`, `respond`, `rewrite path`, `signed_urls key= [key2=]`, `header set\|add\|drop`, `response header set\|add\|drop` |
+| `route PATH... [METHOD...]` | `to`, `redirect`, `respond`, `rewrite path`, `signed_urls key= [key2=]`, `header set\|add\|drop`, `response header set\|add\|drop`, `retry N [idempotent-only] [on=reset,timeout,5xx,500,502,503,504]` |
 | `pool NAME` | `server ADDR [weight=N] [max=N] [backup]`, `queue timeout=`, `balance least-request\|peak-ewma\|round-robin\|least-conn\|random\|maglev\|ring-hash\|source-hash [key=] [bound=]\|first`, `sticky cookie= [ttl=] [samesite=]`, `connect timeout=`, `health tcp\|http\|grpc ...`, `outlier errors= eject= max_ejected=`, `retry_budget P% [min=N/s]`, `slow_start`, `tls { trust FILE; sni NAME; cert FILE; key FILE }` (TLS to the backends), `protocol h1\|h2\|fastcgi` |
 
 `okena { ech PUBLIC_NAME KEYFILE... }` turns on Encrypted Client Hello (the
@@ -122,6 +122,17 @@ routes answer 503 with `Retry-After: 1`. Level 4, 97% or 1 s: so do `normal`
 ones, which is the default, and only `critical` goes on. Each worker decides for
 itself, once a second; the level rises at once and falls one step at a time, after 3
 quiet seconds and 5 points below where it rose. Changes are logged.
+
+On a route, `retry N on=LIST` says how many more times (0 to 5) a request
+goes to another server, and on what: `reset` (the backend closed before any
+answer), `timeout` (no answer head within the listener's `timeout { response
+}`), `5xx`, or one of 500, 502, 503 and 504. Without it a request is retried
+once on reset, 502, 503 and 504. Only requests with no body and an idempotent
+method are retried (`idempotent-only` says so, and is all there is: a body
+already streamed to a backend cannot be sent twice), each try spends the
+pool's `retry_budget`, and a failed connect always moves on to another server,
+nothing having been sent. `retry 0` passes a backend's 503 to the client as it
+is.
 
 On a route, `hedge after=50ms` (or `after=p95`) cuts the tail of a pool: a GET,
 HEAD or other idempotent request with no body that has no answer by then is sent
