@@ -28,6 +28,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 SUITES = [
     ("httpproxy io_uring", ["tests/httpproxy/run.py", "io_uring"]),
     ("httpproxy epoll", ["tests/httpproxy/run.py", "epoll"]),
+    ("edge io_uring", ["tests/httpproxy/edge.py", "io_uring"]),
+    ("edge epoll", ["tests/httpproxy/edge.py", "epoll"]),
     ("l4 io_uring core", ["tests/l4/run.py", "io_uring", "core"]),
     ("l4 io_uring faults", ["tests/l4/run.py", "io_uring", "faults"]),
     ("l4 epoll core", ["tests/l4/run.py", "epoll", "core"]),

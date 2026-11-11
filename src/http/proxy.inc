@@ -97,6 +97,7 @@ HS_RESP_HEAD	:= 7		; reading a response head
 HS_RESP_SEND	:= 8		; writing response head or body to the client
 HS_RESP_READ	:= 9
 HS_ERROR_SEND	:= 10		; writing an error, then closing
+HS_LINGER	:= 45		; an error sent, its writing side shut: what still comes is read and dropped
 HS_TUNNEL_UP	:= 11		; 101 sent: bytes the backend sent early go to the client
 HS_TUNNEL_IN	:= 12		; then bytes the client sent early go to the backend
 HS_INTERIM_SEND	:= 13		; writing a 1xx (103 Early Hints...) before the final response
@@ -283,11 +284,40 @@ http_next_request:
 	mov	rdi,[r15+H_BUF]
 	lea	rdi,[rdi+HB_IN]
 	mov	esi,[r15+H_INLEN]
+	; empty lines before a request line are dropped (RFC 9112 2.2: a client
+	; may send a CRLF after a body)
+	xor	ecx,ecx
+@@:
+	lea	eax,[rcx+2]
+	cmp	eax,esi
+	ja	@f
+	cmp	word [rdi+rcx],0x0A0D
+	jne	@f
+	mov	ecx,eax
+	jmp	@b
+@@:
+	test	ecx,ecx
+	jz	.lines_kept
+	sub	esi,ecx
+	mov	[r15+H_INLEN],esi
+	push	rsi
+	lea	rsi,[rdi+rcx]
+	mov	ecx,[rsp]
+	rep	movsb				; (forwards: the source is ahead)
+	pop	rsi
+	mov	rdi,[r15+H_BUF]
+	lea	rdi,[rdi+HB_IN]
+	test	esi,esi
+	jz	.read
+.lines_kept:
 	call	http_head_end
 	cmp	eax,-1
 	je	.bad
 	test	eax,eax
 	jnz	http_request
+	call	http_line_one		; its first line whole: HTTP/0.9, or too long?
+	cmp	eax,1
+	je	.bad
 	cmp	dword [r15+H_INLEN],H_IN_CAP
 	jae	.too_large
 .read:
@@ -303,7 +333,40 @@ http_next_request:
 	jmp	http_error
 .too_large:
 	mov	edi,431
+	cmp	eax,2
+	jne	http_error
+	mov	edi,414				; the request line alone fills it
 	jmp	http_error
+
+; ebx, r15: a head not yet whole. eax = 1 when its first line has ended with no
+; version after the target (HTTP/0.9, "GET /": nothing more will come to make a
+; head of it), 2 when it has not ended at all, 0 otherwise.
+http_line_one:
+	mov	rdi,[r15+H_BUF]
+	lea	rdi,[rdi+HB_IN]
+	mov	esi,[r15+H_INLEN]
+	xor	ecx,ecx
+	xor	edx,edx				; spaces
+.next:
+	cmp	ecx,esi
+	jae	.open
+	movzx	eax,byte [rdi+rcx]
+	inc	ecx
+	cmp	al,' '
+	jne	@f
+	inc	edx
+@@:
+	cmp	al,10
+	jne	.next
+	xor	eax,eax
+	cmp	edx,2
+	jae	@f
+	mov	eax,1
+@@:
+	ret
+.open:
+	mov	eax,2
+	ret
 
 ; fault delay=: requests held, a table a worker, looked through when one is
 ; due (few, and only on routes that ask for this). Their heads wait where they
@@ -922,6 +985,16 @@ http_request:
 	jmp	h_connect
 .parse_error:
 	mov	edi,eax
+	cmp	eax,400
+	jne	http_error
+	cmp	dword [g_hm+HM_MLEN],7		; CONNECT: no tunnels here (forward proxy is
+	jne	http_error			; a route's), not a malformed request
+	mov	rax,[g_hm+HM_METHOD]
+	cmp	dword [rax],'CONN'
+	jne	http_error
+	cmp	dword [rax+3],'NECT'
+	jne	http_error
+	mov	edi,405
 	jmp	http_error
 .no_route:
 	mov	edi,404
@@ -1627,6 +1700,34 @@ http_write_request_head:
 	inc	ebx
 	jmp	.field
 .own:
+	cmp	dword [r12+HM_HOST],-1
+	jne	.has_host
+	; HTTP/1.0 without Host goes on as HTTP/1.1, which needs one: the address
+	; the client reached (as nginx sends the upstream's own name)
+	memit_x 'Host: '
+	call	session_ptr
+	mov	eax,[rax+S_LST]
+	imul	rax,rax,LS_SIZE
+	mov	rsi,[g_listeners+rax+LS_TEXT]
+	mov	ecx,[g_listeners+rax+LS_TLEN]
+	cmp	ecx,5
+	jb	.host_name
+	cmp	dword [rsi],'unix'
+	je	.host_local
+.host_name:
+	test	ecx,ecx
+	jz	.host_local
+	cmp	byte [rsi],':'			; ":8080": every address
+	jne	.host_copy
+	memit_x 'localhost'
+.host_copy:
+	rep	movsb
+	jmp	.host_done
+.host_local:
+	memit_x 'localhost'
+.host_done:
+	memit_x 13,10
+.has_host:
 	call	auth_emit
 	call	slice_range_emit
 	call	cdnloop_emit
@@ -1901,7 +2002,14 @@ http_recv_plain:
 	je	http_tls12_fin
 	cmp	edx,HS_H2TUN
 	je	http_h2tun_recv
+	cmp	edx,HS_LINGER
+	je	.linger
 	ret
+.linger:
+	test	rax,rax
+	jg	http_linger_read
+	mov	edi,ebx				; the client is done too
+	jmp	session_close
 .head:
 	test	rax,rax
 	jle	.client_gone			; the client is done
@@ -4229,6 +4337,8 @@ http_phase_expired:
 	cmp	eax,HS_TLS_LAST
 	jbe	.silent				; the handshake never finished
 @@:
+	cmp	eax,HS_LINGER
+	je	.silent				; its error long sent
 	cmp	eax,HS_HEAD
 	jne	.out
 	cmp	dword [r15+H_INLEN],0
@@ -4790,3 +4900,50 @@ http_reason:
 	cstring str_reason_other, 'Error',0
 	lea	rsi,[str_reason_other]
 	ret
+
+; An error answered on a connection in the clear (HTTP/1.1): close only once the
+; client has stopped sending. Closed with bytes of its unread (a body, a head too
+; large, what it pipelined), the socket sends a reset, and a client still sending
+; may lose the answer with it. So the writing side is shut (the client reads the
+; end of the answer), what comes is read and dropped until the client closes or
+; the header timeout passes. ebx = session.
+http_linger:
+	h_rec
+	mov	dword [r15+H_STATE],HS_LINGER
+	cmp	dword [g_engine],ENGINE_EPOLL
+	jne	.ring
+	xor	ecx,ecx
+	call	hep_fd
+	mov	edi,eax
+	mov	esi,SHUT_WR
+	mov	eax,SYS_shutdown
+	syscall
+	jmp	.armed
+.ring:
+	; the session's own operation: io_uring runs a SHUTDOWN on a thread of io-wq,
+	; later, and finds a direct descriptor's file only then. Uncounted, the session
+	; could close first and its slot go to a new connection, which the shutdown
+	; would then cut. Counted, the slot is closed only after it (or its cancel).
+	mov	edi,OP_S_SHUT
+	mov	esi,ebx
+	call	sess_sqe			; (rdx = the session)
+	mov	byte [rax+SQE_OPCODE],IORING_OP_SHUTDOWN
+	mov	ecx,[rdx+S_CLIENT]
+	mov	[rax+SQE_FD],ecx
+	mov	byte [rax+SQE_FLAGS],IOSQE_FIXED_FILE
+	client_sqe rdx
+	mov	dword [rax+SQE_LEN],SHUT_WR
+.armed:
+	mov	edi,ebx
+	mov	esi,PH_HEAD
+	call	ph_arm
+; what the client sends next, into nothing
+http_linger_read:
+	h_rec
+	mov	dword [r15+H_INLEN],0
+	mov	dword [r15+H_INOFF],0
+	mov	ecx,SIDE_CLIENT
+	mov	rdi,[r15+H_BUF]
+	lea	rdi,[rdi+HB_IN]
+	mov	esi,H_IN_CAP
+	jmp	h_recv

@@ -1,7 +1,9 @@
 # Edge cases
 
 What okena does in the situations that break proxies. Each line is a
-behaviour to implement and a test to keep. "Reject" means a 4xx/5xx with
+behaviour to implement and a test to keep. The HTTP/1.x parsing table is
+checked line by line against a running okena by `tests/httpproxy/edge.py`
+(both engines), and its parser against a reference by `tests/http/run.py`. "Reject" means a 4xx/5xx with
 the connection closed when its framing can no longer be trusted.
 
 ## Network and TCP
@@ -55,16 +57,19 @@ the connection closed when its framing can no longer be trusted.
 | Obsolete line folding, bare CR, bare LF, NUL, control bytes | reject 400 |
 | Whitespace between header name and colon | reject 400 |
 | Header names with invalid token characters | reject 400 |
-| HTTP/1.0 without `Host`, with keep-alive | accepted, `Host` from the listener's default; `Connection: keep-alive` honoured |
-| HTTP/0.9 | rejected |
-| Absolute-form target (`GET http://host/ HTTP/1.1`) | host taken from the target as RFC 9112 says, must agree with `Host` |
+| HTTP/1.0 without `Host`, with keep-alive | accepted, routed by the listener's default; forwarded as HTTP/1.1 with `Host` set to the listener's address; `Connection: keep-alive` honoured |
+| HTTP/0.9 | 400 as soon as its line ends (no head would ever follow) |
+| Absolute-form target (`GET http://host/ HTTP/1.1`) | its authority must be the `Host` (letters in any case), else 400: two hosts named is a request a server behind could read either way; sent on in origin form |
 | `CONNECT` | 405 unless a route allows tunnelling (forward proxy is opt-in) |
+| `*` target | only with `OPTIONS`; any other method 400 |
+| Empty lines before the request line | dropped (RFC 9112 2.2: a client may send a CRLF after a body); a bare LF is still 400 |
 | `TRACE` | 405 by default |
-| Request line or headers too large | 414 / 431 |
+| Request line or headers too large | 414 (the line alone fills the buffer) / 431 |
 | Too many headers | 431 |
 | Huge cookies (many `Cookie` lines) | combined per RFC, size-limited |
 | `Expect: 100-continue` | forwarded or answered by okena when the body would be rejected anyway (size, auth) |
 | Pipelined requests | answered in order; a request with an error closes after earlier responses are sent |
+| An error answered with bytes still unread (a body, a head too large) | lingering close: the writing side shut, what comes read and dropped until the client closes or the header timeout passes, so no reset takes the answer with it |
 | Request body on GET/DELETE | forwarded as framed; never assumed empty |
 | Upgrade on a request with a body | reject |
 | `Connection` naming other headers | those headers removed as hop-by-hop |

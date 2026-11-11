@@ -1047,7 +1047,20 @@ http_close_notify:
 	mov	r10d,MSG_DONTWAIT or MSG_NOSIGNAL
 	mov	eax,SYS_sendmmsg
 	syscall
+	mov	edi,ebx
+	jmp	session_close
 .plain:
+	call	session_ptr			; an error on HTTP/1.1 in the clear: lingers
+	test	dword [rax+S_FLAGS],SF_H2S or SF_H3S or SF_MIR or SF_H2C or SF_TLS_HS or SF_TUNNEL
+	jnz	@f
+	mov	ecx,[rax+S_LST]
+	imul	rcx,rcx,LS_SIZE
+	cmp	dword [g_listeners+rcx+LS_TLS],0
+	jne	@f
+	h_rec
+	cmp	dword [r15+H_STATE],HS_ERROR_SEND
+	je	http_linger
+@@:
 	mov	edi,ebx
 	jmp	session_close
 

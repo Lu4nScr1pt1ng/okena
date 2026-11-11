@@ -868,11 +868,67 @@ hm_request_rules:
 .host_ok:
 	mov	eax,[r13+HM_HOST]
 	cmp	eax,-1
-	je	.upgrade
+	je	.star
 	imul	rax,rax,HF_SIZE
 	lea	rdi,[r13+HM_HDRS+rax]
 	call	hf_valid_host
 	jc	.bad
+	; absolute-form: its authority is the Host, or two hosts are named and a
+	; server behind could take the other one (RFC 9112 3.2.2)
+	mov	rsi,[r13+HM_TARGET]
+	cmp	byte [rsi],'/'
+	je	.star
+	cmp	byte [rsi],'*'
+	je	.star
+	mov	edx,[r13+HM_TLEN]
+	add	rsi,7				; "http://"
+	sub	edx,7
+	xor	ecx,ecx				; the authority's length
+@@:
+	cmp	ecx,edx
+	jae	@f
+	cmp	byte [rsi+rcx],'/'
+	je	@f
+	cmp	byte [rsi+rcx],'?'
+	je	@f
+	inc	ecx
+	jmp	@b
+@@:
+	cmp	ecx,[rdi+HF_VLEN]
+	jne	.bad
+	test	ecx,ecx
+	jz	.bad
+	mov	r8,[rdi+HF_VALUE]
+@@:
+	dec	ecx
+	js	.star
+	movzx	eax,byte [rsi+rcx]
+	movzx	edx,byte [r8+rcx]
+	lea	r9d,[rax-'A']			; letters in lower case, nothing else
+	cmp	r9d,25				; ('@' and '`' differ by that bit too)
+	ja	.lower_t
+	or	eax,0x20
+.lower_t:
+	lea	r9d,[rdx-'A']
+	cmp	r9d,25
+	ja	.lower_h
+	or	edx,0x20
+.lower_h:
+	cmp	eax,edx
+	je	@b
+	jmp	.bad
+.star:
+	; "*" is for OPTIONS only
+	mov	rsi,[r13+HM_TARGET]
+	cmp	byte [rsi],'*'
+	jne	.upgrade
+	cmp	dword [r13+HM_MLEN],7
+	jne	.bad
+	mov	rsi,[r13+HM_METHOD]
+	cmp	dword [rsi],'OPTI'
+	jne	.bad
+	cmp	dword [rsi+3],'IONS'
+	jne	.bad
 .upgrade:
 	; upgrade only with both Connection: upgrade and an Upgrade field
 	mov	eax,[r13+HM_FLAGS]

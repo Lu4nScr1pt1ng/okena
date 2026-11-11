@@ -239,6 +239,16 @@ def parse_request(h):
         raise Err(400)
     if m["host"] is not None and not valid_host(m["fields"][m["host"]][1]):
         raise Err(400)
+    if m["host"] is not None and target[0] not in b"/*":
+        auth = target[7:]
+        for stop in b"/?":
+            if stop in auth:
+                auth = auth[:auth.index(stop)]
+        hv = m["fields"][m["host"]][1]
+        if not auth or auth.lower() != hv.lower():
+            raise Err(400)
+    if target == b"*" and method != b"OPTIONS":
+        raise Err(400)
     if not ("upgrade" in fl and "has_upgrade" in fl):
         fl.discard("upgrade")
     return m
@@ -420,7 +430,14 @@ CORPUS = [
     ("Q", b"POST / HTTP/1.1\r\n" + R + b"Transfer-Encoding:\tChunked \r\n\r\n", "ok"),
     ("Q", b"POST / HTTP/1.0\r\nTransfer-Encoding: chunked\r\n\r\n", "error 400"),
     ("Q", b"GET /a#frag HTTP/1.1\r\n" + R + b"\r\n", "error 400"),
-    ("Q", b"GET http://x/y HTTP/1.1\r\n" + R + b"\r\n", "ok"),
+    ("Q", b"GET http://example.com/y HTTP/1.1\r\n" + R + b"\r\n", "ok"),
+    ("Q", b"GET HTTP://Example.COM?q HTTP/1.1\r\n" + R + b"\r\n", "ok"),
+    ("Q", b"GET http://x/y HTTP/1.1\r\n" + R + b"\r\n", "error 400"),             # two hosts named
+    ("Q", b"GET http://example.com:80/y HTTP/1.1\r\n" + R + b"\r\n", "error 400"),
+    ("Q", b"GET http:///y HTTP/1.1\r\n" + R + b"\r\n", "error 400"),
+    ("Q", b"GET http://u@example.com/ HTTP/1.1\r\n" + R + b"\r\n", "error 400"),
+    ("Q", b"GET * HTTP/1.1\r\n" + R + b"\r\n", "error 400"),                       # "*" is OPTIONS'
+    ("Q", b"GET http://a@b/ HTTP/1.1\r\nHost: a`b\r\n\r\n", "error 400"),        # not letters
     ("Q", b"GET x/y HTTP/1.1\r\n" + R + b"\r\n", "error 400"),
     ("Q", b"OPTIONS * HTTP/1.1\r\n" + R + b"\r\n", "ok"),
     ("Q", b"GET / HTTP/1.1\r\nHost: a b\r\n\r\n", "error 400"),
@@ -474,7 +491,7 @@ def mutate(rng, b):
         elif op == 7:
             b = bytearray(b.replace(b"\r\n\r\n", b"\r\n" + b"X: y\r\n" * rng.randint(95, 105) + b"\r\n", 1))
         else:
-            b[pos:pos] = rng.choice([b"[::1]", b"%2e", b"?", b"#", b"http://", b"*", b" "])
+            b[pos:pos] = rng.choice([b"[::1]", b"%2e", b"?", b"#", b"http://", b"*", b" ", b"@", b"`", b"example.com"])
     return bytes(b)
 
 
