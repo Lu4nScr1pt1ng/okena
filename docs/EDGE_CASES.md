@@ -5,7 +5,7 @@ behaviour to implement and a test to keep. The HTTP/1.x parsing table is
 checked line by line against a running okena by `tests/httpproxy/edge.py`
 (both engines), the upstream responses table by `tests/httpproxy/upstream.py`, paths and hosts by
 `tests/httpproxy/routing.py`, client identity by `tests/httpproxy/identity.py`, failing backends and
-misbehaving clients by `tests/httpproxy/failures.py`, and its parser against a reference by `tests/http/run.py`. "Reject" means a 4xx/5xx with
+misbehaving clients by `tests/httpproxy/failures.py`, odd ClientHellos by `tests/tls/hello.py`, and its parser against a reference by `tests/http/run.py`. "Reject" means a 4xx/5xx with
 the connection closed when its framing can no longer be trusted.
 
 ## Network and TCP
@@ -34,10 +34,11 @@ the connection closed when its framing can no longer be trusted.
 | No SNI (old clients, IP access) | `default` certificate per listener, or reject |
 | SNI and `Host` disagree (domain fronting) | 421 Misdirected Request unless the certificate covers both and the route allows it |
 | HTTP/2 connection coalescing to a host this connection should not serve | 421, so the browser opens a new connection |
-| ClientHello split across several TCP segments / records | buffered up to a limit before routing (`tls` mode and termination) |
+| ClientHello split across several TCP segments / records | buffered up to 16 KiB before routing (`tls` mode and termination), a byte per record or per segment included; a larger hello closes the connection |
+| Records out of place before the hello (application data, ChangeCipherSpec, an empty record), an SSLv2 hello | `unexpected_message`; a record past 2^14+256 `record_overflow` |
 | Large post-quantum ClientHello (ML-KEM shares) | supported; bugs in middleboxes that drop big ClientHellos are the client's, but okena never needs a second round trip for it |
 | HelloRetryRequest | supported for groups okena prefers |
-| TLS 1.2-only clients and backends | ECDHE + AEAD; RSA key exchange and CBC never |
+| TLS 1.2-only clients and backends | ECDHE + AEAD; RSA key exchange and CBC never; TLS 1.0 and 1.1 `handshake_failure`. An ECDSA certificate needs its curve in the client's groups (RFC 8422 5.1), else the RSA one or `handshake_failure` |
 | 0-RTT replay | off by default; when on, only idempotent routes, `Early-Data: 1` forwarded, 425 when a route is not safe |
 | Ticket key leak / rotation | hourly rotation, old keys accepted for one lifetime, never written to disk unless shared on purpose |
 | Certificate expiring, ACME failing | old certificate kept, alert at 14 days, backoff respecting CA limits |
