@@ -16,6 +16,22 @@ not built yet. A directive that is not built is refused by `okena check`
 | `route PATH... [METHOD...]` | `to`, `redirect`, `respond`, `rewrite path`, `signed_urls key= [key2=]`, `header set\|add\|drop`, `response header set\|add\|drop` |
 | `pool NAME` | `server ADDR [weight=N] [max=N] [backup]`, `queue timeout=`, `balance least-request\|peak-ewma\|round-robin\|least-conn\|random\|maglev\|ring-hash\|source-hash [key=] [bound=]\|first`, `sticky cookie= [ttl=] [samesite=]`, `connect timeout=`, `health tcp\|http\|grpc ...`, `slow_start`, `tls { trust FILE; sni NAME; cert FILE; key FILE }` (TLS to the backends), `protocol h1\|h2\|fastcgi` |
 
+`okena { ech PUBLIC_NAME KEYFILE... }` turns on Encrypted Client Hello (the
+draft's version 0xfe0d) for every TLS listener: a client that has okena's
+ECHConfigList, from the DNS, shows only PUBLIC_NAME in the clear, and the name it
+really asks for, its ALPN and the rest of its ClientHello travel sealed (HPKE:
+DHKEM(X25519, HKDF-SHA256), HKDF-SHA256, AES-128-GCM). okena opens it and the
+handshake goes on with that ClientHello: its name picks the certificate. A
+client whose ECH okena cannot open (an old key, a GREASE one) gets the
+certificate of PUBLIC_NAME, which a listener must have, and the keys to try
+again with. The keys are X25519 private keys in PEM: `okena ech new FILE` makes
+one (0600, never over a file; `openssl genpkey -algorithm X25519` too). The
+first is the one published, the others are still opened, for a key being
+retired. `okena ech print [-c FILE]` writes the ECHConfigList in base64: the
+`ech=` parameter of the domain's HTTPS record (`example.com. HTTPS 1 . alpn=h2
+ech=...`). ECH after a HelloRetryRequest is refused (clients send an x25519 share
+at once).
+
 Certificate compression (RFC 8879) needs nothing configured: a TLS 1.3 client
 that offers it with brotli (Chrome) or zlib (Firefox, Safari, OpenSSL) gets the
 chain compressed, brotli first; about a third smaller for a leaf and its

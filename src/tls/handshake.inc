@@ -251,7 +251,9 @@ HL_SH64		:= HL_MLM + 32			; hybrid secret: ML-KEM's (32) | x25519's (32)
 HL_MLCT		:= HL_SH64 + 64			; the ML-KEM ciphertext (1088)
 HL_SKEY		:= HL_MLCT + MLKEM_CT		; server handshake key (16 or 32)
 HL_SIV		:= HL_SKEY + 32			; and IV (12)
-HL_SIZE		:= ((HL_SIV + 16 + 15) and not 15) + 8	; rsp 16-aligned at calls
+HL_ECH		:= HL_SIV + 16			; d: ECH (ech.inc): 0 none, 1 opened, 2 not (retry_configs)
+HL_ECHRND	:= HL_ECH + 16			; the ClientHelloInner's random (32)
+HL_SIZE		:= ((HL_ECHRND + 32 + 15) and not 15) + 8	; rsp 16-aligned at calls
 
 G_TLS13		:= 1
 G_SUITE		:= 2
@@ -410,6 +412,14 @@ tls_hello:
 	rep	movsb
 
 .parse:
+	; Encrypted Client Hello (ech.inc): the inner hello opened, in its place
+	test	dword [rbx+TS_FLAGS],TF_HRR
+	jnz	.ech_done			; (the second hello: none)
+	call	ech_open
+	mov	[rbp+HL_ECH],eax
+	cmp	eax,3
+	je	.illegal
+.ech_done:
 	; Parse. rsi = cursor, r13 = the end of the message.
 	mov	eax,[rbp+HL_MLEN]
 	lea	r13,[r12+rax]
@@ -1311,6 +1321,11 @@ tls_hello:
 	add	rdi,6
 @@:
 	mov	[rbp+HL_W],rdi
+	cmp	dword [rbp+HL_ECH],1		; ECH taken: its confirmation in the random
+	jne	@f
+	mov	edx,[rbp+HL_SHLEN]
+	call	ech_confirm
+@@:
 	lea	rsi,[r12+5]
 	mov	edx,[rbp+HL_SHLEN]
 	th_add
@@ -1482,6 +1497,10 @@ tls_hello:
 	mov	word [r14+4],0
 	add	r14,6
 .ee_done:
+	cmp	dword [rbp+HL_ECH],2		; ECH not opened: the keys to try again with
+	jne	@f
+	call	ech_retry_configs
+@@:
 	test	dword [rbp+HL_GOT],G_RESUME
 	jz	.certificate
 	mov	rsi,r13				; resumed: no Certificate, no CertificateVerify
@@ -1921,6 +1940,8 @@ tls_hello:
 	jnz	.handshake			; (not over QUIC yet)
 	test	dword [rbx+TS_FLAGS],TF_HRR
 	jnz	.illegal			; asked already, and still no share
+	cmp	dword [rbp+HL_ECH],1
+	je	.handshake			; (ECH and a retry: not here)
 	; transcript: message_hash(Hash(ClientHello1)), then the retry request
 	lea	rdi,[rbp+HL_TH]
 	mov	rsi,r12
@@ -2021,6 +2042,8 @@ tls_hello:
 	mov	ecx,AL_DECODE
 	jmp	.alert
 .version:
+	cmp	dword [rbp+HL_ECH],1
+	je	.illegal			; (an inner hello is TLS 1.3)
 	mov	eax,TH_TLS12			; no TLS 1.3 offered: let the caller try 1.2
 	xor	edx,edx
 	jmp	.out

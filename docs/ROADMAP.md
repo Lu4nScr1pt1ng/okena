@@ -596,8 +596,11 @@ built; both measurements are still to be made on the lab.)
   `respond`, `{host}` on the way; status written back (class, Gateways and
   listeners, routes' parents); GRPCRoute, ReferenceGrant, regular expression
   paths and headers, TLSRoute (passthrough), TCPRoute and UDPRoute.) Consul discovery, Kubernetes Gateway API.
-* (Done: certificate compression, RFC 8879, brotli and zlib, kept per worker.)
-  Certificate compression, Encrypted Client Hello.
+* (Done: certificate compression, RFC 8879, brotli and zlib, kept per worker;
+  Encrypted Client Hello, 0xfe0d: HPKE X25519/HKDF-SHA256/AES-128-GCM, inner
+  hello rebuilt with ech_outer_extensions, accept confirmation, retry_configs,
+  `okena ech new|print`. Not yet: ECH with HelloRetryRequest.) Certificate
+  compression, Encrypted Client Hello.
 * AVX-512 paths where they pay.
 
 ## Phase 10 — Kernel fast paths

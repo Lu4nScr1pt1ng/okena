@@ -78,6 +78,8 @@ test-serial: $(BIN) $(HTTPH) $(KAT) $(TLSH)
 	python3 -I tests/tls/https.py epoll user
 	python3 -I tests/tls/certcomp.py io_uring
 	python3 -I tests/tls/certcomp.py epoll
+	python3 -I tests/tls/ech.py io_uring
+	python3 -I tests/tls/ech.py epoll
 	python3 -I tests/tls/passthrough.py io_uring
 	python3 -I tests/tls/passthrough.py epoll
 	python3 -I tests/tls/client.py

@@ -534,6 +534,9 @@ compile_settings:
 	lea	rcx,[dir_table + D_SIZE*DIR_GATEWAY]
 	cmp	rax,rcx
 	je	.gateway
+	lea	rcx,[dir_table + D_SIZE*DIR_ECH]
+	cmp	rax,rcx
+	je	.ech
 	lea	rcx,[dir_table + D_SIZE*DIR_GEOIP]
 	cmp	rax,rcx
 	je	.geoip
@@ -724,6 +727,9 @@ compile_settings:
 	jmp	.advance
 .gateway:
 	call	compile_gateway			; (gateway.inc)
+	jmp	.advance
+.ech:
+	call	compile_ech			; (ech.inc)
 	jmp	.advance
 .cache_memory:
 	mov	rax,[rbx+N_ARGS]

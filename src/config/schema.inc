@@ -222,6 +222,7 @@ dirdef DIR_CDNLOOP, 'cdn_loop',  M_OKENA,   0,           F_UNIQUE, 1, 1, T_ANY, 
 dirdef DIR_BIRD, 'bird',        M_OKENA,   0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, k_bird
 dirdef DIR_ACME, 'acme',        M_OKENA,   0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, k_acme
 dirdef DIR_LOCALCA, 'local_ca', M_OKENA,  0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
+dirdef DIR_ECH, 'ech',           M_OKENA,   0,           F_UNIQUE, 2, 5, T_ANY, T_ANY, 0
 dirdef DIR_GATEWAY, 'gateway',   M_OKENA,   0,           F_UNIQUE, 1, 1, e_gateway, T_NONE, k_gateway
 dirdef DIR_WATCHDOG, 'watchdog',    M_OKENA,   0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
 dirdef DIR_METRICS, 'metrics',     M_OKENA,   0,           F_UNIQUE, 1, 1, T_LISTEN, T_NONE, k_metrics

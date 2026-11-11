@@ -260,6 +260,13 @@ end bss
 ; (no certificate compression here: the Certificate as it is)
 cert_compress:
 	ret
+; (no ECH here)
+ech_open:
+	xor	eax,eax
+	ret
+ech_confirm:
+ech_retry_configs:
+	ret
 
 ; edx = bytes from g_out: written, or CF.
 send_out:

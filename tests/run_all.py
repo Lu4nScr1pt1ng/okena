@@ -51,6 +51,8 @@ SUITES = [
     ("https epoll user", ["tests/tls/https.py", "epoll", "user"]),
     ("certcomp io_uring", ["tests/tls/certcomp.py", "io_uring"]),
     ("certcomp epoll", ["tests/tls/certcomp.py", "epoll"]),
+    ("ech io_uring", ["tests/tls/ech.py", "io_uring"]),
+    ("ech epoll", ["tests/tls/ech.py", "epoll"]),
     ("passthrough io_uring", ["tests/tls/passthrough.py", "io_uring"]),
     ("passthrough epoll", ["tests/tls/passthrough.py", "epoll"]),
     ("tls client", ["tests/tls/client.py"]),
