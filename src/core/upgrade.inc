@@ -102,6 +102,19 @@ helper_close_sockets:
 	inc	r12d
 	jmp	.listener
 .out:
+	; and those of addresses a reload let go, that the supervisor closes once the
+	; old workers are gone: a helper started meanwhile would hold them for ever,
+	; and the address could not be listened on again
+	xor	ebx,ebx
+@@:
+	cmp	ebx,[g_close_count]
+	jae	@f
+	mov	edi,[g_close_fd+rbx*4]
+	mov	eax,SYS_close
+	syscall
+	inc	ebx
+	jmp	@b
+@@:
 	pop	r12
 	pop	rbx
 	ret

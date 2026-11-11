@@ -75,6 +75,7 @@ backend(B0, b"b0")
 backend(B1, b"b1")
 tmp = pathlib.Path(tempfile.mkdtemp())
 conf = tmp / "okena.conf"
+ADMIN = tmp / "admin.sock"
 log = open(tmp / "log", "w+")
 
 
@@ -101,7 +102,7 @@ def workers(p):
 
 
 write(f"""
-okena {{ workers 2 }}
+okena {{ workers 2; admin unix:{ADMIN} }}
 tcp 127.0.0.1:{L1} {{ to 127.0.0.1:{B0} }}
 tcp 127.0.0.1:{L2} {{ to 127.0.0.1:{B0} }}
 """)
@@ -130,7 +131,7 @@ try:
     old = workers(p)
 
     write(f"""
-okena {{ workers 3 }}
+okena {{ workers 3; admin unix:{ADMIN} }}
 tcp 127.0.0.1:{L1} {{ to 127.0.0.1:{B1} }}
 tcp 127.0.0.1:{L3} {{ to 127.0.0.1:{B1} }}
 """)
@@ -147,6 +148,18 @@ tcp 127.0.0.1:{L3} {{ to 127.0.0.1:{B1} }}
     time.sleep(1.0)
     check("old generation exits once its connections end", not (set(old) & set(workers(p))), str(workers(p)))
     check("removed listener closed after that", refused(L2))
+    # and it can be listened on again: no helper the reload started (the admin
+    # process here) kept the socket it let go
+    write(f"""
+okena {{ workers 3; admin unix:{ADMIN} }}
+tcp 127.0.0.1:{L1} {{ to 127.0.0.1:{B1} }}
+tcp 127.0.0.1:{L2} {{ to 127.0.0.1:{B1} }}
+tcp 127.0.0.1:{L3} {{ to 127.0.0.1:{B1} }}
+""")
+    n = text().count("configuration reloaded")
+    p.send_signal(signal.SIGHUP)
+    check("a removed address listened on again", wait_log("configuration reloaded", n + 1) and who(L2) == b"b1",
+          text()[-400:])
 
     # invalid file: nothing changes
     before = workers(p)
@@ -162,7 +175,7 @@ tcp 127.0.0.1:{L3} {{ to 127.0.0.1:{B1} }}
     busy.bind(("127.0.0.1", BUSY))
     busy.listen()
     write(f"""
-okena {{ workers 3 }}
+okena {{ workers 3; admin unix:{ADMIN} }}
 tcp 127.0.0.1:{L1} {{ to 127.0.0.1:{B0} }}
 tcp 127.0.0.1:{BUSY} {{ to 127.0.0.1:{B0} }}
 """)
@@ -173,7 +186,7 @@ tcp 127.0.0.1:{BUSY} {{ to 127.0.0.1:{B0} }}
 
     # several reloads in a row
     write(f"""
-okena {{ workers 2 }}
+okena {{ workers 2; admin unix:{ADMIN} }}
 tcp 127.0.0.1:{L1} {{ to 127.0.0.1:{B0} }}
 """)
     n = text().count("configuration reloaded")
