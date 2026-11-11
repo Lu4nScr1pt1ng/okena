@@ -438,6 +438,10 @@ supervisor_reload:
 	inc	ebx
 	jmp	.spawn
 .spawned:
+	push	rdi
+	mov	edi,1
+	call	gw_reload_result
+	pop	rdi
 	call	log_begin
 	out_lit 'configuration reloaded: '
 	mov	eax,r15d
@@ -487,12 +491,16 @@ supervisor_reload:
 	call	log_end_alert
 	jmp	.undo_arenas
 .rejected:
+	mov	edi,2
+	call	gw_reload_result
 	call	log_begin
 	out_lit 'reload rejected (errors above); keeping the running configuration'
 	mov	edi,AL_RELOAD
 	call	log_end_alert
 	jmp	.undo_arenas
 .sockets_failed:
+	mov	edi,2
+	call	gw_reload_result
 	call	log_begin
 	out_lit 'reload rejected (cannot listen, see above); keeping the running configuration'
 	mov	edi,AL_RELOAD

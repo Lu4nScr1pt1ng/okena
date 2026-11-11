@@ -593,8 +593,8 @@ built; both measurements are still to be made on the lab.)
 * (Done: `discover consul`, the agent's health API: passing instances, weights,
   dc=, tag=, the ACL token from a file. `gateway kubernetes`: Gateways and
   HTTPRoutes written as okena's configuration and reloaded; `include` and
-  `respond`, `{host}` on the way. Not yet: status conditions, GRPCRoute,
-  ReferenceGrant, regex paths.) Consul discovery, Kubernetes Gateway API.
+  `respond`, `{host}` on the way; status written back (class, Gateways and
+  listeners, routes' parents). Not yet: GRPCRoute, ReferenceGrant, regex paths.) Consul discovery, Kubernetes Gateway API.
 * Certificate compression, Encrypted Client Hello.
 * AVX-512 paths where they pay.
 

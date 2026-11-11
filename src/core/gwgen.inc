@@ -36,7 +36,11 @@ GWL_ALL		:= 44			; d: routes from all namespaces (else its own)
 GWL_HOST		:= 48			; q: its hostname, 0 none
 GWL_HOSTLEN	:= 56			; d
 GWL_TLS		:= 64			; q: certificateRefs (the JSON array)
-GWL_SIZE		:= 80
+GWL_STATE	:= 72			; d: 0 served, 1 not a protocol okena serves, 2 invalid
+GWL_GWI		:= 76			; d: its Gateway (GW_T_G)
+GWL_ROUTES	:= 80			; d: routes attached
+GWL_CERTOK	:= 84			; d: HTTPS: a certificate was had
+GWL_SIZE		:= 96
 GW_MAXL		:= 256
 
 GWE_PORT		:= 0			; d
@@ -59,7 +63,8 @@ GWE_RULE		:= 88			; q: the rule (JSON object)
 GWE_NS		:= 96			; q: the route's namespace
 GWE_NSLEN	:= 104			; d
 GWE_PROTO	:= 108			; d: its listener's
-GWE_SIZE		:= 112
+GWE_ROUTE	:= 112			; d: its route (GW_T_R)
+GWE_SIZE		:= 120
 GW_MAXE		:= 4096
 
 GWP2_NS		:= 0			; q
@@ -75,12 +80,50 @@ GW_MAXP		:= 512
 
 GW_MAXH		:= 1024			; hosts on a port
 
+GWG_NS		:= 0			; q
+GWG_NSLEN	:= 8			; d
+GWG_NLEN	:= 12			; d
+GWG_NAME	:= 16			; q
+GWG_GEN		:= 24			; d: metadata.generation
+GWG_FIRSTL	:= 28			; d: its listeners in GW_T_L
+GWG_NL		:= 32			; d
+GWG_SIZE	:= 40
+GW_MAXG		:= 64
+
+GWR_NS		:= 0			; q: a route
+GWR_NSLEN	:= 8			; d
+GWR_NLEN	:= 12			; d
+GWR_NAME	:= 16			; q
+GWR_GEN		:= 24			; d
+GWR_REFS	:= 28			; d: 0 its backends resolved, else why not (GRF_*)
+GWR_STATUS	:= 32			; q: its status.parents (JSON), 0 none
+GWR_SIZE	:= 40
+GW_MAXR		:= 1024
+GRF_NOTFOUND	:= 1			; BackendNotFound
+GRF_NOTPERMITTED := 2			; RefNotPermitted
+GRF_KIND	:= 3			; InvalidKind
+
+GWPR_ROUTE	:= 0			; d: a parentRef: its route
+GWPR_GWI	:= 4			; d: our Gateway it names, -1 none
+GWPR_RAW	:= 8			; q: it, as written (JSON)
+GWPR_RAWLEN	:= 16			; d
+GWPR_WHY	:= 20			; d: 0 accepted, 1 NoMatchingListenerHostname, 2 NotAllowedByListeners, 3 NoMatchingParent (the more precise the lower)
+GWPR_SIZE	:= 24
+GW_MAXPR	:= 4096
+
 GW_T_L		:= GW_TABLES
 GW_T_E		:= GW_T_L + GWL_SIZE * GW_MAXL
 GW_T_P		:= GW_T_E + GWE_SIZE * GW_MAXE
 GW_T_SEL	:= GW_T_P + GWP2_SIZE * GW_MAXP
 GW_T_H		:= GW_T_SEL + 4 * GW_MAXE
-GW_T_END	:= GW_T_H + 16 * GW_MAXH
+GW_T_G		:= GW_T_H + 16 * GW_MAXH
+GW_T_R		:= GW_T_G + GWG_SIZE * GW_MAXG
+GW_T_PR		:= GW_T_R + GWR_SIZE * GW_MAXR
+GW_T_PATCH	:= GW_T_PR + GWPR_SIZE * GW_MAXPR
+GW_T_PATCH_CAP	:= 2 shl 20
+GW_T_KEYS	:= GW_T_PATCH + GW_T_PATCH_CAP	; what status was written: key, hash
+GW_KEYS		:= 8192
+GW_T_END	:= GW_T_KEYS + 16 * GW_KEYS
 assert GW_T_END <= GW_ARENA
 
 bss
@@ -109,6 +152,7 @@ bss
 	g_gr_rule	dq ?
 	g_gp_name	dq ?
 	g_gp_nlen	dd ?
+	g_gr_nhosts	dd ?
 	; the host being written
 	g_gh_host	dq ?
 	g_gh_len	dd ?
@@ -140,6 +184,15 @@ bss
 	g_ga_sum	dd ?
 	g_gh_op		dq ?
 	g_gh_nlen	dd ?
+	g_gw_ng		dd ?
+	g_gw_gwi	dd ?
+	g_gw_nr		dd ?
+	g_gw_npr	dd ?
+	g_gw_rti	dd ?
+	g_gw_pri	dd ?
+	g_gw_classok	dd ?		; the GatewayClass: 0 not there, 1 okena's, 2 another's
+	g_gw_classgen	dd ?
+	g_gw_lend	dq ?		; the lists' end (the status reads them after)
 end bss
 
 macro go_lit text&
@@ -622,12 +675,18 @@ gw_render:
 	mov	dword [g_gw_nl],0
 	mov	dword [g_gw_ne],0
 	mov	dword [g_gw_np],0
+	mov	dword [g_gw_ng],0
+	mov	dword [g_gw_nr],0
+	mov	dword [g_gw_npr],0
 	mov	dword [g_gw_seq],0
 	mov	dword [g_gw_nroutes],0
 	mov	dword [g_gw_nports],0
 	mov	rax,[g_gw_base]
 	add	rax,GW_TEXT
 	mov	[g_gw_txt],rax
+	; the class: okena's, or another's (then nothing of it is served)
+	call	gw_class
+	jc	.not_now
 	; the Gateways, then the HTTPRoutes, side by side
 	call	gw_req_begin
 	cstring .gws, '/apis/gateway.networking.k8s.io/v1/gateways?resourceVersion=0',0
@@ -657,6 +716,7 @@ gw_render:
 	mov	rdi,r14
 	rep	movsb
 	mov	r13,rdi				; (the end, for the parser)
+	mov	[g_gw_lend],rdi
 	mov	rsi,r12
 	call	gw_listeners
 	jc	.unreadable
@@ -681,9 +741,10 @@ gw_render:
 	call	gw_tell
 	jmp	.not_now
 .unreadable:
-	mov	eax,2
-	lea	rsi,[str_kb_bad]
-	mov	edx,str_kb_bad.len
+	mov	eax,8
+	cstring str_gw_lists, ': the Gateways or the HTTPRoutes cannot be read (not such a list, or too large)'
+	lea	rsi,[str_gw_lists]
+	mov	edx,str_gw_lists.len
 	call	gw_tell
 .not_now:
 	stc
@@ -706,6 +767,8 @@ gw_listeners:
 	gk	'items'
 	call	gj_get
 	jc	.bad
+	cmp	dword [g_gw_classok],2
+	je	.done				; (the class is another controller's)
 	cmp	byte [rsi],'n'			; null: none
 	je	.done
 	call	gj_first
@@ -755,18 +818,55 @@ gw_listeners:
 	jc	.next
 	mov	r14,rdi				; (the Gateway's name)
 	mov	[g_gw_tag],cl			; (its length: a scratch)
+	; the Gateway itself, for its status
+	mov	eax,[g_gw_ng]
+	cmp	eax,GW_MAXG
+	jae	.next
+	mov	[g_gw_gwi],eax
+	inc	dword [g_gw_ng]
+	imul	rax,rax,GWG_SIZE
+	mov	r8,[g_gw_base]
+	lea	r8,[r8+GW_T_G+rax]
+	mov	rax,[g_gr_ns]
+	mov	[r8+GWG_NS],rax
+	mov	eax,[g_gr_nslen]
+	mov	[r8+GWG_NSLEN],eax
+	mov	[r8+GWG_NAME],r14
+	mov	[r8+GWG_NLEN],ecx
+	mov	eax,[g_gw_nl]
+	mov	[r8+GWG_FIRSTL],eax
+	mov	dword [r8+GWG_GEN],0
+	push	r8
+	mov	rsi,rbx
+	gk	'metadata'
+	call	gj_get
+	jc	@f
+	gk	'generation'
+	call	gj_num
+	jc	@f
+	mov	r8,[rsp]
+	mov	[r8+GWG_GEN],eax
+@@:
+	pop	r8
 	mov	rsi,r12
 	gk	'listeners'
 	call	gj_get
-	jc	.next
+	jc	.listened
 	call	gj_first
-	jc	.next
+	jc	.listened
 .listener:
 	push	rsi
 	call	gw_listener
 	pop	rsi
 	call	gj_next
 	jnc	.listener
+.listened:
+	mov	eax,[g_gw_gwi]
+	imul	rax,rax,GWG_SIZE
+	add	rax,[g_gw_base]
+	mov	ecx,[g_gw_nl]
+	sub	ecx,[rax+GW_T_G+GWG_FIRSTL]
+	mov	[rax+GW_T_G+GWG_NL],ecx
 .next:
 	mov	rsi,rbx
 	call	gj_next
@@ -805,19 +905,23 @@ gw_listener:
 	jc	.drop
 	mov	[r12+GWL_NAME],rdi
 	mov	[r12+GWL_NAMELEN],ecx
+	mov	edx,ecx				; (it goes into its status, as JSON)
+	mov	rcx,rdi
+	call	gw_sub_ok
+	jc	.drop
 	mov	rsi,rbx
 	gk	'port'
 	call	gj_num
-	jc	.drop
+	jc	.invalid
 	test	eax,eax
-	jz	.drop
+	jz	.invalid
 	cmp	eax,65535
-	ja	.drop
+	ja	.invalid
 	mov	[r12+GWL_PORT],eax
 	mov	rsi,rbx
 	gk	'protocol'
 	call	gj_str
-	jc	.drop
+	jc	.unsupported
 	mov	dword [r12+GWL_PROTO],1
 	cmp	ecx,4
 	jne	@f
@@ -826,11 +930,11 @@ gw_listener:
 @@:
 	mov	dword [r12+GWL_PROTO],2
 	cmp	ecx,5
-	jne	.drop
+	jne	.unsupported
 	cmp	dword [rdi],'HTTP'
-	jne	.drop
+	jne	.unsupported
 	cmp	byte [rdi+4],'S'
-	jne	.drop
+	jne	.unsupported
 .proto:
 	mov	qword [r12+GWL_HOST],0
 	mov	dword [r12+GWL_HOSTLEN],0
@@ -843,7 +947,7 @@ gw_listener:
 	mov	edx,ecx
 	mov	rcx,rdi
 	call	gw_host_ok
-	jc	.drop
+	jc	.invalid
 .no_host:
 	mov	dword [r12+GWL_ALL],0
 	mov	rsi,rbx
@@ -870,18 +974,30 @@ gw_listener:
 	mov	rsi,rbx
 	gk	'tls'
 	call	gj_get
-	jc	.drop
+	jc	.invalid
 	gk	'mode'
 	call	gj_str
 	jc	@f
 	cmp	ecx,9
-	jne	.drop				; (Passthrough is not this)
+	jne	.unsupported				; (Passthrough is not this)
 @@:
 	gk	'certificateRefs'
 	call	gj_get
-	jc	.drop
+	jc	.invalid
 	mov	[r12+GWL_TLS],rsi
 .taken:
+	mov	dword [r12+GWL_STATE],0
+	jmp	.counted
+.unsupported:
+	mov	dword [r12+GWL_STATE],1		; (said in its status: UnsupportedProtocol)
+	jmp	.counted
+.invalid:
+	mov	dword [r12+GWL_STATE],2		; (Invalid)
+.counted:
+	mov	eax,[g_gw_gwi]
+	mov	[r12+GWL_GWI],eax
+	mov	dword [r12+GWL_ROUTES],0
+	mov	dword [r12+GWL_CERTOK],0
 	inc	dword [g_gw_nl]
 .drop:
 	pop	r12
@@ -922,6 +1038,56 @@ gw_routes:
 	jc	.next
 	mov	[g_gr_ns],rdi
 	mov	[g_gr_nslen],ecx
+	; the route, for its status
+	mov	eax,[g_gw_nr]
+	cmp	eax,GW_MAXR
+	jae	.next
+	mov	[g_gw_rti],eax
+	inc	dword [g_gw_nr]
+	imul	r12,rax,GWR_SIZE
+	add	r12,[g_gw_base]
+	add	r12,GW_T_R
+	mov	[r12+GWR_NS],rdi
+	mov	[r12+GWR_NSLEN],ecx
+	mov	qword [r12+GWR_NAME],0
+	mov	dword [r12+GWR_NLEN],0
+	mov	dword [r12+GWR_GEN],0
+	mov	dword [r12+GWR_REFS],0
+	mov	qword [r12+GWR_STATUS],0
+	mov	rsi,rbx
+	gk	'metadata'
+	call	gj_get
+	jc	.unnamed
+	push	rsi
+	gk	'generation'
+	call	gj_num
+	jc	@f
+	mov	[r12+GWR_GEN],eax
+@@:
+	pop	rsi
+	gk	'name'
+	call	gj_str
+	jc	.unnamed
+	mov	edx,ecx
+	push	rdi
+	push	rcx
+	mov	rcx,rdi
+	call	gw_sub_ok
+	pop	rcx
+	pop	rdi
+	jc	.unnamed
+	mov	[r12+GWR_NAME],rdi
+	mov	[r12+GWR_NLEN],ecx
+.unnamed:
+	mov	rsi,rbx
+	gk	'status'
+	call	gj_get
+	jc	@f
+	gk	'parents'
+	call	gj_get
+	jc	@f
+	mov	[r12+GWR_STATUS],rsi
+@@:
 	mov	rsi,rbx
 	gk	'spec'
 	call	gj_get
@@ -944,7 +1110,29 @@ gw_routes:
 	jc	.next
 .parent:
 	mov	r14,rsi
+	; the parentRef, as written, for the route's status
+	mov	eax,[g_gw_npr]
+	cmp	eax,GW_MAXPR
+	jae	.parent_next
+	mov	[g_gw_pri],eax
+	inc	dword [g_gw_npr]
+	imul	rax,rax,GWPR_SIZE
+	add	rax,[g_gw_base]
+	add	rax,GW_T_PR
+	mov	ecx,[g_gw_rti]
+	mov	[rax+GWPR_ROUTE],ecx
+	mov	dword [rax+GWPR_GWI],-1
+	mov	dword [rax+GWPR_WHY],3
+	mov	[rax+GWPR_RAW],rsi
+	push	rax
+	call	js_skip
+	pop	rax
+	jc	.parent_next
+	sub	rsi,r14
+	mov	[rax+GWPR_RAWLEN],esi
+	mov	rsi,r14
 	call	gw_parent
+.parent_next:
 	mov	rsi,r14
 	call	gj_next
 	jnc	.parent
@@ -1000,6 +1188,8 @@ gw_parent:
 	imul	r14,rbx,GWL_SIZE
 	add	r14,[g_gw_base]
 	add	r14,GW_T_L
+	cmp	dword [r14+GWL_STATE],0
+	jne	.other
 	; its Gateway: the name, the namespace (the route's when not said)
 	mov	rdi,[g_gp_name]
 	mov	ecx,[g_gp_nlen]
@@ -1018,6 +1208,9 @@ gw_parent:
 	mov	edx,[r14+GWL_NSLEN]
 	call	gw_same
 	jne	.other
+	mov	eax,[r14+GWL_GWI]		; (it names our Gateway)
+	call	gw_pr_of
+	mov	[rax+GWPR_GWI],ecx
 	; sectionName, port
 	mov	rsi,r12
 	gk	'sectionName'
@@ -1043,10 +1236,21 @@ gw_parent:
 	mov	rsi,[r14+GWL_NS]
 	mov	edx,[r14+GWL_NSLEN]
 	call	gw_same
-	jne	.other
+	je	.takes
+	mov	edx,2				; NotAllowedByListeners
+	call	gw_pr_why
+	jmp	.other
 .takes:
 	mov	[g_gr_li],ebx
+	mov	dword [g_gr_nhosts],0
 	call	gw_attach
+	mov	edx,1				; NoMatchingListenerHostname
+	cmp	dword [g_gr_nhosts],0
+	je	@f
+	inc	dword [r14+GWL_ROUTES]
+	xor	edx,edx				; attached
+@@:
+	call	gw_pr_why
 .other:
 	inc	ebx
 	jmp	.listener
@@ -1054,6 +1258,26 @@ gw_parent:
 	pop	r14
 	pop	r12
 	pop	rbx
+	ret
+
+; eax = a Gateway: rax = the parentRef being read, ecx = that Gateway. Keeps rbx,
+; rdx, rsi, rdi, r8-r15.
+gw_pr_of:
+	mov	ecx,eax
+	mov	eax,[g_gw_pri]
+	imul	rax,rax,GWPR_SIZE
+	add	rax,[g_gw_base]
+	add	rax,GW_T_PR
+	ret
+
+; edx = a reason: the parentRef being read keeps it when it is better (lower)
+; than what it has. Keeps all but rax, rcx.
+gw_pr_why:
+	call	gw_pr_of
+	cmp	edx,[rax+GWPR_WHY]
+	jae	@f
+	mov	[rax+GWPR_WHY],edx
+@@:
 	ret
 
 ; g_gr_li = a listener that takes the route: for each hostname both allow, its rules
@@ -1071,6 +1295,7 @@ gw_attach:
 	mov	[g_gr_host],rax
 	mov	eax,[r12+GWL_HOSTLEN]
 	mov	[g_gr_hostlen],eax
+	inc	dword [g_gr_nhosts]
 	call	gw_rules
 	jmp	.out
 .hostnames:
@@ -1097,6 +1322,7 @@ gw_attach:
 	jc	.next
 	mov	[g_gr_host],rsi
 	mov	[g_gr_hostlen],ecx
+	inc	dword [g_gr_nhosts]
 	call	gw_rules
 .next:
 	mov	rsi,rbx
@@ -1451,6 +1677,8 @@ gw_match:
 	mov	[rcx+GWE_NS],rax
 	mov	eax,[g_gr_nslen]
 	mov	[rcx+GWE_NSLEN],eax
+	mov	eax,[g_gw_rti]
+	mov	[rcx+GWE_ROUTE],eax
 .full:
 	ret
 cstring str_gw_slash, '/'
@@ -1519,6 +1747,8 @@ gw_emit:
 	jae	.found
 	imul	rax,rbx,GWL_SIZE
 	add	rax,[g_gw_base]
+	cmp	dword [rax+GW_T_L+GWL_STATE],0
+	jne	@f
 	mov	ecx,[rax+GW_T_L+GWL_PORT]
 	cmp	ecx,[g_gw_port]
 	jbe	@f
@@ -2709,16 +2939,16 @@ gw_ref_pool:
 	call	gj_str
 	jc	@f
 	test	ecx,ecx
-	jnz	.no
+	jnz	.kind
 @@:
 	mov	rsi,r12
 	gk	'kind'
 	call	gj_str
 	jc	@f
 	cmp	ecx,7
-	jne	.no
+	jne	.kind
 	cmp	dword [rdi],'Serv'
-	jne	.no
+	jne	.kind
 @@:
 	mov	rsi,r12
 	gk	'namespace'
@@ -2727,7 +2957,7 @@ gw_ref_pool:
 	mov	rsi,[rbx+GWE_NS]
 	mov	edx,[rbx+GWE_NSLEN]
 	call	gw_same
-	jne	.no				; (no ReferenceGrants here)
+	jne	.not_permitted			; (no ReferenceGrants here)
 @@:
 	mov	rsi,r12
 	gk	'port'
@@ -2754,8 +2984,24 @@ gw_ref_pool:
 	pop	rdi
 	jc	.no
 	call	gw_pool
-	jmp	.out
+	cmp	eax,-1
+	jne	.out
 .no:
+	mov	edx,GRF_NOTFOUND
+	jmp	.why
+.kind:
+	mov	edx,GRF_KIND
+	jmp	.why
+.not_permitted:
+	mov	edx,GRF_NOTPERMITTED
+.why:
+	mov	eax,[rbx+GWE_ROUTE]		; the route says why (the first reason)
+	imul	rax,rax,GWR_SIZE
+	add	rax,[g_gw_base]
+	cmp	dword [rax+GW_T_R+GWR_REFS],0
+	jne	@f
+	mov	[rax+GW_T_R+GWR_REFS],edx
+@@:
 	mov	eax,-1
 .out:
 	pop	r12
@@ -3010,6 +3256,8 @@ gw_emit_tls:
 	imul	r12,rbx,GWL_SIZE
 	add	r12,[g_gw_base]
 	add	r12,GW_T_L
+	cmp	dword [r12+GWL_STATE],0
+	jne	.next
 	mov	eax,[r12+GWL_PORT]
 	cmp	eax,[g_gw_port]
 	jne	.next
@@ -3022,7 +3270,8 @@ gw_emit_tls:
 	jc	.next
 .ref:
 	mov	r14,rsi
-	call	gw_cert_ref
+	call	gw_cert_ref			; eax = 1: it has its certificate
+	or	[r12+GWL_CERTOK],eax
 	mov	rsi,r14
 	call	gj_next
 	jnc	.ref
@@ -3092,7 +3341,7 @@ gw_cert_ref:
 	mov	rsi,[g_gc_name]
 	mov	edx,[g_gc_nlen]
 	call	gw_same
-	je	.no
+	je	.had
 	inc	eax
 	jmp	.seen
 .fetch:
@@ -3149,10 +3398,14 @@ gw_cert_ref:
 	lea	r8,[str_gw_key]
 	call	gw_cert_path_out
 	go_lit	'"',10
-	jmp	.no
+.had:
+	mov	eax,1
+	jmp	.out
 .fail:
 	mov	dword [g_gw_fail],1
 .no:
+	xor	eax,eax
+.out:
 	pop	r13
 	pop	rbx
 	ret

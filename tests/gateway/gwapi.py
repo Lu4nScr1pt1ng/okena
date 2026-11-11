@@ -66,11 +66,26 @@ def backend(name, ip, port):
     threading.Thread(target=s.serve_forever, daemon=True).start()
 
 
-state = {"gateways": [], "routes": [], "services": {}, "secrets": {}, "slices": [], "status": 200, "seen": []}
+state = {"gateways": [], "routes": [], "services": {}, "secrets": {}, "slices": [], "status": 200, "seen": [],
+         "classes": {}, "patches": [], "bad_patches": []}
+
+
+def merge(dst, patch):
+    """RFC 7386"""
+    if not isinstance(patch, dict):
+        return patch
+    dst = dict(dst) if isinstance(dst, dict) else {}
+    for k, v in patch.items():
+        if v is None:
+            dst.pop(k, None)
+        else:
+            dst[k] = merge(dst.get(k), v)
+    return dst
 
 
 class Api(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.0"
+
 
     def answer(self, code, obj):
         b = json.dumps(obj).encode()
@@ -86,6 +101,9 @@ class Api(http.server.BaseHTTPRequestHandler):
         parts = u.path.split("/")
         if state["status"] != 200:
             return self.answer(state["status"], {"kind": "Status", "code": state["status"]})
+        if u.path.startswith("/apis/gateway.networking.k8s.io/v1/gatewayclasses/"):
+            c = state["classes"].get(parts[-1])
+            return self.answer(200, c) if c else self.answer(404, {"kind": "Status", "code": 404})
         if u.path == "/apis/gateway.networking.k8s.io/v1/gateways":
             return self.answer(200, {"kind": "GatewayList", "metadata": {"resourceVersion": "1"}, "items": state["gateways"]})
         if u.path == "/apis/gateway.networking.k8s.io/v1/httproutes":
@@ -104,8 +122,37 @@ class Api(http.server.BaseHTTPRequestHandler):
             return self.answer(200, {"kind": "EndpointSliceList", "metadata": {"resourceVersion": "1"}, "items": items})
         self.answer(404, {"kind": "Status", "code": 404})
 
+    def do_PATCH(self):
+        u = urllib.parse.urlparse(self.path)
+        raw = self.rfile.read(int(self.headers["Content-Length"]))
+        try:
+            body = json.loads(raw)
+        except ValueError:
+            state["bad_patches"].append(raw)
+            return self.answer(400, {"kind": "Status", "code": 400})
+        state["patches"].append((u.path, self.headers.get("Content-Type"), body))
+        parts = u.path.split("/")
+        obj = None
+        if parts[-1] == "status" and parts[4] == "gatewayclasses":
+            obj = state["classes"].get(parts[5])
+        elif parts[-1] == "status" and len(parts) == 9:
+            ns, kind, name = parts[5], parts[6], parts[7]
+            table = state["gateways"] if kind == "gateways" else state["routes"]
+            obj = next((x for x in table if x["metadata"]["namespace"] == ns and x["metadata"]["name"] == name), None)
+        if obj is None:
+            return self.answer(404, {"kind": "Status", "code": 404})
+        obj["status"] = merge(obj.get("status"), body.get("status"))
+        self.answer(200, obj)
+
     def log_message(self, *a):
         pass
+
+
+def cond(obj, typ, path=None):
+    for c in (obj or {}).get("conditions", []):
+        if c["type"] == typ:
+            return c["status"], c["reason"]
+    return None
 
 
 def service(ns, name, ports):
@@ -120,14 +167,15 @@ def slice_(ns, svc, ips, ports):
 
 
 def gateway(ns, name, listeners, cls="okena"):
-    return {"metadata": {"namespace": ns, "name": name}, "spec": {"gatewayClassName": cls, "listeners": listeners}}
+    return {"metadata": {"namespace": ns, "name": name, "generation": 3},
+            "spec": {"gatewayClassName": cls, "listeners": listeners}}
 
 
 def route(ns, name, rules, parents=None, hostnames=None):
     spec = {"parentRefs": parents or [{"name": "gw", "namespace": "infra"}], "rules": rules}
     if hostnames:
         spec["hostnames"] = hostnames
-    return {"metadata": {"namespace": ns, "name": name}, "spec": spec}
+    return {"metadata": {"namespace": ns, "name": name, "generation": 2}, "spec": spec}
 
 
 def ref(name, port, weight=None):
@@ -201,7 +249,10 @@ def main():
                                 {"name": "https", "port": GWS, "protocol": "HTTPS", "hostname": "secure.test",
                                  "tls": {"mode": "Terminate", "certificateRefs": [{"kind": "Secret", "name": "site"}]},
                                  "allowedRoutes": {"namespaces": {"from": "All"}}}]),
-        gateway("infra", "own", [{"name": "same", "port": GWH + 10, "protocol": "HTTP"}]),
+        gateway("infra", "own", [{"name": "same", "port": GWH + 10, "protocol": "HTTP"},
+                                 {"name": "tcp", "port": GWH + 11, "protocol": "TCP"},
+                                 {"name": "nocert", "port": GWH + 12, "protocol": "HTTPS",
+                                  "tls": {"certificateRefs": [{"name": "nosuch"}]}}]),
         gateway("infra", "theirs", [{"name": "x", "port": GWH + 20, "protocol": "HTTP"}], cls="nginx")]
     state["routes"] = [
         route("shop", "main", [
@@ -231,8 +282,16 @@ def main():
         route("infra", "same", [{"matches": [prefix("/own")], "backendRefs": [ref("web", 80)]}],
               parents=[{"name": "own"}]),
         route("shop", "other-class", [{"backendRefs": [ref("web", 80)]}], parents=[{"name": "theirs", "namespace": "infra"}]),
+        route("shop", "no-section", [{"backendRefs": [ref("web", 80)]}], parents=[{"name": "gw", "namespace": "infra", "sectionName": "nope"}]),
+        route("shop", "no-host", [{"backendRefs": [ref("web", 80)]}], hostnames=["other.test"],
+              parents=[{"name": "gw", "namespace": "infra", "sectionName": "https"}]),
     ]
     state["services"][("infra", "web")] = state["services"][("shop", "web")]
+    state["classes"]["okena"] = {"metadata": {"name": "okena", "generation": 1},
+                                 "spec": {"controllerName": "okena.dev/gateway-controller"}}
+    hosted = next(r for r in state["routes"] if r["metadata"]["name"] == "hosted")
+    hosted["status"] = {"parents": [{"parentRef": {"name": "elsewhere"}, "controllerName": "example.com/other",
+                                     "conditions": [{"type": "Accepted", "status": "True", "reason": "Accepted"}]}]}
     slice_("infra", "web", ["127.0.0.2"], H)
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.minimum_version = ssl.TLSVersion.TLSv1_3
@@ -291,6 +350,50 @@ include "{gwdir}/*.conf"
         check("HTTPS from a Secret: its certificate, its route", q.stdout.startswith("api "), (q.stdout, q.stderr))
         check("  the Secret's files are the owner's only", oct((gwdir / "certs" / "infra.site.key").stat().st_mode & 0o777) == "0o600")
 
+        # the status written back
+        def gw(name):
+            return next(g for g in state["gateways"] if g["metadata"]["name"] == name)
+
+        def rt(name):
+            return next(r for r in state["routes"] if r["metadata"]["name"] == name)
+
+        def listener(g, name):
+            return next((l for l in g.get("status", {}).get("listeners", []) if l["name"] == name), {})
+
+        def mine(r):
+            return next((p for p in r.get("status", {}).get("parents", []) if p["controllerName"] == "okena.dev/gateway-controller"), {})
+        t = until(lambda: "status" in gw("gw") and mine(rt("no-host")))
+        g = gw("gw").get("status", {})
+        check("the GatewayClass: Accepted", cond(state["classes"]["okena"].get("status"), "Accepted") == ("True", "Accepted"),
+              state["classes"]["okena"].get("status"))
+        check("a Gateway: Accepted, Programmed, of its generation", cond(g, "Accepted") == ("True", "Accepted")
+              and cond(g, "Programmed") == ("True", "Programmed") and g["conditions"][0]["observedGeneration"] == 3
+              and g["conditions"][0]["lastTransitionTime"].endswith("Z"), g)
+        h = listener(gw("gw"), "http")
+        check("  a listener: its routes counted, Accepted, ResolvedRefs, Programmed", h.get("attachedRoutes") == 2
+              and cond(h, "Accepted")[0] == "True" and cond(h, "ResolvedRefs")[0] == "True" and cond(h, "Programmed")[0] == "True", h)
+        check("  HTTPS with its certificate: ResolvedRefs", cond(listener(gw("gw"), "https"), "ResolvedRefs") == ("True", "ResolvedRefs"))
+        check("  TCP: UnsupportedProtocol", cond(listener(gw("own"), "tcp"), "Accepted") == ("False", "UnsupportedProtocol"),
+              listener(gw("own"), "tcp"))
+        check("  a Secret that is not there: InvalidCertificateRef, not Programmed",
+              cond(listener(gw("own"), "nocert"), "ResolvedRefs") == ("False", "InvalidCertificateRef")
+              and cond(listener(gw("own"), "nocert"), "Programmed")[0] == "False", listener(gw("own"), "nocert"))
+        check("  another class's Gateway: not touched", "status" not in gw("theirs"))
+        m = mine(rt("main"))
+        check("a route: Accepted; a Service not there: ResolvedRefs BackendNotFound", cond(m, "Accepted") == ("True", "Accepted")
+              and cond(m, "ResolvedRefs") == ("False", "BackendNotFound") and m.get("parentRef") == {"name": "gw", "namespace": "infra"}, m)
+        check("  from a namespace not allowed: NotAllowedByListeners", cond(mine(rt("not-same")), "Accepted") == ("False", "NotAllowedByListeners"),
+              mine(rt("not-same")))
+        check("  a sectionName that is not there: NoMatchingParent", cond(mine(rt("no-section")), "Accepted") == ("False", "NoMatchingParent"))
+        check("  no hostname in common: NoMatchingListenerHostname", cond(mine(rt("no-host")), "Accepted") == ("False", "NoMatchingListenerHostname"))
+        ps = rt("hosted")["status"]["parents"]
+        check("  what another controller wrote is kept", [p["controllerName"] for p in ps] == ["example.com/other", "okena.dev/gateway-controller"], ps)
+        check("  as merge patches", all(c == "application/merge-patch+json" for _, c, _ in state["patches"]))
+        n = len(state["patches"])
+        k = len(state["seen"])
+        until(lambda: len(state["seen"]) > k + 6, 5)
+        check("  and not again while nothing changes", len(state["patches"]) == n, state["patches"][n:][:2])
+
         # changes are followed
         state["routes"].append(route("shop", "late", [{"matches": [prefix("/late")], "backendRefs": [ref("v2", 80)]}]))
         t = until(lambda: get("/late")[1].startswith("v2 "))
@@ -308,6 +411,14 @@ include "{gwdir}/*.conf"
         state["status"] = 200
         t = log.read_text()
         check("  and it is said once", t.count(w) == 1, [l for l in t.splitlines() if "gateway k" in l][-8:])
+        state["classes"]["okena"]["spec"]["controllerName"] = "example.com/other"
+        t = until(lambda: get("/web/x")[0] == 0, 8)
+        check("a GatewayClass of that name that another controller owns: its Gateways not served", t is not None, (t, get("/web/x")))
+        state["classes"]["okena"]["spec"]["controllerName"] = "okena.dev/gateway-controller"
+        # (the port is still held by the workers draining it: asked again until it is free)
+        t = until(lambda: get("/web/x")[0] == 200, 15)
+        check("  ours again: served again (once the port is let go)", t is not None,
+              (t, [l for l in log.read_text().splitlines() if "listen" in l or "gateway:" in l][-6:]))
         check("asked with the token, from okena's cache (resourceVersion=0)",
               any(s == "/apis/gateway.networking.k8s.io/v1/httproutes?resourceVersion=0" for s in state["seen"]))
     finally:

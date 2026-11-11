@@ -61,9 +61,15 @@ bss
 	g_gw_tmp	rb 4096 + 512
 	g_gw_reqpath	rb 1024
 	g_gw_reqlen	dd ?
+	g_gw_method	dd ?			; 0 GET, 1 PATCH (a merge patch: g_gw_body)
+	g_gw_bodylen	dd ?
+	g_gw_body	dq ?
+	g_gw_retries	dd ?
+	g_gw_retry_at	dq ?
 end bss
 
 GH_RELOAD	:= 0			; d: a new file: the supervisor reloads
+GH_RESULT	:= 4			; d: how the last reload went: 0 not known, 1 taken, 2 refused
 
 cstring gw_name, 'okena-gateway',0
 
@@ -300,6 +306,18 @@ gateway_reload:
 	call	acme_stop
 	jmp	spawn_gateway
 
+; edi = 1 a reload taken, 2 refused: said to the gateway process (for its status).
+; Keeps all.
+gw_reload_result:
+	push	rax
+	mov	rax,[g_gw_page]
+	test	rax,rax
+	jz	@f
+	mov	[rax+GH_RESULT],edi
+@@:
+	pop	rax
+	ret
+
 ; the supervisor's tick: eax = 1 when a new file waits to be read
 gw_tick:
 	mov	rcx,[g_gw_page]
@@ -392,6 +410,7 @@ gw_main:
 	xor	eax,eax
 @@:
 	mov	[g_gw_lastlen],eax
+	call	gs_load				; (and the status it wrote)
 .loop:
 	call	gw_render			; GW_OUT, eax = its length; CF: not now
 	jc	.sleep
@@ -406,7 +425,10 @@ gw_main:
 	add	rsi,GW_OUT
 	mov	ecx,eax
 	repe	cmpsb
-	je	.sleep
+	jne	.write
+	call	gw_status			; as it is served: its status, where it changed
+	call	gw_retry			; (refused: asked again, for a while)
+	jmp	.sleep
 .write:
 	lea	rsi,[str_gw_conf]
 	call	gw_dir_path
@@ -434,7 +456,9 @@ gw_main:
 	out_lit ' ports'
 	call	log_end
 	mov	rax,[g_gw_page]
+	mov	dword [rax+GH_RESULT],0		; (what this reload does, not what one did before)
 	mov	dword [rax+GH_RELOAD],1
+	mov	dword [g_gw_retries],0
 	jmp	.sleep
 .unwritable:
 	mov	eax,6
@@ -461,6 +485,32 @@ rodata
 	ts_gw_idle	dq 3600, 0
 end rodata
 cstring str_gw_conf, '/gateway.conf',0
+
+; The last reload was refused: asked again every 5 s, 12 times at most after
+; what was written last. A port okena stopped listening on is still held by the
+; workers that finish their connections there, and listening on it again is
+; refused until they are gone; a configuration that is wrong stays wrong, and is
+; not asked for for ever.
+gw_retry:
+	mov	rax,[g_gw_page]
+	cmp	dword [rax+GH_RESULT],2
+	jne	.out
+	cmp	dword [g_gw_retries],12
+	jae	.out
+	call	monotonic_seconds
+	cmp	rax,[g_gw_retry_at]
+	jb	.out
+	add	rax,5
+	mov	[g_gw_retry_at],rax
+	inc	dword [g_gw_retries]
+	call	log_begin
+	out_lit 'gateway: what it wrote was refused: asking for it again'
+	call	log_end
+	mov	rax,[g_gw_page]
+	mov	dword [rax+GH_RESULT],0
+	mov	dword [rax+GH_RELOAD],1
+.out:
+	ret
 
 ; landlock: everything read, DIR written
 gw_confine:
@@ -681,11 +731,17 @@ gw_get:
 	mov	edx,[r14+KB_SNILEN]
 	call	cx_handshake
 	jc	.not_verified
-	; GET PATH HTTP/1.0, Host, Accept, the token
+	; GET (or PATCH) PATH HTTP/1.0, Host, Accept, the token
 	lea	rdi,[g_kb_req]
 	cstring .get, 'GET '
 	lea	rsi,[.get]
 	mov	ecx,.get.len
+	cmp	dword [g_gw_method],0
+	je	@f
+	cstring .patch, 'PATCH '
+	lea	rsi,[.patch]
+	mov	ecx,.patch.len
+@@:
 	rep	movsb
 	lea	rsi,[g_gw_reqpath]
 	mov	ecx,[g_gw_reqlen]
@@ -703,6 +759,15 @@ gw_get:
 	lea	rsi,[g_kb_tok]
 	mov	ecx,ebx
 	rep	movsb
+	cmp	dword [g_gw_method],0
+	je	@f
+	cstring .ct, 13,10,'Content-Type: application/merge-patch+json',13,10,'Content-Length: '
+	lea	rsi,[.ct]
+	mov	ecx,.ct.len
+	rep	movsb
+	mov	eax,[g_gw_bodylen]
+	call	dk_decimal
+@@:
 	mov	dword [rdi],0x0A0D0A0D
 	add	rdi,4
 	lea	rsi,[g_kb_req]
@@ -710,6 +775,13 @@ gw_get:
 	sub	rdx,rsi
 	call	cx_send
 	jc	.no_answer_close
+	cmp	dword [g_gw_method],0
+	je	@f
+	mov	rsi,[g_gw_body]			; the body after its head
+	mov	edx,[g_gw_bodylen]
+	call	cx_send
+	jc	.no_answer_close
+@@:
 	call	cx_answer
 	jc	.no_answer_close
 	call	cx_close

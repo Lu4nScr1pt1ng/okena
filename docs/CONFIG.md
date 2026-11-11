@@ -1700,9 +1700,14 @@ verified TLS and with the same credentials as `discover kubernetes` (inside a
 pod the defaults are all it needs), and writes them as okena's configuration in
 DIR/gateway.conf. When that changes, okena reloads: what it serves is always a
 configuration `okena check` passes, and one that does not pass is refused
-whole, the running one kept. The main file takes it in with `include`. The
-service account needs `list` on gateways and httproutes, `get` on services and
-secrets, and what `discover kubernetes` needs.
+whole, the running one kept (and asked for again every 5 s for a minute: a
+port okena just stopped listening on is let go only when the workers draining
+it are gone). The main file takes it in with `include`. The GatewayClass, when
+there is one of that name, must have `controllerName: okena.dev/gateway-controller`;
+one of another controller's is not served. The service account needs `list` on
+gateways and httproutes, `get` on gatewayclasses, services and secrets, `patch`
+on gatewayclasses/status, gateways/status and httproutes/status, and what
+`discover kubernetes` needs.
 
 What it reads, and becomes:
 
@@ -1728,10 +1733,19 @@ What it reads, and becomes:
   EndpointSlices, the Service's port found by its name; several, by weight
   (`split`). None to be had, a Service or a port that is not there: 500.
 
+Status is written back, as merge patches of the status subresources and only
+when it changed (DIR/status.state remembers what was written): the GatewayClass
+Accepted; a Gateway Accepted and Programmed (not when okena refused what was
+written for it), each listener with its attachedRoutes, Accepted (or
+UnsupportedProtocol, Invalid), ResolvedRefs (or InvalidCertificateRef) and
+Programmed; an HTTPRoute, for each parentRef naming one of these Gateways,
+Accepted (or NoMatchingParent, NotAllowedByListeners,
+NoMatchingListenerHostname) and ResolvedRefs (or BackendNotFound,
+RefNotPermitted, InvalidKind), what other controllers wrote in it kept.
+
 Not there yet: regular expressions in paths and query parameters, URLRewrite's
 hostname, a backendRef's own filters, ReferenceGrants (so nothing across
-namespaces), GRPCRoute, TLSRoute, and status: okena writes no conditions back,
-so `kubectl get gateway` does not say it is programmed.
+namespaces), GRPCRoute and TLSRoute.
 
 Everything a route's author writes reaches the file only as what it is: names
 and paths are checked for what they may be made of, values are quoted and
