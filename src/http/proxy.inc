@@ -1174,7 +1174,10 @@ route_regex:
 ;   byte is refused (the backend could split or join segments on it);
 ;   a raw '\' is refused; "//" is one '/'; a "." or ".." segment
 ;   (decoded ones included) is refused, so /public/../admin can never
-;   match /public/* while the backend serves /admin.
+;   match /public/* while the backend serves /admin;
+;   a segment's parameters (";..." up to the next '/') are not part of it,
+;   as servlet containers drop them: /admin;x/y is /admin/y, "..;" is "..";
+;   overlong UTF-8 (%C0%AE is a '.' to a careless decoder) is refused.
 ; The target forwarded is still the original one.
 path_normalize:
 	lea	r8,[g_npath]
@@ -1189,6 +1192,8 @@ path_normalize:
 	je	.bad
 	cmp	al,'/'
 	je	.slash
+	cmp	al,';'
+	je	.params
 	cmp	al,'%'
 	jne	.put
 	; %XX
@@ -1205,6 +1210,27 @@ path_normalize:
 	shl	r10d,4
 	or	eax,r10d
 	add	ecx,2
+	cmp	al,0xC0
+	jb	.not_overlong
+	cmp	al,0xC1
+	jbe	.bad				; a 2-byte form of an ASCII byte
+	cmp	al,0xE0
+	je	.lead3
+	cmp	al,0xF0
+	jne	.not_overlong
+	mov	r11d,0x90			; F0 then under 90: a 3-byte one in 4
+	jmp	.lead
+.lead3:
+	mov	r11d,0xA0			; E0 then under A0: a 2-byte one in 3
+.lead:
+	push	rax
+	call	.next_hex
+	jc	@f
+	cmp	eax,r11d
+	jb	.bad_pop
+@@:
+	pop	rax
+.not_overlong:
 	cmp	al,'/'
 	je	.bad
 	cmp	al,'\'
@@ -1225,6 +1251,38 @@ path_normalize:
 	mov	[r8+r9+2],al
 	add	r9d,3
 	jmp	.byte
+.params:
+	; ";..." to the next '/': not part of the segment
+	cmp	ecx,esi
+	jae	.segments
+	cmp	byte [rdi+rcx],'/'
+	je	.byte
+	inc	ecx
+	jmp	.params
+.bad_pop:
+	pop	rax
+	jmp	.bad
+; the %XX at ecx, if there is one: eax = its value, CF when none
+.next_hex:
+	lea	edx,[rcx+3]
+	cmp	edx,esi
+	ja	.none
+	cmp	byte [rdi+rcx],'%'
+	jne	.none
+	movzx	eax,byte [rdi+rcx+1]
+	call	.hex
+	jc	.none
+	mov	edx,eax
+	shl	edx,4
+	movzx	eax,byte [rdi+rcx+2]
+	call	.hex
+	jc	.none
+	or	eax,edx
+	clc
+	ret
+.none:
+	stc
+	ret
 .slash:
 	test	r9d,r9d
 	jz	.put

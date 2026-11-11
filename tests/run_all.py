@@ -32,6 +32,8 @@ SUITES = [
     ("edge epoll", ["tests/httpproxy/edge.py", "epoll"]),
     ("upstream io_uring", ["tests/httpproxy/upstream.py", "io_uring"]),
     ("upstream epoll", ["tests/httpproxy/upstream.py", "epoll"]),
+    ("routing io_uring", ["tests/httpproxy/routing.py", "io_uring"]),
+    ("routing epoll", ["tests/httpproxy/routing.py", "epoll"]),
     ("l4 io_uring core", ["tests/l4/run.py", "io_uring", "core"]),
     ("l4 io_uring faults", ["tests/l4/run.py", "io_uring", "faults"]),
     ("l4 epoll core", ["tests/l4/run.py", "epoll", "core"]),

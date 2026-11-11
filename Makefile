@@ -101,6 +101,8 @@ test-serial: $(BIN) $(HTTPH) $(KAT) $(TLSH)
 	python3 -I tests/httpproxy/edge.py epoll
 	python3 -I tests/httpproxy/upstream.py io_uring
 	python3 -I tests/httpproxy/upstream.py epoll
+	python3 -I tests/httpproxy/routing.py io_uring
+	python3 -I tests/httpproxy/routing.py epoll
 	python3 -I tests/bench/run.py
 	python3 -I tests/h2/hpack_suite.py
 	python3 -I tests/h2/run.py io_uring

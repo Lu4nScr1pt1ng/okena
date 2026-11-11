@@ -1024,18 +1024,25 @@ hf_valid_host:
 	test	ecx,ecx
 	jz	.bad
 	inc	ecx
+	jmp	.port_digits0			; (digits only: "a::1" is no host)
 .port:
 	cmp	ecx,edx
 	jae	.ok
 	cmp	byte [rsi+rcx],':'
-	jne	.port_digits
+	jne	.port_digits0
 	inc	ecx
+.port_digits0:
+	xor	r8d,r8d				; its value: 65535 at most
 .port_digits:
 	cmp	ecx,edx
 	jae	.ok
 	movzx	eax,byte [rsi+rcx]
 	sub	eax,'0'
 	cmp	eax,9
+	ja	.bad
+	imul	r8d,r8d,10
+	add	r8d,eax
+	cmp	r8d,65535
 	ja	.bad
 	inc	ecx
 	jmp	.port_digits

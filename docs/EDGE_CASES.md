@@ -3,7 +3,8 @@
 What okena does in the situations that break proxies. Each line is a
 behaviour to implement and a test to keep. The HTTP/1.x parsing table is
 checked line by line against a running okena by `tests/httpproxy/edge.py`
-(both engines), the upstream responses table by `tests/httpproxy/upstream.py`, and its parser against a reference by `tests/http/run.py`. "Reject" means a 4xx/5xx with
+(both engines), the upstream responses table by `tests/httpproxy/upstream.py`, paths and hosts by
+`tests/httpproxy/routing.py`, and its parser against a reference by `tests/http/run.py`. "Reject" means a 4xx/5xx with
 the connection closed when its framing can no longer be trusted.
 
 ## Network and TCP
@@ -98,14 +99,14 @@ the connection closed when its framing can no longer be trusted.
 
 | Case | Behaviour |
 |---|---|
-| Dot segments, `%2e%2e`, `%2F`, `//`, `;params`, overlong UTF-8, backslashes | normalised once, unsafe forms rejected, `path forward=normalized|original` |
-| Percent-encoding case (`%2f` vs `%2F`) | normalised to upper case for matching |
-| Unicode paths | matched as UTF-8 bytes after percent-decoding; invalid UTF-8 rejected unless the route allows raw bytes |
+| Dot segments, `%2e%2e`, `%2F`, `//`, `;params`, overlong UTF-8, backslashes | routes match a normalized form, computed once: unreserved escapes decoded (`/%61dmin` is `/admin`), `//` one `/`, a segment's `;params` left out as servlet containers do (`/admin;x/y` is `/admin/y`); refused (400): `.` and `..` segments raw, escaped or behind a parameter (`..;`), escaped `/`, `\` or control bytes, a raw `\`, bad escapes, overlong UTF-8 (`%C0%AE`). The target is forwarded as the client sent it |
+| Percent-encoding case (`%2f` vs `%2F`) | normalised to upper case for matching; `%25` stays a `%` (a backend that decodes twice is its own bug) |
+| Unicode paths | escaped, matched as escaped (upper-case hex); raw bytes above 0x7F are not allowed in a target; overlong forms refused, other invalid UTF-8 (`%FF`, old Latin-1 links) passed on |
 | Trailing slash | `/a` and `/a/` are different unless `slash redirect` or `slash ignore` |
 | Query string with repeated keys, empty values, no `=` | kept as sent; matchers define first/any semantics |
-| `Host` with port, upper case, trailing dot | normalised for matching (lower case, port stripped by listener, trailing dot removed) |
+| `Host` with port, upper case, trailing dot | normalised for matching (lower case, port stripped, trailing dot removed); a port over 65535, `::`, raw UTF-8 or a list is 400 |
 | `Host` missing or several | 400 |
-| Unknown host | listener's `default` route, or 421/404, never the first route by accident |
+| Unknown host | the listener's routes outside any `host` block, or 404; never another host's routes. `*.example.com` takes any depth below it, not `example.com` itself |
 | Two routes that match the same request | load-time error |
 | Very large route tables (thousands of hosts/paths) | compiled tries; lookup cost independent of rule count |
 

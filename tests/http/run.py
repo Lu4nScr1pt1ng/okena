@@ -125,16 +125,22 @@ def valid_host(v):
                 if not 48 <= v[i] <= 57:
                     return False
                 i += 1
-            return True
+            return port_ok(v[v.index(b":") + 1:])
         return True
     # after "]": optional ":" then digits
     if i < len(v) and v[i] == ord(":"):
         i += 1
+    j = i
     while i < len(v):
         if not 48 <= v[i] <= 57:
             return False
         i += 1
-    return True
+    return port_ok(v[j:])
+
+
+def port_ok(p):
+    """a port: up to 65535 (leading zeros do not count)"""
+    return int(p or b"0") <= 65535
 
 
 def common(m):
@@ -443,6 +449,11 @@ CORPUS = [
     ("Q", b"GET / HTTP/1.1\r\nHost: a b\r\n\r\n", "error 400"),
     ("Q", b"GET / HTTP/1.1\r\nHost: user@evil\r\n\r\n", "error 400"),
     ("Q", b"GET / HTTP/1.1\r\nHost: [::1]:8080\r\n\r\n", "ok"),
+    ("Q", b"GET / HTTP/1.1\r\nHost: a:65535\r\n\r\n", "ok"),
+    ("Q", b"GET / HTTP/1.1\r\nHost: a:65536\r\n\r\n", "error 400"),
+    ("Q", b"GET / HTTP/1.1\r\nHost: a:0000080\r\n\r\n", "ok"),
+    ("Q", b"GET / HTTP/1.1\r\nHost: a::80\r\n\r\n", "error 400"),
+    ("Q", b"GET / HTTP/1.1\r\nHost: [::1]:99999999999999999999\r\n\r\n", "error 400"),
     ("Q", b"\r\nGET / HTTP/1.1\r\n" + R + b"\r\n", "error 400"),
     ("Q", b"G\x00T / HTTP/1.1\r\n" + R + b"\r\n", "error 400"),
     ("Q", b"GET / HTTP/1.1\r\n" + R + b"Connection: host\r\n\r\n", "ok"),            # cannot hide Host
