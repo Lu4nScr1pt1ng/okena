@@ -86,6 +86,7 @@ SUITES = [
     ("overload epoll", ["tests/overload/run.py", "epoll"]),
     ("reload", ["tests/reload/run.py"]),
     ("lastgood", ["tests/reload/lastgood.py"]),
+    ("onchange", ["tests/reload/onchange.py"]),
     ("health", ["tests/health/run.py"]),
     ("lb", ["tests/lb/run.py"]),
     ("admin io_uring", ["tests/admin/run.py", "io_uring"]),

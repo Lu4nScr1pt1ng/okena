@@ -89,6 +89,7 @@ test-serial: $(BIN) $(HTTPH) $(KAT) $(TLSH)
 	python3 -I tests/dns/run.py
 	python3 -I tests/reload/run.py
 	python3 -I tests/reload/lastgood.py
+	python3 -I tests/reload/onchange.py
 	python3 -I tests/health/run.py
 	python3 -I tests/lb/run.py
 	python3 -I tests/peer/run.py io_uring

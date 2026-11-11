@@ -65,6 +65,7 @@ macro plan_regions action
 	action g_plan_drain_timeout, 8
 	action g_plan_watchdog, 8
 	action g_plan_last_good, 4
+	action g_plan_reload_watch, 4
 	action g_plan_tryc, 4
 	action g_try_secs, 4 * MAX_TRYC
 	action g_plan_busy_poll, 8
@@ -520,6 +521,7 @@ supervisor_reload:
 	mov	edi,SG_RELOAD_FAILS
 	call	stats_global_inc
 .out:
+	call	cw_snapshot			; (reload on-change: the files now, either way)
 	cmp	dword [g_shutdown],0
 	jne	@f
 	call	sd_ready			; (systemd: READY=1, the reload over either way)

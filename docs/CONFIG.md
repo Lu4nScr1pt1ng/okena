@@ -8,7 +8,7 @@ not built yet. A directive that is not built is refused by `okena check`
 
 | Block | Directives |
 |---|---|
-| `okena` | `workers`, `io_engine`, `last_good on\|off`, `busy_poll`, `watchdog`, `drain delay= timeout=`, `metrics [token=]`, `user`, `ticket_keys`, `handshake_budget wait=`, `quic_server_id HEX`, `cache_memory`, `cache_disk PATH size=`, `fleet ADDR...`, `cdn_loop NAME [max=]`, `bird PATH protocol= [pool=]` |
+| `okena` | `workers`, `io_engine`, `last_good on\|off`, `reload on-change\|signal`, `busy_poll`, `watchdog`, `drain delay= timeout=`, `metrics [token=]`, `user`, `ticket_keys`, `handshake_budget wait=`, `quic_server_id HEX`, `cache_memory`, `cache_disk PATH size=`, `fleet ADDR...`, `cdn_loop NAME [max=]`, `bird PATH protocol= [pool=]` |
 | `vrrp IFACE` | `vrid=`, `priority=`, `address=A/N`, `advert=`, `preempt=`, `track=POOL` (a floating address, VRRP v3) |
 | `tcp ADDR...` | `to`, `mss`, `limits { connections; per_source }`, `timeout { idle }`, `proxy_protocol send v1\|v2`, `tls { cert; key }`, `tls passthrough { sni NAME... to pool P; default reject\|to pool P }` (a `default to pool` alone is enough) |
 | `udp ADDR...` | `to`, `responses N`, `limits { connections }` (flows), `timeout { idle }` |
@@ -409,9 +409,9 @@ okena {
                               # past it hellos queue, and those older than wait close
     acme /var/lib/okena/acme ca=https://acme-v02.api.letsencrypt.org/directory email=ops@example.com
                               # automatic HTTPS: `tls { acme NAME... }` (below)
+    reload on-change          # reload when the files change (else SIGHUP, `okena reload`)
     # planned:
     profile balanced          # balanced | latency | throughput | memory-lean
-    reload on-change          # watch the config directory (today: SIGHUP, `okena reload`)
 }
 ```
 
@@ -482,6 +482,14 @@ the whole head, so only that exact request is refused, and the log says each
 death and the quarantine. HTTP/1.x requests (HTTP/2 and 3 heads are decoded
 elsewhere). The watchdog gives a stuck worker two seconds between the two
 signals.
+
+`reload on-change` reloads by itself when the configuration changes: once a
+second the supervisor looks at the file, each file it included and their
+directories (so a file added where an `include "conf.d/*.conf"` looks counts),
+and a change seen on two ticks in a row (its writer done) reloads as SIGHUP
+does. A reload that fails keeps the running configuration and is not tried
+again until the files change again. No inotify: nothing to overflow, and it
+works on any filesystem, a ConfigMap's symlinks included.
 
 `last_good on` keeps the configuration that last started or reloaded as
 FILE.good, beside the file (0600, written whole then renamed over the old

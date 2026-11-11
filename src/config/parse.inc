@@ -92,11 +92,14 @@ bss
 	g_diag_src	dq ?			; the one a message is about
 	g_diag_end	dq ?
 	g_inc_dir	rb 4096
+	g_cfg_ndirs	dd ?			; the directories globs looked in (reload on-change)
+	g_cfg_dirs	rq CFG_DIRS
 	g_inc_pat	rb 256
 	g_inc_dents	rb 8192
 end bss
 
 CFG_FILES	:= 256
+CFG_DIRS	:= 64
 CFG_INC_DEPTH	:= 8
 SYS_getdents64_	:= 217
 
@@ -385,6 +388,7 @@ cfg_begin:
 	mov	[g_diag_src],rdi
 	mov	[g_diag_end],rsi
 	mov	dword [g_cfg_nfiles],1
+	mov	dword [g_cfg_ndirs],0
 	mov	dword [g_inc_depth],0
 	call	cfg_flat_begin			; (rdi: the text) last_good's copy
 	cmp	qword [g_ar_nodes+AR_BASE],0
@@ -1203,6 +1207,31 @@ parse_include:
 
 ; g_inc_dir = "DIR/", g_inc_pat = a pattern: the files that match, sorted
 parse_include_glob:
+	; the directory, kept (a file added there later is a change: cfgwatch.inc)
+	mov	eax,[g_cfg_ndirs]
+	cmp	eax,CFG_DIRS
+	jae	.dir_kept
+	lea	rsi,[g_inc_dir]
+	xor	ecx,ecx
+@@:
+	cmp	byte [rsi+rcx],0
+	je	@f
+	inc	ecx
+	jmp	@b
+@@:
+	push	rcx
+	lea	rdi,[g_ar_text]
+	lea	rsi,[rcx+1]
+	call	arena_alloc
+	pop	rcx
+	mov	rdi,rax
+	lea	rsi,[g_inc_dir]
+	inc	ecx
+	rep	movsb
+	mov	ecx,[g_cfg_ndirs]
+	mov	[g_cfg_dirs+rcx*8],rax
+	inc	dword [g_cfg_ndirs]
+.dir_kept:
 	mov	edi,AT_FDCWD
 	lea	rsi,[g_inc_dir]
 	mov	edx,O_RDONLY or O_DIRECTORY_ or O_CLOEXEC

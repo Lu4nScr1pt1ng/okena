@@ -611,6 +611,7 @@ cli_run:
 	call	plan_compile
 	call	lg_loaded
 	call	lg_save
+	call	cw_snapshot			; reload on-change: the files as started
 	call	local_ca_start			; (a local CA wanted and none: made)
 	call	pd_check			; `user`: possible from here?
 	call	tls_serve_check

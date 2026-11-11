@@ -142,6 +142,7 @@ enumdef e_mirror_what, 'pool'
 enumdef e_quic_cc, 'cubic', 'bbr'
 enumdef e_h3, 'on', 'off', 'retry', 'v2'
 enumdef e_tlsver, '1.2', '1.3'
+enumdef e_reload, 'on-change', 'signal'
 enumdef e_alpn, 'h2', 'http/1.1'
 enumdef e_proto, 'h1', 'h2', 'fastcgi'
 
@@ -203,7 +204,7 @@ enumdef ctx_names, 'the top level', '`okena`', '`tcp`', '`pool`', '`limits`', '`
 
 ; Directives of the language that this version does not implement yet.
 enumdef future_names, 'xdp', \
-	'addon', 'log', 'reload', 'profile', \
+	'addon', 'log', 'profile', \
 	'acme', \
 	'concurrency', \
 	'body', \
@@ -229,6 +230,7 @@ dirdef DIR_ACME, 'acme',        M_OKENA,   0,           F_UNIQUE, 1, 1, T_ANY, T
 dirdef DIR_LOCALCA, 'local_ca', M_OKENA,  0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
 dirdef DIR_ECH, 'ech',           M_OKENA,   0,           F_UNIQUE, 2, 5, T_ANY, T_ANY, 0
 dirdef DIR_GATEWAY, 'gateway',   M_OKENA,   0,           F_UNIQUE, 1, 1, e_gateway, T_NONE, k_gateway
+dirdef DIR_RELOAD, 'reload',     M_OKENA,   0,           F_UNIQUE, 1, 1, e_reload, T_NONE, 0
 dirdef DIR_LAST_GOOD, 'last_good', M_OKENA,  0,           F_UNIQUE, 1, 1, e_onoff, T_NONE, 0
 dirdef DIR_WATCHDOG, 'watchdog',    M_OKENA,   0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
 dirdef DIR_METRICS, 'metrics',     M_OKENA,   0,           F_UNIQUE, 1, 1, T_LISTEN, T_NONE, k_metrics

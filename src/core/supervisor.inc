@@ -243,6 +243,11 @@ supervisor_main:
 	call	api_tick
 	call	watchdog_check
 	call	qz_tick
+	call	cw_tick				; reload on-change: the files changed?
+	test	eax,eax
+	jz	@f
+	call	supervisor_reload
+@@:
 	call	old_workers_check
 	call	tls_tickets_tick		; the ticket key, once a period
 	call	tk_watch			; a fleet's keys file, changed
