@@ -608,6 +608,62 @@ try:
 except ImportError:
     print("note: python cryptography not installed; AES-GCM checked on the test cases only")
 
+# --- SHA-384, HMAC-SHA-384, HKDF-Expand-Label with it, AES-256-GCM
+for n in list(range(0, 260)) + [rng.randrange(260, 5000) for _ in range(20)]:
+    m = rng.randbytes(n)
+    check(f"sha-384 len {n}", run(b"$", m), hashlib.sha384(m).hexdigest())
+check("RFC 4231 case 2, HMAC-SHA-384", run(b"%", le16(4) + b"Jefe" + b"what do ya want for nothing?"),
+      "af45d2e376484031617f78d2b58a6b1b9c7ef464f5a01b47e42ec3736322445e8e2240ca5e69e2c78b3239ecfab21649")
+check("RFC 4231 case 6, a 131-byte key", run(b"%", le16(131) + b"\xaa" * 131 + b"Test Using Larger Than Block-Size Key - Hash Key First"),
+      "4ece084485813e9088d2c63a041bc5b44f9ef1012a2b588f3cd11f05033ac4c60c2ef6ab4030fe8296248df163f44952")
+for _ in range(60):
+    key, msg = rng.randbytes(rng.choice([0, 1, 47, 48, 64, 127, 128, 129, 200])), rng.randbytes(rng.randrange(400))
+    check(f"hmac-sha384 key {len(key)} msg {len(msg)}", run(b"%", le16(len(key)) + key + msg),
+          hmac.new(key, msg, hashlib.sha384).hexdigest())
+
+
+def label384_ref(secret, lab, ctx, n):
+    info = n.to_bytes(2, "big") + bytes([6 + len(lab)]) + b"tls13 " + lab + bytes([len(ctx)]) + ctx
+    out, t, i = b"", b"", 1
+    while len(out) < n:
+        t = hmac.new(secret, t + info + bytes([i]), hashlib.sha384).digest()
+        out += t
+        i += 1
+    return out[:n].hex()
+
+
+for lab, n in ((b"key", 32), (b"iv", 12), (b"finished", 48), (b"c hs traffic", 48), (b"derived", 48), (b"res binder", 100)):
+    secret, ctx = rng.randbytes(48), rng.randbytes(rng.choice([0, 32, 48]))
+    check(f"expand-label-384 {lab.decode()} {n}", run(b"&", secret + bytes([len(lab)]) + lab + bytes([len(ctx)]) + ctx + le16(n)),
+          label384_ref(secret, lab, ctx, n))
+# the GCM paper's test case 16 (AES-256, 60 bytes, 20 of AAD)
+K16 = bytes.fromhex("feffe9928665731c6d6a8f9467308308feffe9928665731c6d6a8f9467308308")
+P16 = bytes.fromhex("d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a721c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b39")
+A16 = bytes.fromhex("feedfacedeadbeeffeedfacedeadbeefabaddad2")
+IV16 = bytes.fromhex("cafebabefacedbaddecaf888")
+check("GCM test case 16 (AES-256)", run(b"i", K16 + IV16 + le16(len(A16)) + A16 + P16),
+      "522dc1f099567d07f47f37a32a84427d643a8cdcbfe5c0c97598a2bd2555d1aa8cb08e48590dbb3da7b08b1056828838c5f61e6393ba7a0abcc9f662"
+      + "76fc6ece0f4e1768cddf8853bb2d551b")
+check("GCM test case 13 (AES-256, empty)", run(b"i", bytes(32) + bytes(12) + le16(0)), "530f8afbc74536b9a963b4f1c4cb738b")
+try:
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    for n in list(range(0, 140)) + [rng.randrange(140, 40000) for _ in range(12)]:
+        key, iv = rng.randbytes(32), rng.randbytes(12)
+        aad = rng.randbytes(rng.choice([0, 5, 13, 16, 17, 32]))
+        pt = rng.randbytes(n)
+        want = AESGCM(key).encrypt(iv, pt, aad)
+        blob = key + iv + le16(len(aad)) + aad
+        check(f"gcm-256 seal {n}", run(b"i", blob + pt), want.hex())
+        if n % 5 == 0 or n > 139:
+            check(f"gcm-256 open {n}", run(b"o", blob + want), pt.hex())
+            check(f"gcm-256 seal {n} without VAES", run(b"vi", blob + pt), want.hex())
+            check(f"gcm-256 open {n} without VAES", run(b"vo", blob + want), pt.hex())
+    key, iv = rng.randbytes(32), rng.randbytes(12)
+    ct = AESGCM(key).encrypt(iv, b"secret", b"")
+    check("gcm-256 open refuses a flipped tag bit", run(b"o", key + iv + le16(0) + ct[:-1] + bytes([ct[-1] ^ 1])), "FAIL")
+except ImportError:
+    pass
+
 # --- P-256: field arithmetic, then keys and RFC 6979 signatures
 P = 2**256 - 2**224 + 2**192 + 2**96 - 1
 N = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551

@@ -1,4 +1,5 @@
-; AES-128-GCM (NIST SP 800-38D), for TLS_AES_128_GCM_SHA256: AES-NI for
+; AES-128-GCM and AES-256-GCM (NIST SP 800-38D), for TLS_AES_128_GCM_SHA256
+; and TLS_AES_256_GCM_SHA384 (and their TLS 1.2 kin): AES-NI for
 ; the cipher, PCLMULQDQ for GHASH (the carry-less multiply and reduction
 ; of Intel's "Carry-Less Multiplication and Its Usage for Computing the
 ; GCM Mode" white paper). No table lookups, no secret-dependent branches.
@@ -9,7 +10,8 @@
 ; rest one block at a time. Serves the handshake and the user-space
 ; records (established connections are meant for kTLS).
 ;
-;   gcm_init(rdi ctx, rsi key[16])
+;   gcm_init(rdi ctx, rsi key[16]), gcm_init256(rdi ctx, rsi key[32]): the
+;            rest is the same for both (rounds as the key says)
 ;   gcm_seal(rdi ctx, rsi iv[12], rdx aad, ecx aad length, r8 buffer,
 ;            r9 length): encrypts the buffer in place, the 16-byte tag
 ;            right after it
@@ -19,7 +21,10 @@
 GCM_RK		:= 0				; 11 round keys
 GCM_H		:= 176				; H = E(K, 0), byte-reflected
 GCM_HP		:= GCM_H			; H^1..H^8, 16 bytes each
-GCM_SIZE	:= GCM_HP + 8 * 16
+GCM_K256	:= GCM_HP + 8 * 16		; d: 1 for AES-256
+GCM_SIZE	:= GCM_K256 + 16		; what AES-128 needs
+GCM_RK11	:= GCM_SIZE			; AES-256: round keys 11 to 14
+GCM256_SIZE	:= GCM_RK11 + 4 * 16		; what a context that may hold AES-256 needs
 
 rodata
 	align 16
@@ -41,6 +46,7 @@ macro aes128_next
 end macro
 
 gcm_init:
+	mov	dword [rdi+GCM_K256],0
 	movdqu	xmm1,[rsi]
 	movdqu	[rdi+GCM_RK],xmm1
 	irp rcon, 0x01,0x02,0x04,0x08,0x10,0x20,0x40,0x80,0x1B,0x36
@@ -48,6 +54,55 @@ gcm_init:
 		aes128_next
 		movdqu	[rdi+GCM_RK+%*16],xmm1
 	end irp
+	jmp	gcm_init_h
+
+; xmm4 = a word of the key so far (the half to change), xmm2 = aeskeygenassist
+; of the other half, shuffled: the next round key in xmm4. Clobbers xmm3.
+macro aes256_next
+	movdqa	xmm3,xmm4
+	pslldq	xmm3,4
+	pxor	xmm4,xmm3
+	pslldq	xmm3,4
+	pxor	xmm4,xmm3
+	pslldq	xmm3,4
+	pxor	xmm4,xmm3
+	pxor	xmm4,xmm2
+end macro
+
+; rdi = ctx, rsi = key[32] (FIPS 197's key expansion for Nk = 8)
+gcm_init256:
+	mov	dword [rdi+GCM_K256],1
+	movdqu	xmm1,[rsi]			; the even round keys
+	movdqu	xmm5,[rsi+16]			; the odd ones
+	movdqu	[rdi+GCM_RK],xmm1
+	movdqu	[rdi+GCM_RK+16],xmm5
+	irp rcon, 0x01,0x02,0x04,0x08,0x10,0x20,0x40
+		aeskeygenassist	xmm2,xmm5,rcon	; RotWord(SubWord(w)) xor rcon
+		pshufd	xmm2,xmm2,0xFF
+		movdqa	xmm4,xmm1
+		aes256_next
+		movdqa	xmm1,xmm4
+		if 2*% <= 10
+			movdqu	[rdi+GCM_RK+(2*%)*16],xmm1
+		else
+			movdqu	[rdi+GCM_RK11+(2*%-11)*16],xmm1
+		end if
+		if % < 7
+			aeskeygenassist	xmm2,xmm1,0	; SubWord(w) alone
+			pshufd	xmm2,xmm2,0xAA
+			movdqa	xmm4,xmm5
+			aes256_next
+			movdqa	xmm5,xmm4
+			if 2*%+1 <= 10
+				movdqu	[rdi+GCM_RK+(2*%+1)*16],xmm5
+			else
+				movdqu	[rdi+GCM_RK11+(2*%+1-11)*16],xmm5
+			end if
+		end if
+	end irp
+	pxor	xmm4,xmm4
+	pxor	xmm5,xmm5
+gcm_init_h:
 	; H = E(K, 0^128), kept byte-reflected for GHASH
 	pxor	xmm0,xmm0
 	call	gcm_encrypt_block
@@ -70,7 +125,19 @@ gcm_encrypt_block:
 		movdqu	xmm1,[rdi+GCM_RK+r*16]
 		aesenc	xmm0,xmm1
 	end repeat
+	cmp	dword [rdi+GCM_K256],0
+	jne	.k256
 	movdqu	xmm1,[rdi+GCM_RK+160]
+	aesenclast xmm0,xmm1
+	ret
+.k256:
+	movdqu	xmm1,[rdi+GCM_RK+160]
+	aesenc	xmm0,xmm1
+	repeat 3, r:0
+		movdqu	xmm1,[rdi+GCM_RK11+r*16]
+		aesenc	xmm0,xmm1
+	end repeat
+	movdqu	xmm1,[rdi+GCM_RK11+48]
 	aesenclast xmm0,xmm1
 	ret
 
@@ -283,7 +350,22 @@ gcm_ctr:
 			aesenc	xmm#i,xmm8
 		end repeat
 	end repeat
+	mov	eax,GCM_RK+160
+	cmp	dword [rdi+GCM_K256],0
+	je	@f
 	movdqu	xmm8,[rdi+GCM_RK+160]
+	repeat 8, i:0
+		aesenc	xmm#i,xmm8
+	end repeat
+	repeat 3, r:0
+		movdqu	xmm8,[rdi+GCM_RK11+r*16]
+		repeat 8, i:0
+			aesenc	xmm#i,xmm8
+		end repeat
+	end repeat
+	mov	eax,GCM_RK11+48
+@@:
+	movdqu	xmm8,[rdi+rax]
 	repeat 8, i:0
 		aesenclast xmm#i,xmm8
 		movdqu	xmm9,[r8+i*16]
@@ -317,7 +399,22 @@ gcm_ctr:
 			vaesenc	ymm#j,ymm#j,ymm8
 		end repeat
 	end repeat
+	mov	eax,GCM_RK+160
+	cmp	dword [rdi+GCM_K256],0
+	je	@f
 	vbroadcasti128 ymm8,xword [rdi+GCM_RK+160]
+	repeat 4, j:2
+		vaesenc	ymm#j,ymm#j,ymm8
+	end repeat
+	repeat 3, r:0
+		vbroadcasti128 ymm8,xword [rdi+GCM_RK11+r*16]
+		repeat 4, j:2
+			vaesenc	ymm#j,ymm#j,ymm8
+		end repeat
+	end repeat
+	mov	eax,GCM_RK11+48
+@@:
+	vbroadcasti128 ymm8,xword [rdi+rax]
 	repeat 4, j:2
 		vaesenclast ymm#j,ymm#j,ymm8
 		vpxor	ymm#j,ymm#j,[r8+(j-2)*32]

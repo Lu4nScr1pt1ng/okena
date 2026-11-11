@@ -417,27 +417,33 @@ cp_open:
 
 ; ------------------------------------------------- the AEAD of a TLS suite
 ;
-; One context for either AEAD: AES-128-GCM's (gcm_*) or ChaCha20-Poly1305's
-; (cp_*), its type after it. aead_seal and aead_open take what gcm_seal and
+; One context for either AEAD: AES-128-GCM's or AES-256-GCM's (gcm_*), or
+; ChaCha20-Poly1305's (cp_*), its type after it. aead_seal and aead_open take what gcm_seal and
 ; gcm_open take.
 
-AEAD_TYPE	:= GCM_SIZE			; d: 0 AES-128-GCM, 1 ChaCha20-Poly1305
-AEAD_SIZE	:= GCM_SIZE + 16
+AEAD_TYPE	:= GCM256_SIZE			; d: 0 AES-GCM (128 or 256), 1 ChaCha20-Poly1305
+AEAD_SIZE	:= GCM256_SIZE + 16
 assert CP_SIZE <= GCM_SIZE
 
 ; rdi = ctx, rsi = key (16 or 32 bytes), edx = the type
+AEAD_GCM128	:= 0
+AEAD_CHACHA	:= 1
+AEAD_GCM256	:= 2
+
 aead_init:
 	mov	[rdi+AEAD_TYPE],edx
-	test	edx,edx
-	jnz	cp_init
+	cmp	edx,AEAD_CHACHA
+	je	cp_init
+	cmp	edx,AEAD_GCM256
+	je	gcm_init256
 	jmp	gcm_init
 
 aead_seal:
-	cmp	dword [rdi+AEAD_TYPE],0
-	jne	cp_seal
+	cmp	dword [rdi+AEAD_TYPE],AEAD_CHACHA
+	je	cp_seal
 	jmp	gcm_seal
 
 aead_open:
-	cmp	dword [rdi+AEAD_TYPE],0
-	jne	cp_open
+	cmp	dword [rdi+AEAD_TYPE],AEAD_CHACHA
+	je	cp_open
 	jmp	gcm_open

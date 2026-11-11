@@ -42,7 +42,7 @@ HB_KTLS		:= HB_TS + TS_SIZE		; the kernel's crypto_info: TX, then RX
 KTLS_INFO	:= 40				; tls12_crypto_info_aes_gcm_128
 KTLS_INFO_CP	:= 56				; tls12_crypto_info_chacha20_poly1305
 KTLS_SLOT	:= KTLS_INFO_CP			; TX and RX slots of a TLS 1.3 connection
-HB_RXC		:= HB_TLS + 1536		; user-space records: ciphertext in
+HB_RXC		:= HB_TLS + 2048		; user-space records: ciphertext in
 UTLS_RX_CAP	:= TLS_RECORD_MAX + 256 + 5 + 251	; one whole record (17 KiB)
 HB_TXC		:= HB_RXC + UTLS_RX_CAP	; and out, two records at a time
 UTLS_TX_RECS	:= 2
@@ -50,6 +50,7 @@ UTLS_TX_CAP	:= UTLS_TX_RECS * (TLS_RECORD_MAX + 29)	; (a 1.2 AES-GCM record: 5 +
 H_TLS_ROOM	:= HB_TLS - HB_OUT		; the flight is built in OUT and after it
 assert HB_KTLS + 2 * KTLS_SLOT <= HB_RXC
 assert HB_TXC + UTLS_TX_CAP <= 1 shl HB_SHIFT
+assert HB_TXC + UTLS_TX_CAP <= 1 shl 17		; (HTTP/2's area, HB_H2, follows)
 assert H_TLS_ROOM >= 2 * (TLS_CHAIN_MAX + 192) + 512
 
 SOL_TLS		:= 282

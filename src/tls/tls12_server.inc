@@ -1003,8 +1003,8 @@ tls12_master_ems:
 ; content type, r9 = plaintext, r10d = its length: the record's payload at
 ; out. eax = its length.
 tls12_aseal:
-	cmp	dword [rsi+AEAD_TYPE],0
-	je	tls12_seal
+	cmp	dword [rsi+AEAD_TYPE],AEAD_CHACHA
+	jne	tls12_seal			; AES-GCM, 128 or 256: an explicit nonce
 	push	rbx
 	push	r12
 	push	r13
@@ -1037,8 +1037,8 @@ tls12_aseal:
 ; write IV, r8 = sequence, r9d = content type: opened in place. eax = the
 ; plaintext's length, rdx = where it is; -1 for a bad tag or a short record.
 tls12_aopen:
-	cmp	dword [rdx+AEAD_TYPE],0
-	jne	.cp
+	cmp	dword [rdx+AEAD_TYPE],AEAD_CHACHA
+	je	.cp
 	push	rdi
 	call	tls12_open
 	pop	rdx

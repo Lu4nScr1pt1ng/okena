@@ -51,6 +51,7 @@ include '../../src/core/util.inc'
 include '../../src/crypto/ct.inc'
 include '../../src/crypto/sha256.inc'
 include '../../src/crypto/sha512.inc'
+include '../../src/crypto/sha384.inc'
 include '../../src/crypto/sha1.inc'
 include '../../src/crypto/keccak.inc'
 include '../../src/crypto/mlkem.inc'
@@ -86,7 +87,7 @@ bss
 	g_out:		rb 70000
 	g_label:	rb 256
 	align 16
-	g_gcm:		rb GCM_SIZE
+	g_gcm:		rb GCM256_SIZE
 	g_gmode		db ?
 	g_tc:		rb TC_FULL
 	align 32
@@ -151,6 +152,16 @@ start:
 	je	.sha3_256
 	cmp	al,'8'
 	je	.sha512
+	cmp	al,'$'
+	je	.sha384
+	cmp	al,'%'
+	je	.hmac384
+	cmp	al,'&'
+	je	.label384
+	cmp	al,'i'
+	je	.gcm256
+	cmp	al,'o'
+	je	.gcm256
 	cmp	al,'!'
 	je	.sha1
 	cmp	al,'5'
@@ -464,6 +475,78 @@ start:
 	call	shake
 	mov	esi,ebx
 	jmp	.print
+.sha384:
+	lea	rdi,[g_out]
+	call	sha384
+	mov	esi,48
+	jmp	.print
+.hmac384:
+	movzx	ecx,word [rsi]			; key length
+	add	rsi,2
+	sub	rdx,2
+	lea	r8,[rdx]
+	sub	r8,rcx
+	lea	rdi,[g_out]
+	mov	rax,rsi
+	add	rax,rcx
+	mov	rdx,rcx
+	mov	rcx,rax
+	call	hmac_sha384
+	mov	esi,48
+	jmp	.print
+.label384:
+	mov	rbx,rsi				; secret (48)
+	movzx	ecx,byte [rsi+48]
+	lea	rsi,[rsi+49]
+	lea	rdi,[g_label]
+	rep	movsb
+	mov	byte [rdi],0
+	movzx	r9d,byte [rsi]
+	lea	r8,[rsi+1]
+	movzx	esi,word [r8+r9]
+	push	rsi
+	lea	rdi,[g_out]
+	mov	rdx,rbx
+	lea	rcx,[g_label]
+	call	tls13_expand_label384
+	pop	rsi
+	jmp	.print
+.gcm256:
+	; key (32) | iv (12) | aad length (2) | aad | text: 'i' seals, 'o' opens
+	mov	[g_gmode],al
+	mov	rbx,rsi
+	mov	r12,rdx
+	lea	rdi,[g_gcm]
+	call	gcm_init256
+	movzx	ecx,word [rbx+44]
+	lea	rdx,[rbx+46]
+	lea	r8,[rdx+rcx]
+	mov	r9,r12
+	sub	r9,46
+	sub	r9,rcx
+	cmp	byte [g_gmode],'i'
+	je	.seal256
+	sub	r9,16
+	push	r8
+	push	r9
+	lea	rdi,[g_gcm]
+	lea	rsi,[rbx+32]
+	call	gcm_open
+	pop	r9
+	pop	r8
+	test	eax,eax
+	jz	.wrong
+	jmp	.text_out
+.seal256:
+	push	r8
+	push	r9
+	lea	rdi,[g_gcm]
+	lea	rsi,[rbx+32]
+	call	gcm_seal
+	pop	r9
+	pop	r8
+	add	r9,16
+	jmp	.text_out
 .hmac:
 	movzx	ecx,word [rsi]			; key length
 	add	rsi,2
