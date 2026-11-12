@@ -13,7 +13,7 @@
 ; pool. A name that does not resolve yet (a container that starts later)
 ; does not stop okena from starting.
 
-MAX_GROUPS	:= 64
+MAX_GROUPS	:= 4096
 DT_SIZE		:= 256		; one shared entry per name
 DT_SEQ		:= 0		; q: odd while being written
 DT_COUNT	:= 8		; d

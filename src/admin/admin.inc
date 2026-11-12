@@ -739,6 +739,7 @@ stats_sum_q:
 	jae	.done
 	imul	rdx,rbx,STP_SIZE
 	add	rdx,r8
+	add	rdx,STP_BASE
 	add	rax,[rdx+rcx]
 	inc	ebx
 	jmp	.next
@@ -756,6 +757,7 @@ stats_sum_d:
 	jae	.done
 	imul	rdx,rbx,STP_SIZE
 	add	rdx,r8
+	add	rdx,STP_BASE
 	mov	r9d,[rdx+rcx]
 	add	rax,r9
 	inc	ebx

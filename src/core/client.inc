@@ -12,7 +12,7 @@
 ; chain as sent, or the shortest start of it that a root in the store signs
 ; (a chain may end with a certificate cross-signed by an older root).
 
-CX_IN_CAP	:= 1 shl 16
+CX_IN_CAP	:= 16 shl 20
 CX_ROOTS	:= 512
 CXR_HASH	:= 0			; q: the subject Name's hash
 CXR_KEY		:= 8			; its key (PK_SIZE)

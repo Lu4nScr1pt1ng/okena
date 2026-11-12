@@ -172,6 +172,7 @@ SUITES = [
     ("jwks epoll", ["tests/gateway/jwks.py", "epoll"]),
     ("upgrade io_uring", ["tests/gateway/upgrade.py", "io_uring"]),
     ("upgrade epoll", ["tests/gateway/upgrade.py", "epoll"]),
+    ("upgrade 260 workers", ["tests/gateway/upgrade.py", "epoll", "260"]),
     ("admin io_uring", ["tests/gateway/admin.py", "io_uring"]),
     ("admin epoll", ["tests/gateway/admin.py", "epoll"]),
     ("udp io_uring", ["tests/gateway/udp.py", "io_uring"]),

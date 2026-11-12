@@ -8,7 +8,7 @@ values-units.conf:3:31: error: invalid value `1.5us`
 values-units.conf:4:13: error: invalid value `0`
      4 |     workers 0
        |             ^
-       = help: expected `auto` or a number of workers from 1 to 256
+       = help: expected `auto` or a number of workers from 1 to 1024
 values-units.conf:7:29: error: invalid value `1001`
      7 |     server 1.1.1.1:1 weight=1001
        |                             ^^^^
@@ -22,13 +22,13 @@ values-units.conf:9:22: error: invalid value `30`
        |                      ^^
        = help: expected a duration with its unit: 250ms, 30s, 5m, 1h (units: us ms s m h d)
 values-units.conf:11:1: error: `okena` is set twice in the same block
-    11 | okena { workers 300 }
+    11 | okena { workers 2000 }
        | ^^^^^
        = note: first set on line 1
-values-units.conf:11:17: error: invalid value `300`
-    11 | okena { workers 300 }
-       |                 ^^^
-       = help: expected `auto` or a number of workers from 1 to 256
+values-units.conf:11:17: error: invalid value `2000`
+    11 | okena { workers 2000 }
+       |                 ^^^^
+       = help: expected `auto` or a number of workers from 1 to 1024
 values-units.conf:13:52: error: invalid value `200..99`
     13 | pool hc4 { server 1.1.1.1:5; health http /x expect=200..99 }
        |                                                    ^^^^^^^

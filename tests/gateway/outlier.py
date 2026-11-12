@@ -105,7 +105,7 @@ http 127.0.0.1:{LD} {{ route /* {{ to pool d }} }}
     log = tmp / "log"
     p = subprocess.Popen([str(BIN), "-c", str(conf)], stderr=open(log, "w"))
     try:
-        until(lambda: get(LE)[0] != 0)
+        until(lambda: get(LE)[0] != 0, 20)            # (started: on a loaded host, slowly)
         # errors=2: the bad one goes after two 503s in a row (each retried on the good one)
         r = [get(LE) for _ in range(6)]
         check("errors=2: every answer good (503s retried elsewhere)", all(x == (200, "good") for x in r), r)

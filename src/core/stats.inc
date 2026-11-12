@@ -53,20 +53,23 @@ STP_ENGINE	:= STP_SACTIVE + MAX_SERVERS * 4
 STP_ALIVE	:= STP_ENGINE + 4
 STP_SIZE	:= (STP_ALIVE + 4 + 4095) and not 4095
 
-; The supervisor's own counters, at the end of the table.
+; The supervisor's own counters, at the start of the table, the workers'
+; pages after them (STP_BASE): a thousand workers' pages are past what a
+; displacement reaches.
 SG_RESTARTS	:= 0
 SG_RELOADS	:= 8
 SG_RELOAD_FAILS	:= 16
 SG_DRAINING	:= 24
 SG_STARTED	:= 32			; wall clock seconds when okena started
-SG_OFF		:= STP_SIZE * MAX_WORKERS
+SG_OFF		:= 0
+STP_BASE	:= 4096
 
 ; Before forking a generation: a fresh table (old workers keep theirs).
 stats_table_init:
 	push	rbx
 	mov	rbx,[g_stats_tbl]
 	xor	edi,edi
-	mov	esi,SG_OFF + 4096
+	mov	rsi,STP_BASE + STP_SIZE * MAX_WORKERS
 	mov	edx,PROT_READ or PROT_WRITE
 	mov	r10d,MAP_SHARED or MAP_ANONYMOUS or MAP_NORESERVE
 	mov	r8,-1
@@ -112,6 +115,7 @@ stats_global_inc:
 stats_publish:
 	mov	edi,[g_worker_id]
 	imul	rdi,rdi,STP_SIZE
+	add	rdi,STP_BASE
 	add	rdi,[g_stats_tbl]
 	mov	rdx,rdi
 	; only the listeners and servers there are: the tables are sized for

@@ -25,9 +25,9 @@ GK_DOCKER	:= 3
 GK_KUBE		:= 4
 GK_CONSUL	:= 5
 
-DISC_MAX	:= 256			; servers a source may have
-DISC_SOURCES	:= 32
-DISC_FILE_MAX	:= 65536
+DISC_MAX	:= 4096			; servers a source may have
+DISC_SOURCES	:= 256
+DISC_FILE_MAX	:= 16 shl 20
 DISC_EMPTY_WAIT	:= 3			; seconds a file must stay empty to be believed
 DE_ADDR		:= 0			; 16 bytes
 DE_FAMILY	:= 16			; d: 4 or 6

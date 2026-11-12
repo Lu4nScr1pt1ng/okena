@@ -24,6 +24,8 @@ SYS_unlink_	:= 87
 SYS_rename_	:= 82
 SYS_chmod_	:= 90
 UP_TEXT		:= 256
+UP_FDS_MSG	:= 240			; descriptors a message (the kernel takes 253 at most:
+					; a listener with more goes in several, under its name)
 
 bss
 	align 8
@@ -43,7 +45,7 @@ bss
 	g_up_fds	rd MAX_LISTENERS * MAX_WORKERS
 	g_up_sa:	rb 110
 	g_up_tmp:	rb 110
-	g_up_cmsg:	rb 16 + 4 * MAX_WORKERS + 8
+	g_up_cmsg:	rb 16 + 4 * UP_FDS_MSG + 8
 	g_up_msg:	rq 8
 	g_up_iov:	rq 2
 	g_up_text:	rb UP_TEXT
@@ -304,8 +306,26 @@ up_send_all:
 	mov	eax,r12d
 	imul	eax,eax,MAX_WORKERS
 	lea	rdi,[g_lfd+rax*4]
-	mov	ecx,[g_lsocks+r12*4]
+	mov	r13d,[g_lsocks+r12*4]
+.chunk:
+	mov	ecx,r13d
+	cmp	ecx,UP_FDS_MSG
+	jbe	@f
+	mov	ecx,UP_FDS_MSG
+@@:
+	sub	r13d,ecx
+	push	rsi
+	push	rdx
+	push	rdi
+	push	rcx
 	call	up_send
+	pop	rcx
+	pop	rdi
+	pop	rdx
+	pop	rsi
+	lea	rdi,[rdi+rcx*4]
+	test	r13d,r13d
+	jnz	.chunk
 	inc	r12d
 	jmp	.listener
 .metrics:
@@ -401,7 +421,7 @@ upgrade_receive:
 	mov	qword [g_up_msg+24],1
 	lea	rcx,[g_up_cmsg]
 	mov	[g_up_msg+32],rcx
-	mov	qword [g_up_msg+40],16 + 4 * MAX_WORKERS + 8
+	mov	qword [g_up_msg+40],16 + 4 * UP_FDS_MSG + 8
 	mov	[g_up_msg+48],rax
 	mov	edi,r12d
 	lea	rsi,[g_up_msg]
@@ -433,6 +453,34 @@ upgrade_receive:
 	mov	[g_up_metrics],eax
 	jmp	.message
 .listener:
+	; the rest of the listener before (the same name again)?
+	mov	eax,[g_up_n]
+	test	eax,eax
+	jz	.new_listener
+	dec	eax
+	cmp	[g_up_tlen+rax*4],ecx
+	jne	.new_listener
+	mov	r8d,eax
+	shl	r8,8				; UP_TEXT
+	lea	rsi,[g_up_texts+r8]
+	lea	rdi,[g_up_text]
+	push	rcx
+	repe	cmpsb
+	pop	rcx
+	jne	.new_listener
+	mov	r8d,[g_up_cnt+rax*4]
+	lea	r9d,[r8+rdx]
+	cmp	r9d,MAX_WORKERS
+	ja	.no_old
+	mov	[g_up_cnt+rax*4],r9d
+	imul	eax,eax,MAX_WORKERS
+	add	eax,r8d
+	lea	rdi,[g_up_fds+rax*4]
+	lea	rsi,[g_up_cmsg+16]
+	mov	ecx,edx
+	rep	movsd
+	jmp	.message
+.new_listener:
 	mov	eax,[g_up_n]
 	cmp	eax,MAX_LISTENERS
 	jae	.no_old

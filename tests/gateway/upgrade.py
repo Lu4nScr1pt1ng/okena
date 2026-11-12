@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """`okena upgrade`, on one engine (argument): a new okena takes the listening sockets from
 the running one with clients connecting all the while, and none is refused or lost. If
-the new one cannot start, the old one must not notice."""
+the new one cannot start, the old one must not notice. A second argument is the
+worker count: 260 puts more sockets on each listener than one message may carry
+(the kernel's 253), so they go over in several."""
 import http.client
 import http.server
 import os
@@ -17,7 +19,8 @@ import time
 HERE = pathlib.Path(__file__).resolve().parent
 BIN = HERE.parents[1] / "build" / "okena"
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
-BASE = 3000 + os.getpid() % 90 * 6 + (3 if ENGINE == "epoll" else 0)
+WORKERS = int(sys.argv[2]) if len(sys.argv) > 2 else 2
+BASE = 3000 + os.getpid() % 90 * 6 + (3 if ENGINE == "epoll" else 0) + (540 if WORKERS > 2 else 0)
 BACK, LST, MET, OTHER = BASE, BASE + 1, BASE + 2, BASE + 3
 fails = 0
 
@@ -58,7 +61,7 @@ def get(path="/", port=LST):
     return r.status, b
 
 
-CONF = """okena {{ workers 2; io_engine {engine}; upgrade {tmp}/up.sock; metrics 127.0.0.1:{met} }}
+CONF = """okena {{ workers {workers}; io_engine {engine}; upgrade {tmp}/up.sock; metrics 127.0.0.1:{met} }}
 pool b {{ server 127.0.0.1:{back} }}
 http 127.0.0.1:{lst} {{ route /* {{ to pool b }} }}
 """
@@ -68,7 +71,7 @@ def main():
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-up."))
     threading.Thread(target=S(("127.0.0.1", BACK), H).serve_forever, daemon=True).start()
     conf = tmp / "okena.conf"
-    args = dict(engine=ENGINE, tmp=tmp, met=MET, back=BACK, lst=LST)
+    args = dict(engine=ENGINE, tmp=tmp, met=MET, back=BACK, lst=LST, workers=WORKERS)
     conf.write_text(CONF.format(**args))
     log, log2, log3 = tmp / "log", tmp / "log2", tmp / "log3"
     a = subprocess.Popen([str(BIN), "-c", str(conf)], stderr=open(log, "w"))

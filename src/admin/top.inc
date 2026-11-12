@@ -458,7 +458,7 @@ status_json:
 .counts:
 	memit ',"engine":"'
 	mov	rax,[g_stats_tbl]
-	cmp	dword [rax+STP_ENGINE],ENGINE_EPOLL	; (worker 0's: they all have the same)
+	cmp	dword [rax+STP_BASE+STP_ENGINE],ENGINE_EPOLL	; (worker 0's: they all have the same)
 	je	@f
 	memit 'io_uring"'
 	jmp	.uptime

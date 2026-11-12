@@ -209,7 +209,7 @@ http 127.0.0.1:{CAP} {{ route /* {{ to pool q }} }}
         check(f"{what}: refused", r.returncode != 0, r.stderr[-200:])
     bad("a relative path", "discover file servers.list")
     bad("max=0", f"discover file {lst} max=0")
-    bad("max past 256", f"discover file {lst} max=300")
+    bad("max past 4096", f"discover file {lst} max=5000")
     bad("port=0", f"discover file {lst} port=0")
     bad("a kind it does not know", f"discover zookeeper {lst}")
     g = tmp / "only.conf"

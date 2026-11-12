@@ -1,6 +1,6 @@
 ; Compile-time limits and process exit codes.
 
-MAX_WORKERS		:= 256
+MAX_WORKERS		:= 1024
 
 ; Process exit codes.
 EXIT_OK			:= 0

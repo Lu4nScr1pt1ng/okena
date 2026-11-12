@@ -721,6 +721,27 @@ a rebuild.
   have (256), requests waiting for a pool in a worker (1024), request headers
   (100), and the smaller tables of the gateway features.
 
+  *Second block (2026-11-12).* The gateway's per-route tables follow the
+  routes: rate limits and cors 65536, splits, auth, caches and ACLs 16384,
+  files, redirects, idempotency, signed_urls and claims 4096, JWK keys and
+  JWKS sets 1024, match variants 65536 and their conditions 262144, error
+  pages 16384, countries in an allow or deny 256 (all). TLS blocks 4096 (was
+  64), with 64 MiB of chains and 131072 SNI names; regexes 16384 (256).
+  Discovery: 4096 servers a source (256), 256 sources (32), and a file or an
+  API answer (Kubernetes, Docker, Consul) of 16 MiB (64 KiB: a Service of a
+  few hundred pods did not fit); servers by DNS name 4096 (64). Workers 1024
+  (256: hosts with more threads exist). Each table is saved, restored and
+  cleared only as far as it is used, the large others cleared by giving
+  pages back. `okena upgrade` passed each listener's sockets in one message,
+  past the kernel's 253 descriptors a message from 254 workers on: it failed
+  (checked with the old binary at 255); they go in messages of 240 now
+  (tests/gateway/upgrade.py with 260 workers). Kept, with their reason: 100
+  request headers (Envoy's default; a count, besides the size limit, that a
+  flood of tiny headers cannot pass), the protocol bounds (an HPACK table
+  4096, a TLS record 16 KiB, a ClientHello 16 KiB), 512 idle connections a
+  server in a worker (`connect max=` sets it), 1024 requests waiting for a
+  pool in a worker (each a slot of a ring sized up front; past it, 503).
+
 **A review of everything.** Each subsystem read again with the measurements in
 hand: is this the fastest correct way, does it do work it need not, does it
 take a lock, a syscall or a copy it could avoid, does its worst case have a

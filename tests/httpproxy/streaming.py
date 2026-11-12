@@ -125,7 +125,7 @@ def main():
                 if buf.endswith(b"0\r\n\r\n"):
                     break
             k.close()
-            res["sse"] = (lat, buf.endswith(b"0\r\n\r\n"))
+            res["sse"] = (lat, buf.endswith(b"0\r\n\r\n"), buf[:120])
 
         def forever():
             k = conn(b"/forever")
@@ -169,9 +169,9 @@ def main():
             t.start()
         for t in ts:
             t.join()
-        lat, ended = res["sse"]
+        lat, ended, head = res["sse"]
         check("Server-Sent Events: each one out as it is written, gaps past body_idle and response kept",
-              len(lat) == 3 and max(lat) < 0.2 and ended, (lat, ended))
+              len(lat) == 3 and max(lat) < 0.2 and ended, (lat, ended, head))
         check("a client that leaves an endless stream: its backend let go at once", res["forever"] < 1.5, res["forever"])
         check("a long poll answered in 1.5 s (response 1s bounds the head): served", res["poll"].startswith(b"HTTP/1.1 200"),
               res["poll"][:40])

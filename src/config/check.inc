@@ -1243,7 +1243,7 @@ type_help:
 @@:
 	cmp	rbx,T_WORKERS
 	jne	@f
-	out_lit '`auto` or a number of workers from 1 to 256'
+	out_lit '`auto` or a number of workers from 1 to 1024'
 	jmp	.end
 @@:
 	cmp	rbx,T_ROUTE

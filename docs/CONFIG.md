@@ -1375,7 +1375,7 @@ the same URL and `trust` are one set, with the times of the first. Shared secret
 (`oct`) in a set by URL are left out: anyone who can read it could sign.
 
 Limits: TLS 1.3 with AES-128-GCM towards the provider, one anchor, a response of
-256 KB, 32 keys in a set, 64 sets. Redirects are not followed.
+256 KB, 32 keys in a set, 1024 sets. Redirects are not followed.
 
 ES256, RS256, PS256, EdDSA and HS256. A bearer token must have `exp`; `issuer`
 and `audience` are checked when given, and a route with no `issuer` takes
@@ -1824,7 +1824,7 @@ The control process looks at the file once a second (a stat: nothing more when i
 did not change), and workers have what it read within another: a line added is
 served within two seconds. An address that stays keeps its slot, its health and
 its connections whatever the order of the lines; one taken out has its idle
-connections closed; a weight changes in place. Up to `max` servers (1 to 256),
+connections closed; a weight changes in place. Up to `max` servers (1 to 4096),
 the first lines. A file that cannot be read, or has a line that is not an
 address, changes nothing: the servers known go on, and it is said once. One that
 turns up empty after having servers is believed once it has stayed empty for
