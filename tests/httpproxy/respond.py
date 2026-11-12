@@ -3,7 +3,8 @@
 body as text/plain (a health endpoint), HEAD with its length and no body, a
 201 with type=application/json, a 204 empty, an error as before; over HTTP/1.1
 and HTTP/2 (prior knowledge, through curl); codes outside 2xx, 4xx, 5xx and a
-204 with a body refused by the checker."""
+204 with a body refused by the checker; a client still sending a body
+okena does not read gets the answer, not a reset (the connection lingers)."""
 import os
 import pathlib
 import shutil
@@ -84,6 +85,29 @@ http 127.0.0.1:{L} {{
         check("respond 410: as before", r.startswith(b"HTTP/1.1 410 Gone") and b"Content-Length: 0" in r, r)
         r = raw(b"GET /healthz HTTP/1.1\r\nHost: a\r\n\r\nGET /json HTTP/1.1\r\nHost: a\r\n\r\n", 2)
         check("  kept alive: the next request answered on the same connection", r.count(b"HTTP/1.1 20") == 2, r)
+        # a body okena does not read, still coming after the answer: the
+        # connection is shut for writing and lingers, reading it away; closed
+        # at once with bytes unread, the socket would send a reset, and the
+        # client lose the answer
+        k = socket.create_connection(("127.0.0.1", L), 5)
+        k.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+        k.sendall(b"POST /healthz HTTP/1.1\r\nHost: a\r\nContent-Length: 2000000\r\n\r\n" + b"x" * 65536)
+        time.sleep(0.1)				# answered, and (before) closed
+        d, err = b"", ""
+        try:
+            k.settimeout(3)
+            for _ in range(16):
+                k.sendall(b"x" * 65536)
+            while not d.endswith(b"ok"):
+                x = k.recv(4096)
+                if not x:
+                    break
+                d += x
+        except OSError as e:
+            err = repr(e)
+        k.close()
+        check("a body still coming after the answer: answered, no reset", d.startswith(b"HTTP/1.1 200 OK") and d.endswith(b"ok")
+              and b"Connection: close" in d and not err, (d[:80], err))
         if shutil.which("curl"):
             c = subprocess.run(["curl", "-s", "--http2-prior-knowledge", "-D", "-", f"http://127.0.0.1:{L}/healthz", f"http://127.0.0.1:{L}/json"],
                                capture_output=True, timeout=10)

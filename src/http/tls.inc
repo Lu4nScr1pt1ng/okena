@@ -1110,6 +1110,8 @@ http_close_notify:
 	h_rec
 	cmp	dword [r15+H_STATE],HS_ERROR_SEND
 	je	http_linger
+	cmp	dword [r15+H_STATE],HS_SELF_SEND	; okena's own answer (`respond`, a
+	je	http_linger			; redirect) to a request whose body it did not read
 @@:
 	mov	edi,ebx
 	jmp	session_close

@@ -5507,7 +5507,8 @@ http_reason:
 @@:
 	ret
 
-; An error answered on a connection in the clear (HTTP/1.1): close only once the
+; An error, or okena's own answer to a request whose body it does not read
+; (`respond`, a redirect), on a connection in the clear (HTTP/1.1): close only once the
 ; client has stopped sending. Closed with bytes of its unread (a body, a head too
 ; large, what it pipelined), the socket sends a reset, and a client still sending
 ; may lose the answer with it. So the writing side is shut (the client reads the
