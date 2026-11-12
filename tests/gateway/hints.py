@@ -113,8 +113,11 @@ http 127.0.0.1:{TLS} {{
                 break
             except OSError:
                 time.sleep(0.1)
-        raw(b"GET /hdr/none HTTP/1.1\r\nHost: x\r\n\r\n")	# (the first request after the start
-        d, first = raw(b"GET /slow HTTP/1.1\r\nHost: x\r\n\r\n")	# pays for it: not the 103's time)
+        for i in range(100):                # every worker serving: the 103's time, not a start's
+            if "started with" in log.read_text():
+                break
+            time.sleep(0.05)
+        d, first = raw(b"GET /slow HTTP/1.1\r\nHost: x\r\n\r\n")
         heads = d.split(b"\r\n\r\n")
         check("a 103 first, then the answer", heads[0].startswith(b"HTTP/1.1 103") and heads[1].startswith(b"HTTP/1.1 200") and d.endswith(b"ok"), d[:300])
         check("  long before the backend answers (0.4 s)", first is not None and first < 0.3, first)

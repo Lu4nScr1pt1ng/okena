@@ -160,7 +160,7 @@ http 127.0.0.1:{TLSL} {{ tls {{ cert {tmp}/c.pem; key {tmp}/k.pem }}; route /* {
         check("a reload reads a key only root may read", until(lambda: "reload rejected" not in log.read_text() and
                                                               len([k for k, c in children(p.pid).items() if c == "okena-worker" and k not in workers]) == 2)
               and tls_get() == 200, log.read_text()[-300:])
-        now = [k for k, c in children(p.pid).items() if c == "okena-worker"]
+        now = [k for k, c in children(p.pid).items() if c == "okena-worker" and k not in workers]   # (the old ones go)
         check("  its new workers as the user too", all(status(k)["Uid"][0] == str(UID) for k in now), now)
     finally:
         # the supervisor killed outright: its children must go with it
