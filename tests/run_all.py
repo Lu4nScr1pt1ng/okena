@@ -36,6 +36,8 @@ SUITES = [
     ("routing epoll", ["tests/httpproxy/routing.py", "epoll"]),
     ("identity io_uring", ["tests/httpproxy/identity.py", "io_uring"]),
     ("identity epoll", ["tests/httpproxy/identity.py", "epoll"]),
+    ("scale io_uring", ["tests/httpproxy/scale.py", "io_uring"]),
+    ("scale epoll", ["tests/httpproxy/scale.py", "epoll"]),
     ("failures io_uring", ["tests/httpproxy/failures.py", "io_uring"]),
     ("failures epoll", ["tests/httpproxy/failures.py", "epoll"]),
     ("streaming io_uring", ["tests/httpproxy/streaming.py", "io_uring"]),

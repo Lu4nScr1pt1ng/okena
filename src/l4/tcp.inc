@@ -95,7 +95,8 @@ FAIL_THRESHOLD	:= 3		; consecutive connect failures before ejection
 EJECT_TICKS	:= 10
 
 ACC_PER_SOCKET	:= 8		; accepts in flight per socket that needs addresses
-ACC_MAX		:= 2048
+ACC_MAX		:= MAX_LISTENERS * ACC_PER_SOCKET	; (shared out when sockets are more)
+AW_MAX		:= 4096		; sockets accept_watch looks at, in a worker
 AC_SID		:= 0		; d: socket id
 AC_LEN		:= 4		; d: address length
 AC_SA		:= 8		; 28 bytes
@@ -104,6 +105,16 @@ AC_SIZE		:= 40
 bss
 	align 8
 	g_acc_count	dd ?
+	g_acc_per	dd ?		; accepts each such socket gets
+	g_aw_n		dd ?		; accept_watch: this worker's sockets
+	g_aw_pfd:	rb 8 * AW_MAX	; (struct pollfd)
+	g_aw_sid	rd AW_MAX
+	g_aw_seen	rq AW_MAX	; its listener's connections taken, at the last tick
+	g_aw_was	rb AW_MAX	; readable then
+	g_acc_live	dd ?		; io_uring accepts in the kernel: a draining
+					; worker leaves only when none is (one that
+					; completes takes a connection it must serve)
+	g_acc_socks	dd ?		; (counting them)
 	g_acc:		rb AC_SIZE * ACC_MAX
 	g_acc_addr:	rb 28
 	g_sessions	dd ?		; slots per worker
@@ -455,15 +466,18 @@ balance_stagger:
 ; A listener has one socket per worker, or more after a reload that
 ; lowered the worker count: no socket is closed while it may hold queued
 ; connections. Worker w serves sockets w, w + workers, w + 2 * workers...
-; A socket id is listener | index << 8.
+; A socket id is listener | index << SID_SHIFT (listeners: 16 bits).
+SID_SHIFT	:= 16
+SID_LISTENER	:= 0xFFFF
+assert MAX_LISTENERS <= SID_LISTENER + 1
 
 ; edi = socket id. eax = its fd.
 listener_fd:
 	mov	eax,edi
-	and	eax,0xFF
+	and	eax,SID_LISTENER
 	imul	eax,eax,MAX_WORKERS
 	mov	ecx,edi
-	shr	ecx,8
+	shr	ecx,SID_SHIFT
 	add	eax,ecx
 	mov	eax,[g_lfd+rax*4]
 	ret
@@ -487,7 +501,7 @@ for_each_socket:
 	cmp	dword [g_listeners+rax+LS_KIND],LK_UDP
 	je	.next				; (not for accepting: see udp_each_socket)
 	mov	edi,r12d
-	shl	edi,8
+	shl	edi,SID_SHIFT
 	or	edi,ebx
 	call	r13
 	add	r12d,[g_workers]
@@ -501,24 +515,79 @@ for_each_socket:
 	pop	rbx
 	ret
 
-; Multishot accept into direct descriptors on every socket of this worker.
+; Multishot accept into direct descriptors on every socket of this worker;
+; ACC_MAX accepts with addresses shared out between the sockets that need
+; them, ACC_PER_SOCKET each at most and one at least, so that no listener
+; is left without any.
 arm_accepts:
+	mov	dword [g_acc_socks],0
+	lea	rsi,[.count]
+	call	for_each_socket
+	mov	eax,ACC_MAX
+	xor	edx,edx
+	mov	ecx,[g_acc_socks]
+	test	ecx,ecx
+	jz	@f
+	div	ecx
+@@:
+	cmp	eax,ACC_PER_SOCKET
+	jbe	@f
+	mov	eax,ACC_PER_SOCKET
+@@:
+	cmp	eax,1
+	jae	@f
+	mov	eax,1
+@@:
+	mov	[g_acc_per],eax
+	mov	dword [g_aw_n],0
+	lea	rsi,[.watch]
+	call	for_each_socket
 	lea	rsi,[arm_accept]
 	jmp	for_each_socket
+.watch:
+	mov	eax,[g_aw_n]
+	cmp	eax,AW_MAX
+	jae	@f
+	inc	dword [g_aw_n]
+	mov	[g_aw_sid+rax*4],edi
+	; as if seen waiting now: one already stuck when this worker starts is
+	; taken at its first tick
+	mov	byte [g_aw_was+rax],1
+	mov	ecx,edi
+	and	ecx,SID_LISTENER
+	mov	rdx,[g_st_l_accepted+rcx*8]
+	add	rdx,[g_st_l_full+rcx*8]
+	mov	[g_aw_seen+rax*8],rdx
+	push	rax
+	call	listener_fd
+	pop	rcx
+	mov	[g_aw_pfd+rcx*8],eax
+	mov	dword [g_aw_pfd+rcx*8+4],POLLIN
+@@:
+	ret
+.count:
+	mov	eax,edi
+	and	eax,SID_LISTENER
+	imul	rax,rax,LS_SIZE
+	test	dword [g_listeners+rax+LS_FLAGS],LSF_PEER
+	jz	@f
+	inc	dword [g_acc_socks]
+@@:
+	ret
 
 ; edi = socket id: a listener that needs client addresses gets
 ; ACC_PER_SOCKET single-shot accepts, each with its own address buffer;
 ; the others one multishot accept into direct descriptors.
 arm_accept:
 	mov	eax,edi
-	and	eax,0xFF
+	and	eax,SID_LISTENER
 	imul	rax,rax,LS_SIZE
 	test	dword [g_listeners+rax+LS_FLAGS],LSF_PEER
 	jz	arm_accept_multi
 	push	rbx
 	push	r12
 	mov	r12d,edi
-	mov	ebx,ACC_PER_SOCKET
+	mov	ebx,[g_acc_per]
 .slot:
 	mov	eax,[g_acc_count]
 	cmp	eax,ACC_MAX
@@ -535,8 +604,78 @@ arm_accept:
 	pop	rbx
 	ret
 
+; io_uring, once a tick: the listening sockets looked at, and one that has
+; had connections waiting for a whole tick while its listener took none gets
+; one more accept, which takes the queue at once. Seen after reloads with a
+; few hundred listeners: a connection that came as the old workers stopped
+; stayed queued although the new worker had accepts armed there (an accept
+; waits exclusively, one arrival waking one accept, and a wakeup that went to
+; an accept cancelled before it ran is not given to another). It is served a
+; tick late instead of never.
+accept_watch:
+	cmp	dword [g_aw_n],0
+	je	.out
+	cmp	dword [g_draining],0
+	jne	.out
+	push	rbx
+	lea	rdi,[g_aw_pfd]
+	mov	esi,[g_aw_n]
+	xor	edx,edx				; now, no waiting
+	mov	eax,SYS_poll
+	syscall
+	xor	ebx,ebx
+.socket:
+	cmp	ebx,[g_aw_n]
+	jae	.done
+	mov	edi,[g_aw_sid+rbx*4]
+	mov	eax,edi
+	and	eax,SID_LISTENER
+	mov	rcx,[g_st_l_accepted+rax*8]
+	add	rcx,[g_st_l_full+rax*8]		; (refused ones are taken too)
+	xor	edx,edx
+	test	word [g_aw_pfd+rbx*8+6],POLLIN
+	setnz	dl
+	jz	.mark
+	cmp	byte [g_aw_was+rbx],0
+	je	.mark
+	cmp	rcx,[g_aw_seen+rbx*8]
+	jne	.mark
+	push	rcx
+	push	rdx
+	call	arm_accept_one
+	pop	rdx
+	pop	rcx
+.mark:
+	mov	[g_aw_was+rbx],dl
+	mov	[g_aw_seen+rbx*8],rcx
+	inc	ebx
+	jmp	.socket
+.done:
+	pop	rbx
+.out:
+	ret
+
+; edi = socket id: one more accept on it (a slot of its own, or a multishot).
+arm_accept_one:
+	mov	eax,edi
+	and	eax,SID_LISTENER
+	imul	rax,rax,LS_SIZE
+	test	dword [g_listeners+rax+LS_FLAGS],LSF_PEER
+	jz	arm_accept_multi
+	mov	eax,[g_acc_count]
+	cmp	eax,ACC_MAX
+	jae	.none
+	inc	dword [g_acc_count]
+	imul	rcx,rax,AC_SIZE
+	mov	[g_acc+rcx+AC_SID],edi
+	mov	edi,eax
+	jmp	arm_accept_slot
+.none:
+	ret
+
 ; edi = accept slot.
 arm_accept_slot:
+	inc	dword [g_acc_live]
 	push	rbx
 	mov	ebx,edi
 	imul	rcx,rbx,AC_SIZE
@@ -564,6 +703,7 @@ arm_accept_slot:
 
 ; ebx = accept slot, r14 = normal descriptor or -errno.
 on_accept_a:
+	dec	dword [g_acc_live]		; (this one is over: re-armed below, or not)
 	mov	r12d,ebx
 	; take the client's address out of the slot before re-arming it: a
 	; re-armed accept may complete into the same buffer
@@ -583,7 +723,7 @@ on_accept_a:
 	js	.out
 	imul	rcx,r12,AC_SIZE
 	mov	r13d,[g_acc+rcx+AC_SID]
-	and	r13d,0xFF			; listener
+	and	r13d,SID_LISTENER		; listener
 	mov	eax,[g_ls_active+r13*4]
 	cmp	eax,[g_ls_cap+r13*4]
 	jae	.refuse
@@ -670,6 +810,7 @@ peer_admit:
 
 ; edi = socket id: one multishot accept into direct descriptors.
 arm_accept_multi:
+	inc	dword [g_acc_live]
 	push	rbx
 	mov	ebx,edi
 	call	ring_get_sqe
@@ -693,12 +834,13 @@ arm_accept_multi:
 on_accept:
 	test	r15d,IORING_CQE_F_MORE
 	jnz	@f
+	dec	dword [g_acc_live]		; the multishot ended
 	cmp	dword [g_draining],2
 	jae	@f
 	mov	edi,ebx
 	call	arm_accept			; the multishot ended: re-arm it
 @@:
-	and	ebx,0xFF			; the listener
+	and	ebx,SID_LISTENER		; the listener
 	test	r14,r14
 	js	.error
 	; room on this listener?

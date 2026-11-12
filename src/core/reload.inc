@@ -89,16 +89,20 @@ macro plan_regions action
 	action g_plan_metrics_sa, 28
 	action g_plan_mtlen, 4
 	action g_plan_mtoken, 256
-	action g_listeners, LS_SIZE * MAX_LISTENERS
-	action g_pools, PL_SIZE * MAX_POOLS
-	action g_servers, SV_SIZE * MAX_SERVERS
+	action g_listeners, LS_SIZE * MAX_LISTENERS, g_plan_listeners, LS_SIZE
+	action g_pools, PL_SIZE * MAX_POOLS, g_plan_pools, PL_SIZE
+	action g_servers, SV_SIZE * MAX_SERVERS, g_plan_servers, SV_SIZE
 	action g_groups, GR_SIZE * MAX_GROUPS
 	action g_plan_routes, 4
-	action g_routes, RT_SIZE * MAX_ROUTES
+	action g_routes, RT_SIZE * MAX_ROUTES, g_plan_routes, RT_SIZE
 	action g_plan_trust, 4
-	action g_trust, TR_SIZE * MAX_TRUST
-	action g_hhash, 8 * HHASH_SIZE
-	action g_rhash, 8 * RHASH_SIZE
+	action g_trust, TR_SIZE * MAX_TRUST, g_plan_trust, TR_SIZE
+	action g_plan_hhsize, 4
+	action g_plan_hhmask, 4
+	action g_hhash, 8 * HHASH_SIZE, g_plan_hhsize, 8
+	action g_plan_rhsize, 4
+	action g_plan_rhmask, 4
+	action g_rhash, 8 * RHASH_SIZE, g_plan_rhsize, 8
 	action g_plan_tls, 4
 	action g_plan_tkeys, TKF_SIZE
 	action g_plan_tkpath, 8
@@ -116,7 +120,7 @@ macro plan_regions action
 	action g_ep_store, EP_STORE
 	action g_plan_maints, 4
 	action g_maints, MT_SIZE * MAX_MAINTS
-	action g_acts, RA_SIZE * MAX_ACTS
+	action g_acts, RA_SIZE * MAX_ACTS, g_plan_acts, RA_SIZE
 	action g_limits, LM_SIZE * MAX_LIMITS
 	action g_plan_limits, 4
 	action g_cors, CO_SIZE * MAX_CORS
@@ -202,14 +206,15 @@ macro plan_regions action
 	action g_plan_claims, 4
 	action g_auth_tab, AT_SIZE * AT_N
 	action g_plan_hdrops, 4
-	action g_hdrops, HD_SIZE * MAX_HDROPS
+	action g_hdrops, HD_SIZE * MAX_HDROPS, g_plan_hdrops, HD_SIZE
 	action g_plan_hosts, 4
-	action g_hosts, HO_SIZE * MAX_HOSTS
+	action g_hosts, HO_SIZE * MAX_HOSTS, g_plan_hosts, HO_SIZE
 end macro
 
 PLAN_SAVE_SIZE = 0
+PLAN_HW_N = 0
 ; offsets of the regions read back from the snapshot
-macro plan_size_of sym, size
+macro plan_size_of sym, size, cnt, elem:0
 	match =g_listeners, sym
 		PLAN_SAVE_LISTENERS = PLAN_SAVE_SIZE
 	end match
@@ -217,44 +222,102 @@ macro plan_size_of sym, size
 		PLAN_SAVE_DRAIN_TIMEOUT = PLAN_SAVE_SIZE
 	end match
 	PLAN_SAVE_SIZE = PLAN_SAVE_SIZE + size
+	if elem
+		PLAN_HW_N = PLAN_HW_N + 1
+	end if
 end macro
 plan_regions plan_size_of
 
+; A table sized for the largest configuration (cnt entries of elem bytes in
+; use) is copied and cleared only as far as it is used, so its untouched
+; pages cost nothing: a table's watermark is the most entries it has held
+; since it was last cleared (a compile that failed may leave more than the
+; count restored says).
 bss
 	align 8
 	g_plan_save:	rb PLAN_SAVE_SIZE
+	g_plan_hw	rd PLAN_HW_N
 end bss
 
-macro plan_copy_out sym, size
+macro plan_copy_out sym, size, cnt, elem:0
+	lea	rdi,[g_plan_save + PLAN_OFF]
 	lea	rsi,[sym]
-	mov	ecx,size
+	if elem
+		mov	ecx,[cnt]
+		imul	ecx,ecx,elem
+	else
+		mov	ecx,size
+	end if
 	rep	movsb
+	PLAN_OFF = PLAN_OFF + size
 end macro
 
-macro plan_copy_in sym, size
+macro plan_copy_in sym, size, cnt, elem:0
+	lea	rsi,[g_plan_save + PLAN_OFF]
 	lea	rdi,[sym]
-	mov	ecx,size
+	if elem
+		mov	ecx,[cnt]		; (restored already: counts come first)
+		imul	ecx,ecx,elem
+	else
+		mov	ecx,size
+	end if
 	rep	movsb
+	PLAN_OFF = PLAN_OFF + size
+end macro
+
+; before a restore: what the failed plan used stays to be cleared
+macro plan_hw_note sym, size, cnt, elem:0
+	if elem
+		mov	eax,[cnt]
+		cmp	eax,[g_plan_hw + PLAN_HWI*4]
+		jbe	@f
+		mov	[g_plan_hw + PLAN_HWI*4],eax
+	@@:
+		PLAN_HWI = PLAN_HWI + 1
+	end if
 end macro
 
 plan_save:
-	lea	rdi,[g_plan_save]
+	PLAN_OFF = 0
 	plan_regions plan_copy_out
 	ret
 
 plan_restore:
-	lea	rsi,[g_plan_save]
+	PLAN_HWI = 0
+	plan_regions plan_hw_note
+	PLAN_OFF = 0
 	plan_regions plan_copy_in
 	ret
 
-macro plan_zero sym, size
-	lea	rdi,[sym]
-	mov	ecx,size
-	rep	stosb
+; sized tables first, while their counts are still there
+macro plan_zero_sized sym, size, cnt, elem:0
+	if elem
+		mov	ecx,[cnt]
+		cmp	ecx,[g_plan_hw + PLAN_HWI*4]
+		jae	@f
+		mov	ecx,[g_plan_hw + PLAN_HWI*4]
+	@@:
+		mov	dword [g_plan_hw + PLAN_HWI*4],0
+		imul	ecx,ecx,elem
+		lea	rdi,[sym]
+		rep	stosb
+		PLAN_HWI = PLAN_HWI + 1
+	end if
+end macro
+
+macro plan_zero sym, size, cnt, elem:0
+	if ~ elem
+		lea	rdi,[sym]
+		mov	ecx,size
+		rep	stosb
+	end if
 end macro
 
 ; Empty plan, as before the first compile.
 plan_reset:
+	xor	eax,eax
+	PLAN_HWI = 0
+	plan_regions plan_zero_sized
 	xor	eax,eax
 	plan_regions plan_zero
 	ret
@@ -274,8 +337,11 @@ arenas_swap:
 	ret
 
 arenas_empty:
+	lea	rdi,[g_ar_nodes]
+	; rdi = an arena set (three arenas): emptied, its pages given back
+arenas_empty_at:
 	push	rbx
-	lea	rbx,[g_ar_nodes]
+	mov	rbx,rdi
 	mov	ecx,3
 .next:
 	push	rcx
@@ -333,11 +399,11 @@ supervisor_reload:
 	mov	[g_prev_workers],eax
 	lea	rdi,[g_prev_lfd]
 	lea	rsi,[g_lfd]
-	mov	ecx,MAX_LISTENERS * MAX_WORKERS * 4
+	imul	ecx,[g_plan_listeners],MAX_WORKERS * 4	; (the rows there are)
 	rep	movsb
 	lea	rdi,[g_prev_lsocks]
 	lea	rsi,[g_lsocks]
-	mov	ecx,MAX_LISTENERS * 4
+	imul	ecx,[g_plan_listeners],4
 	rep	movsb
 	call	arenas_swap
 	call	arenas_empty
@@ -379,7 +445,14 @@ supervisor_reload:
 	call	reload_sockets
 	test	eax,eax
 	jnz	.sockets_failed
-	; commit
+	; commit. The old plan's snapshot and the old configuration's text and
+	; tree are not needed again (the old workers have their own copies):
+	; given back now, before any process is forked, or each would keep them
+	lea	rdi,[g_plan_save]
+	mov	esi,PLAN_SAVE_SIZE
+	call	pages_release
+	lea	rdi,[g_ar_alt]
+	call	arenas_empty_at
 	call	tls_tickets_apply		; the ticket_keys file again (an operator's rotation)
 	call	retire_workers
 	mov	[g_workers],r15d
@@ -547,7 +620,7 @@ reload_sockets:
 	mov	dword [g_new_count],0
 	lea	rdi,[g_taken]
 	xor	eax,eax
-	mov	ecx,MAX_LISTENERS * MAX_WORKERS
+	imul	ecx,[g_prev_nls],MAX_WORKERS	; (only old listeners are taken)
 	rep	stosb
 	xor	r12d,r12d			; new listener
 .listener:
@@ -677,11 +750,11 @@ reload_sockets:
 @@:
 	lea	rdi,[g_lfd]
 	lea	rsi,[g_prev_lfd]
-	mov	ecx,MAX_LISTENERS * MAX_WORKERS * 4
+	imul	ecx,[g_prev_nls],MAX_WORKERS * 4
 	rep	movsb
 	lea	rdi,[g_lsocks]
 	lea	rsi,[g_prev_lsocks]
-	mov	ecx,MAX_LISTENERS * 4
+	imul	ecx,[g_prev_nls],4
 	rep	movsb
 	mov	dword [g_reloading],0
 	mov	eax,1

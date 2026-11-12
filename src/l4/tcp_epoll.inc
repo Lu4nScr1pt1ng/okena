@@ -378,7 +378,7 @@ ep_accept:
 	push	r15
 	call	listener_fd
 	mov	r15d,eax
-	and	edi,0xFF
+	and	edi,SID_LISTENER
 	mov	r13d,edi			; listener
 	mov	r12d,ACCEPT_BATCH
 .next:

@@ -2,9 +2,9 @@
 ; tables the workers read and never write. Addresses become sockaddr
 ; structures here, so the data path never parses text.
 
-MAX_LISTENERS	:= 64
-MAX_POOLS	:= 512
-MAX_SERVERS	:= 1024
+MAX_LISTENERS	:= 1024
+MAX_POOLS	:= 4096
+MAX_SERVERS	:= 16384
 
 ; Listener
 LS_SA		:= 0		; sockaddr_in6 / sockaddr_in (28 bytes)
@@ -58,10 +58,12 @@ HO_SIZE		:= 24
 ; Host names are found through one open-addressing table for the whole
 ; plan: key = (the listener's first host entry, wildcard or not, the
 ; name in lower case), value = host entry + 1 (0 = empty slot). Load is
-; at most 1/4, so a probe sequence is short.
+; at most 1/4, so a probe sequence is short. The table is sized from the
+; names there are (g_plan_hhsize, a power of two), up to HHASH_SIZE.
 HHASH_SIZE	:= MAX_HOSTS * 4
-MAX_HOSTS	:= 1024
-MAX_TRUST	:= 1024		; trusted_proxies ranges, all listeners
+HASH_MIN	:= 64
+MAX_HOSTS	:= 65536
+MAX_TRUST	:= 16384		; trusted_proxies ranges, all listeners
 
 LK_TCP		:= 0
 LK_HTTP		:= 1
@@ -136,17 +138,18 @@ HD_NAME		:= 16		; q
 HD_VAL		:= 24		; q
 HD_VARS		:= 32		; d: ${...} in the value (how many), 0 = literal
 HD_SIZE		:= 40
-MAX_HDROPS	:= 4096
+MAX_HDROPS	:= 65536
 HOP_SET		:= 1
 HOP_ADD		:= 2
 HOP_DROP	:= 3
 
 ; Routes are found through one open-addressing table: key = (the route
 ; set's first entry, exact or prefix, the path), value = route entry + 1.
+; Sized like the hosts' (g_plan_rhsize).
 ; Routes that share a path with different methods share a key: a lookup
 ; walks every entry of its probe sequence.
 RHASH_SIZE	:= MAX_ROUTES * 4
-MAX_ROUTES	:= 1024
+MAX_ROUTES	:= 65536
 
 LSF_PEER	:= 1		; sessions need the client's address
 LSF_PP_V1	:= 2		; send a PROXY protocol v1 header upstream
@@ -330,6 +333,14 @@ bss
 	g_trust:	rb TR_SIZE * MAX_TRUST
 	g_hhash:	rq HHASH_SIZE
 	g_rhash:	rq RHASH_SIZE
+	g_plan_hhsize	dd ?		; entries of g_hhash in use, a power of two
+	g_plan_rhsize	dd ?		; and of g_rhash
+	g_plan_hhmask	dd ?		; each less one
+	g_plan_rhmask	dd ?
+	g_hh_npend	dd ?		; compiling: slots for them, in order
+	g_rh_npend	dd ?
+	g_hh_pend	rq MAX_HOSTS
+	g_rh_pend	rq MAX_ROUTES
 	g_plan_acts	dd ?
 	g_acts:		rb RA_SIZE * MAX_ACTS
 	g_limits:	rb LM_SIZE * MAX_LIMITS
@@ -360,6 +371,9 @@ end bss
 plan_compile:
 	push	rbx
 	push	r12
+	call	ni_reset			; (the checker's entries; children are indexed again)
+	mov	dword [g_hh_npend],0
+	mov	dword [g_rh_npend],0
 	call	errpage_plan_init		; (g_eps[0]: maintenance's text)
 	mov	qword [g_plan_drain_timeout],DEFAULT_DRAIN_US
 	mov	qword [g_plan_watchdog],2000000
@@ -426,6 +440,15 @@ plan_compile:
 	mov	rbx,[rbx+N_NEXT]
 	jmp	.listeners
 .done:
+	call	hash_tables_build
+	; what only compiling needed goes back to the kernel before workers fork
+	call	ni_release
+	lea	rdi,[g_hh_pend]
+	mov	esi,8 * MAX_HOSTS
+	call	pages_release
+	lea	rdi,[g_rh_pend]
+	mov	esi,8 * MAX_ROUTES
+	call	pages_release
 	; `profile`: what it sets that was not set
 	cmp	dword [g_plan_profile],PROFILE_LATENCY
 	jne	@f
@@ -921,6 +944,24 @@ pool_new:
 	mov	dword [rax+PL_RBPCT],2000	; a fifth of the requests
 	mov	dword [rax+PL_RBMIN],10 * RETRY_COST	; and 10 a second
 	mov	dword [rax+PL_RBCAP],100 * RETRY_COST
+	test	rdi,rdi
+	jz	@f
+	; found by its name in constant time (plan_pool_index)
+	push	rax
+	push	rcx
+	push	rsi
+	push	rdi
+	mov	edx,esi
+	mov	rsi,rdi
+	mov	r8d,ecx
+	mov	edi,NI_PPOOL
+	xor	ecx,ecx
+	call	ni_add
+	pop	rdi
+	pop	rsi
+	pop	rcx
+	pop	rax
+@@:
 	ret
 
 ; Access log destinations. The table only grows while the supervisor
@@ -1753,12 +1794,12 @@ compile_route_action:
 	call	.collect_from
 	pop	rdi
 .lines:
-	mov	rbx,[rdi+N_CHILD]
+	mov	rdx,r14
+	call	kids_first			; (a listener's thousands of routes: indexed)
+	mov	rbx,rax
 .line:
 	test	rbx,rbx
 	jz	.collected
-	cmp	[rbx+N_DEF],r14
-	jne	.next_line
 	mov	ecx,[g_plan_hdrops]
 	cmp	ecx,MAX_HDROPS
 	jae	plan_too_many
@@ -1811,7 +1852,8 @@ compile_route_action:
 	jmp	@b
 @@:
 .next_line:
-	mov	rbx,[rbx+N_NEXT]
+	call	kids_next			; (nothing above calls kids_first)
+	mov	rbx,rax
 	jmp	.line
 .collected:
 	ret
@@ -1830,18 +1872,70 @@ route_insert:
 	call	rhash_final
 	pop	rdx
 	pop	rcx
-	mov	r8d,eax
+	lea	r9d,[rdx+1]
+	shl	r9,32
+	or	r9,rax
+	mov	r8d,[g_rh_npend]
+	mov	[g_rh_pend+r8*8],r9
+	inc	dword [g_rh_npend]
+	ret
+
+; End of a compile: each lookup table sized for what goes in it (load at
+; most 1/4), then filled. The plan was reset, so both are empty.
+hash_tables_build:
+	mov	eax,[g_hh_npend]
+	mov	ecx,HHASH_SIZE
+	call	.size
+	mov	[g_plan_hhsize],eax
+	lea	edx,[eax-1]
+	mov	[g_plan_hhmask],edx
+	lea	rdi,[g_hhash]
+	lea	rsi,[g_hh_pend]
+	mov	ecx,[g_hh_npend]
+	call	.fill
+	mov	eax,[g_rh_npend]
+	mov	ecx,RHASH_SIZE
+	call	.size
+	mov	[g_plan_rhsize],eax
+	lea	edx,[eax-1]
+	mov	[g_plan_rhmask],edx
+	lea	rdi,[g_rhash]
+	lea	rsi,[g_rh_pend]
+	mov	ecx,[g_rh_npend]
+	; rdi = table of eax entries, rsi = ecx slot values (hash low, entry + 1 high)
+.fill:
+	lea	edx,[eax-1]
+.next:
+	test	ecx,ecx
+	jz	.filled
+	mov	r9,[rsi]
+	mov	r8d,r9d
 .probe:
-	and	r8d,RHASH_SIZE - 1
-	cmp	qword [g_rhash+r8*8],0
+	and	r8d,edx
+	cmp	qword [rdi+r8*8],0
 	je	.slot
 	inc	r8d
 	jmp	.probe
 .slot:
-	lea	r9d,[rdx+1]
-	shl	r9,32
-	or	r9,rax
-	mov	[g_rhash+r8*8],r9
+	mov	[rdi+r8*8],r9
+	add	rsi,8
+	dec	ecx
+	jmp	.next
+.filled:
+	ret
+	; eax = entries, ecx = the most: eax = a power of two, 4 per entry or more
+.size:
+	shl	eax,2
+	mov	edx,HASH_MIN
+@@:
+	cmp	edx,eax
+	jae	@f
+	cmp	edx,ecx
+	jae	@f
+	shl	edx,1
+	jmp	@b
+@@:
+	mov	eax,edx
 	ret
 
 ; Path hashing (FNV-1a), in three steps so a request path is hashed in one
@@ -5443,19 +5537,12 @@ compile_hosts:
 	mov	ecx,[r14+HO_WILD]
 	call	host_hash
 	pop	rcx
-	mov	edx,HHASH_SIZE - 1
-	mov	r8d,eax
-.probe:
-	and	r8d,edx
-	cmp	qword [g_hhash+r8*8],0
-	je	.slot
-	inc	r8d
-	jmp	.probe
-.slot:
 	lea	r9d,[rcx+1]
 	shl	r9,32
 	or	r9,rax
-	mov	[g_hhash+r8*8],r9
+	mov	r8d,[g_hh_npend]
+	mov	[g_hh_pend+r8*8],r9
+	inc	dword [g_hh_npend]
 	mov	eax,[g_cmp_rfirst]
 	mov	[r14+HO_RFIRST],eax
 	mov	eax,[g_cmp_rcount]
@@ -5627,6 +5714,30 @@ compile_routes:
 
 ; rdi/esi = pool name. eax = index (the checker made sure it exists).
 plan_pool_index:
+	cmp	dword [g_ni_full],0
+	jne	.walk
+	push	r8
+	push	r9
+	push	r10
+	push	r11
+	mov	edx,esi
+	mov	rsi,rdi
+	mov	edi,NI_PPOOL
+	xor	ecx,ecx
+	call	ni_find
+	test	rax,rax
+	jz	@f
+	mov	eax,[rax+NI_VAL]
+	jmp	.found_ix
+@@:
+	mov	eax,-1
+.found_ix:
+	pop	r11
+	pop	r10
+	pop	r9
+	pop	r8
+	ret
+.walk:
 	push	rbx
 	push	r12
 	push	r13

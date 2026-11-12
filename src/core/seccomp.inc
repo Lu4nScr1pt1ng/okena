@@ -172,6 +172,7 @@ rodata
 	sc_allow filter_supervisor, SYS_kill
 	sc_allow filter_supervisor, SYS_setitimer
 	sc_allow filter_supervisor, SYS_nanosleep
+	sc_allow filter_supervisor, SYS_poll		; (io_uring workers: accept_watch, timeout 0)
 	sc_allow filter_supervisor, SYS_clock_gettime
 	sc_allow filter_supervisor, SYS_getrandom
 	sc_allow filter_supervisor, SYS_recvmmsg		; (QUIC, in workers)
@@ -254,6 +255,7 @@ rodata
 	sc_allow filter_worker_uring, SYS_getrandom	; TLS: server random, ephemeral keys
 	sc_allow filter_worker_uring, SYS_recvmmsg	; QUIC datagrams
 	sc_allow filter_worker_uring, SYS_sendmmsg
+	sc_allow filter_worker_uring, SYS_poll		; (a listening socket nobody takes from: accept_watch)
 	sc_end filter_worker_uring
 
 	; io_uring worker with `udp` listeners (and whatever `files` needs): their
@@ -284,6 +286,7 @@ rodata
 	sc_allow filter_worker_uring_u, SYS_fstat
 	sc_allow filter_worker_uring_u, SYS_lseek_
 	sc_allow filter_worker_uring_u, SYS_close
+	sc_allow filter_worker_uring_u, SYS_poll		; (a listening socket nobody takes from: accept_watch)
 	sc_end filter_worker_uring_u
 
 	; epoll worker
@@ -337,6 +340,7 @@ rodata
 	sc_allow filter_worker_uring_f, SYS_fstat
 	sc_allow filter_worker_uring_f, SYS_lseek_
 	sc_allow filter_worker_uring_f, SYS_close
+	sc_allow filter_worker_uring_f, SYS_poll		; (a listening socket nobody takes from: accept_watch)
 	sc_end filter_worker_uring_f
 
 	sc_begin filter_worker_epoll_f

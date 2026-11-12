@@ -1304,6 +1304,9 @@ check_semantics:
 	push	rbx
 	push	r12
 	push	r13
+	call	ni_reset
+	mov	dword [g_ni_kids],1		; (every N_DEF is set now)
+	call	pool_index_build
 	mov	rax,[g_cfg_root]
 	mov	rbx,[rax+N_CHILD]
 .next:
@@ -1627,16 +1630,7 @@ check_tcp_timeouts:
 find_child:
 	imul	ecx,ecx,D_SIZE
 	lea	rdx,[dir_table+rcx]
-	mov	rax,[rdi+N_CHILD]
-.next:
-	test	rax,rax
-	jz	.done
-	cmp	[rax+N_DEF],rdx
-	je	.done
-	mov	rax,[rax+N_NEXT]
-	jmp	.next
-.done:
-	ret
+	jmp	kids_first
 
 ; rdi = tcp listener node.
 check_listener:
@@ -1933,6 +1927,18 @@ check_host_unique:
 	jae	.done
 	imul	r15,r14,A_SIZE
 	add	r15,[r13+N_ARGS]
+	cmp	dword [g_ni_full],0
+	jne	.walk
+	mov	rsi,[r15+A_VAL]
+	mov	edx,[r15+A_VLEN]
+	mov	edi,NI_HOST
+	mov	rcx,r12
+	call	ni_find
+	test	rax,rax
+	jz	.mine_next
+	mov	rbx,[rax+NI_VAL]
+	jmp	.dup
+.walk:
 	mov	rbx,[r12+N_CHILD]
 .other:
 	cmp	rbx,r13
@@ -1986,6 +1992,22 @@ check_host_unique:
 	inc	r14d
 	jmp	.mine
 .done:
+	; its names, for the blocks after it
+	xor	r14d,r14d
+.add:
+	cmp	r14d,[r13+N_ARGC]
+	jae	.added
+	imul	rax,r14,A_SIZE
+	add	rax,[r13+N_ARGS]
+	mov	rsi,[rax+A_VAL]
+	mov	edx,[rax+A_VLEN]
+	mov	edi,NI_HOST
+	mov	rcx,r12
+	mov	r8,r13
+	call	ni_add
+	inc	r14d
+	jmp	.add
+.added:
 	pop	r15
 	pop	r14
 	pop	r13
@@ -2094,6 +2116,70 @@ check_route_unique:
 	mov	rdi,r13
 	call	route_methods
 	mov	r15d,eax			; this route's methods (0 = all)
+	cmp	dword [g_ni_full],0
+	jne	.walk
+	; each of its paths: the earlier routes of the set with that path
+	xor	r14d,r14d
+.ix_mine:
+	cmp	r14d,[r13+N_ARGC]
+	jae	.ix_add
+	imul	rsi,r14,A_SIZE
+	add	rsi,[r13+N_ARGS]
+	mov	rax,[rsi+A_VAL]
+	cmp	byte [rax],'/'
+	jne	.ix_mine_next
+	push	rsi
+	mov	edx,[rsi+A_VLEN]
+	mov	rsi,[rsi+A_VAL]
+	mov	edi,NI_ROUTE
+	mov	rcx,r12
+	call	ni_find
+.ix_other:
+	test	rax,rax
+	jz	.ix_none
+	mov	rbx,[rax+NI_VAL]
+	push	rax
+	mov	rdi,rbx
+	call	route_methods
+	mov	ecx,eax
+	pop	rax
+	; overlap: either is "all", or they share a method
+	test	ecx,ecx
+	jz	.ix_dup
+	test	r15d,r15d
+	jz	.ix_dup
+	test	ecx,r15d
+	jnz	.ix_dup
+	call	ni_next
+	jmp	.ix_other
+.ix_dup:
+	pop	rsi
+	jmp	.dup
+.ix_none:
+	pop	rsi
+.ix_mine_next:
+	inc	r14d
+	jmp	.ix_mine
+.ix_add:
+	xor	r14d,r14d
+.ix_add_one:
+	cmp	r14d,[r13+N_ARGC]
+	jae	.done
+	imul	rsi,r14,A_SIZE
+	add	rsi,[r13+N_ARGS]
+	mov	rax,[rsi+A_VAL]
+	cmp	byte [rax],'/'
+	jne	@f
+	mov	edx,[rsi+A_VLEN]
+	mov	rsi,rax
+	mov	edi,NI_ROUTE
+	mov	rcx,r12
+	mov	r8,r13
+	call	ni_add
+@@:
+	inc	r14d
+	jmp	.ix_add_one
+.walk:
 	mov	rbx,[r12+N_CHILD]
 .other:
 	cmp	rbx,r13
@@ -2308,6 +2394,19 @@ listen_conflict:
 
 ; rdi/esi = pool name. rax = pool node or 0.
 pool_find:
+	cmp	dword [g_ni_pools],0
+	je	.walk
+	mov	edx,esi
+	mov	rsi,rdi
+	mov	edi,NI_POOL
+	xor	ecx,ecx
+	call	ni_find
+	test	rax,rax
+	jz	@f
+	mov	rax,[rax+NI_VAL]
+@@:
+	ret
+.walk:
 	push	rbx
 	push	r12
 	push	r13
@@ -2341,6 +2440,44 @@ pool_find:
 .out:
 	pop	r13
 	pop	r12
+	pop	rbx
+	ret
+
+; Every pool of the tree into the index by its name (the first of a name
+; is the one found, as the walk finds it).
+pool_index_build:
+	push	rbx
+	mov	rax,[g_cfg_root]
+	mov	rbx,[rax+N_CHILD]
+.next:
+	test	rbx,rbx
+	jz	.done
+	lea	rax,[dir_table + D_SIZE*DIR_POOL]
+	cmp	[rbx+N_DEF],rax
+	jne	.skip
+	mov	rax,[rbx+N_ARGS]
+	mov	rsi,[rax+A_VAL]
+	mov	edx,[rax+A_VLEN]
+	mov	edi,NI_POOL
+	xor	ecx,ecx
+	call	ni_find
+	test	rax,rax
+	jnz	.skip
+	mov	rax,[rbx+N_ARGS]
+	mov	rsi,[rax+A_VAL]
+	mov	edx,[rax+A_VLEN]
+	mov	edi,NI_POOL
+	xor	ecx,ecx
+	mov	r8,rbx
+	call	ni_add
+.skip:
+	mov	rbx,[rbx+N_NEXT]
+	jmp	.next
+.done:
+	xor	eax,eax
+	cmp	[g_ni_full],eax
+	sete	al
+	mov	[g_ni_pools],eax
 	pop	rbx
 	ret
 
@@ -3240,10 +3377,53 @@ same_arg_value:
 	clc
 	ret
 
+; pool_used's comparison: rdi = an argument naming a pool, r12 = the pool's
+; name argument (CF when the same), or 0: the name is noted, CF clear.
+pool_ref:
+	test	r12,r12
+	jz	@f
+	mov	rsi,r12
+	jmp	same_arg_value
+@@:
+	mov	rsi,[rdi+A_VAL]
+	mov	edx,[rdi+A_VLEN]
+	; rsi/edx = a pool's name: into NI_USED once. Keeps r8-r11.
+pool_note:
+	push	r8
+	push	r9
+	push	r10
+	push	r11
+	push	rsi
+	push	rdx
+	mov	edi,NI_USED
+	xor	ecx,ecx
+	call	ni_find
+	pop	rdx
+	pop	rsi
+	test	rax,rax
+	jnz	@f
+	mov	edi,NI_USED
+	xor	ecx,ecx
+	xor	r8d,r8d
+	call	ni_add
+@@:
+	pop	r11
+	pop	r10
+	pop	r9
+	pop	r8
+	clc
+	ret
+
 ; Warn about pools no listener uses.
 check_unused_pools:
 	push	rbx
 	push	r12
+	; one walk notes every pool named (NI_USED); then each pool is looked up
+	xor	edi,edi
+	cmp	[g_ni_full],edi
+	jne	@f
+	call	pool_used
+@@:
 	mov	rax,[g_cfg_root]
 	mov	rbx,[rax+N_CHILD]
 .next:
@@ -3252,9 +3432,23 @@ check_unused_pools:
 	lea	rax,[dir_table + D_SIZE*DIR_POOL]
 	cmp	[rbx+N_DEF],rax
 	jne	.skip
+	cmp	dword [g_ni_full],0
+	jne	.walk
+	mov	rax,[rbx+N_ARGS]
+	mov	rsi,[rax+A_VAL]
+	mov	edx,[rax+A_VLEN]
+	mov	edi,NI_USED
+	xor	ecx,ecx
+	call	ni_find
+	test	rax,rax
+	jnz	.skip
+	cmp	dword [g_ni_full],0
+	je	.unused
+.walk:
 	mov	rdi,rbx
 	call	pool_used
 	jc	.skip
+.unused:
 	mov	r12,[rbx+N_ARGS]
 	mov	rdi,r12
 	call	arg_value_span
@@ -3274,12 +3468,17 @@ check_unused_pools:
 	pop	rbx
 	ret
 
-; rdi = pool node. CF when some `to pool NAME` names it.
+; rdi = pool node. CF when some `to pool NAME` names it. With rdi = 0, each
+; pool named anywhere is noted in the index (NI_USED), and CF is clear.
 pool_used:
 	push	rbx
 	push	r12
 	push	r13
+	xor	r12d,r12d
+	test	rdi,rdi
+	jz	@f
 	mov	r12,[rdi+N_ARGS]
+@@:
 	mov	rax,[g_cfg_root]
 	mov	rbx,[rax+N_CHILD]
 .next:
@@ -3354,9 +3553,8 @@ pool_used:
 	imul	rcx,rcx,A_SIZE
 	mov	rdi,[r13+N_ARGS]
 	add	rdi,rcx
-	mov	rsi,r12
 	push	r13
-	call	same_arg_value
+	call	pool_ref
 	pop	r13
 	jc	.pt_yes
 .pt_next:
@@ -3405,8 +3603,7 @@ pool_used:
 	jb	.uses_auth
 	push	rdi
 	lea	rdi,[rcx+A_SIZE]
-	mov	rsi,r12
-	call	same_arg_value
+	call	pool_ref
 	pop	rdi
 	jc	.used
 .uses_auth:
@@ -3424,6 +3621,16 @@ pool_used:
 	cmp	dword [r8+A_KIND],ARG_KV
 	jne	.split_next
 	mov	edx,[r8+A_KLEN]
+	test	r12,r12
+	jnz	@f
+	push	rdi
+	push	rcx
+	mov	rsi,[r8+A_KEY]
+	call	pool_note
+	pop	rcx
+	pop	rdi
+	jmp	.split_next
+@@:
 	cmp	edx,[r12+A_VLEN]
 	jne	.split_next
 	push	rdi
@@ -3452,8 +3659,7 @@ pool_used:
 	test	rax,rax
 	jz	.not
 	mov	rdi,rax
-	mov	rsi,r12
-	jmp	same_arg_value
+	jmp	pool_ref
 .used:
 	ret
 .uses_to:
@@ -3471,8 +3677,7 @@ pool_used:
 	test	eax,eax
 	jz	.not
 	lea	rdi,[r13+A_SIZE]
-	mov	rsi,r12
-	jmp	same_arg_value
+	jmp	pool_ref
 .not:
 	clc
 	ret

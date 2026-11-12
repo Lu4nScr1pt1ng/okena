@@ -696,6 +696,31 @@ or kept with the reason written next to it and a number high enough that no
 real deployment meets it. A configuration that grows tenfold must work without
 a rebuild.
 
+  *First block (2026-11-12).* The plan's tables: 1024 listener addresses (was
+  64), 4096 pools (512), 16384 servers (1024), 65536 route paths and host
+  names (1024 each), 65536 header operations (4096), 16384 trusted_proxies
+  ranges (1024). They are address space, reserved and untouched: a reload
+  copies and clears only the entries in use (a watermark covers what a failed
+  compile left), the route and host tables are sized from what goes in them,
+  a worker publishes only the listeners and servers there are, and the
+  zero-initialised state is on 4 KiB pages (`MADV_NOHUGEPAGE` before anything
+  is written: with THP on `always` a sparse touch made 2 MiB resident; a
+  three-line configuration went from 19 MB to 3 MB). Every lookup of the
+  checker and the compiler that walked the tree (a route's path or a host
+  name seen before, a pool by name, which pools are used, a listener's
+  `header` lines for each of its routes) goes through one index sized from
+  the tree and given back to the kernel before the workers fork: `okena
+  check` of 300 listeners, 2000 pools, 10000 servers, 40000 routes and 20000
+  host names went from 15.5 s to 0.1 s of CPU, and the whole runs in about
+  40 MiB (tests/httpproxy/scale.py). Two limits that broke silently are gone:
+  a socket id held a listener in 8 bits (a 257th listener accepted nothing),
+  and io_uring had 2048 address-taking accepts for the whole worker (past 256
+  listeners, the last ones got none). The same suite found a reload losing
+  requests on io_uring with hundreds of listeners (EDGE_CASES, reload). Still
+  fixed and to be gone through: regexes (256), servers a discovery source may
+  have (256), requests waiting for a pool in a worker (1024), request headers
+  (100), and the smaller tables of the gateway features.
+
 **A review of everything.** Each subsystem read again with the measurements in
 hand: is this the fastest correct way, does it do work it need not, does it
 take a lock, a syscall or a copy it could avoid, does its worst case have a

@@ -138,7 +138,9 @@ worker_main:
 	cmp	dword [g_draining],2
 	jne	.poll
 	cmp	dword [g_active],0
-	je	.drained
+	jne	.poll
+	cmp	dword [g_acc_live],0		; accepts not cancelled yet may still
+	je	.drained			; bring a connection: it is served
 .poll:
 	cmp	qword [g_spin_ticks],0
 	je	.block
@@ -367,6 +369,10 @@ tick_work:
 	call	pool_warm			; `connect warm=`
 	call	stats_publish
 	call	udp_tick
+	cmp	dword [g_engine],ENGINE_EPOLL
+	je	@f
+	call	accept_watch			; (io_uring: a lost wakeup)
+@@:
 	mov	eax,[g_hb_slot]
 	add	rax,[g_hb]
 	inc	qword [rax]
@@ -389,6 +395,7 @@ tick_work:
 	je	stop_accepting
 	; drain timeout: close what is left
 	call	sessions_close_all
+	mov	dword [g_acc_live],0		; (and go, whatever the kernel still holds)
 .done:
 	ret
 

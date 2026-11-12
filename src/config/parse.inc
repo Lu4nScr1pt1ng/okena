@@ -852,6 +852,7 @@ lex_push_back:
 ; in g_cfg_errors.
 cfg_parse:
 	push	rbx
+	call	ni_new_tree
 	lea	rdi,[g_ar_nodes]
 	mov	esi,N_SIZE
 	call	arena_alloc

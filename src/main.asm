@@ -25,6 +25,7 @@ include 'config/values.inc'
 include 'config/schema.inc'
 include 'config/policy.inc'
 include 'config/check.inc'
+include 'config/index.inc'
 include 'plan/compile.inc'
 include 'core/base64.inc'
 include 'crypto/ct.inc'
@@ -162,6 +163,15 @@ include 'cli_fmt.inc'
 include 'cli_explain.inc'
 
 start:
+	; The zero-initialised state is sized for the largest configuration and
+	; touched sparsely: with transparent huge pages "always", each touch would
+	; make 2 MiB resident. Before anything is written, 4 KiB pages for all of
+	; it (the hot pools that gain from huge pages are mappings of their own).
+	mov	edi,BSS_PAGE
+	mov	esi,BSS_PAGES
+	mov	edx,MADV_NOHUGEPAGE
+	mov	eax,SYS_madvise
+	syscall
 	; At entry: [rsp] = argc, then argv[], NULL, envp[], NULL.
 	mov	rax,[rsp]
 	mov	[g_argc],rax
@@ -180,6 +190,8 @@ segment readable
 
 segment readable writeable
 	bss_emit
+	BSS_PAGE := (BSS.base + 4095) and not 4095
+	BSS_PAGES := (BSS.base + BSS.size - BSS_PAGE) and not 4095
 	assert g_acme_chain - g_tls_store = TLS_STORE	; (a TL_CHAIN offset reaches it)
 	assert g_od_chain - g_tls_store = TLS_STORE + AX_CHAINMAX
 

@@ -219,7 +219,7 @@ the connection closed when its framing can no longer be trusted.
 | Invalid config on reload | rejected, running config kept, error with line:column |
 | A crowd of silent connections to the metrics address | requests read as they come, 128 at once, two seconds each; all slots taken, the one waiting longest gives way: `/live` and `/ready` keep answering |
 | HEAD on the metrics address | answered as GET, without the body |
-| Reload during heavy traffic | no dropped connections; old generations freed as connections finish |
+| Reload during heavy traffic | no dropped connections; old generations freed as connections finish. io_uring: a draining worker leaves only once each of its accepts has ended (one that completes brings a connection it serves), and a listening socket with connections waiting a whole tick while its listener took none gets one more accept (an accept waits exclusively: a wakeup that went to an accept cancelled by an old worker is not given to the new one's; with a few hundred listeners, requests sent as the old workers stopped waited for good). Checked with clients all through a reload of 300 listeners (tests/httpproxy/scale.py) |
 | Binary upgrade | listeners handed over, old workers drain |
 | Worker crash | only its connections lost; queued connections wait for the replacement |
 | Worker hung (infinite loop) | heartbeat watchdog kills and replaces it after 2 s |

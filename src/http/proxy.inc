@@ -1443,7 +1443,7 @@ route_lookup:
 	pop	rdx
 	mov	r11d,eax
 .probe:
-	and	eax,RHASH_SIZE - 1
+	and	eax,[g_plan_rhmask]
 	mov	r10,[g_rhash+rax*8]
 	test	r10,r10
 	jz	.miss
@@ -1593,7 +1593,7 @@ host_find:
 	pop	rdx
 	pop	rsi
 .probe:
-	and	eax,HHASH_SIZE - 1
+	and	eax,[g_plan_hhmask]
 	mov	r10,[g_hhash+rax*8]
 	test	r10,r10
 	jz	.none

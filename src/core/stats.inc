@@ -27,6 +27,7 @@ bss
 	g_st_l_dgout	rq MAX_LISTENERS	; and to them
 	g_st_l_lat	rq MAX_LISTENERS * LAT_B	; http: request durations, by bucket
 	g_st_l_latsum	rq MAX_LISTENERS	; and their sum, µs
+	; (stats_publish names each table above)
 	g_st_ud_drops	dq ?			; udp: datagrams lost (no flow to go in, a full buffer)
 	g_st_src_open	dq ?			; let in uncounted: per_source table full
 	g_st_alog_dropped dq ?			; access log lines lost to a full pipe
@@ -42,6 +43,8 @@ bss
 end bss
 
 ST_BLOCK	:= g_st_end - g_st_begin
+; every table stats_publish copies, and nothing else before the scalars
+assert g_st_ud_drops - g_st_begin = 8 * (MAX_LISTENERS * (34 + LAT_B) + MAX_SERVERS * 2)
 ; a worker's page: counters, then active connections per listener and
 ; per server, then its engine
 STP_LACTIVE	:= ST_BLOCK
@@ -110,18 +113,36 @@ stats_publish:
 	mov	edi,[g_worker_id]
 	imul	rdi,rdi,STP_SIZE
 	add	rdi,[g_stats_tbl]
-	push	rdi
-	lea	rsi,[g_st_begin]
-	mov	ecx,ST_BLOCK / 8
+	mov	rdx,rdi
+	; only the listeners and servers there are: the tables are sized for
+	; the largest configuration, and a second's copy stays what is used
+	irp <sym,per,cnt>, g_st_l_accepted,1,g_plan_listeners, g_st_l_full,1,g_plan_listeners, \
+		g_st_l_source,1,g_plan_listeners, g_st_l_in,1,g_plan_listeners, \
+		g_st_l_out,1,g_plan_listeners, g_st_s_connects,1,g_plan_servers, \
+		g_st_s_fails,1,g_plan_servers, g_st_l_evicted,1,g_plan_listeners, \
+		g_st_l_http,10,g_plan_listeners, g_st_l_retries,1,g_plan_listeners, \
+		g_st_l_proto,3,g_plan_listeners, g_st_l_codes,4,g_plan_listeners, \
+		g_st_l_ws,1,g_plan_listeners, g_st_l_cache,1,g_plan_listeners, \
+		g_st_l_tls,4,g_plan_listeners, g_st_l_quic,1,g_plan_listeners, \
+		g_st_l_dgin,1,g_plan_listeners, g_st_l_dgout,1,g_plan_listeners, \
+		g_st_l_lat,LAT_B,g_plan_listeners, g_st_l_latsum,1,g_plan_listeners
+		lea	rdi,[rdx + sym - g_st_begin]
+		lea	rsi,[sym]
+		mov	ecx,[cnt]
+		imul	ecx,ecx,per
+		rep	movsq
+	end irp
+	lea	rdi,[rdx + g_st_ud_drops - g_st_begin]
+	lea	rsi,[g_st_ud_drops]
+	mov	ecx,(g_st_end - g_st_ud_drops) / 8
 	rep	movsq
-	pop	rdx
 	lea	rdi,[rdx+STP_LACTIVE]
 	lea	rsi,[g_ls_active]
-	mov	ecx,MAX_LISTENERS
+	mov	ecx,[g_plan_listeners]
 	rep	movsd
 	lea	rdi,[rdx+STP_SACTIVE]
 	lea	rsi,[g_sv_active]
-	mov	ecx,MAX_SERVERS
+	mov	ecx,[g_plan_servers]
 	rep	movsd
 	mov	eax,[g_engine]
 	mov	[rdx+STP_ENGINE],eax

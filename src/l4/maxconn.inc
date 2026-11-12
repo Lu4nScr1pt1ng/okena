@@ -81,7 +81,7 @@ sv_live_worker:
 	add	rax,[g_sv_live]
 	mov	[g_sv_row],rax
 	mov	rdi,rax
-	mov	ecx,MAX_SERVERS
+	mov	ecx,[g_plan_servers]		; (a worker restarted: its row as the last one left it)
 	xor	eax,eax
 	rep	stosd
 	mov	dword [g_wq_waiting],0

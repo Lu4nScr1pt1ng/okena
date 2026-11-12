@@ -554,7 +554,14 @@ Explicit huge pages (`MAP_HUGETLB`) are used when the host provides them.
 **Today** every pool is marked `MADV_NOHUGEPAGE`: with THP on `always`,
 the first touch of a sparse pool committed a whole 2 MiB page and a
 worker at rest grew from 0.7 MB to 13 MB. Huge pages come back per pool,
-for pools dense enough to fill them, once measured.
+for pools dense enough to fill them, once measured. The same holds for the
+zero-initialised state of the binary (the plan's tables, sized for the
+largest configuration, a few hundred MiB of address space): it is marked
+before anything is written, and only what a configuration uses is touched.
+A reload copies and clears tables as far as they are used, and what only
+compiling needs (the checker's index, the lookup tables' pending entries,
+the old plan's snapshot and text) goes back to the kernel before any
+process is forked, or every child would keep a copy.
 
 **Pressure-aware.** The overload manager reads the cgroup's
 `memory.current` and pressure stall information (`memory.pressure`, PSI)
