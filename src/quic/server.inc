@@ -430,7 +430,35 @@ macro qc_key level*, dir*
 end macro
 
 ; µs now, into g_qnow
+; g_qnow and rax = monotonic microseconds. From the TSC between readings of the
+; clock a second apart: the clock was a system call (through the seccomp
+; filters) at each cache lookup, rate limit and QUIC batch; a hit of the cache
+; paid it on every request. Never backwards: a reading below the last is
+; the last. The clock itself when the TSC is not calibrated.
 qs_clock:
+	mov	rcx,[g_tsc_per_us]
+	test	rcx,rcx
+	jz	.sys
+	rdtsc
+	shl	rdx,32
+	or	rax,rdx
+	sub	rax,[g_qclk_tsc]
+	xor	edx,edx
+	div	rcx				; microseconds since the clock
+	cmp	rax,1000000
+	jae	.sys				; a second: read it again
+	add	rax,[g_qclk_us]
+	cmp	rax,[g_qnow]
+	jae	@f
+	mov	rax,[g_qnow]
+@@:
+	mov	[g_qnow],rax
+	ret
+.sys:
+	rdtsc
+	shl	rdx,32
+	or	rax,rdx
+	mov	[g_qclk_tsc],rax
 	sub	rsp,24
 	mov	edi,CLOCK_MONOTONIC
 	mov	rsi,rsp
@@ -443,9 +471,20 @@ qs_clock:
 	mov	r8d,1000
 	div	r8
 	add	rax,rcx
-	mov	[g_qnow],rax
 	add	rsp,24
+	mov	[g_qclk_us],rax
+	cmp	rax,[g_qnow]
+	jae	@f
+	mov	rax,[g_qnow]
+@@:
+	mov	[g_qnow],rax
 	ret
+
+bss
+	align 8
+	g_qclk_tsc	dq ?		; qs_clock: the TSC at the last reading of the clock
+	g_qclk_us	dq ?		; and the clock then
+end bss
 
 ; ---------------------------------------------------- sockets (supervisor)
 
