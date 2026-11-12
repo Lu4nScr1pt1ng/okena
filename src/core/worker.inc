@@ -158,7 +158,8 @@ worker_main:
 	call	ep_http_ready			; user-space TLS deliveries
 	call	fault_flush			; requests held by fault delay=
 	call	h2_flush			; HTTP/2: one send a connection an iteration
-	call	qs_resume			; QUIC: datagrams left from the last turn
+	call	qs_flush			; QUIC: the answers first,
+	call	qs_resume			; then the datagrams that came
 	call	udp_resume
 	call	qs_flush			; QUIC: what connections send
 	call	hs_drain			; hellos that waited for the budget
@@ -192,7 +193,8 @@ worker_main:
 	call	ep_http_ready			; user-space TLS deliveries
 	call	fault_flush			; requests held by fault delay=
 	call	h2_flush			; HTTP/2: one send a connection an iteration
-	call	qs_resume			; QUIC: datagrams left from the last turn
+	call	qs_flush			; QUIC: the answers first,
+	call	qs_resume			; then the datagrams that came
 	call	udp_resume
 	call	qs_flush			; QUIC: what connections send
 	call	hs_drain			; hellos that waited for the budget

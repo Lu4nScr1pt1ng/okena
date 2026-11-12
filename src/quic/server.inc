@@ -831,12 +831,12 @@ qs_arm_timer:
 	mov	[rax+SQE_USER_DATA],rcx
 	ret
 
-; io_uring: a socket is readable (ebx = slot, r15d = cqe flags)
+; io_uring: a socket is readable (ebx = slot, r15d = cqe flags). Read at
+; the turn's end (qs_resume), after the other completions: the answers the
+; backends gave go out first (qs_flush), then new requests come in; in a
+; burst, a request is not held behind the next ones.
 on_qpoll:
-	push	r15
-	mov	edi,ebx
-	call	qs_readable
-	pop	r15
+	bts	[g_qs_pend],ebx
 	test	r15d,IORING_CQE_F_MORE
 	jnz	.out
 	mov	edi,ebx				; the multishot poll ended: again

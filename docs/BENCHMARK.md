@@ -359,90 +359,91 @@ Read with care:
   slept with deliveries waiting. Bidirectional 4 KB messages at 80k/s
   through one core run clean on both engines.
 
-## HTTP/3 against HAProxy and nginx (2026-11-05)
+## HTTP/3 against HAProxy and nginx, all in Docker (2026-11-12)
 
-`tests/bench/h3.sh`: okena (2 workers, `http3 on`), HAProxy 3.2 (`nbthread
-2`, `bind quic4@`, OpenSSL 3.5.7) and nginx 1.27 (2 workers, `listen ...
-quic reuseport`), official images on the host network, all on cores 1-2;
-the backend `l4bench http` on 4-5; the load on the four other physical
-cores, from h2load built with HTTP/3 (nghttp2 1.66, ngtcp2 1.14, nghttp3
-1.11 on OpenSSL 3.5: tests/bench/h3/Dockerfile) and from `okena bench
-proto=h3`. ECDSA P-256, X25519 for all three, 10 s a run. h2load is closed
-loop and its latencies are per request after the connection (no correction
-for coordinated omission); "first byte" includes the handshake. `okena
-bench` counts from when the schedule asked for the request. Other
-containers stopped. One run of each table below: differences of a few
-tens of µs on quiet latency are not to be read from it, see the repeated
-runs after them.
+`tests/bench/h3.sh`: okena (2 workers, `http3 on`, its image and seccomp
+profile), HAProxy 3.2 (`nbthread 2`, `bind quic4@`, OpenSSL 3.5.7) and
+nginx 1.27 (2 workers, `listen ... quic reuseport`), each in a container
+on the host network, all on cores 1-2; the backend `l4bench http` on 4-5;
+the load on the four other physical cores, from h2load built with HTTP/3
+(nghttp2 1.66, ngtcp2 1.14, nghttp3 1.11 on OpenSSL 3.5:
+tests/bench/h3/Dockerfile) and from `okena bench proto=h3`. ECDSA P-256,
+X25519 for all three, 10 s a run. h2load is closed loop and its latencies
+are per request after the connection (no correction for coordinated
+omission); "first byte" includes the handshake. `okena bench` counts from
+when the schedule asked for the request. Other containers stopped. One run
+of each table.
 
 | HTTP/3, many streams (64 x 10) | server | requests/s | p50 / p99 / p99.9 / max (µs) | failed |
 |---|---|---|---|---|
-| closed loop | okena, 2 workers | 195836.10 | 2872 / 6659 / 9634 / 36984 | 0 |
-| closed loop | HAProxy 3.2, 2 threads | 131836.00 | 4741 / 6140 / 9356 / 63763 | 0 |
-| closed loop | nginx 1.27, 2 workers | 95014.80 | 5909 / 38336 / 67805 / 265398 | 0 |
+| closed loop | okena, 2 workers | 191906.90 | 3324 / 6169 / 8508 / 43284 | 0 |
+| closed loop | HAProxy 3.2, 2 threads | 127340.00 | 4913 / 6270 / 8682 / 75016 | 0 |
+| closed loop | nginx 1.27, 2 workers | 94840.00 | 6068 / 19606 / 53718 / 157335 | 0 |
 
 | HTTP/3, a new connection each | server | requests/s | p50 / p99 / p99.9 / max (µs) | failed | first byte, mean / max |
 |---|---|---|---|---|---|
-| 2000/s | okena, 2 workers | 2016.38 | 5584 / 12772 / 13809 / 14924 | 0 | 15.83ms / 57.77ms |
-| 2000/s | HAProxy 3.2, 2 threads | 1298.63 | 21582 / 50771 / 56265 / 60079 | 0 | 69.10ms / 15.00s |
-| 2000/s | nginx 1.27, 2 workers | 1117.11 | 72981 / 745441 / 3116345 / 12671543 | 0 | 588.75ms / 15.02s |
-| 5000/s | okena, 2 workers | 4987.44 | 16134 / 37238 / 40665 / 51102 | 0 | 49.42ms / 130.60ms |
-| 5000/s | HAProxy 3.2, 2 threads | 700.80 | 14096169 / 20046085 / 20434632 / 20708052 | 50074 | 17.19s / 21.13s |
-| 5000/s | nginx 1.27, 2 workers | 1119.03 | 69959 / 1455543 / 6233438 / 21337863 | 11784 | 6.23s / 21.35s |
-| 10000/s | okena, 2 workers | 9975.08 | 46250 / 143099 / 217487 / 238185 | 0 | 127.81ms / 394.09ms |
-| 10000/s | HAProxy 3.2, 2 threads | 888.99 | 4478918 / 16118430 / 16598603 / 17373428 | 141630 | 20.03s / 29.98s |
-| 10000/s | nginx 1.27, 2 workers | 741.59 | 418585 / 17328620 / 27016738 / 34359455 | 129654 | 7.35s / 34.41s |
+| 2000/s | okena, 2 workers | 2016.00 | 6779 / 15561 / 19792 / 20919 | 0 | 17.03ms / 57.07ms |
+| 2000/s | HAProxy 3.2, 2 threads | 1315.49 | 21682 / 51317 / 56980 / 69738 | 0 | 60.65ms / 15.00s |
+| 2000/s | nginx 1.27, 2 workers | 1117.19 | 73421 / 741532 / 3033018 / 12652843 | 0 | 637.06ms / 15.01s |
+| 5000/s | okena, 2 workers | 4987.60 | 15987 / 36988 / 47504 / 50705 | 0 | 48.26ms / 129.41ms |
+| 5000/s | HAProxy 3.2, 2 threads | 702.17 | 5156054 / 18132465 / 18755820 / 18961135 | 49810 | 15.33s / 19.71s |
+| 5000/s | nginx 1.27, 2 workers | 1114.87 | 72841 / 1505312 / 6248082 / 21255953 | 12092 | 6.24s / 28.29s |
+| 10000/s | okena, 2 workers | 9973.97 | 41953 / 115147 / 140529 / 171528 | 0 | 111.30ms / 293.54ms |
+| 10000/s | HAProxy 3.2, 2 threads | 656.39 | 3297326 / 14433474 / 15183472 / 15329551 | 135310 | 18.05s / 29.62s |
+| 10000/s | nginx 1.27, 2 workers | 770.75 | 444765 / 17037002 / 27112139 / 34425584 | 127208 | 7.23s / 34.46s |
 
 | HTTP/3, keep-alive at 18k/s (60 x 300/s) | server | requests/s | p50 / p99 / p99.9 / max (µs) | failed |
 |---|---|---|---|---|
-| quiet | okena, 2 workers | 17987.70 | 100 / 235 / 443 / 3322 | 0 |
-| under an Initial flood | okena, 2 workers | 17987.00 | 163 / 493 / 1978 / 9878 | 0 |
-| quiet | HAProxy 3.2, 2 threads | 17982.50 | 95 / 192 / 338 / 18776 | 0 |
-| under an Initial flood | HAProxy 3.2, 2 threads | 2111.10 | 117 / 95200 / 98906 / 168494 | 0 |
-| quiet | nginx 1.27, 2 workers | 17982.70 | 76 / 171 / 929 / 11901 | 0 |
-| under an Initial flood | nginx 1.27, 2 workers | 4067.30 | 1024 / 172430 / 1877380 / 3455693 | 0 |
+| quiet | okena, 2 workers | 16778.30 | 67 / 131 / 240 / 10100 | 0 |
+| under an Initial flood | okena, 2 workers | 16762.52 | 151 / 3562 / 16841 / 27560 | 0 |
+| quiet | HAProxy 3.2, 2 threads | 16769.46 | 97 / 209 / 526 / 23792 | 0 |
+| under an Initial flood | HAProxy 3.2, 2 threads | 8458.89 | 801 / 97291 / 103927 / 197957 | 0 |
+| quiet | nginx 1.27, 2 workers | 16772.82 | 104 / 431 / 1383 / 19053 | 0 |
+| under an Initial flood | nginx 1.27, 2 workers | 6150.80 | 120 / 28605 / 271364 / 27685075 | 0 |
 
 | HTTP/3, open loop (60 connections) | server | requests/s | p50 / p99 / p99.9 / max (µs) | errors |
 |---|---|---|---|---|
-| 5000/s | okena, 2 workers | 5000.0 | 50 / 311 / 2523 / 2895 | 0 |
-| 5000/s | HAProxy 3.2, 2 threads | 5000.0 | 67 / 102 / 1294 / 3002 | 0 |
-| 5000/s | nginx 1.27, 2 workers | 5000.0 | 59 / 3801 / 27262 / 35866 | 0 |
-| 18000/s | okena, 2 workers | 18000.0 | 39 / 117 / 389 / 3563 | 0 |
-| 18000/s | HAProxy 3.2, 2 threads | 18000.0 | 71 / 110 / 221 / 1370 | 0 |
-| 18000/s | nginx 1.27, 2 workers | 18000.0 | 51 / 72 / 153 / 659 | 0 |
-| 40000/s | okena, 2 workers | 40000.0 | 39 / 67 / 827 / 2835 | 0 |
-| 40000/s | HAProxy 3.2, 2 threads | 40000.0 | 151 / 4915 / 7340 / 11564 | 0 |
-| 40000/s | nginx 1.27, 2 workers | 40000.0 | 6160 / 148897 / 163577 / 166375 | 0 |
+| 5000/s | okena, 2 workers | 5000.0 | 52 / 90 / 115 / 996 | 0 |
+| 5000/s | HAProxy 3.2, 2 threads | 5000.0 | 69 / 117 / 196 / 4016 | 0 |
+| 5000/s | nginx 1.27, 2 workers | 5000.0 | 61 / 204 / 266 / 355 | 0 |
+| 18000/s | okena, 2 workers | 18000.0 | 43 / 66 / 98 / 2086 | 0 |
+| 18000/s | HAProxy 3.2, 2 threads | 18000.0 | 70 / 114 / 188 / 1105 | 0 |
+| 18000/s | nginx 1.27, 2 workers | 18000.0 | 55 / 99 / 327 / 1703 | 0 |
+| 40000/s | okena, 2 workers | 40000.0 | 46 / 73 / 253 / 3159 | 0 |
+| 40000/s | HAProxy 3.2, 2 threads | 40000.0 | 121 / 4718 / 8257 / 16569 | 0 |
+| 40000/s | nginx 1.27, 2 workers | 40000.0 | 99 / 199229 / 213909 / 215075 | 0 |
 
-Quiet latency, three runs each, alternating on one machine, 60 connections,
-in µs, p50 / p99 / p99.9, the range of the runs:
-
-| at 18k/s | okena | HAProxy 3.2 | nginx 1.27 |
-|---|---|---|---|
-| `okena bench`, p50 | 39 | 71-72 | 53-54 |
-| `okena bench`, p99 | 58-63 | 117-149 | 96-102 |
-| `okena bench`, p99.9 | 105-811 | 206-262 | 215-247 |
-| h2load, p50 | 103-133 | 91-96 | 89-91 |
-| h2load, p99 | 258-338 | 187-222 | 237-285 |
-| h2load, p99.9 | 630-1229 | 547-860 | 3406-3764 |
-
-* Many streams: okena 49% above HAProxy, twice nginx.
+* Many streams: okena 51% above HAProxy, twice nginx.
 * Handshakes: okena keeps up to about 10k new connections a second on two
-  cores with none failing; HAProxy and nginx top out near 1.1-1.3k/s here,
+  cores with none failing; HAProxy and nginx top out near 0.7-1.3k/s here,
   and fail connections when offered more.
-* Quiet: the two generators disagree. Open loop okena is ahead at p50 and
-  p99, its p99.9 less steady than theirs; under h2load it is 10 to 40 µs
-  behind at p50. Which is the truth for a browser is not settled: the
-  difference between them is not explained yet.
+* Keep-alive, quiet: okena first at every percentile with both generators
+  now. With h2load it used to be 10 to 40 µs behind at p50, and the two
+  generators disagreed. The cause was in the load, not the server: h2load
+  starts each connection's 300/s schedule when its handshake ends; okena
+  completed the 60 handshakes in one burst, so ever after its requests came
+  in bursts of 10-12 within 100 µs (a capture on lo showed it), and each
+  waited for the ones before it (a request to a loopback backend costs
+  about 10 µs of the kernel's time to send); HAProxy and nginx, slower at
+  the handshakes, got theirs spread out. The connections now start 1 ms
+  apart (`-r 8 --rate-period=1ms`), and every server gets the same arrivals:
+  okena p50 / p99 67 / 131 µs, HAProxy 97 / 209, nginx 104 / 431 (with the
+  same arrivals in an A/B of three runs: 71 against nginx's 79 at p50).
+  The requests/s column counts the ramp of the connections too.
+* Within a turn of the loop a QUIC socket is now read after the other
+  completions: the answers from the backends go out before new requests
+  come in (backend reply to datagram out, p50 41-46 µs in a burst).
+* Under the flood (about 300k Initials a second, real ClientHellos never
+  answered, tests/bench/h3flood.py) okena keeps the whole rate; HAProxy
+  falls to 8.5k/s and nginx to 6.2k/s, with p99 near 30-100 ms. okena's
+  own p99 is 3.6 ms and p99.9 17 ms here, against 0.5 and 2 ms on
+  2026-11-05 (okena outside Docker then, HAProxy at 2.1k/s and nginx at
+  4.1k/s): not explained yet, to be looked at. Modulo steering spreads the
+  flood over the workers.
 * An answer used to cost 3 datagrams out and 4 in: an ACK alone, the answer,
   MAX_STREAMS alone, and the client's ACK of each. Now about 1 and 2. Old
   and new binary alternated: `okena bench` p50 at 18k/s 46 -> 39 µs, h2load
   130-170 -> 103-156 µs (one binary varies that much between runs).
-* Under the flood (about 330k Initials a second, real ClientHellos never
-  answered, tests/bench/h3flood.py) okena keeps the 18k/s with p99 at
-  0.5 ms against 0.2 quiet; HAProxy falls to 2.1k/s and nginx to 4.1k/s,
-  with p99 near 100 ms and above. Modulo steering spreads the flood over the
-  workers. Close to flat, not flat: p99.9 goes from 0.4 to 2 ms.
 * Congestion control through a relay, 3 MB, medians: at 30 ms RTT and 1%
   loss CUBIC 6.07 s and `quic_cc bbr` 1.48 s, at 100 ms and no loss 2.66 and
   3.16 s. CUBIC's figure is what the loss model predicts (0.55 MB/s), not a

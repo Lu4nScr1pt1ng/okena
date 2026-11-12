@@ -139,6 +139,8 @@ ep_main:
 	call	ep_http_ready
 	call	fault_flush			; requests held by fault delay=
 	call	h2_flush			; HTTP/2: one send a connection an iteration
+	call	qs_flush			; QUIC: the answers first,
+	call	qs_resume			; then the datagrams that came
 	call	qs_tick				; QUIC: timers, then what connections send
 	call	qs_flush
 	call	hs_drain			; hellos that waited for the budget
@@ -332,8 +334,9 @@ ep_dispatch:
 	je	.pooled
 	cmp	eax,EK_QUIC
 	jne	@f
-	mov	edi,esi				; a QUIC socket is readable
-	jmp	qs_readable
+	and	esi,QS_MAX - 1			; a QUIC socket is readable: read at
+	bts	[g_qs_pend],esi			; the turn's end, after the answers
+	ret
 @@:
 	cmp	eax,EK_UDP
 	je	udp_ready

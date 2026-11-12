@@ -10,7 +10,8 @@
 #   handshakes: a new connection per request at fixed rates (h2load
 #     --rate): the rate reached, the requests' latency after the
 #     handshake, time to the first byte (connect included), failures
-#   flood: 60 connections at 300 requests/s each, quiet and then while
+#   flood: 60 connections at 300 requests/s each (started 1 ms apart, so
+#     every server sees the same spread of arrivals), quiet and then while
 #     two senders replay real client Initials that are never answered
 #     (tests/bench/h3flood.py, about 300k a second)
 #   open loop: okena bench proto=h3 at fixed rates, 60 connections: latency
@@ -175,7 +176,13 @@ for s in "${SERVERS[@]}"; do
 			done
 			sleep 4
 		fi
-		LOAD_CPUS=$KA_CPUS load -c 60 -m 1 --rps 300 -D "$DUR" "https://127.0.0.1:${s##*:}/"
+		# connections started 1 ms apart (8 at a time, one a load thread):
+		# each client's 300/s schedule starts when its handshake ends, so
+		# a server that completes the 60 handshakes in one burst would
+		# get its requests in bursts of 10 forever after, and one that is
+		# slower at them spread out; started apart, every server gets the
+		# same arrivals, spread over the 3.3 ms period
+		LOAD_CPUS=$KA_CPUS load -c 60 -m 1 --rps 300 -n $((18000 * DUR)) -r 8 --rate-period=1ms "https://127.0.0.1:${s##*:}/"
 		read -ra r < <(stats)
 		row "$([ $flood = yes ] && echo 'under an Initial flood' || echo 'quiet')" "${s%:*}" "${r[@]}"
 		for p in $pids; do wait "$p" 2>/dev/null || true; done
