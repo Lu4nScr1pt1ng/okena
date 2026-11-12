@@ -536,10 +536,7 @@ jwks_tick:
 .none:
 	ret
 .forget:
-	lea	rdi,[g_jc]
-	mov	ecx,JC_N * JC_SIZE
-	xor	eax,eax
-	rep	stosb
+	inc	dword [g_jc_gen]		; (every entry of the last one free)
 	ret
 
 ; ----------------------------------------------------- okena-keys

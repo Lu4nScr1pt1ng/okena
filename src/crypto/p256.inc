@@ -1966,6 +1966,11 @@ p256_verify:
 	end repeat
 	test	rax,rax
 	jnz	.bad
+	mov	rdi,rbx				; a key with a table of its own?
+	lea	rsi,[rsp+VF_QP]
+	call	vk_table
+	test	rax,rax
+	jnz	.fast
 	lea	r12,[p256_n]			; u1 = e w mod n, then u1 G
 	lea	rdi,[rsp+VF_U]
 	lea	rsi,[rsp+VF_E]
@@ -2051,6 +2056,89 @@ p256_verify:
 	end repeat
 	test	rax,rax
 	jnz	.bad
+	mov	eax,1
+	jmp	.out
+.fast:
+	; u1 G + u2 Q, both by tables (vk_comb_acc), then X = r Z^2
+	mov	r15,rax
+	xor	eax,eax
+	lea	rdi,[rsp+VF_SUM]
+	mov	ecx,12
+	rep	stosq
+	lea	r12,[p256_n]
+	lea	rdi,[rsp+VF_U]
+	lea	rsi,[rsp+VF_E]
+	lea	rdx,[r12+MOD_RR]
+	mov	rcx,r12
+	call	mont_mul
+	lea	rdi,[rsp+VF_U]
+	lea	rsi,[rsp+VF_U]
+	lea	rdx,[rsp+VF_W]
+	mov	rcx,r12
+	call	mont_mul
+	lea	rdi,[rsp+VF_SUM]
+	lea	rsi,[rsp+VF_U]
+	lea	rdx,[p256_table]
+	call	vk_comb_acc
+	lea	r12,[p256_n]
+	lea	rdi,[rsp+VF_U]
+	lea	rsi,[rsp+VF_R]
+	lea	rdx,[r12+MOD_RR]
+	mov	rcx,r12
+	call	mont_mul
+	lea	rdi,[rsp+VF_U]
+	lea	rsi,[rsp+VF_U]
+	lea	rdx,[rsp+VF_W]
+	mov	rcx,r12
+	call	mont_mul
+	lea	rdi,[rsp+VF_SUM]
+	lea	rsi,[rsp+VF_U]
+	mov	rdx,r15
+	call	vk_comb_acc
+	vt_iszero rsp+VF_SUM+PT_Z		; infinity: invalid
+	jz	.bad
+	F mont_sqr, rsp+VF_ZI, rsp+VF_SUM+PT_Z
+	lea	rsi,[rsp+VF_R]
+	lea	rdi,[rsp+VF_X]
+	mov	ecx,4
+	rep	movsq
+	xor	r14d,r14d			; r + n not tried yet
+.fast_try:
+	F mont_mul, rsp+VF_T, rsp+VF_X, p256_p+MOD_RR	; x candidate, Montgomery
+	F mont_mul, rsp+VF_T, rsp+VF_T, rsp+VF_ZI	; times Z^2
+	lea	rsi,[rsp+VF_T]
+	lea	rdi,[rsp+VF_SUM+PT_X]
+	xor	eax,eax
+	repeat 4, i:0
+		mov	r8,[rsi+i*8]
+		xor	r8,[rdi+i*8]
+		or	rax,r8
+	end repeat
+	test	rax,rax
+	jz	.good
+	; x(R) may be r + n when that is below p
+	test	r14d,r14d
+	jnz	.bad
+	inc	r14d
+	lea	rsi,[p256_n]
+	mov	rax,[rsp+VF_R]
+	add	rax,[rsi]
+	mov	[rsp+VF_X],rax
+	mov	rax,[rsp+VF_R+8]
+	adc	rax,[rsi+8]
+	mov	[rsp+VF_X+8],rax
+	mov	rax,[rsp+VF_R+16]
+	adc	rax,[rsi+16]
+	mov	[rsp+VF_X+16],rax
+	mov	rax,[rsp+VF_R+24]
+	adc	rax,[rsi+24]
+	mov	[rsp+VF_X+24],rax
+	jc	.bad
+	lea	rdi,[rsp+VF_X]
+	call	vf_below_p
+	jc	.bad
+	jmp	.fast_try
+.good:
 	mov	eax,1
 	jmp	.out
 .bad:
@@ -2351,6 +2439,335 @@ p256_mul_vt:
 	mov	ecx,12
 	rep	movsq
 	add	rsp,MV_SIZE
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; ------------------------------------- fixed-base tables of verification keys
+;
+; A key that verifies often (a JWK set's, an issuer's) gets a table of its
+; own, laid out as G's (37 windows of 64 multiples, affine, Montgomery):
+; then u2 Q costs as u1 G, 37 additions, and neither needs a doubling. The
+; scalars and points are public: entries are read at their index, the
+; additions branch on their special cases, and x(R) = r is checked as
+; X = r Z^2 without an inversion. A key's VK_BUILD_AT-th use in a process
+; makes its table (about a millisecond, 148 KiB); VK_SLOTS keys at a time.
+VK_SLOTS	:= 16
+VK_BUILD_AT	:= 16
+VK_TAB		:= TW_COUNT * TW_SIZE
+
+bss
+	align 8
+	g_vk_uses	rd VK_SLOTS
+	g_vk_built	rd VK_SLOTS
+	g_vk_q		rb VK_SLOTS * 64
+	align 64
+	g_vk_tab	rb VK_SLOTS * VK_TAB
+end bss
+
+; rdi = Q (04 | x | y, valid), rsi = Q as (x : y : 1), Montgomery: rax = its
+; table, 0 when it has none (yet). Keeps rbx, r12-r15.
+vk_table:
+	push	rbx
+	push	r12
+	push	r13
+	mov	r12,rdi
+	mov	r13,rsi
+	movzx	ebx,byte [rdi+32]		; (the low byte of x)
+	and	ebx,VK_SLOTS - 1
+	mov	rax,rbx
+	shl	rax,6
+	lea	rdi,[g_vk_q+rax]
+	lea	rsi,[r12+1]
+	xor	edx,edx
+	repeat 8, q:0
+		mov	r8,[rdi+q*8]
+		xor	r8,[rsi+q*8]
+		or	rdx,r8
+	end repeat
+	test	rdx,rdx
+	jz	.same
+	mov	ecx,64				; another key: the slot is its from now on
+	rep	movsb
+	mov	dword [g_vk_uses+rbx*4],0
+	mov	dword [g_vk_built+rbx*4],0
+.same:
+	cmp	dword [g_vk_built+rbx*4],0
+	jne	.have
+	inc	dword [g_vk_uses+rbx*4]
+	cmp	dword [g_vk_uses+rbx*4],VK_BUILD_AT
+	jb	.none
+	imul	rdi,rbx,VK_TAB
+	lea	rdi,[g_vk_tab+rdi]
+	mov	rsi,r13
+	call	vk_build
+	mov	dword [g_vk_built+rbx*4],1
+.have:
+	imul	rax,rbx,VK_TAB
+	lea	rax,[g_vk_tab+rax]
+	jmp	.out
+.none:
+	xor	eax,eax
+.out:
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; rdi = the table to make, rsi = Q (x : y : 1), Montgomery. A window at a
+; time: B, 2B, .. 64B and 128B (the next window's B) in Jacobian, then all
+; 65 made affine with one inversion (Montgomery's trick).
+VKB_E		:= 0				; 65 points
+VKB_C		:= 65 * PT_SIZE			; 65 running products of Z
+VKB_INV		:= VKB_C + 65 * 32
+VKB_ZI		:= VKB_INV + 32
+VKB_Z2		:= VKB_ZI + 32
+VKB_B		:= VKB_Z2 + 32
+VKB_SIZE		:= (VKB_B + PT_SIZE + 15) and not 15
+vk_build:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	sub	rsp,VKB_SIZE
+	mov	r12,rdi
+	lea	rdi,[rsp+VKB_B]
+	mov	ecx,12
+	rep	movsq
+	xor	r13d,r13d
+.window:
+	lea	rdi,[rsp+VKB_E]
+	lea	rsi,[rsp+VKB_B]
+	mov	ecx,12
+	rep	movsq
+	lea	rdi,[rsp+VKB_E+PT_SIZE]
+	lea	rsi,[rsp+VKB_E]
+	call	p256_jdbl
+	mov	r14d,2
+.mult:
+	imul	eax,r14d,PT_SIZE
+	lea	rdi,[rsp+VKB_E+rax]
+	lea	rsi,[rdi-PT_SIZE]
+	lea	rdx,[rsp+VKB_E]
+	call	p256_jadd
+	inc	r14d
+	cmp	r14d,64
+	jb	.mult
+	lea	rdi,[rsp+VKB_E+64*PT_SIZE]
+	lea	rsi,[rsp+VKB_E+63*PT_SIZE]
+	call	p256_jdbl
+	lea	rdi,[rsp+VKB_C]
+	lea	rsi,[rsp+VKB_E+PT_Z]
+	mov	ecx,4
+	rep	movsq
+	mov	r14d,1
+.prefix:
+	mov	eax,r14d
+	shl	eax,5
+	imul	r15d,r14d,PT_SIZE
+	F mont_mul, rsp+VKB_C+rax, rsp+VKB_C+rax-32, rsp+VKB_E+r15+PT_Z
+	inc	r14d
+	cmp	r14d,65
+	jb	.prefix
+	lea	rdi,[rsp+VKB_INV]
+	lea	rsi,[rsp+VKB_C+64*32]
+	lea	rcx,[p256_p]
+	call	mod_inv
+	mov	r14d,64
+.back:
+	imul	r15d,r14d,PT_SIZE
+	test	r14d,r14d
+	jz	.first
+	lea	eax,[r14-1]
+	shl	eax,5
+	F mont_mul, rsp+VKB_ZI, rsp+VKB_INV, rsp+VKB_C+rax	; 1/Z_k
+	F mont_mul, rsp+VKB_INV, rsp+VKB_INV, rsp+VKB_E+r15+PT_Z	; 1/(Z_0 .. Z_k-1)
+	jmp	.affine
+.first:
+	lea	rdi,[rsp+VKB_ZI]
+	lea	rsi,[rsp+VKB_INV]
+	mov	ecx,4
+	rep	movsq
+.affine:
+	F mont_sqr, rsp+VKB_Z2, rsp+VKB_ZI
+	F mont_mul, rsp+VKB_E+r15+PT_X, rsp+VKB_E+r15+PT_X, rsp+VKB_Z2
+	F mont_mul, rsp+VKB_Z2, rsp+VKB_Z2, rsp+VKB_ZI
+	F mont_mul, rsp+VKB_E+r15+PT_Y, rsp+VKB_E+r15+PT_Y, rsp+VKB_Z2
+	dec	r14d
+	jns	.back
+	xor	r14d,r14d
+.store:
+	imul	eax,r14d,PT_SIZE
+	lea	rsi,[rsp+VKB_E+rax]
+	mov	edi,r14d
+	shl	edi,6
+	add	rdi,r12
+	mov	ecx,8
+	rep	movsq
+	inc	r14d
+	cmp	r14d,64
+	jb	.store
+	lea	rdi,[rsp+VKB_B]
+	lea	rsi,[rsp+VKB_E+64*PT_SIZE]
+	mov	ecx,8
+	rep	movsq
+	lea	rsi,[p256_p+MOD_ONE]
+	lea	rdi,[rsp+VKB_B+PT_Z]
+	mov	ecx,4
+	rep	movsq
+	add	r12,TW_SIZE
+	inc	r13d
+	cmp	r13d,TW_COUNT
+	jb	.window
+	add	rsp,VKB_SIZE
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; rdi = acc (Jacobian, Montgomery; Z = 0 infinity), rsi = k (4 limbs, public),
+; rdx = a table: acc += k P, the table's point. Variable time.
+VKC_K2		:= 0				; 2k, 6 limbs
+VKC_SEL		:= 48				; the entry (x, y)
+VKC_Z1Z1		:= 112
+VKC_U2		:= 144
+VKC_S2		:= 176
+VKC_H		:= 208
+VKC_HH		:= 240
+VKC_I		:= 272
+VKC_J		:= 304
+VKC_R		:= 336
+VKC_V		:= 368
+VKC_T		:= 400
+VKC_SIZE		:= 432
+vk_comb_acc:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	sub	rsp,VKC_SIZE
+	mov	r12,rdi
+	mov	r13,rdx
+	mov	rax,[rsi]
+	mov	rcx,[rsi+8]
+	mov	rdx,[rsi+16]
+	mov	r8,[rsi+24]
+	xor	r9d,r9d
+	shld	r9,r8,1
+	shld	r8,rdx,1
+	shld	rdx,rcx,1
+	shld	rcx,rax,1
+	shl	rax,1
+	mov	[rsp+VKC_K2],rax
+	mov	[rsp+VKC_K2+8],rcx
+	mov	[rsp+VKC_K2+16],rdx
+	mov	[rsp+VKC_K2+24],r8
+	mov	[rsp+VKC_K2+32],r9
+	mov	qword [rsp+VKC_K2+40],0
+	xor	ebx,ebx
+.window:
+	imul	eax,ebx,7			; Booth: bits 7i - 1 .. 7i + 6
+	mov	ecx,eax
+	shr	eax,6
+	mov	rdx,[rsp+VKC_K2+rax*8]
+	mov	r8,[rsp+VKC_K2+rax*8+8]
+	and	ecx,63
+	shrd	rdx,r8,cl
+	and	edx,0xFF
+	xor	r14d,r14d			; negative?
+	cmp	edx,128
+	jb	@f
+	mov	eax,255
+	sub	eax,edx
+	mov	edx,eax
+	mov	r14d,1
+@@:
+	mov	eax,edx
+	shr	eax,1
+	and	edx,1
+	add	eax,edx				; |digit|
+	jz	.next
+	dec	eax
+	shl	eax,6
+	lea	rsi,[r13+rax]
+	lea	rdi,[rsp+VKC_SEL]
+	mov	ecx,8
+	rep	movsq
+	test	r14d,r14d
+	jz	@f
+	F mod_sub, rsp+VKC_T, p256_zero, rsp+VKC_SEL+32
+	lea	rsi,[rsp+VKC_T]
+	lea	rdi,[rsp+VKC_SEL+32]
+	mov	ecx,4
+	rep	movsq
+@@:
+	vt_iszero r12+PT_Z
+	jnz	.add
+	lea	rsi,[rsp+VKC_SEL]		; acc infinity: the entry
+	mov	rdi,r12
+	mov	ecx,8
+	rep	movsq
+	lea	rsi,[p256_p+MOD_ONE]
+	lea	rdi,[r12+PT_Z]
+	mov	ecx,4
+	rep	movsq
+	jmp	.next
+.add:
+	; madd-2007-bl, its special cases by branches
+	F mont_sqr, rsp+VKC_Z1Z1, r12+PT_Z
+	F mont_mul, rsp+VKC_U2, rsp+VKC_SEL, rsp+VKC_Z1Z1
+	F mont_mul, rsp+VKC_T, r12+PT_Z, rsp+VKC_Z1Z1
+	F mont_mul, rsp+VKC_S2, rsp+VKC_SEL+32, rsp+VKC_T
+	F mod_sub, rsp+VKC_H, rsp+VKC_U2, r12+PT_X
+	F mod_sub, rsp+VKC_R, rsp+VKC_S2, r12+PT_Y
+	vt_iszero rsp+VKC_H
+	jnz	.general
+	vt_iszero rsp+VKC_R
+	jnz	.infinity
+	mov	rdi,r12				; the same point: doubled
+	mov	rsi,r12
+	call	p256_jdbl
+	jmp	.next
+.infinity:
+	xor	eax,eax				; its opposite: infinity
+	mov	[r12+PT_Z],rax
+	mov	[r12+PT_Z+8],rax
+	mov	[r12+PT_Z+16],rax
+	mov	[r12+PT_Z+24],rax
+	jmp	.next
+.general:
+	F mod_add, rsp+VKC_R, rsp+VKC_R, rsp+VKC_R
+	F mont_sqr, rsp+VKC_HH, rsp+VKC_H
+	F mod_add, rsp+VKC_I, rsp+VKC_HH, rsp+VKC_HH
+	F mod_add, rsp+VKC_I, rsp+VKC_I, rsp+VKC_I
+	F mont_mul, rsp+VKC_J, rsp+VKC_H, rsp+VKC_I
+	F mont_mul, rsp+VKC_V, r12+PT_X, rsp+VKC_I
+	F mod_add, rsp+VKC_T, r12+PT_Z, rsp+VKC_H
+	F mont_sqr, r12+PT_Z, rsp+VKC_T
+	F mod_sub, r12+PT_Z, r12+PT_Z, rsp+VKC_Z1Z1
+	F mod_sub, r12+PT_Z, r12+PT_Z, rsp+VKC_HH
+	F mont_mul, rsp+VKC_T, r12+PT_Y, rsp+VKC_J
+	F mod_add, rsp+VKC_T, rsp+VKC_T, rsp+VKC_T
+	F mont_sqr, r12+PT_X, rsp+VKC_R
+	F mod_sub, r12+PT_X, r12+PT_X, rsp+VKC_J
+	F mod_sub, r12+PT_X, r12+PT_X, rsp+VKC_V
+	F mod_sub, r12+PT_X, r12+PT_X, rsp+VKC_V
+	F mod_sub, rsp+VKC_V, rsp+VKC_V, r12+PT_X
+	F mont_mul, r12+PT_Y, rsp+VKC_R, rsp+VKC_V
+	F mod_sub, r12+PT_Y, r12+PT_Y, rsp+VKC_T
+.next:
+	add	r13,TW_SIZE
+	inc	ebx
+	cmp	ebx,TW_COUNT
+	jb	.window
+	add	rsp,VKC_SIZE
 	pop	r15
 	pop	r14
 	pop	r13

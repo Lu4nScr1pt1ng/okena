@@ -125,8 +125,14 @@ def main():
         sig = bytes.fromhex(t["sig"])
         if len(sig) != 64:                      # not r | s of 32 bytes each: never verified
             return t["result"] != "valid", "length"
-        got = run(b"V", pub + hashlib.sha256(bytes.fromhex(t["msg"])).digest() + sig)
-        return got == ("01" if t["result"] == "valid" else "00"), got
+        data = pub + hashlib.sha256(bytes.fromhex(t["msg"])).digest() + sig
+        want = "01" if t["result"] == "valid" else "00"
+        got = run(b"V", data)
+        if got != want:
+            return False, got
+        # 40 times in one process: from the 16th the key's own table (p256.inc)
+        got = run(b"w", data)
+        return got == want, "table: " + got
     family("ecdsa-p256-sha256", "p1363", ((t["tcId"], t["result"],
                                            (lambda p=bytes.fromhex(g["publicKey"]["uncompressed"]), t=t: ecdsa(p, t)))
                                           for g in d["testGroups"] for t in g["tests"]))

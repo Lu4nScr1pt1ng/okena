@@ -42,8 +42,12 @@ CM_HLEN		:= 20				; d
 CM_SIZE		:= 24
 MAX_CLAIMS	:= 4096
 
-; a token verified
-JC_N		:= 1024
+; a token verified, kept by each worker in a two-way set associative table:
+; JC_SETS sets of two, 128 Ki tokens (64 MiB of address space, touched as
+; tokens come: 20000 users cost 10 MB). Forgetting them all is a new
+; generation (g_jc_gen), not a write of the table.
+JC_SETS		:= 65536
+JC_N		:= 2 * JC_SETS
 JC_KEY		:= 0				; 32: SHA-256 of the token
 JC_EXP		:= 32				; q: seconds, leeway included; 0 free
 JC_AU		:= 40				; d
@@ -51,6 +55,7 @@ JC_HLEN		:= 44				; d
 JC_NAMEL	:= 48				; d
 JC_NAME		:= 52				; 20
 JC_HDR		:= 72				; what the backend is told
+JC_GEN		:= JC_HDR + 256			; d: the generation it was kept in
 JC_SIZE		:= 512
 JWT_HDR_MAX	:= 256
 JWT_MAX		:= 12288
@@ -65,8 +70,34 @@ bss
 	g_jt_s:		rb 1024
 	g_jt_a:		rb 512
 	g_jt_q:		rb 65
+	g_jc_gen	dd ?			; entries of another are free
+	align 64
 	g_jc:		rb JC_N * JC_SIZE
 end bss
+assert JC_GEN + 4 <= JC_SIZE & JWT_HDR_MAX <= 256
+
+; rbx = an entry: CF clear when it holds this token (g_jt_dig) for the
+; auth r12, kept in this generation. Keeps rbx, r12-r15.
+jc_holds:
+	mov	eax,[g_jc_gen]
+	cmp	[rbx+JC_GEN],eax
+	jne	.no
+	cmp	qword [rbx+JC_EXP],0
+	je	.no
+	mov	eax,[r12+AU_ID]
+	cmp	[rbx+JC_AU],eax
+	jne	.no
+	mov	rdi,rbx
+	lea	rsi,[g_jt_dig]
+	mov	edx,32
+	call	ct_equal
+	test	eax,eax
+	jz	.no
+	clc
+	ret
+.no:
+	stc
+	ret
 
 ; once a tick
 jwt_tick:
@@ -616,23 +647,33 @@ jwt_check:
 	mov	rsi,r13
 	mov	edx,r14d
 	call	sha256
-	; seen?
+	; seen? Its set's two entries; else the one it takes: a free one, or
+	; one of the two by a bit of the digest
 	mov	eax,[g_jt_dig]
-	and	eax,JC_N - 1
-	shl	rax,9				; JC_SIZE
+	and	eax,JC_SETS - 1
+	shl	rax,10				; 2 * JC_SIZE
 	lea	rbx,[g_jc+rax]
-	mov	rax,[rbx+JC_EXP]
-	test	rax,rax
-	jz	.verify
-	mov	ecx,[r12+AU_ID]
-	cmp	[rbx+JC_AU],ecx
+	call	jc_holds
+	jnc	.found
+	add	rbx,JC_SIZE
+	call	jc_holds
+	jnc	.found
+	sub	rbx,JC_SIZE
+	mov	eax,[g_jc_gen]
+	cmp	[rbx+JC_GEN],eax
 	jne	.verify
-	mov	rdi,rbx
-	lea	rsi,[g_jt_dig]
-	mov	edx,32
-	call	ct_equal
-	test	eax,eax
+	cmp	qword [rbx+JC_EXP],0
+	je	.verify
+	cmp	[rbx+JC_SIZE+JC_GEN],eax
+	jne	.take1
+	cmp	qword [rbx+JC_SIZE+JC_EXP],0
+	je	.take1
+	test	byte [g_jt_dig+4],1
 	jz	.verify
+.take1:
+	add	rbx,JC_SIZE
+	jmp	.verify
+.found:
 	mov	rax,[rbx+JC_EXP]
 	cmp	rax,[g_jwt_now]
 	jbe	.expired
@@ -727,6 +768,8 @@ jwt_check:
 	rep	movsb
 	mov	eax,[r12+AU_ID]
 	mov	[rbx+JC_AU],eax
+	mov	eax,[g_jc_gen]
+	mov	[rbx+JC_GEN],eax
 .good:
 	; what the head to the backend needs
 	mov	rdx,[r15+H_BUF]

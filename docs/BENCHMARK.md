@@ -66,7 +66,8 @@ taskset -c 3 openssl speed -seconds 2 ed25519
 | X25519 (variable base) | 25.2 us | 25.5 us | 2026-11-12 | mulx/adcx/adox ladder; 5 multiplications and 4 squares a step at ~45 cycles: the scalar ladder's floor without AVX-512 IFMA (Zen 3 has none) |
 | X25519 (fixed base, key generation) | 8.0 us | | 2026-10 | Edwards-form table |
 | ECDSA P-256 sign (RFC 6979) | 12.3 us | ~15.6 us | 2026-11-12 | fixed-base table; Z and k inverted blinded, in variable time, trailing zeros at once (tzcnt, a Montgomery step for 2^t); only x made affine. 15.6 us with Fermat's inversion of Z |
-| ECDSA P-256 verify | 67 us | 47.8 us | 2026-10-30 | u1 G by the fixed-base table, u2 Q by a width-5 NAF in Jacobian coordinates (259 us with two constant-time ladders) |
+| ECDSA P-256 verify, a key in use | 14.2 us | 47.8 us | 2026-11-12 | from a key's 16th use, a fixed-base table of its own (37 x 64 affine multiples, made once, ~1 ms): u1 G + u2 Q in 74 mixed additions, no doubling; entries read at their index and X = r Z^2 checked without an inversion (all public data) |
+| ECDSA P-256 verify, a key seen once | 67 us | 47.8 us | 2026-10-30 | u1 G by the fixed-base table, u2 Q by a width-5 NAF in Jacobian coordinates (259 us with two constant-time ladders) |
 | Ed25519 sign | 9.7 us | 30.2 us | 2026-10-30 | fixed-base table (constant time), Barrett mod L |
 | Ed25519 verify | 39 us | 79.8 us | 2026-10-30 | variable-base windows (public data) |
 | AES-128-GCM, 16 KiB records | 6.9 GB/s | 5.8 GB/s | 2026-10 | VAES + VPCLMULQDQ on ymm (4.3 GB/s on the SSE path) |

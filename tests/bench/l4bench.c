@@ -16,7 +16,8 @@
 //                                  client closes with a reset: no TIME_WAIT)
 //   l4bench httpbig PORT SIZE      HTTP/1.1, keep-alive: every request answered
 //                                  with a body of SIZE bytes, or of N for GET /N
-//                                  (N at most SIZE; a thread a connection)
+//                                  (N at most SIZE; a thread a connection;
+//                                  cacheable: Cache-Control: max-age=3600)
 //   l4bench uecho PORT THREADS     UDP echo
 //   l4bench uping HOST PORT CONNS THREADS SECONDS SIZE
 //                                  UDP, a datagram in flight on each socket
@@ -153,7 +154,7 @@ static void *big_conn(void *arg) {
             if (have > 6 && buf[5] >= '1' && buf[5] <= '9') size = atol(buf + 5);   // GET /SIZE
             if (size > big_size) size = big_size;
             char head[128];
-            int hl = snprintf(head, sizeof head, "HTTP/1.1 200 OK\r\nContent-Length: %ld\r\n\r\n", size);
+            int hl = snprintf(head, sizeof head, "HTTP/1.1 200 OK\r\nCache-Control: max-age=3600\r\nContent-Length: %ld\r\n\r\n", size);
             if (write(c, head, hl) != hl) goto out;
             for (long off = 0; off < size;) { ssize_t w = write(c, big_resp + off, size - off); if (w <= 0) goto out; off += w; }
             memmove(buf, buf + used, have - used); have -= used;

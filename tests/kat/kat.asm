@@ -209,6 +209,8 @@ start:
 	je	.ecdh
 	cmp	al,'V'
 	je	.ecdsa_verify
+	cmp	al,'w'
+	je	.ecdsa_verify_many
 	cmp	al,'C'
 	je	.cert_verify
 	cmp	al,'H'
@@ -1217,6 +1219,33 @@ start:
 	mov	rcx,r10
 	call	p256_verify
 	mov	[g_out],al			; 01 valid, 00 invalid
+	lea	rdi,[g_out]
+	mov	esi,1
+	jmp	.print
+.ecdsa_verify_many:			; as V, 40 times in one process: the key's
+	push	rbx				; table is made on the way (p256.inc,
+	push	r15				; VK_BUILD_AT), so both paths answer;
+	mov	r15,rsi				; 01 / 00 when all 40 agree, EE when not
+	xor	ebx,ebx
+.evm_one:
+	mov	rdi,r15
+	lea	rsi,[r15+65]
+	lea	rdx,[r15+65+32]
+	lea	rcx,[r15+65+64]
+	call	p256_verify
+	test	ebx,ebx
+	jnz	@f
+	mov	[g_out],al
+@@:
+	cmp	[g_out],al
+	je	@f
+	mov	byte [g_out],0xEE
+@@:
+	inc	ebx
+	cmp	ebx,40
+	jb	.evm_one
+	pop	r15
+	pop	rbx
 	lea	rdi,[g_out]
 	mov	esi,1
 	jmp	.print
