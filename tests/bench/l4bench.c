@@ -18,6 +18,10 @@
 //                                  with a body of SIZE bytes, or of N for GET /N
 //                                  (N at most SIZE; a thread a connection;
 //                                  cacheable: Cache-Control: max-age=3600)
+//   l4bench hold HOST PORT N SECONDS
+//                                  N keep-alive HTTP connections, each one GET
+//                                  and its answer, then idle for SECONDS (from
+//                                  127.0.0.2.. as sources, 20000 a source)
 //   l4bench uecho PORT THREADS     UDP echo
 //   l4bench uping HOST PORT CONNS THREADS SECONDS SIZE
 //                                  UDP, a datagram in flight on each socket
@@ -27,6 +31,7 @@
 #include <netinet/tcp.h>
 #include <pthread.h>
 #include <signal.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -182,6 +187,50 @@ static int httpbig(int port, long size) {
     }
 }
 
+
+static int hold(const char *host, int port, long n, int secs) {
+    signal(SIGPIPE, SIG_IGN);
+    int *fds = calloc(n, sizeof(int)), ep = epoll_create1(0), one = 1;
+    struct sockaddr_in a = {.sin_family = AF_INET, .sin_port = htons(port)};
+    inet_pton(AF_INET, host, &a.sin_addr);
+    static const char req[] = "GET / HTTP/1.1\r\nHost: a\r\n\r\n";
+    long ok = 0, failed = 0, i = 0;
+    while (i < n) {
+        long batch = i + 2000 < n ? i + 2000 : n, started = i;
+        for (; i < batch; i++) {
+            int fd = socket(AF_INET, SOCK_STREAM, 0);
+            struct sockaddr_in src = {.sin_family = AF_INET,
+                                      .sin_addr.s_addr = htonl(0x7F000002 + (uint32_t)(i / 20000))};
+            setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+            if (bind(fd, (void *)&src, sizeof src) || connect(fd, (void *)&a, sizeof a) ||
+                write(fd, req, sizeof req - 1) != (ssize_t)sizeof req - 1) { close(fd); fds[i] = -1; failed++; continue; }
+            fds[i] = fd;
+        }
+        for (long k = started; k < batch; k++) {   // each its answer, whole
+            if (fds[k] < 0) continue;
+            char buf[4096]; long got = 0, want = -1;
+            struct pollfd pf = {.fd = fds[k], .events = POLLIN};
+            while (want < 0 || got < want) {
+                if (poll(&pf, 1, 5000) <= 0) break;
+                ssize_t r = read(fds[k], buf + got, sizeof buf - got);
+                if (r <= 0) break;
+                got += r;
+                char *e = memmem(buf, got, "\r\n\r\n", 4);
+                if (e && want < 0) {
+                    char *cl = memmem(buf, e - buf, "Content-Length:", 15);
+                    want = (e + 4 - buf) + (cl ? atol(cl + 15) : 0);
+                }
+            }
+            if (want >= 0 && got >= want) ok++; else { close(fds[k]); fds[k] = -1; failed++; }
+        }
+    }
+    (void)ep;
+    printf("held %ld, failed %ld\n", ok, failed);
+    fflush(stdout);
+    sleep(secs);
+    return 0;
+}
+
 // ---- more modes ----
 static void *sink_thread(void *arg) {
     (void)arg;
@@ -332,6 +381,7 @@ static void report(void) {
 static int more_modes(int argc, char **argv) {
     const char *m = argv[1];
     if (!strcmp(m, "httpbig") && argc >= 4) return httpbig(atoi(argv[2]), atol(argv[3]));
+    if (!strcmp(m, "hold") && argc >= 6) return hold(argv[2], atoi(argv[3]), atol(argv[4]), atoi(argv[5]));
     pthread_t th[256];
     if ((!strcmp(m, "sink") || !strcmp(m, "uecho")) && argc >= 4) {
         port_g = atoi(argv[2]); int t = atoi(argv[3]);

@@ -367,6 +367,64 @@ needs to see goes by the L4 relay, counted to the byte
 | nginx | 1.0MB | 7.7 | 919 |
 | envoy | 1.0MB | 33.2 | 3959 |
 
+## Gateway features against Envoy, HAProxy and nginx, all in Docker (2026-11-12)
+
+`tests/bench/gw.sh`: each proxy in a container on cores 1-2, a listener a
+scenario so that one feature never touches another's numbers, in front of
+the same backend (`l4bench httpbig`: 100-byte answers, cacheable for an
+hour); wrk, 256 connections, closed loop, median of 3. none: the plain
+proxy. jwt: ES256 bearer tokens checked (signature, exp, iss, aud), 100000
+different tokens in turn (users), each used some 15 times in a run; Envoy's
+jwt_authn with its cache on (200000), HAProxy's jwt_verify (no cache),
+nginx has no JWT outside NGINX Plus. limit: a per-client-address limit
+never reached (its cost). cache: every request a hit (okena `cache 1h`,
+HAProxy's `cache`, nginx `proxy_cache`, Envoy's cache filter). check: a
+bad token got 401.
+
+| Proxy (2 cores) | scenario | requests/s | p99 (wrk) | check |
+|---|---|---|---|---|
+| okena | none | 108372 | 3.35ms | - |
+| okena | jwt | 96719 | 3.80ms | 401 |
+| okena | limit | 111477 | 2.92ms | - |
+| okena | cache | 293852 | 1.13ms | - |
+| envoy | none | 29325 | 10.84ms | - |
+| envoy | jwt | 25374 | 12.63ms | 401 |
+| envoy | limit | 29245 | 10.91ms | - |
+| envoy | cache | 28291 | 11.17ms | - |
+| haproxy | none | 86073 | 3.22ms | - |
+| haproxy | jwt | 23341 | 12.60ms | 401 |
+| haproxy | limit | 83748 | 3.50ms | - |
+| haproxy | cache | 182960 | 1.60ms | - |
+| nginx | none | 82965 | 3.38ms | - |
+| nginx | jwt | (NGINX Plus only) | | |
+| nginx | limit | 75952 | 4.42ms | - |
+| nginx | cache | 54460 | 5.06ms | - |
+
+* JWT: verified tokens kept in a two-way table of 128 Ki a worker (was 1024
+  direct mapped), and a key in use verifies with a table of its own (ECDSA
+  67 -> 14.2 us): 36k -> 97k requests/s.
+* Cache hit: one send for head and body (163k -> 276k), and the clock from
+  the TSC instead of a system call at each lookup.
+
+## Idle keep-alive connections: memory, all in Docker (2026-11-12)
+
+`tests/bench/idlemem.sh`: 100000 clients each make one request, read its
+answer and stay connected, idle. The proxy's own memory, `anon` from the
+container's cgroup (the kernel's socket buffers left out, the same for
+all), before the connections and 5 s after the last.
+
+| Proxy (2 workers) | idle connections | memory before | after | per connection |
+|---|---|---|---|---|
+| okena | 100000 | 7 MiB | 58 MiB | 534 B |
+| HAProxy 3.2 | 99743 | 72 MiB | 184 MiB | 1177 B |
+| nginx 1.27 | 97042 | 840 MiB | 895 MiB | 587 B |
+| Envoy 1.40 | 100000 | 18 MiB | 1578 MiB | 16366 B |
+
+* nginx reserves its connection arrays for `worker_connections` up front
+  (1000000 here: 840 MiB before the first). The connections short of 100000
+  are those the proxy refused or dropped while they came (HAProxy 257,
+  nginx 2958); okena and Envoy took every one.
+
 ## gRPC against Envoy, open loop (2026-10-31)
 
 `tests/bench/grpc.sh`: okena (`http2 on`, a pool with `protocol h2`) and
