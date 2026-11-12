@@ -33,9 +33,11 @@ bss
 	g_xc_keys	dq ?		; a batch: MAGLEV_M keys and values
 	g_xc_vals	dq ?
 	g_xc_k		dd ?
-	g_xc_v		dd ?
-	g_xc_vk:	rb 8
-	g_xc_vk2:	rb 8
+	align 8
+	g_xc_val:	rb 24		; a value: CTL's, a VIP's, a real's
+	g_xc_vk:	rb 24		; VIP keys (8 bytes IPv4, 20 IPv6)
+	g_xc_vk2:	rb 24
+	g_xc_inet6:	rb 16384	; /proc/net/if_inet6
 end bss
 
 rodata
@@ -53,13 +55,15 @@ xdp_setup:
 	cmp	dword [g_plan_nxif],0
 	je	.no_iface
 	call	eb_ncpu
-	irp <num,type,ks,vs,n,fl>, XL_VIPS,BPF_MAP_TYPE_HASH,8,4,XVIP_MAX,0, \
+	irp <num,type,ks,vs,n,fl>, XL_VIPS4,BPF_MAP_TYPE_HASH,8,XVV_L,XVIP_MAX,0, \
 		XL_RING,BPF_MAP_TYPE_ARRAY,4,4,XVIP_MAX*MAGLEV_M,0, \
-		XL_REALS,BPF_MAP_TYPE_ARRAY,4,4,MAX_SERVERS+1,0, \
-		XL_LRU,BPF_MAP_TYPE_LRU_HASH,16,4,XC_LRU_N,BPF_F_NO_COMMON_LRU, \
+		XL_REALS,BPF_MAP_TYPE_ARRAY,4,XR_L,MAX_SERVERS+1,0, \
+		XL_LRU4,BPF_MAP_TYPE_LRU_HASH,16,4,XC_LRU_N,BPF_F_NO_COMMON_LRU, \
 		XL_STATS,BPF_MAP_TYPE_PERCPU_ARRAY,4,8,XS_N,0, \
-		XL_CTL,BPF_MAP_TYPE_ARRAY,4,4,2,0, \
-		XL_NH,BPF_MAP_TYPE_PERCPU_ARRAY,4,NH_L,XL_NH_N,0
+		XL_CTL,BPF_MAP_TYPE_ARRAY,4,CTL_L,CTL_N,0, \
+		XL_NH,BPF_MAP_TYPE_PERCPU_ARRAY,4,NH_L,XL_NH_N,0, \
+		XL_VIPS6,BPF_MAP_TYPE_HASH,20,XVV_L,XVIP_MAX,0, \
+		XL_LRU6,BPF_MAP_TYPE_LRU_HASH,40,4,XC_LRU_N,BPF_F_NO_COMMON_LRU
 		mov	edi,type
 		mov	esi,ks
 		mov	edx,vs
@@ -70,7 +74,8 @@ xdp_setup:
 		test	eax,eax
 		js	.failed_map
 	end irp
-	; the outer header's source: the first interface's IPv4 address
+	; the outer headers' sources: the first interface's IPv4 address, its
+	; IPv6 one (global); one of them at least
 	lea	rsi,[g_plan_xif]
 	lea	rdi,[g_xdp_ifr]
 	mov	ecx,16
@@ -88,31 +93,42 @@ xdp_setup:
 	lea	rdx,[g_xdp_ifr]
 	mov	eax,SYS_ioctl_
 	syscall
-	push	rax
+	mov	r12,rax
 	mov	edi,ebx
 	mov	eax,SYS_close
 	syscall
-	pop	rax
-	test	eax,eax
-	js	.failed_addr
+	lea	rdi,[g_xc_val]
+	xor	eax,eax
+	mov	ecx,3
+	rep	stosq
+	test	r12,r12
+	js	@f				; (no IPv4 address)
 	mov	eax,[g_xdp_ifr+16+4]		; (struct sockaddr_in in the ifreq)
-	mov	[g_xc_v],eax
-	mov	dword [g_xc_k],0
-	mov	edi,[g_eb_mapfd+XL_CTL*4]
-	lea	rsi,[g_xc_k]
-	lea	rdx,[g_xc_v]
-	xor	ecx,ecx
-	call	eb_map_update
-	test	eax,eax
-	js	.failed_addr
-	mov	dword [g_xc_k],1		; the new flows remembered a time step
-	mov	dword [g_xc_v],XL_FLOOD_N
-	mov	edi,[g_eb_mapfd+XL_CTL*4]
-	lea	rsi,[g_xc_k]
-	lea	rdx,[g_xc_v]
-	xor	ecx,ecx
-	call	eb_map_update
-	test	eax,eax
+	mov	dword [g_xc_val],eax
+@@:
+	mov	dword [g_xc_k],CTL_SRC4
+	call	xdp_ctl_put
+	js	.failed_map
+	mov	ebx,[g_xc_val]			; (0: none)
+	lea	rdi,[g_xc_val]
+	xor	eax,eax
+	mov	ecx,3
+	rep	stosq
+	call	xdp_src6			; g_xc_val = it, or ::
+	mov	rax,qword [g_xc_val]
+	or	rax,qword [g_xc_val+8]
+	or	rbx,rax
+	jz	.failed_addr
+	mov	dword [g_xc_k],CTL_SRC6
+	call	xdp_ctl_put
+	js	.failed_map
+	lea	rdi,[g_xc_val]
+	xor	eax,eax
+	mov	ecx,3
+	rep	stosq
+	mov	dword [g_xc_val],XL_FLOOD_N	; the new flows remembered a time step
+	mov	dword [g_xc_k],CTL_FLOOD
+	call	xdp_ctl_put
 	js	.failed_map
 	; the program
 	lea	rdi,[g_xdp_insns]
@@ -168,6 +184,7 @@ xdp_setup:
 	jmp	.iface
 .attached:
 	mov	dword [g_xdp_on],1
+	call	xdp_check_forwarding
 	call	log_begin
 	out_lit 'xdp: '
 	mov	eax,[g_plan_nxvip]
@@ -218,9 +235,307 @@ xdp_setup:
 .none:
 	ret
 	cstring .s_map, 'no map could be made',0
-	cstring .s_addr, 'the first interface has no IPv4 address for the outer header',0
+	cstring .s_addr, 'the first interface has no IP address (IPv4, or global IPv6) for the outer header',0
 	cstring .s_prog, 'no program loaded',0
 	cstring .s_if, 'an interface it could not go on',0
+
+; bpf_fib_lookup gives a next hop only on an interface that forwards: for
+; each `xdp` interface and each family the VIPs' reals use, say so when it
+; does not (without a next hop every packet to those reals is dropped).
+; Turning it on is the operator's: on IPv6 it also stops the interface
+; taking router advertisements, unless accept_ra=2.
+xdp_check_forwarding:
+	push	rbx
+	push	r12
+	push	r13
+	; the families of the reals: bit 0 IPv4, bit 1 IPv6
+	xor	r13d,r13d
+	xor	ebx,ebx
+.vip:
+	cmp	ebx,[g_plan_nxvip]
+	jae	.families
+	imul	rax,rbx,XV_SIZE
+	mov	eax,[g_plan_xvips+rax+XV_POOL]
+	imul	rax,rax,PL_SIZE
+	mov	ecx,[g_pools+rax+PL_FIRST]
+	mov	edx,[g_pools+rax+PL_COUNT]
+	add	edx,ecx
+.server:
+	cmp	ecx,edx
+	jae	.next_vip
+	imul	rax,rcx,SV_SIZE
+	cmp	word [g_servers+rax+SV_SA],AF_INET
+	jne	@f
+	or	r13d,1
+@@:
+	cmp	word [g_servers+rax+SV_SA],AF_INET6
+	jne	@f
+	or	r13d,2
+@@:
+	inc	ecx
+	jmp	.server
+.next_vip:
+	inc	ebx
+	jmp	.vip
+.families:
+	xor	r12d,r12d			; the interface
+.iface:
+	cmp	r12d,[g_plan_nxif]
+	jae	.out
+	mov	ebx,4
+.family:
+	mov	eax,1
+	cmp	ebx,4
+	je	@f
+	mov	eax,2
+@@:
+	test	r13d,eax
+	jz	.next_family
+	; /proc/sys/net/ipv4/conf/IFACE/forwarding
+	lea	rdi,[g_xc_inet6]
+	lea	rsi,[.p1]
+	call	.cat
+	mov	byte [rdi-1],bl			; (the 4 of the template: 4 or 6)
+	add	byte [rdi-1],'0'
+	lea	rsi,[.p2]
+	call	.cat
+	mov	rsi,r12
+	shl	rsi,4
+	lea	rsi,[g_plan_xif+rsi]
+	call	.cat
+	lea	rsi,[.p3]
+	call	.cat
+	mov	byte [rdi],0
+	mov	edi,-100			; AT_FDCWD
+	lea	rsi,[g_xc_inet6]
+	mov	edx,O_RDONLY or O_CLOEXEC
+	xor	r10d,r10d
+	mov	eax,SYS_openat
+	syscall
+	test	eax,eax
+	js	.next_family
+	push	rax
+	mov	edi,eax
+	lea	rsi,[g_xc_inet6+512]
+	mov	edx,1
+	xor	eax,eax				; SYS_read
+	syscall
+	pop	rdi
+	push	rax
+	mov	eax,SYS_close
+	syscall
+	pop	rax
+	cmp	rax,1
+	jne	.next_family
+	cmp	byte [g_xc_inet6+512],'0'
+	jne	.next_family
+	call	log_begin
+	out_lit 'xdp: '
+	mov	rsi,r12
+	shl	rsi,4
+	lea	rsi,[g_plan_xif+rsi]
+	call	out_cstr
+	out_lit ' does not forward IPv'
+	mov	eax,ebx
+	call	out_u64
+	out_lit ': the kernel gives no next hop, packets to IPv'
+	mov	eax,ebx
+	call	out_u64
+	out_lit ' reals are dropped (sysctl net.ipv'
+	mov	eax,ebx
+	call	out_u64
+	out_lit '.conf.'
+	mov	rsi,r12
+	shl	rsi,4
+	lea	rsi,[g_plan_xif+rsi]
+	call	out_cstr
+	out_lit '.forwarding=1'
+	cmp	ebx,6
+	jne	@f
+	out_lit '; accept_ra=2 if the host takes its routes from router advertisements'
+@@:
+	out_lit ')'
+	call	log_end
+.next_family:
+	add	ebx,2
+	cmp	ebx,6
+	jbe	.family
+	inc	r12d
+	jmp	.iface
+.out:
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+; rsi = a string (NUL-ended) copied to rdi; rdi past it
+.cat:
+	lodsb
+	test	al,al
+	jz	@f
+	stosb
+	jmp	.cat
+@@:
+	ret
+	cstring .p1, '/proc/sys/net/ipv4',0
+	cstring .p2, '/conf/',0
+	cstring .p3, '/forwarding',0
+
+; g_xc_val -> CTL[g_xc_k]. SF: failed.
+xdp_ctl_put:
+	mov	edi,[g_eb_mapfd+XL_CTL*4]
+	lea	rsi,[g_xc_k]
+	lea	rdx,[g_xc_val]
+	xor	ecx,ecx
+	call	eb_map_update
+	test	eax,eax
+	ret
+
+; g_xc_val = the first interface's first global IPv6 address that is in
+; use (not tentative, deprecated or failed), from /proc/net/if_inet6:
+; "20010db8000000000000000000000001 02 40 00 80 eth0", one a line: the
+; address, ifindex, prefix, scope (00 global), flags, the name. Left as
+; it is when there is none.
+xdp_src6:
+	push	rbx
+	push	r12
+	push	r13
+	mov	edi,-100			; AT_FDCWD
+	lea	rsi,[.path]
+	mov	edx,O_RDONLY or O_CLOEXEC
+	xor	r10d,r10d
+	mov	eax,SYS_openat
+	syscall
+	test	eax,eax
+	js	.out
+	mov	ebx,eax
+	xor	r12d,r12d			; read so far
+.read:
+	mov	edi,ebx
+	lea	rsi,[g_xc_inet6+r12]
+	mov	edx,16384 - 1
+	sub	edx,r12d
+	jz	.read_all
+	mov	eax,SYS_read
+	syscall
+	test	rax,rax
+	jle	.read_all
+	add	r12d,eax
+	jmp	.read
+.read_all:
+	mov	edi,ebx
+	mov	eax,SYS_close
+	syscall
+	mov	byte [g_xc_inet6+r12],0
+	lea	r13,[g_xc_inet6]		; the line
+.line:
+	cmp	byte [r13],0
+	je	.out
+	; the name: the last field, the line's end
+	mov	rsi,r13
+@@:
+	movzx	eax,byte [rsi]
+	test	eax,eax
+	jz	@f
+	cmp	eax,10
+	je	@f
+	inc	rsi
+	jmp	@b
+@@:
+	mov	r12,rsi				; the line's end
+	mov	rdi,rsi
+@@:
+	cmp	rdi,r13
+	je	.next
+	cmp	byte [rdi-1],' '
+	je	@f
+	dec	rdi
+	jmp	@b
+@@:	; rdi..r12: the name; compare with the interface's
+	lea	rsi,[g_plan_xif]
+	mov	rcx,r12
+	sub	rcx,rdi
+	cmp	byte [rsi+rcx],0
+	jne	.next
+	repe	cmpsb
+	jne	.next
+	; 32 hex digits, " ", ifindex, " ", prefix, " ", scope, " ", flags
+	cmp	byte [r13+32],' '
+	jne	.next
+	lea	rsi,[r13+33]
+	call	.skip_field			; ifindex
+	call	.skip_field			; prefix
+	cmp	word [rsi],'00'			; global
+	jne	.next
+	cmp	byte [rsi+2],' '
+	jne	.next
+	add	rsi,3
+	call	.hex_byte			; the flags
+	jc	.next
+	test	al,0x08 or 0x20 or 0x40		; dadfailed, deprecated, tentative
+	jnz	.next
+	xor	ecx,ecx
+@@:
+	lea	rsi,[r13+rcx*2]
+	call	.hex_byte
+	jc	.next
+	mov	[g_xc_val+rcx],al
+	inc	ecx
+	cmp	ecx,16
+	jb	@b
+	jmp	.out
+.next:
+	lea	r13,[r12+1]
+	cmp	byte [r12],0
+	jne	.line
+.out:
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+; rsi = a field and its spaces: rsi past them
+.skip_field:
+	cmp	byte [rsi],' '
+	je	@f
+	cmp	byte [rsi],10
+	jbe	@f
+	inc	rsi
+	jmp	.skip_field
+@@:
+	cmp	byte [rsi],' '
+	jne	@f
+	inc	rsi
+	jmp	@b
+@@:
+	ret
+; rsi = two hex digits: al. CF: not hex
+.hex_byte:
+	push	rcx
+	xor	eax,eax
+	mov	ecx,2
+.digit:
+	movzx	edx,byte [rsi]
+	sub	edx,'0'
+	cmp	edx,9
+	jbe	@f
+	sub	edx,'a' - '0' - 10
+	cmp	edx,10
+	jb	.bad
+	cmp	edx,15
+	ja	.bad
+@@:
+	shl	eax,4
+	or	eax,edx
+	inc	rsi
+	dec	ecx
+	jnz	.digit
+	pop	rcx
+	clc
+	ret
+.bad:
+	pop	rcx
+	stc
+	ret
+	cstring .path, '/proc/net/if_inet6',0
 
 ; Supervisor: start okena-xdp when the balancer is set up
 spawn_xdpctl:
@@ -313,15 +628,16 @@ xdpctl_main:
 	mov	edi,EXIT_FAILURE
 	jmp	exit_process
 
-; the VIPs: those of the plan in, any other out
+; the VIPs: those of the plan in, any other out (both families)
 xc_vips:
 	push	rbx
+	push	r12
+	mov	r12d,4
+.family:
 	; out: every key not in the plan (a reload may have dropped some)
-	lea	rsi,[g_xc_vk]			; (from the first)
-	mov	qword [rsi],0
 	xor	ebx,ebx
 .next_key:
-	mov	edi,[g_eb_mapfd+XL_VIPS*4]
+	call	xc_vips_fd
 	lea	rsi,[g_xc_vk]
 	lea	rdx,[g_xc_vk2]
 	test	ebx,ebx
@@ -331,70 +647,146 @@ xc_vips:
 	call	xc_next_key
 	test	eax,eax
 	jnz	.in
-	mov	rax,[g_xc_vk2]
-	mov	[g_xc_vk],rax
+	lea	rsi,[g_xc_vk2]
+	lea	rdi,[g_xc_vk]
+	mov	ecx,24
+	rep	movsb
 	inc	ebx
 	call	xc_vip_planned
 	jnc	.next_key
-	mov	edi,[g_eb_mapfd+XL_VIPS*4]	; (deleting is safe while walking)
+	call	xc_vips_fd			; (deleting is safe while walking)
 	lea	rsi,[g_xc_vk]
 	call	xc_delete
 	jmp	.next_key
 .in:
+	cmp	r12d,6
+	je	@f
+	mov	r12d,6
+	jmp	.family
+@@:
 	xor	ebx,ebx
 .vip:
 	cmp	ebx,[g_plan_nxvip]
 	jae	.out
-	call	xc_vip_key
-	mov	[g_xc_v],ebx
-	mov	edi,[g_eb_mapfd+XL_VIPS*4]
+	xor	r9d,r9d				; its key, then its address's (ping)
+.key:
+	call	xc_vip_key			; (edi = its map)
+	imul	rax,rbx,XV_SIZE
+	mov	[g_xc_val+XVV_NUM],ebx
+	mov	eax,[g_plan_xvips+rax+XV_FLAGS]
+	mov	[g_xc_val+XVV_FLAGS],eax
+	push	r9
 	lea	rsi,[g_xc_vk]
-	lea	rdx,[g_xc_v]
+	lea	rdx,[g_xc_val]
 	xor	ecx,ecx
 	call	eb_map_update
+	pop	r9
+	inc	r9d
+	cmp	r9d,1
+	je	.key
 	inc	ebx
 	jmp	.vip
 .out:
+	pop	r12
 	pop	rbx
 	ret
 
-; ebx = a VIP of the plan: g_xc_vk = its key (address, port big endian, protocol)
+; r12d = 4 / 6: edi = that family's VIPS map
+xc_vips_fd:
+	mov	edi,[g_eb_mapfd+XL_VIPS4*4]
+	cmp	r12d,6
+	jne	@f
+	mov	edi,[g_eb_mapfd+XL_VIPS6*4]
+@@:
+	ret
+
+; ebx = a VIP of the plan: g_xc_vk = its key (the address, port big endian,
+; protocol, 0: 8 bytes IPv4, 20 IPv6), edi = its family's map, edx = the
+; key's length, r8d = its family. r9d = 1: its address's key instead (port
+; 0, ICMP's protocol: the program answers echo requests to it). Keeps rbx,
+; r9, r12.
 xc_vip_key:
 	imul	rax,rbx,XV_SIZE
 	lea	rax,[g_plan_xvips+rax]
-	mov	ecx,[rax+XV_ADDR]
-	mov	dword [g_xc_vk],ecx
+	lea	rdi,[g_xc_vk]
+	xor	ecx,ecx
+	mov	[rdi],rcx
+	mov	[rdi+8],rcx
+	mov	[rdi+16],rcx
+	mov	r8d,[rax+XV_FAMILY]
+	mov	edx,4				; the address's length
+	cmp	r8d,6
+	jne	@f
+	mov	edx,16
+@@:
+	push	rsi
+	lea	rsi,[rax+XV_ADDR]
+	mov	ecx,edx
+	rep	movsb				; rdi: past it
+	pop	rsi
 	mov	ecx,[rax+XV_PORT]
 	xchg	cl,ch
-	mov	word [g_xc_vk+4],cx
+	mov	[rdi],cx
 	mov	ecx,[rax+XV_PROTO]
-	mov	byte [g_xc_vk+6],cl
-	mov	byte [g_xc_vk+7],0
+	mov	[rdi+2],cl
+	test	r9d,r9d
+	jz	@f
+	mov	word [rdi],0
+	mov	byte [rdi+2],1			; ICMP
+	cmp	r8d,6
+	jne	@f
+	mov	byte [rdi+2],58			; ICMPv6
+@@:
+	add	edx,4
+	mov	edi,[g_eb_mapfd+XL_VIPS4*4]
+	cmp	r8d,6
+	jne	@f
+	mov	edi,[g_eb_mapfd+XL_VIPS6*4]
+@@:
 	ret
 
-; g_xc_vk2 = a key in VIPS: CF when no VIP of the plan has it
+; g_xc_vk2 = a key in r12d's family's VIPS: CF when no VIP of the plan has it
 xc_vip_planned:
 	push	rbx
-	push	qword [g_xc_vk]
+	sub	rsp,32
+	lea	rsi,[g_xc_vk]			; (kept: the walk goes on from it)
+	mov	rdi,rsp
+	mov	ecx,24
+	rep	movsb
 	xor	ebx,ebx
 .v:
 	cmp	ebx,[g_plan_nxvip]
 	jae	.no
+	xor	r9d,r9d				; its key, its address's
+.key:
 	call	xc_vip_key
-	mov	rax,[g_xc_vk]
-	cmp	rax,[g_xc_vk2]
+	cmp	r8d,r12d
+	jne	.other
+	lea	rsi,[g_xc_vk]
+	lea	rdi,[g_xc_vk2]
+	mov	ecx,edx
+	repe	cmpsb
 	je	.yes
+	inc	r9d
+	cmp	r9d,1
+	je	.key
+.other:
 	inc	ebx
 	jmp	.v
 .yes:
-	pop	qword [g_xc_vk]
-	pop	rbx
 	clc
-	ret
+	jmp	.back
 .no:
-	pop	qword [g_xc_vk]
-	pop	rbx
 	stc
+.back:
+	pushf
+	lea	rsi,[rsp+8]
+	lea	rdi,[g_xc_vk]
+	mov	ecx,24
+	rep	movsb
+	popf
+	add	rsp,32
+	pop	rbx
 	ret
 
 xc_next_key	:= eb_map_next_key
@@ -425,27 +817,40 @@ xc_tick:
 	cmp	r12,[g_xc_sig]
 	je	.out
 	mov	[g_xc_sig],r12
-	; the reals: an address while up, 0 down
+	; the reals: an address and its family while up, nothing down
 	xor	ebx,ebx
 .real:
 	cmp	ebx,[g_plan_servers]
 	jae	.rings
-	imul	rax,rbx,SV_SIZE
-	xor	ecx,ecx
-	cmp	word [g_servers+rax+SV_SA],AF_INET
-	jne	@f
+	lea	rdi,[g_xc_val]
+	xor	eax,eax
+	mov	ecx,3
+	rep	stosq
 	call	xc_up
 	test	al,al
-	jz	@f
+	jz	.put_real
 	imul	rax,rbx,SV_SIZE
-	mov	ecx,[g_servers+rax+SV_SA+4]
+	lea	rax,[g_servers+rax+SV_SA]
+	cmp	word [rax],AF_INET
+	jne	@f
+	mov	ecx,[rax+4]			; sockaddr_in
+	mov	[g_xc_val+XR_ADDR],ecx
+	mov	dword [g_xc_val+XR_FAMILY],4
+	jmp	.put_real
 @@:
-	mov	[g_xc_v],ecx
+	cmp	word [rax],AF_INET6
+	jne	.put_real
+	mov	rcx,[rax+8]			; sockaddr_in6
+	mov	[g_xc_val+XR_ADDR],rcx
+	mov	rcx,[rax+16]
+	mov	[g_xc_val+XR_ADDR+8],rcx
+	mov	dword [g_xc_val+XR_FAMILY],6
+.put_real:
 	lea	eax,[rbx+1]
 	mov	[g_xc_k],eax
 	mov	edi,[g_eb_mapfd+XL_REALS*4]
 	lea	rsi,[g_xc_k]
-	lea	rdx,[g_xc_v]
+	lea	rdx,[g_xc_val]
 	xor	ecx,ecx
 	call	eb_map_update
 	inc	ebx

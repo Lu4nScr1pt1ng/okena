@@ -862,7 +862,10 @@ is measured on NICs that are not here), then made phase 12, next after phase
 pre-filter, wait for this.
 
 * `xdp` listener: Maglev in eBPF, IPIP/GUE encapsulation, DSR,
-  connection tracking table, backend health from user space.
+  connection tracking table, backend health from user space. Done
+  2026-11-12: IPv4 and IPv6 VIPs and reals in any mix, IP in IP or GUE,
+  ICMP (echo, errors carried to the flow's real, too big answered), the
+  next hop kept per CPU, a bound on new flows remembered.
 * XDP pre-filter for the other engines: drop lists, per-source SYN rate.
 * zcrx zero-copy receive on supported NICs; NIC TLS offload.
 

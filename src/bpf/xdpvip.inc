@@ -1,15 +1,19 @@
 ; `tcp VIP:PORT { mode xdp; to pool P }` (and `udp`): a VIP of the XDP
 ; balancer (xdp_lb.inc), compiled into g_plan_xvips, not a listener: no socket,
 ; no accept; the packets are turned round in the driver. `okena { xdp IFACE... }`
-; names the interfaces the program goes on. IPv4 for now.
+; names the interfaces the program goes on. IPv4 or IPv6, the reals either;
+; `mode xdp encap=gue [port=6080]`: GUE (UDP) to the reals, not IP in IP.
 
-XV_ADDR		:= 0		; d: the VIP, network order
-XV_PORT		:= 4		; d: host order
-XV_PROTO	:= 8		; d: 6 TCP, 17 UDP
-XV_POOL		:= 12		; d
-XV_SIZE		:= 16
+XV_ADDR		:= 0		; 16 bytes: the VIP (IPv4 in the first 4), network order
+XV_FAMILY	:= 16		; d: 4, 6
+XV_PORT		:= 20		; d: host order
+XV_PROTO	:= 24		; d: 6 TCP, 17 UDP
+XV_POOL		:= 28		; d
+XV_FLAGS	:= 32		; d: XVV_FLAGS (xdp_lb.inc)
+XV_SIZE		:= 40
 XVIP_MAX	:= 64
 XIF_MAX		:= 8
+XV_GUE_PORT	:= 6080		; (Katran's GUE_DPORT)
 
 bss
 	align 8
@@ -19,12 +23,16 @@ bss
 	g_plan_xif:	rb XIF_MAX * 16	; the interfaces, NUL-ended (IFNAMSIZ)
 end bss
 
+cstring str_key_encap, 'encap',0
+
 ; rdi = a tcp/udp node with `mode xdp`: its addresses as VIPs of its pool
 compile_xvip:
 	push	rbx
 	push	r12
 	push	r13
 	push	r14
+	push	r15
+	sub	rsp,16
 	mov	r12,rdi
 	; nothing but `mode` and `to` applies here: the kernel never sees these
 	; connections (TLS, limits, timeouts, PROXY headers have nobody to act)
@@ -46,6 +54,60 @@ compile_xvip:
 	mov	rdi,r12
 	call	compile_target
 	mov	r14d,eax			; the pool
+	; encap=ipip|gue port=N: the flags every address of it gets
+	mov	rdi,r12
+	mov	ecx,DIR_MODE
+	call	find_child
+	mov	[rsp],rax			; (the mode node, for its options)
+	xor	r15d,r15d			; IP in IP
+	mov	rdi,rax
+	lea	rsi,[str_key_encap]
+	call	node_option
+	test	rax,rax
+	jz	.encap_set
+	mov	[rsp+8],rax
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	lea	rdx,[.s_ipip]
+	call	mem_eq_cstr
+	test	eax,eax
+	jnz	.encap_set
+	mov	rax,[rsp+8]
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	lea	rdx,[.s_gue]
+	call	mem_eq_cstr
+	test	eax,eax
+	jz	.bad_encap
+	mov	r15d,XV_GUE_PORT
+	mov	rdi,[rsp]
+	lea	rsi,[str_key_port]
+	call	node_option
+	test	rax,rax
+	jz	.gue_port
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_decimal
+	jc	.bad_port
+	test	rax,rax
+	jz	.bad_port
+	cmp	rax,65535
+	ja	.bad_port
+	mov	r15d,eax
+.gue_port:
+	mov	eax,r15d			; network order, in the high half
+	xchg	al,ah
+	shl	eax,16
+	or	eax,XVF_GUE
+	mov	r15d,eax
+	jmp	.encapped
+.encap_set:	; IP in IP: no port to name
+	mov	rdi,[rsp]
+	lea	rsi,[str_key_port]
+	call	node_option
+	test	rax,rax
+	jnz	.port_ipip
+.encapped:
 	mov	r13d,6
 	lea	rax,[dir_table + D_SIZE*DIR_UDP]
 	cmp	[r12+N_DEF],rax
@@ -65,35 +127,71 @@ compile_xvip:
 	lea	rdx,[g_cmp_addr]
 	xor	ecx,ecx
 	call	parse_address
-	cmp	dword [g_cmp_addr+AD_KIND],ADDR_V4
-	jne	.not_v4
 	mov	eax,[g_plan_nxvip]
 	imul	rax,rax,XV_SIZE
 	lea	rdi,[g_plan_xvips+rax]
-	mov	ecx,[g_cmp_addr+AD_IP]
-	mov	[rdi+XV_ADDR],ecx
+	mov	ecx,4
+	cmp	dword [g_cmp_addr+AD_KIND],ADDR_V4
+	je	@f
+	mov	ecx,6
+	cmp	dword [g_cmp_addr+AD_KIND],ADDR_V6
+	jne	.not_ip
+@@:
+	mov	[rdi+XV_FAMILY],ecx
+	mov	rax,qword [g_cmp_addr+AD_IP]	; (IPv4: the rest is zero)
+	mov	[rdi+XV_ADDR],rax
+	mov	rax,qword [g_cmp_addr+AD_IP+8]
+	mov	[rdi+XV_ADDR+8],rax
+	cmp	ecx,4
+	jne	@f
+	mov	dword [rdi+XV_ADDR+4],0
+	mov	qword [rdi+XV_ADDR+8],0
+@@:
 	mov	ecx,[g_cmp_addr+AD_PORT]
 	mov	[rdi+XV_PORT],ecx
 	mov	[rdi+XV_PROTO],r13d
 	mov	[rdi+XV_POOL],r14d
+	mov	[rdi+XV_FLAGS],r15d
 	inc	dword [g_plan_nxvip]
 	inc	ebx
 	jmp	.arg
 .out:
+	add	rsp,16
+	pop	r15
 	pop	r14
 	pop	r13
 	pop	r12
 	pop	rbx
 	ret
+	cstring .s_ipip, 'ipip',0
+	cstring .s_gue, 'gue',0
+.bad_encap:
+	call	log_begin
+	out_lit '`mode xdp encap=`: ipip (the default) or gue'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
+.bad_port:
+	call	log_begin
+	out_lit '`mode xdp port=`: the GUE port the reals listen on, 1 to 65535'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
+.port_ipip:
+	call	log_begin
+	out_lit '`mode xdp port=` is the GUE port: with `encap=gue`'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
 .extra:
 	call	log_begin
 	out_lit 'a listener with `mode xdp` takes `to` and nothing else: its packets are turned round in the driver, the kernel never holds those connections'
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process
-.not_v4:
+.not_ip:
 	call	log_begin
-	out_lit '`mode xdp` takes an IPv4 address and a port (IPv6: not yet)'
+	out_lit '`mode xdp` takes IP addresses with a port'
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process

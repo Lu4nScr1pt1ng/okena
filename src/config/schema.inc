@@ -197,6 +197,7 @@ keysdef k_sticky, 'cookie', T_ANY, 'ttl', T_DURATION, 'samesite', T_ANY
 keysdef k_cert, 'key', T_ANY
 keysdef k_odemand, 'ask', T_ANY, 'max', T_ANY
 keysdef k_cca, 'crl', T_ANY
+keysdef k_mode, 'encap', T_ANY, 'port', T_UINT
 keysdef k_health, 'every', T_DURATION, 'timeout', T_DURATION, 'rise', T_COUNT, 'fall', T_COUNT, \
 	'expect', T_STATUSES, 'host', T_HOSTNAME
 keysdef k_uptls, 'trust', T_ANY, 'sni', T_HOSTNAME, 'cert', T_ANY, 'key', T_ANY
@@ -346,7 +347,7 @@ dirdef DIR_CONNECT, 'connect',     M_POOL,    0,           F_UNIQUE or F_KEYS_BL
 dirdef DIR_HEALTH, 'health',      M_POOL,    0,           F_UNIQUE or F_KEYS_BLOCK, 1, 3, e_health, T_ANY, k_health
 dirdef DIR_UPTLS, 'tls',         M_POOL,    0,           F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_uptls
 dirdef DIR_PROTOCOL, 'protocol', M_POOL,    0,           F_UNIQUE, 1, 1, e_proto, T_NONE, 0
-dirdef DIR_MODE, 'mode',         M_TCP or M_UDP, 0,      F_UNIQUE, 1, 1, e_listen_mode, T_NONE, 0
+dirdef DIR_MODE, 'mode',         M_TCP or M_UDP, 0,      F_UNIQUE, 1, 1, e_listen_mode, T_NONE, k_mode
 dirdef DIR_XDP, 'xdp',           M_OKENA,   0,           F_UNIQUE, 1, 8, T_ANY, T_ANY, 0
 rodata
 	dir_table_end:

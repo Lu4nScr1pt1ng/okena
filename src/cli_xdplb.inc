@@ -13,6 +13,8 @@ bss
 	g_xb_key	dd ?
 	g_xb_ip		dd ?
 	g_xb_val	dd ?
+	align 8
+	g_xb_v24:	rb 24		; a value: CTL's, the VIP's, a real's
 	g_xb_vip:	rb 8
 	g_xb_nreal	dd ?
 	g_xb_secs	dd ?
@@ -60,6 +62,13 @@ xb_ip4:
 	stc
 	ret
 
+; g_xb_v24 = 0 (keeps eax)
+xb_v24_clear:
+	mov	qword [g_xb_v24],0
+	mov	qword [g_xb_v24+8],0
+	mov	qword [g_xb_v24+16],0
+	ret
+
 ; rsi = decimal: eax. CF: not one.
 xb_uint:
 	xor	eax,eax
@@ -85,13 +94,15 @@ cli_xdplb:
 	mov	dword [g_xb_secs],10
 	call	eb_ncpu
 	; the maps, in the program's order
-	irp <num,type,ks,vs,n,fl>, XL_VIPS,BPF_MAP_TYPE_HASH,8,4,64,0, \
+	irp <num,type,ks,vs,n,fl>, XL_VIPS4,BPF_MAP_TYPE_HASH,8,XVV_L,64,0, \
 		XL_RING,BPF_MAP_TYPE_ARRAY,4,4,MAGLEV_M,0, \
-		XL_REALS,BPF_MAP_TYPE_ARRAY,4,4,256,0, \
-		XL_LRU,BPF_MAP_TYPE_LRU_HASH,16,4,XB_LRU_N,BPF_F_NO_COMMON_LRU, \
+		XL_REALS,BPF_MAP_TYPE_ARRAY,4,XR_L,256,0, \
+		XL_LRU4,BPF_MAP_TYPE_LRU_HASH,16,4,XB_LRU_N,BPF_F_NO_COMMON_LRU, \
 		XL_STATS,BPF_MAP_TYPE_PERCPU_ARRAY,4,8,XS_N,0, \
-		XL_CTL,BPF_MAP_TYPE_ARRAY,4,4,2,0, \
-		XL_NH,BPF_MAP_TYPE_PERCPU_ARRAY,4,NH_L,XL_NH_N,0
+		XL_CTL,BPF_MAP_TYPE_ARRAY,4,CTL_L,CTL_N,0, \
+		XL_NH,BPF_MAP_TYPE_PERCPU_ARRAY,4,NH_L,XL_NH_N,0, \
+		XL_VIPS6,BPF_MAP_TYPE_HASH,20,XVV_L,1,0, \
+		XL_LRU6,BPF_MAP_TYPE_LRU_HASH,40,4,1024,0
 		mov	edi,type
 		mov	esi,ks
 		mov	edx,vs
@@ -106,20 +117,22 @@ cli_xdplb:
 	mov	rsi,[rbx+24]
 	call	xb_ip4
 	jc	.usage
-	mov	[g_xb_val],eax
-	mov	dword [g_xb_key],0
+	call	xb_v24_clear
+	mov	dword [g_xb_v24],eax
+	mov	dword [g_xb_key],CTL_SRC4
 	mov	edi,[g_eb_mapfd+XL_CTL*4]
 	lea	rsi,[g_xb_key]
-	lea	rdx,[g_xb_val]
+	lea	rdx,[g_xb_v24]
 	xor	ecx,ecx
 	call	eb_map_update
 	test	eax,eax
 	js	.no_fill
-	mov	dword [g_xb_key],1		; the new flows remembered a time step
-	mov	dword [g_xb_val],XL_FLOOD_N
+	call	xb_v24_clear
+	mov	dword [g_xb_v24],XL_FLOOD_N	; the new flows remembered a time step
+	mov	dword [g_xb_key],CTL_FLOOD
 	mov	edi,[g_eb_mapfd+XL_CTL*4]
 	lea	rsi,[g_xb_key]
-	lea	rdx,[g_xb_val]
+	lea	rdx,[g_xb_v24]
 	xor	ecx,ecx
 	call	eb_map_update
 	test	eax,eax
@@ -136,10 +149,10 @@ cli_xdplb:
 	mov	[g_xb_vip+4],ax
 	mov	byte [g_xb_vip+6],6
 	mov	byte [g_xb_vip+7],0
-	mov	dword [g_xb_val],0		; VIP number 0
-	mov	edi,[g_eb_mapfd+XL_VIPS*4]
+	call	xb_v24_clear			; VIP number 0, IP in IP
+	mov	edi,[g_eb_mapfd+XL_VIPS4*4]
 	lea	rsi,[g_xb_vip]
-	lea	rdx,[g_xb_val]
+	lea	rdx,[g_xb_v24]
 	xor	ecx,ecx
 	call	eb_map_update
 	test	eax,eax
@@ -163,13 +176,17 @@ cli_xdplb:
 @@:
 	call	xb_ip4
 	jc	.usage
-	mov	[g_xb_val],eax
+	push	rax
+	call	xb_v24_clear
+	pop	rax
+	mov	dword [g_xb_v24+XR_ADDR],eax
+	mov	dword [g_xb_v24+XR_FAMILY],4
 	inc	dword [g_xb_nreal]
 	mov	eax,[g_xb_nreal]
 	mov	[g_xb_key],eax
 	mov	edi,[g_eb_mapfd+XL_REALS*4]
 	lea	rsi,[g_xb_key]
-	lea	rdx,[g_xb_val]
+	lea	rdx,[g_xb_v24]
 	xor	ecx,ecx
 	call	eb_map_update
 	test	eax,eax
