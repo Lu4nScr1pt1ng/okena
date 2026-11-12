@@ -241,6 +241,51 @@ of ten seconds can move a p99.9 several times either way.
   runs, 94 against 159. Its tail moves with the host's noise, not okena's
   pinning (free, auto and pinned compared natively: auto 99-101 us).
 
+## gRPC against Envoy, HAProxy and nginx, all in Docker (2026-11-12)
+
+`tests/bench/grpcmax.sh`: each proxy in a container on the same two cores,
+gRPC over h2c both sides (okena `protocol h2`, Envoy's cluster on HTTP/2,
+HAProxy `proto h2` both ends, nginx `grpc_pass`), the Go echo backend of
+tests/bench/grpc on cores 4-5 and 12-13. Unary calls of 64 bytes. The most
+from h2load posting gRPC frames (64 connections, 16 streams); every proxy
+checked first to end calls with grpc-status 0 (grpcbench: 4000 calls, no
+error for any). Latency from grpcbench (Go, open loop), median of three.
+
+| Path (2 cores) | unary calls/s | per core |
+|---|---|---|
+| straight to the backend | 222228 | |
+| okena | 145688 | 72844 |
+| HAProxy 3.2 | 55347 | 27673 |
+| Envoy 1.40 | 50898 | 25449 |
+| nginx 1.27 | 35118 | 17559 |
+
+| Path | rate | p50 / p99 / p99.9 / max (us) |
+|---|---|---|
+| direct | 5000/s | 148 / 182 / 461 / 2128 |
+| direct | 20000/s | 143 / 644 / 1976 / 3120 |
+| direct | 40000/s | 123 / 1210 / 3983 / 11389 |
+| okena | 5000/s | 184 / 243 / 467 / 1482 |
+| okena | 20000/s | 194 / 1166 / 3239 / 6036 |
+| okena | 40000/s | 202 / 3050 / 10684 / 20033 |
+| HAProxy | 5000/s | 200 / 269 / 508 / 1507 |
+| HAProxy | 20000/s | 232 / 1594 / 3193 / 4756 |
+| HAProxy | 40000/s | 8178 / 96825 / 143748 / 152105 |
+| Envoy | 5000/s | 268 / 361 / 539 / 2471 |
+| Envoy | 20000/s | 982 / 45236 / 72069 / 89040 |
+| Envoy | 40000/s | 22541 / 220870 / 289437 / 341809 |
+| nginx | 5000/s | 212 / 286 / 553 / 1675 |
+| nginx | 20000/s | 8873 / 116461 / 143665 / 177335 |
+| nginx | 40000/s | 1889012 / 6308947 / 7758162 / 9545108 |
+
+* okena does 2.6 times HAProxy's gRPC calls, 2.9 times Envoy's (gRPC's own
+  proxy) and 4.1 times nginx's, on the same two cores.
+* The Go client is most of every latency here (straight to the backend, p50
+  148 us and p99.9 2 ms at 20000/s). Within that: okena lowest at p50 and p99
+  everywhere, and at p99.9 at 5000 and 40000/s; at 20000/s its p99.9 is
+  HAProxy's (3239 against 3193 us, under the client's noise). At 40000/s only
+  okena stays near the backend's own tail (p99 3 ms; HAProxy 97 ms, Envoy
+  221 ms, nginx seconds).
+
 ## gRPC against Envoy, open loop (2026-10-31)
 
 `tests/bench/grpc.sh`: okena (`http2 on`, a pool with `protocol h2`) and
