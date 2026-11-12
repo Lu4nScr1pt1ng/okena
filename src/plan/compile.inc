@@ -390,6 +390,7 @@ plan_compile:
 	mov	qword [g_plan_drain_timeout],DEFAULT_DRAIN_US
 	mov	qword [g_plan_watchdog],2000000
 	mov	dword [g_plan_last_good],0
+	mov	dword [g_plan_pin],PIN_AUTO
 	mov	dword [g_plan_reload_watch],0
 	mov	dword [g_plan_tryc],0
 	mov	qword [g_plan_hs_budget],DEFAULT_HS_BUDGET_US
@@ -648,6 +649,9 @@ compile_settings:
 	lea	rcx,[dir_table + D_SIZE*DIR_LAST_GOOD]
 	cmp	rax,rcx
 	je	.last_good
+	lea	rcx,[dir_table + D_SIZE*DIR_PIN_WORKERS]
+	cmp	rax,rcx
+	je	.pin_workers
 	lea	rcx,[dir_table + D_SIZE*DIR_RELOAD]
 	cmp	rax,rcx
 	je	.reload_watch
@@ -899,6 +903,19 @@ compile_settings:
 	cmp	word [rax],'on'
 	sete	cl
 	mov	[g_plan_last_good],ecx
+	jmp	.advance
+.pin_workers:
+	mov	rax,[rbx+N_ARGS]
+	mov	rax,[rax+A_VAL]
+	mov	ecx,PIN_ON
+	cmp	word [rax],'on'
+	je	@f
+	mov	ecx,PIN_AUTO
+	cmp	byte [rax],'a'
+	je	@f
+	mov	ecx,PIN_OFF
+@@:
+	mov	[g_plan_pin],ecx
 	jmp	.advance
 .drain:
 	mov	rdi,rbx

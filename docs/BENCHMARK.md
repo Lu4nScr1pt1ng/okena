@@ -99,37 +99,46 @@ The most each does, closed loop (wrk, 8 threads, 256 connections, 10 s):
 
 | Proxy (2 cores) | most req/s | per core |
 |---|---|---|
-| okena | 142392 | 71196 |
-| HAProxy 3.2 | 102490 | 51245 |
-| nginx 1.27 | 90687 | 45343 |
-| Envoy 1.40 | 35866 | 17933 |
+| okena | 146471 | 73235 |
+| HAProxy 3.2 | 104479 | 52239 |
+| nginx 1.27 | 86024 | 43012 |
+| Envoy 1.40 | 36713 | 18356 |
 
 Envoy was at 189% CPU with no errors: that is what its HTTP/1 path costs here.
 
 Latency at fixed rates, open loop (okena bench, 64 connections, 4 workers,
-from the schedule), microseconds:
+from the schedule), each point three times and the median of each
+percentile, microseconds:
 
 | Proxy | rate | p50 / p99 / p99.9 / max | behind | errors |
 |---|---|---|---|---|
-| okena | 10000/s | 46 / 69 / 589 / 3185 | 0 | 0 |
-| okena | 30000/s | 40 / 69 / 1146 / 3331 | 0 | 0 |
-| okena | 80000/s | 46 / 88 / 331 / 1274 | 0 | 0 |
-| HAProxy | 10000/s | 54 / 73 / 104 / 264 | 0 | 0 |
-| HAProxy | 30000/s | 53 / 84 / 315 / 2944 | 0 | 0 |
-| HAProxy | 80000/s | 119 / 50855 / 66060 / 69550 | 0 | 0 |
-| nginx | 10000/s | 59 / 81 / 119 / 725 | 0 | 0 |
-| nginx | 30000/s | 67 / 253 / 671 / 1296 | 0 | 0 |
-| nginx | 80000/s | 331 / 1056964 / 1085565 / 1085565 | 0 | 0 |
-| Envoy | 10000/s | 120 / 198 / 278 / 625 | 0 | 0 |
-| Envoy | 30000/s | 1392 / 5767 / 8191 / 12157 | 0 | 0 |
-| Envoy | 80000/s | (did not keep up: 430311 behind) | | 64 |
+| okena | 10000/s | 44 / 62 / 89 / 565 | 0 | 0 |
+| okena | 30000/s | 40 / 64 / 116 / 1172 | 0 | 0 |
+| okena | 80000/s | 44 / 69 / 123 / 778 | 0 | 0 |
+| HAProxy | 10000/s | 53 / 73 / 100 / 397 | 0 | 0 |
+| HAProxy | 30000/s | 51 / 99 / 3047 / 7553 | 0 | 0 |
+| HAProxy | 80000/s | 151 / 211812 / 226492 / 228813 | 0 | 0 |
+| nginx | 10000/s | 58 / 77 / 116 / 635 | 0 | 0 |
+| nginx | 30000/s | 61 / 133 / 573 / 1580 | 0 | 0 |
+| nginx | 80000/s | 344 / 2919235 / 2952790 / 2957399 | 45411 | 35 |
+| Envoy | 10000/s | 121 / 200 / 327 / 2304 | 0 | 0 |
+| Envoy | 30000/s | 696 / 1327 / 3932 / 5036 | 0 | 0 |
+| Envoy | 80000/s | (did not keep up: 416034 behind) | | 64 |
 
-* okena does 39% more than HAProxy, 57% more than nginx and four times
-  Envoy on the same cores, and has the lowest p50 and p99 at every rate; it
-  alone holds 80000/s on two cores (p99 88 us).
-* **It loses at p99.9 at low rates**: 589 us at 10000/s and 1146 us at
-  30000/s against HAProxy's 104 and 315. That is the worker wake-up tail the
-  roadmap names (phase 11, performance work): the next thing to fix.
+* okena does 40% more than HAProxy, 70% more than nginx and four times
+  Envoy on the same cores, and has the lowest p50, p99 and p99.9 at every
+  rate; it alone holds 80000/s on two cores (p99 69 us, p99.9 123).
+* The first run of this table (same day) had okena **losing at p99.9** at
+  10000/s and 30000/s: 589 and 1146 us against HAProxy's 104 and 315. The
+  cause was not okena's loop (no iteration over 300 us, checked) nor the
+  CPU's idle states (holding /dev/cpu_dma_latency at 20 us changed nothing),
+  but its workers being pinned one to a core: on a host that runs anything
+  else, a pinned worker waits for whatever took its core, milliseconds, where
+  the others' threads move. Free, p99.9 fell to 54-59 us; but under load free
+  workers sometimes shared a core (at 80000/s p99 466-532 us, pinned 73-89).
+  `pin_workers auto` (now the default) is each by turn: a worker past half a
+  core pins itself, one under a fifth lets go; throughput is the same either
+  way (155k req/s, io_uring, pinned or free).
 
 ## gRPC against Envoy, open loop (2026-10-31)
 

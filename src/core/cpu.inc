@@ -131,8 +131,92 @@ cpu_worker_count:
 .done:
 	ret
 
-; edi = worker index: pin to the n-th CPU of the startup mask.
+PIN_OFF		:= 0
+PIN_ON		:= 1
+PIN_AUTO	:= 2
+PIN_HIGH	:= 50		; auto: busy past this share of a tick, pinned
+PIN_LOW		:= 20		; and below this one, free again
+
+bss
+	g_plan_pin	dd ?		; `pin_workers`: PIN_*
+	g_pin_index	dd ?		; this worker's index
+	g_pinned	dd ?		; pinned now
+	align 8
+	g_util_cpu	dq ?		; its CPU time (ns) at the last tick
+	g_util_wall	dq ?		; and the clock's
+end bss
+
+CLOCK_PROCESS_CPUTIME_ID := 2
+
+; Workers and cores. Pinned (`pin_workers on`), a worker keeps its core's
+; caches, and two workers never share a core: under load, its tail is the
+; best (at 80000 req/s on two cores, p99 73-89 us; free, 466-532). Free
+; (`off`), it runs wherever a core is idle: on a host it shares (anything
+; else, the kernel's own threads included) a pinned worker waits for
+; whatever took its core, milliseconds, where a free one moves (at 10000/s,
+; p99.9 54-59 us free, 540-679 pinned). `auto`, the default, is each by turn:
+; a worker busy past PIN_HIGH of a tick pins itself, one below PIN_LOW lets go.
+
+; Tick, auto: this worker's share of busy time since the last tick, and its
+; affinity to match.
+pin_tick:
+	cmp	dword [g_plan_pin],PIN_AUTO
+	jne	.out
+	; the CPU this worker used since the last tick (in the kernel too: with
+	; io_uring much of its work is in io_uring_enter) against the clock
+	sub	rsp,16
+	mov	edi,CLOCK_PROCESS_CPUTIME_ID
+	mov	rsi,rsp
+	mov	eax,SYS_clock_gettime
+	syscall
+	imul	r8,[rsp],1000000000
+	add	r8,[rsp+8]
+	mov	edi,CLOCK_MONOTONIC
+	mov	rsi,rsp
+	mov	eax,SYS_clock_gettime
+	syscall
+	imul	r9,[rsp],1000000000
+	add	r9,[rsp+8]
+	add	rsp,16
+	mov	rcx,r8
+	xchg	rcx,[g_util_cpu]
+	mov	rdx,r9
+	xchg	rdx,[g_util_wall]
+	test	rdx,rdx
+	jz	.out				; (the first tick: from now on)
+	sub	r9,rdx				; elapsed
+	jz	.out
+	sub	r8,rcx				; busy
+	imul	rax,r8,100
+	xor	edx,edx
+	div	r9				; eax = busy, percent
+	cmp	dword [g_pinned],0
+	jne	.pinned
+	cmp	eax,PIN_HIGH
+	jb	.out
+	mov	dword [g_pinned],1
+	mov	edi,[g_pin_index]
+	jmp	pin_now
+.pinned:
+	cmp	eax,PIN_LOW
+	jae	.out
+	mov	dword [g_pinned],0
+	; free: back to every CPU it was given
+	xor	edi,edi
+	mov	esi,128
+	lea	rdx,[g_affinity]
+	mov	eax,SYS_sched_setaffinity
+	syscall
+.out:
+	ret
+
 pin_to_cpu:
+	mov	[g_pin_index],edi
+	cmp	dword [g_plan_pin],PIN_ON
+	jne	pin_free
+	mov	dword [g_pinned],1
+	; edi = worker index: onto its core now
+pin_now:
 	sub	rsp,128
 	mov	ecx,edi
 	; n modulo the number of CPUs in the mask
@@ -167,6 +251,7 @@ pin_to_cpu:
 	syscall
 .done:
 	add	rsp,128
+pin_free:
 	ret
 
 ; rax = seconds on the monotonic clock.

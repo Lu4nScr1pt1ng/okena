@@ -174,6 +174,7 @@ SUITES = [
     ("upgrade epoll", ["tests/gateway/upgrade.py", "epoll"]),
     ("upgrade 260 workers", ["tests/gateway/upgrade.py", "epoll", "260"]),
     ("gwscale io_uring", ["tests/gateway/gwscale.py", "io_uring"]),
+    ("pinning", ["tests/httpproxy/pinning.py"]),
     ("gwscale epoll", ["tests/gateway/gwscale.py", "epoll"]),
     ("admin io_uring", ["tests/gateway/admin.py", "io_uring"]),
     ("admin epoll", ["tests/gateway/admin.py", "epoll"]),

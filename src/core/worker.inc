@@ -369,6 +369,7 @@ tick_work:
 	call	pool_warm			; `connect warm=`
 	call	stats_publish
 	call	udp_tick
+	call	pin_tick			; pin_workers auto
 	cmp	dword [g_engine],ENGINE_EPOLL
 	je	@f
 	call	accept_watch			; (io_uring: a lost wakeup)

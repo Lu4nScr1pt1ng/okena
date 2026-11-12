@@ -8,7 +8,7 @@ not built yet. A directive that is not built is refused by `okena check`
 
 | Block | Directives |
 |---|---|
-| `okena` | `workers`, `io_engine`, `profile`, `last_good on\|off`, `reload on-change\|signal`, `busy_poll`, `watchdog`, `drain delay= timeout=`, `metrics [token=]`, `user`, `ticket_keys`, `handshake_budget wait=`, `quic_server_id HEX`, `cache_memory`, `cache_disk PATH size=`, `fleet ADDR...`, `cdn_loop NAME [max=]`, `bird PATH protocol= [pool=]` |
+| `okena` | `workers`, `io_engine`, `profile`, `pin_workers auto\|on\|off`, `last_good on\|off`, `reload on-change\|signal`, `busy_poll`, `watchdog`, `drain delay= timeout=`, `metrics [token=]`, `user`, `ticket_keys`, `handshake_budget wait=`, `quic_server_id HEX`, `cache_memory`, `cache_disk PATH size=`, `fleet ADDR...`, `cdn_loop NAME [max=]`, `bird PATH protocol= [pool=]` |
 | `vrrp IFACE` | `vrid=`, `priority=`, `address=A/N`, `advert=`, `preempt=`, `track=POOL` (a floating address, VRRP v3) |
 | `tcp ADDR...` | `to`, `mss`, `limits { connections; per_source }`, `timeout { idle }`, `proxy_protocol send v1\|v2`, `tls { cert; key }`, `tls passthrough { sni NAME... to pool P; default reject\|to pool P }` (a `default to pool` alone is enough) |
 | `udp ADDR...` | `to`, `responses N`, `limits { connections }` (flows), `timeout { idle }` |
@@ -491,6 +491,15 @@ again until the files change again. A file written while a reload was reading
 it is not taken as read: it reloads again (before, an edit made during a
 reload could be missed for good). No inotify: nothing to overflow, and it
 works on any filesystem, a ConfigMap's symlinks included.
+
+`pin_workers auto|on|off` is where workers run. `on` pins each to a core of its
+own (for hosts whose cores are okena's alone, with the NIC's queues on them);
+`off` lets the kernel place them wherever a core is idle; `auto`, the default,
+is each by turn: a worker that used more than half of a core over the last
+second pins itself to its core, one that used less than a fifth lets go. Free,
+a worker escapes whatever else takes its core (pinned on a shared host, p99.9
+was ten times worse); pinned under load, two workers never share one (free at
+80000 req/s on two cores, p99 was five times worse). Throughput is the same.
 
 `last_good on` keeps the configuration that last started or reloaded as
 FILE.good, beside the file (0600, written whole then renamed over the old

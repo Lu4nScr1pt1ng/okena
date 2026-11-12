@@ -256,6 +256,7 @@ rodata
 	sc_allow filter_worker_uring, SYS_recvmmsg	; QUIC datagrams
 	sc_allow filter_worker_uring, SYS_sendmmsg
 	sc_allow filter_worker_uring, SYS_poll		; (a listening socket nobody takes from: accept_watch)
+	sc_allow filter_worker_uring, SYS_sched_setaffinity	; (pin_workers auto: pinned under load)
 	sc_end filter_worker_uring
 
 	; io_uring worker with `udp` listeners (and whatever `files` needs): their
@@ -287,6 +288,7 @@ rodata
 	sc_allow filter_worker_uring_u, SYS_lseek_
 	sc_allow filter_worker_uring_u, SYS_close
 	sc_allow filter_worker_uring_u, SYS_poll		; (a listening socket nobody takes from: accept_watch)
+	sc_allow filter_worker_uring_u, SYS_sched_setaffinity	; (pin_workers auto: pinned under load)
 	sc_end filter_worker_uring_u
 
 	; epoll worker
@@ -317,6 +319,7 @@ rodata
 	sc_allow filter_worker_epoll, SYS_recvmmsg	; QUIC datagrams
 	sc_allow filter_worker_epoll, SYS_sendmmsg
 	sc_allow filter_worker_epoll, SYS_recvmsg	; kTLS upstream: control records (tickets)
+	sc_allow filter_worker_epoll, SYS_sched_setaffinity	; (pin_workers auto: pinned under load)
 	sc_end filter_worker_epoll
 
 	; workers with `files` routes: they open beneath their roots (files.inc)
@@ -341,6 +344,7 @@ rodata
 	sc_allow filter_worker_uring_f, SYS_lseek_
 	sc_allow filter_worker_uring_f, SYS_close
 	sc_allow filter_worker_uring_f, SYS_poll		; (a listening socket nobody takes from: accept_watch)
+	sc_allow filter_worker_uring_f, SYS_sched_setaffinity	; (pin_workers auto: pinned under load)
 	sc_end filter_worker_uring_f
 
 	sc_begin filter_worker_epoll_f
@@ -373,6 +377,7 @@ rodata
 	sc_allow filter_worker_epoll_f, SYS_openat2
 	sc_allow filter_worker_epoll_f, SYS_fstat
 	sc_allow filter_worker_epoll_f, SYS_lseek_
+	sc_allow filter_worker_epoll_f, SYS_sched_setaffinity	; (pin_workers auto: pinned under load)
 	sc_end filter_worker_epoll_f
 
 	; control process: DNS over UDP, resolv.conf and hosts read-only

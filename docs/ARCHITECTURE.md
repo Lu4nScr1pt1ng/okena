@@ -49,8 +49,8 @@ supervisor (PID 1 in a container, or under systemd)
  ├─ owns all listening sockets (SO_REUSEPORT, one per worker per listener)
  ├─ runs a short-lived compiler child that validates the configuration
  │  before the supervisor compiles it; watches worker heartbeats
- ├─ worker 0 ── pinned to CPU 0 ── its own io_uring, memory, upstream connections
- ├─ worker 1 ── pinned to CPU 1
+ ├─ worker 0 ── on CPU 0 under load ── its own io_uring, memory, upstream connections
+ ├─ worker 1 ── on CPU 1 under load
  ├─ ...
  ├─ logger   ── reads access-log lines from the workers, writes files/stdout
  ├─ control  ── DNS, service discovery, JWKS and other remote keys, active
@@ -399,7 +399,10 @@ What buys them:
 * **Fewer syscalls, not faster ones.** One `io_uring_enter` per iteration
   for everything; completions reaped in budgets so a burst on one
   connection cannot delay the others by more than one budget.
-* **Predictable CPU.** Workers pinned, no migration; interrupts for a
+* **Predictable CPU.** Workers pinned under load (`pin_workers auto`: one
+  that uses more than half a core pins itself, one under a fifth lets go,
+  measured: pinned all the time on a host shared with anything else, p99.9
+  was ten times worse; free under load, five times worse at p99); interrupts for a
   queue on the same core as its worker; hot code and data laid out by
   cache line; no real-time scheduling (a `SCHED_FIFO` worker that busy
   polls starves the softirq and kernel threads on its own core and causes

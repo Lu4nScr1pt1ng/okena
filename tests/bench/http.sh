@@ -6,7 +6,9 @@
 # `http-reuse always`), Envoy's circuit breakers out of the way, each with as
 # many threads as cores. First the most each does (closed loop, wrk), then the
 # latency each gives at fixed rates (open loop, okena bench: from the
-# schedule, as wrk2). Output: markdown rows for docs/BENCHMARK.md.
+# schedule, as wrk2), each point REPEAT times and the median of each
+# percentile given (on a host that is not quiet, one bad run moves a tail).
+# Output: markdown rows for docs/BENCHMARK.md.
 #
 #   tests/bench/http.sh             (needs docker, the three images, wrk)
 #
@@ -32,6 +34,7 @@ LOAD_CPUS=${LOAD_CPUS:-0,3,6,7,8,11,14,15}
 DUR=${DUR:-10s}
 CONNS=${CONNS:-256}
 RATES=${RATES:-}
+REPEAT=${REPEAT:-3}		# each latency point this many times: the median of each percentile
 ONLY=${ONLY:-okena envoy haproxy nginx}
 B=28600 OK=28601 EN=28602 HA=28603 NG=28604
 W=$(mktemp -d)
@@ -175,7 +178,11 @@ if [ -n "$RATES" ]; then
 	for p in $ONLY; do
 		start "$p"
 		for r in $RATES; do
-			read -ra v < <(lat "$(port "$p")" "$r")
+			read -ra v < <(for i in $(seq "$REPEAT"); do lat "$(port "$p")" "$r"; done |
+				awk '{ for (i = 1; i <= NF; i++) c[i, NR] = $i } END { for (i = 1; i <= 6; i++) {
+					n = 0; for (j = 1; j <= NR; j++) a[++n] = c[i, j]
+					for (x = 1; x <= n; x++) for (y = x + 1; y <= n; y++) if (a[y] < a[x]) { t = a[x]; a[x] = a[y]; a[y] = t }
+					printf "%s ", a[int((n + 1) / 2)] } print "" }')
 			printf '| %s | %s/s | %s / %s / %s / %s | %s | %s |\n' "$p" "$r" "${v[0]}" "${v[1]}" "${v[2]}" "${v[3]}" "${v[4]}" "${v[5]}"
 		done
 		stop "$p"

@@ -67,6 +67,7 @@ macro plan_regions action
 	action g_plan_drain_timeout, 8
 	action g_plan_watchdog, 8
 	action g_plan_last_good, 4
+	action g_plan_pin, 4
 	action g_plan_reload_watch, 4
 	action g_plan_profile, 4
 	action g_plan_tryc, 4

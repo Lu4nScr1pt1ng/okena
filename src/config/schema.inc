@@ -133,6 +133,7 @@ enumdef e_rewrite_what, 'path'
 enumdef e_pp_version, 'v1', 'v2'
 enumdef e_tls_mode, 'passthrough'
 enumdef e_onoff, 'on', 'off'
+enumdef e_pin, 'on', 'off', 'auto'
 enumdef e_retry_mode, 'idempotent-only'
 enumdef e_cors_flags, 'credentials'
 enumdef e_auth, 'api_key', 'basic', 'jwt', 'mtls', 'forward'
@@ -234,6 +235,7 @@ dirdef DIR_GATEWAY, 'gateway',   M_OKENA,   0,           F_UNIQUE, 1, 1, e_gatew
 dirdef DIR_PROFILE, 'profile',   M_OKENA,   0,           F_UNIQUE, 1, 1, e_profile, T_NONE, 0
 dirdef DIR_RELOAD, 'reload',     M_OKENA,   0,           F_UNIQUE, 1, 1, e_reload, T_NONE, 0
 dirdef DIR_LAST_GOOD, 'last_good', M_OKENA,  0,           F_UNIQUE, 1, 1, e_onoff, T_NONE, 0
+dirdef DIR_PIN_WORKERS, 'pin_workers', M_OKENA, 0,        F_UNIQUE, 1, 1, e_pin, T_NONE, 0
 dirdef DIR_WATCHDOG, 'watchdog',    M_OKENA,   0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
 dirdef DIR_METRICS, 'metrics',     M_OKENA,   0,           F_UNIQUE, 1, 1, T_LISTEN, T_NONE, k_metrics
 dirdef DIR_BUSY_POLL, 'busy_poll',   M_OKENA,   0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
