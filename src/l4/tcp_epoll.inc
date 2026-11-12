@@ -170,8 +170,36 @@ ep_main:
 	mov	edi,EXIT_FATAL
 	jmp	exit_process
 
-; g_now_ms = monotonic milliseconds.
+; g_now_ms = monotonic milliseconds: from the TSC between two readings of the
+; clock a second apart (a syscall each iteration of the loop was one of the
+; costs of every request: no libc, no vDSO), the clock itself when the TSC is
+; not calibrated.
 ep_clock:
+	mov	rcx,[g_tsc_per_us]
+	test	rcx,rcx
+	jz	ep_clock_sys
+	rdtsc
+	shl	rdx,32
+	or	rax,rdx
+	sub	rax,[g_clk_tsc]
+	imul	rcx,rcx,1000			; TSC ticks a millisecond
+	xor	edx,edx
+	div	rcx
+	cmp	rax,1000
+	jae	ep_clock_sys			; a second since the clock: read it again
+	add	rax,[g_clk_ms]
+	mov	[g_now_ms],rax
+	ret
+ep_clock_sys:
+	rdtsc
+	shl	rdx,32
+	or	rax,rdx
+	mov	[g_clk_tsc],rax
+	call	.read
+	mov	rax,[g_now_ms]
+	mov	[g_clk_ms],rax
+	ret
+.read:
 	sub	rsp,24
 	mov	edi,CLOCK_MONOTONIC
 	mov	rsi,rsp
@@ -187,6 +215,11 @@ ep_clock:
 	mov	[g_now_ms],rax
 	add	rsp,24
 	ret
+
+bss
+	g_clk_tsc	dq ?		; ep_clock: the TSC at the last reading of the clock
+	g_clk_ms	dq ?		; and the clock then
+end bss
 
 ; edx = milliseconds until the next tick or connect deadline.
 ep_wait_timeout:
