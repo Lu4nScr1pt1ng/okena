@@ -130,7 +130,8 @@ def main():
                 break
             except OSError:
                 time.sleep(0.05)
-        ts, bodies = [], []
+        get("/h/warm")              # (the first request after the start pays for it,
+        ts, bodies = [], []         # which under a loaded host is not the hedge's time)
         for i in range(30):
             t0 = time.time()
             r, b = get(f"/h/{i}")
