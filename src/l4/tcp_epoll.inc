@@ -1374,6 +1374,7 @@ ep_close:
 	dec	dword [g_ls_active+rax*4]
 	dec	dword [g_active]
 @@:
+	call	hbuf_freed			; (its buffers go back in a while)
 	mov	eax,[g_sess_free]
 	mov	[r12+S_NEXT],eax
 	mov	[g_sess_free],ebx

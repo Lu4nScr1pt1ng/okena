@@ -156,6 +156,10 @@ bss
 	align 8
 	g_http_base	dq ?		; the states
 	g_hbuf_base	dq ?		; the buffers
+	g_hr_base	dq ?		; freed sessions whose buffers go back (hbuf_tick)
+	g_hr_cap	dd ?
+	g_hr_head	dd ?
+	g_hr_tail	dd ?
 	g_hm:		rb HM_SIZE		; the message being parsed
 end bss
 
@@ -172,6 +176,15 @@ http_worker_init:
 	cmp	rax,-4096
 	ja	.done
 	mov	[g_hbuf_base],rax
+	mov	ecx,3				; the queue of freed sessions, 8 bytes each
+	call	.reserve
+	cmp	rax,-4096
+	ja	.done
+	mov	[g_hr_base],rax
+	mov	eax,[g_sessions]
+	mov	[g_hr_cap],eax
+	mov	dword [g_hr_head],0
+	mov	dword [g_hr_tail],0
 	call	retry_budget_tick		; budgets start at their floor, not empty
 	mov	dword [g_hready_head],NIL	; deliveries (epoll, user-space TLS)
 	mov	dword [g_hready_tail],NIL
@@ -202,6 +215,95 @@ http_worker_init:
 	syscall
 	pop	rax
 @@:
+	ret
+
+; A session's buffers when it is freed: an idle connection gives its back
+; 2 s after its last exchange (PH_TRIM), a closed one kept them, so the
+; memory of a burst stayed (50000 connections come and gone: 290 MB). A
+; freed session of an http listener goes into a queue, without a system
+; call; each tick the oldest past HR_SLACK give their buffers back, those
+; freed last stay (the free list hands them out first: they would fault
+; back in at once). One taken again meanwhile is skipped: its state, or its
+; generation (each free moves it on), says so.
+HR_SLACK	:= 1024
+HR_MADV		:= 8192				; buffers given back a tick, at most
+HR_LOOK		:= 65536			; entries looked at a tick, at most
+
+; ebx = a session just freed (its generation moved on), r12 = it. Keeps
+; rbx, r12-r15.
+hbuf_freed:
+	cmp	qword [g_hr_base],0
+	je	.out
+	mov	eax,[r12+S_LST]
+	imul	rax,rax,LS_SIZE
+	cmp	dword [g_listeners+rax+LS_KIND],LK_HTTP
+	jne	.out
+	mov	ecx,[g_hr_tail]
+	lea	eax,[rcx+1]
+	cmp	eax,[g_hr_cap]
+	jb	@f
+	xor	eax,eax
+@@:
+	cmp	eax,[g_hr_head]
+	je	.out				; (full: this one keeps its pages)
+	mov	r8d,[r12+S_GEN]
+	shl	r8,32
+	or	r8,rbx
+	mov	rdx,[g_hr_base]
+	mov	[rdx+rcx*8],r8
+	mov	[g_hr_tail],eax
+.out:
+	ret
+
+; once a tick
+hbuf_tick:
+	cmp	qword [g_hr_base],0
+	je	.none
+	push	rbx
+	push	r12
+	push	r13
+	mov	r12d,HR_MADV
+	mov	r13d,HR_LOOK
+.next:
+	mov	eax,[g_hr_tail]
+	sub	eax,[g_hr_head]
+	jns	@f
+	add	eax,[g_hr_cap]
+@@:
+	cmp	eax,HR_SLACK
+	jbe	.done
+	dec	r13d
+	js	.done
+	mov	ecx,[g_hr_head]
+	mov	rdx,[g_hr_base]
+	mov	r8,[rdx+rcx*8]
+	inc	ecx
+	cmp	ecx,[g_hr_cap]
+	jb	@f
+	xor	ecx,ecx
+@@:
+	mov	[g_hr_head],ecx
+	mov	ebx,r8d
+	shr	r8,32
+	call	session_ptr
+	cmp	dword [rax+S_STATE],ST_FREE
+	jne	.next				; taken again
+	cmp	[rax+S_GEN],r8d
+	jne	.next				; (and freed again since: a later entry)
+	mov	rdi,rbx
+	shl	rdi,HB_SHIFT
+	add	rdi,[g_hbuf_base]
+	mov	esi,1 shl HB_SHIFT
+	mov	edx,MADV_DONTNEED
+	mov	eax,SYS_madvise
+	syscall
+	dec	r12d
+	jnz	.next
+.done:
+	pop	r13
+	pop	r12
+	pop	rbx
+.none:
 	ret
 
 ; Append literal text at rdi (rdi = after it).

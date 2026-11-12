@@ -466,6 +466,7 @@ tick_work:
 	inc	qword [rax]
 	call	idle_expire
 	call	ph_expire
+	call	hbuf_tick			; freed sessions' buffers back to the kernel
 	call	overload_tick
 	call	jwt_tick
 	call	od_tick				; handshakes waiting for an on-demand certificate
