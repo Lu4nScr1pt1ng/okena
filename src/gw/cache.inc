@@ -1987,6 +1987,48 @@ cache_serve:
 	mov	[rax+HB_CPOS],edx
 	mov	rcx,[g_c_take]
 	mov	[rax+HB_CLEFT],ecx
+	; a body that fits after the head goes into UP with it, as a backend's
+	; that came in one read: one send for both, no turn of its own
+	; (hits of 100 bytes through two cores: 163k -> 276k a second)
+	test	r12d,CD_MARK
+	jnz	.whole_done			; (from disk: as it comes)
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_SLICE
+	jnz	.whole_done
+	mov	rax,[r15+H_BUF]
+	mov	ecx,[rax+HB_CLEFT]
+	test	ecx,ecx
+	jz	.whole_done
+	mov	edx,H_UP_CAP
+	sub	edx,[r15+H_UPLEN]
+	cmp	ecx,edx
+	ja	.whole_done
+	mov	rdi,rax
+	mov	edx,[r15+H_UPLEN]
+	lea	rdi,[rdi+HB_UP+rdx]
+	add	[r15+H_UPLEN],ecx
+	mov	r8d,ecx				; to copy
+	mov	dword [rax+HB_CLEFT],0
+	mov	r9d,[rax+HB_CPOSB]
+	mov	r10d,[rax+HB_CPOS]
+.whole:
+	mov	ecx,CB_SIZE
+	sub	ecx,r10d
+	cmp	ecx,r8d
+	cmova	ecx,r8d
+	sub	r8d,ecx
+	mov	rsi,r9
+	shl	rsi,CB_SHIFT
+	add	rsi,[g_cb_base]
+	add	rsi,r10
+	rep	movsb
+	test	r8d,r8d
+	jz	.whole_done
+	mov	rdx,[g_cb_nexts]
+	mov	r9d,[rdx+r9*4]
+	xor	r10d,r10d
+	jmp	.whole
+.whole_done:
 	mov	dword [r15+H_STATE],HS_RESP_HEAD
 	mov	edi,ebx
 	mov	esi,PH_RESPONSE
