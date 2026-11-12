@@ -375,6 +375,10 @@ drawn for each packet (every packet a new flow).
   in each program (`kernel.bpf_stats_enabled`, now printed by the bench;
   it adds its clock reads to each run): okena 122 ns, Katran 157 ns, est;
   the same 122 ns after IPv6, GUE and ICMP were added to the program.
+* The pre-filter (`okena-drop`: every source in `drop 10.9.0.0/16`, drawn
+  for each packet): 40 ns a packet dropped in the program, the longest
+  prefix found; 3.48 M dropped a second on the core, the veth's own
+  turning of skbs into XDP buffers the rest (its XDP_TX alone: 3.04 M).
 * Before this entry okena did 1.99 M (est) and 1.10 M (new): the next hop
   (bpf_fib_lookup, the kernel's routes and neighbours) was asked for every
   packet. Now each CPU keeps the kernel's answer for a real for the time

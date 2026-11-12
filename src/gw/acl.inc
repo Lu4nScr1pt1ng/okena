@@ -25,6 +25,7 @@ bss
 	g_acls:		rb ACL_SIZE * MAX_ACLS
 	g_plan_acls	dd ?
 	g_tr_tmp:	rb TR_SIZE
+	g_acl_sink	dq ?		; not 0: acl_add hands each range to it instead
 end bss
 
 ; rax = a trie's root, 0 none, rsi = the address, ecx = its bits: CF when in it.
@@ -187,11 +188,24 @@ compile_acl:
 	cmp	[rbx+N_DEF],rax
 	jne	.next_line
 .args:
+	call	acl_args
+.next_line:
+	mov	rbx,[rbx+N_NEXT]
+	jmp	.line
+.out:
+	pop	r15
+	pop	r14
+	pop	rbx
+	ret
+
+; rbx = an allow, deny or drop line, r14 = the acl, r15d = deny: its
+; arguments into it (ranges, file:PATH, a provider's name, country:XX)
+acl_args:
 	mov	r8d,[rbx+N_ARGC]
 	mov	r9,[rbx+N_ARGS]
 .arg:
 	test	r8d,r8d
-	jz	.next_line
+	jz	.out
 	dec	r8d
 	push	r8
 	push	r9
@@ -241,13 +255,7 @@ compile_acl:
 	pop	r8
 	add	r9,A_SIZE
 	jmp	.arg
-.next_line:
-	mov	rbx,[rbx+N_NEXT]
-	jmp	.line
 .out:
-	pop	r15
-	pop	r14
-	pop	rbx
 	ret
 
 ; rsi = BR,PT, ecx = its length, r14 = the acl, r15d = deny
@@ -339,8 +347,13 @@ acl_file:
 	pop	rbx
 	ret
 
-; rdi/esi = a CIDR, r14 = the acl, r15d = deny
+; rdi/esi = a CIDR, r14 = the acl, r15d = deny (or to g_acl_sink)
 acl_add:
+	mov	rax,[g_acl_sink]
+	test	rax,rax
+	jz	@f
+	jmp	rax
+@@:
 	push	rbx
 	push	r12
 	push	r13

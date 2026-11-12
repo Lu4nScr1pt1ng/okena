@@ -198,6 +198,7 @@ keysdef k_cert, 'key', T_ANY
 keysdef k_odemand, 'ask', T_ANY, 'max', T_ANY
 keysdef k_cca, 'crl', T_ANY
 keysdef k_mode, 'encap', T_ANY, 'port', T_UINT
+keysdef k_synrate, 'burst', T_COUNT
 keysdef k_health, 'every', T_DURATION, 'timeout', T_DURATION, 'rise', T_COUNT, 'fall', T_COUNT, \
 	'expect', T_STATUSES, 'host', T_HOSTNAME
 keysdef k_uptls, 'trust', T_ANY, 'sni', T_HOSTNAME, 'cert', T_ANY, 'key', T_ANY
@@ -349,6 +350,8 @@ dirdef DIR_UPTLS, 'tls',         M_POOL,    0,           F_UNIQUE or F_KEYS_BLOC
 dirdef DIR_PROTOCOL, 'protocol', M_POOL,    0,           F_UNIQUE, 1, 1, e_proto, T_NONE, 0
 dirdef DIR_MODE, 'mode',         M_TCP or M_UDP, 0,      F_UNIQUE, 1, 1, e_listen_mode, T_NONE, k_mode
 dirdef DIR_XDP, 'xdp',           M_OKENA,   0,           F_UNIQUE, 1, 8, T_ANY, T_ANY, 0
+dirdef DIR_XDROP, 'drop',        M_OKENA,   0,           0, 1, 64, T_ANY, T_ANY, 0
+dirdef DIR_SYN_RATE, 'syn_rate', M_OKENA,   0,           F_UNIQUE, 1, 1, T_RATE, T_NONE, k_synrate
 rodata
 	dir_table_end:
 end rodata

@@ -9,7 +9,7 @@
 #   tests/bench/xdp.sh            (needs docker, the pktgen module: modprobe
 #                                  pktgen; a --privileged container with
 #                                  --pid host, to pin the NAPI threads)
-#   MODES="est new" WHO="base okena katran katran-noflood" SECS=5 GENS="2 10 3"
+#   MODES="est new" WHO="base okena katran katran-noflood okena-drop" SECS=5 GENS="2 10 3"
 #   LB_CPU=4 PEER_CPU=6 FLOWS=1024
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)

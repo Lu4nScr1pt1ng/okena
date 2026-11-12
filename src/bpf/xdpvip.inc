@@ -21,6 +21,13 @@ bss
 	g_plan_nxvip	dd ?
 	g_plan_nxif	dd ?
 	g_plan_xif:	rb XIF_MAX * 16	; the interfaces, NUL-ended (IFNAMSIZ)
+	g_plan_xdrop	dd ?		; `drop`: its ranges, in blocks (compile_xdp_drop)
+	align 8
+	g_plan_xdrop_fam dd ?, ?	; of them IPv4, IPv6 (each at most XC_DROP_N)
+	g_plan_xdrop_head dq ?
+	g_plan_xdrop_tail dq ?
+	g_plan_syn_ivl	dq ?		; `syn_rate`: ns between a source's SYNs, 0 none
+	g_plan_syn_tau	dq ?		; and how far ahead it may be (its burst)
 end bss
 
 cstring str_key_encap, 'encap',0
@@ -198,6 +205,146 @@ compile_xvip:
 .too_many:
 	call	log_begin
 	out_lit '`mode xdp`: 64 VIPs at most'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
+
+; rdi = a `drop` line in `okena`: its ranges, as `deny` reads them but no
+; country (a packet has none), onto the plan's drop list: blocks of
+; XD_CAP ranges (TR_*: gw/acl.inc's, read by parse_cidr) in the text arena,
+; so a reload's list is apart from the running one's. The kernel's LPM
+; tries are what looks them up: no trie here (a million ranges are 24 MB).
+XD_NEXT		:= 0		; q: the next block
+XD_N		:= 8		; d: ranges in this one
+XD_E		:= 16		; XD_CAP of TR_SIZE
+XD_CAP		:= 8192
+compile_xdp_drop:
+	push	rbx
+	push	r14
+	push	r15
+	mov	rbx,rdi
+	mov	r8d,[rbx+N_ARGC]
+	mov	r9,[rbx+N_ARGS]
+.arg:
+	test	r8d,r8d
+	jz	.args_ok
+	dec	r8d
+	cmp	dword [r9+A_VLEN],8
+	jb	@f
+	mov	rax,[r9+A_VAL]
+	mov	rax,[rax]
+	mov	rdx,'country:'
+	cmp	rax,rdx
+	je	.country
+@@:
+	add	r9,A_SIZE
+	jmp	.arg
+.args_ok:
+	lea	rax,[xdrop_add]
+	mov	[g_acl_sink],rax
+	call	acl_args
+	mov	qword [g_acl_sink],0
+	pop	r15
+	pop	r14
+	pop	rbx
+	ret
+.country:
+	call	log_begin
+	out_lit '`drop` takes addresses, ranges, file:PATH or a provider; a packet has no country (`deny country:` on a route has it)'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
+
+; rdi/esi = a range (g_acl_sink while `drop` is read): onto the list
+xdrop_add:
+	lea	rdx,[g_tr_tmp]
+	call	parse_cidr
+	jc	plan_bad_acl
+	mov	rax,[g_plan_xdrop_tail]
+	test	rax,rax
+	jz	.block
+	cmp	dword [rax+XD_N],XD_CAP
+	jb	.room
+.block:
+	push	rax
+	lea	rdi,[g_ar_text]
+	mov	esi,XD_E + XD_CAP * TR_SIZE
+	call	arena_alloc
+	pop	rcx
+	mov	qword [rax+XD_NEXT],0
+	mov	dword [rax+XD_N],0
+	test	rcx,rcx
+	jz	.first
+	mov	[rcx+XD_NEXT],rax
+	jmp	.linked
+.first:
+	mov	[g_plan_xdrop_head],rax
+.linked:
+	mov	[g_plan_xdrop_tail],rax
+.room:
+	mov	ecx,[rax+XD_N]
+	inc	dword [rax+XD_N]
+	imul	rcx,rcx,TR_SIZE
+	lea	rdi,[rax+XD_E+rcx]
+	lea	rsi,[g_tr_tmp]
+	mov	ecx,TR_SIZE
+	rep	movsb
+	inc	dword [g_plan_xdrop]
+	xor	eax,eax
+	cmp	dword [g_tr_tmp+TR_KIND],6
+	sete	al
+	inc	dword [g_plan_xdrop_fam+rax*4]
+	cmp	dword [g_plan_xdrop_fam+rax*4],XC_DROP_N
+	ja	.too_many
+	ret
+.too_many:
+	call	log_begin
+	out_lit '`drop`: 1048576 ranges of a family at most (the size of the kernel table)'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
+
+; rdi = `syn_rate N/s [burst=B]` in `okena`: g_plan_syn_ivl, g_plan_syn_tau
+compile_xdp_syn_rate:
+	push	rbx
+	mov	rbx,rdi
+	mov	rax,[rbx+N_ARGS]
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_rate			; rax a period of rdx seconds
+	jc	.bad
+	mov	rcx,rax				; ns between two: period * 1e9 / count
+	imul	rax,rdx,1000000000
+	xor	edx,edx
+	div	rcx
+	test	rax,rax
+	jz	.bad
+	mov	[g_plan_syn_ivl],rax
+	mov	rax,rcx				; burst: the count, unless burst=
+	mov	rdi,rbx
+	push	rax
+	lea	rsi,[str_key_burst]
+	call	node_option
+	test	rax,rax
+	pop	rcx
+	jz	.burst
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_decimal
+	jc	.bad
+	test	rax,rax
+	jz	.bad
+	mov	rcx,rax
+.burst:
+	dec	rcx				; B back to back: B - 1 intervals ahead
+	mov	rax,[g_plan_syn_ivl]
+	mul	rcx
+	mov	[g_plan_syn_tau],rax
+	pop	rbx
+	ret
+.bad:
+	call	log_begin
+	out_lit '`syn_rate` takes a rate (100/s, 6000/m) and burst=N'
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process

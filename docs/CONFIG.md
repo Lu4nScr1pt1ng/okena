@@ -8,7 +8,7 @@ not built yet. A directive that is not built is refused by `okena check`
 
 | Block | Directives |
 |---|---|
-| `okena` | `workers`, `io_engine`, `profile`, `pin_workers auto\|on\|off`, `last_good on\|off`, `reload on-change\|signal`, `busy_poll`, `watchdog`, `drain delay= timeout=`, `metrics [token=]`, `user`, `ticket_keys`, `handshake_budget wait=`, `quic_server_id HEX`, `cache_memory`, `cache_disk PATH size=`, `fleet ADDR...`, `cdn_loop NAME [max=]`, `bird PATH protocol= [pool=]`, `xdp IFACE...` |
+| `okena` | `workers`, `io_engine`, `profile`, `pin_workers auto\|on\|off`, `last_good on\|off`, `reload on-change\|signal`, `busy_poll`, `watchdog`, `drain delay= timeout=`, `metrics [token=]`, `user`, `ticket_keys`, `handshake_budget wait=`, `quic_server_id HEX`, `cache_memory`, `cache_disk PATH size=`, `fleet ADDR...`, `cdn_loop NAME [max=]`, `bird PATH protocol= [pool=]`, `xdp IFACE...`, `drop CIDR... file:PATH`, `syn_rate N/s [burst=]` |
 | `vrrp IFACE` | `vrid=`, `priority=`, `address=A/N`, `advert=`, `preempt=`, `track=POOL` (a floating address, VRRP v3) |
 | `tcp ADDR...` | `to`, `mode xdp [encap=ipip\|gue port=N]`, `mss`, `limits { connections; per_source }`, `timeout { idle }`, `proxy_protocol send v1\|v2`, `tls { cert; key }`, `tls passthrough { sni NAME... to pool P; default reject\|to pool P }` (a `default to pool` alone is enough) |
 | `udp ADDR...` | `to`, `mode xdp [encap=ipip\|gue port=N]`, `responses N`, `limits { connections }` (flows), `timeout { idle }` |
@@ -650,6 +650,29 @@ confines itself; afterwards only `okena-xdp`, a process of its own, changes
 the maps); without them okena says why and serves the rest. `to` is all a
 VIP takes (TLS, limits, timeouts have nothing to act on); the interfaces
 are those at the start (a reload changes VIPs and servers, not interfaces).
+
+The same program filters, before anything else, every packet on the `xdp`
+interfaces, whatever engine it is for (an `http` or `tcp` listener's too):
+
+```
+okena {
+    xdp eth0
+    drop 192.0.2.0/24 2001:db8:bad::/48 file:/etc/okena/drop.txt
+    syn_rate 100/s burst=200
+}
+```
+
+`drop` takes what `deny` on a route takes (addresses, ranges, `file:PATH`
+one a line, a provider's name), not a country: a packet from a source in
+it is dropped in the driver, ICMP included; lists of a million prefixes
+each family. `syn_rate` is how many new TCP connections (SYNs without ACK)
+a source may open, an IPv4 address or an IPv6 /64 (whoever holds one
+address holds the /64), with `burst` back to back (the rate's count unless
+said); the others are dropped before the kernel's SYN cookies and accept
+queue. A reload puts a new list in before the old one is taken out: no
+moment drops neither. Either one sets the program up on the interfaces
+even with no VIP, and with `xdp IFACE` alone it is there, passing all,
+so a reload can add them.
 
 Transport settings, the same in every listener:
 

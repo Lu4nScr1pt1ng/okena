@@ -15,7 +15,7 @@ the connection closed when its framing can no longer be trusted.
 
 | Case | Behaviour |
 |---|---|
-| SYN flood | kernel SYN cookies; optional XDP per-source SYN rate; accept queue sized by `somaxconn` |
+| SYN flood | `syn_rate` (XDP, a source: an IPv4 address, an IPv6 /64), then kernel SYN cookies; accept queue sized by `somaxconn`; `drop` lists in XDP |
 | Connection that never sends a byte | `TCP_DEFER_ACCEPT` for HTTP; handshake deadline |
 | Slowloris (headers a byte at a time) | header progress and total deadlines; linear-time resumable parsing |
 | Slow read (client never reads the response) | write progress deadline (`body_idle`: no byte taken, or no HTTP/2 or 3 window, for that long closes it, or its stream, and the backend's connection); backpressure to the upstream stream, not buffering |

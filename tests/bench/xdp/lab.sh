@@ -15,6 +15,8 @@
 #
 #   MODE=est   FLOWS UDP flows over and over (in the flow table)
 #   MODE=new   source address and port drawn for each packet (all new)
+#   okena-drop: the pre-filter, every source in `drop 10.9.0.0/16`: packets
+#   dropped a second, its core
 set -uo pipefail
 GENS=${GENS:-2 10 3} LB_CPU=${LB_CPU:-4} PEER_CPU=${PEER_CPU:-6}
 SECS=${SECS:-5} FLOWS=${FLOWS:-1024} MODE=${MODE:-est}
@@ -62,7 +64,8 @@ pktgen() {
 			n=\$((n + 1))
 		done"
 }
-xdp_tx() { ip netns exec lb ethtool -S xl0 | awk '$1 == "rx_queue_0_xdp_tx:" { print $2 }'; }
+STAT=rx_queue_0_xdp_tx	# what a balancer's packets are counted by (okena-drop: its drops)
+xdp_tx() { ip netns exec lb ethtool -S xl0 | awk -v k="$STAT:" '$1 == k { print $2 }'; }
 busy() { awk -v c=cpu$LB_CPU '$1 == c { print $2 + $3 + $4 + $7 + $8, $2 + $3 + $4 + $5 + $6 + $7 + $8 }' /proc/stat; }
 run() {		# label
 	napi lb xl0 $LB_CPU
@@ -92,9 +95,10 @@ for w in $WHO; do
 	base)
 		ip netns exec lb $B/kload attach $B/base.bpf.o xdp_tx xl0 >/dev/null || exit 1
 		run base ;;
-	okena)
+	okena|okena-drop)
+		drop=""; [ $w = okena-drop ] && drop="; drop 10.9.0.0/16" && STAT=rx_queue_0_xdp_drops
 		cat > /tmp/lb.conf <<EOF
-okena { workers 1; xdp xl0 }
+okena { workers 1; xdp xl0 $drop }
 pool p { server 10.9.0.21:53; server 10.9.0.22:53; server 10.9.0.23:53 }
 udp 10.9.0.100:53 { mode xdp; to pool p }
 EOF
@@ -102,7 +106,8 @@ EOF
 		ok=$!
 		for i in $(seq 50); do grep -q 'balanced in the driver' /tmp/lb.log && break; sleep 0.1; done
 		grep -q 'balanced in the driver' /tmp/lb.log || { cat /tmp/lb.log; exit 1; }
-		run okena
+		run $w
+		STAT=rx_queue_0_xdp_tx
 		kill $ok; wait $ok 2>/dev/null ;;
 	katran|katran-noflood)
 		o=$B/balancer.bpf.o; [ $w = katran-noflood ] && o=$B/balancer-noflood.bpf.o

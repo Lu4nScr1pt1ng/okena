@@ -398,6 +398,12 @@ plan_compile:
 	mov	dword [g_plan_tryc],0
 	mov	dword [g_plan_nxvip],0		; (xdpvip.inc)
 	mov	dword [g_plan_nxif],0
+	mov	dword [g_plan_xdrop],0
+	mov	qword [g_plan_xdrop_fam],0
+	mov	qword [g_plan_xdrop_head],0
+	mov	qword [g_plan_xdrop_tail],0
+	mov	qword [g_plan_syn_ivl],0
+	mov	qword [g_plan_syn_tau],0
 	mov	qword [g_plan_hs_budget],DEFAULT_HS_BUDGET_US
 	mov	qword [g_plan_hs_wait],DEFAULT_HS_WAIT_US
 	call	profile_scan			; (before the pools: their defaults follow it)
@@ -719,6 +725,12 @@ compile_settings:
 	lea	rcx,[dir_table + D_SIZE*DIR_XDP]
 	cmp	rax,rcx
 	je	.xdp
+	lea	rcx,[dir_table + D_SIZE*DIR_XDROP]
+	cmp	rax,rcx
+	je	.xdrop
+	lea	rcx,[dir_table + D_SIZE*DIR_SYN_RATE]
+	cmp	rax,rcx
+	je	.syn_rate
 	lea	rcx,[dir_table + D_SIZE*DIR_METRICS]
 	cmp	rax,rcx
 	je	.metrics
@@ -811,6 +823,14 @@ compile_settings:
 .xdp:
 	mov	rdi,rbx
 	call	compile_xdp_ifaces
+	jmp	.advance
+.xdrop:
+	mov	rdi,rbx
+	call	compile_xdp_drop
+	jmp	.advance
+.syn_rate:
+	mov	rdi,rbx
+	call	compile_xdp_syn_rate
 	jmp	.advance
 .busy_poll:
 	mov	rdi,rbx

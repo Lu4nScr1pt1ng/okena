@@ -867,6 +867,7 @@ pre-filter, wait for this.
   ICMP (echo, errors carried to the flow's real, too big answered), the
   next hop kept per CPU, a bound on new flows remembered.
 * XDP pre-filter for the other engines: drop lists, per-source SYN rate.
+  Done 2026-11-12 (`drop`, `syn_rate`; tests/xdp/filter.sh).
 * zcrx zero-copy receive on supported NICs; NIC TLS offload.
 
 Exit: packets/s per core comparable to Katran. Measured 2026-11-12

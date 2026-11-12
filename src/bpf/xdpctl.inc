@@ -17,6 +17,9 @@
 
 XC_TICK_MS	:= 100
 XC_LRU_N	:= 1 shl 20		; flows remembered
+XC_DROP_N	:= 1 shl 20		; `drop` prefixes, each family
+XC_SYNS_N	:= 1 shl 20		; sources `syn_rate` follows
+XC_STALE_N	:= 65536		; drop list keys gone, deleted a pass at a time
 
 bss
 	align 8
@@ -38,6 +41,11 @@ bss
 	g_xc_vk:	rb 24		; VIP keys (8 bytes IPv4, 20 IPv6)
 	g_xc_vk2:	rb 24
 	g_xc_inet6:	rb 16384	; /proc/net/if_inet6
+	align 8
+	g_xc_lkey:	rb 24
+	g_xc_lkey2:	rb 24
+	g_xc_gen	dd ?
+	g_xc_stale	dq ?		; XC_STALE_N keys of 24 bytes
 end bss
 
 rodata
@@ -48,12 +56,18 @@ end rodata
 
 ; Supervisor, before seccomp_supervisor
 xdp_setup:
-	cmp	dword [g_plan_nxvip],0
-	je	.none
+	cmp	dword [g_plan_nxif],0		; on the `xdp` interfaces, whatever is
+	jne	@f				; asked yet (a reload may bring VIPs, `drop`)
+	mov	eax,[g_plan_nxvip]
+	or	eax,[g_plan_xdrop]
+	or	rax,[g_plan_syn_ivl]
+	jz	.none
 	push	rbx
 	push	r12
-	cmp	dword [g_plan_nxif],0
-	je	.no_iface
+	jmp	.no_iface
+@@:
+	push	rbx
+	push	r12
 	call	eb_ncpu
 	irp <num,type,ks,vs,n,fl>, XL_VIPS4,BPF_MAP_TYPE_HASH,8,XVV_L,XVIP_MAX,0, \
 		XL_RING,BPF_MAP_TYPE_ARRAY,4,4,XVIP_MAX*MAGLEV_M,0, \
@@ -63,7 +77,10 @@ xdp_setup:
 		XL_CTL,BPF_MAP_TYPE_ARRAY,4,CTL_L,CTL_N,0, \
 		XL_NH,BPF_MAP_TYPE_PERCPU_ARRAY,4,NH_L,XL_NH_N,0, \
 		XL_VIPS6,BPF_MAP_TYPE_HASH,20,XVV_L,XVIP_MAX,0, \
-		XL_LRU6,BPF_MAP_TYPE_LRU_HASH,40,4,XC_LRU_N,BPF_F_NO_COMMON_LRU
+		XL_LRU6,BPF_MAP_TYPE_LRU_HASH,40,4,XC_LRU_N,BPF_F_NO_COMMON_LRU, \
+		XL_DROP4,BPF_MAP_TYPE_LPM_TRIE,8,4,XC_DROP_N,BPF_F_NO_PREALLOC, \
+		XL_DROP6,BPF_MAP_TYPE_LPM_TRIE,20,4,XC_DROP_N,BPF_F_NO_PREALLOC, \
+		XL_SYNS,BPF_MAP_TYPE_LRU_HASH,8,8,XC_SYNS_N,0
 		mov	edi,type
 		mov	esi,ks
 		mov	edx,vs
@@ -190,11 +207,19 @@ xdp_setup:
 	mov	eax,[g_plan_nxvip]
 	call	out_u64
 	out_lit ' VIPs balanced in the driver'
+	cmp	dword [g_plan_xdrop],0
+	je	@f
+	out_lit '; `drop` before anything'
+@@:
+	cmp	qword [g_plan_syn_ivl],0
+	je	@f
+	out_lit '; SYNs a source at most `syn_rate`'
+@@:
 	call	log_end
 	jmp	.out
 .no_iface:
 	call	log_begin
-	out_lit '`mode xdp` needs the interfaces it goes on: okena { xdp IFACE }'
+	out_lit '`mode xdp`, `drop` and `syn_rate` need the interfaces they go on: okena { xdp IFACE }'
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process
@@ -582,6 +607,17 @@ xdpctl_main:
 	mov	[g_xc_keys],rax
 	add	rax,MAGLEV_M * 4
 	mov	[g_xc_vals],rax
+	xor	edi,edi				; the drop lists' keys gone, a pass's
+	mov	esi,XC_STALE_N * 24
+	mov	edx,PROT_READ or PROT_WRITE
+	mov	r10d,MAP_PRIVATE or MAP_ANONYMOUS
+	mov	r8,-1
+	xor	r9d,r9d
+	mov	eax,SYS_mmap
+	syscall
+	cmp	rax,-4096
+	ja	.fatal
+	mov	[g_xc_stale],rax
 	call	groups_refresh			; (names to addresses, as workers do)
 	xor	ebx,ebx
 .table:
@@ -616,6 +652,7 @@ xdpctl_main:
 	call	ll_confine_none			; (Landlock: no file at all)
 	seccomp_for filter_xdpctl
 	call	xc_vips
+	call	xc_filters
 	mov	qword [g_xc_sig],-1
 .loop:
 	call	xc_tick
@@ -786,6 +823,196 @@ xc_vip_planned:
 	rep	movsb
 	popf
 	add	rsp,32
+	pop	rbx
+	ret
+
+; The pre-filter, as the plan has it: `drop`'s ranges into DROP4 / DROP6
+; with a new generation, then CTL_FILTER and CTL_SYN, then the prefixes of
+; the generation before taken out (a reload never leaves a moment with a
+; source let through that both lists drop)
+xc_filters:
+	push	rbx
+	push	r12
+	; the generation: the last one's, plus one
+	mov	dword [g_xc_k],CTL_GEN
+	mov	edi,[g_eb_mapfd+XL_CTL*4]
+	lea	rsi,[g_xc_k]
+	lea	rdx,[g_xc_val]
+	call	eb_map_lookup
+	mov	eax,[g_xc_val]
+	inc	eax
+	mov	[g_xc_gen],eax
+	xor	r12d,r12d			; FF_*
+	mov	rbx,[g_plan_xdrop_head]
+.block:
+	test	rbx,rbx
+	jz	.lists
+	xor	ecx,ecx
+.range:
+	cmp	ecx,[rbx+XD_N]
+	jae	.next_block
+	push	rcx
+	imul	rsi,rcx,TR_SIZE
+	lea	rsi,[rbx+XD_E+rsi]
+	call	xc_drop_put			; (eax = FF_DROP4 / FF_DROP6, 0 failed)
+	or	r12d,eax
+	pop	rcx
+	inc	ecx
+	jmp	.range
+.next_block:
+	mov	rbx,[rbx+XD_NEXT]
+	jmp	.block
+.lists:
+	mov	rax,[g_plan_syn_ivl]
+	test	rax,rax
+	jz	.flags
+	or	r12d,FF_SYN
+	call	xc_val_clear
+	mov	rax,[g_plan_syn_ivl]
+	mov	qword [g_xc_val],rax
+	mov	rax,[g_plan_syn_tau]
+	mov	qword [g_xc_val+8],rax
+	mov	dword [g_xc_k],CTL_SYN
+	call	xdp_ctl_put
+.flags:
+	call	xc_val_clear
+	mov	[g_xc_val],r12d
+	mov	dword [g_xc_k],CTL_FILTER
+	call	xdp_ctl_put
+	call	xc_val_clear
+	mov	eax,[g_xc_gen]
+	mov	[g_xc_val],eax
+	mov	dword [g_xc_k],CTL_GEN
+	call	xdp_ctl_put
+	mov	r8d,XL_DROP4
+	call	xc_prune
+	mov	r8d,XL_DROP6
+	call	xc_prune
+	pop	r12
+	pop	rbx
+	ret
+
+xc_val_clear:
+	mov	qword [g_xc_val],0
+	mov	qword [g_xc_val+8],0
+	mov	qword [g_xc_val+16],0
+	ret
+
+; rsi = a range (TR_*): into DROP4 / DROP6 as {prefix length, the address,
+; its bits past the prefix 0}, with g_xc_gen. eax = its FF_DROP*, 0 failed.
+xc_drop_put:
+	push	rbx
+	mov	ebx,[rsi+TR_BITS]
+	mov	[g_xc_lkey],ebx
+	xor	ecx,ecx
+.byte:
+	mov	al,[rsi+TR_IP+rcx]
+	mov	edx,ecx
+	shl	edx,3
+	mov	r8d,ebx
+	sub	r8d,edx				; its bits in this byte
+	jle	.zero
+	cmp	r8d,8
+	jae	.whole
+	push	rcx
+	mov	ecx,8
+	sub	ecx,r8d
+	mov	dl,0xFF
+	shl	dl,cl
+	pop	rcx
+	and	al,dl
+	jmp	.whole
+.zero:
+	xor	eax,eax
+.whole:
+	mov	[g_xc_lkey+4+rcx],al
+	inc	ecx
+	cmp	ecx,16
+	jb	.byte
+	mov	ebx,FF_DROP4
+	mov	edi,[g_eb_mapfd+XL_DROP4*4]
+	cmp	dword [rsi+TR_KIND],6
+	jne	@f
+	mov	ebx,FF_DROP6
+	mov	edi,[g_eb_mapfd+XL_DROP6*4]
+@@:
+	push	rdi
+	call	xc_val_clear
+	pop	rdi
+	mov	eax,[g_xc_gen]
+	mov	[g_xc_val],eax
+	lea	rsi,[g_xc_lkey]
+	lea	rdx,[g_xc_val]
+	xor	ecx,ecx
+	call	eb_map_update
+	test	eax,eax
+	mov	eax,ebx
+	jns	@f
+	xor	eax,eax
+@@:
+	pop	rbx
+	ret
+
+; r8d = an LPM map: its keys of another generation than g_xc_gen out
+xc_prune:
+	push	rbx
+	push	r12
+	push	r13
+	mov	r13d,r8d
+.pass:
+	xor	ebx,ebx				; keys gone in this pass
+	xor	r12d,r12d			; 0: from the first key
+.next:
+	mov	edi,[g_eb_mapfd+r13*4]
+	lea	rsi,[g_xc_lkey]
+	lea	rdx,[g_xc_lkey2]
+	test	r12d,r12d
+	jnz	@f
+	xor	esi,esi
+@@:
+	call	xc_next_key
+	test	eax,eax
+	jnz	.delete
+	mov	r12d,1
+	mov	rax,qword [g_xc_lkey2]
+	mov	qword [g_xc_lkey],rax
+	mov	rax,qword [g_xc_lkey2+8]
+	mov	qword [g_xc_lkey+8],rax
+	mov	rax,qword [g_xc_lkey2+16]
+	mov	qword [g_xc_lkey+16],rax
+	mov	edi,[g_eb_mapfd+r13*4]
+	lea	rsi,[g_xc_lkey]
+	lea	rdx,[g_xc_val]
+	call	eb_map_lookup
+	test	eax,eax
+	js	.next
+	mov	eax,[g_xc_val]
+	cmp	eax,[g_xc_gen]
+	je	.next
+	imul	rdi,rbx,24			; (deleted after the walk: an LPM
+	add	rdi,[g_xc_stale]		; trie's walk starts over from a key
+	lea	rsi,[g_xc_lkey]			; that is gone)
+	mov	ecx,24
+	rep	movsb
+	inc	ebx
+	cmp	ebx,XC_STALE_N
+	jb	.next
+.delete:
+	xor	r12d,r12d
+.del:
+	cmp	r12d,ebx
+	jae	.deleted
+	imul	rsi,r12,24
+	add	rsi,[g_xc_stale]
+	mov	edi,[g_eb_mapfd+r13*4]
+	call	xc_delete
+	inc	r12d
+	jmp	.del
+.deleted:
+	cmp	ebx,XC_STALE_N			; a full pass: more may be left
+	je	.pass
+	pop	r13
+	pop	r12
 	pop	rbx
 	ret
 

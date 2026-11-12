@@ -31,6 +31,13 @@
 ; (the route's MTU, kept with the next hop) is answered with ICMP: IPv4's
 ; fragmentation needed, IPv6's packet too big, giving the MTU left.
 ;
+; The pre-filter, for every packet on the interface (okena's other engines'
+; listeners too), before anything else: a source in DROP4 / DROP6 (`drop`,
+; longest prefix) is dropped; TCP SYNs over `syn_rate` from one source (an
+; IPv4 address, an IPv6 /64) are dropped, by GCRA (SYNS: the theoretical
+; arrival time, one u64 a source, shared by the CPUs: a race between two
+; may let one more through, never fewer).
+;
 ; A flood of new flows (more than CTL[CTL_FLOOD] in a time step on one CPU)
 ; is routed by the ring alone, not remembered: the flows LRU holds are not
 ; pushed out by it, and the flood is cheaper (as Katran does).
@@ -45,11 +52,21 @@ XL_CTL		:= 5		; array of 16 bytes: CTL_*
 XL_NH		:= 6		; per-CPU array: real number mod XL_NH_N -> the next hop (NH_*)
 XL_VIPS6	:= 7		; hash: {address (16), port, protocol, 0} (20 bytes) -> XVV_*
 XL_LRU6		:= 8		; LRU hash: flow (40 bytes) -> u32 real number
+XL_DROP4	:= 9		; LPM trie: {prefix length, address (4)} -> u32 generation
+XL_DROP6	:= 10		; LPM trie: {prefix length, address (16)} -> u32 generation
+XL_SYNS		:= 11		; LRU hash: source (8 bytes) -> u64 its theoretical arrival time
 XL_NH_N		:= 1024
 CTL_SRC4	:= 0		; the outer IPv4 header's source (0: none)
 CTL_FLOOD	:= 1		; u32 new flows remembered a time step, each CPU (0: all)
 CTL_SRC6	:= 2		; the outer IPv6 header's source (:: none)
-CTL_N		:= 3
+CTL_FILTER	:= 3		; u32 FF_*: what the pre-filter does
+CTL_SYN		:= 4		; u64 ns between SYNs of a source, u64 how far ahead (burst)
+CTL_GEN		:= 5		; u32 the drop lists' generation (okena-xdp's; the program
+				; ignores it)
+CTL_N		:= 6
+FF_DROP4	:= 1
+FF_DROP6	:= 2
+FF_SYN		:= 4
 CTL_L		:= 16
 XL_FLOOD_N	:= 125000	; (Katran's MAX_CONN_RATE)
 ; a VIP (VIPS4 / VIPS6's value)
@@ -68,7 +85,9 @@ XS_FLOOD	:= 3		; new flows past CTL_FLOOD: routed, not remembered
 XS_WINDOW	:= 4		; (not a count: the time step, high half; its new flows, low)
 XS_ICMP		:= 5		; echo requests answered, errors carried to a real
 XS_TOOBIG	:= 6		; too big for the outer header: ICMP sent back
-XS_N		:= 7
+XS_FILTERED	:= 7		; from a source `drop` names: dropped
+XS_SYN		:= 8		; SYNs over `syn_rate`: dropped
+XS_N		:= 9
 ; a next hop (NH's value)
 NH_DMAC		:= 0
 NH_SMAC		:= 6
@@ -81,6 +100,12 @@ NH_MTU		:= 44		; the route's MTU (0: not known)
 NH_L		:= 48
 
 ; the frame (offsets from BR10)
+XF_TAU		:= -312		; u64: CTL_SYN's burst
+XF_IVL		:= -304		; u64: CTL_SYN's interval
+XF_NOW		:= -296		; u64: now (ns)
+XF_SVAL		:= -288		; u64: a SYNS value
+XF_SKEY		:= -280		; 8 bytes: a SYNS key
+XF_LPM		:= -272		; 20 bytes: a DROP key
 XF_ICMP		:= -248		; u32: 1 for an ICMP error carried to its flow's real
 XF_MTU		:= -244		; u32: the route's MTU, then what is left of it
 XF_SRC6		:= -240		; 16 bytes: the outer IPv6 source
@@ -322,6 +347,49 @@ macro xl_sum at*, n*
 	e_add	BR1, BR2
 end macro
 
+; a SYN from the source at XF_SKEY: on to .synd when over `syn_rate`;
+; clobbers BR0-BR5
+macro xl_syn_rate
+	local fresh, ok, later
+	e_call	BPF_FUNC_ktime_get_ns
+	e_stx64	BR10, XF_NOW, BR0
+	e_st32	BR10, XF_KEY, CTL_SYN
+	xl_lookup XL_CTL, XF_KEY
+	e_jeqi	BR0, 0, ok
+	e_ldx64	BR1, BR0, 0
+	e_stx64	BR10, XF_IVL, BR1
+	e_ldx64	BR1, BR0, 8
+	e_stx64	BR10, XF_TAU, BR1
+	xl_lookup XL_SYNS, XF_SKEY
+	e_jeqi	BR0, 0, fresh
+	e_ldx64	BR1, BR0, 0			; its theoretical arrival time
+	e_ldx64	BR2, BR10, XF_NOW
+	e_ldx64	BR3, BR10, XF_TAU
+	e_mov	BR4, BR2			; too early: now + burst before it
+	e_add	BR4, BR3
+	e_jlt	BR4, BR1, .synd
+	e_jge	BR1, BR2, later			; the next: one interval after it, or now
+	e_mov	BR1, BR2
+later:
+	e_ldx64	BR4, BR10, XF_IVL
+	e_add	BR1, BR4
+	e_stx64	BR0, 0, BR1
+	e_ja	ok
+fresh:
+	e_ldx64	BR1, BR10, XF_NOW
+	e_ldx64	BR2, BR10, XF_IVL
+	e_add	BR1, BR2
+	e_stx64	BR10, XF_SVAL, BR1
+	e_ldmap	BR1, XL_SYNS
+	e_mov	BR2, BR10
+	e_addi	BR2, XF_SKEY
+	e_mov	BR3, BR10
+	e_addi	BR3, XF_SVAL
+	e_movi	BR4, 0
+	e_call	BPF_FUNC_map_update_elem
+ok:
+end macro
+
 rodata
 	align 8
 xl_prog:
@@ -336,7 +404,26 @@ xl_prog:
 	e_jeqi	BR1, 0xDD86, .v6		; (0x86DD)
 	e_ja	.pass
 .v4:
-	e_mov	BR1, BR7			; IPv4, the ports
+	e_mov	BR1, BR7			; IPv4
+	e_addi	BR1, ETH_L + IP_L
+	e_jgt	BR1, BR8, .pass
+	; the pre-filter: what it does (BR9 holds it), the source's prefix
+	e_st32	BR10, XF_KEY, CTL_FILTER
+	xl_lookup XL_CTL, XF_KEY
+	e_movi	BR9, 0
+	e_jeqi	BR0, 0, @f
+	e_ldx32	BR9, BR0, 0
+@@:
+	e_mov	BR1, BR9
+	e_andi	BR1, FF_DROP4
+	e_jeqi	BR1, 0, .v4_kept
+	e_st32	BR10, XF_LPM, 32
+	e_ldx32	BR1, BR7, ETH_L + 12
+	e_stx32	BR10, XF_LPM + 4, BR1
+	xl_lookup XL_DROP4, XF_LPM
+	e_jnei	BR0, 0, .filtered
+.v4_kept:
+	e_mov	BR1, BR7			; the ports
 	e_addi	BR1, ETH_L + IP_L + 4
 	e_jgt	BR1, BR8, .pass
 	e_ldx8	BR1, BR7, ETH_L
@@ -346,9 +433,25 @@ xl_prog:
 	e_jnei	BR1, 0, .pass
 	e_st32	BR10, XF_ICMP, 0
 	e_ldx8	BR2, BR7, ETH_L + 9		; the protocol
-	e_jeqi	BR2, 6, .l4
+	e_jeqi	BR2, 6, .tcp4
 	e_jeqi	BR2, 1, .icmp4
 	e_jnei	BR2, 17, .pass
+	e_ja	.l4
+.tcp4:	; a SYN (no ACK), over the source's rate?
+	e_mov	BR1, BR9
+	e_andi	BR1, FF_SYN
+	e_jeqi	BR1, 0, .l4
+	e_mov	BR1, BR7
+	e_addi	BR1, ETH_L + IP_L + 14
+	e_jgt	BR1, BR8, .l4
+	e_ldx8	BR1, BR7, ETH_L + IP_L + 13
+	e_andi	BR1, 0x12
+	e_jnei	BR1, 0x02, .l4
+	e_ldx32	BR1, BR7, ETH_L + 12		; the key: the address
+	e_stx32	BR10, XF_SKEY, BR1
+	e_st32	BR10, XF_SKEY + 4, -1
+	xl_syn_rate
+	e_movi	BR2, 6
 .l4:
 	e_ldx32	BR1, BR7, ETH_L + 16		; the VIP's key
 	e_stx32	BR10, XF_VIP, BR1
@@ -455,14 +558,51 @@ xl_prog:
 	e_movi	BR0, XDP_TX
 	e_exit
 .v6:
-	e_mov	BR1, BR7			; IPv6, the ports
+	e_mov	BR1, BR7			; IPv6
+	e_addi	BR1, ETH_L + IP6_L
+	e_jgt	BR1, BR8, .pass
+	e_st32	BR10, XF_KEY, CTL_FILTER	; the pre-filter
+	xl_lookup XL_CTL, XF_KEY
+	e_movi	BR9, 0
+	e_jeqi	BR0, 0, @f
+	e_ldx32	BR9, BR0, 0
+@@:
+	e_mov	BR1, BR9
+	e_andi	BR1, FF_DROP6
+	e_jeqi	BR1, 0, .v6_kept
+	e_st32	BR10, XF_LPM, 128
+	repeat 4, q:0
+		e_ldx32	BR1, BR7, ETH_L + 8 + q * 4
+		e_stx32	BR10, XF_LPM + 4 + q * 4, BR1
+	end repeat
+	xl_lookup XL_DROP6, XF_LPM
+	e_jnei	BR0, 0, .filtered
+.v6_kept:
+	e_mov	BR1, BR7			; the ports
 	e_addi	BR1, ETH_L + IP6_L + 4
 	e_jgt	BR1, BR8, .pass
 	e_st32	BR10, XF_ICMP, 0
 	e_ldx8	BR2, BR7, ETH_L + 6		; the next header: TCP, UDP, ICMPv6
-	e_jeqi	BR2, 6, .l4v6			; (any extension header passes)
+	e_jeqi	BR2, 6, .tcp6			; (any extension header passes)
 	e_jeqi	BR2, 58, .icmp6
 	e_jnei	BR2, 17, .pass
+	e_ja	.l4v6
+.tcp6:	; a SYN (no ACK), over the source's /64's rate?
+	e_mov	BR1, BR9
+	e_andi	BR1, FF_SYN
+	e_jeqi	BR1, 0, .l4v6
+	e_mov	BR1, BR7
+	e_addi	BR1, ETH_L + IP6_L + 14
+	e_jgt	BR1, BR8, .l4v6
+	e_ldx8	BR1, BR7, ETH_L + IP6_L + 13
+	e_andi	BR1, 0x12
+	e_jnei	BR1, 0x02, .l4v6
+	e_ldx32	BR1, BR7, ETH_L + 8		; the key: the /64
+	e_stx32	BR10, XF_SKEY, BR1
+	e_ldx32	BR1, BR7, ETH_L + 12
+	e_stx32	BR10, XF_SKEY + 4, BR1
+	xl_syn_rate
+	e_movi	BR2, 6
 .l4v6:
 	repeat 4, q:0				; the VIP's key
 		e_ldx32	BR1, BR7, ETH_L + 24 + q * 4
@@ -903,6 +1043,14 @@ xl_prog:
 	e_stx16	BR7, ETH_L + IP6_L + 2, BR1
 	xl_count XS_TOOBIG
 	e_movi	BR0, XDP_TX
+	e_exit
+.filtered:
+	xl_count XS_FILTERED
+	e_movi	BR0, XDP_DROP
+	e_exit
+.synd:
+	xl_count XS_SYN
+	e_movi	BR0, XDP_DROP
 	e_exit
 .drop:
 	xl_count XS_DROP

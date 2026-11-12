@@ -160,6 +160,16 @@ macro plan_regions action
 	action g_geo_v4, 4
 	action g_acls, ACL_SIZE * MAX_ACLS, g_plan_acls, ACL_SIZE
 	action g_plan_acls, 4
+	action g_plan_xvips, XV_SIZE * XVIP_MAX, g_plan_nxvip, XV_SIZE	; (xdpvip.inc)
+	action g_plan_nxvip, 4
+	action g_plan_xif, XIF_MAX * 16
+	action g_plan_nxif, 4
+	action g_plan_xdrop, 4
+	action g_plan_xdrop_fam, 8
+	action g_plan_xdrop_head, 8
+	action g_plan_xdrop_tail, 8
+	action g_plan_syn_ivl, 8
+	action g_plan_syn_tau, 8
 	action g_idems, IC_SIZE * MAX_IDEMS, g_plan_idems, IC_SIZE
 	action g_plan_idems, 4
 	action g_plan_zip, 4
