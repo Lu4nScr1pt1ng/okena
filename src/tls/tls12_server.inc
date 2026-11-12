@@ -464,7 +464,13 @@ tls12_offers:
 	lea	rax,[rsi+2]
 	cmp	rax,r14
 	ja	.bad
-	; cipher_suites: the first of ours, in the client's order
+	; cipher_suites: AES-128-GCM, then ChaCha20-Poly1305, then AES-256-GCM, of
+	; what it offers; but ChaCha20 when it is the client's first (a client
+	; without AES in hardware says so), as BoringSSL and OpenSSL's
+	; PrioritizeChaCha do. In the client's order every OpenSSL client took
+	; AES-256 (14 rounds to AES-128's 10: 16% of the keep-alive throughput),
+	; where TLS 1.3 here prefers AES-128 already.
+	xor	r11d,r11d			; offered: a bit for each of ours
 	movzx	ecx,word [rsi]
 	xchg	cl,ch
 	add	rsi,2
@@ -485,8 +491,6 @@ tls12_offers:
 	mov	dword [rbp+T2_RENEG],1
 	jmp	.suite
 @@:
-	cmp	r9d,-1
-	jne	.suite
 	imul	edx,r10d,T12_SUITES * 2		; the suites for the certificate's key
 	xor	ecx,ecx
 .suite_try:
@@ -497,11 +501,18 @@ tls12_offers:
 	jb	.suite_try
 	jmp	.suite
 .suite_ours:
-	mov	r9d,ecx				; (T12_*: the table's order)
+	bts	r11d,ecx
+	cmp	r9d,-1
+	jne	.suite
+	mov	r9d,ecx				; the client's first of ours (T12_*: the table's order)
 	jmp	.suite
 .suites_done:
 	cmp	r9d,-1
 	je	.bad
+	cmp	r9d,T12_CHACHA
+	je	.suite_set			; its first: ChaCha20
+	bsf	r9d,r11d			; else ours: the lowest of the table offered
+.suite_set:
 	mov	[rbp+T2_SUITE],r9d
 	mov	rsi,r8
 	cmp	rsi,r14				; compression_methods

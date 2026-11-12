@@ -11,6 +11,13 @@
 # Output: markdown rows for docs/BENCHMARK.md.
 #
 #   tests/bench/http.sh             (needs docker, the three images, wrk)
+#   TLS=1.3 tests/bench/http.sh     HTTPS: every proxy terminates TLS 1.3 (or
+#                                   TLS=1.2), one ECDSA P-256 certificate, ALPN
+#                                   http/1.1, each with its defaults (session
+#                                   tickets and all); the backend stays plain.
+#                                   Adds handshakes a second (a new connection
+#                                   each request), and latency comes from oha
+#                                   (its client speaks 1.2, okena bench's not).
 #
 # Every one of them in a container (host network, the same --cpuset-cpus):
 # okena from this tree's image (docker build, `okena:bench`), with the seccomp
@@ -35,6 +42,9 @@ DUR=${DUR:-10s}
 CONNS=${CONNS:-256}
 RATES=${RATES:-}
 REPEAT=${REPEAT:-3}		# each latency point this many times: the median of each percentile
+TLS=${TLS:-}			# 1.3 or 1.2: HTTPS
+SCHEME=http
+[ -n "$TLS" ] && SCHEME=https
 ONLY=${ONLY:-okena envoy haproxy nginx}
 B=28600 OK=28601 EN=28602 HA=28603 NG=28604
 W=$(mktemp -d)
@@ -51,10 +61,35 @@ http {
 	server { listen 127.0.0.1:$B reuseport backlog=65535; location / { return 200 "ok"; } }
 }
 EOF
+OKTLS= ENTLS= HATLS= NGTLS=
+if [ -n "$TLS" ]; then
+	openssl ecparam -genkey -name prime256v1 -noout -out "$W/key.pem" 2>/dev/null
+	openssl req -new -x509 -key "$W/key.pem" -subj /CN=localhost -addext subjectAltName=DNS:localhost \
+		-days 2 -out "$W/cert.pem" 2>/dev/null
+	cat "$W/cert.pem" "$W/key.pem" > "$W/combined.pem"
+	V=${TLS/./_}				# 1_3
+	OKTLS="tls { cert /w/cert.pem; key /w/key.pem; versions $TLS }"
+	HATLS="ssl crt /w/combined.pem ssl-min-ver TLSv$TLS ssl-max-ver TLSv$TLS alpn http/1.1"
+	NGTLS="ssl; ssl_certificate /w/cert.pem; ssl_certificate_key /w/key.pem; ssl_protocols TLSv$TLS"
+	ENTLS="
+      transport_socket:
+        name: envoy.transport_sockets.tls
+        typed_config:
+          \"@type\": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+          common_tls_context:
+            alpn_protocols: [http/1.1]
+            tls_params: { tls_minimum_protocol_version: TLSv$V, tls_maximum_protocol_version: TLSv$V }
+            tls_certificates:
+            - certificate_chain: { filename: /w/cert.pem }
+              private_key: { filename: /w/key.pem }"
+fi
 cat > "$W/okena.conf" <<EOF
 okena { workers $NPROXY; io_engine $ENGINE }
 pool b { server 127.0.0.1:$B }
-http 127.0.0.1:$OK { route /* { to pool b } }
+http 127.0.0.1:$OK {
+	$OKTLS
+	route /* { to pool b }
+}
 EOF
 cat > "$W/envoy.yaml" <<EOF
 static_resources:
@@ -79,7 +114,7 @@ static_resources:
           - name: envoy.filters.http.router
             typed_config:
               "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
-              dynamic_stats: false
+              dynamic_stats: false$ENTLS
   clusters:
   - name: b
     type: STATIC
@@ -104,7 +139,7 @@ defaults
 	timeout server 30s
 	http-reuse always
 frontend f
-	bind 127.0.0.1:$HA
+	bind 127.0.0.1:$HA $HATLS
 	default_backend b
 backend b
 	server s 127.0.0.1:$B
@@ -117,7 +152,8 @@ http {
 	keepalive_requests 1000000;
 	upstream b { server 127.0.0.1:$B; keepalive 1024; keepalive_requests 1000000; }
 	server {
-		listen 127.0.0.1:$NG reuseport backlog=65535;
+		listen 127.0.0.1:$NG reuseport backlog=65535 ${NGTLS%%;*};
+		${NGTLS#*;}${NGTLS:+;}
 		location / { proxy_pass http://b; proxy_http_version 1.1; proxy_set_header Connection ""; }
 	}
 }
@@ -129,12 +165,44 @@ docker run -d --rm --name okh-back --network host --cpuset-cpus "$BACK_CPUS" \
 sleep 1
 
 # max PORT: requests a second, closed loop (wrk)
-max() {
-	taskset -c "$LOAD_CPUS" wrk -t8 -c"$CONNS" -d"$DUR" "http://127.0.0.1:$1/" 2>&1 |
+max() {	# PORT [SCHEME]
+	taskset -c "$LOAD_CPUS" wrk -t8 -c"$CONNS" -d"$DUR" "${2:-$SCHEME}://127.0.0.1:$1/" 2>&1 |
 		awk '/Requests\/sec/ { printf "%d", $2 }'
 }
+# hs PORT NAME: "full handshakes a second, and per second of the proxy's CPU".
+# openssl s_time -new, two processes on each load core: a new connection each
+# time and never a resumption (wrk resumes nearly every one: its "handshakes"
+# are abbreviated ones). The first number is a floor where the clients are the
+# limit (okena's is, at about 14k here); the second, from the container's
+# cgroup (cpu.stat), is what a handshake costs the proxy, whoever is the limit.
+hs() {
+	local c k pids= t cg u0 u1
+	t=$(mktemp -d)
+	cg=/sys/fs/cgroup/system.slice/docker-$(docker inspect -f '{{.Id}}' "okh-$2").scope/cpu.stat
+	u0=$(awk '/^usage_usec/ { print $2 }' "$cg")
+	for c in ${LOAD_CPUS//,/ }; do
+		for k in 1 2; do
+			taskset -c "$c" timeout 30 openssl s_time -connect "127.0.0.1:$1" -new -time "${DUR%s}" "-tls${TLS/./_}" \
+				> "$t/$c.$k" 2>/dev/null & pids="$pids $!"
+		done
+	done
+	wait $pids || true
+	u1=$(awk '/^usage_usec/ { print $2 }' "$cg")
+	cat "$t"/* | awk -v cpu=$((u1 - u0)) '/real seconds/ { n += $1; s = $4 } END { printf "%d %d", s ? n / s : 0, cpu ? n / (cpu / 1e6) : 0 }'
+	rm -rf "$t"
+}
+
 # lat PORT RATE: "p50 p99 p99.9 max behind errors" (us), open loop
 lat() {
+	if [ -n "$TLS" ]; then
+		taskset -c "$LOAD_CPUS" oha -z "$DUR" -q "$2" -c 64 --latency-correction --insecure --no-tui -j \
+			"https://127.0.0.1:$1/" 2>/dev/null | python3 -c '
+import json, sys
+d = json.load(sys.stdin); p = d["latencyPercentiles"]; us = lambda x: int((x or 0) * 1e6)
+ok = d["statusCodeDistribution"].get("200", 0); n = sum(d["statusCodeDistribution"].values())
+print(us(p["p50"]), us(p["p99"]), us(p["p99.9"]), us(d["summary"]["slowest"]), 0, n - ok + sum(d.get("errorDistribution", {}).values()))'
+		return
+	fi
 	taskset -c "$LOAD_CPUS" "$OKENA" bench "http://127.0.0.1:$1/" rate="$2" conns=64 workers=4 duration="$DUR" format=kv 2>&1 |
 		tr ' ' '\n' | awk -F= '{ v[$1] = $2 } END { printf "%d %d %d %d %d %d", v["c_p50_ns"] / 1000, v["c_p99_ns"] / 1000,
 			v["c_p999_ns"] / 1000, v["c_max_ns"] / 1000, v["behind"], v["errors"] + v["timeouts"] }' ; echo
@@ -144,13 +212,13 @@ start() {	# name
 	case $1 in
 	okena) docker run -d --rm --name okh-okena --network host --cpuset-cpus "$PROXY_CPUS" \
 		--security-opt seccomp="$ROOT/docker/okena.seccomp.json" \
-		-v "$W/okena.conf:/etc/okena/okena.conf:ro" "$OKENA_IMAGE" >/dev/null ;;
+		-v "$W/okena.conf:/etc/okena/okena.conf:ro" -v "$W:/w:ro" "$OKENA_IMAGE" >/dev/null ;;
 	envoy) docker run -d --rm --name okh-envoy --network host --cpuset-cpus "$PROXY_CPUS" -v "$W:/w:ro" \
 		"$ENVOY_IMAGE" envoy -c /w/envoy.yaml --concurrency "$NPROXY" -l warn >/dev/null ;;
 	haproxy) docker run -d --rm --name okh-haproxy --network host --cpuset-cpus "$PROXY_CPUS" \
-		-v "$W/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro" "$HAPROXY_IMAGE" >/dev/null ;;
+		-v "$W/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro" -v "$W:/w:ro" "$HAPROXY_IMAGE" >/dev/null ;;
 	nginx) docker run -d --rm --name okh-nginx --network host --cpuset-cpus "$PROXY_CPUS" \
-		-v "$W/nginx.conf:/etc/nginx/nginx.conf:ro" "$NGINX_IMAGE" >/dev/null ;;
+		-v "$W/nginx.conf:/etc/nginx/nginx.conf:ro" -v "$W:/w:ro" "$NGINX_IMAGE" >/dev/null ;;
 	esac
 	sleep 2
 }
@@ -159,15 +227,25 @@ port() { case $1 in okena) echo $OK ;; envoy) echo $EN ;; haproxy) echo $HA ;; n
 
 MAXRUN=${MAXRUN:-1}
 if [ "$MAXRUN" = 1 ]; then
-echo "direct to the backend: $(max $B) req/s"
+echo "direct to the backend: $(max $B http) req/s"
 echo
-echo "| Proxy ($NPROXY cores) | most req/s | per core |"
-echo "|---|---|---|"
+if [ -n "$TLS" ]; then
+	echo "| Proxy ($NPROXY cores, TLS $TLS) | most req/s, keep-alive | per core | full handshakes/s | handshakes per CPU-second |"
+	echo "|---|---|---|---|---|"
+else
+	echo "| Proxy ($NPROXY cores) | most req/s | per core |"
+	echo "|---|---|---|"
+fi
 declare -A MOST
 for p in $ONLY; do
 	start "$p"
 	MOST[$p]=$(max "$(port "$p")")
-	printf '| %s | %s | %s |\n' "$p" "${MOST[$p]}" $(( ${MOST[$p]} / NPROXY ))
+	if [ -n "$TLS" ]; then
+		read -ra h < <(hs "$(port "$p")" "$p"; echo)
+		printf '| %s | %s | %s | %s | %s |\n' "$p" "${MOST[$p]}" $(( ${MOST[$p]} / NPROXY )) "${h[0]}" "${h[1]}"
+	else
+		printf '| %s | %s | %s |\n' "$p" "${MOST[$p]}" $(( ${MOST[$p]} / NPROXY ))
+	fi
 	stop "$p"
 done
 fi

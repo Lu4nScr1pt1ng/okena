@@ -322,9 +322,11 @@ http 127.0.0.1:{DLST} {{
         check(f"TLS 1.2 {cipher}: kTLS, 200 proxied",
               ver == "TLSv1.2" and data.startswith(b"HTTP/1.1 200") and b"backend:/cha" in data, f"{ver} {data[:80]}")
     o = sclient(LST, "-cipher", "ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES128-GCM-SHA256")
-    check("  the client's order kept (ChaCha20 first: ChaCha20)", "Cipher is ECDHE-ECDSA-CHACHA20-POLY1305" in o, o[-300:])
+    check("  ChaCha20 the client's first: ChaCha20", "Cipher is ECDHE-ECDSA-CHACHA20-POLY1305" in o, o[-300:])
     o = sclient(LST, "-cipher", "ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES128-GCM-SHA256")
-    check("  (AES-256 first: AES-256, with SHA-384)", "Cipher is ECDHE-ECDSA-AES256-GCM-SHA384" in o, o[-300:])
+    check("  AES-256 first and AES-128 offered: AES-128 (as most clients ask)", "Cipher is ECDHE-ECDSA-AES128-GCM-SHA256" in o, o[-300:])
+    o = sclient(LST, "-cipher", "ECDHE-ECDSA-AES256-GCM-SHA384")
+    check("  AES-256 alone: AES-256, with SHA-384", "Cipher is ECDHE-ECDSA-AES256-GCM-SHA384" in o, o[-300:])
     o = sclient(LST)
     check("x25519 when offered; the extended master secret; secure renegotiation said",
           "X25519" in o and "TLSv1.2, Cipher is" in o and "Extended master secret: yes" in o

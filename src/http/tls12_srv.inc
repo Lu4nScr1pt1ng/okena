@@ -391,6 +391,16 @@ http_tls12_fin2_sent:
 	mov	[g_t12_klen],eax		; (40 AES-128-GCM, 56 ChaCha20-Poly1305 or AES-256-GCM)
 	cmp	dword [g_no_ktls],0
 	jne	http_utls12_start		; no module: the records here
+	; as TLS 1.3's: an http listener keeps the records here unless `ktls on`
+	; (on kTLS, 1.2 did 16% less keep-alive traffic than 1.3 in user space)
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_TLS_HS
+	jnz	.kernel
+	mov	eax,[rax+S_LST]
+	imul	rax,rax,LS_SIZE
+	test	dword [g_listeners+rax+LS_FLAGS],LSF_KTLS
+	jz	http_utls12_start
+.kernel:
 	cmp	dword [g_engine],ENGINE_EPOLL
 	je	.epoll
 	mov	dword [r15+H_STATE],HS_TLS_KTLS

@@ -140,6 +140,61 @@ percentile, microseconds:
   core pins itself, one under a fifth lets go; throughput is the same either
   way (155k req/s, io_uring, pinned or free).
 
+## HTTPS, TLS 1.3 and 1.2, against Envoy, HAProxy and nginx, all in Docker (2026-11-12)
+
+`TLS=1.3 tests/bench/http.sh` (and `TLS=1.2`): the same setup as above, each
+proxy terminating TLS with the same ECDSA P-256 certificate and that version
+only (ALPN http/1.1, its own defaults: session tickets on), the backend plain.
+Keep-alive throughput from wrk. Full handshakes from `openssl s_time -new`, two
+on each of the eight load cores, never a resumption (wrk resumes nearly every
+connection: okena's counters showed 10250 of 10266, so its "new connections"
+are abbreviated handshakes); their rate is a floor where the clients are the
+limit (okena's is: about 14k a second here), so the proxy's CPU (its
+container's cgroup) gives what a handshake costs it. Latency from oha (it
+speaks TLS 1.2; slower than okena bench, so every number is higher than plain
+HTTP's for all), median of three.
+
+| Proxy (2 cores) | TLS | keep-alive req/s | full handshakes/s | handshakes per CPU-second |
+|---|---|---|---|---|
+| okena | 1.3 | 144845 | 9940 | 8299 |
+| Envoy 1.40 | 1.3 | 31932 | 8328 | 5197 |
+| HAProxy 3.2 | 1.3 | 79028 | 6302 | 3336 |
+| nginx 1.27 | 1.3 | 72893 | 5285 | 2915 |
+| okena | 1.2 | 141724 | 13182 | 9646 |
+| Envoy 1.40 | 1.2 | 30510 | 10738 | 6630 |
+| HAProxy 3.2 | 1.2 | 79140 | 6840 | 3621 |
+| nginx 1.27 | 1.2 | 70379 | 6060 | 3365 |
+
+Latency, microseconds, p50 / p99 / p99.9 / max:
+
+| Proxy | TLS | 10000/s | 30000/s | 60000/s |
+|---|---|---|---|---|
+| okena | 1.3 | 131 / 268 / 548 / 10679 | 254 / 593 / 2786 / 17844 | 474 / 957 / 4231 / 13696 |
+| HAProxy | 1.3 | 193 / 398 / 3409 / 22324 | 446 / 902 / 6415 / 20348 | 849 / 40664 / 55724 / 58785 |
+| nginx | 1.3 | 202 / 452 / 4546 / 19518 | 486 / 1067 / 8844 / 18730 | 865 / 7334 / 18085 / 22265 |
+| Envoy | 1.3 | 441 / 973 / 6369 / 16563 | 2166 / 88412 / 92521 / 94741 | did not keep up |
+| okena | 1.2 | 132 / 261 / 453 / 12659 | 253 / 557 / 3698 / 20729 | 466 / 1118 / 6805 / 18912 |
+| HAProxy | 1.2 | 189 / 388 / 2548 / 16435 | 427 / 1152 / 11306 / 23450 | 878 / 19350 / 34224 / 37499 |
+| nginx | 1.2 | 199 / 443 / 4649 / 19750 | 441 / 1068 / 8616 / 19004 | 943 / 6377 / 16881 / 21856 |
+| Envoy | 1.2 | 419 / 900 / 6672 / 22762 | 1590 / 19581 / 20804 / 22473 | did not keep up |
+
+* okena keeps its plaintext throughput with TLS (records sealed and opened
+  in user space, ~1.5%); the others lose 20-25%. 80% over HAProxy, twice
+  nginx, 4.5 times Envoy, either version.
+* A full handshake costs okena 60% less CPU than Envoy (1.3; 45% less in
+  1.2) and 2.5 to 3 times less than HAProxy and nginx. In 1.3 the client
+  offers X25519MLKEM768 first (OpenSSL 3.5's default): an ML-KEM
+  encapsulation each. Of okena's user-space time in a 1.2 handshake about
+  half is X25519 (25.2 us variable base, 7.9 us from its table; OpenSSL 25.5)
+  and a fifth ECDSA P-256 (14.7 us a signature); the rest of a handshake's
+  cost is the kernel's (accept, the TCP connection), the same for all.
+* The lowest p50, p99 and p99.9 at every rate and version.
+* This run found two things in okena's TLS 1.2: its records went to kTLS
+  whenever the host had the module, ignoring `ktls` (1.3 keeps them in user
+  space unless `ktls on`): 16% less keep-alive traffic than 1.3, now the same;
+  and it took the client's first suite, AES-256 for every OpenSSL client,
+  where it now prefers AES-128 unless the client puts ChaCha20 first.
+
 ## gRPC against Envoy, open loop (2026-10-31)
 
 `tests/bench/grpc.sh`: okena (`http2 on`, a pool with `protocol h2`) and

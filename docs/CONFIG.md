@@ -63,11 +63,12 @@ first) and TLS_AES_256_GCM_SHA384 for a client that offers neither of those
 (its records here or on kTLS); that one is never resumed (no ticket, no
 0-RTT: tickets are SHA-256's) and not taken with client certificates, ECH or
 QUIC, whose clients all offer AES-128. For a fleet,
-A client that offers no TLS 1.3 gets TLS 1.2 (RFC 5246), on kTLS when the host
-has it, else its records sealed and opened by okena as 1.3's are: ECDHE with
-the certificate's key, ECDSA or RSA, and AES-128-GCM, ChaCha20-Poly1305 or
-AES-256-GCM with SHA-384 (its PRF and transcript hash), the first of those in
-the client's order (many clients put AES-256 first); x25519, else secp256r1 (an ECDSA
+A client that offers no TLS 1.3 gets TLS 1.2 (RFC 5246), its records sealed
+and opened by okena as 1.3's are (on kTLS with `ktls on`, the module there):
+ECDHE with the certificate's key, ECDSA or RSA, and AES-128-GCM, ChaCha20-Poly1305
+or AES-256-GCM with SHA-384 (its PRF and transcript hash), in that order of
+what the client offers, but ChaCha20 when it is the client's first (a client
+without AES in hardware puts it there); x25519, else secp256r1 (an ECDSA
 certificate, being on secp256r1, needs that one offered); rsa_pss_rsae_sha256,
 else rsa_pkcs1_sha256, for an RSA key; the extended master secret (RFC 7627)
 whenever the client offers it; secure renegotiation said, and no
