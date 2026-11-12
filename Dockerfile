@@ -17,6 +17,7 @@ COPY scripts/fetch-fasm2.sh scripts/
 RUN ./scripts/fetch-fasm2.sh .toolchain/fasm2
 COPY Makefile ./
 COPY src src
+COPY contrib/ranges contrib/ranges
 RUN make
 
 FROM scratch

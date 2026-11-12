@@ -85,6 +85,52 @@ taskset -c 3 openssl speed -seconds 2 ed25519
 | Worker CPU per new HTTPS connection (x25519) | ~75 us (77 user + 61 kernel with the client on other cores) | 2026-10 | 4 workers, a route okena answers, new connection per request |
 | Worker CPU saved by a session ticket | ~27 us | 2026-10 | same, resumed |
 
+## HTTP/1.1 against Envoy, HAProxy and nginx, all in Docker (2026-11-12)
+
+`tests/bench/http.sh`. Every proxy in a container on the same two cores (1-2,
+their SMT siblings idle), host network: okena from this tree's image with its
+seccomp profile (io_uring), Envoy 1.40, HAProxy 3.2 and nginx 1.27 from their
+official images, each with as many threads as cores and tuned by its own
+documentation (upstream keep-alive, Envoy's circuit breakers raised, no
+access logs). The backend is nginx answering "ok" from memory on cores 4-5
+(320k req/s straight to it); plain HTTP/1.1, keep-alive on both sides.
+
+The most each does, closed loop (wrk, 8 threads, 256 connections, 10 s):
+
+| Proxy (2 cores) | most req/s | per core |
+|---|---|---|
+| okena | 142392 | 71196 |
+| HAProxy 3.2 | 102490 | 51245 |
+| nginx 1.27 | 90687 | 45343 |
+| Envoy 1.40 | 35866 | 17933 |
+
+Envoy was at 189% CPU with no errors: that is what its HTTP/1 path costs here.
+
+Latency at fixed rates, open loop (okena bench, 64 connections, 4 workers,
+from the schedule), microseconds:
+
+| Proxy | rate | p50 / p99 / p99.9 / max | behind | errors |
+|---|---|---|---|---|
+| okena | 10000/s | 46 / 69 / 589 / 3185 | 0 | 0 |
+| okena | 30000/s | 40 / 69 / 1146 / 3331 | 0 | 0 |
+| okena | 80000/s | 46 / 88 / 331 / 1274 | 0 | 0 |
+| HAProxy | 10000/s | 54 / 73 / 104 / 264 | 0 | 0 |
+| HAProxy | 30000/s | 53 / 84 / 315 / 2944 | 0 | 0 |
+| HAProxy | 80000/s | 119 / 50855 / 66060 / 69550 | 0 | 0 |
+| nginx | 10000/s | 59 / 81 / 119 / 725 | 0 | 0 |
+| nginx | 30000/s | 67 / 253 / 671 / 1296 | 0 | 0 |
+| nginx | 80000/s | 331 / 1056964 / 1085565 / 1085565 | 0 | 0 |
+| Envoy | 10000/s | 120 / 198 / 278 / 625 | 0 | 0 |
+| Envoy | 30000/s | 1392 / 5767 / 8191 / 12157 | 0 | 0 |
+| Envoy | 80000/s | (did not keep up: 430311 behind) | | 64 |
+
+* okena does 39% more than HAProxy, 57% more than nginx and four times
+  Envoy on the same cores, and has the lowest p50 and p99 at every rate; it
+  alone holds 80000/s on two cores (p99 88 us).
+* **It loses at p99.9 at low rates**: 589 us at 10000/s and 1146 us at
+  30000/s against HAProxy's 104 and 315. That is the worker wake-up tail the
+  roadmap names (phase 11, performance work): the next thing to fix.
+
 ## gRPC against Envoy, open loop (2026-10-31)
 
 `tests/bench/grpc.sh`: okena (`http2 on`, a pool with `protocol h2`) and
