@@ -15,7 +15,7 @@
 ;
 ; `okena sign KEYFILE PATH TTL [prefix=P] [ip=A]` prints a link.
 
-MAX_SIGNED	:= 64
+MAX_SIGNED	:= 4096
 SU_KEY1		:= 0				; 128
 SU_K1LEN	:= 128				; d
 SU_KEY2		:= 132				; 128

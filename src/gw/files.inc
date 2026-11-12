@@ -19,7 +19,7 @@
 
 SF_FILE		:= 33554432			; S_FLAGS: its answer comes from a file
 
-MAX_FILES	:= 64
+MAX_FILES	:= 4096
 FI_ROOT		:= 0				; q
 FI_RLEN		:= 8				; d
 FI_ILEN		:= 12				; d

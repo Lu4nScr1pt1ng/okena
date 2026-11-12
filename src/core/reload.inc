@@ -108,40 +108,40 @@ macro plan_regions action
 	action g_plan_tkpath, 8
 	action g_plan_tkplen, 4
 	action g_tls_ntab, TN_CAP * TN_SIZE
-	action g_tls_nstore, TN_STORE
+	action g_tls_nstore, TN_STORE, g_tls_nused, 1
 	action g_tls_nused, 8
 	action g_tls_used, 4
-	action g_tls, TL_SIZE * MAX_TLS
-	action g_tls_store, TLS_STORE
+	action g_tls, TL_SIZE * MAX_TLS, g_plan_tls, TL_SIZE
+	action g_tls_store, TLS_STORE, g_tls_used, 1
 	action g_plan_acts, 4
 	action g_plan_eps, 4
 	action g_ep_used, 4
-	action g_eps, EP_SIZE * MAX_EPS
-	action g_ep_store, EP_STORE
+	action g_eps, EP_SIZE * MAX_EPS, g_plan_eps, EP_SIZE
+	action g_ep_store, EP_STORE, g_ep_used, 1
 	action g_plan_maints, 4
 	action g_maints, MT_SIZE * MAX_MAINTS
 	action g_acts, RA_SIZE * MAX_ACTS, g_plan_acts, RA_SIZE
-	action g_limits, LM_SIZE * MAX_LIMITS
+	action g_limits, LM_SIZE * MAX_LIMITS, g_plan_limits, LM_SIZE
 	action g_plan_limits, 4
-	action g_cors, CO_SIZE * MAX_CORS
+	action g_cors, CO_SIZE * MAX_CORS, g_plan_cors, CO_SIZE
 	action g_plan_cors, 4
-	action g_splits, SL_SIZE * MAX_SPLITS
+	action g_splits, SL_SIZE * MAX_SPLITS, g_plan_splits, SL_SIZE
 	action g_plan_splits, 4
-	action g_auths, AU_SIZE * MAX_AUTHS
+	action g_auths, AU_SIZE * MAX_AUTHS, g_plan_auths, AU_SIZE
 	action g_plan_auths, 4
 	action g_plan_akeys, 4
-	action g_jwk, JK_SIZE * MAX_JWK
+	action g_jwk, JK_SIZE * MAX_JWK, g_plan_jwk, JK_SIZE
 	action g_plan_jwk, 4
-	action g_jsrc, JS_SIZE * MAX_JWKS
+	action g_jsrc, JS_SIZE * MAX_JWKS, g_plan_jsrc, JS_SIZE
 	action g_cca, PK_SIZE * CCA_MAX
 	action g_cca_nh, 8 * CCA_MAX
 	action g_cca_next, 8 * CCA_MAX
 	action g_crl_tab, 8 * CRL_SLOTS
 	action g_plan_crln, 4
-	action g_caches, CA_SIZE * MAX_CACHES
-	action g_files, FI_SIZE * MAX_FILES
+	action g_caches, CA_SIZE * MAX_CACHES, g_plan_caches, CA_SIZE
+	action g_files, FI_SIZE * MAX_FILES, g_plan_files, FI_SIZE
 	action g_plan_files, 4
-	action g_rmaps, RM_SIZE * MAX_RMAPS
+	action g_rmaps, RM_SIZE * MAX_RMAPS, g_plan_rmaps, RM_SIZE
 	action g_plan_rmaps, 4
 	action g_plan_up, 8
 	action g_plan_uplen, 4
@@ -155,14 +155,14 @@ macro plan_regions action
 	action g_geo_rec, 4
 	action g_geo_ver, 4
 	action g_geo_v4, 4
-	action g_acls, ACL_SIZE * MAX_ACLS
+	action g_acls, ACL_SIZE * MAX_ACLS, g_plan_acls, ACL_SIZE
 	action g_plan_acls, 4
-	action g_idems, IC_SIZE * MAX_IDEMS
+	action g_idems, IC_SIZE * MAX_IDEMS, g_plan_idems, IC_SIZE
 	action g_plan_idems, 4
 	action g_plan_zip, 4
-	action g_mroutes, RT_SIZE * MAX_MATCH
-	action g_mblocks, MB_SIZE * MAX_MATCH
-	action g_mconds, MC_SIZE * MAX_MCOND
+	action g_mroutes, RT_SIZE * MAX_MATCH, g_plan_mroutes, RT_SIZE
+	action g_mblocks, MB_SIZE * MAX_MATCH, g_plan_mroutes, MB_SIZE
+	action g_mconds, MC_SIZE * MAX_MCOND, g_plan_mconds, MC_SIZE
 	action g_plan_mroutes, 4
 	action g_plan_mconds, 4
 	action g_plan_caches, 4
@@ -183,9 +183,9 @@ macro plan_regions action
 	action g_plan_birdpooll, 4
 	action g_plan_vrrp, VC_SIZE
 	action g_plan_acme, ACM_SIZE
-	action g_rx, RXE_SIZE * RX_MAX
-	action g_rx_prog, RI_SIZE * RX_POOL
-	action g_rx_cls, 32 * RX_CLASSES
+	action g_rx, RXE_SIZE * RX_MAX, g_plan_rx, RXE_SIZE
+	action g_rx_prog, RI_SIZE * RX_POOL, g_plan_rxpc, RI_SIZE
+	action g_rx_cls, 32 * RX_CLASSES, g_plan_rxcls, 32
 	action g_plan_rx, 4
 	action g_plan_rxpc, 4
 	action g_plan_rxcls, 4
@@ -194,7 +194,7 @@ macro plan_regions action
 	action g_plan_ocspoff, MAX_TLS
 	action g_plan_odn, 4
 	action g_plan_od, OC_SIZE * OD_CFGS
-	action g_signed, SU_SIZE * MAX_SIGNED
+	action g_signed, SU_SIZE * MAX_SIGNED, g_plan_signed, SU_SIZE
 	action g_plan_signed, 4
 	action g_plan_fleet_sa, 32 * MAX_FLEET
 	action g_plan_fleet_sl, 4 * MAX_FLEET
@@ -202,7 +202,7 @@ macro plan_regions action
 	action g_plan_fleet_tl, 4 * MAX_FLEET
 	action g_plan_cca, 4
 	action g_plan_jsrc, 4
-	action g_claims, CM_SIZE * MAX_CLAIMS
+	action g_claims, CM_SIZE * MAX_CLAIMS, g_plan_claims, CM_SIZE
 	action g_plan_claims, 4
 	action g_auth_tab, AT_SIZE * AT_N
 	action g_plan_hdrops, 4
@@ -252,16 +252,26 @@ macro plan_copy_out sym, size, cnt, elem:0
 	PLAN_OFF = PLAN_OFF + size
 end macro
 
-macro plan_copy_in sym, size, cnt, elem:0
-	lea	rsi,[g_plan_save + PLAN_OFF]
-	lea	rdi,[sym]
-	if elem
-		mov	ecx,[cnt]		; (restored already: counts come first)
-		imul	ecx,ecx,elem
-	else
+; restored in two passes: everything but the sized tables first, so that
+; their counts are back wherever they are in the list
+macro plan_copy_in_fixed sym, size, cnt, elem:0
+	if ~ elem
+		lea	rsi,[g_plan_save + PLAN_OFF]
+		lea	rdi,[sym]
 		mov	ecx,size
+		rep	movsb
 	end if
-	rep	movsb
+	PLAN_OFF = PLAN_OFF + size
+end macro
+
+macro plan_copy_in_sized sym, size, cnt, elem:0
+	if elem
+		lea	rsi,[g_plan_save + PLAN_OFF]
+		lea	rdi,[sym]
+		mov	ecx,[cnt]
+		imul	ecx,ecx,elem
+		rep	movsb
+	end if
 	PLAN_OFF = PLAN_OFF + size
 end macro
 
@@ -286,7 +296,9 @@ plan_restore:
 	PLAN_HWI = 0
 	plan_regions plan_hw_note
 	PLAN_OFF = 0
-	plan_regions plan_copy_in
+	plan_regions plan_copy_in_fixed
+	PLAN_OFF = 0
+	plan_regions plan_copy_in_sized
 	ret
 
 ; sized tables first, while their counts are still there
@@ -305,13 +317,53 @@ macro plan_zero_sized sym, size, cnt, elem:0
 	end if
 end macro
 
+; a large one by giving its pages back: clearing with stores would make
+; resident what was never touched
 macro plan_zero sym, size, cnt, elem:0
 	if ~ elem
 		lea	rdi,[sym]
-		mov	ecx,size
-		rep	stosb
+		if size >= 65536
+			mov	esi,size
+			call	region_zero
+		else
+			mov	ecx,size
+			rep	stosb
+		end if
 	end if
 end macro
+
+; rdi = start, esi = length: zero; whole pages inside by MADV_DONTNEED.
+; eax = 0 after.
+region_zero:
+	push	rbx
+	push	r12
+	mov	rbx,rdi
+	mov	r12d,esi
+	call	pages_release
+	; the part pages_release leaves: up to the first page, from the last
+	lea	rcx,[rbx+4095]
+	and	rcx,not 4095
+	sub	rcx,rbx
+	cmp	ecx,r12d
+	jbe	@f
+	mov	ecx,r12d
+@@:
+	mov	rdi,rbx
+	xor	eax,eax
+	rep	stosb
+	lea	rdi,[rbx+r12]
+	mov	rcx,rdi
+	and	rdi,not 4095
+	cmp	rdi,rbx
+	jae	@f
+	mov	rdi,rbx
+@@:
+	sub	rcx,rdi
+	xor	eax,eax
+	rep	stosb
+	pop	r12
+	pop	rbx
+	ret
 
 ; Empty plan, as before the first compile.
 plan_reset:

@@ -13,8 +13,8 @@ EP_LEN		:= 12			; d
 EP_TYPE		:= 16			; d: 0 HTML, 1 JSON, 2 text
 EP_BACKEND	:= 20			; d: a backend's errors too
 EP_SIZE		:= 24
-MAX_EPS		:= 256
-EP_STORE	:= 1 shl 20
+MAX_EPS		:= 16384
+EP_STORE	:= 16 shl 20
 EP_PAGE_MAX	:= 16 shl 10
 
 bss

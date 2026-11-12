@@ -27,7 +27,7 @@ JK_KID		:= 20				; 60
 JK_KEY		:= 80				; 04|x|y, n, the public key, the secret
 JK_KEYCAP	:= 512
 JK_SIZE		:= JK_KEY + JK_KEYCAP
-MAX_JWK		:= 64
+MAX_JWK		:= 1024
 JA_ES256	:= 1
 JA_RS256	:= 2
 JA_PS256	:= 3
@@ -40,7 +40,7 @@ CM_HDR		:= 8				; q
 CM_CLEN		:= 16				; d
 CM_HLEN		:= 20				; d
 CM_SIZE		:= 24
-MAX_CLAIMS	:= 64
+MAX_CLAIMS	:= 4096
 
 ; a token verified
 JC_N		:= 1024

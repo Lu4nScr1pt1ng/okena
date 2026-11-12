@@ -15,10 +15,10 @@
 ; threads, the program's length each, a visit mark per instruction, and the
 ; captures each thread carries.
 
-RX_MAX		:= 256				; regexes
-RX_POOL		:= 16384			; instructions, all of them
+RX_MAX		:= 16384				; regexes
+RX_POOL		:= 1 shl 20			; instructions, all of them
 RX_PER		:= 2048				; one regex's at most
-RX_CLASSES	:= 1024
+RX_CLASSES	:= 65536
 RX_SLOTS	:= 20				; captures: 0-1 the match, then 9 groups
 
 RXE_START	:= 0				; d: its first instruction in the pool

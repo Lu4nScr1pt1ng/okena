@@ -3,8 +3,8 @@
 ; wins; with any allow, what is not in one gets a 403 too. Lists from files can run to
 ; thousands, so each is a binary trie by family: a lookup is one step a bit, at most.
 
-MAX_ACLS	:= 256
-ACL_CMAX	:= 64
+MAX_ACLS	:= 16384
+ACL_CMAX	:= 256
 ACL_V4		:= 0				; q: root
 ACL_V6		:= 8				; q
 ACL_DENY4	:= 16				; q

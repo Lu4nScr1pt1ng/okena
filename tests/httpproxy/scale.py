@@ -26,6 +26,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 BIN = ROOT / "build" / "okena"
 BASE = 30000 + (500 if ENGINE == "epoll" else 0)
 NL, NP, PER, NR, NH = 300, 2000, 5, 20000, 20000
+NG = 1000          # each gateway feature, past its old table (256 or 64)
+GW = BASE + NL     # their listener
 fails = 0
 
 
@@ -70,7 +72,7 @@ def pool_net(p):
     return f"127.{1 + p // 256}.{p % 256}."
 
 
-def config(bport, gen):
+def config(bport, gen, page="/dev/null"):
     out = [f"okena {{ workers 2; io_engine {ENGINE}; drain delay=0s timeout=2s }}"]
     for p in range(NP):
         srv = " ".join(f"server {pool_net(p)}{s + 1}:{bport};" for s in range(PER))
@@ -86,6 +88,15 @@ def config(bport, gen):
     out.append("}")
     for i in range(2, NL):
         out.append(f"http 127.0.0.1:{BASE + i} {{ route /* {{ to pool p{i % NP} }} }}")
+    out.append("pool dead { server 127.0.0.1:1 }")
+    out.append(f"http 127.0.0.1:{GW} {{")
+    for i in range(NG):
+        rate = "1/s" if i == NG - 1 else "1000/s"
+        out.append(f"    route /lim{i} {{ limit {rate} key=client.ip; to pool p{i % NP} }}")
+        out.append(f"    route /cors{i} {{ cors origins=https://a{i}.test methods=GET; to pool p{i % NP} }}")
+        out.append(f"    route ~^/rx{i}/[0-9]+$ {{ to pool p{i % NP} }}")
+        out.append(f"    route /e{i} {{ errors 502 file={page}; to pool dead }}")
+    out.append("}")
     return "\n".join(out) + "\n"
 
 
@@ -151,13 +162,16 @@ def main():
     bport = backend()
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-scale-"))
     conf = tmp / "okena.conf"
-    conf.write_text(config(bport, 0))
+    page = tmp / "down.html"
+    page.write_text("down, page 999\n")
+    cfg = lambda gen: config(bport, gen, page)
+    conf.write_text(cfg(0))
     before = resource.getrusage(resource.RUSAGE_CHILDREN)
     c = subprocess.run([str(BIN), "check", "-c", str(conf)], capture_output=True, text=True)
     after = resource.getrusage(resource.RUSAGE_CHILDREN)
     # CPU time, not the clock: the suites run side by side
     took = after.ru_utime + after.ru_stime - before.ru_utime - before.ru_stime
-    check("check: 300 listeners, 2000 pools, 10000 servers, 40000 routes, 20000 hosts", c.returncode == 0 and "ok (300 listeners, 2000 pools, 10000 servers)" in c.stdout + c.stderr, (c.returncode, (c.stdout + c.stderr)[-300:]))
+    check(f"check: 301 listeners, 2001 pools, 10001 servers, 44000 routes, 20000 hosts, {NG} each of limit, cors, regex, error page", c.returncode == 0 and f"ok ({NL + 1} listeners, {NP + 1} pools, {NP * PER + 1} servers)" in c.stdout + c.stderr, (c.returncode, (c.stdout + c.stderr)[-300:]))
     check("  in well under a second of CPU", took < 0.5, f"{took:.2f}s")
     log = tmp / "log"
     p = subprocess.Popen([str(BIN), "-c", str(conf)], stderr=open(log, "w"))
@@ -173,6 +187,24 @@ def main():
         check("a path no route has: 404", r.startswith(b"HTTP/1.1 404"), r[:60])
         r = get(BASE + 1, "/", f"h{NH - 1}.test")
         check("the last of 20000 host names reaches its own pool", pool_net((NH - 1) % NP).encode() in r.split(b"\r\n\r\n")[-1], r[-120:])
+        # the gateway features, each the last of a thousand
+        r = get(GW, f"/lim{NG - 1}")
+        r2 = get(GW, f"/lim{NG - 1}")
+        check("the last of a thousand rate limits: its own (1/s: the second 429)", r.startswith(b"HTTP/1.1 200") and r2.startswith(b"HTTP/1.1 429"), (r[:40], r2[:40]))
+        k = socket.create_connection(("127.0.0.1", GW), 5)
+        k.settimeout(5)
+        k.sendall(f"GET /cors{NG - 1} HTTP/1.1\r\nHost: a\r\nOrigin: https://a{NG - 1}.test\r\nConnection: close\r\n\r\n".encode())
+        r = b""
+        while True:
+            x = k.recv(4096)
+            if not x:
+                break
+            r += x
+        check("the last of a thousand cors: its own origin allowed", f"access-control-allow-origin: https://a{NG - 1}.test".encode() in r.lower(), r[:300])
+        r = get(GW, f"/rx{NG - 1}/42")
+        check("the last of a thousand regex routes: its own pool", pool_net((NG - 1) % NP).encode() in r.split(b"\r\n\r\n")[-1], r[-120:])
+        r = get(GW, f"/e{NG - 1}")
+        check("the last of a thousand error pages: its page", r.startswith(b"HTTP/1.1 502") and b"down, page 999" in r, r[:200])
         r = get(BASE + 1, "/", "H777.TEST")
         check("  names without case", pool_net(777 % NP).encode() in r.split(b"\r\n\r\n")[-1], r[-120:])
         kib = pss_kib(p.pid)
@@ -200,7 +232,7 @@ def main():
         ts = [threading.Thread(target=client, daemon=True) for _ in range(2)]
         for c in ts:
             c.start()
-        conf.write_text(config(bport, 1))
+        conf.write_text(cfg(1))
         t = time.time()
         p.send_signal(signal.SIGHUP)
         moved = until(lambda: pool_net((NR - 1) % NP).encode() in get(BASE, f"/g1/r{NR - 1}").split(b"\r\n\r\n")[-1], 20)

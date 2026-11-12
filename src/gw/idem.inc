@@ -39,7 +39,7 @@ IS_CLAIM	:= 1
 IS_DONE		:= 2
 IS_BIG		:= 3				; done, and not kept
 
-MAX_IDEMS	:= 64
+MAX_IDEMS	:= 4096
 IC_HDR		:= 0				; q
 IC_HLEN		:= 8				; d
 IC_TTL		:= 12				; d: seconds

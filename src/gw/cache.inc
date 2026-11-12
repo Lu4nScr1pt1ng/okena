@@ -103,7 +103,7 @@ HB_CST		:= HB_CPOSB			; (a hit's field: a request that goes on has none)
 ; backend fail (stale-if-error). Times it waited are far below these.
 CW_SIEM		:= 0x40000000			; + an entry of memory, pinned
 CW_SIED		:= 0x20000000			; one on disk (looked up again then)
-MAX_CACHES	:= 256
+MAX_CACHES	:= 16384
 
 bss
 	align 8

@@ -51,7 +51,7 @@ LR_EXP		:= 20				; d: g_tick
 LR_B		:= 24				; q: its bucket
 LR_SIZE		:= 32
 
-MAX_LIMITS	:= 256
+MAX_LIMITS	:= 65536
 LEASE_SECS	:= 2
 
 bss

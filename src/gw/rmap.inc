@@ -9,7 +9,7 @@
 ; A held request tries every HOLD_POLL, ejected servers included (server_pick's last
 ; pass), so a backend that is back is found at once. Past that time, the 502.
 
-MAX_RMAPS	:= 64
+MAX_RMAPS	:= 4096
 RM_TAB		:= 0				; q
 RM_MASK		:= 8				; d
 RM_CODE		:= 12				; d

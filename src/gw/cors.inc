@@ -27,7 +27,7 @@ CO_AGE		:= 48				; d: seconds, 0 not said
 CO_CRED		:= 52				; d
 CO_ANY		:= 56				; d: origins=*
 CO_SIZE		:= 64
-MAX_CORS	:= 256
+MAX_CORS	:= 65536
 CORS_ORIGIN_MAX	:= 256
 
 ; g_acts + eax - 1 = an action: rsi = its cors entry, ZF when it has none.

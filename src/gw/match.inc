@@ -32,8 +32,8 @@ MB_CN		:= 8				; d
 MB_LAST		:= 12				; d: the route has no more
 MB_SIZE		:= 16
 
-MAX_MATCH	:= 1024
-MAX_MCOND	:= 4096
+MAX_MATCH	:= 65536
+MAX_MCOND	:= 262144
 ROUTE_MATCH_MAX	:= 32
 
 CV_ACT		:= 0				; d
