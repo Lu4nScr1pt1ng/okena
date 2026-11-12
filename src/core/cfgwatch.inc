@@ -4,6 +4,11 @@
 ; glob's directory changes that directory). A change seen twice in a row (its
 ; writer done) reloads, as SIGHUP does; whatever came of the reload, the files
 ; as they are then are the new reference, so a broken file is tried once.
+; Except a file written while it was being read (its time not before the
+; read began, less CW_SLACK for the coarse clock the file system stamps
+; with): that one is not taken as read, and reloads again.
+
+CW_SLACK	:= 20000000	; ns
 
 CW_PATH		:= 512
 
@@ -13,10 +18,26 @@ bss
 	align 8
 	g_cw_sig	dq ?		; their signature, as last loaded
 	g_cw_seen	dq ?		; a different one seen at the last tick, 0 none
+	g_cw_t0		dq ?		; ns (realtime) when the files were last read
+	g_cw_late	dd ?		; one of them changed since
 	g_cw_paths	rb (CFG_FILES + CFG_DIRS) * CW_PATH
 	g_cw_st		rb STAT_BYTES
 	g_cw_dir	rb CW_PATH
 end bss
+
+; Before the files are read: when.
+cw_mark:
+	sub	rsp,16
+	mov	edi,CLOCK_REALTIME
+	mov	rsi,rsp
+	mov	eax,SYS_clock_gettime
+	syscall
+	mov	rax,[rsp]
+	imul	rax,rax,1000000000
+	add	rax,[rsp+8]
+	mov	[g_cw_t0],rax
+	add	rsp,16
+	ret
 
 ; After a start or a reload (either way): the files as the configuration knows
 ; them, and their signature now.
@@ -76,7 +97,12 @@ cw_snapshot:
 .dirs_done:
 	mov	[g_cw_n],ebx
 	pop	rbx
+	mov	dword [g_cw_late],0
 	call	cw_signature
+	cmp	dword [g_cw_late],0
+	je	@f
+	not	rax				; (written as it was read: not the reference)
+@@:
 	mov	[g_cw_sig],rax
 	mov	qword [g_cw_seen],0
 .out:
@@ -156,6 +182,15 @@ cw_signature:
 	call	.fold
 	lea	rsi,[g_cw_st+96]
 	call	.fold
+	; changed since the read began?
+	mov	rax,qword [g_cw_st+88]
+	imul	rax,rax,1000000000
+	add	rax,qword [g_cw_st+96]
+	add	rax,CW_SLACK
+	cmp	rax,[g_cw_t0]
+	jl	@f
+	mov	dword [g_cw_late],1
+@@:
 	ret
 .gone:
 	mov	rax,0x9E3779B97F4A7C15

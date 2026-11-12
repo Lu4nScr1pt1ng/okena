@@ -341,6 +341,7 @@ supervisor_reload:
 	rep	movsb
 	call	arenas_swap
 	call	arenas_empty
+	call	cw_mark				; (reload on-change: when the files were read)
 	call	cfg_read_source
 	test	rax,rax
 	js	.read_failed

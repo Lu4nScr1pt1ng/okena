@@ -487,7 +487,9 @@ second the supervisor looks at the file, each file it included and their
 directories (so a file added where an `include "conf.d/*.conf"` looks counts),
 and a change seen on two ticks in a row (its writer done) reloads as SIGHUP
 does. A reload that fails keeps the running configuration and is not tried
-again until the files change again. No inotify: nothing to overflow, and it
+again until the files change again. A file written while a reload was reading
+it is not taken as read: it reloads again (before, an edit made during a
+reload could be missed for good). No inotify: nothing to overflow, and it
 works on any filesystem, a ConfigMap's symlinks included.
 
 `last_good on` keeps the configuration that last started or reloaded as

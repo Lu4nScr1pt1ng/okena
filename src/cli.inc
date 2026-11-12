@@ -507,6 +507,7 @@ cfg_read_source:
 
 cli_load_config:
 	push	rbx
+	call	cw_mark				; (reload on-change: when the files were read)
 	call	cfg_read_source
 	test	rax,rax
 	js	cfg_parse_checked.read_error
