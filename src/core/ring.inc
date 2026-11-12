@@ -459,6 +459,23 @@ ring_reap:
 	cmp	eax,OP_COUNT
 	jae	.next
 	inc	dword [g_reaped]
+	; a session's op done: out of its bits (g_sops), unless more completions
+	; are to come (multishot) or the slot is another session's by now
+	cmp	eax,OP_S_SOCKET
+	jb	.dispatch
+	test	r15d,IORING_CQE_F_MORE
+	jnz	.dispatch
+	cmp	ebx,[g_sessions]
+	jae	.dispatch
+	mov	rcx,rbx
+	shl	rcx,S_SHIFT
+	add	rcx,[g_sess_base]
+	mov	edx,[rcx+S_GEN]
+	and	edx,0xFFFFFF
+	cmp	edx,r12d
+	jne	.dispatch
+	btr	qword [g_sops+rbx*8],rax
+.dispatch:
 	call	qword [dispatch_tbl+rax*8]
 	dec	ebp
 	jnz	.next

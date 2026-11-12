@@ -184,6 +184,8 @@ bss
 	g_pb_stack	rd BUF_MAX	; (the last given back on top)
 	g_pbl_stack	rd BUFL_MAX
 	g_sbig		rb 1 shl 20	; a session's extras (SX_*)
+	align 8
+	g_sops		rq 1 shl 20	; a session's ops in flight, a bit each (sess_sqe)
 	g_waitq_c_head	dd ?
 	g_waitq_c_tail	dd ?
 	g_waitq_u_head	dd ?
@@ -613,9 +615,73 @@ sess_user_data:
 	or	rax,rcx
 	ret
 
+; The ops a session has in flight, a bit each (g_sops): set here, cleared as
+; they complete (ring_reap). A close cancels each by its user_data
+; (sess_cancel_ops): the kernel finds it in a hash, where a cancel by
+; descriptor looks at every request of the ring (50000 connections closing
+; at once, each such a cancel: seconds).
+SOPS_NOCANCEL	:= (1 shl OP_S_CLOSE) or (1 shl OP_S_CANCEL)
+SOPS_UP		:= (1 shl OP_S_SOCKET) or (1 shl OP_S_CONNECT) or (1 shl OP_S_LTIMEOUT) \
+		or (1 shl OP_S_RECV_U) or (1 shl OP_S_SEND_U) or (1 shl OP_S_SEND_PP) \
+		or (1 shl OP_S_SEND_PFX) or (1 shl OP_H_RECV_U) or (1 shl OP_H_SEND_U) \
+		or (1 shl OP_H_UKTLS) or (1 shl OP_H_UDRAIN) or (1 shl OP_B_RD_u) \
+		or (1 shl OP_B_WR_c) or (1 shl OP_B_FD_U)
+
+; ebx = session, r12 = its record, rdx = the ops to cancel (a mask), ecx =
+; what the cancels complete as (OP_S_CANCEL, counted in S_INFL; OP_IGNORE,
+; not). CF: the session has more in flight than its bits tell (an op not
+; through sess_sqe, two of a kind): the caller cancels by descriptor too.
+; Keeps rbx, r12-r15.
+sess_cancel_ops:
+	push	r13
+	push	r14
+	push	r15
+	mov	r14d,ecx
+	mov	r15,[g_sops+rbx*8]
+	popcnt	rax,r15
+	xor	r13d,r13d
+	cmp	eax,[r12+S_INFL]
+	jae	@f
+	inc	r13d				; (more in flight than known)
+@@:
+	and	r15,rdx
+	mov	rax,not SOPS_NOCANCEL
+	and	r15,rax
+.op:
+	tzcnt	rcx,r15
+	jc	.ops_done
+	btr	r15,rcx
+	mov	edi,ecx
+	mov	esi,ebx
+	call	sess_user_data
+	push	rax
+	cmp	r14d,OP_S_CANCEL
+	jne	.uncounted
+	mov	edi,OP_S_CANCEL
+	mov	esi,ebx
+	call	sess_sqe
+	jmp	.sqe
+.uncounted:
+	call	ring_get_sqe
+	mov	rcx,OP_IGNORE shl 56
+	mov	[rax+SQE_USER_DATA],rcx
+.sqe:
+	pop	rcx
+	mov	byte [rax+SQE_OPCODE],IORING_OP_ASYNC_CANCEL
+	mov	[rax+SQE_ADDR],rcx		; (its user_data; no flags: that one)
+	jmp	.op
+.ops_done:
+	cmp	r13d,1				; CF out: unknown ones (r13d = 1): cmp
+	cmc					; borrows only for 0, cmc turns it round
+	pop	r15
+	pop	r14
+	pop	r13
+	ret
+
 ; Get an SQE for op edi on session esi, count the completion.
 ; rax = SQE (user_data set), rdx = session.
 sess_sqe:
+	bts	qword [g_sops+rsi*8],rdi	; (in flight: g_sops)
 	push	rdi
 	push	rsi
 	call	ring_get_sqe
@@ -1110,6 +1176,7 @@ session_alloc:
 	mov	edx,[rcx+S_NEXT]
 	mov	[g_sess_free],edx
 	mov	byte [g_sbig+rax],0		; (its extras start clear)
+	mov	qword [g_sops+rax*8],0
 	mov	dword [g_bfd_c+rax*4],0
 	mov	dword [g_bfd_u+rax*4],0
 	mov	qword [g_cnt+rax*8],0
@@ -1120,6 +1187,7 @@ session_alloc:
 	jae	.none
 	inc	dword [g_sess_hwm]
 	mov	byte [g_sbig+rax],0
+	mov	qword [g_sops+rax*8],0
 	mov	dword [g_bfd_c+rax*4],0
 	mov	dword [g_bfd_u+rax*4],0
 	mov	qword [g_cnt+rax*8],0
@@ -3070,7 +3138,23 @@ session_close:
 	call	session_maybe_free
 	jmp	.done
 .client:
-	; phase 1: cancel
+	; nothing in flight (the usual close: the read that ended it is in):
+	; nothing to cancel. A cancel by descriptor makes the kernel look at
+	; every request of the ring: with 50000 connections reading, closing
+	; them all took seconds (the watchdog fired)
+	cmp	dword [r12+S_INFL],0
+	jne	.cancel
+	mov	edi,ebx
+	call	session_maybe_free
+	jmp	.done
+.cancel:
+	; phase 1: cancel what is in flight, each by its user_data (the kernel
+	; finds it at once); by descriptor only when the session has more in
+	; flight than it knows of
+	mov	rdx,-1
+	mov	ecx,OP_S_CANCEL
+	call	sess_cancel_ops
+	jnc	.done
 	mov	edi,OP_S_CANCEL
 	mov	esi,ebx
 	call	sess_sqe
@@ -3084,7 +3168,19 @@ session_close:
 @@:
 	test	dword [r12+S_FLAGS],SF_UP_OPEN
 	jz	.done
+	jmp	.up_fd
 .upstream:
+	cmp	dword [r12+S_INFL],0		; (no client socket: a stream, a copy)
+	jne	@f
+	mov	edi,ebx
+	call	session_maybe_free
+	jmp	.done
+@@:
+	mov	rdx,-1
+	mov	ecx,OP_S_CANCEL
+	call	sess_cancel_ops
+	jnc	.done
+.up_fd:
 	mov	edi,OP_S_CANCEL
 	mov	esi,ebx
 	call	sess_sqe

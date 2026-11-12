@@ -344,6 +344,13 @@ h_upclose:
 	; a close alone would leave that read hanging on the socket. Not
 	; linked: a cancel runs at submission, while a linked close would wait
 	; for task work, after the slot (freed below) may hold a new socket.
+	; (by user_data, the upstream's ops in flight, the kernel finds them at
+	; once; by descriptor, it looks at every request of the ring, only when
+	; the session has more in flight than it knows of)
+	mov	rdx,SOPS_UP
+	mov	ecx,OP_IGNORE
+	call	sess_cancel_ops
+	jnc	.cancelled
 	call	ring_get_sqe
 	mov	byte [rax+SQE_OPCODE],IORING_OP_ASYNC_CANCEL
 	mov	ecx,[g_upslot+rbx*4]
@@ -351,6 +358,7 @@ h_upclose:
 	mov	dword [rax+SQE_OP_FLAGS],IORING_ASYNC_CANCEL_FD or IORING_ASYNC_CANCEL_FD_FIXED or IORING_ASYNC_CANCEL_ALL
 	mov	rcx,OP_IGNORE shl 56
 	mov	[rax+SQE_USER_DATA],rcx
+.cancelled:
 	mov	edi,OP_S_CLOSE
 	mov	esi,ebx
 	call	sess_sqe
