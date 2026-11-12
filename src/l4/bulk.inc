@@ -50,7 +50,12 @@ bulk_want:
 	mov	eax,[r13+S_LST]
 	imul	rax,rax,LS_SIZE
 	cmp	dword [g_listeners+rax+LS_KIND],LK_TCP
+	je	.wanted
+	cmp	dword [g_listeners+rax+LS_KIND],LK_HTTP
 	jne	.out
+	cmp	qword [g_cnt+rbx*8],0		; http: a body by the relay (counted.inc)
+	je	.out
+.wanted:
 	or	byte [g_sbig+rbx],SX_FDREQ
 	mov	edi,OP_B_FD_U
 	mov	esi,ebx
@@ -59,6 +64,8 @@ bulk_want:
 	mov	byte [rax+SQE_FLAGS],IOSQE_FIXED_FILE
 	mov	ecx,[g_upslot+rbx*4]
 	mov	[rax+SQE_FD],ecx
+	cmp	dword [g_bfd_c+rbx*4],0
+	jne	.out				; (had from an earlier body)
 	test	dword [r13+S_FLAGS],SF_RAW
 	jz	.install_c
 	mov	eax,[r13+S_CLIENT]		; a normal descriptor already
@@ -207,6 +214,15 @@ macro bulk_direction sfx, src, dst, bidf, lenf, offf, eof, oeof, sync, stat, rst
 
 ; the poll for the source
 bulk_arm_rd_#sfx:
+	if dir
+	cmp	qword [g_cnt+rbx*8],0		; an HTTP body: the backend's turn
+	je	@f
+	mov	eax,ebx
+	shl	rax,H_SHIFT
+	add	rax,[g_http_base]
+	mov	dword [rax+H_STATE],HS_RESP_READ
+@@:
+	end if
 	mov	edi,OP_B_RD_#sfx
 	mov	esi,ebx
 	call	sess_sqe
@@ -291,6 +307,10 @@ bulk_pump_#sfx:
 	jnz	.out
 	cmp	dword [r13+bidf],NIL
 	jne	.out				; (waits for room)
+	if dir
+	cmp	qword [g_cnt+rbx*8],1
+	je	bulk_counted_end		; an HTTP body, all of it out
+	end if
 	push	r14
 	mov	r14d,BK_BUDGET
 .read:
@@ -304,6 +324,15 @@ bulk_pump_#sfx:
 	jb	@f
 	mov	edx,BUFL_SIZE
 @@:
+	if dir
+	mov	r8,[g_cnt+rbx*8]		; an HTTP body: no more than is left
+	test	r8,r8
+	jz	@f
+	dec	r8
+	cmp	r8,rdx
+	cmovb	edx,r8d
+@@:
+	end if
 	push	rdx
 	buf_ptr rsi, esi
 	mov	edi,[src+rbx*4]
@@ -322,12 +351,22 @@ bulk_pump_#sfx:
 	mov	dword [r13+offf],0
 	push	rax
 	push	rdx
+	if dir
+	call	bulk_counted_took
+	end if
 	mov	edi,ebx
 	call	idle_touch
 	call	bulk_write_#sfx
 	pop	rdx
 	pop	rax
 	jc	.done
+	if dir
+	cmp	qword [g_cnt+rbx*8],1
+	jne	@f
+	pop	r14
+	jmp	bulk_counted_end
+@@:
+	end if
 	cmp	eax,edx
 	jb	.drained			; less than a buffer: likely all of it
 	dec	r14d
@@ -357,6 +396,10 @@ bulk_pump_#sfx:
 	mov	edi,ebx
 	jmp	session_close
 .eof:
+	if dir
+	cmp	qword [g_cnt+rbx*8],0
+	jne	.both				; an HTTP body cut short: both go
+	end if
 	; the source is done: pass the FIN on, keep the other way open
 	or	dword [r13+S_FLAGS],eof
 	test	dword [r13+S_FLAGS],oeof
@@ -416,6 +459,51 @@ on_b_wr_#sfx:
 .out:
 	ret
 end macro
+
+; An HTTP body's piece of rax bytes read (ebx = session): less of it to
+; come, its bytes for the access log, now the client's to take, and
+; body_idle's clock again (as h_send_clock). Keeps rbx, r13, r14.
+bulk_counted_took:
+	cmp	qword [g_cnt+rbx*8],0
+	je	.out
+	sub	[g_cnt+rbx*8],rax
+	mov	ecx,ebx
+	shl	rcx,H_SHIFT
+	add	rcx,[g_http_base]
+	add	[rcx+H_XBYTES],rax
+	mov	dword [rcx+H_STATE],HS_RESP_SEND
+	push	rbx
+	push	r13
+	push	r14
+	mov	edi,ebx
+	mov	esi,PH_BODY
+	call	ph_arm
+	pop	r14
+	pop	r13
+	pop	rbx
+.out:
+	ret
+
+; An HTTP body all relayed (ebx = session, r13 = it): the upstream's normal
+; descriptor closes now (the connection goes back to its pool, where it
+; must not stay held by it), the direction is the exchange's again.
+bulk_counted_end:
+	mov	qword [g_cnt+rbx*8],0
+	and	byte [g_sbig+rbx],not (SX_SYNC_U or SX_FDS or SX_FDREQ)
+	mov	eax,[g_bfd_u+rbx*4]
+	test	eax,eax
+	jz	@f
+	mov	dword [g_bfd_u+rbx*4],0
+	push	rax
+	mov	edi,OP_S_CLOSE
+	mov	esi,ebx
+	call	sess_sqe
+	pop	rcx
+	dec	ecx
+	mov	byte [rax+SQE_OPCODE],IORING_OP_CLOSE
+	mov	[rax+SQE_FD],ecx
+@@:
+	jmp	http_counted_done
 
 macro bk_client_sock
 	mov	byte [rax+SQE_FLAGS],IOSQE_FIXED_FILE

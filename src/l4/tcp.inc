@@ -2940,6 +2940,13 @@ on_s_send_c:
 	shl	rax,H_SHIFT			; not count it against the client)
 	add	rax,[g_http_base]
 	mov	dword [rax+H_STATE],HS_RESP_READ
+	test	byte [g_sbig+rbx],SX_FDS
+	jz	@f
+	or	byte [g_sbig+rbx],SX_SYNC_U	; the descriptors had: reads in the loop
+	call	session_ptr
+	mov	r13,rax
+	jmp	bulk_arm_rd_u
+@@:
 	mov	edi,ebx
 	jmp	post_recv_u
 .counted_all:

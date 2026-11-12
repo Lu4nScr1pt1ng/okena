@@ -50,6 +50,13 @@ http_counted_try:
 	inc	rcx				; (+ 1: 1 is all of it relayed)
 	mov	[g_cnt+rbx*8],rcx
 	or	byte [g_sbig+rbx],SX_BIG_U	; (large buffers from the first)
+	push	r13
+	push	r14
+	call	session_ptr
+	mov	r13,rax
+	call	bulk_want			; and reads in the loop once it can
+	pop	r14
+	pop	r13
 	mov	dword [r15+H_STATE],HS_RESP_READ
 	mov	edi,ebx
 	call	post_recv_u
