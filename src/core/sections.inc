@@ -41,13 +41,23 @@ macro rodata_emit
 	db RODATA.data
 end macro
 
+; With BSS_FIXED defined, the state is not the executable's: the program maps
+; it there itself, as its first act (main.asm), so that it is reserved address
+; space (MAP_NORESERVE) and not memory the kernel accounts for at exec.
 macro bss_emit
-	align 4096
-	BSS.base:
-	virtual BSS.buffer
-		BSS.size = $-$$
-	end virtual
-	rb BSS.size
+	if defined BSS_FIXED
+		BSS.base := BSS_FIXED
+		virtual BSS.buffer
+			BSS.size = $-$$
+		end virtual
+	else
+		align 4096
+		BSS.base:
+		virtual BSS.buffer
+			BSS.size = $-$$
+		end virtual
+		rb BSS.size
+	end if
 end macro
 
 ; Read-only string with a "<name>.len" constant next to it.

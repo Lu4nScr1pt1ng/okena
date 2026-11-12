@@ -104,8 +104,7 @@ cli_ranges:
 ; r12, r13.
 trust_add:
 	mov	ecx,[g_plan_trust]
-	cmp	ecx,MAX_TRUST
-	jae	plan_too_many
+	too_many	ecx,MAX_TRUST,str_tm_max_trust
 	inc	dword [g_plan_trust]
 	inc	dword [g_cmp_tcount]
 	imul	rdx,rcx,TR_SIZE

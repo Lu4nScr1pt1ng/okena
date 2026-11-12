@@ -625,8 +625,7 @@ compile_cert:
 	mov	[rsp+TC_KEY],rsi
 	mov	[rsp+TC_GROUP],edx
 	mov	ecx,[g_plan_tls]
-	cmp	ecx,MAX_TLS
-	jae	plan_too_many
+	too_many	ecx,MAX_TLS,str_tm_max_tls
 	inc	dword [g_plan_tls]
 	imul	r13,rcx,TL_SIZE
 	lea	r13,[g_tls+r13]

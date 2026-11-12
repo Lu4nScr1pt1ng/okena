@@ -238,8 +238,7 @@ compile_preset:
 	jmp	.own
 .add:
 	mov	ecx,[g_plan_hdrops]
-	cmp	ecx,MAX_HDROPS
-	jae	plan_too_many
+	too_many	ecx,MAX_HDROPS,str_tm_max_hdrops
 	inc	dword [g_plan_hdrops]
 	imul	r8,rcx,HD_SIZE
 	lea	r8,[g_hdrops+r8]

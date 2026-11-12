@@ -26,7 +26,7 @@ GK_KUBE		:= 4
 GK_CONSUL	:= 5
 
 DISC_MAX	:= 4096			; servers a source may have
-DISC_SOURCES	:= 256
+DISC_SOURCES	:= MAX_POOLS		; (a pool of a Gateway API cluster is one)
 DISC_FILE_MAX	:= 16 shl 20
 DISC_EMPTY_WAIT	:= 3			; seconds a file must stay empty to be believed
 DE_ADDR		:= 0			; 16 bytes
@@ -68,7 +68,7 @@ disc_table_init:
 	xor	edi,edi
 	mov	esi,DISC_SOURCES * DX_SIZE
 	mov	edx,PROT_READ or PROT_WRITE
-	mov	r10d,MAP_SHARED or MAP_ANONYMOUS
+	mov	r10d,MAP_SHARED or MAP_ANONYMOUS or MAP_NORESERVE	; (touched as used)
 	mov	r8,-1
 	xor	r9d,r9d
 	mov	eax,SYS_mmap

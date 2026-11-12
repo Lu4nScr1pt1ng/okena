@@ -44,9 +44,9 @@ macro plan_regions action
 	action g_plan_servers, 4
 	action g_plan_groups, 4
 	action g_plan_discs, 4
-	action g_plan_dk, DK_SIZE * DISC_SOURCES
-	action g_plan_kb, KB_SIZE * DISC_SOURCES
-	action g_plan_cs, CS_SIZE * DISC_SOURCES
+	action g_plan_dk, DK_SIZE * DISC_SOURCES, g_plan_discs, DK_SIZE
+	action g_plan_kb, KB_SIZE * DISC_SOURCES, g_plan_discs, KB_SIZE
+	action g_plan_cs, CS_SIZE * DISC_SOURCES, g_plan_discs, CS_SIZE
 	action g_plan_gw, GWP_SIZE
 	action g_plan_dshare, 4 * DISC_SOURCES
 	action g_plan_echn, 4

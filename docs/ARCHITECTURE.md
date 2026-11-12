@@ -556,8 +556,12 @@ the first touch of a sparse pool committed a whole 2 MiB page and a
 worker at rest grew from 0.7 MB to 13 MB. Huge pages come back per pool,
 for pools dense enough to fill them, once measured. The same holds for the
 zero-initialised state of the binary (the plan's tables, sized for the
-largest configuration, a few hundred MiB of address space): it is marked
-before anything is written, and only what a configuration uses is touched.
+largest configuration, a few hundred MiB of address space). It is not the
+executable's bss, which the kernel accounts at exec (and with overcommit's
+default heuristic refuses when larger than RAM and swap: a small VM could not
+start okena): the program's first act maps it at a fixed address below 2 GiB
+(its absolute addresses stay 32-bit), `MAP_NORESERVE` and `MADV_NOHUGEPAGE`,
+and only what a configuration uses is touched.
 A reload copies and clears tables as far as they are used, and what only
 compiling needs (the checker's index, the lookup tables' pending entries,
 the old plan's snapshot and text) goes back to the kernel before any

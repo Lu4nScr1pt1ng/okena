@@ -6,6 +6,8 @@
 format ELF64 executable 3
 entry start
 
+BSS_FIXED := 0x10000000		; where the zero-initialised state is mapped (start)
+
 include 'core/sections.inc'
 include 'sys/linux.inc'
 include 'sys/uring.inc'
@@ -163,11 +165,25 @@ include 'cli_fmt.inc'
 include 'cli_explain.inc'
 
 start:
-	; The zero-initialised state is sized for the largest configuration and
-	; touched sparsely: with transparent huge pages "always", each touch would
-	; make 2 MiB resident. Before anything is written, 4 KiB pages for all of
-	; it (the hot pools that gain from huge pages are mappings of their own).
-	mov	edi,BSS_PAGE
+	; The zero-initialised state is sized for the largest configuration, a
+	; few hundred MiB of it, and touched sparsely. As the executable's bss the
+	; kernel would account all of it at exec, and refuse to start on a host
+	; with less memory than that (overcommit's heuristic refuses any one
+	; mapping larger than RAM and swap): mapped here, reserved, it costs what
+	; is touched. And on 4 KiB pages: with transparent huge pages "always",
+	; each sparse touch would make 2 MiB resident (the hot pools that gain
+	; from huge pages are mappings of their own).
+	mov	edi,BSS_FIXED
+	mov	esi,BSS_PAGES
+	mov	edx,PROT_READ or PROT_WRITE
+	mov	r10d,MAP_PRIVATE or MAP_ANONYMOUS or MAP_FIXED_NOREPLACE or MAP_NORESERVE
+	mov	r8,-1
+	xor	r9d,r9d
+	mov	eax,SYS_mmap
+	syscall
+	cmp	rax,BSS_FIXED
+	jne	.no_state
+	mov	edi,BSS_FIXED
 	mov	esi,BSS_PAGES
 	mov	edx,MADV_NOHUGEPAGE
 	mov	eax,SYS_madvise
@@ -184,14 +200,25 @@ start:
 	call	cpu_require
 	call	crypto_init
 	jmp	cli_main
+.no_state:
+	mov	edi,2
+	lea	rsi,[str_no_state]
+	mov	edx,str_no_state.len
+	mov	eax,SYS_write
+	syscall
+	mov	edi,1
+	mov	eax,SYS_exit_group
+	syscall
+
+cstring str_no_state, 'okena: cannot reserve its memory (address space at 0x10000000 taken?)',10
 
 segment readable
 	rodata_emit
 
 segment readable writeable
 	bss_emit
-	BSS_PAGE := (BSS.base + 4095) and not 4095
-	BSS_PAGES := (BSS.base + BSS.size - BSS_PAGE) and not 4095
+	BSS_PAGES := (BSS.size + 4095) and not 4095
+	assert BSS_FIXED + BSS_PAGES <= 0x7FFF0000	; (absolute addresses: 32 bits, signed)
 	assert g_acme_chain - g_tls_store = TLS_STORE	; (a TL_CHAIN offset reaches it)
 	assert g_od_chain - g_tls_store = TLS_STORE + AX_CHAINMAX
 

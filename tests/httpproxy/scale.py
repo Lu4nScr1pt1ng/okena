@@ -207,6 +207,19 @@ def main():
         check("the last of a thousand error pages: its page", r.startswith(b"HTTP/1.1 502") and b"down, page 999" in r, r[:200])
         r = get(BASE + 1, "/", "H777.TEST")
         check("  names without case", pool_net(777 % NP).encode() in r.split(b"\r\n\r\n")[-1], r[-120:])
+        # the state is reserved address space, not memory accounted at exec:
+        # a mapping of its own marked no-reserve, and no large bss in the ELF
+        flags = ""
+        here = False
+        for line in open(f"/proc/{p.pid}/smaps"):
+            if line[:1] in "0123456789abcdef" and "-" in line.split()[0]:
+                here = line.startswith("10000000-")
+            elif here and line.startswith("VmFlags:"):
+                flags = line
+        ph = subprocess.run(["readelf", "-lW", str(BIN)], capture_output=True, text=True).stdout
+        rw = [l.split() for l in ph.splitlines() if "LOAD" in l and " RW " in l]
+        check("the state: reserved, not accounted (no-reserve, 4 KiB pages; no large bss)",
+              " nr" in flags and " nh" in flags and all(int(x[5], 16) < 1 << 20 for x in rw), (flags, rw))
         kib = pss_kib(p.pid)
         # what the configuration uses, not what the tables could hold (they
         # are hundreds of MiB of address space, reserved, untouched; about 40

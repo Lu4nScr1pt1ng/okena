@@ -3,6 +3,17 @@
 ; structures here, so the data path never parses text.
 
 MAX_LISTENERS	:= 1024
+
+; reg against limit: past it, the configuration is refused, saying which table.
+macro too_many reg, limit, what
+	local fits
+	cmp	reg,limit
+	jb	fits
+	lea	rsi,[what]
+	mov	eax,limit
+	jmp	plan_too_many_of
+	fits:
+end macro
 MAX_POOLS	:= 4096
 MAX_SERVERS	:= 16384
 
@@ -920,8 +931,7 @@ compile_settings:
 ; ecx = its index.
 pool_new:
 	mov	ecx,[g_plan_pools]
-	cmp	ecx,MAX_POOLS
-	jae	plan_too_many
+	too_many	ecx,MAX_POOLS,str_tm_max_pools
 	inc	dword [g_plan_pools]
 	imul	rax,rcx,PL_SIZE
 	lea	rax,[g_pools+rax]
@@ -1379,8 +1389,7 @@ compile_route_action:
 	jmp	.up
 @@:
 	mov	ecx,[g_plan_acts]
-	cmp	ecx,MAX_ACTS
-	jae	plan_too_many
+	too_many	ecx,MAX_ACTS,str_tm_max_acts
 	inc	dword [g_plan_acts]
 	push	rcx
 	imul	r13,rcx,RA_SIZE
@@ -1801,8 +1810,7 @@ compile_route_action:
 	test	rbx,rbx
 	jz	.collected
 	mov	ecx,[g_plan_hdrops]
-	cmp	ecx,MAX_HDROPS
-	jae	plan_too_many
+	too_many	ecx,MAX_HDROPS,str_tm_max_hdrops
 	inc	dword [g_plan_hdrops]
 	imul	r8,rcx,HD_SIZE
 	lea	r8,[g_hdrops+r8]
@@ -2030,8 +2038,7 @@ compile_auth:
 	push	r14
 	mov	rbx,rdi
 	mov	eax,[g_plan_auths]
-	cmp	eax,MAX_AUTHS
-	jae	plan_too_many
+	too_many	eax,MAX_AUTHS,str_tm_max_auths
 	inc	dword [g_plan_auths]
 	imul	r12,rax,AU_SIZE
 	lea	r12,[g_auths+r12]
@@ -2313,8 +2320,7 @@ compile_split:
 	push	r14
 	mov	rbx,rdi
 	mov	eax,[g_plan_splits]
-	cmp	eax,MAX_SPLITS
-	jae	plan_too_many
+	too_many	eax,MAX_SPLITS,str_tm_max_splits
 	inc	dword [g_plan_splits]
 	imul	r12,rax,SL_SIZE
 	lea	r12,[g_splits+r12]
@@ -2428,8 +2434,7 @@ compile_cors:
 	push	r12
 	mov	rbx,rdi
 	mov	eax,[g_plan_cors]
-	cmp	eax,MAX_CORS
-	jae	plan_too_many
+	too_many	eax,MAX_CORS,str_tm_max_cors
 	inc	dword [g_plan_cors]
 	imul	r12,rax,CO_SIZE
 	lea	r12,[g_cors+r12]
@@ -2789,6 +2794,37 @@ hex_bytes:
 .bad:
 	stc
 	ret
+
+cstring str_tm_max_pools, 'pools',0
+cstring str_tm_max_acts, 'routes with actions',0
+cstring str_tm_max_hdrops, 'header operations',0
+cstring str_tm_max_auths, 'auth blocks',0
+cstring str_tm_max_splits, 'splits',0
+cstring str_tm_max_cors, 'cors blocks',0
+cstring str_tm_max_servers, 'servers',0
+cstring str_tm_max_groups, 'servers named by DNS',0
+cstring str_tm_max_listeners, 'listener addresses',0
+cstring str_tm_disc_sources, 'discovery sources',0
+cstring str_tm_max_hosts, 'host names',0
+cstring str_tm_max_routes, 'route paths',0
+cstring str_tm_max_tls, 'tls blocks',0
+cstring str_tm_max_trust, 'trusted_proxies ranges',0
+
+; Past one of the plan's tables: which, and how many it holds. rsi = what
+; (a NUL-terminated name), eax = the most.
+plan_too_many_of:
+	push	rsi
+	push	rax
+	call	log_begin
+	out_lit 'the configuration needs more than this build holds: at most '
+	pop	rax
+	call	out_u64
+	out_lit ' '
+	pop	rsi
+	call	out_cstr
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
 
 plan_too_many:
 	call	log_begin
@@ -3908,8 +3944,7 @@ server_new:
 	mov	r12,rdi
 	mov	r13,rsi
 	mov	ecx,[g_plan_servers]
-	cmp	ecx,MAX_SERVERS
-	jae	plan_too_many
+	too_many	ecx,MAX_SERVERS,str_tm_max_servers
 	inc	dword [g_plan_servers]
 	inc	dword [r13+PL_COUNT]
 	imul	rbx,rcx,SV_SIZE
@@ -3951,8 +3986,7 @@ server_new:
 .name:
 	; a name: DNS_MAX_ADDRS slots, filled in when it resolves
 	mov	ecx,[g_plan_groups]
-	cmp	ecx,MAX_GROUPS
-	jae	plan_too_many
+	too_many	ecx,MAX_GROUPS,str_tm_max_groups
 	inc	dword [g_plan_groups]
 	imul	rax,rcx,GR_SIZE
 	lea	rax,[g_groups+rax]
@@ -3973,8 +4007,7 @@ server_new:
 	mov	r8d,DNS_MAX_ADDRS - 1
 .more_slots:
 	mov	edx,[g_plan_servers]
-	cmp	edx,MAX_SERVERS
-	jae	plan_too_many
+	too_many	edx,MAX_SERVERS,str_tm_max_servers
 	inc	dword [g_plan_servers]
 	inc	dword [r13+PL_COUNT]
 	imul	rdx,rdx,SV_SIZE
@@ -4403,8 +4436,7 @@ compile_listener:
 	cmp	r13d,[r12+N_ARGC]
 	jae	.done
 	mov	ecx,[g_plan_listeners]
-	cmp	ecx,MAX_LISTENERS
-	jae	plan_too_many
+	too_many	ecx,MAX_LISTENERS,str_tm_max_listeners
 	inc	dword [g_plan_listeners]
 	imul	rcx,rcx,LS_SIZE
 	lea	rcx,[g_listeners+rcx]
@@ -4682,11 +4714,9 @@ compile_discover:
 	mov	r12,rdi
 	mov	r13,rsi
 	mov	ecx,[g_plan_groups]
-	cmp	ecx,MAX_GROUPS
-	jae	plan_too_many
+	too_many	ecx,MAX_GROUPS,str_tm_max_groups
 	mov	edx,[g_plan_discs]
-	cmp	edx,DISC_SOURCES
-	jae	plan_too_many
+	too_many	edx,DISC_SOURCES,str_tm_disc_sources
 	inc	dword [g_plan_discs]
 	inc	dword [g_plan_groups]
 	imul	rbx,rcx,GR_SIZE
@@ -5076,8 +5106,7 @@ compile_discover:
 	mov	r8d,[rbx+GR_SLOTS]
 .slot:
 	mov	edx,[g_plan_servers]
-	cmp	edx,MAX_SERVERS
-	jae	plan_too_many
+	too_many	edx,MAX_SERVERS,str_tm_max_servers
 	inc	dword [g_plan_servers]
 	inc	dword [r12+PL_COUNT]
 	imul	rdx,rdx,SV_SIZE
@@ -5508,8 +5537,7 @@ compile_hosts:
 	cmp	r13d,[rbx+N_ARGC]
 	jae	.next
 	mov	ecx,[g_plan_hosts]
-	cmp	ecx,MAX_HOSTS
-	jae	plan_too_many
+	too_many	ecx,MAX_HOSTS,str_tm_max_hosts
 	inc	dword [g_plan_hosts]
 	inc	dword [g_cmp_hcount]
 	imul	r14,rcx,HO_SIZE
@@ -5635,8 +5663,7 @@ compile_routes:
 	cmp	byte [rdi],'/'
 	jne	.arg_next
 	mov	ecx,[g_plan_routes]
-	cmp	ecx,MAX_ROUTES
-	jae	plan_too_many
+	too_many	ecx,MAX_ROUTES,str_tm_max_routes
 	inc	dword [g_plan_routes]
 	inc	dword [g_cmp_rcount]
 	imul	rcx,rcx,RT_SIZE
@@ -5678,8 +5705,7 @@ compile_routes:
 	pop	rdi
 	pop	rsi
 	mov	ecx,[g_plan_routes]
-	cmp	ecx,MAX_ROUTES
-	jae	plan_too_many
+	too_many	ecx,MAX_ROUTES,str_tm_max_routes
 	inc	dword [g_plan_routes]
 	inc	dword [g_cmp_rcount]
 	inc	dword [g_plan_rxroutes]
