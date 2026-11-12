@@ -11,6 +11,10 @@
 # Output: markdown rows for docs/BENCHMARK.md.
 #
 #   tests/bench/http.sh             (needs docker, the three images, wrk)
+#   H2=1 tests/bench/http.sh        HTTP/2 from the clients (h2c, prior knowledge),
+#                                   HTTP/1.1 to the backend; the most from h2load
+#                                   (H2_CONNS connections of H2_STREAMS streams),
+#                                   latency from okena bench proto=h2
 #   TLS=1.3 tests/bench/http.sh     HTTPS: every proxy terminates TLS 1.3 (or
 #                                   TLS=1.2), one ECDSA P-256 certificate, ALPN
 #                                   http/1.1, each with its defaults (session
@@ -43,6 +47,10 @@ CONNS=${CONNS:-256}
 RATES=${RATES:-}
 REPEAT=${REPEAT:-3}		# each latency point this many times: the median of each percentile
 TLS=${TLS:-}			# 1.3 or 1.2: HTTPS
+H2=${H2:-}			# 1: HTTP/2 from the clients
+H2_CONNS=${H2_CONNS:-64}
+H2_STREAMS=${H2_STREAMS:-16}
+H2LOAD_IMAGE=${H2LOAD_IMAGE:-okena-h2load-h3}
 SCHEME=http
 [ -n "$TLS" ] && SCHEME=https
 ONLY=${ONLY:-okena envoy haproxy nginx}
@@ -83,11 +91,16 @@ if [ -n "$TLS" ]; then
             - certificate_chain: { filename: /w/cert.pem }
               private_key: { filename: /w/key.pem }"
 fi
+OKH2= ENCODEC=HTTP1 HAH2= NGH2=
+if [ -n "$H2" ]; then
+	OKH2="http2 on" ENCODEC=AUTO HAH2="proto h2" NGH2="http2 on;"
+fi
 cat > "$W/okena.conf" <<EOF
 okena { workers $NPROXY; io_engine $ENGINE }
 pool b { server 127.0.0.1:$B }
 http 127.0.0.1:$OK {
 	$OKTLS
+	$OKH2
 	route /* { to pool b }
 }
 EOF
@@ -101,7 +114,7 @@ static_resources:
         typed_config:
           "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
           stat_prefix: h
-          codec_type: HTTP1
+          codec_type: $ENCODEC
           generate_request_id: false
           route_config:
             virtual_hosts:
@@ -139,7 +152,7 @@ defaults
 	timeout server 30s
 	http-reuse always
 frontend f
-	bind 127.0.0.1:$HA $HATLS
+	bind 127.0.0.1:$HA $HATLS $HAH2
 	default_backend b
 backend b
 	server s 127.0.0.1:$B
@@ -153,7 +166,7 @@ http {
 	upstream b { server 127.0.0.1:$B; keepalive 1024; keepalive_requests 1000000; }
 	server {
 		listen 127.0.0.1:$NG reuseport backlog=65535 ${NGTLS%%;*};
-		${NGTLS#*;}${NGTLS:+;}
+		${NGTLS#*;}${NGTLS:+;} $NGH2
 		location / { proxy_pass http://b; proxy_http_version 1.1; proxy_set_header Connection ""; }
 	}
 }
@@ -166,6 +179,14 @@ sleep 1
 
 # max PORT: requests a second, closed loop (wrk)
 max() {	# PORT [SCHEME]
+	if [ -n "$H2" ] && [ "${2:-}" != http ]; then
+		docker run --rm --network host --cpuset-cpus "$LOAD_CPUS" "$H2LOAD_IMAGE" -t8 -c"$H2_CONNS" \
+			-m"$H2_STREAMS" -D"${DUR%s}" "http://127.0.0.1:$1/" 2>&1 |
+			awk '/^finished in/ { gsub(",", ""); r = $4 } /^status codes:/ { ok = $3 + 0 }
+			     /^requests:/ { n = $2 + 0 } /Application protocol: *h2c/ { proto = "h2c" }
+			     END { if (proto != "h2c" || ok < n * 0.99) r = 0; printf "%d", r }	# (threads write lines into each other: h2c anywhere)'
+		return
+	fi
 	taskset -c "$LOAD_CPUS" wrk -t8 -c"$CONNS" -d"$DUR" "${2:-$SCHEME}://127.0.0.1:$1/" 2>&1 |
 		awk '/Requests\/sec/ { printf "%d", $2 }'
 }
@@ -203,7 +224,8 @@ ok = d["statusCodeDistribution"].get("200", 0); n = sum(d["statusCodeDistributio
 print(us(p["p50"]), us(p["p99"]), us(p["p99.9"]), us(d["summary"]["slowest"]), 0, n - ok + sum(d.get("errorDistribution", {}).values()))'
 		return
 	fi
-	taskset -c "$LOAD_CPUS" "$OKENA" bench "http://127.0.0.1:$1/" rate="$2" conns=64 workers=4 duration="$DUR" format=kv 2>&1 |
+	taskset -c "$LOAD_CPUS" "$OKENA" bench "http://127.0.0.1:$1/" rate="$2" conns=64 workers=4 duration="$DUR" \
+		${H2:+proto=h2} format=kv 2>&1 |
 		tr ' ' '\n' | awk -F= '{ v[$1] = $2 } END { printf "%d %d %d %d %d %d", v["c_p50_ns"] / 1000, v["c_p99_ns"] / 1000,
 			v["c_p999_ns"] / 1000, v["c_max_ns"] / 1000, v["behind"], v["errors"] + v["timeouts"] }' ; echo
 }

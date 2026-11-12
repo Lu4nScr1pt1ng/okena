@@ -199,6 +199,48 @@ Latency, microseconds, p50 / p99 / p99.9 / max:
   and it took the client's first suite, AES-256 for every OpenSSL client,
   where it now prefers AES-128 unless the client puts ChaCha20 first.
 
+## HTTP/2 against Envoy, HAProxy and nginx, all in Docker (2026-11-12)
+
+`H2=1 tests/bench/http.sh`: the same setup, the clients speaking HTTP/2 in
+clear (h2c, prior knowledge: okena `http2 on`, Envoy's codec AUTO, HAProxy
+`proto h2`, nginx `http2 on`), HTTP/1.1 with keep-alive to the backend. The
+most each does from h2load (nghttp2; 64 connections, 16 streams each, 10 s;
+counted only when every answer came over h2c and 99% were 2xx); latency from
+okena bench proto=h2 (64 connections, one stream at a time each, open loop),
+each point five times and the median of each percentile: on this host one run
+of ten seconds can move a p99.9 several times either way.
+
+| Proxy (2 cores) | most req/s | per core |
+|---|---|---|
+| okena | 182033 | 91016 |
+| HAProxy 3.2 | 97503 | 48751 |
+| nginx 1.27 | 73328 | 36664 |
+| Envoy 1.40 | 39586 | 19793 |
+
+| Proxy | rate | p50 / p99 / p99.9 / max (us) | behind | errors |
+|---|---|---|---|---|
+| okena | 10000/s | 46 / 65 / 95 / 1016 | 0 | 0 |
+| okena | 30000/s | 40 / 66 / 94 / 717 | 0 | 0 |
+| okena | 80000/s | 51 / 178 / 1196 / 2762 | 0 | 0 |
+| HAProxy | 10000/s | 56 / 73 / 110 / 930 | 0 | 0 |
+| HAProxy | 30000/s | 65 / 82 / 159 / 1178 | 0 | 0 |
+| HAProxy | 80000/s | 200 / 236978 / 251658 / 257911 | 0 | 0 |
+| nginx | 10000/s | 71 / 97 / 141 / 525 | 0 | 0 |
+| nginx | 30000/s | 91 / 266 / 1884 / 3370 | 0 | 0 |
+| nginx | 80000/s | 671088 / 2248146 / 2309050 / 2309050 | 12686 | 33 |
+| Envoy | 10000/s | 163 / 221 / 331 / 1059 | 0 | 0 |
+| Envoy | 30000/s | 255852 / 1090519 / 1107296 / 1113241 | 0 | 0 |
+| Envoy | 80000/s | (did not keep up: 461850 behind) | | 64 |
+
+* okena does 87% more than HAProxy, 2.5 times nginx and 4.6 times Envoy, and
+  more over HTTP/2 than over HTTP/1.1 (many streams, fewer syscalls).
+* The lowest p50, p99 and p99.9 at every rate; at 80000/s on two cores only
+  okena answers in under a millisecond at p99 (178 us; HAProxy 237 ms).
+* A first run with a median of three had okena at 315 us at p99.9 at
+  30000/s against HAProxy's 157; a paired rerun, 679 against 1261; with five
+  runs, 94 against 159. Its tail moves with the host's noise, not okena's
+  pinning (free, auto and pinned compared natively: auto 99-101 us).
+
 ## gRPC against Envoy, open loop (2026-10-31)
 
 `tests/bench/grpc.sh`: okena (`http2 on`, a pool with `protocol h2`) and
