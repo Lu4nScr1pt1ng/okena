@@ -853,7 +853,22 @@ carries tens of millions of requests per second; and, for each of the large
 edges named above, the list of what it does with okena's answer to each item,
 measured, so that the claim that okena can replace it stands on numbers.
 
-## Phase 12 — Addons
+## Phase 12 — Kernel fast paths (was phase 10)
+
+Moved after the others on 2026-11-11 (loading eBPF needs privileges the
+development machine does not give: no unprivileged BPF, no root; and its exit
+is measured on NICs that are not here), then made phase 12, next after phase
+11, on 2026-11-12. Phase 11's comparisons with IPVS and Katran, and its XDP
+pre-filter, wait for this.
+
+* `xdp` listener: Maglev in eBPF, IPIP/GUE encapsulation, DSR,
+  connection tracking table, backend health from user space.
+* XDP pre-filter for the other engines: drop lists, per-source SYN rate.
+* zcrx zero-copy receive on supported NICs; NIC TLS offload.
+
+Exit: packets/s per core comparable to Katran.
+
+## Phase 13 — Addons
 
 * Shared-memory addon protocol, supervision, deadlines, circuit breakers.
 * SDKs (C, Rust, Go, Python); a reference WAF addon on Coraza.
@@ -863,17 +878,3 @@ measured, so that the claim that okena can replace it stands on numbers.
 
 Exit: an addon that answers immediately adds under 5 us at p99; a crashing
 or hanging addon never affects routes that do not use it.
-
-## Later — Kernel fast paths (was phase 10)
-
-Moved after the others on 2026-11-11: loading eBPF needs privileges the
-development machine does not give (no unprivileged BPF, no root), and its exit
-is measured on NICs that are not here. Until then, phase 11's comparisons with
-IPVS and Katran, and its XDP pre-filter, wait for this.
-
-* `xdp` listener: Maglev in eBPF, IPIP/GUE encapsulation, DSR,
-  connection tracking table, backend health from user space.
-* XDP pre-filter for the other engines: drop lists, per-source SYN rate.
-* zcrx zero-copy receive on supported NICs; NIC TLS offload.
-
-Exit: packets/s per core comparable to Katran.
