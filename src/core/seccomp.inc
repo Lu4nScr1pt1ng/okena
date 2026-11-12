@@ -256,6 +256,8 @@ rodata
 	sc_allow filter_worker_uring, SYS_recvmmsg	; QUIC datagrams
 	sc_allow filter_worker_uring, SYS_sendmmsg
 	sc_allow filter_worker_uring, SYS_poll		; (a listening socket nobody takes from: accept_watch)
+	sc_allow filter_worker_uring, SYS_recvfrom	; bulk: reads and writes in the loop (bulk.inc)
+	sc_allow filter_worker_uring, SYS_sendto
 	sc_allow filter_worker_uring, SYS_sched_setaffinity	; (pin_workers auto: pinned under load)
 	sc_end filter_worker_uring
 
@@ -288,6 +290,7 @@ rodata
 	sc_allow filter_worker_uring_u, SYS_lseek_
 	sc_allow filter_worker_uring_u, SYS_close
 	sc_allow filter_worker_uring_u, SYS_poll		; (a listening socket nobody takes from: accept_watch)
+	sc_allow filter_worker_uring_u, SYS_sendto	; bulk (bulk.inc)
 	sc_allow filter_worker_uring_u, SYS_sched_setaffinity	; (pin_workers auto: pinned under load)
 	sc_end filter_worker_uring_u
 
@@ -344,6 +347,8 @@ rodata
 	sc_allow filter_worker_uring_f, SYS_lseek_
 	sc_allow filter_worker_uring_f, SYS_close
 	sc_allow filter_worker_uring_f, SYS_poll		; (a listening socket nobody takes from: accept_watch)
+	sc_allow filter_worker_uring_f, SYS_recvfrom	; bulk: reads and writes in the loop (bulk.inc)
+	sc_allow filter_worker_uring_f, SYS_sendto
 	sc_allow filter_worker_uring_f, SYS_sched_setaffinity	; (pin_workers auto: pinned under load)
 	sc_end filter_worker_uring_f
 

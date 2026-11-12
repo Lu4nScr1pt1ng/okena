@@ -46,6 +46,8 @@ SUITES = [
     ("cachedge epoll", ["tests/gateway/cachedge.py", "epoll"]),
     ("l4 edges io_uring", ["tests/l4/edges.py", "io_uring"]),
     ("l4 edges epoll", ["tests/l4/edges.py", "epoll"]),
+    ("l4 bulk io_uring", ["tests/l4/bulk.py", "io_uring"]),
+    ("l4 bulk epoll", ["tests/l4/bulk.py", "epoll"]),
     ("admin edges", ["tests/admin/edges.py"]),
     ("fdlimit io_uring", ["tests/httpproxy/fdlimit.py", "io_uring"]),
     ("fdlimit epoll", ["tests/httpproxy/fdlimit.py", "epoll"]),

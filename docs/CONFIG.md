@@ -538,7 +538,9 @@ backend's answer, a client's next request), for twice their recent gap:
 there a sleep and a wakeup cost more than the wait (one TCP or UDP flow
 through two cores: 31k to 37k round trips a second, p50 31.7 to 26.5 µs).
 When events come further apart the loop sleeps as before, and polling costs
-nothing. `okena explain` shows what a
+nothing. It polls only on a core of its own (a pinned worker: `pin_workers
+on`, or `auto` once the load is its own): on a shared core polling takes the
+time the others need. `okena explain` shows what a
 profile set.
 
 ## Listeners

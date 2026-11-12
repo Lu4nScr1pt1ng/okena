@@ -403,7 +403,13 @@ OP_ZC_OUT	:= 38		; pipe -> client
 OP_ZC_DRAIN	:= 39		; a pipe given back with bytes in it
 OP_ZC_FD	:= 40		; zero copy: a descriptor of the client's own, made
 OP_ZC_POLL	:= 41		; and room on its socket
-OP_COUNT	:= 42
+OP_B_FD_C	:= 42		; bulk.inc: the client's normal descriptor
+OP_B_FD_U	:= 43		; the upstream's
+OP_B_RD_c	:= 44		; the client is readable
+OP_B_RD_u	:= 45
+OP_B_WR_c	:= 46		; room to the upstream (client to upstream)
+OP_B_WR_u	:= 47		; room to the client
+OP_COUNT	:= 48
 
 rodata
 	align 8
@@ -418,6 +424,7 @@ rodata
 			dq on_qpoll, on_qtimer, on_qpace, on_fdelay, on_upoll
 			dq on_zc_in, on_zc_out, on_zc_drain
 			dq on_zc_fd, on_zc_poll
+			dq on_b_fd_c, on_b_fd_u, on_b_rd_c, on_b_rd_u, on_b_wr_c, on_b_wr_u
 end rodata
 
 ring_reap:

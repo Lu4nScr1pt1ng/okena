@@ -171,6 +171,8 @@ worker_main:
 	shl	rdx,32
 	or	rax,rdx
 	mov	[g_bp_t0],rax
+	cmp	dword [g_pinned],0		; only on a core of its own: polling on a
+	je	.block				; shared one takes it from the others
 	mov	rcx,[g_bp_gap]
 	cmp	rcx,[g_bp_max]
 	jae	.block
@@ -196,6 +198,7 @@ worker_main:
 	call	qs_flush			; QUIC: the answers first,
 	call	qs_resume			; then the datagrams that came
 	call	udp_resume
+	call	bulk_resume			; bulk directions whose turn ran out
 	call	qs_flush			; QUIC: what connections send
 	call	hs_drain			; hellos that waited for the budget
 	mov	eax,[g_reaped]
@@ -219,6 +222,8 @@ worker_main:
 	jne	@f
 	cmp	dword [g_ud_pend],0
 	jne	@f
+	cmp	dword [g_bk_pn],0
+	jne	@f
 	mov	edi,1
 @@:
 	cmp	dword [g_bp_auto],0
@@ -241,6 +246,7 @@ worker_main:
 	call	qs_flush			; QUIC: the answers first,
 	call	qs_resume			; then the datagrams that came
 	call	udp_resume
+	call	bulk_resume			; bulk directions whose turn ran out
 	call	qs_flush			; QUIC: what connections send
 	call	hs_drain			; hellos that waited for the budget
 	jmp	.loop

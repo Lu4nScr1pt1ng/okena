@@ -110,6 +110,10 @@ SX_BIG_C	:= 1		; client to upstream on large buffers
 SX_BIG_U	:= 2		; upstream to client
 SX_RST_U	:= 4		; the upstream's close resets
 SX_RST_C	:= 8		; the client's
+SX_SYNC_C	:= 16		; client to upstream reads in the loop (bulk.inc)
+SX_SYNC_U	:= 32		; upstream to client
+SX_FDS		:= 64		; both normal descriptors are had
+SX_FDREQ	:= 128		; they were asked for
 
 ; a provided ring (io_uring), one for each size
 PG_RING		:= 0		; q: its entries
@@ -1083,6 +1087,8 @@ session_alloc:
 	mov	edx,[rcx+S_NEXT]
 	mov	[g_sess_free],edx
 	mov	byte [g_sbig+rax],0		; (its extras start clear)
+	mov	dword [g_bfd_c+rax*4],0
+	mov	dword [g_bfd_u+rax*4],0
 	ret
 .fresh:
 	mov	eax,[g_sess_hwm]
@@ -1090,6 +1096,8 @@ session_alloc:
 	jae	.none
 	inc	dword [g_sess_hwm]
 	mov	byte [g_sbig+rax],0
+	mov	dword [g_bfd_c+rax*4],0
+	mov	dword [g_bfd_u+rax*4],0
 	ret
 .none:
 	mov	eax,NIL
@@ -2620,6 +2628,7 @@ macro buf_next_size bit
 	cmp	dword [g_pbgl+PG_MAX],0
 	je	done
 	or	byte [g_sbig+rbx],bit
+	call	bulk_want			; (its reads may go in the loop)
 	jmp	done
 large:
 	cmp	r14d,BUF_SIZE
@@ -2840,6 +2849,14 @@ on_s_send_u:
 	jnz	.out
 	cmp	dword [rax+S_STATE],ST_OPEN
 	jne	.out
+	mov	cl,[g_sbig+rbx]			; bulk, the descriptors had: from now on
+	and	cl,SX_FDS or SX_BIG_C		; its reads go in the loop (bulk.inc)
+	cmp	cl,SX_FDS or SX_BIG_C
+	jne	@f
+	or	byte [g_sbig+rbx],SX_SYNC_C
+	mov	r13,rax
+	jmp	bulk_arm_rd_c
+@@:
 	mov	edi,ebx
 	jmp	post_recv_c
 .partial:
@@ -2878,6 +2895,14 @@ on_s_send_c:
 	jnz	.out
 	cmp	dword [rax+S_STATE],ST_OPEN
 	jne	.out
+	mov	cl,[g_sbig+rbx]
+	and	cl,SX_FDS or SX_BIG_U
+	cmp	cl,SX_FDS or SX_BIG_U
+	jne	@f
+	or	byte [g_sbig+rbx],SX_SYNC_U
+	mov	r13,rax
+	jmp	bulk_arm_rd_u
+@@:
 	mov	edi,ebx
 	jmp	post_recv_u
 .partial:
@@ -2995,6 +3020,7 @@ session_close:
 ; descriptors (nothing of the session is in flight any more).
 session_close_fds:
 	or	dword [r12+S_FLAGS],SF_FDS_CLOSING
+	call	bulk_close_fds			; (the normal descriptors bulk made)
 	test	dword [r12+S_FLAGS],SF_H2S or SF_H2U or SF_QC or SF_H3S or SF_MIR
 	jnz	.client_closed			; no client socket
 	test	byte [g_sbig+rbx],SX_RST_C
