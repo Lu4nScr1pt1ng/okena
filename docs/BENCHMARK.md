@@ -408,22 +408,33 @@ bad token got 401.
 
 ## Idle keep-alive connections: memory, all in Docker (2026-11-12)
 
-`tests/bench/idlemem.sh`: 100000 clients each make one request, read its
-answer and stay connected, idle. The proxy's own memory, `anon` from the
-container's cgroup (the kernel's socket buffers left out, the same for
-all), before the connections and 5 s after the last.
+`tests/bench/idlemem.sh`: 100000 clients (in a container of their own) each
+make one request, read its answer and stay connected, idle. The proxy's own
+memory, `anon` from its container's cgroup (the kernel's socket buffers left
+out, the same for all), before the connections and 5 s after the last; the
+count is of the connections open on the proxy's side at that moment (a
+first version counted what the client had read, connections the proxy had
+closed meanwhile included: its figures were too low, okena's 534 B among
+them).
 
 | Proxy (2 workers) | idle connections | memory before | after | per connection |
 |---|---|---|---|---|
-| okena | 100000 | 7 MiB | 58 MiB | 534 B |
-| HAProxy 3.2 | 99743 | 72 MiB | 184 MiB | 1177 B |
-| nginx 1.27 | 97042 | 840 MiB | 895 MiB | 587 B |
-| Envoy 1.40 | 100000 | 18 MiB | 1578 MiB | 16366 B |
+| okena | 100000 | 5 MiB | 75 MiB | 727 B |
+| HAProxy 3.2 | 100000 | 71 MiB | 185 MiB | 1189 B |
+| nginx 1.27 | 100000 | 840 MiB | 896 MiB | 587 B |
+| Envoy 1.40 | 100000 | 18 MiB | 1599 MiB | 16572 B |
 
-* nginx reserves its connection arrays for `worker_connections` up front
-  (1000000 here: 840 MiB before the first). The connections short of 100000
-  are those the proxy refused or dropped while they came (HAProxy 257,
-  nginx 2958); okena and Envoy took every one.
+* okena 971 -> 727 B: the client's side record 256 -> 64 bytes (the PROXY
+  header in a table of its own), no transparent huge pages on per-session
+  tables. What is left: the session (128 B), the HTTP state (512 B), the
+  side record (64 B). nginx's connection is smaller; its arrays are
+  reserved up front for `worker_connections` (1000000 here: 840 MiB before
+  the first), so in all okena holds less up to some 1.4 million connections.
+* Past 56000 idle connections okena used to close what came: the default
+  `limits { connections }` was 65536 and the overload manager acts at 80%
+  of it. The default is now what a worker can hold. 262144 idle
+  connections through okena held 233 MiB; more was this host's conntrack
+  table (262144 entries), not okena.
 
 ## gRPC against Envoy, open loop (2026-10-31)
 
