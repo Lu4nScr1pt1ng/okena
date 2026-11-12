@@ -176,6 +176,7 @@ supervisor_main:
 
 	call	alog_pipe_init
 	call	tsc_calibrate			; once, for every worker (busy_poll, access log)
+	call	xdp_setup			; (maps, programs: only before the filter)
 	; from here on the supervisor and everything it forks are confined
 	call	seccomp_supervisor
 	call	idem_table_init
@@ -191,6 +192,7 @@ supervisor_main:
 
 	call	spawn_control
 	call	spawn_health
+	call	spawn_xdpctl
 	call	spawn_admin
 	call	spawn_logger
 	call	spawn_keeper
@@ -1056,6 +1058,21 @@ reap_workers:
 	call	spawn_health
 	jmp	.next
 .not_health:
+	cmp	r12d,[g_xdp_pid]
+	jne	.not_xdpctl
+	mov	dword [g_xdp_pid],0
+	cmp	dword [g_shutdown],0
+	jne	.next
+	call	log_begin
+	out_lit 'okena-xdp exited, restarting it (the balancer keeps its last rings meanwhile)'
+	call	log_end
+	lea	rdi,[ts_respawn_delay]
+	xor	esi,esi
+	mov	eax,SYS_nanosleep
+	syscall
+	call	spawn_xdpctl
+	jmp	.next
+.not_xdpctl:
 	cmp	r12d,[g_control_pid]
 	jne	.worker
 	; the control process: workers keep the last published addresses
@@ -1207,6 +1224,13 @@ reap_workers:
 	syscall
 @@:
 	mov	edi,[g_health_pid]
+	test	edi,edi
+	jz	@f
+	mov	esi,SIGKILL
+	mov	eax,SYS_kill
+	syscall
+@@:
+	mov	edi,[g_xdp_pid]
 	test	edi,edi
 	jz	@f
 	mov	esi,SIGKILL

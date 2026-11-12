@@ -396,6 +396,8 @@ plan_compile:
 	mov	dword [g_plan_pin],PIN_AUTO
 	mov	dword [g_plan_reload_watch],0
 	mov	dword [g_plan_tryc],0
+	mov	dword [g_plan_nxvip],0		; (xdpvip.inc)
+	mov	dword [g_plan_nxif],0
 	mov	qword [g_plan_hs_budget],DEFAULT_HS_BUDGET_US
 	mov	qword [g_plan_hs_wait],DEFAULT_HS_WAIT_US
 	call	profile_scan			; (before the pools: their defaults follow it)
@@ -714,6 +716,9 @@ compile_settings:
 	lea	rcx,[dir_table + D_SIZE*DIR_BUSY_POLL]
 	cmp	rax,rcx
 	je	.busy_poll
+	lea	rcx,[dir_table + D_SIZE*DIR_XDP]
+	cmp	rax,rcx
+	je	.xdp
 	lea	rcx,[dir_table + D_SIZE*DIR_METRICS]
 	cmp	rax,rcx
 	je	.metrics
@@ -802,6 +807,10 @@ compile_settings:
 	mov	dword [g_plan_metrics],1
 	mov	rdi,rbx
 	call	compile_metrics_token
+	jmp	.advance
+.xdp:
+	mov	rdi,rbx
+	call	compile_xdp_ifaces
 	jmp	.advance
 .busy_poll:
 	mov	rdi,rbx
@@ -4121,6 +4130,14 @@ compile_listener:
 	push	r14
 	push	r15
 	mov	r12,rdi
+	mov	ecx,DIR_MODE			; `mode xdp`: a VIP of the XDP balancer,
+	call	find_child			; not a listener (no socket: xdpvip.inc)
+	test	rax,rax
+	jz	@f
+	mov	rdi,r12
+	call	compile_xvip
+	jmp	.xvip_done
+@@:
 	mov	r14d,-1				; http: routes choose the pool
 	mov	dword [g_cmp_pt],0
 	mov	dword [g_cmp_hpeer],0
@@ -4586,6 +4603,7 @@ compile_listener:
 	inc	r13d
 	jmp	.address
 .done:
+.xvip_done:
 	pop	r15
 	pop	r14
 	pop	r13

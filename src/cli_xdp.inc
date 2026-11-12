@@ -4,14 +4,14 @@
 ; none), counting what comes in, per CPU, and letting it pass. Prints the
 ; packets of each second. Needs CAP_BPF and CAP_NET_ADMIN (root).
 
-XC_MAP_COUNT	:= 0			; per-CPU array of one u64
+XT_MAP_COUNT	:= 0			; per-CPU array of one u64
 
 rodata
 	align 8
 ; the counter, then XDP_PASS
-xc_prog:
+xt_prog:
 	e_st32	BR10, -4, 0			; key 0 on the stack
-	e_ldmap	BR1, XC_MAP_COUNT
+	e_ldmap	BR1, XT_MAP_COUNT
 	e_mov	BR2, BR10
 	e_addi	BR2, -4
 	e_call	BPF_FUNC_map_lookup_elem
@@ -22,16 +22,16 @@ xc_prog:
 .pass:
 	e_movi	BR0, XDP_PASS
 	e_exit
-xc_prog_len = $ - xc_prog
+xt_prog_len = $ - xt_prog
 end rodata
 
 bss
 	align 8
-	g_xc_insns:	rb 4096
-	g_xc_vals:	rb 8 * 1024		; a per-CPU value: 8 bytes a CPU
-	g_xc_key	dd ?
-	g_xc_secs	dd ?
-	g_xc_link	dd ?
+	g_xt_insns:	rb 4096
+	g_xt_vals:	rb 8 * 1024		; a per-CPU value: 8 bytes a CPU
+	g_xt_key	dd ?
+	g_xt_secs	dd ?
+	g_xt_link	dd ?
 end bss
 
 cli_xdp:
@@ -39,7 +39,7 @@ cli_xdp:
 	mov	r12,[rax+16]			; the interface
 	test	r12,r12
 	jz	.usage
-	mov	dword [g_xc_secs],10
+	mov	dword [g_xt_secs],10
 	mov	rsi,[rax+24]
 	test	rsi,rsi
 	jz	@f
@@ -56,21 +56,21 @@ cli_xdp:
 .secs:
 	test	eax,eax
 	jz	@f
-	mov	[g_xc_secs],eax
+	mov	[g_xt_secs],eax
 @@:
 	call	eb_ncpu
 	mov	edi,BPF_MAP_TYPE_PERCPU_ARRAY
 	mov	esi,4
 	mov	edx,8
 	mov	ecx,1
-	mov	r8d,XC_MAP_COUNT
+	mov	r8d,XT_MAP_COUNT
 	xor	r9d,r9d
 	call	eb_map_create
 	test	eax,eax
 	js	.no_map
-	lea	rdi,[g_xc_insns]
-	lea	rsi,[xc_prog]
-	mov	edx,xc_prog_len
+	lea	rdi,[g_xt_insns]
+	lea	rsi,[xt_prog]
+	mov	edx,xt_prog_len
 	call	eb_prog_load_xdp
 	test	eax,eax
 	js	.no_prog
@@ -95,7 +95,7 @@ cli_xdp:
 	test	eax,eax
 	js	.no_attach
 .attached:
-	mov	[g_xc_link],eax
+	mov	[g_xt_link],eax
 	out_lit 'okena xdp: attached to '
 	mov	rsi,r12
 	call	out_cstr
@@ -121,16 +121,16 @@ cli_xdp:
 	mov	eax,SYS_nanosleep
 	syscall
 	add	rsp,16
-	mov	edi,[g_eb_mapfd+XC_MAP_COUNT*4]
-	lea	rsi,[g_xc_key]
-	lea	rdx,[g_xc_vals]
+	mov	edi,[g_eb_mapfd+XT_MAP_COUNT*4]
+	lea	rsi,[g_xt_key]
+	lea	rdx,[g_xt_vals]
 	call	eb_map_lookup
 	test	eax,eax
 	js	.no_read
 	xor	eax,eax
 	xor	ecx,ecx
 @@:
-	add	rax,[g_xc_vals+rcx*8]
+	add	rax,[g_xt_vals+rcx*8]
 	inc	ecx
 	cmp	ecx,[g_eb_ncpu]
 	jb	@b
@@ -142,7 +142,7 @@ cli_xdp:
 	call	out_char
 	call	out_flush
 	pop	rbx
-	dec	dword [g_xc_secs]
+	dec	dword [g_xt_secs]
 	jnz	.second
 	xor	edi,edi
 	jmp	exit_process			; (the link goes with the process)

@@ -548,6 +548,15 @@ supervisor_reload:
 	call	api_table_init
 	call	sv_live_init
 	call	spawn_health
+	mov	edi,[g_xdp_pid]			; okena-xdp: again, with the new plan
+	test	edi,edi
+	jz	@f
+	mov	dword [g_xdp_pid],0
+	mov	esi,SIGKILL
+	mov	eax,SYS_kill
+	syscall
+@@:
+	call	spawn_xdpctl
 	call	stats_table_init		; the old workers keep their pages
 	mov	edi,[g_admin_pid]
 	test	edi,edi

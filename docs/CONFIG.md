@@ -8,10 +8,10 @@ not built yet. A directive that is not built is refused by `okena check`
 
 | Block | Directives |
 |---|---|
-| `okena` | `workers`, `io_engine`, `profile`, `pin_workers auto\|on\|off`, `last_good on\|off`, `reload on-change\|signal`, `busy_poll`, `watchdog`, `drain delay= timeout=`, `metrics [token=]`, `user`, `ticket_keys`, `handshake_budget wait=`, `quic_server_id HEX`, `cache_memory`, `cache_disk PATH size=`, `fleet ADDR...`, `cdn_loop NAME [max=]`, `bird PATH protocol= [pool=]` |
+| `okena` | `workers`, `io_engine`, `profile`, `pin_workers auto\|on\|off`, `last_good on\|off`, `reload on-change\|signal`, `busy_poll`, `watchdog`, `drain delay= timeout=`, `metrics [token=]`, `user`, `ticket_keys`, `handshake_budget wait=`, `quic_server_id HEX`, `cache_memory`, `cache_disk PATH size=`, `fleet ADDR...`, `cdn_loop NAME [max=]`, `bird PATH protocol= [pool=]`, `xdp IFACE...` |
 | `vrrp IFACE` | `vrid=`, `priority=`, `address=A/N`, `advert=`, `preempt=`, `track=POOL` (a floating address, VRRP v3) |
-| `tcp ADDR...` | `to`, `mss`, `limits { connections; per_source }`, `timeout { idle }`, `proxy_protocol send v1\|v2`, `tls { cert; key }`, `tls passthrough { sni NAME... to pool P; default reject\|to pool P }` (a `default to pool` alone is enough) |
-| `udp ADDR...` | `to`, `responses N`, `limits { connections }` (flows), `timeout { idle }` |
+| `tcp ADDR...` | `to`, `mode xdp`, `mss`, `limits { connections; per_source }`, `timeout { idle }`, `proxy_protocol send v1\|v2`, `tls { cert; key }`, `tls passthrough { sni NAME... to pool P; default reject\|to pool P }` (a `default to pool` alone is enough) |
+| `udp ADDR...` | `to`, `mode xdp`, `responses N`, `limits { connections }` (flows), `timeout { idle }` |
 | `http ADDR...` | `host`, `route`, `mss`, `canonical NAME`, `header`, `response header` (for every route below), `errors CODES file= [backend]`, `maintenance file= retry= allow= except=`, `limits`, `timeout { idle; header; body_idle; response }`, `trusted_proxies`, `access_log`, `tracing`, `http2 on\|off`, `http3 on\|off\|retry\|v2`, `preferred_address`, `early_data on\|off`, `tls { cert; key; ktls on\|off; versions 1.2 1.3; alpn h2 http/1.1 }` |
 | `route PATH... [METHOD...]` | `to`, `redirect`, `respond CODE [BODY] [type=]`, `rewrite path`, `signed_urls key= [key2=]`, `header set\|add\|drop`, `response header set\|add\|drop`, `retry N [idempotent-only] [on=reset,timeout,5xx,500,502,503,504]`, `timeout try= total=` |
 | `pool NAME` | `server ADDR [weight=N] [max=N] [backup]`, `queue timeout=`, `balance least-request\|peak-ewma\|round-robin\|least-conn\|random\|maglev\|ring-hash\|source-hash [key=] [bound=]\|first`, `sticky cookie= [ttl=] [samesite=]`, `connect timeout= max= idle= warm= rate=`, `health tcp\|http\|grpc ...`, `outlier errors= eject= max_ejected=`, `retry_budget P% [min=N/s]`, `concurrency N\|adaptive [min=] [max=]`, `source ADDR...`, `slow_start`, `tls { trust FILE; sni NAME; cert FILE; key FILE }` (TLS to the backends), `protocol h1\|h2\|fastcgi` |
@@ -582,7 +582,36 @@ that changes the number of workers moves some flows, which start again on
 their next datagram (to the same server with `balance source-hash`).
 
 `xdp` (L4 in the kernel, direct server return) is a mode of `tcp` and
-`udp` listeners: `tcp 203.0.113.10:80 { mode xdp; to pool web }`.
+`udp` listeners:
+
+```
+okena { xdp eth0 }                  # the interfaces it goes on
+pool web {
+    server 10.0.0.21:80
+    server 10.0.0.22:80
+    health tcp every=200ms
+}
+tcp 203.0.113.10:80 { mode xdp; to pool web }
+```
+
+A VIP so marked is no socket: its packets are turned round in the NIC's
+driver (generic XDP where the driver has none) before the kernel's stack
+sees them, wrapped in IPIP to a server, which takes the outer header off
+(`tunl0`), holds the VIP on `lo` and answers the client itself. A flow keeps
+its server while it lives (a flow table, an LRU a CPU); a new one takes the
+server its hash names in the pool's maglev table, the same on every
+instance, so a flow that moves between instances (ECMP) keeps its server. A
+server the health checks take out leaves the table at once; its slots are
+drawn again, as user-space maglev does, and its flows move. The outer
+header's source is the first interface's IPv4 address; the next hop comes
+from the kernel's routes and neighbours.
+
+Needs CAP_BPF and CAP_NET_ADMIN (the supervisor sets it up before it
+confines itself; afterwards only `okena-xdp`, a process of its own, changes
+the maps); without them okena says why and serves the rest. `to` is all a
+VIP takes (TLS, limits, timeouts have nothing to act on); IPv4 for now;
+the interfaces are those at the start (a reload changes VIPs and servers,
+not interfaces).
 
 Transport settings, the same in every listener:
 

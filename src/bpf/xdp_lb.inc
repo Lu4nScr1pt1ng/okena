@@ -24,6 +24,7 @@ XS_N		:= 4
 
 ; the frame (offsets from BR10)
 XF_FIB		:= -112		; struct bpf_fib_lookup, 64 bytes
+XF_LRU		:= -44		; u32: 1 when the real came from LRU
 XF_SRC		:= -40		; u32 the outer source
 XF_KEY		:= -36		; u32 a key (CTL, STATS)
 XF_RING		:= -32		; u32 the ring's key
@@ -103,8 +104,10 @@ xl_prog:
 	e_jeqi	BR0, 0, .new
 	e_ldx32	BR1, BR0, 0
 	e_stx32	BR10, XF_REAL, BR1
+	e_st32	BR10, XF_LRU, 1
 	e_ja	.real
 .new:
+	e_st32	BR10, XF_LRU, 0
 	; the flow's hash: its source and ports (the VIP's are the same for all)
 	e_ldx32	BR1, BR10, XF_FLOW
 	e_mul32i BR1, 0x9E3779B1
@@ -140,8 +143,20 @@ xl_prog:
 	e_addi	BR2, XF_REAL
 	e_call	BPF_FUNC_map_lookup_elem
 	e_jeqi	BR0, 0, .drop
-	e_ldx32	BR9, BR0, 0			; the real's address
-	e_jeqi	BR9, 0, .drop			; (a slot with no real)
+	e_ldx32	BR1, BR0, 0			; the real's address, 0 when it is down
+	e_jnei	BR1, 0, .real_up
+	e_ldx32	BR2, BR10, XF_LRU		; a flow's real gone: a new flow, once
+	e_jeqi	BR2, 0, .drop
+	; (the VIP's number again: BR9 held the real since)
+	e_ldmap	BR1, XL_VIPS
+	e_mov	BR2, BR10
+	e_addi	BR2, XF_VIP
+	e_call	BPF_FUNC_map_lookup_elem
+	e_jeqi	BR0, 0, .drop
+	e_ldx32	BR9, BR0, 0
+	e_ja	.new
+.real_up:
+	e_mov	BR9, BR1
 	e_st32	BR10, XF_KEY, 0			; the outer source
 	e_ldmap	BR1, XL_CTL
 	e_mov	BR2, BR10

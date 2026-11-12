@@ -138,6 +138,17 @@ macro sc_end f*
 	bpf_jset O_WRONLY, f#.ap2, f#.allow
 	f#.ap2:
 	bpf_jset O_APPEND, f#.allow, f#.trap
+	f#.bpf_map:				; bpf: on maps only (args[0], the command:
+	bpf_ld 16				; lookup, update, delete, next key, batch
+	bpf_jeq 1, f#.allow, f#.bm1		; update); making maps and loading programs
+	f#.bm1:					; happen before any filter (xdpctl.inc)
+	bpf_jeq 2, f#.allow, f#.bm2
+	f#.bm2:
+	bpf_jeq 3, f#.allow, f#.bm3
+	f#.bm3:
+	bpf_jeq 4, f#.allow, f#.bm4
+	f#.bm4:
+	bpf_jeq 26, f#.allow, f#.trap
 	f#.trap:
 	bpf_ret SECCOMP_RET_TRAP
 	f#.kill:
@@ -165,6 +176,7 @@ rodata
 	sc_allow filter_supervisor, SYS_fstat
 	sc_check filter_supervisor, SYS_openat, append_only	; config; access logs (logger)
 	sc_allow filter_supervisor, 217			; getdents64: `include "DIR/*.conf"`
+	sc_check filter_supervisor, SYS_bpf, bpf_map	; (okena-xdp: the balancer's maps)
 	sc_check filter_supervisor, SYS_mmap, no_exec
 	sc_allow filter_supervisor, SYS_madvise
 	sc_allow filter_supervisor, SYS_fork
@@ -438,6 +450,14 @@ rodata
 	sc_allow filter_health, SYS_read		; HTTP checks: the status line
 	sc_allow filter_health, SYS_clock_gettime
 	sc_end filter_health
+
+	; okena-xdp: the XDP balancer's maps, each tick (xdpctl.inc)
+	sc_begin filter_xdpctl
+	sc_common filter_xdpctl
+	sc_check filter_xdpctl, SYS_bpf, bpf_map
+	sc_allow filter_xdpctl, SYS_nanosleep
+	sc_allow filter_xdpctl, SYS_clock_gettime
+	sc_end filter_xdpctl
 
 	; admin process: one connection at a time on the metrics socket
 	sc_begin filter_admin

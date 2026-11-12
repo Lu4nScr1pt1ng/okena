@@ -9,6 +9,8 @@ BPF_MAP_UPDATE_ELEM := 2
 BPF_MAP_DELETE_ELEM := 3
 BPF_PROG_LOAD	:= 5
 BPF_LINK_CREATE	:= 28
+BPF_MAP_GET_NEXT_KEY := 4
+BPF_MAP_UPDATE_BATCH := 26
 BPF_MAP_TYPE_HASH := 1
 BPF_MAP_TYPE_ARRAY := 2
 BPF_MAP_TYPE_PERCPU_ARRAY := 6
@@ -297,3 +299,102 @@ eb_ncpu:
 	mov	[g_eb_ncpu],eax
 .out:
 	ret
+
+; edi = map, rsi = key (0: from the first), rdx = where the next goes: eax =
+; 0, or -errno (-ENOENT: none after)
+eb_map_next_key:
+	push	rdx
+	push	rsi
+	push	rdi
+	lea	rdi,[g_eb_attr]
+	xor	eax,eax
+	mov	ecx,32 / 8
+	rep	stosq
+	pop	rdi
+	pop	rsi
+	pop	rdx
+	mov	[g_eb_attr],edi
+	mov	[g_eb_attr+8],rsi
+	mov	[g_eb_attr+16],rdx
+	mov	edi,BPF_MAP_GET_NEXT_KEY
+	lea	rsi,[g_eb_attr]
+	mov	edx,24
+	mov	eax,SYS_bpf
+	syscall
+	ret
+
+; edi = map, rsi = key: eax = 0 or -errno
+eb_map_delete:
+	push	rsi
+	push	rdi
+	lea	rdi,[g_eb_attr]
+	xor	eax,eax
+	mov	ecx,32 / 8
+	rep	stosq
+	pop	rdi
+	pop	rsi
+	mov	[g_eb_attr],edi
+	mov	[g_eb_attr+8],rsi
+	mov	edi,BPF_MAP_DELETE_ELEM
+	lea	rsi,[g_eb_attr]
+	mov	edx,16
+	mov	eax,SYS_bpf
+	syscall
+	ret
+
+; edi = map, rsi = keys, rdx = values (4 bytes each), ecx = how many: one
+; BPF_MAP_UPDATE_BATCH; a kernel without it (before 5.6), one update each.
+; eax = 0 or -errno. Keeps rbx, r12-r15.
+eb_map_update_batch:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	mov	ebx,edi
+	mov	r12,rsi
+	mov	r13,rdx
+	mov	r14d,ecx
+	lea	rdi,[g_eb_attr]
+	xor	eax,eax
+	mov	ecx,64 / 8
+	rep	stosq
+	mov	[g_eb_attr+16],r12		; keys
+	mov	[g_eb_attr+24],r13		; values
+	mov	[g_eb_attr+32],r14d		; count
+	mov	[g_eb_attr+36],ebx		; map_fd
+	mov	edi,BPF_MAP_UPDATE_BATCH
+	lea	rsi,[g_eb_attr]
+	mov	edx,56
+	mov	eax,SYS_bpf
+	syscall
+	test	eax,eax
+	jz	.out
+	cmp	eax,-22				; EINVAL / ENOTSUPP: not this kernel
+	je	.each
+	cmp	eax,-524
+	jne	.out
+.each:
+	xor	ecx,ecx
+.one:
+	cmp	ecx,r14d
+	jae	.done
+	push	rcx
+	mov	edi,ebx
+	lea	rsi,[r12+rcx*4]
+	lea	rdx,[r13+rcx*4]
+	xor	ecx,ecx
+	call	eb_map_update
+	pop	rcx
+	test	eax,eax
+	js	.out
+	inc	ecx
+	jmp	.one
+.done:
+	xor	eax,eax
+.out:
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+

@@ -125,6 +125,7 @@ enumdef e_balance, 'round-robin', 'least-conn', 'random', 'least-request', 'peak
 enumdef e_server_flags, 'backup'
 enumdef e_health, 'tcp', 'http', 'grpc'
 enumdef e_pp_mode, 'send'
+enumdef e_listen_mode, 'xdp'
 enumdef e_redirect_codes, '301', '302', '303', '307', '308'
 keysdef k_respond, 'type', T_ANY
 enumdef e_header_ops, 'set', 'add', 'drop'
@@ -206,7 +207,7 @@ keysdef k_connect, 'timeout', T_DURATION, 'max', T_UINT, 'idle', T_DURATION, \
 enumdef ctx_names, 'the top level', '`okena`', '`tcp`', '`pool`', '`limits`', '`timeout`', '`http`', '`route`', '`host`', '`tls`', '`auth`', '`udp`', '`alerts`'
 
 ; Directives of the language that this version does not implement yet.
-enumdef future_names, 'xdp', \
+enumdef future_names, \
 	'addon', 'log', \
 	'acme', \
 	'body', \
@@ -345,6 +346,8 @@ dirdef DIR_CONNECT, 'connect',     M_POOL,    0,           F_UNIQUE or F_KEYS_BL
 dirdef DIR_HEALTH, 'health',      M_POOL,    0,           F_UNIQUE or F_KEYS_BLOCK, 1, 3, e_health, T_ANY, k_health
 dirdef DIR_UPTLS, 'tls',         M_POOL,    0,           F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_uptls
 dirdef DIR_PROTOCOL, 'protocol', M_POOL,    0,           F_UNIQUE, 1, 1, e_proto, T_NONE, 0
+dirdef DIR_MODE, 'mode',         M_TCP or M_UDP, 0,      F_UNIQUE, 1, 1, e_listen_mode, T_NONE, 0
+dirdef DIR_XDP, 'xdp',           M_OKENA,   0,           F_UNIQUE, 1, 8, T_ANY, T_ANY, 0
 rodata
 	dir_table_end:
 end rodata
