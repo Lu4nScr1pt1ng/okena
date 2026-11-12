@@ -14,6 +14,9 @@
 //   l4bench cps HOST PORT THREADS SECONDS
 //                                  a new connection per 64-byte exchange (the
 //                                  client closes with a reset: no TIME_WAIT)
+//   l4bench httpbig PORT SIZE      HTTP/1.1, keep-alive: every request answered
+//                                  with a body of SIZE bytes, or of N for GET /N
+//                                  (N at most SIZE; a thread a connection)
 //   l4bench uecho PORT THREADS     UDP echo
 //   l4bench uping HOST PORT CONNS THREADS SECONDS SIZE
 //                                  UDP, a datagram in flight on each socket
@@ -22,6 +25,7 @@
 #include <arpa/inet.h>
 #include <netinet/tcp.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -132,6 +136,49 @@ int main(int argc, char **argv) {
            lat_g[nlat_g / 2] / 1e3, lat_g[nlat_g * 99 / 100] / 1e3, lat_g[nlat_g * 999 / 1000] / 1e3,
            lat_g[nlat_g - 1] / 1e3);
     return 0;
+}
+
+
+static char *big_resp; static long big_size;
+static void *big_conn(void *arg) {
+    int c = (int)(long)arg; char buf[65536]; long have = 0;
+    for (;;) {
+        ssize_t r = read(c, buf + have, sizeof buf - have);
+        if (r <= 0) break;
+        have += r;
+        for (;;) {   // each request head in what was read
+            char *e = memmem(buf, have, "\r\n\r\n", 4);
+            if (!e) break;
+            long used = e + 4 - buf, size = big_size;
+            if (have > 6 && buf[5] >= '1' && buf[5] <= '9') size = atol(buf + 5);   // GET /SIZE
+            if (size > big_size) size = big_size;
+            char head[128];
+            int hl = snprintf(head, sizeof head, "HTTP/1.1 200 OK\r\nContent-Length: %ld\r\n\r\n", size);
+            if (write(c, head, hl) != hl) goto out;
+            for (long off = 0; off < size;) { ssize_t w = write(c, big_resp + off, size - off); if (w <= 0) goto out; off += w; }
+            memmove(buf, buf + used, have - used); have -= used;
+        }
+        if (have == sizeof buf) break;
+    }
+out:
+    close(c);
+    return 0;
+}
+static int httpbig(int port, long size) {
+    signal(SIGPIPE, SIG_IGN);              // a client gone mid-body: that connection, not the server
+    big_size = size; big_resp = malloc(size); memset(big_resp, 'x', size);
+    int ls = socket(AF_INET, SOCK_STREAM, 0), one = 1;
+    setsockopt(ls, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+    struct sockaddr_in a = {.sin_family = AF_INET, .sin_port = htons(port), .sin_addr.s_addr = htonl(INADDR_LOOPBACK)};
+    if (bind(ls, (void *)&a, sizeof a) || listen(ls, 4096)) { perror("bind"); return 1; }
+    for (;;) {
+        int c = accept(ls, 0, 0);
+        if (c < 0) continue;
+        setsockopt(c, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+        pthread_t t;
+        if (pthread_create(&t, 0, big_conn, (void *)(long)c)) { perror("thread"); close(c); continue; }
+        pthread_detach(t);
+    }
 }
 
 // ---- more modes ----
@@ -283,6 +330,7 @@ static void report(void) {
 }
 static int more_modes(int argc, char **argv) {
     const char *m = argv[1];
+    if (!strcmp(m, "httpbig") && argc >= 4) return httpbig(atoi(argv[2]), atol(argv[3]));
     pthread_t th[256];
     if ((!strcmp(m, "sink") || !strcmp(m, "uecho")) && argc >= 4) {
         port_g = atoi(argv[2]); int t = atoi(argv[3]);

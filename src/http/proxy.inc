@@ -3168,12 +3168,16 @@ http_resp_pump:
 .read:
 	mov	dword [r15+H_UPLEN],0
 	mov	dword [r15+H_UPOFF],0
+	call	http_counted_try		; a large plain body: by the L4 relay
+	jnc	.counted
 	mov	dword [r15+H_STATE],HS_RESP_READ
 	mov	ecx,SIDE_UP
 	mov	rdi,[r15+H_BUF]
 	lea	rdi,[rdi+HB_UP]
 	mov	esi,H_UP_CAP
 	jmp	h_recv
+.counted:
+	ret
 .chunked:
 	lea	rdi,[r15+H_RCK]
 	mov	eax,[r15+H_UPOFF]

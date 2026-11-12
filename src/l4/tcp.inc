@@ -1089,6 +1089,7 @@ session_alloc:
 	mov	byte [g_sbig+rax],0		; (its extras start clear)
 	mov	dword [g_bfd_c+rax*4],0
 	mov	dword [g_bfd_u+rax*4],0
+	mov	qword [g_cnt+rax*8],0
 	ret
 .fresh:
 	mov	eax,[g_sess_hwm]
@@ -1098,6 +1099,7 @@ session_alloc:
 	mov	byte [g_sbig+rax],0
 	mov	dword [g_bfd_c+rax*4],0
 	mov	dword [g_bfd_u+rax*4],0
+	mov	qword [g_cnt+rax*8],0
 	ret
 .none:
 	mov	eax,NIL
@@ -2569,6 +2571,19 @@ post_recv_u:
 	shr	ecx,1
 	and	ecx,1				; group 1: the large buffers
 	mov	[rax+SQE_BUF_GROUP],cx
+	mov	r8,[g_cnt+rsi*8]		; an HTTP body by the relay: no more than
+	test	r8,r8				; what is left of it (counted.inc: + 1)
+	jz	.out
+	dec	r8
+	mov	edx,BUF_SIZE
+	test	ecx,ecx
+	jz	@f
+	mov	edx,BUFL_SIZE
+@@:
+	cmp	r8,rdx
+	cmovb	edx,r8d
+	mov	[rax+SQE_LEN],edx
+.out:
 	ret
 
 ; edi = session: send the client's bytes upstream (what is left of them).
@@ -2756,6 +2771,26 @@ on_s_recv_u:
 	jle	.end_or_error
 	mov	eax,[r13+S_LST]
 	add	[g_st_l_out+rax*8],r14
+	cmp	qword [g_cnt+rbx*8],0
+	je	@f
+	sub	[g_cnt+rbx*8],r14		; an HTTP body: less of it to come, and
+	mov	eax,ebx				; its bytes for the access log
+	shl	rax,H_SHIFT
+	add	rax,[g_http_base]
+	add	[rax+H_XBYTES],r14
+	mov	dword [rax+H_STATE],HS_RESP_SEND	; (now the client's to take)
+	push	rbx				; each piece starts body_idle's clock again,
+	push	r13				; as h_send_clock does: a client that takes
+	push	r14				; nothing for that long is let go
+	push	r15
+	mov	edi,ebx
+	mov	esi,PH_BODY
+	call	ph_arm
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	rbx
+@@:
 	mov	eax,r15d
 	shr	eax,IORING_CQE_BUFFER_SHIFT
 	mov	[r13+S_UC_BID],eax
@@ -2774,6 +2809,8 @@ on_s_recv_u:
 	mov	edi,ebx
 	jmp	session_close
 .eof:
+	cmp	qword [g_cnt+rbx*8],0
+	jne	.both				; an HTTP body cut short: both go
 	or	dword [r13+S_FLAGS],SF_U_EOF
 	test	dword [r13+S_FLAGS],SF_C_EOF
 	jnz	.both
@@ -2895,6 +2932,20 @@ on_s_send_c:
 	jnz	.out
 	cmp	dword [rax+S_STATE],ST_OPEN
 	jne	.out
+	mov	rcx,[g_cnt+rbx*8]		; an HTTP body by the relay (counted.inc):
+	cmp	rcx,1				; 1, all of it sent: the exchange ends;
+	jb	.not_counted			; more, the next receive
+	je	.counted_all
+	mov	eax,ebx				; (the backend's turn: body_idle does
+	shl	rax,H_SHIFT			; not count it against the client)
+	add	rax,[g_http_base]
+	mov	dword [rax+H_STATE],HS_RESP_READ
+	mov	edi,ebx
+	jmp	post_recv_u
+.counted_all:
+	mov	qword [g_cnt+rbx*8],0
+	jmp	http_counted_done
+.not_counted:
 	mov	cl,[g_sbig+rbx]
 	and	cl,SX_FDS or SX_BIG_U
 	cmp	cl,SX_FDS or SX_BIG_U
