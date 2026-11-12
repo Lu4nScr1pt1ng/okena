@@ -8,8 +8,12 @@ bss
 	g_sig_buf:	rb SIGINFO_SIZE
 	align 8
 	g_tsc_per_us	dq ?
-	g_spin_ticks	dq ?
+	g_spin_ticks	dq ?		; `busy_poll` set: how long, in TSC ticks
 	g_spin_until	dq ?
+	g_bp_auto	dd ?		; `busy_poll` not set: polls when events come close
+	g_bp_max	dq ?		; BP_AUTO_US in ticks
+	g_bp_gap	dq ?		; the recent gap between events (moving average)
+	g_bp_t0		dq ?		; when this wait began
 	g_reaped_mark	dd ?
 end bss
 
@@ -108,8 +112,20 @@ worker_main:
 	call	hash_tables_init
 	call	sv_live_worker
 	mov	rax,[g_plan_busy_poll]
+	cmp	rax,-1
+	je	.confine			; `busy_poll 0`
+	test	rax,rax
+	jnz	.bp_fixed
+	mov	rax,[g_tsc_per_us]		; not set: auto
 	test	rax,rax
 	jz	.confine
+	imul	rax,rax,BP_AUTO_US
+	mov	[g_bp_max],rax
+	shl	rax,2
+	mov	[g_bp_gap],rax			; (until gaps are seen: none to poll for)
+	mov	dword [g_bp_auto],1
+	jmp	.confine
+.bp_fixed:
 	push	rax
 	call	tsc_calibrate
 	pop	rax
@@ -142,12 +158,31 @@ worker_main:
 	cmp	dword [g_acc_live],0		; accepts not cancelled yet may still
 	je	.drained			; bring a connection: it is served
 .poll:
-	cmp	qword [g_spin_ticks],0
+	mov	rcx,[g_spin_ticks]
+	test	rcx,rcx
+	jnz	.spin_for
+	cmp	dword [g_bp_auto],0
 	je	.block
+	; auto: events have come within BP_AUTO_US of each other of late
+	; (a backend's answer, a client's next request): poll twice that long
+	; rather than sleep and be woken, which costs more than the wait. Gaps
+	; past it: sleep as always, and polling costs nothing.
 	rdtsc
 	shl	rdx,32
 	or	rax,rdx
-	add	rax,[g_spin_ticks]
+	mov	[g_bp_t0],rax
+	mov	rcx,[g_bp_gap]
+	cmp	rcx,[g_bp_max]
+	jae	.block
+	add	rcx,rcx
+	cmp	rcx,[g_bp_max]
+	jbe	.spin_for
+	mov	rcx,[g_bp_max]
+.spin_for:
+	rdtsc
+	shl	rdx,32
+	or	rax,rdx
+	add	rax,rcx
 	mov	[g_spin_until],rax
 .spin:
 	mov	eax,[g_reaped]
@@ -165,7 +200,7 @@ worker_main:
 	call	hs_drain			; hellos that waited for the budget
 	mov	eax,[g_reaped]
 	cmp	eax,[g_reaped_mark]
-	jne	.loop				; progress: restart the window
+	jne	.spin_hit			; progress: restart the window
 	pause
 	rdtsc
 	shl	rdx,32
@@ -186,9 +221,19 @@ worker_main:
 	jne	@f
 	mov	edi,1
 @@:
+	cmp	dword [g_bp_auto],0
+	je	@f
+	cmp	qword [g_bp_t0],0
+	jne	@f
+	rdtsc					; (no poll this turn: the wait starts here)
+	shl	rdx,32
+	or	rax,rdx
+	mov	[g_bp_t0],rax
+@@:
 	pin_wait_begin
 	call	ring_enter
 	pin_wait_end
+	call	bp_seen
 	call	ring_reap
 	call	ep_http_ready			; user-space TLS deliveries
 	call	fault_flush			; requests held by fault delay=
@@ -198,6 +243,9 @@ worker_main:
 	call	udp_resume
 	call	qs_flush			; QUIC: what connections send
 	call	hs_drain			; hellos that waited for the budget
+	jmp	.loop
+.spin_hit:
+	call	bp_seen
 	jmp	.loop
 .drained:
 	call	alog_flush
@@ -274,6 +322,34 @@ worker_main:
 ; was (a loaded machine sleeps longer than asked: taking 10 ms for granted
 ; made every duration short). Each reading is bracketed by two TSC reads,
 ; the tightest of a few kept, so a preemption between them costs nothing.
+; busy_poll auto: an event came; the gap since the wait began into the
+; moving average (an eighth; a long sleep counts as 4 BP_AUTO_US at most,
+; so a few close events bring polling back). Keeps everything but rax,
+; rcx, rdx.
+BP_AUTO_US	:= 50
+bp_seen:
+	cmp	dword [g_bp_auto],0
+	je	.out
+	mov	rcx,[g_bp_t0]
+	test	rcx,rcx
+	jz	.out
+	mov	qword [g_bp_t0],0
+	rdtsc
+	shl	rdx,32
+	or	rax,rdx
+	sub	rax,rcx				; this gap
+	mov	rcx,[g_bp_max]
+	shl	rcx,2
+	cmp	rax,rcx
+	jbe	@f
+	mov	rax,rcx
+@@:
+	sub	rax,[g_bp_gap]			; gap += (this - gap) / 8
+	sar	rax,3
+	add	[g_bp_gap],rax
+.out:
+	ret
+
 tsc_calibrate:
 	cmp	qword [g_tsc_per_us],0
 	jne	.known				; measured by the supervisor, inherited

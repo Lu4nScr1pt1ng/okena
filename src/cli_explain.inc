@@ -41,7 +41,17 @@ explain_print:
 	call	.word_n
 	out_lit 10,'    busy_poll '
 	mov	rax,[g_plan_busy_poll]
+	test	rax,rax
+	jnz	@f
+	out_lit 'auto'
+	jmp	.busy_done
+@@:
+	cmp	rax,-1
+	jne	@f
+	xor	eax,eax
+@@:
 	call	.dur
+.busy_done:
 	out_lit 10,'    watchdog '
 	mov	rax,[g_plan_watchdog]
 	call	.dur

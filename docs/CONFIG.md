@@ -398,7 +398,7 @@ docker run --network host okena 'http :80 { route /* { to app:3000 } }'
 okena {
     workers auto              # min(affinity mask, cgroup CPU quota)
     io_engine auto            # auto | io_uring | epoll
-    busy_poll 50us            # poll this long after activity instead of sleeping
+    busy_poll auto            # poll while events come close; 50us: always that long; 0us: never
     watchdog 2s               # a worker stuck this long is replaced
     last_good on              # FILE broken at startup: start on FILE.good, the last that ran
     drain delay=2s timeout=7s # fits inside docker stop's 10 s
@@ -529,10 +529,16 @@ Profiles set groups of defaults, each still overridden by its own setting:
 `latency` makes workers poll 50 µs after activity (`busy_poll 50us`) and asks
 the kernel to busy-poll the listeners' queues (SO_BUSY_POLL, SO_PREFER_BUSY_POLL:
 granted to a process that may, ignored otherwise), for the last microseconds
-at the cost of a core kept busy; `throughput` keeps polling off (the default:
-the loop sleeps when there is nothing to do); `memory-lean` keeps 32 idle
-connections per server instead of 512 and a quarter of the default memory
-cache; `balanced` is the defaults as written. `okena explain` shows what a
+at the cost of a core kept busy; `throughput` keeps polling off (the loop
+sleeps when there is nothing to do); `memory-lean` keeps polling off too, 32
+idle connections per server instead of 512 and a quarter of the default memory
+cache; `balanced` is the defaults as written. Its `busy_poll auto` (io_uring)
+polls only while events have been coming within 50 µs of each other (a
+backend's answer, a client's next request), for twice their recent gap:
+there a sleep and a wakeup cost more than the wait (one TCP or UDP flow
+through two cores: 31k to 37k round trips a second, p50 31.7 to 26.5 µs).
+When events come further apart the loop sleeps as before, and polling costs
+nothing. `okena explain` shows what a
 profile set.
 
 ## Listeners

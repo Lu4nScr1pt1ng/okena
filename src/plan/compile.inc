@@ -286,7 +286,7 @@ bss
 	g_plan_drain_delay	dq ?		; microseconds
 	g_plan_drain_timeout	dq ?
 	g_plan_watchdog		dq ?
-	g_plan_busy_poll	dq ?		; microseconds, 0 = off
+	g_plan_busy_poll	dq ?		; microseconds; 0 auto (not set), -1 off
 	g_plan_qcc		dd ?		; quic_cc: 0 cubic, 1 bbr
 	g_plan_qlb_len		dd ?		; quic_server_id: its bytes (0: none)
 	g_plan_qlb_sid		rb 4
@@ -469,6 +469,15 @@ plan_compile:
 	jne	@f
 	mov	qword [g_plan_busy_poll],PROFILE_BUSY_US
 @@:
+	cmp	dword [g_plan_profile],PROFILE_THROUGHPUT	; throughput, memory-lean:
+	je	.no_poll					; never poll (unset, it
+	cmp	dword [g_plan_profile],PROFILE_LEAN		; would be auto)
+	jne	@f
+.no_poll:
+	cmp	qword [g_plan_busy_poll],0
+	jne	@f
+	mov	qword [g_plan_busy_poll],-1
+@@:
 	cmp	dword [g_plan_profile],PROFILE_LEAN
 	jne	@f
 	cmp	qword [g_plan_cmem],0
@@ -483,8 +492,10 @@ plan_compile:
 ; its own setting. latency: workers poll PROFILE_BUSY_US after activity
 ; (busy_poll) and the listeners' sockets busy-poll their queue
 ; (SO_BUSY_POLL, SO_PREFER_BUSY_POLL, when the kernel lets them);
-; throughput: no polling (the default); memory-lean: 32 idle connections
-; kept per server, not 512, and a quarter of the default memory cache.
+; balanced (the default): busy_poll auto, workers poll only while events
+; come close together; throughput: no polling; memory-lean: no polling,
+; 32 idle connections kept per server, not 512, and a quarter of the
+; default memory cache.
 PROFILE_BALANCED := 0
 PROFILE_LATENCY	:= 1
 PROFILE_THROUGHPUT := 2
@@ -792,6 +803,10 @@ compile_settings:
 .busy_poll:
 	mov	rdi,rbx
 	call	node_duration
+	test	rax,rax
+	jnz	@f
+	mov	rax,-1				; `busy_poll 0`: never (unset is auto)
+@@:
 	mov	[g_plan_busy_poll],rax
 	jmp	.advance
 .hs_budget:
