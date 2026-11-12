@@ -377,6 +377,7 @@ tick_work:
 	cmp	dword [g_engine],ENGINE_EPOLL
 	je	@f
 	call	accept_watch			; (io_uring: a lost wakeup)
+	call	pbuf_tick			; the provided ring's wanted size
 @@:
 	mov	eax,[g_hb_slot]
 	add	rax,[g_hb]

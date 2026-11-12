@@ -41,6 +41,9 @@ bss
 	g_cl_head	rd MAX_POOLS	; connecting sessions, oldest first
 	g_cl_tail	rd MAX_POOLS
 	g_buf_stack	rd BUF_MAX
+	g_bufl_top	dd ?
+	g_bufl_hwm	dd ?
+	g_bufl_stack	rd BUFL_MAX
 	g_ep_events:	rb EPOLL_EVENT * EP_EVENTS
 	g_ep_sa:	rb 28
 	g_ep_salen	dd ?
@@ -910,10 +913,40 @@ ep_connect_failed:
 	pop	rbx
 	ret
 
+; edi = a socket: its close resets (SO_LINGER 0). Keeps edi.
+ep_linger0:
+	push	rdi
+	mov	esi,SOL_SOCKET
+	mov	edx,SO_LINGER
+	lea	r10,[linger0]
+	mov	r8d,8
+	mov	eax,SYS_setsockopt
+	syscall
+	pop	rdi
+	ret
+
 ; ---------------------------------------------------------------- buffers
 
-; eax = buffer id or NIL.
+; edi: nonzero for a large one (none left: a small one). eax = buffer id
+; or NIL.
 ep_buf_get:
+	test	edi,edi
+	jz	.small
+	mov	ecx,[g_bufl_top]
+	test	ecx,ecx
+	jz	.lfresh
+	dec	ecx
+	mov	[g_bufl_top],ecx
+	mov	eax,[g_bufl_stack+rcx*4]
+	ret
+.lfresh:
+	mov	eax,[g_bufl_hwm]
+	cmp	eax,BUFL_MAX
+	jae	.small
+	inc	dword [g_bufl_hwm]
+	add	eax,BUF_MAX
+	ret
+.small:
 	mov	ecx,[g_buf_top]
 	test	ecx,ecx
 	jz	.fresh
@@ -933,10 +966,18 @@ ep_buf_get:
 
 ; edi = buffer id.
 ep_buf_put:
+	cmp	edi,BUF_MAX
+	jae	.large
 	mov	ecx,[g_buf_top]
 	mov	[g_buf_stack+rcx*4],edi
 	inc	ecx
 	mov	[g_buf_top],ecx
+	ret
+.large:
+	mov	ecx,[g_bufl_top]
+	mov	[g_bufl_stack+rcx*4],edi
+	inc	ecx
+	mov	[g_bufl_top],ecx
 	ret
 
 ; Sessions that waited for a buffer: pump them while buffers are free.
@@ -1030,19 +1071,39 @@ ep_pump:
 	jne	.out				; a buffer is still being written
 	test	[r12+S_FLAGS],ebp
 	jnz	.out				; source already ended
+	movzx	edi,byte [g_sbig+rbx]
+	and	edi,ebp				; this direction on large buffers
 	call	ep_buf_get
 	cmp	eax,NIL
 	je	.wait
 	mov	[r12+r15],eax
 	mov	edi,r13d
 	mov	esi,eax
-	shl	rsi,BUF_SHIFT
-	add	rsi,[g_buf_base]
 	mov	edx,BUF_SIZE
+	cmp	eax,BUF_MAX
+	jb	@f
+	mov	edx,BUFL_SIZE
+@@:
+	buf_ptr rsi, esi
 	xor	eax,eax				; SYS_read
 	syscall
 	test	rax,rax
 	jle	.no_data
+	; the next read's size: large after a small one came full, small after
+	; a large one held less than a small one
+	cmp	dword [r12+r15],BUF_MAX
+	jae	.was_large
+	cmp	eax,BUF_SIZE
+	jb	.sized
+	or	[g_sbig+rbx],bpl
+	jmp	.sized
+.was_large:
+	cmp	eax,BUF_SIZE
+	jae	.sized
+	mov	ecx,ebp
+	not	ecx
+	and	[g_sbig+rbx],cl
+.sized:
 	mov	ecx,[r12+S_LST]
 	lea	rdx,[g_st_l_in+rcx*8]
 	cmp	dword [rsp],EK_CLIENT
@@ -1069,6 +1130,12 @@ ep_pump:
 	je	.out
 	cmp	rax,-EINTR
 	je	.again
+	mov	eax,SX_RST_U			; the source broke: reset the other side
+	cmp	ebp,SF_C_EOF
+	je	@f
+	mov	eax,SX_RST_C
+@@:
+	or	[g_sbig+rbx],al
 	mov	edi,ebx
 	call	ep_close
 	jmp	.out
@@ -1145,8 +1212,7 @@ ep_flush_dir:
 	sub	edx,eax
 	jz	.done
 	mov	esi,[r12+r15]
-	shl	rsi,BUF_SHIFT
-	add	rsi,[g_buf_base]
+	buf_ptr rsi, esi
 	add	rsi,rax
 	mov	edi,r14d
 	mov	eax,SYS_write
@@ -1160,6 +1226,12 @@ ep_flush_dir:
 	je	.again
 	cmp	rax,-EAGAIN
 	je	.pending
+	mov	eax,SX_RST_C			; the destination broke: reset the source
+	cmp	ebp,SF_C_EOF
+	je	@f
+	mov	eax,SX_RST_U
+@@:
+	or	[g_sbig+rbx],al
 	mov	edi,ebx
 	call	ep_close
 .pending:
@@ -1258,12 +1330,20 @@ ep_close:
 	jmp	.client_closed
 @@:
 	mov	edi,[r12+S_CLIENT]
+	test	byte [g_sbig+rbx],SX_RST_C
+	jz	@f
+	call	ep_linger0
+@@:
 	mov	eax,SYS_close
 	syscall
 .client_closed:
 	test	dword [r12+S_FLAGS],SF_UP_OPEN
 	jz	@f
 	mov	edi,[r12+S_UPFD]
+	test	byte [g_sbig+rbx],SX_RST_U
+	jz	.up_close
+	call	ep_linger0
+.up_close:
 	mov	eax,SYS_close
 	syscall
 @@:

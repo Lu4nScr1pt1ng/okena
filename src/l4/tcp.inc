@@ -86,10 +86,60 @@ end macro
 
 NIL		:= -1
 
+; Two sizes of buffer. Every direction of a connection reads into small
+; ones; one whose read filled a small buffer reads into large ones after,
+; until a large one comes back holding less than a small one would: bulk
+; moves in 256 KiB steps (16 KiB ones held a stream to 23 Gbit/s through two
+; cores), and the many connections that move little keep costing 16 KiB a
+; direction in flight. Large ids follow the small ones.
 BUF_SIZE	:= 16384
 BUF_SHIFT	:= 14
-BUF_GROW	:= 64		; buffers added to the ring at a time (1 MiB)
 BUF_MAX		:= 8192		; per worker (128 MiB of address space)
+BUFL_SIZE	:= 262144
+BUFL_SHIFT	:= 18
+BUFL_MAX	:= 512		; per worker (128 MiB); none left: small ones
+BUF_GROW	:= 8		; a ring's wanted size grows by this much at a time
+BUF_RING_MIN	:= 8		; and does not shrink below this
+
+; g_sbig, a byte a session: its directions on large buffers, and the sides
+; whose close resets (SO_LINGER 0) because the other one broke: an abort
+; goes on as an abort, and leaves no TIME_WAIT behind on okena's ports (a
+; new connection each, a client that resets: 17000 of them held there,
+; every connect searching past them)
+SX_BIG_C	:= 1		; client to upstream on large buffers
+SX_BIG_U	:= 2		; upstream to client
+SX_RST_U	:= 4		; the upstream's close resets
+SX_RST_C	:= 8		; the client's
+
+; a provided ring (io_uring), one for each size
+PG_RING		:= 0		; q: its entries
+PG_BASE		:= 8		; q: its buffers
+PG_STACK	:= 16		; q: free ones not in the ring
+PG_TAIL		:= 24
+PG_GIVEN	:= 28		; buffers made so far (in the ring, the stack or held)
+PG_RN		:= 32		; in the ring now
+PG_WANT		:= 36		; how many it should hold
+PG_SN		:= 40		; on the stack
+PG_MAX		:= 44		; entries (0: this size is not had)
+PG_SHIFT	:= 48
+PG_BID0		:= 52		; its first id
+PG_SIZE		:= 56
+PG_REC		:= 64
+
+; reg64, reg32 = a buffer id: its address (reg32's register only)
+macro buf_ptr r64, r32
+	local large, done
+	cmp	r32,BUF_MAX
+	jae	large
+	shl	r64,BUF_SHIFT
+	add	r64,[g_buf_base]
+	jmp	done
+large:
+	sub	r32,BUF_MAX
+	shl	r64,BUFL_SHIFT
+	add	r64,[g_bufl_base]
+done:
+end macro
 MAX_TRIES	:= 3
 FAIL_THRESHOLD	:= 3		; consecutive connect failures before ejection
 EJECT_TICKS	:= 10
@@ -123,9 +173,13 @@ bss
 	g_active	dd ?		; sessions not free
 	g_sess_base	dq ?
 	g_buf_base	dq ?
-	g_pbuf_ring	dq ?
-	g_pbuf_tail	dd ?
-	g_buf_given	dd ?		; buffers handed to the ring so far
+	g_bufl_base	dq ?
+	align 8
+	g_pbg:		rb PG_REC	; the small buffers' ring
+	g_pbgl:		rb PG_REC	; the large ones'
+	g_pb_stack	rd BUF_MAX	; (the last given back on top)
+	g_pbl_stack	rd BUFL_MAX
+	g_sbig		rb 1 shl 20	; a session's extras (SX_*)
 	g_waitq_c_head	dd ?
 	g_waitq_c_tail	dd ?
 	g_waitq_u_head	dd ?
@@ -240,6 +294,7 @@ sessions_init:
 	cmp	rax,-4096
 	ja	.done
 	mov	[g_buf_base],rax
+	mov	[g_pbg+PG_BASE],rax
 	; buffers come and go 16 KiB at a time: huge pages would commit (and
 	; keep) 2 MiB for each buffer touched
 	mov	rdi,rax
@@ -247,9 +302,26 @@ sessions_init:
 	mov	edx,MADV_NOHUGEPAGE
 	mov	eax,SYS_madvise
 	syscall
-	; the provided ring itself: 16 bytes per entry
+	xor	edi,edi				; the large ones
+	mov	esi,BUFL_MAX * BUFL_SIZE
+	mov	edx,PROT_READ or PROT_WRITE
+	mov	r10d,MAP_PRIVATE or MAP_ANONYMOUS or MAP_NORESERVE
+	mov	r8,-1
+	xor	r9d,r9d
+	mov	eax,SYS_mmap
+	syscall
+	cmp	rax,-4096
+	ja	.done
+	mov	[g_bufl_base],rax
+	mov	[g_pbgl+PG_BASE],rax
+	mov	rdi,rax
+	mov	esi,BUFL_MAX * BUFL_SIZE
+	mov	edx,MADV_NOHUGEPAGE
+	mov	eax,SYS_madvise
+	syscall
+	; the provided rings themselves: 16 bytes per entry
 	xor	edi,edi
-	mov	esi,BUF_MAX * 16
+	mov	esi,(BUF_MAX + BUFL_MAX) * 16
 	mov	edx,PROT_READ or PROT_WRITE
 	mov	r10d,MAP_PRIVATE or MAP_ANONYMOUS or MAP_POPULATE
 	mov	r8,-1
@@ -258,7 +330,21 @@ sessions_init:
 	syscall
 	cmp	rax,-4096
 	ja	.done
-	mov	[g_pbuf_ring],rax
+	mov	[g_pbg+PG_RING],rax
+	add	rax,BUF_MAX * 16
+	mov	[g_pbgl+PG_RING],rax
+	lea	rax,[g_pb_stack]
+	mov	[g_pbg+PG_STACK],rax
+	lea	rax,[g_pbl_stack]
+	mov	[g_pbgl+PG_STACK],rax
+	mov	dword [g_pbg+PG_MAX],BUF_MAX
+	mov	dword [g_pbg+PG_SHIFT],BUF_SHIFT
+	mov	dword [g_pbg+PG_BID0],0
+	mov	dword [g_pbg+PG_SIZE],BUF_SIZE
+	mov	dword [g_pbgl+PG_MAX],BUFL_MAX
+	mov	dword [g_pbgl+PG_SHIFT],BUFL_SHIFT
+	mov	dword [g_pbgl+PG_BID0],BUF_MAX
+	mov	dword [g_pbgl+PG_SIZE],BUFL_SIZE
 	rdtsc
 	shl	rdx,32
 	or	rax,rdx
@@ -289,10 +375,27 @@ sessions_init:
 ; Register the provided buffer ring (group 0) and hand it a first batch.
 ; eax = 0 or -errno.
 pbuf_register:
-	mov	rax,[g_pbuf_ring]
+	lea	r9,[g_pbg]
+	xor	ecx,ecx
+	call	.one
+	test	eax,eax
+	js	.done
+	lea	r9,[g_pbgl]			; (group 1) none: small ones only
+	mov	ecx,1
+	call	.one
+	test	eax,eax
+	jns	@f
+	mov	dword [g_pbgl+PG_MAX],0
+@@:
+	xor	eax,eax
+.done:
+	ret
+.one:
+	mov	rax,[r9+PG_RING]
 	mov	[g_pbuf_reg],rax		; ring_addr
-	mov	dword [g_pbuf_reg+8],BUF_MAX	; ring_entries
-	mov	dword [g_pbuf_reg+12],0		; bgid, flags
+	mov	eax,[r9+PG_MAX]
+	mov	[g_pbuf_reg+8],eax		; ring_entries
+	mov	[g_pbuf_reg+12],ecx		; bgid, flags
 	mov	edi,[g_ring_fd]
 	mov	esi,IORING_REGISTER_PBUF_RING
 	lea	rdx,[g_pbuf_reg]
@@ -300,60 +403,135 @@ pbuf_register:
 	mov	eax,SYS_io_uring_register
 	syscall
 	test	eax,eax
-	js	.done
+	js	@f
 	call	pbuf_grow
 	xor	eax,eax
-.done:
+@@:
 	ret
 
-; Hand BUF_GROW more buffers to the ring. CF when all are given already.
+; The ring is first in, first out: the kernel takes the buffer given back
+; longest ago. Holding every free buffer, it would cycle through all of them
+; (8192 x 256 KiB at worst), each copy into memory long out of the caches;
+; at 8, bulk through two cores went from 40 to 54 Gbit/s. So the ring holds
+; what the traffic needs (g_pb_want: up when a receive finds it empty, down
+; each second) and the other free buffers wait on a stack, the most recently
+; used on top.
+;
+; r9 = a ring that a receive found empty: room for BUF_GROW more, filled
+; from its stack, else with new buffers. CF when none could be added.
+; Keeps r9.
 pbuf_grow:
-	mov	ecx,[g_buf_given]
-	cmp	ecx,BUF_MAX
-	jae	.full
-	mov	edx,ecx
-	add	edx,BUF_GROW
-	mov	[g_buf_given],edx
-.add:
-	mov	edi,ecx
-	push	rcx
-	push	rdx
+	mov	eax,[r9+PG_WANT]
+	add	eax,BUF_GROW
+	cmp	eax,[r9+PG_MAX]
+	jbe	@f
+	mov	eax,[r9+PG_MAX]
+@@:
+	mov	[r9+PG_WANT],eax
+	xor	r8d,r8d				; added
+.more:
+	mov	eax,[r9+PG_RN]
+	cmp	eax,[r9+PG_WANT]
+	jae	.done
+	mov	ecx,[r9+PG_SN]
+	test	ecx,ecx
+	jz	.new
+	dec	ecx
+	mov	[r9+PG_SN],ecx
+	mov	rax,[r9+PG_STACK]
+	mov	edi,[rax+rcx*4]
 	call	pbuf_put
-	pop	rdx
-	pop	rcx
-	inc	ecx
-	cmp	ecx,edx
-	jb	.add
-	clc
-	ret
-.full:
-	stc
+	inc	r8d
+	jmp	.more
+.new:
+	mov	ecx,[r9+PG_GIVEN]
+	cmp	ecx,[r9+PG_MAX]
+	jae	.done
+	inc	dword [r9+PG_GIVEN]
+	mov	edi,ecx
+	add	edi,[r9+PG_BID0]
+	call	pbuf_put
+	inc	r8d
+	jmp	.more
+.done:
+	cmp	r8d,1				; CF: none
 	ret
 
-; edi = buffer id: give it (back) to the ring.
-pbuf_put:
-	mov	eax,[g_pbuf_tail]
+; Each second: each ring's wanted size a quarter nearer the minimum (what
+; is in it above that stays until taken)
+pbuf_tick:
+	lea	r9,[g_pbg]
+	call	.one
+	lea	r9,[g_pbgl]
+.one:
+	mov	eax,[r9+PG_WANT]
 	mov	ecx,eax
-	and	ecx,BUF_MAX - 1
+	shr	ecx,2
+	sub	eax,ecx
+	cmp	eax,BUF_RING_MIN
+	jae	@f
+	mov	eax,BUF_RING_MIN
+@@:
+	mov	[r9+PG_WANT],eax
+	ret
+
+; edi = buffer id: free again, into its ring when that holds fewer than
+; wanted, else on its stack. Clobbers eax, ecx, rdx.
+pbuf_free:
+	push	r9
+	lea	r9,[g_pbg]
+	cmp	edi,BUF_MAX
+	jb	@f
+	lea	r9,[g_pbgl]
+@@:
+	mov	eax,[r9+PG_RN]
+	cmp	eax,[r9+PG_WANT]
+	jb	.ring
+	mov	eax,[r9+PG_SN]
+	mov	rcx,[r9+PG_STACK]
+	mov	[rcx+rax*4],edi
+	inc	eax
+	mov	[r9+PG_SN],eax
+	pop	r9
+	ret
+.ring:
+	call	pbuf_put
+	pop	r9
+	ret
+
+; r9 = a ring, edi = one of its buffers: into it. Clobbers eax, ecx, rdx.
+pbuf_put:
+	mov	eax,[r9+PG_TAIL]
+	mov	ecx,[r9+PG_MAX]
+	dec	ecx
+	and	ecx,eax
 	shl	ecx,4
-	add	rcx,[g_pbuf_ring]
+	add	rcx,[r9+PG_RING]
+	push	rcx
 	mov	edx,edi
-	shl	rdx,BUF_SHIFT
-	add	rdx,[g_buf_base]
+	sub	edx,[r9+PG_BID0]
+	mov	ecx,[r9+PG_SHIFT]
+	shl	rdx,cl
+	add	rdx,[r9+PG_BASE]
+	pop	rcx
 	mov	[rcx+BUF_ADDR],rdx
-	mov	dword [rcx+BUF_LEN],BUF_SIZE
+	mov	edx,[r9+PG_SIZE]
+	mov	[rcx+BUF_LEN],edx
 	mov	[rcx+BUF_BID],di
 	inc	eax
-	mov	[g_pbuf_tail],eax
-	mov	rcx,[g_pbuf_ring]
+	mov	[r9+PG_TAIL],eax
+	mov	rcx,[r9+PG_RING]
 	mov	[rcx+BUF_TAIL],ax		; x86 stores are ordered: entry first
+	inc	dword [r9+PG_RN]
 	ret
 
 ; edi = buffer id: back to the ring, then wake one session waiting for a
 ; buffer. Entries of sessions that stopped waiting are skipped. Clobbers
 ; rbx.
 buf_release:
-	call	pbuf_put
+	call	pbuf_free
+	cmp	edi,BUF_MAX
+	jae	.done				; (a large one: nobody waits for those)
 .client:
 	mov	ebx,[g_waitq_c_head]
 	cmp	ebx,NIL
@@ -904,12 +1082,14 @@ session_alloc:
 	add	rcx,[g_sess_base]
 	mov	edx,[rcx+S_NEXT]
 	mov	[g_sess_free],edx
+	mov	byte [g_sbig+rax],0		; (its extras start clear)
 	ret
 .fresh:
 	mov	eax,[g_sess_hwm]
 	cmp	eax,[g_sessions]
 	jae	.none
 	inc	dword [g_sess_hwm]
+	mov	byte [g_sbig+rax],0
 	ret
 .none:
 	mov	eax,NIL
@@ -2360,7 +2540,9 @@ post_recv_c:
 	mov	byte [rax+SQE_FLAGS],IOSQE_FIXED_FILE or IOSQE_BUFFER_SELECT
 	mov	ecx,[rdx+S_CLIENT]
 	mov	[rax+SQE_FD],ecx
-	mov	word [rax+SQE_BUF_GROUP],0
+	movzx	ecx,byte [g_sbig+rsi]
+	and	ecx,1				; group 1: the large buffers
+	mov	[rax+SQE_BUF_GROUP],cx
 	client_sqe rdx
 	ret
 
@@ -2375,7 +2557,10 @@ post_recv_u:
 	mov	byte [rax+SQE_FLAGS],IOSQE_FIXED_FILE or IOSQE_BUFFER_SELECT
 	mov	ecx,[g_upslot+rsi*4]
 	mov	[rax+SQE_FD],ecx
-	mov	word [rax+SQE_BUF_GROUP],0
+	movzx	ecx,byte [g_sbig+rsi]
+	shr	ecx,1
+	and	ecx,1				; group 1: the large buffers
+	mov	[rax+SQE_BUF_GROUP],cx
 	ret
 
 ; edi = session: send the client's bytes upstream (what is left of them).
@@ -2390,8 +2575,7 @@ post_send_u:
 	mov	ecx,[g_upslot+rsi*4]
 	mov	[rax+SQE_FD],ecx
 	mov	ecx,[rdx+S_CU_BID]
-	shl	rcx,BUF_SHIFT
-	add	rcx,[g_buf_base]
+	buf_ptr rcx, ecx
 	mov	r8d,[rdx+S_CU_OFF]
 	add	rcx,r8
 	mov	[rax+SQE_ADDR],rcx
@@ -2414,8 +2598,7 @@ post_send_c:
 	mov	ecx,[rdx+S_CLIENT]
 	mov	[rax+SQE_FD],ecx
 	mov	ecx,[rdx+S_UC_BID]
-	shl	rcx,BUF_SHIFT
-	add	rcx,[g_buf_base]
+	buf_ptr rcx, ecx
 	mov	r8d,[rdx+S_UC_OFF]
 	add	rcx,r8
 	mov	[rax+SQE_ADDR],rcx
@@ -2424,6 +2607,41 @@ post_send_c:
 	mov	[rax+SQE_LEN],ecx
 	mov	dword [rax+SQE_OP_FLAGS],MSG_NOSIGNAL
 	ret
+
+; After a receive of r14 bytes into buffer eax, session ebx: the size its
+; direction (bit) reads into next. Large after a small one came full, small
+; after a large one held less than a small one.
+macro buf_next_size bit
+	local large, done
+	cmp	eax,BUF_MAX
+	jae	large
+	cmp	r14d,BUF_SIZE
+	jb	done
+	cmp	dword [g_pbgl+PG_MAX],0
+	je	done
+	or	byte [g_sbig+rbx],bit
+	jmp	done
+large:
+	cmp	r14d,BUF_SIZE
+	jae	done
+	and	byte [g_sbig+rbx],not bit
+done:
+end macro
+
+; A receive's completion (r15d = cqe flags) that carries a buffer: one
+; fewer in the ring
+macro pbuf_taken
+	local no, small
+	test	r15d,IORING_CQE_F_BUFFER
+	jz	no
+	cmp	r15d,BUF_MAX shl IORING_CQE_BUFFER_SHIFT
+	jb	small
+	dec	dword [g_pbgl+PG_RN]
+	jmp	no
+small:
+	dec	dword [g_pbg+PG_RN]
+no:
+end macro
 
 ; Return the buffer a completion carried, if any (r15d = cqe flags).
 release_cqe_buffer:
@@ -2438,6 +2656,7 @@ release_cqe_buffer:
 	ret
 
 on_s_recv_c:
+	pbuf_taken
 	call	sess_complete
 	jc	release_cqe_buffer
 	mov	r13,rax
@@ -2451,6 +2670,7 @@ on_s_recv_c:
 	shr	eax,IORING_CQE_BUFFER_SHIFT
 	mov	[r13+S_CU_BID],eax
 	mov	[r13+S_CU_LEN],r14d
+	buf_next_size 1
 	mov	dword [r13+S_CU_OFF],0
 	mov	edi,ebx
 	call	idle_touch
@@ -2460,6 +2680,7 @@ on_s_recv_c:
 	jz	.eof
 	cmp	r14,-ENOBUFS
 	je	.no_buffer
+	or	byte [g_sbig+rbx],SX_RST_U	; the client broke: reset the upstream
 	mov	edi,ebx
 	jmp	session_close
 .eof:
@@ -2480,8 +2701,18 @@ on_s_recv_c:
 	mov	edi,ebx
 	jmp	session_close
 .no_buffer:
+	test	byte [g_sbig+rbx],1
+	jz	.no_small
+	lea	r9,[g_pbgl]
+	call	pbuf_grow
+	jnc	.recv_again
+	and	byte [g_sbig+rbx],not 1	; the large ones all out: a small one
+	jmp	.recv_again
+.no_small:
+	lea	r9,[g_pbg]
 	call	pbuf_grow
 	jc	.wait
+.recv_again:
 	mov	edi,ebx
 	jmp	post_recv_c
 .wait:
@@ -2506,6 +2737,7 @@ on_s_recv_c:
 	jmp	session_maybe_free
 
 on_s_recv_u:
+	pbuf_taken
 	call	sess_complete
 	jc	release_cqe_buffer
 	mov	r13,rax
@@ -2519,6 +2751,7 @@ on_s_recv_u:
 	shr	eax,IORING_CQE_BUFFER_SHIFT
 	mov	[r13+S_UC_BID],eax
 	mov	[r13+S_UC_LEN],r14d
+	buf_next_size 2
 	mov	dword [r13+S_UC_OFF],0
 	mov	edi,ebx
 	call	idle_touch
@@ -2528,6 +2761,7 @@ on_s_recv_u:
 	jz	.eof
 	cmp	r14,-ENOBUFS
 	je	.no_buffer
+	or	byte [g_sbig+rbx],SX_RST_C	; the upstream broke: reset the client
 	mov	edi,ebx
 	jmp	session_close
 .eof:
@@ -2548,8 +2782,18 @@ on_s_recv_u:
 	mov	edi,ebx
 	jmp	session_close
 .no_buffer:
+	test	byte [g_sbig+rbx],2
+	jz	.no_small
+	lea	r9,[g_pbgl]
+	call	pbuf_grow
+	jnc	.recv_again
+	and	byte [g_sbig+rbx],not 2	; the large ones all out: a small one
+	jmp	.recv_again
+.no_small:
+	lea	r9,[g_pbg]
 	call	pbuf_grow
 	jc	.wait
+.recv_again:
 	mov	edi,ebx
 	jmp	post_recv_u
 .wait:
@@ -2602,6 +2846,7 @@ on_s_send_u:
 	mov	edi,ebx
 	jmp	post_send_u
 .failed:
+	or	byte [g_sbig+rbx],SX_RST_C	; the upstream broke: reset the client
 	mov	edi,ebx
 	jmp	session_close
 .not_open:
@@ -2639,6 +2884,7 @@ on_s_send_c:
 	mov	edi,ebx
 	jmp	post_send_c
 .failed:
+	or	byte [g_sbig+rbx],SX_RST_U	; the client broke: reset the upstream
 	mov	edi,ebx
 	jmp	session_close
 .not_open:
@@ -2751,6 +2997,21 @@ session_close_fds:
 	or	dword [r12+S_FLAGS],SF_FDS_CLOSING
 	test	dword [r12+S_FLAGS],SF_H2S or SF_H2U or SF_QC or SF_H3S or SF_MIR
 	jnz	.client_closed			; no client socket
+	test	byte [g_sbig+rbx],SX_RST_C
+	jz	.client_close
+	mov	edi,OP_S_OPT			; SO_LINGER 0 just before the close. Not
+	mov	esi,ebx				; linked: a linked close would run later,
+	call	sess_sqe			; from task work, when its slot may hold
+	mov	byte [rax+SQE_OPCODE],IORING_OP_URING_CMD	; the next session's socket
+	mov	byte [rax+SQE_FLAGS],IOSQE_FIXED_FILE
+	mov	ecx,[r12+S_CLIENT]
+	mov	[rax+SQE_FD],ecx
+	test	dword [r12+S_FLAGS],SF_RAW
+	jz	@f
+	mov	byte [rax+SQE_FLAGS],0
+@@:
+	call	sqe_linger0
+.client_close:
 	mov	edi,OP_S_CLOSE
 	mov	esi,ebx
 	call	sess_sqe
@@ -2767,6 +3028,17 @@ session_close_fds:
 	test	dword [r12+S_FLAGS],SF_UP_OPEN
 	jz	.done
 	and	dword [r12+S_FLAGS],not SF_UP_OPEN
+	test	byte [g_sbig+rbx],SX_RST_U
+	jz	.up_close
+	mov	edi,OP_S_OPT			; (not linked either)
+	mov	esi,ebx
+	call	sess_sqe
+	mov	byte [rax+SQE_OPCODE],IORING_OP_URING_CMD
+	mov	byte [rax+SQE_FLAGS],IOSQE_FIXED_FILE
+	mov	ecx,[g_upslot+rbx*4]
+	mov	[rax+SQE_FD],ecx
+	call	sqe_linger0
+.up_close:
 	mov	edi,OP_S_CLOSE
 	mov	esi,ebx
 	call	sess_sqe
@@ -2778,6 +3050,21 @@ session_close_fds:
 	call	upslot_free
 .done:
 	ret
+
+; rax = an SQE (socket command): set SO_LINGER to 0 seconds
+sqe_linger0:
+	mov	dword [rax+SQE_CMD_OP],SOCKET_URING_OP_SETSOCKOPT
+	mov	dword [rax+SQE_LEVEL],SOL_SOCKET
+	mov	dword [rax+SQE_OPTNAME],SO_LINGER
+	mov	dword [rax+SQE_OPTLEN],8
+	lea	rcx,[linger0]
+	mov	[rax+SQE_OPTVAL],rcx
+	ret
+
+rodata
+	align 4
+	linger0		dd 1, 0		; on, 0 s: the close resets
+end rodata
 
 ; edi = session: once closing and nothing is in flight, close its
 ; descriptors (phase 2), and once those closes are in, free it.
