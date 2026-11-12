@@ -34,10 +34,14 @@ BACK_CPUS=${BACK_CPUS:-4,5}
 LOAD_CPUS=${LOAD_CPUS:-0,3,6,7,8,11,14,15}
 DUR=${DUR:-10}
 NEW_RATES=${NEW_RATES:-2000 5000 10000}
+SECTIONS=${SECTIONS:-streams new keepalive open}	# which tables
+ONLY_OKENA=${ONLY_OKENA:-}				# 1: okena's rows only
+OKENA_IMAGE=${OKENA_IMAGE:-okena:bench}		# okena in a container too, as the others
 W=$(mktemp -d)
 chmod 777 "$W"
 BPID= OKPID=
-trap 'docker rm -f okb-h3hap okb-h3ngx >/dev/null 2>&1 || true; for p in $OKPID $BPID; do kill $p 2>/dev/null; done; rm -rf "$W"' EXIT
+trap 'docker rm -f okb-h3hap okb-h3ngx okb-h3ok >/dev/null 2>&1 || true; for p in $OKPID $BPID; do kill $p 2>/dev/null; done; rm -rf "$W"' EXIT
+docker build -q -t "$OKENA_IMAGE" "$ROOT" >/dev/null
 cd "$W"
 docker rm -f okb-h3hap okb-h3ngx >/dev/null 2>&1 || true
 
@@ -51,7 +55,7 @@ openssl req -new -x509 -key key.pem -subj /CN=localhost -addext subjectAltName=D
 cat cert.pem key.pem > combined.pem
 chmod 644 ./*.pem
 cat > okena.conf <<EOF
-okena { workers 2 }
+okena { workers 2; ${OKENA_EXTRA:-} }
 http 127.0.0.1:28302 {
 	http3 on
 	tls { cert $W/cert.pem; key $W/key.pem }
@@ -95,7 +99,9 @@ http {
 EOF
 chmod 644 okena.conf haproxy.cfg nginx.conf
 
-taskset -c "$PROXY_CPUS" "$OKENA" -c okena.conf 2>okena.log & OKPID=$!
+docker run -d --name okb-h3ok --network host --cpuset-cpus "$PROXY_CPUS" --ulimit nofile=1048576 \
+	--security-opt seccomp="$ROOT/docker/okena.seccomp.json" -v "$W/okena.conf:/etc/okena/okena.conf:ro" \
+	-v "$W:$W:ro" "$OKENA_IMAGE" >/dev/null
 docker run -d --name okb-h3hap --network host --cpuset-cpus "$PROXY_CPUS" --ulimit nofile=1048576 \
 	-v "$W":/w:ro "$HAPROXY_IMAGE" haproxy -f /w/haproxy.cfg >/dev/null
 docker run -d --name okb-h3ngx --network host --cpuset-cpus "$PROXY_CPUS" --ulimit nofile=1048576 \
@@ -126,6 +132,8 @@ row() {	# scenario server rps p50 p99 p999 max failed [ttfb]
 	printf '| %s | %s | %s | %s / %s / %s / %s | %s |%s\n' "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "${9:+ $9 |}"
 }
 
+on() { case " $SECTIONS " in *" $1 "*) return 0 ;; esac; return 1; }
+if on streams; then
 echo '| HTTP/3, many streams (64 x 10) | server | requests/s | p50 / p99 / p99.9 / max (µs) | failed |'
 echo '|---|---|---|---|---|'
 for s in "okena, 2 workers:28302" "HAProxy 3.2, 2 threads:28402" "nginx 1.27, 2 workers:28502"; do
@@ -133,6 +141,8 @@ for s in "okena, 2 workers:28302" "HAProxy 3.2, 2 threads:28402" "nginx 1.27, 2 
 	read -ra r < <(stats)
 	row "closed loop" "${s%:*}" "${r[@]}"
 done
+fi
+if on new; then
 echo
 echo '| HTTP/3, a new connection each | server | requests/s | p50 / p99 / p99.9 / max (µs) | failed | first byte, mean / max |'
 echo '|---|---|---|---|---|---|'
@@ -145,6 +155,8 @@ for rate in $NEW_RATES; do
 		row "$rate/s" "${s%:*}" "${r[@]}" "${t[0]:-} / ${t[1]:-}"
 	done
 done
+fi
+if on keepalive; then
 echo
 echo '| HTTP/3, keep-alive at 18k/s (60 x 300/s) | server | requests/s | p50 / p99 / p99.9 / max (µs) | failed |'
 echo '|---|---|---|---|---|'
@@ -152,7 +164,9 @@ echo '|---|---|---|---|---|'
 # (tests/bench/h3flood.py), on two load cores of their own
 FLOOD_CPUS=${FLOOD_CPUS:-7,15}
 KA_CPUS=${KA_CPUS:-0,3,6,8,11,14}
-for s in "okena, 2 workers:28302" "HAProxy 3.2, 2 threads:28402" "nginx 1.27, 2 workers:28502"; do
+SERVERS=("okena, 2 workers:28302" "HAProxy 3.2, 2 threads:28402" "nginx 1.27, 2 workers:28502")
+[ -n "$ONLY_OKENA" ] && SERVERS=("okena, 2 workers:28302")
+for s in "${SERVERS[@]}"; do
 	for flood in no yes; do
 		pids=
 		if [ $flood = yes ]; then
@@ -167,7 +181,9 @@ for s in "okena, 2 workers:28302" "HAProxy 3.2, 2 threads:28402" "nginx 1.27, 2 
 		for p in $pids; do wait "$p" 2>/dev/null || true; done
 	done
 done
+fi
 
+on open || exit 0
 echo
 echo '| HTTP/3, open loop (60 connections) | server | requests/s | p50 / p99 / p99.9 / max (µs) | errors |'
 echo '|---|---|---|---|---|'

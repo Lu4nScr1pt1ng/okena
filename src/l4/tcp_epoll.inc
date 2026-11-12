@@ -111,10 +111,12 @@ ep_main:
 	mov	edi,[g_epfd]
 	lea	rsi,[g_ep_events]
 	mov	r10d,edx
+	pin_wait_begin
 	mov	edx,EP_EVENTS
 	mov	eax,SYS_epoll_wait
 	syscall
 	mov	r12,rax
+	pin_wait_end
 	call	ep_clock
 	test	r12,r12
 	jle	.timers

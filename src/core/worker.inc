@@ -185,7 +185,9 @@ worker_main:
 	jne	@f
 	mov	edi,1
 @@:
+	pin_wait_begin
 	call	ring_enter
+	pin_wait_end
 	call	ring_reap
 	call	ep_http_ready			; user-space TLS deliveries
 	call	fault_flush			; requests held by fault delay=

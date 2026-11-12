@@ -147,6 +147,136 @@ bss
 end bss
 
 CLOCK_PROCESS_CPUTIME_ID := 2
+PIN_GAP_US	:= 50		; auto: a wait this long is a pause in the work
+PIN_BUSY_US	:= 2000		; and this long without one, a worker pins itself now
+
+bss
+	align 8
+	g_wait_t0	dq ?		; TSC as the wait for events began
+	g_busy_since	dq ?		; TSC of the last pause (a wait of PIN_GAP_US)
+	g_busy_cpu	dq ?		; CPU time (ns) when that busy spell was first seen, 0 not yet
+	g_busy_tsc	dq ?		; and the TSC then
+end bss
+PIN_BUSY_SHARE	:= 75		; percent of a busy spell spent running: work, not a busy host
+
+; Around each wait for events (both engines), auto: a worker under a sudden
+; load (a flood) pins itself within PIN_BUSY_US instead of at the next tick,
+; a second later; one at ease waits often and is left to the tick.
+macro pin_wait_begin
+	push	rax
+	push	rdx
+	rdtsc
+	shl	rdx,32
+	or	rax,rdx
+	mov	[g_wait_t0],rax
+	pop	rdx
+	pop	rax
+end macro
+macro pin_wait_end
+	push	rax
+	push	rcx
+	push	rdx
+	push	r8
+	call	pin_after_wait
+	pop	r8
+	pop	rdx
+	pop	rcx
+	pop	rax
+end macro
+
+; Keeps all but rax, rcx, rdx, r8 (pin_wait_end saves those).
+pin_after_wait:
+	cmp	dword [g_plan_pin],PIN_AUTO
+	jne	.out
+	cmp	dword [g_pinned],0
+	jne	.out
+	mov	rcx,[g_tsc_per_us]
+	test	rcx,rcx
+	jz	.out
+	rdtsc
+	shl	rdx,32
+	or	rax,rdx
+	mov	rdx,rax
+	sub	rdx,[g_wait_t0]			; how long it waited
+	imul	r8,rcx,PIN_GAP_US
+	cmp	rdx,r8
+	jb	@f
+	mov	[g_busy_since],rax		; a pause
+	mov	qword [g_busy_cpu],0
+	ret
+@@:
+	cmp	qword [g_busy_since],0
+	jne	@f
+	mov	[g_busy_since],rax		; (the first time)
+	ret
+@@:
+	mov	r8,rax
+	sub	rax,[g_busy_since]
+	imul	rcx,rcx,PIN_BUSY_US
+	cmp	rax,rcx
+	jb	.out
+	; no pause for PIN_BUSY_US: running, or waiting for a CPU on a busy host
+	; (then the events pile up and every wait returns at once)? The CPU it
+	; used over the next spell decides.
+	push	rsi
+	push	rdi
+	push	r9
+	push	r10
+	push	r11
+	push	rcx
+	sub	rsp,16
+	mov	edi,CLOCK_PROCESS_CPUTIME_ID
+	mov	rsi,rsp
+	mov	eax,SYS_clock_gettime
+	syscall
+	imul	r9,[rsp],1000000000
+	add	r9,[rsp+8]			; CPU ns now
+	add	rsp,16
+	pop	rcx
+	cmp	qword [g_busy_cpu],0
+	jne	.second
+	mov	[g_busy_cpu],r9			; the spell's start: look again later
+	mov	[g_busy_tsc],r8
+	jmp	.done_check
+.second:
+	mov	rax,r8
+	sub	rax,[g_busy_tsc]		; TSC ticks since
+	cmp	rax,rcx
+	jb	.done_check			; (not a whole spell yet)
+	sub	r9,[g_busy_cpu]			; CPU ns used
+	mov	qword [g_busy_cpu],0
+	xor	edx,edx
+	div	qword [g_tsc_per_us]		; us elapsed
+	imul	rax,rax,1000 * PIN_BUSY_SHARE / 100	; ns it should have run
+	cmp	r9,rax
+	jb	.done_check			; a busy host: free still
+	pop	r11
+	pop	r10
+	pop	r9
+	pop	rdi
+	pop	rsi
+	push	rsi
+	push	rdi
+	push	r9
+	push	r10
+	push	r11
+	mov	dword [g_pinned],1
+	mov	edi,[g_pin_index]
+	call	pin_now
+	pop	r11
+	pop	r10
+	pop	r9
+	pop	rdi
+	pop	rsi
+.out:
+	ret
+.done_check:
+	pop	r11
+	pop	r10
+	pop	r9
+	pop	rdi
+	pop	rsi
+	ret
 
 ; Workers and cores. Pinned (`pin_workers on`), a worker keeps its core's
 ; caches, and two workers never share a core: under load, its tail is the
