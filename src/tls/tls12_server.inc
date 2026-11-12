@@ -143,19 +143,13 @@ tls12_hello:
 	; server random and the ephemeral key
 	lea	rdi,[rbp+T2_SR]
 	mov	esi,32
-	xor	edx,edx
-	mov	eax,SYS_getrandom
-	syscall
-	cmp	rax,32
-	jne	.fail
+	call	rnd_bytes			; (the pool: no syscall a handshake)
+	jc	.fail
 .esk:
 	lea	rdi,[rbp+T2_ESK]
 	mov	esi,32
-	xor	edx,edx
-	mov	eax,SYS_getrandom
-	syscall
-	cmp	rax,32
-	jne	.fail
+	call	rnd_bytes			; (the pool: no syscall a handshake)
+	jc	.fail
 	cmp	dword [rbp+T2_GROUP],0
 	jne	.esk_x
 	lea	rdi,[rsp+112]			; secp256r1: a scalar in [1, n-1]
@@ -1369,9 +1363,7 @@ tls12_ticket_new:
 @@:
 	lea	rdi,[rbx+TK_NONCE]
 	mov	esi,12
-	xor	edx,edx
-	mov	eax,SYS_getrandom
-	syscall
+	call	rnd_bytes
 	mov	rdi,[g_tks]			; the current key
 	mov	eax,[rdi+TKS_CUR]
 	imul	eax,eax,TKS_SLOT

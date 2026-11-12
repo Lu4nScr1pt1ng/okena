@@ -33,6 +33,7 @@ include 'core/base64.inc'
 include 'crypto/ct.inc'
 include 'crypto/sha256.inc'
 include 'crypto/sha512.inc'
+include 'crypto/rand.inc'
 include 'crypto/sha384.inc'
 include 'crypto/sha1.inc'
 include 'crypto/keccak.inc'
@@ -199,6 +200,8 @@ start:
 	mov	dword [g_out_fd],2
 	call	cpu_require
 	call	crypto_init
+	xor	esi,esi
+	call	rnd_init			; the random pool's page, wiped in every child
 	jmp	cli_main
 .no_state:
 	mov	edi,2

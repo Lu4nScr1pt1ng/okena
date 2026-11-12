@@ -1372,10 +1372,27 @@ MG_T		:= 656
 MG_INF		:= 688				; all ones while acc is still infinity
 MG_DIG		:= 696				; |digit|, sign mask
 MG_SIGN		:= 704
-MG_SIZE		:= 712
+MG_BLIND	:= 712				; p256_mul_g_x: the blinding value, 0 none
+MG_BM		:= 720				; its Montgomery form mod p
+MG_SIZE		:= 752
 macro M op*, d*, a*, b
 	F op, rsp+d, rsp+a, b
 end macro
+; rdi = x (4 limbs), rsi = k, rdx = b (4 limbs, 1 <= b < n, secret and
+; uniform): x of k G only, for a signature. The last step's inversion of Z,
+; blinded: Z b is uniform and independent of Z, so a variable-time inversion
+; of it (binary Euclid, 1.7 us) leaks nothing, where Fermat's took 255
+; squarings (4 us); y is not computed.
+p256_mul_g_x:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	sub	rsp,MG_SIZE
+	mov	[rsp+MG_BLIND],rdx
+	jmp	p256_mul_g.body
+
 p256_mul_g:
 	push	rbx
 	push	r12
@@ -1383,6 +1400,8 @@ p256_mul_g:
 	push	r14
 	push	r15
 	sub	rsp,MG_SIZE
+	mov	qword [rsp+MG_BLIND],0
+.body:
 	mov	r12,rdi
 	; 2k, so the window i reads bits 7i - 1 .. 7i + 6 of k at offset 7i
 	mov	rax,[rsi]
@@ -1498,6 +1517,8 @@ p256_mul_g:
 	cmp	ebx,TW_COUNT
 	jb	.window
 	; affine: x = X / Z^2, y = Y / Z^3, out of Montgomery form
+	cmp	qword [rsp+MG_BLIND],0
+	jne	.blinded
 	lea	rdi,[rsp+MG_T]
 	lea	rsi,[rsp+MG_ACC+PT_Z]
 	lea	rcx,[p256_p]
@@ -1508,6 +1529,23 @@ p256_mul_g:
 	M mont_mul, MG_ACC+PT_Y, MG_ACC+PT_Y, rsp+MG_U2
 	F mont_mul, r12, rsp+MG_ACC+PT_X, p256_one
 	F mont_mul, r12+32, rsp+MG_ACC+PT_Y, p256_one
+	jmp	.wipe
+.blinded:
+	; Z is Z R here (Montgomery): u = Z b R, then plain Z b, inverted, then
+	; (Z b)^-1 R b R / R = Z^-1 R
+	mov	rdx,[rsp+MG_BLIND]
+	F mont_mul, rsp+MG_BM, rdx, p256_p+MOD_RR	; b R
+	M mont_mul, MG_T, MG_ACC+PT_Z, rsp+MG_BM	; Z b R
+	F mont_mul, rsp+MG_T, rsp+MG_T, p256_one	; Z b
+	lea	rdi,[rsp+MG_T]
+	lea	rsi,[rsp+MG_T]
+	call	mod_inv_p_vartime			; 1 / (Z b)
+	F mont_mul, rsp+MG_T, rsp+MG_T, p256_p+MOD_RR	; R / (Z b)
+	M mont_mul, MG_T, MG_T, rsp+MG_BM		; R / Z
+	M mont_sqr, MG_Z1Z1, MG_T			; 1/Z^2
+	M mont_mul, MG_ACC+PT_X, MG_ACC+PT_X, rsp+MG_Z1Z1
+	F mont_mul, r12, rsp+MG_ACC+PT_X, p256_one
+.wipe:
 	mov	rdi,rsp
 	mov	ecx,MG_SIZE
 	call	secure_zero
@@ -2437,19 +2475,19 @@ rfc6979_k:
 IVT_X1		:= 0
 IVT_X2		:= 32
 IVT_SIZE	:= 64
-macro ivt_halve x*
-	; x / 2 mod n: x + n first when x is odd (five limbs), then a shift
+macro ivt_halve x*, m*
+	; x / 2 mod m: x + n first when x is odd (five limbs), then a shift
 	local even
 	test	byte [rsp+x],1
 	mov	eax,0
 	jz	even
-	mov	rax,[p256_n]
+	mov	rax,[m]
 	add	[rsp+x],rax
-	mov	rax,[p256_n+8]
+	mov	rax,[m+8]
 	adc	[rsp+x+8],rax
-	mov	rax,[p256_n+16]
+	mov	rax,[m+16]
 	adc	[rsp+x+16],rax
-	mov	rax,[p256_n+24]
+	mov	rax,[m+24]
 	adc	[rsp+x+24],rax
 	setc	al
 	movzx	eax,al
@@ -2462,8 +2500,36 @@ even:
 	shrd	[rsp+x+16],rdx,1
 	shrd	[rsp+x+24],rax,1
 end macro
-macro ivt_sub x*, y*
-	; x = x - y mod n
+macro ivt_divpow x*, m*
+	; x / 2^t mod m, t = cl (1..63), x < m: x + q m with q = x m' mod 2^t
+	; (m' = -1/m mod 2^64, the Montgomery constant) is a multiple of 2^t,
+	; and below 2^t m, so the quotient is below m. Keeps r8-r15.
+	mov	rdx,[rsp+x]
+	imul	rdx,[m+MOD_N0]
+	bzhi	rdx,rdx,rcx			; q
+	mulx	rsi,rax,[m]
+	mulx	rbp,rbx,[m+8]
+	add	rbx,rsi
+	mulx	rsi,rdi,[m+16]
+	adc	rdi,rbp
+	mulx	rdx,rbp,[m+24]
+	adc	rbp,rsi
+	adc	rdx,0				; q m in rdx:rbp:rdi:rbx:rax
+	add	[rsp+x],rax
+	adc	[rsp+x+8],rbx
+	adc	[rsp+x+16],rdi
+	adc	[rsp+x+24],rbp
+	adc	rdx,0				; the fifth limb
+	mov	rax,[rsp+x+8]
+	shrd	[rsp+x],rax,cl
+	mov	rax,[rsp+x+16]
+	shrd	[rsp+x+8],rax,cl
+	mov	rax,[rsp+x+24]
+	shrd	[rsp+x+16],rax,cl
+	shrd	[rsp+x+24],rdx,cl
+end macro
+macro ivt_sub x*, y*, m*
+	; x = x - y mod m
 	local done
 	mov	rax,[rsp+y]
 	sub	[rsp+x],rax
@@ -2474,18 +2540,22 @@ macro ivt_sub x*, y*
 	mov	rax,[rsp+y+24]
 	sbb	[rsp+x+24],rax
 	jnc	done
-	mov	rax,[p256_n]
+	mov	rax,[m]
 	add	[rsp+x],rax
-	mov	rax,[p256_n+8]
+	mov	rax,[m+8]
 	adc	[rsp+x+8],rax
-	mov	rax,[p256_n+16]
+	mov	rax,[m+16]
 	adc	[rsp+x+16],rax
-	mov	rax,[p256_n+24]
+	mov	rax,[m+24]
 	adc	[rsp+x+24],rax
 done:
 end macro
-mod_inv_n_vartime:
+; rdi = 4 limbs, rsi = 4 limbs (below the modulus, not 0): its inverse, in
+; variable time (binary extended Euclid): only for values blinded first.
+macro mod_inv_vartime_for name*, m*
+name:
 	push	rbx
+	push	rbp
 	push	r12
 	push	r13
 	push	r14
@@ -2497,10 +2567,10 @@ mod_inv_n_vartime:
 	mov	r9,[rsi+8]
 	mov	r10,[rsi+16]
 	mov	r11,[rsi+24]
-	mov	r12,[p256_n]
-	mov	r13,[p256_n+8]
-	mov	r14,[p256_n+16]
-	mov	r15,[p256_n+24]
+	mov	r12,[m]
+	mov	r13,[m+8]
+	mov	r14,[m+16]
+	mov	r15,[m+24]
 	xor	eax,eax
 	repeat 4, q:0
 		mov	[rsp+8+IVT_X1+q*8],rax
@@ -2508,22 +2578,30 @@ mod_inv_n_vartime:
 	end repeat
 	mov	byte [rsp+8+IVT_X1],1
 .loop:
+	; a even: all its trailing zeros at once (and x1 divided as many times)
 	test	r8b,1
 	jnz	.a_odd
-	shrd	r8,r9,1
-	shrd	r9,r10,1
-	shrd	r10,r11,1
-	shr	r11,1
-	ivt_halve 8+IVT_X1
-	jmp	.loop
+	tzcnt	rcx,r8
+	mov	eax,63
+	cmp	ecx,eax
+	cmova	ecx,eax				; (a's low limb all zeros: 63 now, more later)
+	shrd	r8,r9,cl
+	shrd	r9,r10,cl
+	shrd	r10,r11,cl
+	shr	r11,cl
+	ivt_divpow 8+IVT_X1, m
 .a_odd:
 	test	r12b,1
 	jnz	.both_odd
-	shrd	r12,r13,1
-	shrd	r13,r14,1
-	shrd	r14,r15,1
-	shr	r15,1
-	ivt_halve 8+IVT_X2
+	tzcnt	rcx,r12
+	mov	eax,63
+	cmp	ecx,eax
+	cmova	ecx,eax
+	shrd	r12,r13,cl
+	shrd	r13,r14,cl
+	shrd	r14,r15,cl
+	shr	r15,cl
+	ivt_divpow 8+IVT_X2, m
 	jmp	.loop
 .both_odd:
 	; done when a or b is 1
@@ -2555,14 +2633,14 @@ mod_inv_n_vartime:
 	sbb	r9,r13
 	sbb	r10,r14
 	sbb	r11,r15
-	ivt_sub 8+IVT_X1, 8+IVT_X2
+	ivt_sub 8+IVT_X1, 8+IVT_X2, m
 	jmp	.loop
 .b_larger:
 	sub	r12,r8
 	sbb	r13,r9
 	sbb	r14,r10
 	sbb	r15,r11
-	ivt_sub 8+IVT_X2, 8+IVT_X1
+	ivt_sub 8+IVT_X2, 8+IVT_X1, m
 	jmp	.loop
 .got_x2:
 	lea	rsi,[rsp+8+IVT_X2]
@@ -2581,8 +2659,13 @@ mod_inv_n_vartime:
 	pop	r14
 	pop	r13
 	pop	r12
+	pop	rbp
 	pop	rbx
 	ret
+end macro
+
+mod_inv_vartime_for mod_inv_n_vartime, p256_n
+mod_inv_vartime_for mod_inv_p_vartime, p256_p
 
 ; rdi = rs[64], rsi = d[32], rdx = digest[32]. eax = 1, or 0 when d is
 ; not in [1, n).
@@ -2600,7 +2683,8 @@ SG_HB		:= 320				; h as bytes
 SG_B		:= 352				; the blinding value
 SG_BM		:= 384
 SG_U		:= 416
-SG_SIZE		:= 448
+SG_B2		:= 448				; Z's blinding value: SHA-256 of b
+SG_SIZE		:= 480
 p256_sign:
 	push	rbx
 	push	r12
@@ -2632,9 +2716,19 @@ p256_sign:
 	lea	rdx,[rsp+SG_HB]
 	lea	rcx,[rsp+SG_B]
 	call	rfc6979_k
+	; Z's blinding, independent of 1/k's: SHA-256 of b (as limbs, below 2^256,
+	; reduced below p; 0 has probability 2^-256)
+	lea	rdi,[rsp+SG_B2]
+	lea	rsi,[rsp+SG_B]
+	mov	edx,32
+	call	sha256
+	lea	rdi,[rsp+SG_B2]
+	lea	rsi,[p256_p]
+	call	mod_reduce_once
 	lea	rdi,[rsp+SG_X]
 	lea	rsi,[rsp+SG_K]
-	call	p256_mul_g
+	lea	rdx,[rsp+SG_B2]
+	call	p256_mul_g_x
 	lea	rdi,[rsp+SG_X]
 	lea	rsi,[p256_n]
 	call	mod_reduce_once			; r = x mod n (x < p < 2n)

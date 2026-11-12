@@ -1253,11 +1253,8 @@ tls_hello:
 	; server random and the ephemeral x25519 key
 	lea	rdi,[rbp+HL_RAND]
 	mov	esi,80
-	xor	edx,edx
-	mov	eax,SYS_getrandom
-	syscall
-	cmp	rax,80
-	jne	.internal
+	call	rnd_bytes			; (the pool: no syscall a handshake)
+	jc	.internal
 	cmp	dword [rbp+HL_GROUP],1
 	je	.eph_p256
 	jb	.eph_x25519
@@ -1265,11 +1262,8 @@ tls_hello:
 	; there), then x25519 with its half; the secret is ML-KEM's | x25519's
 	lea	rdi,[rbp+HL_MLM]
 	mov	esi,32
-	xor	edx,edx
-	mov	eax,SYS_getrandom
-	syscall
-	cmp	rax,32
-	jne	.internal
+	call	rnd_bytes
+	jc	.internal
 	lea	rdi,[rbp+HL_MLCT]
 	lea	rsi,[rbp+HL_SH64]
 	mov	rdx,[rbp+HL_MLEK]
