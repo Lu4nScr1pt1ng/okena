@@ -63,9 +63,9 @@ taskset -c 3 openssl speed -seconds 2 ed25519
 
 | Operation | okena | OpenSSL 3.5.3 | Date | Notes |
 |---|---|---|---|---|
-| X25519 (variable base) | 25.6 us | ~25.6 us | 2026-10 | mulx/adcx/adox ladder |
+| X25519 (variable base) | 25.2 us | 25.5 us | 2026-11-12 | mulx/adcx/adox ladder; 5 multiplications and 4 squares a step at ~45 cycles: the scalar ladder's floor without AVX-512 IFMA (Zen 3 has none) |
 | X25519 (fixed base, key generation) | 8.0 us | | 2026-10 | Edwards-form table |
-| ECDSA P-256 sign (RFC 6979) | 15.6 us | ~15.6 us | 2026-10 | fixed-base table, blinded inversion |
+| ECDSA P-256 sign (RFC 6979) | 12.3 us | ~15.6 us | 2026-11-12 | fixed-base table; Z and k inverted blinded, in variable time, trailing zeros at once (tzcnt, a Montgomery step for 2^t); only x made affine. 15.6 us with Fermat's inversion of Z |
 | ECDSA P-256 verify | 67 us | 47.8 us | 2026-10-30 | u1 G by the fixed-base table, u2 Q by a width-5 NAF in Jacobian coordinates (259 us with two constant-time ladders) |
 | Ed25519 sign | 9.7 us | 30.2 us | 2026-10-30 | fixed-base table (constant time), Barrett mod L |
 | Ed25519 verify | 39 us | 79.8 us | 2026-10-30 | variable-base windows (public data) |
@@ -178,6 +178,10 @@ Latency, microseconds, p50 / p99 / p99.9 / max:
 | nginx | 1.2 | 199 / 443 / 4649 / 19750 | 441 / 1068 / 8616 / 19004 | 943 / 6377 / 16881 / 21856 |
 | Envoy | 1.2 | 419 / 900 / 6672 / 22762 | 1590 / 19581 / 20804 / 22473 | did not keep up |
 
+* After ECDSA signatures went from 14.9 to 12.3 us and handshakes stopped
+  calling getrandom (a pool, MADV_WIPEONFORK), okena's handshakes per
+  CPU-second: 8636 (1.3, was 8299) and 10213 (1.2, was 9646). Most of what is
+  left is the kernel's (the TCP connection) and X25519's ladder.
 * okena keeps its plaintext throughput with TLS (records sealed and opened
   in user space, ~1.5%); the others lose 20-25%. 80% over HAProxy, twice
   nginx, 4.5 times Envoy, either version.
