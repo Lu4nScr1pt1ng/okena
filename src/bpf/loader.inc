@@ -13,6 +13,9 @@ BPF_MAP_TYPE_HASH := 1
 BPF_MAP_TYPE_ARRAY := 2
 BPF_MAP_TYPE_PERCPU_ARRAY := 6
 BPF_MAP_TYPE_LRU_PERCPU_HASH := 10
+BPF_MAP_TYPE_LRU_HASH := 9
+BPF_F_NO_COMMON_LRU := 2		; an LRU list a CPU (no lock shared between CPUs)
+BPF_FUNC_redirect := 23
 BPF_PROG_TYPE_XDP := 6
 BPF_XDP		:= 37			; attach type
 XDP_FLAGS_SKB_MODE := 2
@@ -34,9 +37,11 @@ rodata
 	eb_license	db 'GPL',0		; (helpers like fib_lookup ask for it)
 end rodata
 
-; edi = type, esi = key size, edx = value size, ecx = entries, r8d = number:
-; the map made, g_eb_mapfd[number] = its descriptor. eax = it, or -errno.
+; edi = type, esi = key size, edx = value size, ecx = entries, r8d = number,
+; r9d = map_flags: the map made, g_eb_mapfd[number] = its descriptor. eax =
+; it, or -errno.
 eb_map_create:
+	push	r9
 	push	r8
 	push	rdi
 	push	rsi
@@ -54,12 +59,15 @@ eb_map_create:
 	mov	[g_eb_attr+4],esi
 	mov	[g_eb_attr+8],edx
 	mov	[g_eb_attr+12],ecx
+	mov	r9,[rsp+8]
+	mov	[g_eb_attr+16],r9d		; map_flags
 	mov	edi,BPF_MAP_CREATE
 	lea	rsi,[g_eb_attr]
 	mov	edx,72
 	mov	eax,SYS_bpf
 	syscall
 	pop	r8
+	pop	r9
 	test	eax,eax
 	js	@f
 	mov	[g_eb_mapfd+r8*4],eax

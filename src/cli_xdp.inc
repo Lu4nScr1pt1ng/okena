@@ -64,6 +64,7 @@ cli_xdp:
 	mov	edx,8
 	mov	ecx,1
 	mov	r8d,XC_MAP_COUNT
+	xor	r9d,r9d
 	call	eb_map_create
 	test	eax,eax
 	js	.no_map
