@@ -58,7 +58,8 @@ xdp_setup:
 		XL_REALS,BPF_MAP_TYPE_ARRAY,4,4,MAX_SERVERS+1,0, \
 		XL_LRU,BPF_MAP_TYPE_LRU_HASH,16,4,XC_LRU_N,BPF_F_NO_COMMON_LRU, \
 		XL_STATS,BPF_MAP_TYPE_PERCPU_ARRAY,4,8,XS_N,0, \
-		XL_CTL,BPF_MAP_TYPE_ARRAY,4,4,1,0
+		XL_CTL,BPF_MAP_TYPE_ARRAY,4,4,2,0, \
+		XL_NH,BPF_MAP_TYPE_PERCPU_ARRAY,4,NH_L,XL_NH_N,0
 		mov	edi,type
 		mov	esi,ks
 		mov	edx,vs
@@ -104,6 +105,15 @@ xdp_setup:
 	call	eb_map_update
 	test	eax,eax
 	js	.failed_addr
+	mov	dword [g_xc_k],1		; the new flows remembered a time step
+	mov	dword [g_xc_v],XL_FLOOD_N
+	mov	edi,[g_eb_mapfd+XL_CTL*4]
+	lea	rsi,[g_xc_k]
+	lea	rdx,[g_xc_v]
+	xor	ecx,ecx
+	call	eb_map_update
+	test	eax,eax
+	js	.failed_map
 	; the program
 	lea	rdi,[g_xdp_insns]
 	lea	rsi,[xl_prog]

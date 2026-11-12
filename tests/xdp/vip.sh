@@ -10,7 +10,8 @@
 # Checks: requests through the VIP all answered, spread over the reals,
 # straight back from them (DSR); a real stopped: taken out of the ring by
 # the health checks, its share to the others, no request lost after; back:
-# taken in again; okena-xdp killed: restarted, the balancer serving meanwhile.
+# taken in again; a real's MAC changed: the next hop follows; okena-xdp
+# killed: restarted, the balancer serving meanwhile.
 #
 #   tests/xdp/vip.sh          (needs docker; runs a --privileged container)
 set -euo pipefail
@@ -91,6 +92,13 @@ check "real2 stopped: every request answered by the others" $([ $a = 40 ] && [ $
 real_start 2; sleep 1.5
 read a c1 c2 c3 < <(ask 60)
 check "real2 back: in the ring again" $([ $a = 60 ] && [ $c2 -gt 0 ] && echo 1 || echo 0) "$a (real1 $c1, real2 $c2, real3 $c3)"
+# the MAC of a real changes (a new card, a failover): the next hop each CPU
+# keeps is the kernel one again within a time step (~1 s); none lost after
+ip -n real1 link set real1 address 02:00:00:00:a1:21
+ip -n lb neigh replace 10.9.0.21 lladdr 02:00:00:00:a1:21 dev lb nud reachable
+sleep 1.2
+read a c1 c2 c3 < <(ask 60)
+check "real1 with a new MAC: every request answered" $([ $a = 60 ] && [ $c1 -gt 0 ] && echo 1 || echo 0) "$a (real1 $c1, real2 $c2, real3 $c3)"
 # okena-xdp killed: the balancer serves meanwhile, it is started again
 pkill -x okena-xdp 2>/dev/null || kill $(ps -eo pid,comm | awk "\$2 == \"okena-xdp\" { print \$1 }")
 read a c1 c2 c3 < <(ask 20)

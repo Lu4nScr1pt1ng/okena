@@ -90,7 +90,8 @@ cli_xdplb:
 		XL_REALS,BPF_MAP_TYPE_ARRAY,4,4,256,0, \
 		XL_LRU,BPF_MAP_TYPE_LRU_HASH,16,4,XB_LRU_N,BPF_F_NO_COMMON_LRU, \
 		XL_STATS,BPF_MAP_TYPE_PERCPU_ARRAY,4,8,XS_N,0, \
-		XL_CTL,BPF_MAP_TYPE_ARRAY,4,4,1,0
+		XL_CTL,BPF_MAP_TYPE_ARRAY,4,4,2,0, \
+		XL_NH,BPF_MAP_TYPE_PERCPU_ARRAY,4,NH_L,XL_NH_N,0
 		mov	edi,type
 		mov	esi,ks
 		mov	edx,vs
@@ -107,6 +108,15 @@ cli_xdplb:
 	jc	.usage
 	mov	[g_xb_val],eax
 	mov	dword [g_xb_key],0
+	mov	edi,[g_eb_mapfd+XL_CTL*4]
+	lea	rsi,[g_xb_key]
+	lea	rdx,[g_xb_val]
+	xor	ecx,ecx
+	call	eb_map_update
+	test	eax,eax
+	js	.no_fill
+	mov	dword [g_xb_key],1		; the new flows remembered a time step
+	mov	dword [g_xb_val],XL_FLOOD_N
 	mov	edi,[g_eb_mapfd+XL_CTL*4]
 	lea	rsi,[g_xb_key]
 	lea	rdx,[g_xb_val]
@@ -237,7 +247,7 @@ cli_xdplb:
 	mov	eax,SYS_nanosleep
 	syscall
 	add	rsp,16
-	irp <idx,label>, XS_TX,'to reals/s ', XS_MISS,'new flows/s ', XS_DROP,'dropped/s'
+	irp <idx,label>, XS_TX,'to reals/s ', XS_MISS,'new flows/s ', XS_FLOOD,'not remembered/s ', XS_DROP,'dropped/s'
 		mov	dword [g_xb_key],idx
 		mov	edi,[g_eb_mapfd+XL_STATS*4]
 		lea	rsi,[g_xb_key]

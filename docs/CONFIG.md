@@ -604,7 +604,11 @@ instance, so a flow that moves between instances (ECMP) keeps its server. A
 server the health checks take out leaves the table at once; its slots are
 drawn again, as user-space maglev does, and its flows move. The outer
 header's source is the first interface's IPv4 address; the next hop comes
-from the kernel's routes and neighbours.
+from the kernel's routes and neighbours, each CPU keeping the answer for a
+server about a second (a changed route or MAC is followed within one). Past
+125000 new flows a second on one CPU (a flood), new flows are sent by the
+table alone and not remembered, so they do not push out the flows already
+there.
 
 Needs CAP_BPF and CAP_NET_ADMIN (the supervisor sets it up before it
 confines itself; afterwards only `okena-xdp`, a process of its own, changes
