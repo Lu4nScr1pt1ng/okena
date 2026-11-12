@@ -83,6 +83,7 @@ ep_main:
 	add	rax,1000
 	mov	[g_next_tick_ms],rax
 	call	priv_drop			; as `user` from here on
+	call	worker_ready
 	cmp	dword [g_plan_files],0
 	jne	.with_files
 	seccomp_for filter_worker_epoll
@@ -784,7 +785,10 @@ ep_connect_result:
 	test	eax,eax
 	js	.failed
 	test	ecx,ecx
-	jnz	.error
+	jz	.connected
+	cmp	ecx,ECONNRESET			; reset after the handshake (refused before
+	jne	.error				; it is ECONNREFUSED): connected, and what the
+.connected:					; backend sent before is read, then its end
 	mov	edi,ebx
 	call	ep_connected
 	pop	rbx

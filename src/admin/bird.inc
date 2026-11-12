@@ -35,6 +35,8 @@ end bss
 ; eax = 1 when this okena can take traffic
 bird_ready:
 	mov	rax,[g_stats_tbl]
+	cmp	qword [rax+SG_OFF+SG_SERVING],0
+	je	.no				; (not serving yet)
 	cmp	qword [rax+SG_OFF+SG_DRAINING],0
 	jne	.no
 	mov	rax,[g_api_ov]

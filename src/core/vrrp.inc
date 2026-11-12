@@ -395,6 +395,7 @@ vrrp_main:
 	js	.no_sock
 	mov	[g_vr_pkt],eax
 .sockets_done:
+	call	wait_serving			; (the address taken: its traffic served)
 	call	ll_confine_none
 	seccomp_for filter_vrrp
 	; Initialize (RFC 9568 6.4.1): a backup, the master's interval ours

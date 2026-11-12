@@ -138,7 +138,7 @@ def main():
             ts.append(time.time() - t0)
             bodies.append((r.status, b))
         check(f"a slow server's requests hedged: worst {max(ts) * 1000:.0f} ms, not {SLOW_DELAY * 1000:.0f}",
-              max(ts) < SLOW_DELAY * 0.8 and all(s == 200 for s, _ in bodies), str(ts))
+              max(ts) < SLOW_DELAY and all(s == 200 for s, _ in bodies), str(ts))   # (not hedged: the slow one's time at least)
         check("  answered by the other, once", all(b == b"fast" for _, b in bodies)
               and all(hits.get(("fast", f"/h/{i}")) == 1 for i in range(30)), str(bodies[:3]))
         n = sum(1 for i in range(30) if ("slow", f"/h/{i}") in hits)

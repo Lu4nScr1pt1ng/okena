@@ -199,6 +199,7 @@ bss
 	g_ac_t14:	rb 16
 	g_ac_tag	rq ACME_ALL		; each certificate's tag (its leaf's SHA-256, 8 bytes)
 	g_ac_revdone	rq ACME_ALL		; a revocation already acted on
+	g_ac_revnew	dd ?		; revocations acme_revoked took in (a pass)
 	g_ac_eabreq	dd ?			; its directory says externalAccountRequired
 	g_ac_dchgl	rd ACME_NAMES
 	g_ac_dchg:	rb 64 * ACME_NAMES	; (Route 53: each change, until INSYNC)
@@ -1778,6 +1779,7 @@ acme_main:
 	jb	@b
 	call	od_load				; the on-demand ones kept from before
 	call	acme_failed_load		; (and which failed last: their status)
+	call	wait_serving			; (a CA's check, on port 80: answered)
 .loop:
 	mov	dword [g_ac_reload],0
 	mov	rax,[g_acme_page]
@@ -1981,6 +1983,12 @@ acme_main:
 	inc	ebx
 	jmp	.cert
 .pass:
+	; a revocation said before a certificate's tag was known (the first pass
+	; reads the files after acme_revoked): looked at again, not slept on
+	mov	dword [g_ac_revnew],0
+	call	acme_revoked
+	cmp	dword [g_ac_revnew],0
+	jne	.loop
 	call	acme_served_check		; (once: the files against what is served)
 	call	acme_clear
 	cmp	dword [g_plan_acme+ACM_SHARED],0
@@ -2058,6 +2066,7 @@ acme_revoked:
 .it:
 	mov	[g_ac_revdone+rbx*8],rax
 	mov	qword [g_ac_due+rbx*8],0
+	inc	dword [g_ac_revnew]
 	push	r8
 	push	r9
 	call	log_begin

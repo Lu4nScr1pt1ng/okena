@@ -103,7 +103,8 @@ http 127.0.0.1:{TLS} {{ tls {{ cert {tmp}/c.pem; key {tmp}/k.pem }}; route /* {{
                 if ready() == 200:
                     break
             except OSError:
-                time.sleep(0.05)
+                pass
+            time.sleep(0.05)                    # (503 "starting" too: the workers set up)
         check("in rotation: /ready 200", ready() == 200)
         keep = http.client.HTTPConnection("127.0.0.1", LST, timeout=5)
         keep.request("GET", "/")

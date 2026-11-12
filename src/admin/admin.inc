@@ -6,7 +6,8 @@
 ; connections at once, each given two seconds to say what it wants (then what
 ; came is taken); a request is answered once it is whole. All slots taken, the
 ; one waiting longest goes for the newcomer, so a crowd of silent connections
-; cannot keep a health check out. /ready answers 503 once the instance drains,
+; cannot keep a health check out. /ready answers 503 until the workers serve
+; ("starting") and once the instance drains,
 ; so orchestrators stop sending traffic first. HEAD is answered as GET, without
 ; the body.
 
@@ -384,6 +385,8 @@ admin_serve:
 	jmp	.send
 .ready:
 	mov	rax,[g_stats_tbl]
+	cmp	qword [rax+SG_OFF+SG_SERVING],0
+	je	.starting			; the workers are not set up yet
 	cmp	qword [rax+SG_OFF+SG_DRAINING],0
 	jne	.draining
 	mov	rax,[g_api_ov]
@@ -392,6 +395,11 @@ admin_serve:
 	cstring str_ready, 'HTTP/1.1 200 OK',13,10,'Content-Length: 6',13,10,'Connection: close',13,10,13,10,'ready',10
 	lea	rsi,[str_ready]
 	mov	edx,str_ready.len
+	jmp	.send
+.starting:
+	cstring str_starting, 'HTTP/1.1 503 Service Unavailable',13,10,'Content-Length: 9',13,10,'Connection: close',13,10,13,10,'starting',10
+	lea	rsi,[str_starting]
+	mov	edx,str_starting.len
 	jmp	.send
 .draining:
 	cstring str_draining, 'HTTP/1.1 503 Service Unavailable',13,10,'Content-Length: 9',13,10,'Connection: close',13,10,13,10,'draining',10

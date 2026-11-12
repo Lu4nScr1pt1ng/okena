@@ -61,6 +61,7 @@ SG_RELOADS	:= 8
 SG_RELOAD_FAILS	:= 16
 SG_DRAINING	:= 24
 SG_STARTED	:= 32			; wall clock seconds when okena started
+SG_SERVING	:= 40			; 1 once the first workers serve (workers_wait_ready)
 SG_OFF		:= 0
 STP_BASE	:= 4096
 
@@ -88,6 +89,8 @@ stats_table_init:
 	mov	[rax+SG_OFF+SG_RELOAD_FAILS],rcx
 	mov	rcx,[rbx+SG_OFF+SG_STARTED]
 	mov	[rax+SG_OFF+SG_STARTED],rcx
+	mov	rcx,[rbx+SG_OFF+SG_SERVING]	; (the old workers serve meanwhile)
+	mov	[rax+SG_OFF+SG_SERVING],rcx
 	jmp	.out
 .done:
 	; the first: when it started

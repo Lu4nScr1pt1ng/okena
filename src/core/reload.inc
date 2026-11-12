@@ -10,8 +10,8 @@
 ;      is kept), opens the sockets of new addresses, keeps the sockets of
 ;      addresses that stay (no moment where a connection is refused), and
 ;      only then commits: a new generation of workers starts, the old one
-;      stops accepting at once and finishes its sessions within its drain
-;      timeout. Sockets of removed addresses close when the old
+;      accepts on until the new one serves (workers_wait_ready), then stops
+;      accepting and finishes its sessions within its drain timeout. Sockets of removed addresses close when the old
 ;      generation is gone. Any failure before the commit restores the old
 ;      plan and closes what was opened.
 
@@ -25,6 +25,8 @@ bss
 	g_old_count	dd ?
 	g_old_pid	rd MAX_OLD
 	g_old_deadline	dq ?		; monotonic second to kill stragglers
+	g_nretiring	dd ?		; old workers not told yet (retire_take)
+	g_retiring	rd MAX_WORKERS
 	g_close_count	dd ?
 	g_close_fd	rd MAX_LISTENERS * MAX_WORKERS
 	g_prev_lfd	rd MAX_LISTENERS * MAX_WORKERS
@@ -519,7 +521,7 @@ supervisor_reload:
 	lea	rdi,[g_ar_alt]
 	call	arenas_empty_at
 	call	tls_tickets_apply		; the ticket_keys file again (an operator's rotation)
-	call	retire_workers
+	call	retire_take			; (they accept on until the new ones serve)
 	mov	[g_workers],r15d
 	mov	edi,[g_control_pid]
 	test	edi,edi
@@ -596,6 +598,8 @@ supervisor_reload:
 	inc	ebx
 	jmp	.spawn
 .spawned:
+	call	workers_wait_ready		; the new generation serves:
+	call	retire_signal			; the old one stops accepting
 	push	rdi
 	mov	edi,1
 	call	gw_reload_result
@@ -880,10 +884,11 @@ previous_listener:
 	pop	rbx
 	ret
 
-; The running workers become the old generation: they stop accepting at
-; once (SIGUSR1) and finish their sessions within their drain timeout.
-retire_workers:
+; The running workers become the old generation: taken out of the table now
+; (an early exit of one is an old one's), then ...
+retire_take:
 	push	rbx
+	mov	dword [g_nretiring],0
 	xor	ebx,ebx
 .next:
 	cmp	ebx,[g_workers]
@@ -892,18 +897,17 @@ retire_workers:
 	test	edi,edi
 	jz	.skip
 	mov	dword [g_worker_pid+rbx*4],0
+	dec	dword [g_alive]
 	mov	ecx,[g_old_count]
 	cmp	ecx,MAX_OLD
 	jae	.kill
-	mov	[g_old_pid+rcx*4],edi
+	mov	[g_old_pid+rcx*4],edi		; (reaped as old from now on)
 	inc	dword [g_old_count]
-	dec	dword [g_alive]
-	mov	esi,SIGUSR1
-	mov	eax,SYS_kill
-	syscall
+	mov	ecx,[g_nretiring]
+	mov	[g_retiring+rcx*4],edi
+	inc	dword [g_nretiring]
 	jmp	.skip
 .kill:
-	dec	dword [g_alive]
 	mov	esi,SIGKILL			; too many generations at once
 	mov	eax,SYS_kill
 	syscall
@@ -911,7 +915,25 @@ retire_workers:
 	inc	ebx
 	jmp	.next
 .done:
-	; stragglers are killed after the drain timeout and a margin
+	pop	rbx
+	ret
+
+; ... and, once the new generation serves, told to stop accepting and finish
+; their sessions; stragglers are killed after the drain timeout and a margin
+retire_signal:
+	push	rbx
+	xor	ebx,ebx
+.next:
+	cmp	ebx,[g_nretiring]
+	jae	.done
+	mov	edi,[g_retiring+rbx*4]
+	mov	esi,SIGUSR1
+	mov	eax,SYS_kill
+	syscall
+	inc	ebx
+	jmp	.next
+.done:
+	mov	dword [g_nretiring],0
 	call	monotonic_seconds
 	mov	rcx,rax
 	mov	rax,[g_plan_save+PLAN_SAVE_DRAIN_TIMEOUT]	; old drain timeout (us)
@@ -923,6 +945,11 @@ retire_workers:
 	mov	[g_old_deadline],rax
 	pop	rbx
 	ret
+
+; both at once (upgrade.inc)
+retire_workers:
+	call	retire_take
+	jmp	retire_signal
 
 ; edi = pid that exited: an old worker? CF when it was one.
 reap_old:

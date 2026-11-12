@@ -140,7 +140,9 @@ http 127.0.0.1:{LST} {{ http2 on; route /* {{ to pool b }} }}
         time.sleep(0.2)
         r = cli("drain")
         check("okena drain", r.returncode == 0, r.stderr)
-        busy.pump(1.0)                                  # (a tick: the GOAWAY goes)
+        end = time.time() + 3                           # (the next tick: the GOAWAY goes,
+        while time.time() < end and not busy.kinds(h2.events.ConnectionTerminated):
+            busy.pump(0.1)                              # a second at most, more on a loaded host)
         ga = busy.kinds(h2.events.ConnectionTerminated)
         check("a connection with a request in flight: GOAWAY, NO_ERROR, the last stream it took",
               ga and ga[0].error_code == 0 and ga[0].last_stream_id == sid, [(e.error_code, e.last_stream_id) for e in ga])

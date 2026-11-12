@@ -134,6 +134,7 @@ worker_main:
 .confine:
 	; set up: from here on only what serving needs, as `user`
 	call	priv_drop
+	call	worker_ready			; (its accepts go in with the first wait)
 	cmp	dword [g_ud_on],0
 	jne	.with_udp
 	cmp	dword [g_plan_files],0

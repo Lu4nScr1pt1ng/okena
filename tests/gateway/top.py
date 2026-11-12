@@ -123,7 +123,7 @@ http 127.0.0.1:{TLSL} {{
     p = subprocess.Popen([str(BIN), "-c", str(conf)], stderr=open(log, "w"))
     cli = lambda *a: subprocess.run([str(BIN), *a, "-c", str(conf)], capture_output=True, text=True, timeout=10)
     try:
-        check("okena starts", until(lambda: admin("/live")[0] == 200), log.read_text()[-300:])
+        check("okena starts", until(lambda: admin("/ready")[0] == 200), log.read_text()[-300:])  # (serving: /live is up before)
 
         # the token: /live and /ready open, the rest behind it
         check("/live and /ready need no token", admin("/live")[0] == 200 and admin("/ready")[0] == 200)

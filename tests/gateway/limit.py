@@ -137,12 +137,10 @@ def main():
     conf.write_text(text)
     p = subprocess.Popen(["timeout", "--foreground", "60", str(BIN), "-c", str(conf)], stderr=open(tmp / "log", "w"))
     try:
-        for _ in range(100):
-            try:
-                socket.create_connection(("127.0.0.1", LST), timeout=1).close()
+        for _ in range(200):                # every worker serving: the budget's time from then
+            if "started with" in (tmp / "log").read_text():
                 break
-            except OSError:
-                time.sleep(0.05)
+            time.sleep(0.05)
         t0 = time.time()
         ok, no = hammer("/all", 3)
         dt = time.time() - t0

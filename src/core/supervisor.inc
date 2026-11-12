@@ -152,28 +152,6 @@ supervisor_main:
 	call	qs_open_all			; http3: a UDP socket per worker
 	test	eax,eax
 	js	.no_udp
-	call	log_begin
-	call	sd_ready			; (systemd: READY=1)
-	out_lit 'started with '
-	mov	eax,[g_workers]
-	call	out_u64
-	out_lit ' worker'
-	cmp	dword [g_workers],1
-	je	@f
-	out_lit 's'
-@@:
-	mov	eax,[g_cpu_quota]
-	test	eax,eax
-	jz	@f
-	cmp	eax,[g_cpu_count]
-	jae	@f
-	out_lit ' (cgroup CPU quota of '
-	mov	eax,[g_cpu_quota]
-	call	out_u64
-	out_lit '; pin cores with --cpuset-cpus for unthrottled latency)'
-@@:
-	call	log_end
-
 	call	alog_pipe_init
 	call	tsc_calibrate			; once, for every worker (busy_poll, access log)
 	call	xdp_setup			; (maps, programs: only before the filter)
@@ -200,8 +178,34 @@ supervisor_main:
 	call	spawn_acme
 	call	spawn_ocsp
 	call	spawn_gateway
+	call	api_ready			; (the admin API: as soon as it is there)
+	; started once the workers serve: then systemd, an old binary handing
+	; over (upgrade), the log hear it
+	call	workers_wait_ready
+	mov	rax,[g_stats_tbl]
+	mov	qword [rax+SG_OFF+SG_SERVING],1	; /ready: 200 from now on
+	call	log_begin
+	call	sd_ready			; (systemd: READY=1)
+	out_lit 'started with '
+	mov	eax,[g_workers]
+	call	out_u64
+	out_lit ' worker'
+	cmp	dword [g_workers],1
+	je	@f
+	out_lit 's'
+@@:
+	mov	eax,[g_cpu_quota]
+	test	eax,eax
+	jz	@f
+	cmp	eax,[g_cpu_count]
+	jae	@f
+	out_lit ' (cgroup CPU quota of '
+	mov	eax,[g_cpu_quota]
+	call	out_u64
+	out_lit '; pin cores with --cpuset-cpus for unthrottled latency)'
+@@:
+	call	log_end
 	call	upgrade_ready
-	call	api_ready
 
 	; check the heartbeats once a second
 	sub	rsp,32
@@ -882,6 +886,11 @@ sleep_ms:
 	add	rsp,16
 	ret
 
+; A heartbeat line: the beat (q, at 0), the crash quarantine's (q, at 8,
+; quarantine.inc), and 1 once the worker serves (d, at HB_READY_OFF)
+HB_READY_OFF	:= 16
+WORKERS_READY_MS := 3000		; how long the supervisor waits for them
+
 ; edi = worker index.
 spawn_worker:
 	push	rbx
@@ -893,6 +902,7 @@ spawn_worker:
 	call	hb_line
 	mov	[g_hb_slot],eax			; inherited by the worker
 	add	rax,[g_hb]
+	mov	dword [rax+HB_READY_OFF],0	; (it says when it serves)
 	mov	rax,[rax]
 	mov	[g_hb_seen+rbx*8],rax
 	call	monotonic_seconds
@@ -915,6 +925,68 @@ spawn_worker:
 	call	log_end
 	mov	dword [g_exit_code],EXIT_FAILURE
 	call	begin_shutdown
+	pop	rbx
+	ret
+
+; A worker set up (its ring, its accepts armed, confined): it says so in its
+; heartbeat line, for workers_wait_ready
+worker_ready:
+	mov	eax,[g_hb_slot]
+	add	rax,[g_hb]
+	mov	dword [rax+HB_READY_OFF],1
+	ret
+
+; Until every worker of this generation serves, or WORKERS_READY_MS: what
+; "started" and systemd's READY=1 mean, and the moment a reload's old
+; workers stop accepting (until then they take what comes). A worker's
+; setup takes milliseconds, more on a loaded host (its ring's descriptor
+; table, a few MB the kernel clears).
+workers_wait_ready:
+	push	rbx
+	push	r12
+	mov	r12d,WORKERS_READY_MS
+.round:
+	xor	ebx,ebx
+.worker:
+	cmp	ebx,[g_workers]
+	jae	.out
+	cmp	dword [g_worker_pid+rbx*4],0
+	je	.next				; (not running: not waited for)
+	call	hb_line
+	add	rax,[g_hb]
+	cmp	dword [rax+HB_READY_OFF],0
+	je	.wait
+.next:
+	inc	ebx
+	jmp	.worker
+.wait:
+	dec	r12d
+	jz	.out
+	mov	eax,1
+	call	sleep_ms
+	jmp	.round
+.out:
+	pop	r12
+	pop	rbx
+	ret
+
+; A helper that tells the world okena takes traffic (okena-acme asking a CA
+; to come and check, VRRP taking the address): first until the workers
+; serve, SERVING_WAIT_MS at most (nanosleep)
+SERVING_WAIT_MS	:= 10000
+wait_serving:
+	push	rbx
+	mov	ebx,SERVING_WAIT_MS / 10
+.check:
+	mov	rax,[g_stats_tbl]
+	cmp	qword [rax+SG_OFF+SG_SERVING],0
+	jne	.out
+	dec	ebx
+	jz	.out
+	mov	eax,10
+	call	sleep_ms
+	jmp	.check
+.out:
 	pop	rbx
 	ret
 

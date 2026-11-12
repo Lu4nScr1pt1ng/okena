@@ -1279,8 +1279,9 @@ count.
 `okena { bird /run/bird/bird.ctl protocol=anycast pool=web }` announces an anycast
 address only while this okena can take traffic, through BIRD's control socket. It
 sends `enable anycast` and `disable anycast`, for BIRD's protocol that exports the
-address over BGP. okena can take traffic as `/ready` says: not draining (`okena
-drain`, a stop, the old process of an upgrade) and, with `pool=`, while that pool
+address over BGP. okena can take traffic as `/ready` says: its workers serving
+(not while they start), not draining (`okena drain`, a stop, the old process of an
+upgrade) and, with `pool=`, while that pool
 has a server up. A node whose backends are all down withdraws itself, and the
 routers send its share of clients to the other nodes.
 
