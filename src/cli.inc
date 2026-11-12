@@ -37,6 +37,7 @@ cstring str_cmd_certs, 'certs',0
 cstring str_cmd_trust, 'trust',0
 cstring str_cmd_regex, 'regex',0
 cstring str_cmd_ech, 'ech',0
+cstring str_cmd_xdp, 'xdp',0
 cstring str_flag_help, '--help',0
 cstring str_flag_version, '--version',0
 cstring str_flag_c, '-c',0
@@ -72,6 +73,12 @@ cli_main:
 	call	cstr_eq
 	test	eax,eax
 	jnz	cli_route
+	mov	rax,[g_argv]
+	mov	rdi,[rax+8]
+	lea	rsi,[str_cmd_xdp]
+	call	cstr_eq
+	test	eax,eax
+	jnz	cli_xdp
 	mov	rax,[g_argv]
 	mov	rdi,[rax+8]
 	lea	rsi,[str_cmd_fmt]
