@@ -5,12 +5,15 @@
 ; from a session to a pool and to the next session. epoll: they are
 ; plain descriptors.
 ;
-; Pools (http keep-alive): per worker, per server, a LIFO stack of idle
+; Pools (http keep-alive): per worker, per server, a LIFO list of idle
 ; connections, the most recently used first (warm in the kernel's and
-; the backend's caches). At most POOL_MAX per server per worker; the
-; oldest ones are closed after POOL_IDLE seconds, below the usual
-; backend keep-alive timeouts so okena closes first, not the backend in
-; the middle of a reuse.
+; the backend's caches). At most `connect max=` (POOL_MAX by default) per
+; server per worker; the oldest ones are closed after POOL_IDLE seconds,
+; below the usual backend keep-alive timeouts so okena closes first, not
+; the backend in the middle of a reuse. The list is threaded through the
+; handles themselves (next, prev, parked at), so a server costs three words
+; whatever its maximum, and a connection the backend closes leaves from the
+; middle at once. Links hold handle + 1: 0 is none, as the state starts.
 
 POOL_MAX	:= 512
 POOL_IDLE	:= 50
@@ -24,8 +27,12 @@ bss
 	g_us_hwm	dd ?
 	g_pool_n	rd MAX_SERVERS		; idle connections per server
 	g_sv_gen	rd MAX_SERVERS		; a slot's address changes: what it was made for is old
-	g_pool_h	rd MAX_SERVERS * POOL_MAX	; their slots or descriptors
-	g_pool_t	rd MAX_SERVERS * POOL_MAX	; tick each was parked at
+	g_pool_head	rd MAX_SERVERS		; the newest + 1
+	g_pool_tail	rd MAX_SERVERS		; the oldest + 1
+	g_hd_next	rd UPSLOT_MAX		; a pooled handle: the next older + 1
+	g_hd_prev	rd UPSLOT_MAX		; the next newer + 1
+	g_hd_t		rd UPSLOT_MAX		; tick it was parked at
+	g_hd_pooled	rb UPSLOT_MAX		; 1 while in a pool
 	g_us_wgen	rd UPSLOT_MAX		; io_uring: watch generation per slot
 	g_hd_server	rd UPSLOT_MAX		; pooled handle -> its server
 end bss
@@ -107,40 +114,57 @@ on_pool_watch:
 .stale:
 	ret
 
+; edi = server, esi = handle: on the list's newest end. Keeps rdi, rsi.
+pool_link:
+	mov	byte [g_hd_pooled+rsi],1
+	mov	eax,[g_pool_head+rdi*4]
+	mov	[g_hd_next+rsi*4],eax
+	mov	dword [g_hd_prev+rsi*4],0
+	lea	ecx,[rsi+1]
+	test	eax,eax
+	jz	@f
+	mov	[g_hd_prev+rax*4-4],ecx
+	jmp	.head
+@@:
+	mov	[g_pool_tail+rdi*4],ecx
+.head:
+	mov	[g_pool_head+rdi*4],ecx
+	inc	dword [g_pool_n+rdi*4]
+	ret
+
+; edi = server, esi = handle in its list: out of it. Keeps rdi, rsi.
+pool_unlink:
+	mov	byte [g_hd_pooled+rsi],0
+	mov	eax,[g_hd_prev+rsi*4]		; newer + 1
+	mov	ecx,[g_hd_next+rsi*4]		; older + 1
+	test	eax,eax
+	jz	@f
+	mov	[g_hd_next+rax*4-4],ecx
+	jmp	.older
+@@:
+	mov	[g_pool_head+rdi*4],ecx
+.older:
+	test	ecx,ecx
+	jz	@f
+	mov	[g_hd_prev+rcx*4-4],eax
+	jmp	.done
+@@:
+	mov	[g_pool_tail+rdi*4],eax
+.done:
+	dec	dword [g_pool_n+rdi*4]
+	ret
+
 ; edi = handle that died while pooled: out of its pool, closed.
 pool_drop_handle:
-	push	rbx
-	mov	ebx,[g_hd_server+rdi*4]
-	mov	ecx,[g_pool_n+rbx*4]
-	imul	edx,ebx,POOL_MAX
-	xor	eax,eax
-.find:
-	cmp	eax,ecx
-	jae	.absent
-	lea	r8d,[rdx+rax]
-	cmp	[g_pool_h+r8*4],edi
-	je	.found
-	inc	eax
-	jmp	.find
-.found:
-	; shift the entries above it down
-	dec	ecx
-	mov	[g_pool_n+rbx*4],ecx
-	sub	ecx,eax
-	push	rdi
-	lea	rsi,[g_pool_h+r8*4+4]
-	lea	rdi,[g_pool_h+r8*4]
-	push	rcx
-	rep	movsd
-	pop	rcx
-	lea	rsi,[g_pool_t+r8*4+4]
-	lea	rdi,[g_pool_t+r8*4]
-	rep	movsd
-	pop	rdi
+	cmp	byte [g_hd_pooled+rdi],0
+	je	.absent
+	mov	esi,edi
+	mov	edi,[g_hd_server+rsi*4]
+	call	pool_unlink
+	mov	edi,esi
 	inc	dword [g_us_wgen+rdi*4]
-	call	pool_close_handle
+	jmp	pool_close_handle
 .absent:
-	pop	rbx
 	ret
 
 ; eax = a free upstream slot, or NIL.
@@ -178,15 +202,11 @@ pool_put:
 	mov	eax,[g_sv_pool+rdi*4]		; the pool's `connect max=`
 	imul	rax,rax,PL_SIZE
 	mov	ecx,[g_pools+rax+PL_CMAX]
-	mov	eax,[g_pool_n+rdi*4]
-	cmp	eax,ecx
+	cmp	[g_pool_n+rdi*4],ecx
 	jae	.full
-	imul	ecx,edi,POOL_MAX
-	add	ecx,eax
-	mov	[g_pool_h+rcx*4],esi
-	mov	edx,[g_tick]
-	mov	[g_pool_t+rcx*4],edx
-	inc	dword [g_pool_n+rdi*4]
+	mov	eax,[g_tick]
+	mov	[g_hd_t+rsi*4],eax
+	call	pool_link
 	call	pool_watch
 	clc
 	ret
@@ -196,14 +216,12 @@ pool_put:
 
 ; edi = server. eax = the most recently parked handle, or NIL.
 pool_take:
-	mov	eax,[g_pool_n+rdi*4]
-	test	eax,eax
+	mov	esi,[g_pool_head+rdi*4]
+	test	esi,esi
 	jz	.none
-	dec	eax
-	mov	[g_pool_n+rdi*4],eax
-	imul	ecx,edi,POOL_MAX
-	add	ecx,eax
-	mov	eax,[g_pool_h+rcx*4]
+	dec	esi
+	call	pool_unlink
+	mov	eax,esi
 	call	pool_unwatch
 	cmp	dword [g_engine],ENGINE_EPOLL
 	jne	.ok
@@ -255,7 +273,7 @@ pool_close_handle:
 	ret
 
 ; Tick: close idle connections parked longer than their pool's `connect idle=`
-; (POOL_IDLE; they sit at the bottom of each stack).
+; (POOL_IDLE; they are at the old end of each list).
 pool_expire:
 	push	rbx
 	push	r12
@@ -264,36 +282,27 @@ pool_expire:
 	cmp	ebx,[g_plan_servers]
 	jae	.done
 .oldest:
-	cmp	dword [g_pool_n+rbx*4],0
-	je	.next
-	imul	r12d,ebx,POOL_MAX
+	mov	r12d,[g_pool_tail+rbx*4]
+	test	r12d,r12d
+	jz	.next
+	dec	r12d
 	mov	eax,[g_sv_pool+rbx*4]		; the pool's `connect idle=`
 	imul	rax,rax,PL_SIZE
 	mov	ecx,[g_pools+rax+PL_CIDLE]
 	mov	eax,[g_tick]
-	sub	eax,[g_pool_t+r12*4]
+	sub	eax,[g_hd_t+r12*4]
 	cmp	eax,ecx
 	jbe	.next
-	mov	edi,[g_pool_h+r12*4]
-	push	rdi
+	mov	edi,ebx
+	mov	esi,r12d
+	call	pool_unlink
 	cmp	dword [g_engine],ENGINE_EPOLL
 	je	@f
-	mov	eax,edi
+	mov	eax,r12d
 	call	pool_unwatch
 @@:
-	pop	rdi
+	mov	edi,r12d
 	call	pool_close_handle
-	; shift the stack down by one
-	dec	dword [g_pool_n+rbx*4]
-	mov	ecx,[g_pool_n+rbx*4]
-	lea	rsi,[g_pool_h+r12*4+4]
-	lea	rdi,[g_pool_h+r12*4]
-	push	rcx
-	rep	movsd
-	pop	rcx
-	lea	rsi,[g_pool_t+r12*4+4]
-	lea	rdi,[g_pool_t+r12*4]
-	rep	movsd
 	jmp	.oldest
 .next:
 	inc	ebx

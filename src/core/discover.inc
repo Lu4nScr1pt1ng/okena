@@ -871,21 +871,20 @@ pool_flush:
 	push	rbx
 	push	r12
 	mov	ebx,edi
-	imul	r12d,ebx,POOL_MAX
 .next:
-	cmp	dword [g_pool_n+rbx*4],0
-	je	.done
-	dec	dword [g_pool_n+rbx*4]
-	mov	eax,[g_pool_n+rbx*4]
-	add	eax,r12d
-	mov	edi,[g_pool_h+rax*4]
-	push	rdi
+	mov	r12d,[g_pool_head+rbx*4]
+	test	r12d,r12d
+	jz	.done
+	dec	r12d
+	mov	edi,ebx
+	mov	esi,r12d
+	call	pool_unlink
 	cmp	dword [g_engine],ENGINE_EPOLL
 	je	@f
-	mov	eax,edi
+	mov	eax,r12d
 	call	pool_unwatch
 @@:
-	pop	rdi
+	mov	edi,r12d
 	call	pool_close_handle
 	jmp	.next
 .done:
