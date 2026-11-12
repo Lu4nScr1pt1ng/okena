@@ -2,7 +2,7 @@
 """A pool's `concurrency`, on one engine (argument): concurrency 2 lets two
 requests at the backend at once and answers the rest 503 at once;
 concurrency adaptive starts high enough for 20 at a time against a quick
-backend, and when the backend slows tenfold the limit falls within seconds:
+backend, and when the backend slows down the limit falls within seconds:
 503s at the edge, fewer at the backend."""
 import http.client
 import http.server
@@ -114,7 +114,10 @@ http 127.0.0.1:{LA} {{ route /* {{ to pool a }} }}
         time.sleep(1.5)
         quick = [s for (_, s) in res]
         check("adaptive, a quick backend under 20 at a time: nothing shed", quick and all(s == 200 for s in quick), quick.count(503))
-        a.delay = 0.1                           # the backend slows tenfold
+        # the backend slows down: 0.25 s is past four times its usual even on a
+        # host loaded by the other suites (a slow Python answer is ~50 ms then),
+        # so the gradient is at its floor and the limit halves each second
+        a.delay = 0.25
         slowed = time.time()
         a.most = 0
         time.sleep(4.5)
@@ -124,7 +127,7 @@ http 127.0.0.1:{LA} {{ route /* {{ to pool a }} }}
         stop[0] = True
         for t in ts:
             t.join(15)
-        check("  slowed tenfold: within seconds, 503s at the edge", 503 in late and 200 in late, (late.count(200), late.count(503)))
+        check("  slowed down: within seconds, 503s at the edge", 503 in late and 200 in late, (late.count(200), late.count(503)))
         check("  and fewer at the backend at once than the 20 asking", a.most < 16, a.most)
     finally:
         p.terminate()

@@ -125,6 +125,8 @@ def main():
             k.close()
             until(lambda: worker(p.pid) not in (0, w))
             check(f"crash {n}: the worker replaced", worker(p.pid) not in (0, w))
+        # (the supervisor may say so after the new worker is up)
+        until(lambda: log.read_text().count("died on a request") >= 2 and "twice now" in log.read_text())
         t = log.read_text()
         check("the supervisor counts the head it died on, and quarantines it the second time",
               t.count("died on a request") == 2 and "twice now" in t, t[-600:])
