@@ -286,6 +286,86 @@ error for any). Latency from grpcbench (Go, open loop), median of three.
   okena stays near the backend's own tail (p99 3 ms; HAProxy 97 ms, Envoy
   221 ms, nginx seconds).
 
+## L4, TCP and UDP, against HAProxy, nginx and Envoy, all in Docker (2026-11-12)
+
+`tests/bench/l4max.sh`: okena (`tcp` and `udp` listeners), HAProxy 3.2
+(`mode tcp`; UDP is not in its open source edition), nginx 1.27 (`stream`)
+and Envoy 1.40 (tcp_proxy, udp_proxy), each in a container on the host
+network on cores 1-2, in front of the same backends (tests/bench/l4bench.c:
+an echo, a sink, a UDP echo on 4-5 and 12-13), loaded by l4bench on the
+other cores. ping1: one connection, 64 bytes and their echo, closed loop;
+ping256: 256 connections, a message in flight on each; bulk: 8 connections
+writing to the sink (bulk256: 256); connect: a new connection per 64-byte
+exchange, the client closing with a reset; udp1/udp256: the same as ping
+with datagrams. Median of 3 runs.
+
+| Path (2 cores) | test | rate | p50 / p99 / p99.9 / max (µs) | lost |
+|---|---|---|---|---|
+| direct | ping1 | 65097/s | 15.0 / 21.2 / 29.7 / 203.3 |  |
+| direct | ping256 | 465604/s | 560.1 / 1002.1 / 1206.2 / 2286.6 | 0 |
+| direct | bulk | 241.23 Gbit/s | |  |
+| direct | bulk256 | 109.32 Gbit/s | |  |
+| direct | connect | 91227/s | 83.2 / 144.5 / 190.5 / 333.8 | 0 |
+| direct | udp1 | 73721/s | 13.4 / 16.8 / 21.1 / 464.5 | 0 |
+| direct | udp256 | 574350/s | 433.6 / 485.1 / 501.9 / 729.3 | 0 |
+| okena | ping1 | 37097/s | 26.5 / 33.8 / 50.2 / 421.7 |  |
+| okena | ping256 | 154448/s | 1700.6 / 1871.6 / 2282.8 / 2672.3 | 0 |
+| okena | bulk | 53.36 Gbit/s | |  |
+| okena | bulk256 | 51.00 Gbit/s | |  |
+| okena | connect | 24299/s | 325.2 / 572.1 / 629.3 / 744.1 | 0 |
+| okena | udp1 | 37410/s | 26.4 / 33.3 / 48.0 / 141.3 | 0 |
+| okena | udp256 | 186815/s | 1382.7 / 1451.2 / 1978.0 / 2317.8 | 0 |
+| haproxy | ping1 | 28131/s | 34.8 / 46.4 / 73.5 / 128.9 |  |
+| haproxy | ping256 | 131037/s | 1958.1 / 2486.6 / 2720.7 / 3451.5 | 0 |
+| haproxy | bulk | 20.98 Gbit/s | |  |
+| haproxy | bulk256 | 20.62 Gbit/s | |  |
+| haproxy | connect | 21640/s | 367.8 / 493.1 / 563.3 / 3398.4 | 0 |
+| nginx | ping1 | 29768/s | 33.0 / 43.3 / 71.1 / 127.4 |  |
+| nginx | ping256 | 140184/s | 1916.2 / 2015.4 / 2598.8 / 3096.9 | 0 |
+| nginx | bulk | 22.92 Gbit/s | |  |
+| nginx | bulk256 | 21.40 Gbit/s | |  |
+| nginx | connect | 14040/s | 443.2 / 4549.1 / 10237.5 / 13051.3 | 0 |
+| nginx | udp1 | 33471/s | 29.4 / 36.8 / 54.5 / 126.7 | 0 |
+| nginx | udp256 | 145634/s | 1768.5 / 1812.9 / 1966.9 / 2352.9 | 0 |
+| envoy | ping1 | 24476/s | 39.9 / 54.0 / 85.5 / 161.1 |  |
+| envoy | ping256 | 106803/s | 2374.8 / 3021.9 / 3327.0 / 4018.7 | 0 |
+| envoy | bulk | 41.77 Gbit/s | |  |
+| envoy | bulk256 | 34.19 Gbit/s | |  |
+| envoy | connect | 12473/s | 646.5 / 1142.4 / 1549.0 / 3070.2 | 0 |
+| envoy | udp1 | 29976/s | 32.5 / 46.1 / 70.8 / 198.4 | 0 |
+| envoy | udp256 | 131256/s | 2062.6 / 2164.9 / 2365.6 / 3072.5 | 0 |
+
+* okena first in every row. One flow (ping1, udp1) by `busy_poll auto`: a
+  pinned worker polls while events come within 50 µs of each other.
+* Bulk: large buffers for a direction that fills a small one, a small hot
+  provided ring, and on io_uring the bulk directions read and write in the
+  loop through the buffer given back last: 256 connections no longer fall
+  behind 8 (35 -> 51 Gbit/s).
+* Connect: an abort passed on as an abort (SO_LINGER 0 on the other side)
+  leaves no TIME_WAIT on okena's ports: 14.5k -> 24.3k/s, p99 8.5 -> 0.57 ms.
+
+## Large HTTP/1.1 response bodies, all in Docker (2026-11-12)
+
+`tests/bench/httpbig.sh`: the same four proxies (nginx with
+`proxy_buffering off`), the backend `l4bench httpbig` (GET /SIZE answered
+with SIZE bytes, keep-alive), h2load --h1, 64 connections, closed loop,
+median of 3. A Content-Length body of 16 KiB or more that nothing in between
+needs to see goes by the L4 relay, counted to the byte
+(src/http/counted.inc).
+
+| Path (2 cores) | body | Gbit/s | requests/s |
+|---|---|---|---|
+| direct | 64KB | 36.0 | 68593 |
+| okena | 64KB | 30.1 | 57387 |
+| haproxy | 64KB | 19.4 | 36959 |
+| nginx | 64KB | 6.2 | 11830 |
+| envoy | 64KB | 12.8 | 24335 |
+| direct | 1.0MB | 146.5 | 17466 |
+| okena | 1.0MB | 49.6 | 5918 |
+| haproxy | 1.0MB | 26.4 | 3147 |
+| nginx | 1.0MB | 7.7 | 919 |
+| envoy | 1.0MB | 33.2 | 3959 |
+
 ## gRPC against Envoy, open loop (2026-10-31)
 
 `tests/bench/grpc.sh`: okena (`http2 on`, a pool with `protocol h2`) and
