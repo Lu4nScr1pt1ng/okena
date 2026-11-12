@@ -2,7 +2,8 @@
 """`discover kubernetes` on one engine (argument), against a fake API server
 over TLS 1.3 (an EC and an RSA CA, as kubeadm makes): ready endpoints by the
 port's name, terminating ones when nothing is ready, the token as rotated,
-and nothing believed from a server that is not the one it should be."""
+and nothing believed from a server that is not the one it should be; a service
+of 3000 pods in 30 slices (an answer of ~450 KB) has every one of them."""
 import collections
 import http.client
 import http.server
@@ -21,7 +22,7 @@ import urllib.parse
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BIN = ROOT / "build" / "okena"
-LST, RSA, BADCA, BADNAME, NUM = 18720, 18721, 18722, 18723, 18724
+LST, RSA, BADCA, BADNAME, NUM, BIGL = 18720, 18721, 18722, 18723, 18724, 18725
 API_EC, API_RSA = 18730, 18731
 fails = 0
 
@@ -55,6 +56,25 @@ def backend(name, ip, port):
     s = S((ip, port), Back)
     s.name = name
     threading.Thread(target=s.serve_forever, daemon=True).start()
+
+
+class Where(http.server.BaseHTTPRequestHandler):
+    """Answers with the address it was reached at."""
+    protocol_version = "HTTP/1.0"
+
+    def do_GET(self):
+        b = self.connection.getsockname()[0].encode()
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(b)))
+        self.end_headers()
+        self.wfile.write(b)
+
+    def log_message(self, *a):
+        pass
+
+
+BIG = 3000
+big_ip = lambda i: f"127.10.{i // 250}.{i % 250 + 1}"
 
 
 def ep(ip, ready=True, serving=None, terminating=None):
@@ -162,7 +182,11 @@ def main():
         backend(name, ip, 8080)
         backend(name + "-metrics", ip, 9090)
     P = [{"name": "metrics", "port": 9090, "protocol": "TCP"}, {"name": "http", "port": 8080, "protocol": "TCP"}]
-    state["slices"] = [slice_("web-1", "web", [ep("127.0.0.2"), ep("127.0.0.3", ready=False)], P),
+    wb = S(("0.0.0.0", 8081), Where)           # every 127/8 address of the big service
+    threading.Thread(target=wb.serve_forever, daemon=True).start()
+    PB = [{"name": "http", "port": 8081, "protocol": "TCP"}]
+    big = [slice_(f"big-{k}", "big", [ep(big_ip(i)) for i in range(k * 100, k * 100 + 100)], PB) for k in range(BIG // 100)]
+    state["slices"] = big + [slice_("web-1", "web", [ep("127.0.0.2"), ep("127.0.0.3", ready=False)], P),
                        slice_("web-2", "web", [ep("127.0.0.4")], P),
                        slice_("other-1", "other", [ep("127.0.0.6")], P),
                        slice_("web-x", "web", [ep("127.0.0.6")], P, ns="elsewhere")]
@@ -176,7 +200,9 @@ pool rsa {{ discover kubernetes service=shop/web port=http api=127.0.0.1:{API_RS
 pool badca {{ discover kubernetes service=shop/web port=http api=127.0.0.1:{API_EC} ca={tmp}/o/ec-ca.crt {common} }}
 pool badname {{ discover kubernetes service=shop/web port=http api=127.0.0.1:{API_EC} ca={tmp}/ec-ca.crt name=api.example.com {common} }}
 pool num {{ discover kubernetes service=shop/web port=9090 api=127.0.0.1:{API_EC} ca={tmp}/ec-ca.crt {common} }}
+pool big {{ balance random; discover kubernetes service=shop/big port=http max=4096 api=127.0.0.1:{API_EC} ca={tmp}/ec-ca.crt {common} }}
 http 127.0.0.1:{LST} {{ route /* {{ to pool web }} }}
+http 127.0.0.1:{BIGL} {{ route /* {{ to pool big }} }}
 http 127.0.0.1:{RSA} {{ route /* {{ to pool rsa }} }}
 http 127.0.0.1:{BADCA} {{ route /* {{ to pool badca }} }}
 http 127.0.0.1:{BADNAME} {{ route /* {{ to pool badname }} }}
@@ -203,6 +229,13 @@ http 127.0.0.1:{NUM} {{ route /* {{ to pool num }} }}
         t = log.read_text()
         check("  and it says why, once", t.count("not who it should be") == 2, t[-400:])
 
+        def big_seen():
+            got = {get(BIGL)[1] for i in range(300)}
+            late = {x for x in got if x.startswith("127.10.") and int(x.split(".")[2]) * 250 + int(x.split(".")[3]) - 1 >= 2 * BIG // 3}
+            return len(got) > 256 and late
+        check(f"a service of {BIG} pods in {BIG // 100} slices: past 256 of them served, the last ones too",
+              until(big_seen, 10) is not None, (len({get(BIGL)[1] for i in range(50)}), log.read_text()[-300:]))
+        state["slices"] = state["slices"][BIG // 100:]
         state["slices"][0]["endpoints"][1]["conditions"]["ready"] = True
         t = until(lambda: "b" in spread(20))
         check("a pod becomes ready: served", t is not None and t < 3, (t, p.poll(), log.read_text()[-700:]))

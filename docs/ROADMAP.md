@@ -727,9 +727,10 @@ a rebuild.
   JWKS sets 1024, match variants 65536 and their conditions 262144, error
   pages 16384, countries in an allow or deny 256 (all). TLS blocks 4096 (was
   64), with 64 MiB of chains and 131072 SNI names; regexes 16384 (256).
-  Discovery: 4096 servers a source (256), 256 sources (32), and a file or an
-  API answer (Kubernetes, Docker, Consul) of 16 MiB (64 KiB: a Service of a
-  few hundred pods did not fit); servers by DNS name 4096 (64). Workers 1024
+  Discovery: 4096 servers a source (256), 256 sources (32), and a file of
+  16 MiB (64 KiB: a few thousand lines did not fit; an API's answer already
+  had 4 MiB, a Service of 3000 pods in 30 slices is ~450 KB, checked in
+  tests/gateway/kube.py); servers by DNS name 4096 (64). Workers 1024
   (256: hosts with more threads exist). Each table is saved, restored and
   cleared only as far as it is used, the large others cleared by giving
   pages back. `okena upgrade` passed each listener's sockets in one message,

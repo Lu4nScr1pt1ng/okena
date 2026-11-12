@@ -35,7 +35,6 @@ KB_SALEN	:= 64			; d
 KB_SA		:= 72			; 28
 KB_ANCHOR	:= 104			; the CA's key (PK_SIZE)
 KB_SIZE		:= (KB_ANCHOR + PK_SIZE + 63) and not 63
-KB_IN_CAP	:= 16 shl 20
 KB_TOKEN_MAX	:= 8192
 
 bss

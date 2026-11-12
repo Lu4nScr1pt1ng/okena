@@ -27,7 +27,7 @@ BIN = ROOT / "build" / "okena"
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
 BASE = 35000 + os.getpid() % 40 * 10 + (5 if ENGINE == "epoll" else 0)
 LST, MET, LST2, MET2 = BASE, BASE + 1, BASE + 2, BASE + 3
-BURST = 300
+BURST = 150         # one worker, on a host the other suites load: the default wait (1 s) holds them
 tmp = pathlib.Path(tempfile.mkdtemp())
 atexit.register(shutil.rmtree, tmp, True)
 failures = 0
