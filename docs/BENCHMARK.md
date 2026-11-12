@@ -438,7 +438,9 @@ of each table.
   falls to 8.5k/s and nginx to 6.2k/s, with p99 near 30-100 ms. okena's
   own p99 is 3.6 ms and p99.9 17 ms here, against 0.5 and 2 ms on
   2026-11-05 (okena outside Docker then, HAProxy at 2.1k/s and nginx at
-  4.1k/s): not explained yet, to be looked at. Modulo steering spreads the
+  4.1k/s). Six more runs, three with and three without the change below:
+  p99 0.55-2.9 ms, p99.9 1.6-19 ms, alike for both; the flood's tail
+  varies run to run, to be looked at. Modulo steering spreads the
   flood over the workers.
 * An answer used to cost 3 datagrams out and 4 in: an ACK alone, the answer,
   MAX_STREAMS alone, and the client's ACK of each. Now about 1 and 2. Old
