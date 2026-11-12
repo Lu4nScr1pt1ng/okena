@@ -343,8 +343,63 @@ sha256_final:
 	pop	rbx
 	ret
 
-; rdi = digest, rsi = data, rdx = length.
+; rdi = digest, rsi = data, rdx = length. Up to 55 bytes, one block: built on
+; the stack and compressed once, without init / update / final and their
+; copies (a cache key, a token's digest: their fixed cost was most of it).
 sha256:
+	cmp	rdx,55
+	ja	.general
+	sub	rsp,104				; block (64), state (32)
+	vpxor	ymm0,ymm0,ymm0
+	vmovdqu	[rsp],ymm0
+	vmovdqu	[rsp+32],ymm0
+	mov	r8,rdi
+	xor	ecx,ecx
+	mov	r9,rdx
+	shr	r9,3
+	jz	.bytes
+.qword:
+	mov	rax,[rsi+rcx*8]
+	mov	[rsp+rcx*8],rax
+	inc	ecx
+	cmp	rcx,r9
+	jb	.qword
+.bytes:
+	shl	ecx,3
+.byte:
+	cmp	rcx,rdx
+	jae	.copied
+	mov	al,[rsi+rcx]
+	mov	[rsp+rcx],al
+	inc	ecx
+	jmp	.byte
+.copied:
+	mov	byte [rsp+rdx],0x80
+	lea	rax,[rdx*8]
+	bswap	rax
+	mov	[rsp+56],rax
+	vmovdqu	ymm0,yword [sha256_iv]
+	vmovdqu	[rsp+64],ymm0
+	vzeroupper
+	push	r8
+	lea	rdi,[rsp+8+64]
+	lea	rsi,[rsp+8]
+	mov	edx,1
+	call	sha256_blocks
+	pop	r8
+	repeat 8, i:0
+		mov	eax,[rsp+64+i*4]
+		bswap	eax
+		mov	[r8+i*4],eax
+	end repeat
+	vpxor	ymm0,ymm0,ymm0			; (the data may be a secret)
+	vmovdqu	[rsp],ymm0
+	vmovdqu	[rsp+32],ymm0
+	vmovdqu	[rsp+64],ymm0
+	vzeroupper
+	add	rsp,104
+	ret
+.general:
 	push	rbx
 	sub	rsp,SHA256_CTX_SIZE
 	mov	rbx,rdi

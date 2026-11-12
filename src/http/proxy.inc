@@ -2894,7 +2894,7 @@ http_write_response_head:
 	lea	r13,[r13+HB_OUT+H_OUT_CAP-256]
 	memit_x 'HTTP/1.1 '
 	mov	eax,[r12+HM_STATUS]
-	call	fmt_u64
+	status3
 	mov	byte [rdi],' '
 	inc	rdi
 	mov	rsi,[r12+HM_TARGET]		; the reason phrase
@@ -4258,15 +4258,8 @@ http_redirect:
 	call	http_count
 	mov	rdi,[r15+H_BUF]
 	lea	rdi,[rdi+HB_OUT]
-	memit_x 'HTTP/1.1 '
 	mov	eax,[r12+RA_CODE]
-	call	fmt_u64
-	mov	byte [rdi],' '
-	inc	rdi
-	mov	eax,[r12+RA_CODE]
-	call	http_reason
-	call	fmt_cstr
-	memit_x 13,10
+	call	status_line
 	cmp	dword [r12+RA_TLEN],0
 	je	.headers_crlf			; `respond`: no target
 	memit_x 'Location: '
@@ -5294,6 +5287,100 @@ reasons 200,'OK', 201,'Created', 202,'Accepted', 204,'No Content', 409,'Conflict
 	410,'Gone', 411,'Length Required', 413,'Content Too Large', 414,'URI Too Long', 415,'Unsupported Media Type', \
 	431,'Request Header Fields Too Large', 500,'Internal Server Error', 501,'Not Implemented', 502,'Bad Gateway', \
 	503,'Service Unavailable', 504,'Gateway Timeout', 505,'HTTP Version Not Supported', 508,'Loop Detected'
+
+; eax = a status code (100 to 999, as the parser takes them), rdi = where:
+; its three digits; rdi after them. Clobbers rax, rcx, rdx.
+macro status3
+	mov	ecx,100
+	xor	edx,edx
+	div	ecx				; (one division by a constant: cheaper than
+	add	al,'0'				; fmt_u64's loop, and no branches)
+	mov	[rdi],al
+	mov	eax,edx
+	mov	cl,10
+	div	cl
+	add	ax,'00'
+	mov	[rdi+1],ax
+	add	rdi,3
+end macro
+
+; eax = a status code (100 to 599), rdi = where: "HTTP/1.1 CODE REASON\r\n",
+; made once for each code and copied after (an answer okena makes itself:
+; `respond`, a redirect, its own errors). rdi after it. Clobbers rax, rcx,
+; rdx, rsi, r8.
+STL_MAX		:= 48
+bss
+	align 8
+	g_sl		rb 500 * STL_MAX
+	g_sl_len	rb 500
+end bss
+status_line:
+	cmp	eax,100
+	jb	.slow
+	cmp	eax,600
+	jae	.slow
+	lea	r8d,[rax-100]
+	movzx	ecx,byte [g_sl_len+r8]
+	test	ecx,ecx
+	jz	.make
+.copy:
+	imul	rsi,r8,STL_MAX
+	lea	rsi,[g_sl+rsi]
+	repeat STL_MAX / 8, q:0
+		mov	rdx,[rsi+q*8]
+		mov	[rdi+q*8],rdx
+	end repeat
+	add	rdi,rcx
+	ret
+.make:
+	push	rdi
+	imul	rdi,r8,STL_MAX
+	lea	rdi,[g_sl+rdi]
+	push	rdi
+	push	r8
+	push	rax
+	memit_x 'HTTP/1.1 '
+	mov	eax,[rsp]
+	status3
+	mov	byte [rdi],' '
+	inc	rdi
+	mov	eax,[rsp]
+	call	http_reason
+	mov	rdx,[rsp+16]
+	lea	rcx,[rdx+STL_MAX-2]
+@@:
+	mov	al,[rsi]			; (a reason too long for the room: cut)
+	test	al,al
+	jz	@f
+	cmp	rdi,rcx
+	jae	@f
+	mov	[rdi],al
+	inc	rdi
+	inc	rsi
+	jmp	@b
+@@:
+	mov	word [rdi],0x0A0D
+	add	rdi,2
+	pop	rax
+	pop	r8
+	pop	rdx
+	sub	rdi,rdx
+	mov	ecx,edi
+	mov	[g_sl_len+r8],cl
+	pop	rdi
+	jmp	.copy
+.slow:
+	push	rax
+	memit_x 'HTTP/1.1 '
+	mov	eax,[rsp]
+	call	fmt_u64
+	mov	byte [rdi],' '
+	inc	rdi
+	pop	rax
+	call	http_reason
+	call	fmt_cstr
+	memit_x 13,10
+	ret
 
 http_reason:
 	lea	rcx,[http_reasons]
