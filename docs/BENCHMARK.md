@@ -371,7 +371,10 @@ drawn for each packet (every packet a new flow).
 | okena, no bound on new flows remembered | | 1.30 M |
 
 * Less the path, a packet of a flow in the table costs okena's program
-  about 100 ns, Katran's about 160 ns.
+  about 100 ns, Katran's about 160 ns. The kernel's own count of the time
+  in each program (`kernel.bpf_stats_enabled`, now printed by the bench;
+  it adds its clock reads to each run): okena 122 ns, Katran 157 ns, est;
+  the same 122 ns after IPv6, GUE and ICMP were added to the program.
 * Before this entry okena did 1.99 M (est) and 1.10 M (new): the next hop
   (bpf_fib_lookup, the kernel's routes and neighbours) was asked for every
   packet. Now each CPU keeps the kernel's answer for a real for the time

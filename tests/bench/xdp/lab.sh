@@ -9,7 +9,9 @@
 # same for every balancer, and `base` (XDP_TX and nothing else) says what
 # that path costs alone. A balancer's number is the XDP_TX count of xl0, a
 # second at a time, the median; its core must be busy all the time (else
-# the generator, not the balancer, set the number: it says so).
+# the generator, not the balancer, set the number: it says so). The time
+# in the program alone, a packet, from the kernel's own count (bpf_stats:
+# it adds its clock reads to every run, the same for each).
 #
 #   MODE=est   FLOWS UDP flows over and over (in the flow table)
 #   MODE=new   source address and port drawn for each packet (all new)
@@ -19,6 +21,7 @@ SECS=${SECS:-5} FLOWS=${FLOWS:-1024} MODE=${MODE:-est}
 WHO=${WHO:-base okena katran katran-noflood}
 B=/b
 ip netns add gen; ip netns add lb
+sysctl -qw kernel.bpf_stats_enabled=1	# (run_time_ns: the time in each program)
 ip link add xg0 type veth peer name xl0
 ip link set xg0 netns gen; ip link set xl0 netns lb
 ip -n gen addr add 10.9.0.10/24 dev xg0; ip -n gen link set xg0 up
@@ -68,16 +71,20 @@ run() {		# label
 	local pg=$! a b r=() u0 t0 u1 t1
 	sleep 1
 	read u0 t0 < <(busy)
+	read n0 ns0 < <(ip netns exec lb $B/kload stats xl0)
 	for s in $(seq $SECS); do
 		a=$(xdp_tx); sleep 1; b=$(xdp_tx); r+=($((b - a)))
 	done
+	read n1 ns1 < <(ip netns exec lb $B/kload stats xl0)
 	read u1 t1 < <(busy)
 	ip netns exec gen sh -c 'echo stop > /proc/net/pktgen/pgctrl'
 	wait $pg 2>/dev/null
 	local med=$(printf '%s\n' "${r[@]}" | sort -n | sed -n "$(( (SECS + 1) / 2 ))p")
 	local pct=$(( 100 * (u1 - u0) / (t1 - t0) ))
 	local note=""; [ $pct -lt 97 ] && note="  (its core ${pct}% busy: the generator set this)"
-	printf '%-15s %-4s %9s packets/s   (each second: %s)%s\n' "$1" $MODE "$med" "${r[*]}" "$note"
+	local inprog=$(( (ns1 - ns0) * 10 / (n1 - n0 + 1) ))
+	printf '%-15s %-4s %9s packets/s  %3d.%d ns in the program   (each second: %s)%s\n' "$1" $MODE "$med" \
+		$((inprog / 10)) $((inprog % 10)) "${r[*]}" "$note"
 }
 detach() { ip -n lb link set xl0 xdp off 2>/dev/null; ip -n lb link set xl0 xdpgeneric off 2>/dev/null; true; }
 for w in $WHO; do

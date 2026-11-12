@@ -5,6 +5,8 @@
 //                                    way its control plane fills them: the default router's
 //                                    MAC, one VIP, the reals (1..n), the ring (RING_SIZE
 //                                    slots in turn) and an LRU a CPU (LRU flows in all)
+//   kload stats IFACE                the program on IFACE: runs, and ns in it (needs
+//                                    kernel.bpf_stats_enabled=1)
 // The programs stay attached after it exits (`ip link set IFACE xdp off`).
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
@@ -98,7 +100,19 @@ int main(int argc, char **argv) {
 			attach(bpf_program__fd(p), argv[3]), nreal, lru);
 		return 0;
 	}
+	if (argc == 3 && !strcmp(argv[1], "stats")) {
+		int ifx = if_nametoindex(argv[2]);
+		uint32_t id = 0;
+		if (!ifx || bpf_xdp_query_id(ifx, 0, &id) || !id) die("no program on the interface");
+		int fd = bpf_prog_get_fd_by_id(id);
+		struct bpf_prog_info info = {0};
+		uint32_t len = sizeof info;
+		if (fd < 0 || bpf_prog_get_info_by_fd(fd, &info, &len)) die("prog info");
+		printf("%llu %llu\n", (unsigned long long)info.run_cnt, (unsigned long long)info.run_time_ns);
+		return 0;
+	}
 	fprintf(stderr, "usage: kload attach OBJ PROG IFACE\n"
-		"       kload katran OBJ IFACE GWMAC VIP PORT PROTO LRU REAL...\n");
+		"       kload katran OBJ IFACE GWMAC VIP PORT PROTO LRU REAL...\n"
+		"       kload stats IFACE\n");
 	return 2;
 }
