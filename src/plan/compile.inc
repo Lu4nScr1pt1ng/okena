@@ -264,7 +264,10 @@ BAL_RING	:= 6
 BAL_SOURCE	:= 7		; (written so; kept as maglev on the client's address)
 BAL_FIRST	:= 8		; the first with room (src/l4/maxconn.inc)
 
-DEFAULT_CONNECTIONS	:= 65536		; per listener, whole instance
+DEFAULT_CONNECTIONS	:= 0		; per listener, whole instance; 0 auto: what a
+					; worker can hold (sessions_init), not a number
+					; picked (65536 was: past 56000 idle connections
+					; the overload manager closed what came)
 DEFAULT_IDLE_SECS	:= 3600
 DEFAULT_UDP_IDLE_SECS	:= 30
 DEFAULT_HTTP_IDLE_SECS	:= 60

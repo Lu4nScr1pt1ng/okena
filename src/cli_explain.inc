@@ -267,7 +267,13 @@ explain_print:
 	call	out_str
 	out_lit ' {',10,'    limits { connections '
 	mov	eax,[r12+LS_MAXCONN]
+	test	eax,eax
+	jnz	@f
+	out_lit 'auto'
+	jmp	.conns_said
+@@:
 	call	out_u64
+.conns_said:
 	cmp	dword [r12+LS_PER_SOURCE],0	; (0: no limit, not said)
 	je	@f
 	out_lit '; per_source '

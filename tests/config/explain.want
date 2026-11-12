@@ -30,7 +30,7 @@ pool (inline 1) {
 }
 
 http :8080 {
-    limits { connections 65536 }
+    limits { connections auto }
     timeout { idle 60s; header 10s; body_idle 30s; response 30s }
     canonical example.com
     http2 off
@@ -43,7 +43,7 @@ http :8080 {
 }
 
 tcp :5432 {
-    limits { connections 65536 }
+    limits { connections auto }
     timeout { idle 3600s }
     to pool (inline)
 }

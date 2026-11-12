@@ -212,14 +212,29 @@ sessions_init:
 	jae	.sized
 	imul	rcx,rbx,LS_SIZE
 	mov	eax,[g_listeners+rcx+LS_MAXCONN]
+	test	eax,eax
+	jnz	.declared
+	; auto: as many as the worker can hold, three descriptors a session
+	; within RLIMIT_NOFILE (the table's own bound below)
+	mov	rax,[g_nofile]
+	sub	rax,64
+	xor	edx,edx
+	mov	ecx,3
+	div	rcx
+	cmp	rax,1 shl 20
+	jbe	@f
+	mov	eax,1 shl 20
+@@:
+	jmp	.capped
+.declared:
 	add	eax,[g_workers]
 	dec	eax
 	xor	edx,edx
 	div	dword [g_workers]
 	test	eax,eax
-	jnz	@f
+	jnz	.capped
 	inc	eax
-@@:
+.capped:
 	mov	[g_ls_cap+rbx*4],eax
 	imul	rcx,rbx,LS_SIZE
 	cmp	dword [g_listeners+rcx+LS_KIND],LK_UDP
@@ -285,6 +300,14 @@ sessions_init:
 	syscall
 	cmp	rax,-4096
 	ja	.done
+	push	rax				; (a table touched a session at a time: huge
+	mov	rdi,rax				; pages would commit 2 MiB for a few)
+	mov	esi,r12d
+	shl	rsi,S_SHIFT
+	mov	edx,MADV_NOHUGEPAGE
+	mov	eax,SYS_madvise
+	syscall
+	pop	rax
 	mov	[g_sess_base],rax
 	; buffers
 	xor	edi,edi
@@ -968,8 +991,8 @@ on_accept_a:
 ; header. CF when the client is over its per-source limit.
 peer_admit:
 	call	peer_ptr
-	mov	dword [rax+P_SLOT],-1
-	mov	dword [rax+P_HLEN],0
+	mov	dword [rax+P_SLOT],-1		; (its PROXY header record: written by
+						; pp_build, read only where the listener sends one)
 	imul	rcx,r13,LS_SIZE
 	cmp	dword [g_listeners+rcx+LS_PER_SOURCE],0
 	je	.pp
@@ -2309,11 +2332,11 @@ post_send_pp:
 	mov	ecx,[g_upslot+rbx*4]
 	mov	[rax+SQE_FD],ecx
 	mov	rdx,rax
-	call	peer_ptr
-	mov	ecx,[rax+P_HOFF]
-	lea	rsi,[rax+P_HDR+rcx]
+	call	px_ptr
+	mov	ecx,[rax+PX_HOFF]
+	lea	rsi,[rax+PX_HDR+rcx]
 	mov	[rdx+SQE_ADDR],rsi
-	mov	esi,[rax+P_HLEN]
+	mov	esi,[rax+PX_HLEN]
 	sub	esi,ecx
 	mov	[rdx+SQE_LEN],esi
 	mov	dword [rdx+SQE_OP_FLAGS],MSG_NOSIGNAL
@@ -2327,10 +2350,10 @@ on_s_send_pp:
 	jne	.not_open
 	test	r14,r14
 	jle	.failed
-	call	peer_ptr
-	add	[rax+P_HOFF],r14d
-	mov	ecx,[rax+P_HOFF]
-	cmp	ecx,[rax+P_HLEN]
+	call	px_ptr
+	add	[rax+PX_HOFF],r14d
+	mov	ecx,[rax+PX_HOFF]
+	cmp	ecx,[rax+PX_HLEN]
 	jb	.more
 	jmp	relay_after_pp
 .more:

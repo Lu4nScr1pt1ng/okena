@@ -1847,7 +1847,6 @@ qc_new:
 	mov	ecx,28
 	rep	movsb
 	mov	dword [rax+P_SLOT],-1
-	mov	dword [rax+P_HLEN],0
 	mov	rax,-1
 	mov	[r15+QC_PS+0*PS_SIZE+PS_LARGEST],rax
 	mov	[r15+QC_PS+1*PS_SIZE+PS_LARGEST],rax

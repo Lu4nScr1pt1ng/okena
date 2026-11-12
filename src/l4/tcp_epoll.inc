@@ -827,9 +827,9 @@ ep_connected:
 	test	dword [g_listeners+rcx+LS_FLAGS],LSF_PP_V1 or LSF_PP_V2
 	jz	.relay
 	mov	edi,[rax+S_UPFD]
-	call	peer_ptr
-	lea	rsi,[rax+P_HDR]
-	mov	edx,[rax+P_HLEN]
+	call	px_ptr
+	lea	rsi,[rax+PX_HDR]
+	mov	edx,[rax+PX_HLEN]
 	push	rdx
 	mov	eax,SYS_write
 	syscall

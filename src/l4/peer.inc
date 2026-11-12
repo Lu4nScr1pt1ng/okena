@@ -19,11 +19,23 @@
 P_PEER		:= 0		; sockaddr of the client (28 bytes)
 P_LOCAL		:= 32		; local sockaddr (28 bytes)
 P_SLOT		:= 60		; d: per-source entry, -1 = not counted
-P_HLEN		:= 64		; d: PROXY header length (0 = none)
-P_HOFF		:= 68		; d: bytes of it sent
-P_HDR		:= 72		; the header (v1 at most 107 bytes)
-P_SIZE		:= 256
-P_SHIFT		:= 8
+P_SIZE		:= 64		; (an idle http connection holds it: 64, not 256)
+P_SHIFT		:= 6
+; the PROXY header to send, in a table of its own: only the sessions of a
+; listener with `proxy_protocol send` touch theirs
+PX_HLEN		:= 0		; d: its length (0 = none)
+PX_HOFF		:= 4		; d: bytes of it sent
+PX_HDR		:= 8		; the header (v1 at most 107 bytes)
+PX_SIZE		:= 128
+PX_SHIFT	:= 7
+assert PX_HDR + 108 <= PX_SIZE & PX_SHIFT = P_SHIFT + 1
+
+; reg = a side record: its PROXY header's record (same session)
+macro px_of reg
+	sub	reg,[g_peer_base]
+	add	reg,reg				; (P_SIZE to PX_SIZE)
+	add	reg,[g_px_base]
+end macro
 
 SRC_BITS	:= 20		; 1M entries, 8 MiB of address space
 SRC_PROBE	:= 16
@@ -31,6 +43,7 @@ SRC_PROBE	:= 16
 bss
 	align 8
 	g_peer_base	dq ?
+	g_px_base	dq ?
 	g_src_tbl	dq ?		; shared
 	g_src_seed	rq 2
 	g_ip_a:		rb 16		; scratch: normalized addresses
@@ -68,9 +81,44 @@ peer_worker_init:
 	syscall
 	cmp	rax,-4096
 	ja	.done
+	push	rax				; (touched a session at a time: no huge pages)
+	mov	rdi,rax
+	mov	esi,[g_sessions]
+	shl	rsi,P_SHIFT
+	mov	edx,MADV_NOHUGEPAGE
+	mov	eax,SYS_madvise
+	syscall
+	pop	rax
 	mov	[g_peer_base],rax
+	xor	edi,edi
+	mov	esi,[g_sessions]
+	shl	rsi,PX_SHIFT
+	mov	edx,PROT_READ or PROT_WRITE
+	mov	r10d,MAP_PRIVATE or MAP_ANONYMOUS or MAP_NORESERVE
+	mov	r8,-1
+	xor	r9d,r9d
+	mov	eax,SYS_mmap
+	syscall
+	cmp	rax,-4096
+	ja	.done
+	push	rax
+	mov	rdi,rax
+	mov	esi,[g_sessions]
+	shl	rsi,PX_SHIFT
+	mov	edx,MADV_NOHUGEPAGE
+	mov	eax,SYS_madvise
+	syscall
+	pop	rax
+	mov	[g_px_base],rax
 	xor	eax,eax
 .done:
+	ret
+
+; ebx = session. rax = its PROXY header's record.
+px_ptr:
+	mov	eax,ebx
+	shl	rax,PX_SHIFT
+	add	rax,[g_px_base]
 	ret
 
 ; ebx = session. rax = its side record.
@@ -264,7 +312,6 @@ pp_build:
 	push	r15
 	call	peer_ptr
 	mov	r12,rax
-	mov	dword [r12+P_HOFF],0
 	lea	rdi,[g_ip_a]
 	lea	rsi,[r12+P_PEER]
 	call	peer_normalize
@@ -274,13 +321,15 @@ pp_build:
 	lea	rsi,[r12+P_LOCAL]
 	call	peer_normalize
 	mov	ebx,edx				; local port
+	px_of	r12				; (the header goes in its own record)
+	mov	dword [r12+PX_HOFF],0
 	; both sides have one family: a dual-stack socket sees IPv4 clients
 	; as mapped addresses on a mapped local address, both normalized
 	imul	rax,r13,LS_SIZE
 	test	dword [g_listeners+rax+LS_FLAGS],LSF_PP_V2
 	jnz	.v2
 	; v1: "PROXY TCP4 src dst sport dport\r\n"
-	lea	rdi,[r12+P_HDR]
+	lea	rdi,[r12+PX_HDR]
 	mov	dword [rdi],'PROX'
 	mov	dword [rdi+4],'Y TC'
 	mov	byte [rdi+8],'P'
@@ -309,12 +358,12 @@ pp_build:
 	call	fmt_u
 	mov	word [rdi],0x0A0D
 	add	rdi,2
-	lea	rax,[r12+P_HDR]
+	lea	rax,[r12+PX_HDR]
 	sub	rdi,rax
-	mov	[r12+P_HLEN],edi
+	mov	[r12+PX_HLEN],edi
 	jmp	.out
 .v2:
-	lea	rdi,[r12+P_HDR]
+	lea	rdi,[r12+PX_HDR]
 	mov	rax,0x510A0D000A0D0A0D		; \r\n\r\n\0\r\nQ
 
 	mov	[rdi],rax
@@ -334,7 +383,7 @@ pp_build:
 	mov	eax,ebx
 	xchg	al,ah
 	mov	[rdi+26],ax
-	mov	dword [r12+P_HLEN],28
+	mov	dword [r12+PX_HLEN],28
 	jmp	.out
 .v2_6:
 	mov	byte [rdi+13],0x21		; TCP over IPv6
@@ -353,7 +402,7 @@ pp_build:
 	mov	eax,ebx
 	xchg	al,ah
 	mov	[rdi+50],ax
-	mov	dword [r12+P_HLEN],52
+	mov	dword [r12+PX_HLEN],52
 .out:
 	pop	r15
 	pop	r14

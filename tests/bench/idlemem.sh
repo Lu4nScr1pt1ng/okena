@@ -3,7 +3,8 @@
 # 3.2, nginx 1.27 and Envoy 1.40, each in a container on the host network, in
 # front of the same backend (l4bench httpbig, 100-byte answers). N clients
 # connect (from 127.0.0.2.. as sources), make one request each, read its
-# answer and stay connected, idle. Measured from the container's cgroup:
+# answer and stay connected, idle; the count is of the connections still open
+# on the proxy's side when its memory is read. Measured from the container's cgroup:
 # `anon` (the proxy's own memory, what it allocated and touched; the
 # kernel's socket buffers are left out, the same for all), before the
 # connections, and after them once idle for SETTLE seconds. Output: bytes a
@@ -16,6 +17,7 @@ OKENA_IMAGE=${OKENA_IMAGE:-okena:bench}
 ENVOY_IMAGE=${ENVOY_IMAGE:-envoyproxy/envoy:v1.40-latest}
 HAPROXY_IMAGE=${HAPROXY_IMAGE:-haproxy:3.2}
 NGINX_IMAGE=${NGINX_IMAGE:-nginx:1.27-alpine}
+H2LOAD_IMAGE=${H2LOAD_IMAGE:-okena-h2load-h3}	# (its Debian runs the client)
 PROXY_CPUS=${PROXY_CPUS:-1,2}
 NPROXY=${NPROXY:-2}
 N=${N:-100000}
@@ -25,9 +27,10 @@ B=29900
 W=$(mktemp -d)
 chmod 755 "$W"
 BPID= HPID=
-trap 'docker rm -f oki-okena oki-haproxy oki-nginx oki-envoy >/dev/null 2>&1 || true; for p in $BPID $HPID; do kill $p 2>/dev/null; done; rm -rf "$W"' EXIT
+trap 'docker rm -f oki-okena oki-haproxy oki-nginx oki-envoy oki-client >/dev/null 2>&1 || true; for p in $BPID $HPID; do kill $p 2>/dev/null; done; rm -rf "$W"' EXIT
 
 gcc -O2 -pthread -o "$W/l4bench" "$ROOT/tests/bench/l4bench.c"
+gcc -O2 -static -pthread -o "$W/l4bench-static" "$ROOT/tests/bench/l4bench.c" 2>/dev/null	# (the client, in a container)
 docker build -q -t "$OKENA_IMAGE" "$ROOT" >/dev/null
 taskset -c 4,5,12,13 "$W/l4bench" httpbig $B 100 & BPID=$!
 
@@ -130,15 +133,23 @@ for p in $ONLY; do
 	start "$p"
 	curl -q -s -o /dev/null "http://127.0.0.1:$(port "$p")/" || true
 	a=$(anon "$p")
-	(ulimit -n "$(ulimit -Hn)"; exec "$W/l4bench" hold 127.0.0.1 "$(port "$p")" "$N" 600) > "$W/hold.out" & HPID=$!
+	# the clients in a container of their own: past this shell's limit of files
+	docker run --rm --name oki-client --network host --ulimit nofile=1048576 -v "$W:/w" \
+		--entrypoint /w/l4bench-static "$H2LOAD_IMAGE" hold 127.0.0.1 "$(port "$p")" "$N" 3600 > "$W/hold.out" & HPID=$!
 	t0=$(date +%s)
-	until grep -q held "$W/hold.out" 2>/dev/null || [ $(( $(date +%s) - t0 )) -gt 300 ]; do sleep 1; done
+	until grep -q held "$W/hold.out" 2>/dev/null || [ $(( $(date +%s) - t0 )) -gt 900 ]; do sleep 1; done
 	sleep "$SETTLE"
 	b=$(anon "$p")
-	held=$(awk '/held/ { gsub(",", "", $2); print $2 }' "$W/hold.out")
+	# the connections open now, as the proxy sees them (one it closed, or
+	# answered with Connection: close, is not held, whatever the client counted)
+	held=$(ss -Htn state established "( sport = :$(port "$p") )" | wc -l)
 	printf '| %s | %s | %s MiB | %s MiB | %s B |\n' "$p" "$held" $((a >> 20)) $((b >> 20)) \
 		$(( held > 0 ? (b - a) / held : 0 ))
-	kill $HPID; wait $HPID 2>/dev/null || true; HPID=
+	docker rm -f oki-client >/dev/null 2>&1 || true; wait $HPID 2>/dev/null || true; HPID=
 	docker rm -f "oki-$p" >/dev/null
-	sleep 2
+	# the closed connections' conntrack entries gone before the next proxy
+	# (the table holds 262144 by default: a full one drops what comes)
+	ct=/proc/sys/net/netfilter/nf_conntrack_count
+	t0=$(date +%s)
+	while [ -r $ct ] && [ "$(cat $ct)" -gt 20000 ] && [ $(( $(date +%s) - t0 )) -lt 300 ]; do sleep 5; done
 done
