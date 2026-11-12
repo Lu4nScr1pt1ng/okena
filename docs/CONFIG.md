@@ -1824,8 +1824,12 @@ The control process looks at the file once a second (a stat: nothing more when i
 did not change), and workers have what it read within another: a line added is
 served within two seconds. An address that stays keeps its slot, its health and
 its connections whatever the order of the lines; one taken out has its idle
-connections closed; a weight changes in place. Up to `max` servers (1 to 4096),
-the first lines. A file that cannot be read, or has a line that is not an
+connections closed; a weight changes in place. With `max=N` (1 to 4096) a source
+has room for N servers, the first lines. Without it its room follows it: 64 to
+start (less when there are so many sources that half of all servers would not
+hold them, 8 at least), and twice what it had at each reload after; a source that
+has more than its room is grown by a reload of the same configuration, said in
+the log, at most once in 10 s. A file that cannot be read, or has a line that is not an
 address, changes nothing: the servers known go on, and it is said once. One that
 turns up empty after having servers is believed once it has stayed empty for
 three seconds, as an editor may truncate before it writes; writing a new file and

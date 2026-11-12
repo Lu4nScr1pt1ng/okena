@@ -41,7 +41,7 @@ GWL_GWI		:= 76			; d: its Gateway (GW_T_G)
 GWL_ROUTES	:= 80			; d: routes attached
 GWL_CERTOK	:= 84			; d: HTTPS: a certificate was had
 GWL_SIZE		:= 96
-GW_MAXL		:= 256
+GW_MAXL		:= 4096
 
 GWE_PORT		:= 0			; d
 GWE_ORIGIN	:= 4			; d: 0 Exact, 1 a prefix's own path, 2 a prefix's /*, 3 a regular expression
@@ -66,7 +66,7 @@ GWE_PROTO	:= 108			; d: its listener's
 GWE_ROUTE	:= 112			; d: its route (GW_T_R)
 GWE_GRPC	:= 116			; d: a GRPCRoute's (its backends speak HTTP/2)
 GWE_SIZE		:= 120
-GW_MAXE		:= 4096
+GW_MAXE		:= 65536
 
 GWP2_NS		:= 0			; q
 GWP2_NSLEN	:= 8			; d
@@ -79,10 +79,10 @@ GWP2_PNLEN	:= 40			; d
 GWP2_H2		:= 44			; d: gRPC: protocol h2
 GWP2_USED	:= 48			; d: named in what was written (so it is written)
 GWP2_SIZE		:= 56
-GW_MAXP		:= 512
+GW_MAXP		:= 4096
 
-GW_MAXH		:= 1024			; hosts on a port
-GW_MAXRX	:= 120			; regular expressions (okena takes 256)
+GW_MAXH		:= 65536			; hosts on a port
+GW_MAXRX	:= 4096			; regular expressions (okena takes 16384)
 
 GWG_NS		:= 0			; q
 GWG_NSLEN	:= 8			; d
@@ -92,7 +92,7 @@ GWG_GEN		:= 24			; d: metadata.generation
 GWG_FIRSTL	:= 28			; d: its listeners in GW_T_L
 GWG_NL		:= 32			; d
 GWG_SIZE	:= 40
-GW_MAXG		:= 64
+GW_MAXG		:= 1024
 
 GWR_NS		:= 0			; q: a route
 GWR_NSLEN	:= 8			; d
@@ -103,7 +103,7 @@ GWR_REFS	:= 28			; d: 0 its backends resolved, else why not (GRF_*)
 GWR_STATUS	:= 32			; q: its status.parents (JSON), 0 none
 GWR_KIND	:= 40			; d: 0 HTTPRoute, 1 GRPCRoute
 GWR_SIZE	:= 48
-GW_MAXR		:= 1024
+GW_MAXR		:= 16384
 GRF_NOTFOUND	:= 1			; BackendNotFound
 GRF_NOTPERMITTED := 2			; RefNotPermitted
 GRF_KIND	:= 3			; InvalidKind
@@ -114,7 +114,7 @@ GWPR_RAW	:= 8			; q: it, as written (JSON)
 GWPR_RAWLEN	:= 16			; d
 GWPR_WHY	:= 20			; d: 0 accepted, 1 NoMatchingListenerHostname, 2 NotAllowedByListeners, 3 NoMatchingParent (the more precise the lower)
 GWPR_SIZE	:= 24
-GW_MAXPR	:= 4096
+GW_MAXPR	:= 65536
 
 GW_T_L		:= GW_TABLES
 GW_T_E		:= GW_T_L + GWL_SIZE * GW_MAXL
@@ -125,9 +125,9 @@ GW_T_G		:= GW_T_H + 16 * GW_MAXH
 GW_T_R		:= GW_T_G + GWG_SIZE * GW_MAXG
 GW_T_PR		:= GW_T_R + GWR_SIZE * GW_MAXR
 GW_T_PATCH	:= GW_T_PR + GWPR_SIZE * GW_MAXPR
-GW_T_PATCH_CAP	:= 2 shl 20
+GW_T_PATCH_CAP	:= 32 shl 20
 GW_T_KEYS	:= GW_T_PATCH + GW_T_PATCH_CAP	; what status was written: key, hash
-GW_KEYS		:= 8192
+GW_KEYS		:= 131072
 GW_T_END	:= GW_T_KEYS + 16 * GW_KEYS
 assert GW_T_END <= GW_ARENA
 

@@ -173,6 +173,8 @@ SUITES = [
     ("upgrade io_uring", ["tests/gateway/upgrade.py", "io_uring"]),
     ("upgrade epoll", ["tests/gateway/upgrade.py", "epoll"]),
     ("upgrade 260 workers", ["tests/gateway/upgrade.py", "epoll", "260"]),
+    ("gwscale io_uring", ["tests/gateway/gwscale.py", "io_uring"]),
+    ("gwscale epoll", ["tests/gateway/gwscale.py", "epoll"]),
     ("admin io_uring", ["tests/gateway/admin.py", "io_uring"]),
     ("admin epoll", ["tests/gateway/admin.py", "epoll"]),
     ("udp io_uring", ["tests/gateway/udp.py", "io_uring"]),

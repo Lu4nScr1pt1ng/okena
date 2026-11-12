@@ -212,11 +212,14 @@ http 127.0.0.1:{TLSL} {{
         cli("resume")
 
         # what the workers count: by protocol, status, handshake, datagram; latency
+        took = []
         for i in range(10):                     # (a listener of their own: its latency theirs alone)
+            t0 = time.time()
             c = http.client.HTTPConnection("127.0.0.1", SLOWL, timeout=5)
             c.request("GET", "/slow")
             c.getresponse().read()
             c.close()
+            took.append((time.time() - t0) * 1000)
         c = http.client.HTTPConnection("127.0.0.1", LST, timeout=5)
         c.request("GET", "/missing")
         c.getresponse().read()
@@ -249,11 +252,13 @@ http 127.0.0.1:{TLSL} {{
         L = {l["address"]: l for l in s["listeners"]}
         hl, sl, ul = L[f"127.0.0.1:{LST}"], L[f"127.0.0.1:{TLSL}"], L[f"127.0.0.1:{UDPL}"]
         lat = L[f"127.0.0.1:{SLOWL}"].get("latency_ms") or {}
-        # (the backend sleeps 50 ms; under a loaded machine its tail grows by
-        # scheduling, so the bound on p99 is the backend's order, not its exact time)
-        check("latency: percentiles that are the backend's (p50 50 ms within 1/8, p99 under 100)",
-              50 <= lat.get("p50", 0) <= 60 and lat["p50"] <= lat["p90"] <= lat["p99"] < 100,
-              lat)
+        # (the backend sleeps 50 ms; on a loaded host each request takes some ms
+        # more, and okena must say what the client saw: its p50 within a bucket
+        # (1/8) of the client's own median, never under the backend's 50 ms)
+        mid = sorted(took)[len(took) // 2]
+        check("latency: percentiles that are what the client saw (p50 its median within 1/8, p99 under 100)",
+              50 <= lat.get("p50", 0) <= max(60, mid * 1.125 + 1) and lat["p50"] <= lat["p90"] <= lat["p99"] < 100,
+              (lat, sorted(took)))
         check("  a 404 counted as such, requests by protocol", hl["statuses"]["404"] == 1 and hl["by_protocol"]["http/1.1"] == hl["requests"]
               and sl["by_protocol"]["h2"] == 2 and h2.stdout.split() == ["2", "2"], (hl["statuses"], hl["by_protocol"], sl["by_protocol"], h2.stdout))
         tl = sl.get("tls_handshakes", {})

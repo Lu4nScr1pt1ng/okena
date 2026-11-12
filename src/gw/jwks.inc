@@ -372,7 +372,7 @@ jwks_table_init:
 	xor	edi,edi
 	mov	esi,KT_TOTAL
 	mov	edx,PROT_READ or PROT_WRITE
-	mov	r10d,MAP_SHARED or MAP_ANONYMOUS
+	mov	r10d,MAP_SHARED or MAP_ANONYMOUS or MAP_NORESERVE
 	mov	r8,-1
 	xor	r9d,r9d
 	mov	eax,SYS_mmap

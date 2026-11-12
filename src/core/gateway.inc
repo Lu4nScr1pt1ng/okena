@@ -36,16 +36,16 @@ GWP_NAMELEN	:= 72			; d
 GWP_KB		:= 128			; the API server, as a KB block (kube.inc)
 GWP_SIZE	:= GWP_KB + KB_SIZE
 
-GW_ARENA	:= 64 shl 20
+GW_ARENA	:= 1 shl 30
 GW_LISTS	:= 0			; the Gateways, then the HTTPRoutes (as read)
-GW_LISTS_CAP	:= 16 shl 20
+GW_LISTS_CAP	:= 256 shl 20
 GW_OUT		:= GW_LISTS + GW_LISTS_CAP	; what is written
-GW_OUT_CAP	:= 8 shl 20
+GW_OUT_CAP	:= 128 shl 20
 GW_LAST		:= GW_OUT + GW_OUT_CAP	; what was written last
 GW_TEXT		:= GW_LAST + GW_OUT_CAP	; text made on the way (paths, names)
-GW_TEXT_CAP	:= 4 shl 20
+GW_TEXT_CAP	:= 64 shl 20
 GW_FILE		:= GW_TEXT + GW_TEXT_CAP	; a file read back, a Secret decoded
-GW_FILE_CAP	:= 4 shl 20
+GW_FILE_CAP	:= 16 shl 20
 GW_TABLES	:= GW_FILE + GW_FILE_CAP
 assert GW_TABLES + (16 shl 20) <= GW_ARENA
 
@@ -271,7 +271,7 @@ gw_page_init:
 	xor	edi,edi
 	mov	esi,4096
 	mov	edx,PROT_READ or PROT_WRITE
-	mov	r10d,MAP_SHARED or MAP_ANONYMOUS
+	mov	r10d,MAP_SHARED or MAP_ANONYMOUS or MAP_NORESERVE
 	mov	r8,-1
 	xor	r9d,r9d
 	mov	eax,SYS_mmap

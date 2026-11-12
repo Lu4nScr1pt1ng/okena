@@ -743,6 +743,20 @@ a rebuild.
   server in a worker (`connect max=` sets it), 1024 requests waiting for a
   pool in a worker (each a slot of a ring sized up front; past it, 503).
 
+  *Third block (2026-11-12).* The state above was the executable's bss, ~600
+  MiB the kernel accounts at exec: on a host with less RAM and swap than that
+  okena would not have started. It is now a mapping of its own, made by the
+  first instructions at a fixed address, no-reserve; the shared tables are
+  no-reserve too. Servers 65536. A discovery source without `max=` reserved
+  64 slots whether it used them or not, and was cut there silently: its room
+  now follows what it has (twice, at each reload; a source past it asks for a
+  reload, tests/gateway/discover.py). The Gateway API controller's tables
+  went from 1024 routes, 512 pools, 256 listeners, 64 gateways and 120
+  regexes to 16384, 4096, 4096, 1024 and 4096, its lists from 16 to 256 MiB:
+  3000 HTTPRoutes over 600 Services are served in 2 s (tests/gateway/
+  gwscale.py), 10000 over 2000 in 7 s. A table past its limit is named in
+  the error, with its number.
+
 **A review of everything.** Each subsystem read again with the measurements in
 hand: is this the fastest correct way, does it do work it need not, does it
 take a lock, a syscall or a copy it could avoid, does its worst case have a

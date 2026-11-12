@@ -59,11 +59,16 @@ def frames(data):
     return out, i == len(data)
 
 
-def grpc_server():
+def listening(port):
+    """A backend's socket, listening before okena starts (a thread could be late)."""
     s = socket.socket()
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    s.bind(("127.0.0.1", GRPC))
+    s.bind(("127.0.0.1", port))
     s.listen(16)
+    return s
+
+
+def grpc_server(s):
 
     def handle(c):
         conn = h2.connection.H2Connection(h2.config.H2Configuration(client_side=False, header_encoding=None))
@@ -104,11 +109,7 @@ def grpc_server():
         threading.Thread(target=handle, args=(c,), daemon=True).start()
 
 
-def h1_server():
-    s = socket.socket()
-    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    s.bind(("127.0.0.1", H1B))
-    s.listen(16)
+def h1_server(s):
     while True:
         c, _ = s.accept()
         d = b""
@@ -166,8 +167,8 @@ def h2_post(path, body, ctype="application/grpc-web+proto"):
 
 def main():
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-grpcweb-", dir="/tmp"))
-    threading.Thread(target=grpc_server, daemon=True).start()
-    threading.Thread(target=h1_server, daemon=True).start()
+    threading.Thread(target=grpc_server, args=(listening(GRPC),), daemon=True).start()
+    threading.Thread(target=h1_server, args=(listening(H1B),), daemon=True).start()
     conf = tmp / "okena.conf"
     conf.write_text(f"""okena {{ workers 1; io_engine {ENGINE}; drain delay=0s timeout=1s }}
 pool grpc {{ server 127.0.0.1:{GRPC}; protocol h2 }}

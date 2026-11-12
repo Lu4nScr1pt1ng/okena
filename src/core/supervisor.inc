@@ -10,6 +10,7 @@ LISTEN_BACKLOG	:= 4096
 
 bss
 	g_sup_pid	dd ?
+	g_sv_ticks	dd ?		; supervisor ticks (one a second) since it started
 	g_sup_sigfd	dd ?
 	g_alive		dd ?
 	g_shutdown	dd ?
@@ -57,7 +58,7 @@ supervisor_main:
 	xor	edi,edi
 	mov	esi,MAX_WORKERS * 64 * 2		; two generations side by side
 	mov	edx,PROT_READ or PROT_WRITE
-	mov	r10d,MAP_SHARED or MAP_ANONYMOUS
+	mov	r10d,MAP_SHARED or MAP_ANONYMOUS or MAP_NORESERVE
 	mov	r8,-1
 	xor	r9d,r9d
 	mov	eax,SYS_mmap
@@ -244,6 +245,12 @@ supervisor_main:
 	call	watchdog_check
 	call	qz_tick
 	call	cw_tick				; reload on-change: the files changed?
+	test	eax,eax
+	jz	@f
+	call	supervisor_reload
+@@:
+	inc	dword [g_sv_ticks]
+	call	disc_grow_tick			; a discovered source past its slots
 	test	eax,eax
 	jz	@f
 	call	supervisor_reload

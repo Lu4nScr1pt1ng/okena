@@ -281,6 +281,7 @@ kb_parse:
 	push	rbx
 	push	r15
 	mov	dword [g_disc_new+DX_COUNT],0
+	mov	dword [g_disc_over],0
 	mov	rbx,rsi
 	xor	r15d,r15d			; pass: 0 the ready ones, 1 the terminating that serve
 .pass:
@@ -565,8 +566,7 @@ kb_bool:
 ; rdi/ecx = an address, ebp = port: into g_disc_new
 kb_add:
 	mov	eax,[g_disc_new+DX_COUNT]
-	cmp	eax,[r12+GR_SLOTS]
-	jae	.out
+	disc_cap	.out			; (more than it has slots for: counted)
 	cmp	ecx,45
 	ja	.out
 	; "a.b.c.d:P" or "[v6]:P"

@@ -15,7 +15,7 @@ macro too_many reg, limit, what
 	fits:
 end macro
 MAX_POOLS	:= 4096
-MAX_SERVERS	:= 16384
+MAX_SERVERS	:= 65536
 
 ; Listener
 LS_SA		:= 0		; sockaddr_in6 / sockaddr_in (28 bytes)
@@ -383,6 +383,7 @@ plan_compile:
 	push	rbx
 	push	r12
 	call	ni_reset			; (the checker's entries; children are indexed again)
+	call	disc_count_init
 	mov	dword [g_hh_npend],0
 	mov	dword [g_rh_npend],0
 	call	errpage_plan_init		; (g_eps[0]: maintenance's text)
@@ -4700,7 +4701,141 @@ plan_bad_sticky:
 	jmp	exit_process
 
 cstring str_key_cookie, 'cookie',0
-DISC_DEFAULT	:= 64
+DISC_DEFAULT	:= 64		; slots of a source never seen, at most
+DISC_LEAST	:= 8		; and at least, of any source with no max=
+
+; rdi = pool, rsi = its `discover` node: rax = the source's identity, the same
+; for the same line of the same pool in any later configuration
+disc_identity:
+	push	rbx
+	mov	rbx,rsi
+	mov	rax,0xCBF29CE484222325
+	mov	r9,0x100000001B3
+	mov	rsi,[rdi+PL_NAME]
+	mov	ecx,[rdi+PL_NLEN]
+	call	.bytes
+	xor	edx,edx
+.arg:
+	cmp	edx,[rbx+N_ARGC]
+	jae	.done
+	imul	r8,rdx,A_SIZE
+	add	r8,[rbx+N_ARGS]
+	xor	al,1				; (a separator)
+	imul	rax,r9
+	cmp	dword [r8+A_KIND],ARG_KV
+	jne	@f
+	mov	rsi,[r8+A_KEY]
+	mov	ecx,[r8+A_KLEN]
+	call	.bytes
+@@:
+	mov	rsi,[r8+A_VAL]
+	mov	ecx,[r8+A_VLEN]
+	call	.bytes
+	inc	edx
+	jmp	.arg
+.done:
+	or	rax,1				; (never 0: 0 is no source)
+	pop	rbx
+	ret
+.bytes:
+	test	ecx,ecx
+	jz	.bytes_done
+	movzx	r10d,byte [rsi]
+	xor	rax,r10
+	imul	rax,r9
+	inc	rsi
+	dec	ecx
+	jmp	.bytes
+.bytes_done:
+	ret
+
+; rax = an identity: eax = its slots. What the running configuration's source
+; of that identity has (it is found in the running table) twice over, a power
+; of two from DISC_LEAST to DISC_MAX; a source not seen before g_cmp_dinit.
+disc_slots:
+	mov	rdx,[g_disc_tbl]
+	test	rdx,rdx
+	jz	.new
+	xor	ecx,ecx
+.look:
+	cmp	ecx,DISC_SOURCES
+	jae	.new
+	mov	r8,[rdx+DX_NAME]
+	test	r8,r8
+	jz	.new				; (the sources there are come first)
+	cmp	r8,rax
+	je	.found
+	add	rdx,DX_SIZE
+	inc	ecx
+	jmp	.look
+.found:
+	mov	ecx,[rdx+DX_WANT]
+	cmp	ecx,[rdx+DX_COUNT]
+	jae	@f
+	mov	ecx,[rdx+DX_COUNT]
+@@:
+	add	ecx,ecx
+	mov	eax,DISC_LEAST
+@@:
+	cmp	eax,ecx
+	jae	@f
+	cmp	eax,DISC_MAX
+	jae	@f
+	shl	eax,1
+	jmp	@b
+@@:
+	ret
+.new:
+	mov	eax,[g_cmp_dinit]
+	ret
+
+; plan_compile, first: a source never seen gets DISC_DEFAULT slots, or less
+; when there are so many sources that half the servers would not hold them
+disc_count_init:
+	xor	r8d,r8d				; sources
+	mov	rax,[g_cfg_root]
+	mov	rdx,[rax+N_CHILD]
+.top:
+	test	rdx,rdx
+	jz	.counted
+	lea	rax,[dir_table + D_SIZE*DIR_POOL]
+	cmp	[rdx+N_DEF],rax
+	jne	.next
+	mov	rcx,[rdx+N_CHILD]
+.child:
+	test	rcx,rcx
+	jz	.next
+	lea	rax,[dir_table + D_SIZE*DIR_DISCOVER]
+	cmp	[rcx+N_DEF],rax
+	jne	@f
+	inc	r8d
+@@:
+	mov	rcx,[rcx+N_NEXT]
+	jmp	.child
+.next:
+	mov	rdx,[rdx+N_NEXT]
+	jmp	.top
+.counted:
+	mov	eax,MAX_SERVERS / 2
+	test	r8d,r8d
+	jz	@f
+	xor	edx,edx
+	div	r8d
+@@:
+	cmp	eax,DISC_DEFAULT
+	jbe	@f
+	mov	eax,DISC_DEFAULT
+@@:
+	cmp	eax,DISC_LEAST
+	jae	@f
+	mov	eax,DISC_LEAST
+@@:
+	mov	[g_cmp_dinit],eax
+	ret
+
+bss
+	g_cmp_dinit	dd ?
+end bss
 cstring str_key_max, 'max',0
 cstring str_key_ttl, 'ttl',0
 cstring str_key_samesite, 'samesite',0
@@ -5088,7 +5223,16 @@ compile_discover:
 	mov	ecx,[rbx+GR_DISC]
 	mov	[g_plan_dshare+rcx*4],eax
 @@:
-	mov	dword [rbx+GR_SLOTS],DISC_DEFAULT
+	; which source it is, across reloads; with no max=, slots for twice what
+	; it had (a reload grows it when it has more: disc_grow_tick)
+	mov	rdi,r12
+	mov	rsi,r13
+	call	disc_identity
+	mov	ecx,[rbx+GR_DISC]
+	mov	[g_plan_dname+rcx*8],rax
+	mov	byte [g_plan_dflex+rcx],1
+	call	disc_slots
+	mov	[rbx+GR_SLOTS],eax
 	mov	rdi,r13
 	lea	rsi,[str_key_max]
 	call	node_option
@@ -5100,6 +5244,8 @@ compile_discover:
 	cmp	eax,DISC_MAX
 	ja	plan_bad_discover
 	mov	[rbx+GR_SLOTS],eax
+	mov	ecx,[rbx+GR_DISC]
+	mov	byte [g_plan_dflex+rcx],0
 @@:
 	mov	eax,[g_plan_servers]
 	mov	[rbx+GR_FIRST],eax

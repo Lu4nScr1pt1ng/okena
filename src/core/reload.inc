@@ -49,6 +49,8 @@ macro plan_regions action
 	action g_plan_cs, CS_SIZE * DISC_SOURCES, g_plan_discs, CS_SIZE
 	action g_plan_gw, GWP_SIZE
 	action g_plan_dshare, 4 * DISC_SOURCES
+	action g_plan_dname, 8 * DISC_SOURCES, g_plan_discs, 8
+	action g_plan_dflex, DISC_SOURCES, g_plan_discs, 1
 	action g_plan_echn, 4
 	action g_plan_echlen, 4
 	action g_plan_ech, ECC_SIZE * ECH_MAX

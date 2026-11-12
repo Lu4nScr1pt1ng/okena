@@ -323,6 +323,7 @@ cs_parse:
 	push	r14
 	push	r15
 	mov	dword [g_disc_new+DX_COUNT],0
+	mov	dword [g_disc_over],0
 	call	js_ws
 	cmp	rsi,r13
 	jae	.bad
@@ -365,8 +366,7 @@ cs_parse:
 ; g_disc_new when it can be served
 cs_entry:
 	mov	eax,[g_disc_new+DX_COUNT]
-	cmp	eax,[r12+GR_SLOTS]
-	jae	.no
+	disc_cap	.no			; (more than it has slots for: counted)
 	mov	rsi,rbx
 	js_key 'Service'
 	call	js_find

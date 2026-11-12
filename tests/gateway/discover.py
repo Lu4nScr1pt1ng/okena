@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """`discover file` on one engine (argument): a pool whose servers are the
-lines of a file, followed as it changes, and kept when it goes wrong."""
+lines of a file, followed as it changes, and kept when it goes wrong; a source
+with no max= that grows past its slots is given more by a reload, one with
+max= stays there."""
 import collections
 import http.client
 import http.server
@@ -16,7 +18,7 @@ import time
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BIN = ROOT / "build" / "okena"
-LST, CAP = 18680, 18681
+LST, CAP, GROW = 18680, 18681, 18682
 fails = 0
 
 
@@ -50,6 +52,21 @@ class H(http.server.BaseHTTPRequestHandler):
 class S(http.server.ThreadingHTTPServer):
     daemon_threads = True
     request_queue_size = 128
+
+
+class Where(http.server.BaseHTTPRequestHandler):
+    """Answers with the address it was reached at."""
+    protocol_version = "HTTP/1.0"
+
+    def do_GET(self):
+        b = self.connection.getsockname()[0].encode()
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(b)))
+        self.end_headers()
+        self.wfile.write(b)
+
+    def log_message(self, *a):
+        pass
 
 
 def backend(name):
@@ -91,6 +108,11 @@ def main():
     port = {n: s.server_address[1] for n, s in b.items()}
     lst = tmp / "servers.list"
     few = tmp / "few.list"
+    grow = tmp / "grow.list"
+    wb = S(("0.0.0.0", 0), Where)              # every 127/8 address reaches it
+    threading.Thread(target=wb.serve_forever, daemon=True).start()
+    wport = wb.server_address[1]
+    gip = lambda i: f"127.30.{i // 250}.{i % 250 + 1}"
 
     def write(f, text):
         new = f.with_suffix(".new")                # the way to write it: whole, then renamed
@@ -99,12 +121,15 @@ def main():
 
     write(lst, f"# the servers\n127.0.0.1:{port['a']}\n127.0.0.1:{port['b']}   # and b\n")
     write(few, f"127.0.0.1:{port['a']}\n127.0.0.1:{port['b']}\n127.0.0.1:{port['c']}\n")
+    write(grow, "".join(f"{gip(i)}:{wport}\n" for i in range(10)))
     conf = tmp / "okena.conf"
     conf.write_text(f"""okena {{ drain delay=0s timeout=1s; workers 2; io_engine {ENGINE} }}
 pool p {{ balance round-robin; discover file {lst} }}
 pool q {{ balance round-robin; discover file {few} max=2 }}
+pool g {{ balance random; discover file {grow} }}
 http 127.0.0.1:{LST} {{ route /* {{ to pool p }} }}
 http 127.0.0.1:{CAP} {{ route /* {{ to pool q }} }}
+http 127.0.0.1:{GROW} {{ route /* {{ to pool g }} }}
 """)
     log = tmp / "log"
     p = subprocess.Popen([str(BIN), "-c", str(conf)], stderr=open(log, "w"))
@@ -189,6 +214,15 @@ http 127.0.0.1:{CAP} {{ route /* {{ to pool q }} }}
         after = spread(30)
         check("an address replaced while its requests run: none of its connections serves the new one",
               after == {"d": 30} and [r[1] for r in slow] == ["a"] * 4, (after, slow))
+
+        # a source with no max= past its slots (64 to start): a reload gives it room
+        write(grow, "".join(f"{gip(i)}:{wport}\n" for i in range(200)))
+        many = lambda: len({get(GROW)[1] for i in range(300)}) > 64
+        t = until(lambda: "reloading to make room" in log.read_text() and many(), 20)
+        check("a source past its 64 slots, no max=: grown by a reload, all of it served", t is not None,
+              (len({get(GROW)[1] for i in range(300)}), log.read_text()[-400:]))
+        check("  once; max=2 stays at 2 and asks for nothing",
+              log.read_text().count("reloading to make room") == 1 and set(spread(20, CAP)) <= {"a", "b"}, log.read_text()[-300:])
 
         # the source's port for lines without one
         conf.write_text(conf.read_text().replace(f"discover file {lst} }}", f"discover file {lst} port={port['b']} }}"))

@@ -37,6 +37,8 @@ DE_BACKUP	:= 28			; d: srv: a priority past the lowest
 DE_SIZE		:= 32
 DX_SEQ		:= 0			; q
 DX_COUNT	:= 8			; d
+DX_WANT		:= 12			; d: what the source had, past the slots too
+DX_NAME		:= 16			; q: which source (disc_identity), to find it after a reload
 DX_E		:= 64
 DX_SIZE		:= DX_E + DISC_MAX * DE_SIZE
 DS_LEN		:= 112			; d (a sockaddr first)
@@ -48,6 +50,10 @@ bss
 	align 8
 	g_disc_tbl	dq ?		; shared: DISC_SOURCES entries
 	g_plan_discs	dd ?
+	g_disc_over	dd ?		; a reader: entries past the slots, this read
+	g_plan_dname	rq DISC_SOURCES	; each source's identity
+	g_plan_dflex	rb DISC_SOURCES	; 1: no max=, its slots follow what it has
+	g_dg_next	dd ?		; supervisor: the tick before which it does not grow again
 	g_disc_seen	rq DISC_SOURCES	; a reader: the sequence last copied
 	g_disc_stat	rq DISC_SOURCES * 3	; control: inode, size, time of the last read
 	g_disc_empty	rd DISC_SOURCES	; control: an empty read not believed yet
@@ -63,6 +69,72 @@ bss
 	g_disc_buf	dq ?		; control: the file, read
 end bss
 
+; Supervisor, each tick: an elastic source (no max=) that has more than its
+; slots is grown by reloading the same configuration (disc_slots sizes it from
+; what it has). eax = 1 when it should reload now. Not more than once in 10 s.
+DG_EVERY	:= 10
+disc_grow_tick:
+	xor	eax,eax
+	mov	rdx,[g_disc_tbl]
+	test	rdx,rdx
+	jz	.out
+	cmp	qword [g_cli_text],0
+	jne	.out				; (no file to read again)
+	mov	ecx,[g_dg_next]
+	cmp	ecx,[g_sv_ticks]
+	ja	.out
+	xor	ecx,ecx
+.group:
+	cmp	ecx,[g_plan_groups]
+	jae	.out
+	imul	r8,rcx,GR_SIZE
+	lea	r8,[g_groups+r8]
+	cmp	dword [r8+GR_KIND],GK_FILE
+	jb	.next
+	mov	r9d,[r8+GR_DISC]
+	cmp	byte [g_plan_dflex+r9],0
+	je	.next
+	imul	r10,r9,DX_SIZE
+	mov	r11d,[rdx+r10+DX_WANT]
+	cmp	r11d,[r8+GR_SLOTS]
+	jbe	.next
+	cmp	dword [r8+GR_SLOTS],DISC_MAX
+	jae	.next				; (as large as a source may be)
+	push	r11
+	push	r8
+	call	log_begin
+	out_lit 'discover: a source has '
+	pop	r8
+	pop	rax
+	push	r8
+	call	out_u64
+	out_lit ' servers and room for '
+	pop	r8
+	mov	eax,[r8+GR_SLOTS]
+	call	out_u64
+	out_lit ': reloading to make room'
+	call	log_end
+	mov	eax,[g_sv_ticks]
+	add	eax,DG_EVERY
+	mov	[g_dg_next],eax
+	mov	eax,1
+	ret
+.next:
+	inc	ecx
+	jmp	.group
+.out:
+	ret
+
+; a reader past a source's slots: counted, and on to target
+macro disc_cap target
+	local fits
+	cmp	eax,[r12+GR_SLOTS]
+	jb	fits
+	inc	dword [g_disc_over]
+	jmp	target
+	fits:
+end macro
+
 ; before any fork
 disc_table_init:
 	xor	edi,edi
@@ -74,6 +146,17 @@ disc_table_init:
 	mov	eax,SYS_mmap
 	syscall
 	mov	[g_disc_tbl],rax
+	; each source's identity, for the next configuration to find it by
+	xor	ecx,ecx
+@@:
+	cmp	ecx,[g_plan_discs]
+	jae	@f
+	imul	rdx,rcx,DX_SIZE
+	mov	r8,[g_plan_dname+rcx*8]
+	mov	[rax+rdx+DX_NAME],r8
+	inc	ecx
+	jmp	@b
+@@:
 	xor	edi,edi
 	mov	esi,DISC_FILE_MAX + 1
 	mov	edx,PROT_READ or PROT_WRITE
@@ -263,6 +346,7 @@ disc_parse:
 	push	r14
 	push	r15
 	mov	dword [g_disc_new+DX_COUNT],0
+	mov	dword [g_disc_over],0
 	mov	rbx,[g_disc_buf]
 	lea	r13,[rbx+r8]			; the end
 .line:
@@ -357,8 +441,7 @@ disc_parse:
 	jne	.bad
 .store:
 	mov	eax,[g_disc_new+DX_COUNT]
-	cmp	eax,[r12+GR_SLOTS]
-	jae	.skip_line			; more than it has slots for: the first ones
+	disc_cap	.skip_line			; (more than it has slots for: counted)
 	inc	dword [g_disc_new+DX_COUNT]
 	imul	rax,rax,DE_SIZE
 	lea	rdi,[g_disc_new+DX_E+rax]
@@ -500,6 +583,14 @@ disc_parse:
 ; r12 = group, r13d = source: g_disc_new is what it has now. Published when
 ; it differs, and said.
 disc_publish:
+	; what it had, slots or not: an elastic source past its slots is grown
+	; by a reload (disc_grow_tick)
+	mov	rax,r13
+	imul	rax,rax,DX_SIZE
+	add	rax,[g_disc_tbl]
+	mov	ecx,[g_disc_new+DX_COUNT]
+	add	ecx,[g_disc_over]
+	mov	[rax+DX_WANT],ecx
 	; share=N: N between them, each its part (1000 a share, 1 to 65535)
 	mov	ecx,[g_plan_dshare+r13*4]
 	test	ecx,ecx
@@ -851,6 +942,7 @@ disc_srv_poll:
 @@:
 	; every target's addresses (the lowest priority first: those fill the slots)
 	mov	dword [g_disc_new+DX_COUNT],0
+	mov	dword [g_disc_over],0
 	xor	ebx,ebx				; pass: 0 the lowest priority, 1 the rest
 .pass:
 	xor	ecx,ecx
@@ -890,8 +982,7 @@ disc_srv_poll:
 	cmp	ecx,[g_rs_result+RR_COUNT]
 	jae	.addressed
 	mov	eax,[g_disc_new+DX_COUNT]
-	cmp	eax,[r12+GR_SLOTS]
-	jae	.addressed
+	disc_cap	.addressed			; (more than it has slots for: counted)
 	inc	dword [g_disc_new+DX_COUNT]
 	imul	rax,rax,DE_SIZE
 	lea	rdi,[g_disc_new+DX_E+rax]
