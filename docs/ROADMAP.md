@@ -866,7 +866,10 @@ pre-filter, wait for this.
 * XDP pre-filter for the other engines: drop lists, per-source SYN rate.
 * zcrx zero-copy receive on supported NICs; NIC TLS offload.
 
-Exit: packets/s per core comparable to Katran.
+Exit: packets/s per core comparable to Katran. Measured 2026-11-12
+(docs/BENCHMARK.md, tests/bench/xdp.sh, veth and pktgen): okena 2.57 M a
+core against Katran's 2.20 M for flows in the table, 1.98 M against 1.60 M
+for new flows. On a NIC: not yet (none here).
 
 ## Phase 13 — Addons
 

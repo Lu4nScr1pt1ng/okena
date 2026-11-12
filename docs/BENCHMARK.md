@@ -345,6 +345,45 @@ with datagrams. Median of 3 runs.
 * Connect: an abort passed on as an abort (SO_LINGER 0 on the other side)
   leaves no TIME_WAIT on okena's ports: 14.5k -> 24.3k/s, p99 8.5 -> 0.57 ms.
 
+## XDP L4 balancing against Katran, one core (2026-11-12)
+
+`tests/bench/xdp.sh` (kernel 7.3.0, pktgen loaded): okena's `mode xdp`
+(okena.conf, a `udp` VIP, three reals) against Katran's balancer.bpf.c at
+04a4733 (built with the container's clang 18, loaded with libbpf 1.3, its
+maps filled as its control plane does: the default router's MAC, one VIP,
+the ring, an LRU a CPU of 2^20 / CPUs flows), both encapsulating in IPIP
+and sending back with XDP_TX. In a privileged container of its own:
+pktgen on three CPUs into a veth, the balancer's NAPI a thread on a core
+of its own (4), what it sends dropped by XDP on the far end (core 6).
+UDP, 60-byte packets; packets a second the balancer sent (XDP_TX on its
+veth), the median of 5 seconds; the balancer's core busy all the time.
+`base` is XDP_TX and nothing else: what the veth path costs alone (the veth
+turns pktgen's skbs into XDP buffers, a copy; a NIC would not). est: 1024
+flows over and over (in the flow table); new: source address and port
+drawn for each packet (every packet a new flow).
+
+| | est | new |
+|---|---|---|
+| base (the path alone) | 3.42 M | 3.47 M |
+| okena | **2.57 M** | **1.98 M** |
+| Katran | 2.20 M | 1.60 M |
+| Katran, MAX_CONN_RATE out of reach | 2.31 M | 1.21 M |
+| okena, no bound on new flows remembered | | 1.30 M |
+
+* Less the path, a packet of a flow in the table costs okena's program
+  about 100 ns, Katran's about 160 ns.
+* Before this entry okena did 1.99 M (est) and 1.10 M (new): the next hop
+  (bpf_fib_lookup, the kernel's routes and neighbours) was asked for every
+  packet. Now each CPU keeps the kernel's answer for a real for the time
+  step it got it in (2^30 ns): Katran's speed without its fixed default
+  router MAC, and a route or neighbour change is followed within a second
+  (tests/xdp/vip.sh changes a real's MAC under load).
+* New flows: past 125000 a time step on one CPU they are routed by the
+  ring and not remembered, as Katran does (its MAX_CONN_RATE): the flows
+  in the table are not pushed out by a flood. With neither bound, okena
+  1.30 M against Katran 1.21-1.27 M (two runs): there the LRU insert is
+  most of the cost.
+
 ## Large HTTP/1.1 response bodies, all in Docker (2026-11-12)
 
 `tests/bench/httpbig.sh`: the same four proxies (nginx with
