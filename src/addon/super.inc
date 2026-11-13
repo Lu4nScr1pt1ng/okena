@@ -25,7 +25,8 @@ ADPR_NEW		:= 12				; d: started by this sync: waited for
 ADPR_BASE	:= 16				; q
 ADPR_LEN		:= 24				; q
 ADPR_HASH	:= 32				; q
-ADPR_SIZE	:= 40
+ADPR_STRIDE	:= 40				; q: a ring pair's bytes
+ADPR_SIZE	:= 48
 
 ; a message to the launcher
 ALM_OP		:= 0				; d: ALMO_*
@@ -327,8 +328,12 @@ ad_start:
 	test	eax,eax
 	js	.failed
 	mov	[r14+ADPR_MEMFD],eax
-	mov	eax,[g_ad_nrw]
-	imul	rax,rax,AD_STRIDE
+	mov	eax,[r13+ADE_RING]		; a ring pair: two headers, two rings
+	add	eax,AD_HDR
+	add	rax,rax
+	mov	[r14+ADPR_STRIDE],rax
+	mov	ecx,[g_ad_nrw]
+	imul	rax,rcx
 	add	rax,AD_HDR
 	mov	[r14+ADPR_LEN],rax
 	mov	edi,[r14+ADPR_MEMFD]
@@ -362,9 +367,11 @@ ad_start:
 	mov	dword [r12+ADH_VERSION],AD_VERSION
 	mov	eax,[g_ad_nrw]
 	mov	[r12+ADH_NRINGS],eax
-	mov	dword [r12+ADH_RBYTES],AD_RING
+	mov	eax,[r13+ADE_RING]
+	mov	[r12+ADH_RBYTES],eax
 	mov	dword [r12+ADH_HBYTES],AD_HDR
-	mov	qword [r12+ADH_STRIDE],AD_STRIDE
+	mov	rax,[r14+ADPR_STRIDE]
+	mov	[r12+ADH_STRIDE],rax
 	mov	dword [r12+ADH_BELL],4		; (where the launcher puts them)
 	mov	dword [r12+ADH_WAKE0],5
 	mov	dword [r12+ADH_SLEEP],1
@@ -802,7 +809,7 @@ addon_metrics:
 	cmp	ecx,[g_ad_nrw]
 	jae	.summed
 	add	rax,[r8]
-	add	r8,AD_STRIDE
+	add	r8,[r12+ADH_STRIDE]
 	inc	ecx
 	jmp	.sum
 .summed:
@@ -824,7 +831,7 @@ addon_metrics:
 	cmp	ecx,[g_ad_nrw]
 	jae	.sl_done
 	add	rax,[r8]
-	add	r8,AD_STRIDE
+	add	r8,[r12+ADH_STRIDE]
 	inc	ecx
 	jmp	.sl
 .sl_done:

@@ -11,7 +11,7 @@ cd addons/coraza && go build -o /usr/local/bin/coraza-okena .
 addon waf {
     run /usr/local/bin/coraza-okena -paranoia 1
     phases request_body     # the body's arguments too (form fields, JSON)
-    body 16KiB              # its first 16 KiB, the most a call carries
+    body 1MiB               # judged on its first MiB (up to 16MiB)
     timeout 50ms
     on_error allow          # a WAF that cannot answer lets traffic through; deny to fail closed
 }
@@ -37,8 +37,8 @@ coraza-okena: GET /item?id=1'%20OR%20'1'='1 from 203.0.113.9: deny (rules 942100
 
 With `phases request_body` the body goes through the rules too (URL-encoded
 forms, JSON, multipart, by the CRS's body processors); a body longer than
-`body` is judged on its first bytes, as with `SecRequestBodyLimitAction
-ProcessPartial`.
+`body` is judged on its first `body` bytes, as with
+`SecRequestBodyLimitAction ProcessPartial`, and reaches the backend whole.
 
 With `response_headers` or `response_body` among its phases, the request's
 transaction goes on into the response: its status and fields (phase 3) and,

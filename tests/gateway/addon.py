@@ -60,6 +60,20 @@ class Echo(http.server.BaseHTTPRequestHandler):
                 got += self.rfile.read(size)
                 self.rfile.readline()
         b = self.marker + (self.requestline + "\n" + str(self.headers)).encode() + b"body-len: %d\nbody-head: %s\n" % (len(got), got[:32])
+        import hashlib
+        b += b"body-sha: %s\n" % hashlib.sha256(got).hexdigest()[:16].encode()
+        size = int(self.headers.get("x-size") or 0)
+        if size:
+            b = (b + bytes(range(256)) * (size // 256 + 1))[:size]
+        if self.headers.get("x-chunked"):
+            self.send_response(200)
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+            for i in range(0, len(b), 7000):
+                part = b[i:i + 7000]
+                self.wfile.write(b"%x\r\n" % len(part) + part + b"\r\n")
+            self.wfile.write(b"0\r\n\r\n")
+            return
         self.send_response(200)
         self.send_header("Content-Length", str(len(b)))
         self.end_headers()
@@ -122,6 +136,17 @@ def wait_started(log, n=1, t=10):
     return False
 
 
+def oa_dechunk(raw):
+    out, i = b"", 0
+    while True:
+        j = raw.index(b"\r\n", i)
+        n = int(raw[i:j], 16)
+        if not n:
+            return out
+        out += raw[j + 2:j + 2 + n]
+        i = j + 4 + n
+
+
 def main():
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-addon-"))
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", B), Echo)
@@ -157,8 +182,8 @@ addon tagger {{
     run {run}
     timeout 150ms
     on_error allow
-    breaker errors=3 open=2s
-}}
+    breaker errors=1000 open=2s     # (the circuit has an addon of its own, brk: a call
+}}                                  # past its time under load must not open this one)
 addon strict {{
     run {run} strict
     timeout 150ms
@@ -201,6 +226,12 @@ addon logger {{
     run /usr/bin/env ADDON_LOG_FILE={tmp}/addon.log /usr/bin/python3 {PEER} logger
     phases log
 }}
+addon big {{
+    run {run} big
+    phases request_body response_body
+    body 128KiB
+    timeout 2s
+}}
 addon bodyer {{
     run {run} bodyer
     phases request_body
@@ -217,6 +248,7 @@ http 127.0.0.1:{L} {{
     route /k/* {{ addon brk; to pool echo }}
     route /c/* {{ addon chello; to pool echo }}
     route /body/* {{ addon bodyer; to pool echo }}
+    route /big/* {{ addon big; to pool echo }}
     route /rh/* {{ addon resper; to pool echo }}
     route /rhd/* {{ addon resperd; to pool echo }}
     route /rb/* {{ addon rbodyer; to pool echo }}
@@ -282,8 +314,21 @@ http 127.0.0.1:{L} {{
         check("  a chunked one: decoded, whole", s == 200 and h.get("x-body-len") == ["11"] and b == b"hello world", (s, h, b))
         s, h, b = get("/body/body")
         check("  no body: the call at once, the headers' phase", s == 200 and h.get("x-body-len") == ["0"] and h.get("x-phase") == ["1"], (s, h))
-        s, h, b = get("/body/body", method="POST", headers=[("Content-Length", "50"), ("Expect", "100-continue")])
-        check("  Expect: 100-continue: not waited for, said unread", s == 200 and h.get("x-body-unread") == ["True"], (s, h))
+        # Expect: 100-continue: okena sends the 100, then reads the body for the addon
+        k = socket.create_connection(("127.0.0.1", L), 5)
+        k.settimeout(5)
+        k.sendall(b"POST /body/body HTTP/1.1\r\nHost: t\r\nContent-Length: 50\r\nExpect: 100-continue\r\nConnection: close\r\n\r\n")
+        first = k.recv(100)
+        k.sendall(b"z" * 50)
+        d = b""
+        while True:
+            x = k.recv(65536)
+            if not x:
+                break
+            d += x
+        k.close()
+        check("  Expect: 100-continue: okena's 100, then the body read for the addon", first == b"HTTP/1.1 100 Continue\r\n\r\n"
+              and d.startswith(b"HTTP/1.1 200") and b"x-body-len: 50" in d and b"x-body-unread: False" in d, (first, d[:200]))
         s, h, b = get("/body/attack", method="POST", body=b"name=x'; DROP TABLE users; --")
         check("  the body refused by the addon", s == 403 and b == b"body refused\n", (s, b))
         s, h, b = get("/body/attack", method="POST", body=b"name=bob&" + b"z" * 3000)
@@ -336,6 +381,75 @@ http 127.0.0.1:{L} {{
         check("log: each exchange, its method, target, host, status, bytes and time", len(lines) == 3
               and sorted(l.split()[1] for l in lines) == ["/lg/x0", "/lg/x1", "/lg/x2"]	# (workers' rings: no order between them)
               and all(l.startswith("GET /lg/x") and l.split()[2:4] == ["t", "200"] and int(l.split()[4]) > 0 for l in lines), lines)
+        # bodies larger than a request's own buffer: a body buffer, then on from it
+        import hashlib
+        sha = lambda x: hashlib.sha256(x).hexdigest()[:16]
+        payload = bytes((i * 7) % 251 for i in range(100000))
+        s, h, b = get("/big/big", method="POST", body=payload)
+        # (x-blen, -btrunc, -bsha: the request's fields the addon set, as the backend saw them)
+        check("a 100 KB body: whole in the call, then whole at the backend", s == 200 and b"x-blen: 100000" in b
+              and b"x-btrunc: False" in b and ("x-bsha: " + sha(payload)).encode() in b and b"body-len: 100000" in b
+              and ("body-sha: " + sha(payload)).encode() in b, (s, b[-400:]))
+        s, h, b = get("/big/big", method="POST", headers=[("Content-Length", "60000")], pieces=[payload[:20000], payload[20000:40000], payload[40000:60000]])
+        check("  in pieces", s == 200 and b"x-blen: 60000" in b and ("body-sha: " + sha(payload[:60000])).encode() in b, (s, b[-400:]))
+        chunks = b"".join(b"%x\r\n" % len(payload[i:min(i + 9000, 50000)]) + payload[i:min(i + 9000, 50000)] + b"\r\n"
+                          for i in range(0, 50000, 9000)) + b"0\r\n\r\n"
+        s, h, b = get("/big/big", method="POST", headers=[("Transfer-Encoding", "chunked")], pieces=[chunks[:30000], chunks[30000:]])
+        check("  chunked: decoded whole in the call, the backend gets it", s == 200 and b"x-blen: 50000" in b
+              and b"x-btrunc: False" in b and ("body-sha: " + sha(payload[:50000])).encode() in b, (s, b[-400:]))
+        large = payload * 3
+        s, h, b = get("/big/big", method="POST", body=large)
+        check("  past `body` (128 KiB): its first bytes in the call, said truncated; all of it at the backend", s == 200
+              and b"x-blen: 131072" in b and b"x-btrunc: True" in b and b"body-len: 300000" in b
+              and ("body-sha: " + sha(large)).encode() in b, (s, h.get("x-blen"), b[-120:]))
+        if shutil.which("curl"):
+            f = tmp / "h2body"
+            f.write_bytes(payload[:70000])
+            c = subprocess.run(["curl", "-q", "-s", "--http2-prior-knowledge", "-D", "-", "--data-binary", f"@{f}", f"http://127.0.0.1:{L}/big/big"],
+                               capture_output=True, timeout=10)
+            check("  over HTTP/2: 70 KB in the call and at the backend", b"x-blen: 70000" in c.stdout
+                  and ("body-sha: " + sha(payload[:70000])).encode() in c.stdout, c.stdout[:400])
+        # and responses: counted, chunked, past `body`
+        def full(path, hs):
+            k = socket.create_connection(("127.0.0.1", L), 5)
+            k.sendall((f"GET {path} HTTP/1.1\r\nHost: t\r\n" + "".join(f"{a}: {v}\r\n" for a, v in hs) + "Connection: close\r\n\r\n").encode())
+            d = b""
+            k.settimeout(5)
+            while True:
+                x = k.recv(65536)
+                if not x:
+                    break
+                d += x
+            k.close()
+            head, _, body = d.partition(b"\r\n\r\n")
+            hd = {l.split(":", 1)[0].lower(): l.split(":", 1)[1].strip() for l in head.decode().split("\r\n")[1:] if ":" in l}
+            if hd.get("transfer-encoding") == "chunked":
+                body = oa_dechunk(body)
+            return int(head.split()[1]), hd, body
+        s, hd, body = full("/big/big", [("X-Size", "100000")])
+        check("a 100 KB response: whole in the call, then whole at the client", s == 200 and hd.get("x-rlen") == "100000"
+              and hd.get("x-rtrunc") == "False" and len(body) == 100000 and hd.get("x-rsha") == sha(body), (s, hd, len(body)))
+        s, hd, body = full("/big/big", [("X-Size", "50000"), ("X-Chunked", "1")])
+        check("  chunked: decoded whole in the call, the client gets it", s == 200 and hd.get("x-rlen") == "50000"
+              and hd.get("x-rtrunc") == "False" and len(body) == 50000 and hd.get("x-rsha") == sha(body), (s, hd, len(body)))
+        s, hd, body = full("/big/big", [("X-Size", "300000")])
+        check("  past `body`: its first bytes in the call, said truncated; all of it at the client", s == 200
+              and hd.get("x-rlen") == "131072" and hd.get("x-rtrunc") == "True" and len(body) == 300000, (s, hd, len(body)))
+        # a body of the addon's in place of the one that came
+        s, h, b = get("/big/swapreq", method="POST", body=b"abcdefghijklmnopqrstuvwxyz" * 4000)
+        check("the request's body replaced: the backend gets the addon's, its length", s == 200 and b"body-len: 25" in b
+              and b"body-head: REPLACED:ABCDEFGHIJKLMNOP" in b and b"Content-Length: 25" in b, b[-300:])
+        s, h, b = get("/big/swapreq", method="POST", headers=[("Transfer-Encoding", "chunked")], pieces=[b"5\r\nhello\r\n0\r\n\r\n"])
+        check("  a chunked one: replaced by a counted one", s == 200 and b"body-len: 14" in b and b"Transfer-Encoding" not in b
+              and b"Content-Length: 14" in b, b[-300:])
+        s, h, b = get("/big/swapreq", method="POST", body=b"q" * 300000)
+        check("  a body the call did not carry whole cannot be replaced: on_error (deny: 503)", s == 503, (s, b[:80]))
+        s, hd, body = full("/big/swap", [("X-Size", "40000")])
+        check("the response's body replaced: the client gets the addon's, its length, the backend's status",
+              s == 200 and body == b"a body of the addon's\n" and hd.get("content-length") == "22" and hd.get("x-swapped") == "yes", (s, hd, body[:60]))
+        s, hd, body = full("/big/swap", [("X-Size", "30000"), ("X-Chunked", "1")])
+        check("  a chunked one: replaced by a counted one", s == 200 and body == b"a body of the addon's\n"
+              and "transfer-encoding" not in hd and hd.get("content-length") == "22", (s, hd, body[:60]))
         # the pool an addon chooses
         s, h, b = get("/a/pool")
         check("the addon chooses the pool: another backend answers", s == 200 and b.startswith(b"OTHER POOL"), b[:80])

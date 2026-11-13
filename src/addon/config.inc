@@ -23,6 +23,7 @@ AD_DEF_BREAK	:= 5
 AD_DEF_OPEN	:= 1000000			; µs
 AD_DEF_POLL	:= 50				; µs
 AD_DEF_BODY	:= 8192
+AD_BODY_MAX	:= 16 shl 20
 
 ; plan entry
 ADE_NAME		:= 0				; q
@@ -38,7 +39,8 @@ ADE_BREAK	:= 48				; d
 ADE_OPEN		:= 56				; q: µs
 ADE_HASH		:= 64				; q: what makes it the same process across a reload
 ADE_POLL		:= 72				; q: µs it polls after a call
-ADE_BODY		:= 80				; d: request_body: the most of a body a call carries
+ADE_BODY		:= 80				; d: the most of a body a call carries
+ADE_RING	:= 84				; d: its rings' bytes: twice the largest call, a power of two
 ADE_SIZE		:= 88
 
 RA_ADDONS	:= 140				; d: a route's addons, bit i for g_addons[i]
@@ -258,10 +260,8 @@ compile_addon:
 	mov	esi,[rax+A_VLEN]
 	call	parse_size
 	jc	plan_bad_addon
-	cmp	rax,H_IN_CAP
-	jbe	.body_fits
-	mov	eax,H_IN_CAP			; (as much as a request's buffer holds)
-.body_fits:
+	cmp	rax,AD_BODY_MAX
+	ja	plan_bad_addon
 	mov	[r13+ADE_BODY],eax
 @@:
 	mov	rdi,r12
@@ -385,8 +385,24 @@ compile_addon:
 	jz	plan_bad_addon
 	mov	[r13+ADE_OPEN],rax
 .hash:
-	; the process: its name and its run line (FNV-1a, each word with its length)
+	; its rings: twice the largest call (head, index, body), at least AD_RING
+	mov	eax,[r13+ADE_BODY]
+	add	eax,H_IN_CAP + 2048
+	add	eax,eax
+	mov	ecx,AD_RING
+@@:
+	cmp	ecx,eax
+	jae	@f
+	add	ecx,ecx
+	jmp	@b
+@@:
+	mov	[r13+ADE_RING],ecx
+	; the process: its name, its run line (FNV-1a, each word with its length)
+	; and its rings' size
 	mov	rax,0xCBF29CE484222325
+	lea	rsi,[r13+ADE_RING]
+	mov	ecx,4
+	call	.mix
 	mov	rsi,[r13+ADE_NAME]
 	mov	ecx,[r13+ADE_NLEN]
 	call	.mix

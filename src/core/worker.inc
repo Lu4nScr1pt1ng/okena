@@ -482,6 +482,7 @@ tick_work:
 	call	idle_expire
 	call	ph_expire
 	call	hbuf_tick			; freed sessions' buffers back to the kernel
+	call	addon_bb_tick			; addons' body buffers of sessions gone
 	call	overload_tick
 	call	jwt_tick
 	call	od_tick				; handshakes waiting for an on-demand certificate

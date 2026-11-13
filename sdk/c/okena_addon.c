@@ -34,6 +34,7 @@ struct okena_answer {
 	uint16_t status;
 	int none;
 	int overflow;
+	int body_set;
 	const void *body;
 };
 
@@ -170,7 +171,7 @@ void okena_fail(okena_answer *ans) { ans->action = 2; }
 
 void okena_body(okena_answer *ans, const void *body, size_t len)
 {
-	ans->body = body, ans->body_len = len;
+	ans->body = body, ans->body_len = len, ans->body_set = 1;
 }
 
 /* ----------------------------------------------------------------- rings */
@@ -198,7 +199,7 @@ static int put(okena_addon *a, uint32_t r, uint32_t id, okena_answer *ans)
 		head += pad, pos = 0;
 	}
 	uint8_t *p = d + pos;
-	uint32_t len = (uint32_t)size, blen = (uint32_t)ans->body_len, rsv = 0;
+	uint32_t len = (uint32_t)size, blen = (uint32_t)ans->body_len, rsv = ans->action == 0 && ans->body_set;
 	uint16_t kind = 1;
 	memcpy(p, &len, 4), memcpy(p + 4, &kind, 2), memcpy(p + 6, &ans->action, 2);
 	memcpy(p + 8, &id, 4), memcpy(p + 12, &ans->status, 2), memcpy(p + 14, &ans->nops, 2);
@@ -255,7 +256,7 @@ static unsigned poll_rings(okena_addon *a, okena_handler fn, void *ctx, okena_an
 				q.method = q.head + mo, q.method_len = ml;
 				q.target = q.head + to, q.target_len = tl;
 				ans->len = 24, ans->body_len = 0, ans->nops = 0, ans->action = 0;
-				ans->status = 0, ans->none = 0, ans->overflow = 0, ans->body = NULL;
+				ans->status = 0, ans->none = 0, ans->overflow = 0, ans->body = NULL, ans->body_set = 0;
 				fn(&q, ans, ctx);
 				if (!ans->none && ph != 16)	/* (the log is never answered) */
 					answered |= put(a, r, q.id, ans);

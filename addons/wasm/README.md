@@ -58,13 +58,14 @@ know: every plugin loads. Tested with plugins on the Go SDK
 
 With the addon's `phases request_body`, the plugin's `proxy_on_request_body`
 gets the body (its first `body` bytes; `end_of_stream` false when there was
-more) through `HttpRequestBody`; changing it is not supported.
+more) through `HttpRequestBody`; `proxy_set_buffer_bytes` replaces it.
 
 With `response_headers` or `response_body`, the request's HTTP context goes
 on into the response (okena's calls share a stream): `proxy_on_response_headers`
 with the response's map (`:status` first; fields set, added or removed go
 back to okena), `proxy_on_response_body` with a counted body up to `body`
-(`HttpResponseBody`), and a local response there replaces the backend's.
+(`HttpResponseBody`, `proxy_set_buffer_bytes` replaces it), and a local
+response there replaces the backend's.
 `proxy_on_log`, `proxy_on_done` and `proxy_on_delete` come at the stream's
 last phase (`log`, when the addon has it). A context whose later phase never
 comes (okena answered the request itself) is ended after a minute.

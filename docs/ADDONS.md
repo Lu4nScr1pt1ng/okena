@@ -15,7 +15,7 @@ protocol, for writing an SDK. The SDKs in `sdk/` implement it.
 addon waf {
     run /usr/local/bin/coraza-okena -rules /etc/crs   # absolute path, then its arguments
     phases request_headers       # the default; also request_body, response_headers, response_body, log
-    body 8KiB                    # the most of a body a call carries (at most 16 KiB)
+    body 8KiB                    # the most of a body a call carries (up to 16MiB)
     timeout 50ms                 # a call's time (default 200ms)
     on_error allow               # or deny (the default): 503
     concurrency 1024             # calls waiting at once, the whole instance (default 1024)
@@ -74,21 +74,29 @@ each worker's (`concurrency` is split between the workers).
 
 **The body.** With `phases request_body`, okena reads the request's body
 before it calls the addon, and the call carries it: all of it, or its first
-`body` bytes (said truncated), or what fits in the request's 16 KiB buffer
-after its head. A chunked body comes as it was framed, and the SDKs decode it.
-A request with no body is asked at once; one whose client sends its body only
-after `100 Continue` is asked without it (said unread). The body's reading has
-the listener's `body_idle` clock (408). Once the addon lets the request on,
-the body goes to the backend whole, as it came.
+`body` bytes (said truncated). A body that fits after the head stays in the
+request's own buffer; a larger one goes into a body buffer of the worker
+(as many as the addon's calls may wait at once, `body` bytes each, address
+space only until used), from which the backend gets it once the addon lets
+the request on, then the rest from the client. A chunked body comes as it was
+framed (the SDKs decode it) and is read up to its last chunk. A client that
+waits for `100 Continue` is sent one by okena (HTTP/1.1), and the backend is
+not asked for another; over HTTP/2 and HTTP/3 such a call says the body
+unread. The body's reading has the listener's `body_idle` clock (408).
+`response_body` is the same on the other side: a counted or chunked response
+body, all of it or its first `body` bytes, in the response buffer or a body
+buffer, then on to the client. A response whose end is the backend's close
+carries no body. An addon's rings are sized from `body` (twice the largest
+call, at least 256 KiB). Routes without these phases do not change: nothing
+is read or copied for them.
 
 **Phases.** `request_headers` (the default) and `request_body` are asked
 before the backend, once (with the body when `request_body` is listed).
 `response_headers` is asked with the backend's response head, after okena
 has counted its status (retries and outlier detection have had their say)
 and before anything reaches the client; `response_body` the same, the call
-carrying the response's body when it is counted (Content-Length) and no
-larger than `body` (nor than the 16 KiB response buffer), else none; the
-response waits meanwhile. `log` is told of each exchange once its access log
+carrying the response's body (see the body, above); the response waits
+meanwhile. `log` is told of each exchange once its access log
 line is written, and never waited for: the request line, `host`,
 `okena-status`, `okena-bytes`, `okena-us`. An addon listed for response or
 log phases only is not asked about the request. Every call about one request
@@ -115,6 +123,10 @@ An answer is one of:
   read. A HEAD gets the length and no body.
 * **pool**, with continue: the request goes to another pool, named as in the
   configuration (a name that is not there makes the answer a bad one).
+* **a body of its own**, with continue: in place of the request's body (or,
+  in a response phase, the response's), when the call carried that body
+  whole (else the answer is a bad one), up to `body` bytes. okena gives the
+  head its Content-Length and drops its Transfer-Encoding.
 
 HTTP/1.1, HTTP/2 and HTTP/3 requests all go through the same stage: the addon
 always sees an HTTP/1.1 head.
@@ -230,7 +242,7 @@ call's id is 0.
 | 12 | 2 | respond: the status |
 | 14 | 2 | `nops` |
 | 16 | 4 | respond: the body's length |
-| 20 | 4 | reserved |
+| 20 | 4 | flags: 1 (continue) the body replaces the request's or the response's |
 | 24 | | `nops` ops, then the body |
 
 An op is `op` (u8), 0 (u8), the name's length (u16), the value's length (u16),

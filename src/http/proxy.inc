@@ -2406,6 +2406,8 @@ http_send_plain:
 	je	.hedged
 	cmp	edx,HS_CONTINUE
 	je	.continued
+	cmp	edx,HS_ADCONT
+	je	addon_cont_sent			; (our 100 Continue, for an addon that wants the body)
 	cmp	edx,HS_SEND_HEAD
 	je	http_req_pump
 	cmp	edx,HS_REQ_SEND

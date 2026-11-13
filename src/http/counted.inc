@@ -50,6 +50,8 @@ http_counted_try:
 	call	fcgi_active
 	test	eax,eax
 	jnz	.no
+	test	byte [g_ad_rep+rbx],ADREP_P	; (an addon's body buffer goes first)
+	jnz	.no
 	cmp	dword [g_engine],ENGINE_EPOLL
 	je	hep_counted_start
 	mov	rcx,[r15+H_RREMAIN]

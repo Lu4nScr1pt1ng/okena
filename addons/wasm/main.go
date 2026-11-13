@@ -252,7 +252,7 @@ func (in *instance) finish(ctx context.Context, st *stream) {
 func (in *instance) response(ctx context.Context, st *stream, r *addon.Request, a *addon.Answer) error {
 	in.cur = st
 	in.effective = st.id
-	st.local, st.continued, st.closed = nil, false, false
+	st.local, st.continued, st.closed, st.respBodySet = nil, false, false, false
 	st.resp = []pair{{":status", fmt.Sprint(r.Status)}}
 	for _, f := range r.Headers {
 		st.resp = append(st.resp, pair{strings.ToLower(f.Name), f.Value})
@@ -284,6 +284,9 @@ func (in *instance) response(ctx context.Context, st *stream, r *addon.Request, 
 		return nil
 	}
 	diff(orig, st.resp, a)
+	if st.respBodySet {
+		a.Body(st.respBody)
+	}
 	return nil
 }
 
@@ -373,6 +376,9 @@ func (in *instance) request(ctx context.Context, r *addon.Request, a *addon.Answ
 		}
 	}
 	answered := in.answerLocal(st, a)
+	if !answered && st.bodySet {
+		a.Body(st.body) // (its body replaced)
+	}
 	if !r.Last && !answered {
 		kept = true // its response (or log) comes later
 		in.cur = nil

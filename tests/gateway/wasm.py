@@ -173,6 +173,9 @@ http 127.0.0.1:{L} {{
             print("skip the Rust plugin: not built (rustup target add wasm32-wasip1)")
         s, h, b = get("/bd/x", body=b"hello wasm")
         check("request_body: proxy_on_request_body sees the body", s == 200 and b"x-body-size: 10" in b and b"x-body-more" not in b, (s, b))
+        s, h, b = get("/bd/x", body=b"please rewrite-me")
+        check("  proxy_set_buffer_bytes: the request's body replaced", s == 200 and b.endswith(b"body: rewritten by wasm")
+              and b"Content-Length: 17" in b, b[-200:])
         s, h, b = get("/bd/x", body=b"this is forbidden")
         check("  and answers from it", s == 413 and h.get("x-plugin") == "body", (s, h))
         s, h, b = get("/bd/x", body=b"y" * 3000)
@@ -180,6 +183,9 @@ http 127.0.0.1:{L} {{
         s, h, b = get("/resp/page")
         check("response phases: the request's context goes on (it kept the path), a field added, one removed",
               s == 200 and h.get("x-wasm-resp") == "for /resp/page" and "server" not in h and b"x-wasm: yes" in b, (s, h))
+        s, h, b = get("/resp/page", [("X-Note", "swap-me")])
+        check("  proxy_set_buffer_bytes: the response's body replaced", s == 200 and b == b"swapped by wasm\n"
+              and h.get("content-length") == "16", (s, h, b))
         s, h, b = get("/resp/page", [("X-Note", "a secret")])
         check("  proxy_on_response_body: the body judged, the response replaced", s == 500 and h.get("x-plugin") == "leak"
               and b == b"withheld\n", (s, h, b))

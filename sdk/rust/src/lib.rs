@@ -126,18 +126,19 @@ pub struct Answer {
     action: u16,
     status: u16,
     body: Vec<u8>,
+    body_set: bool,
     none: bool,
     overflow: bool,
 }
 
 impl Answer {
     fn new() -> Self {
-        Answer { buf: vec![0; 24], nops: 0, action: 0, status: 0, body: Vec::new(), none: false, overflow: false }
+        Answer { buf: vec![0; 24], nops: 0, action: 0, status: 0, body: Vec::new(), body_set: false, none: false, overflow: false }
     }
     fn reset(&mut self) {
         self.buf.truncate(24);
         self.body.clear();
-        (self.nops, self.action, self.status, self.none, self.overflow) = (0, 0, 0, false, false);
+        (self.nops, self.action, self.status, self.none, self.overflow, self.body_set) = (0, 0, 0, false, false, false);
     }
     fn op(&mut self, code: u8, name: &[u8], value: &[u8]) {
         if name.len() > 0xFFFF || value.len() > 0xFFFF || self.buf.len() + 6 + name.len() + value.len() > ANSWER_MAX {
@@ -175,9 +176,12 @@ impl Answer {
     pub fn respond(&mut self, status: u16) {
         (self.action, self.status) = (1, status)
     }
+    /// The body of a respond; with continue, a body in place of the one that
+    /// came (one the call carried whole; okena sets its Content-Length).
     pub fn body(&mut self, body: &[u8]) {
         self.body.clear();
-        self.body.extend_from_slice(body)
+        self.body.extend_from_slice(body);
+        self.body_set = true;
     }
     /// Leaves the call unanswered: okena's on_error, at its time.
     pub fn no_answer(&mut self) {
@@ -387,7 +391,7 @@ impl Addon {
             b[12..14].copy_from_slice(&ans.status.to_le_bytes());
             b[14..16].copy_from_slice(&ans.nops.to_le_bytes());
             b[16..20].copy_from_slice(&(ans.body.len() as u32).to_le_bytes());
-            b[20..24].copy_from_slice(&0u32.to_le_bytes());
+            b[20..24].copy_from_slice(&u32::from(ans.action == 0 && ans.body_set).to_le_bytes());
             let p = self.m.add((d + pos) as usize);
             std::ptr::copy_nonoverlapping(b.as_ptr(), p, b.len());
             std::ptr::copy_nonoverlapping(ans.body.as_ptr(), p.add(b.len()), ans.body.len());

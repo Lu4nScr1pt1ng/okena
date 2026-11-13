@@ -133,7 +133,38 @@ func (h *host) functions() map[string]hostFn {
 		m.Memory().WriteUint32Le(u32(s, 2), 1)
 		return rOK
 	})
-	add("proxy_set_buffer_bytes", 5, func(ctx context.Context, in *instance, m api.Module, s []uint64) uint64 { return rUnimplemented })
+	// the request's or the response's body: [start, start+size) replaced by
+	// the bytes given; okena gets the result in place of the body
+	add("proxy_set_buffer_bytes", 5, func(ctx context.Context, in *instance, m api.Module, s []uint64) uint64 {
+		if in.cur == nil {
+			return rNotFound
+		}
+		var b *[]byte
+		var set *bool
+		switch u32(s, 0) {
+		case bufRequestBody:
+			b, set = &in.cur.body, &in.cur.bodySet
+		case bufResponseBody:
+			b, set = &in.cur.respBody, &in.cur.respBodySet
+		default:
+			return rNotFound
+		}
+		data, ok := readBytes(m, u32(s, 3), u32(s, 4))
+		if !ok {
+			return rInvalidMemory
+		}
+		start, size := int(u32(s, 1)), int(u32(s, 2))
+		if start > len(*b) {
+			start = len(*b)
+		}
+		end := start + size
+		if end > len(*b) || size < 0 {
+			end = len(*b)
+		}
+		n := append(append(append([]byte(nil), (*b)[:start]...), data...), (*b)[end:]...)
+		*b, *set = n, true
+		return rOK
+	})
 
 	// header maps
 	headers := func(in *instance, t uint32) *[]pair {

@@ -847,9 +847,10 @@ route /api/* {
 * **Phases:** `request_headers`, `request_body` (streamed in chunks or
   buffered, bounded), `response_headers`, `response_body`, `log`
   (fire-and-forget, never waited for). **Today:** all five; the bodies
-  buffered, up to 16 KiB (the request's and the response's own buffers): a
-  larger request body is given in part, a larger or chunked response body not
-  at all.
+  buffered up to `body` (16 MiB at most): in the session's own buffers when
+  they fit, else in a worker's body buffers, then given on from there (the
+  session's reads served from the buffer first). An addon may replace either
+  body.
 * **Actions an addon can return:** continue, set/remove headers, set
   variables for later filters (`addon.waf.score`), pick a pool, rewrite
   the path, replace the body, or answer directly (status, headers, body).

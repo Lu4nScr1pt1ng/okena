@@ -162,6 +162,10 @@ http 127.0.0.1:{L} {{
         s, h, b = get("/pr/page")
         check("ext_proc response phases: on the request's stream (it kept the path), a field set, one removed",
               s == 200 and h.get("x-proc-resp") == "seen /pr/page" and "server" not in h and b"x-proc: seen" in b, (s, h))
+        s, h, b = get("/pb/x", body=b"please mutate-me")
+        check("ext_proc body_mutation: the request's body replaced", s == 200 and b.endswith(b"body: mutated by ext_proc"), b[-200:])
+        s, h, b = get("/pr/page", [("X-Note", "mutate-resp")])
+        check("  and the response's", s == 200 and b == b"mutated response\n" and h.get("content-length") == "17", (s, h, b))
         s, h, b = get("/pr/page", [("X-Note", "a secret")])
         check("  the response's body judged: an immediate response replaces it", s == 500 and b == b"withheld\n", (s, b))
         t = time.monotonic()

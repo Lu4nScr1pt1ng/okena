@@ -752,6 +752,7 @@ ln_reap:
 ; and workers post no call until the next run says it is ready.
 ln_skip_calls:
 	mov	rdx,[rbx+ALN_HDR]
+	mov	r8,[rdx+ADH_STRIDE]
 	mov	ecx,[rdx+ADH_NRINGS]
 	lea	rdx,[rdx+AD_HDR]
 .ring:
@@ -759,7 +760,7 @@ ln_skip_calls:
 	jz	.done
 	mov	rax,[rdx+ADR_HEAD]
 	mov	[rdx+ADR_TAIL],rax
-	add	rdx,AD_STRIDE
+	add	rdx,r8
 	dec	ecx
 	jmp	.ring
 .done:

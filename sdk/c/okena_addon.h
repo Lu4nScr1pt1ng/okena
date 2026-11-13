@@ -86,7 +86,7 @@ void okena_remove(okena_answer *ans, const char *name);
 void okena_target(okena_answer *ans, const char *target);
 void okena_pool(okena_answer *ans, const char *pool);	/* another pool, by its name */
 void okena_respond(okena_answer *ans, int status);	/* then okena_add: its fields */
-void okena_body(okena_answer *ans, const void *body, size_t len);
+void okena_body(okena_answer *ans, const void *body, size_t len);	/* respond's; with continue: in place of the body */
 void okena_no_answer(okena_answer *ans);		/* okena's on_error, at its time */
 void okena_fail(okena_answer *ans);			/* it could not decide: on_error now */
 

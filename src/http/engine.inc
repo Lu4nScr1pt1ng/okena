@@ -10,6 +10,8 @@ h_recv_peek:
 h_recv:
 	test	ecx,ecx
 	jnz	h_recv_up
+	test	byte [g_ad_rep+rbx],ADREP_Q
+	jnz	addon_replay			; (a body an addon held: from its buffer first)
 	call	session_ptr
 	test	dword [rax+S_FLAGS],SF_H2S
 	jnz	h2s_recv			; an HTTP/2 stream: its connection serves it
@@ -25,6 +27,8 @@ h_recv:
 	jmp	h_recv_raw
 ; the upstream side: a socket, or a stream on an HTTP/2 connection
 h_recv_up:
+	test	byte [g_ad_rep+rbx],ADREP_P
+	jnz	addon_replay
 	call	session_ptr
 	test	dword [rax+S_FLAGS],SF_CACHED
 	jnz	cache_recv			; the backend is a block of memory

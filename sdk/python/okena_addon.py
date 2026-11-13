@@ -83,12 +83,15 @@ class Continue:
     """Let the request go on, its head changed first: `set` replaces every field
     of a name, `add` adds one more, `remove` takes them away, `target` is the
     new request target (a path, with its query), `pool` the pool it goes to (by
-    its name in okena's configuration). Content-Length, Transfer-Encoding,
-    Connection and the like are okena's and stay as they are."""
-    __slots__ = ("set", "add", "remove", "target", "pool")
+    its name in okena's configuration), `body` a body in place of the one that
+    came (the request's, or in a response phase the response's: one the call
+    carried whole; okena sets its Content-Length). Content-Length,
+    Transfer-Encoding, Connection and the like are otherwise okena's."""
+    __slots__ = ("set", "add", "remove", "target", "pool", "body")
 
-    def __init__(self, set=(), add=(), remove=(), target=None, pool=None):
+    def __init__(self, set=(), add=(), remove=(), target=None, pool=None, body=None):
         self.set, self.add, self.remove, self.target, self.pool = set, add, remove, target, pool
+        self.body = body if body is None or isinstance(body, bytes) else body.encode()
 
 
 class Respond:
@@ -217,6 +220,7 @@ class Addon:
     def _answer(self, ah, ad, cid, out):
         ops = []
         body = b""
+        flags = 0
         if isinstance(out, Respond):
             action, status = ACTION_RESPOND, out.status
             for k, val in out.headers:
@@ -234,6 +238,8 @@ class Addon:
                 ops.append((OP_TARGET, b"", _b(out.target)))
             if out.pool is not None:
                 ops.append((OP_POOL, b"", _b(out.pool)))
+            if out.body is not None:
+                body, flags = out.body, 1
         elif isinstance(out, Fail) or out is Fail:
             action, status = 2, 0
         else:
@@ -244,7 +250,7 @@ class Addon:
         rec += body
         size = (len(rec) + 7) & ~7
         rec += b"\0" * (size - len(rec))
-        _ANSWER.pack_into(rec, 0, size, 1, action, cid, status, len(ops), len(body), 0)
+        _ANSWER.pack_into(rec, 0, size, 1, action, cid, status, len(ops), len(body), flags)
         v = self.v
         head = _U64.unpack_from(v, ah + R_HEAD)[0]
         tail = _U64.unpack_from(v, ah + R_TAIL)[0]

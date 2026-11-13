@@ -75,15 +75,22 @@ func (proc) Process(s procv3.ExternalProcessor_ProcessServer) error {
 			if strings.Contains(string(rb.GetBody()), "secret") {
 				s.Send(&procv3.ProcessingResponse{Response: &procv3.ProcessingResponse_ImmediateResponse{ImmediateResponse: &procv3.ImmediateResponse{
 					Status: &typev3.HttpStatus{Code: typev3.StatusCode(500)}, Body: []byte("withheld\n")}}})
+			} else if strings.Contains(string(rb.GetBody()), "mutate-resp") {
+				s.Send(&procv3.ProcessingResponse{Response: &procv3.ProcessingResponse_ResponseBody{ResponseBody: &procv3.BodyResponse{
+					Response: &procv3.CommonResponse{BodyMutation: &procv3.BodyMutation{Mutation: &procv3.BodyMutation_Body{Body: []byte("mutated response\n")}}}}}})
 			} else {
 				s.Send(&procv3.ProcessingResponse{Response: &procv3.ProcessingResponse_ResponseBody{ResponseBody: &procv3.BodyResponse{}}})
 			}
 			continue
 		}
 		if b := req.GetRequestBody(); b != nil {
+			var bm *procv3.BodyMutation
+			if strings.Contains(string(b.GetBody()), "mutate-me") {
+				bm = &procv3.BodyMutation{Mutation: &procv3.BodyMutation_Body{Body: []byte("mutated by ext_proc")}}
+			}
 			s.Send(&procv3.ProcessingResponse{Response: &procv3.ProcessingResponse_RequestBody{RequestBody: &procv3.BodyResponse{
 				Response: &procv3.CommonResponse{HeaderMutation: &procv3.HeaderMutation{
-					SetHeaders: []*corev3.HeaderValueOption{hv("x-proc-body", strconv.Itoa(len(b.GetBody())))}}},
+					SetHeaders: []*corev3.HeaderValueOption{hv("x-proc-body", strconv.Itoa(len(b.GetBody())))}}, BodyMutation: bm},
 			}}})
 			continue
 		}

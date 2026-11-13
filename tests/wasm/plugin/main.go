@@ -49,6 +49,10 @@ func (s *stream) OnHttpResponseHeaders(int, bool) types.Action {
 
 func (s *stream) OnHttpResponseBody(size int, end bool) types.Action {
 	body, err := proxywasm.GetHttpResponseBody(0, size)
+	if err == nil && strings.Contains(string(body), "swap-me") {
+		proxywasm.ReplaceHttpResponseBody([]byte("swapped by wasm\n"))
+		return types.ActionContinue
+	}
 	if err == nil && strings.Contains(string(body), "secret") {
 		proxywasm.SendHttpResponse(500, [][2]string{{"x-plugin", "leak"}}, []byte("withheld\n"), -1)
 		return types.ActionPause
@@ -119,6 +123,10 @@ func (s *stream) OnHttpRequestHeaders(int, bool) types.Action {
 func (s *stream) OnHttpRequestBody(size int, end bool) types.Action {
 	body, err := proxywasm.GetHttpRequestBody(0, size)
 	if err != nil {
+		return types.ActionContinue
+	}
+	if strings.Contains(string(body), "rewrite-me") {
+		proxywasm.ReplaceHttpRequestBody([]byte("rewritten by wasm"))
 		return types.ActionContinue
 	}
 	if strings.Contains(string(body), "forbidden") {

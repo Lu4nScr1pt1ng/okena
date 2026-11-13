@@ -425,6 +425,7 @@ func processResponse(r *addon.Request, a *addon.Answer) error {
 		return nil
 	}
 	mutate(v, resp.GetResponseBody().GetResponse().GetHeaderMutation(), a)
+	bodyMutation(resp.GetResponseBody().GetResponse().GetBodyMutation(), a)
 	return nil
 }
 
@@ -494,6 +495,7 @@ func process(ctx context.Context, v *view, r *addon.Request, a *addon.Answer) er
 	}
 	if rb := resp.GetRequestBody(); rb != nil {
 		mutate(v, rb.GetResponse().GetHeaderMutation(), a)
+		bodyMutation(rb.GetResponse().GetBodyMutation(), a)
 	}
 	return nil
 }
@@ -509,6 +511,17 @@ func immediate(im *procv3.ImmediateResponse, a *addon.Answer) {
 		a.Add(h.GetHeader().GetKey(), value(h.GetHeader()))
 	}
 	a.Body(im.GetBody())
+}
+
+// a body mutation: the body (the request's, or the response's) replaced
+func bodyMutation(m *procv3.BodyMutation, a *addon.Answer) {
+	switch {
+	case m == nil:
+	case m.GetClearBody():
+		a.Body([]byte{})
+	case m.GetBody() != nil:
+		a.Body(m.GetBody())
+	}
 }
 
 func mutate(v *view, m *procv3.HeaderMutation, a *addon.Answer) {

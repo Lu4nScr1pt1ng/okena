@@ -80,6 +80,8 @@ type stream struct {
 	body      []byte
 	resp      []pair // the response's headers (:status first)
 	respBody  []byte
+	bodySet     bool // the plugin replaced the request's body
+	respBodySet bool // or the response's
 	at        time.Time
 }
 

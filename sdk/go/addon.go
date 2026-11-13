@@ -146,6 +146,7 @@ type Answer struct {
 	action   uint16
 	status   uint16
 	body     []byte
+	bodySet  bool
 	none     bool
 	overflow bool
 }
@@ -179,8 +180,10 @@ func (a *Answer) Pool(name string) { a.op(opPool, "", name) }
 // Respond answers the client here with this status; Add gives its fields.
 func (a *Answer) Respond(status int) { a.action, a.status = 1, uint16(status) }
 
-// Body is the body of a Respond.
-func (a *Answer) Body(b []byte) { a.body = b }
+// Body is the body of a Respond; with continue, a body in place of the one
+// that came (the request's, or in a response phase the response's: one the
+// call carried whole; okena sets its Content-Length).
+func (a *Answer) Body(b []byte) { a.body, a.bodySet = b, true }
 
 // NoAnswer leaves the call unanswered: okena's on_error, at its time.
 func (a *Answer) NoAnswer() { a.none = true }
@@ -194,7 +197,7 @@ func (a *Answer) Reset() { a.reset() }
 
 func (a *Answer) reset() {
 	a.buf = a.buf[:24]
-	a.nops, a.action, a.status, a.body, a.none, a.overflow = 0, 0, 0, nil, false, false
+	a.nops, a.action, a.status, a.body, a.bodySet, a.none, a.overflow = 0, 0, 0, nil, false, false, false
 }
 
 // Handler decides about a request.
@@ -520,7 +523,11 @@ func (a *Addon) answer(r uint32, id uint32, ans *Answer, alone bool) bool {
 	le.PutUint16(b[12:], ans.status)
 	le.PutUint16(b[14:], ans.nops)
 	le.PutUint32(b[16:], uint32(len(ans.body)))
-	le.PutUint32(b[20:], 0)
+	var flags uint32
+	if ans.action == 0 && ans.bodySet {
+		flags = 1 // continue with a body of its own
+	}
+	le.PutUint32(b[20:], flags)
 	at := d + pos
 	copy(a.m[at:], b)
 	copy(a.m[at+uint64(len(b)):], ans.body)

@@ -51,5 +51,6 @@ apply `on_error` at once, and counts toward the addon's circuit breaker.
 `response_headers` or `response_body`, the request's ext_proc stream stays
 open and gets `response_headers` (and, with `-proc-body`, a counted
 `response_body` up to `body`): their header mutations change the response,
-an `immediate_response` replaces it. A stream whose response never comes is
+a `body_mutation` its body (as on the request), an `immediate_response`
+replaces it. A stream whose response never comes is
 closed after a minute.

@@ -30,11 +30,23 @@ def on_request(req):
             return oa.Fail()
         if last == "stream":
             return oa.Continue(set=[("x-stream-resp", repr(req.stream))])
+        if last == "swap":
+            return oa.Continue(set=[("x-swapped", "yes")], body=b"a body of the addon's\n")
+        if last == "big":
+            import hashlib
+            return oa.Continue(set=[("x-rlen", str(len(req.body))), ("x-rtrunc", str(req.body_truncated)),
+                                    ("x-rsha", hashlib.sha256(req.body).hexdigest()[:16])])
         if last == "rbody":
             return oa.Respond(200, [("x-rbody-len", str(len(req.body)))], req.body.upper())
         return oa.Continue()
     if last == "stream":
         return oa.Continue(set=[("x-stream-req", repr(req.stream))])
+    if last == "swapreq":
+        return oa.Continue(body=b"REPLACED:" + req.body[:16].upper())
+    if last == "big":
+        import hashlib
+        return oa.Continue(set=[("x-blen", str(len(req.body))), ("x-btrunc", str(req.body_truncated)),
+                                ("x-bsha", hashlib.sha256(req.body).hexdigest()[:16])])
     if last == "pass":
         return oa.Continue()
     if last == "pid":
