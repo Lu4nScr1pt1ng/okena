@@ -25,7 +25,7 @@
 ; then twice as long each time, up to 6 hours. The CA's address is verified as
 ; the control process verifies its servers (the system's roots, or trust=).
 
-ACME_CERTS	:= 16
+ACME_CERTS	:= 4096
 ACME_ALL	:= ACME_CERTS + OD_MAX	; and the on-demand ones (ondemand.inc), after them
 ACME_NAMES	:= 15
 ACME_URL	:= 512
@@ -268,7 +268,7 @@ acme_page_init:
 	cmp	qword [g_od_page],0
 	jne	@f
 	xor	edi,edi				; (ondemand.inc's)
-	mov	esi,OD_PAGE
+	mov	rsi,OD_PAGE
 	mov	edx,PROT_READ or PROT_WRITE
 	mov	r10d,MAP_SHARED or MAP_ANONYMOUS or MAP_NORESERVE
 	mov	r8,-1
@@ -1678,7 +1678,7 @@ compile_tls_acme:
 .too_many:
 	mov	rdi,rbx
 	call	tls_error_at
-	out_lit 'acme: 16 certificates at most'
+	out_lit 'acme: 4096 certificates at most'
 	jmp	tls_error_end
 .bad_name:
 	mov	rdi,rbx

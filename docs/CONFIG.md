@@ -378,8 +378,9 @@ certificate, clients that only take RSA get the RSA one.
 `tls { auto }` gets a certificate from an ACME CA for every name in the
 listener's `host` blocks, and renews it. Without an `okena { acme ... }`
 line, the CA is Let's Encrypt and certificates live in `/var/lib/okena/acme`.
-Each name is one certificate, and an instance holds 16 ACME certificates at
-most. Wildcard names (`*.example.com`) need `challenge=dns-01`; with HTTP-01
+Each name is one certificate, and an instance holds 4096 configured ACME
+certificates at most (for more names, or names not known in advance, use
+`on_demand`). Wildcard names (`*.example.com`) need `challenge=dns-01`; with HTTP-01
 they are skipped. Without any `host` block, `auto` has no name to ask for.
 
 ```nginx
@@ -473,7 +474,10 @@ It needs the CA declared with `okena { acme ... }`, and a pattern, an `ask=`
 URL, or both, so that strangers can't make okena spend the CA's limits.
 `ask=` (an `http://` URL, usually a local service of yours) receives `GET
 URL?domain=NAME`, and only a 200 allows the order. `max=` caps how many names
-it will get certificates for (64 at most). The
+it will get certificates for (262144 at most, the default). Certificates are
+kept in a table shared by the workers and found by the name's hash: a
+handshake looks at one slot or a few, however many names there are, and
+memory is used only as certificates are stored (about 8 KiB each). The
 handshake waits up to 15 s for the certificate; past that it goes on with the
 listener's default certificate.
 
@@ -1935,7 +1939,7 @@ it leaves the pool just as fast.
 | `split` pools | 2 to 256 per split (65536 in all), shares to 0.01% |
 | `retry` | 0 to 5 |
 | `source` addresses | 256 per pool, 65536 in all |
-| ACME certificates | 16 per instance (each `acme` line is one, up to 15 names; with `auto`, each name is one) |
+| ACME certificates | 4096 configured per instance (each `acme` line is one, up to 15 names; with `auto`, each name is one), plus 262144 `on_demand` |
 | error page | 1 MiB (64 MiB in all) |
 | `respond` body | 1 MiB (past 4 KiB, sent from the loaded config with no copy) |
 | rate limit keys | about 256k, kept across reloads |

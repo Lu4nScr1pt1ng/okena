@@ -4,7 +4,11 @@
 ; ACME CA, as Caddy's on-demand TLS does; `ask=` (http://) is asked first, GET
 ; URL?domain=NAME, and only a 200 lets it be: so a stranger's names cannot make
 ; okena ask the CA for certificates (or use up its rate limits). `max=` caps how
-; many (64 at most).
+; many (262144 at most, the default).
+;
+; The store is a table of OD_SLOTS slots found by the name's hash (linear probing,
+; slots never emptied: a name keeps its slot), so a handshake looks at one slot or
+; a few, however many names there are; memory is taken only as slots are written.
 ;
 ; The worker does not block: it puts the name in a ring the acme process reads,
 ; wakes it, and parks the handshake, looked at again each second; once the
@@ -13,7 +17,9 @@
 ; goes on with the listener's own certificate. The certificates are kept in DIR as
 ; the others (DIR/NAME/), named in DIR/on_demand.list, and renewed as they are.
 
-OD_MAX		:= 64
+OD_MAX		:= 1 shl 18
+OD_SLOTS	:= 1 shl 19			; the store: twice as many, for short probes
+OD_PROBE	:= 4096				; slots looked at, at most
 OD_CFGS		:= 4
 OD_WAIT		:= 15				; seconds a handshake waits for one
 OD_REFUSE	:= 600				; a refused name, not asked again for
@@ -48,7 +54,7 @@ ODS_NAME	:= 128				; 256
 ODS_CHAIN	:= 384
 ODS_SIZE	:= 8192
 ODS_CHAINMAX	:= ODS_SIZE - ODS_CHAIN
-OD_PAGE		:= ODP_STORE + OD_MAX * ODS_SIZE
+OD_PAGE		:= ODP_STORE + OD_SLOTS * ODS_SIZE
 
 HS_TLS_ODWAIT	:= 33				; the ClientHello waits for its certificate
 TH_WAIT		:= 5				; tls_hello: an on-demand certificate is coming
@@ -281,7 +287,7 @@ compile_tls_od:
 .bad:
 	mov	rdi,rbx
 	call	tls_error_at_node
-	out_lit 'on_demand takes names (or *.parent), ask=http://URL and max=N (64 at most)'
+	out_lit 'on_demand takes names (or *.parent), ask=http://URL and max=N (262144 at most)'
 	jmp	tls_error_end
 .no_key:
 	mov	rdi,rbx
@@ -374,15 +380,51 @@ od_hello:
 	pop	r12
 	ret
 
+; rsi/ecx = a name: eax = where its probe begins. Keeps all but rax, rdx.
+od_hash:
+	push	rsi
+	push	rcx
+	mov	rax,0xCBF29CE484222325
+	mov	rdx,0x100000001B3
+.byte:
+	test	ecx,ecx
+	jz	.done
+	xor	al,[rsi]
+	imul	rax,rdx
+	inc	rsi
+	dec	ecx
+	jmp	.byte
+.done:
+	mov	rdx,rax
+	shr	rdx,29
+	xor	rax,rdx
+	and	eax,OD_SLOTS - 1
+	pop	rcx
+	pop	rsi
+	ret
+
+; eax = a slot's number: rax = it. Keeps all but rax.
+macro od_ptr
+	shl	rax,13				; ODS_SIZE
+	add	rax,ODP_STORE
+	add	rax,[g_od_page]
+end macro
+assert ODS_SIZE = 8192
+
 ; g_od_name: its slot in the store (whatever its state), or 0. Keeps r12, r13.
 od_find:
-	mov	r8,[g_od_page]
-	add	r8,ODP_STORE
-	mov	r9d,OD_MAX
+	lea	rsi,[g_od_name]
+	mov	ecx,[g_od_namel]
+	call	od_hash
+	mov	r9d,eax				; the slot's number
+	mov	r10d,OD_PROBE
 	mov	edx,[g_od_namel]
 .slot:
+	mov	eax,r9d
+	od_ptr
+	mov	r8,rax
 	cmp	dword [r8+ODS_STATE],0
-	je	.next
+	je	.none				; (slots are never emptied: not further on)
 	cmp	[r8+ODS_NLEN],edx
 	jne	.next
 	lea	rsi,[g_od_name]
@@ -393,9 +435,11 @@ od_find:
 	mov	rax,r8
 	ret
 .next:
-	add	r8,ODS_SIZE
-	dec	r9d
+	inc	r9d
+	and	r9d,OD_SLOTS - 1
+	dec	r10d
 	jnz	.slot
+.none:
 	xor	eax,eax
 	ret
 
@@ -729,13 +773,16 @@ od_slot:
 	imul	esi,eax,256
 	lea	rsi,[g_od_names+rsi]
 	mov	ecx,[g_od_nl+rax*4]
-; rsi/ecx = a name: its slot (found, or a free one, made its), rax
+; rsi/ecx = a name: its slot (found, or the free one its probe reaches, made
+; its), rax. Only the acme process writes a slot's name: no race for one.
 od_slot_of:
-	mov	r8,[g_od_page]
-	add	r8,ODP_STORE
-	xor	r9d,r9d				; a free one
-	mov	r10d,OD_MAX
+	call	od_hash
+	mov	r11d,eax
+	mov	r10d,OD_PROBE
 .slot:
+	mov	eax,r11d
+	od_ptr
+	mov	r8,rax
 	mov	eax,[r8+ODS_STATE]
 	test	eax,eax
 	jz	.free
@@ -751,16 +798,14 @@ od_slot_of:
 	mov	rax,r8
 	clc
 	ret
-.free:
-	test	r9,r9
-	jnz	.next
-	mov	r9,r8
 .next:
-	add	r8,ODS_SIZE
+	inc	r11d
+	and	r11d,OD_SLOTS - 1
 	dec	r10d
 	jnz	.slot
-	test	r9,r9
-	jz	.none
+	jmp	.none
+.free:
+	mov	r9,r8
 	inc	dword [r9+ODS_SEQ]
 	mov	[r9+ODS_NLEN],ecx
 	lea	rdi,[r9+ODS_NAME]
