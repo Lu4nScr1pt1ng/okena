@@ -342,6 +342,12 @@ compile_addon:
 .word:
 	test	r8d,r8d
 	jz	.hashed
+	mov	rsi,[rbx+A_KEY]			; (a word with = in it: its name too)
+	mov	ecx,[rbx+A_KLEN]
+	cmp	dword [rbx+A_KIND],ARG_KV
+	jne	@f
+	call	.mix
+@@:
 	mov	rsi,[rbx+A_VAL]
 	mov	ecx,[rbx+A_VLEN]
 	call	.mix

@@ -82,7 +82,29 @@ build/coraza-okena: $(wildcard addons/coraza/*.go addons/coraza/go.mod addons/co
 	@mkdir -p build
 	-command -v go >/dev/null && cd addons/coraza && GOFLAGS=-mod=mod GOPROXY=off go build -o ../../$@ .
 
-test: $(BIN) $(HTTPH) $(KAT) $(TLSH) $(TLSC) $(TLS12S) $(TLSC12) $(ADDON_EX) build/coraza-okena
+# proxy-wasm: the host addon (addons/wasm) and two plugins for its tests, on
+# the Go SDK and on the Rust one (when wasm32-wasip1 is installed)
+WASM_T    := build/wasm-okena build/test-plugin-go.wasm build/test-plugin-rust.wasm
+
+build/wasm-okena: $(wildcard addons/wasm/*.go addons/wasm/go.mod addons/wasm/go.sum sdk/go/*.go)
+	@mkdir -p build
+	-command -v go >/dev/null && cd addons/wasm && GOFLAGS=-mod=mod GOPROXY=off go build -o ../../$@ .
+
+build/test-plugin-go.wasm: $(wildcard tests/wasm/plugin/*.go tests/wasm/plugin/go.mod tests/wasm/plugin/go.sum)
+	@mkdir -p build
+	-command -v go >/dev/null && cd tests/wasm/plugin && GOFLAGS=-mod=mod GOPROXY=off GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared -o ../../../$@ .
+
+build/test-plugin-rust.wasm: $(wildcard tests/wasm/rust/src/*.rs tests/wasm/rust/Cargo.toml tests/wasm/rust/Cargo.lock)
+	@mkdir -p build
+	-command -v cargo >/dev/null && cd tests/wasm/rust && cargo build -q --release --target wasm32-wasip1 && cp target/wasm32-wasip1/release/okena_test_plugin.wasm ../../../$@
+
+# the test plugins compiled once into a cache of their own, not by each run
+build/wasm-cache/.made: $(WASM_T)
+	@mkdir -p build/wasm-cache
+	-[ -x build/wasm-okena ] && for p in build/test-plugin-go.wasm build/test-plugin-rust.wasm; do \
+		[ -f $$p ] && build/wasm-okena -plugin $$p -cache build/wasm-cache -compile; done; touch $@
+
+test: $(BIN) $(HTTPH) $(KAT) $(TLSH) $(TLSC) $(TLS12S) $(TLSC12) $(ADDON_EX) build/coraza-okena $(WASM_T) build/wasm-cache/.made
 	python3 -I tests/run_all.py
 
 # one after the other, all output shown (slower; for reading a suite's log)

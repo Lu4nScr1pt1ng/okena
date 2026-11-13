@@ -395,10 +395,20 @@ ad_start:
 	test	r9d,r9d
 	jz	.words
 	mov	ecx,[r8+A_VLEN]
-	lea	rax,[rdi+rcx+1]
+	add	ecx,[r8+A_KLEN]
+	lea	rax,[rdi+rcx+2]
 	lea	rdx,[g_ad_lm+ALM_BLOB+ALM_BLOB_MAX]
 	cmp	rax,rdx
 	ja	.too_long
+	cmp	dword [r8+A_KIND],ARG_KV	; a word with = in it: as it was written
+	jne	@f
+	mov	rsi,[r8+A_KEY]
+	mov	ecx,[r8+A_KLEN]
+	rep	movsb
+	mov	byte [rdi],'='
+	inc	rdi
+@@:
+	mov	ecx,[r8+A_VLEN]
 	mov	rsi,[r8+A_VAL]
 	rep	movsb
 	mov	byte [rdi],0

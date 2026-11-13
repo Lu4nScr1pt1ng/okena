@@ -99,9 +99,14 @@ always sees an HTTP/1.1 head.
 | `sdk/go` | handlers on several goroutines at once (`Options.Workers`) |
 | `sdk/rust` | `std` only |
 | `addons/coraza` | a WAF: Coraza with the OWASP Core Rule Set ([README](../addons/coraza/README.md)) |
+| `addons/wasm` | proxy-wasm plugins, the ABI Envoy, nginx and Traefik run, on wazero ([README](../addons/wasm/README.md)) |
 
 Each SDK has a `hello` example that `tests/gateway/addon.py` runs against
-okena; `tests/gateway/waf.py` runs the WAF.
+okena; `tests/gateway/waf.py` runs the WAF, `tests/gateway/wasm.py` proxy-wasm
+plugins built on the Go and Rust proxy-wasm SDKs.
+
+`run`'s words go to the program as they are written, `name=value` ones
+included.
 
 ## The protocol (version 1)
 

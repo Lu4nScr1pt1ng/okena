@@ -5,3 +5,4 @@ __pycache__/
 /.env
 /sdk/rust/target/
 /sdk/rust/Cargo.lock
+/tests/wasm/rust/target/

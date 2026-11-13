@@ -887,6 +887,10 @@ for new flows. On a NIC: not yet (none here).
 * Reference WAF: addons/coraza, Coraza 3.8 with CRS 4.25 built in, blocking or
   detection only (tests/gateway/waf.py). Done 2026-11-13; request bodies wait
   for the request_body phase.
+* proxy-wasm: addons/wasm (wasm-okena) on wazero, ABI 0.2.1 and 0.1.0's
+  names; headers, properties, local answers, HTTP callouts, shared data,
+  ticks; plugins on the Go and Rust SDKs tested (tests/gateway/wasm.py).
+  Done 2026-11-13 for request headers.
 * SDKs (C, Rust, Go, Python); a reference WAF addon on Coraza.
 * proxy-wasm plugins (the ABI Envoy, nginx and Traefik run), in a process of
   their own like the other addons.

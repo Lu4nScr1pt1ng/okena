@@ -271,7 +271,7 @@ dirdef DIR_ALERT_ON, 'on',      M_ALERTS,  0,           F_UNIQUE, 1, 5, e_alert_
 dirdef DIR_EVERY, 'every',      M_ALERTS,  0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
 dirdef DIR_ALERT_NAME, 'name',  M_ALERTS,  0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
 dirdef DIR_ADDON, 'addon',      M_TOP,     CTX_ADDON,   F_BLOCK_REQ, 1, 1, T_NAME, T_NONE, 0
-dirdef DIR_ADRUN, 'run',        M_ADDON,   0,           F_UNIQUE, 1, 64, T_ANY, T_ANY, 0
+dirdef DIR_ADRUN, 'run',        M_ADDON,   0,           F_UNIQUE or F_FREE_KEYS, 1, 64, T_ANY, T_ANY, 0
 dirdef DIR_ADPHASES, 'phases',  M_ADDON,   0,           F_UNIQUE, 1, 5, e_ad_phases, e_ad_phases, 0
 dirdef DIR_ADTIMEOUT, 'timeout', M_ADDON,  0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
 dirdef DIR_ADONERR, 'on_error', M_ADDON,   0,           F_UNIQUE, 1, 1, e_ad_onerr, T_NONE, 0
