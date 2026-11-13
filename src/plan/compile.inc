@@ -397,6 +397,8 @@ plan_compile:
 	mov	dword [g_rh_npend],0
 	call	errpage_plan_init		; (g_eps[0]: maintenance's text)
 	mov	qword [g_plan_drain_timeout],DEFAULT_DRAIN_US
+	mov	dword [g_plan_idkeys],ID_DEF_KEYS
+	mov	dword [g_plan_idsize],ID_DEF_SIZE
 	mov	qword [g_plan_watchdog],2000000
 	mov	dword [g_plan_last_good],0
 	mov	dword [g_plan_pin],PIN_AUTO
@@ -751,6 +753,9 @@ compile_settings:
 	lea	rcx,[dir_table + D_SIZE*DIR_DRAIN]
 	cmp	rax,rcx
 	je	.drain
+	lea	rcx,[dir_table + D_SIZE*DIR_IDEMSTORE]
+	cmp	rax,rcx
+	je	.idemstore
 	lea	rcx,[dir_table + D_SIZE*DIR_BUSY_POLL]
 	cmp	rax,rcx
 	je	.busy_poll
@@ -1015,6 +1020,61 @@ compile_settings:
 @@:
 	mov	[g_plan_pin],ecx
 	jmp	.advance
+.idemstore:
+	; idempotency_store keys=N size=S: each rounded up to a power of two
+	mov	rdi,rbx
+	cstring .k_keys, 'keys',0
+	lea	rsi,[.k_keys]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_decimal
+	jc	plan_bad_idemstore
+	cmp	rax,ID_MAX_KEYS
+	ja	plan_bad_idemstore
+	cmp	eax,1024
+	jae	.idk_pow
+	mov	eax,1024
+.idk_pow:
+	call	.pow2
+	mov	[g_plan_idkeys],eax
+@@:
+	mov	rdi,rbx
+	cstring .k_size, 'size',0
+	lea	rsi,[.k_size]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_size
+	jc	plan_bad_idemstore
+	cmp	rax,ID_MAX_SIZE
+	ja	plan_bad_idemstore
+	cmp	eax,ID_MIN_SIZE
+	jae	.ids_pow
+	mov	eax,ID_MIN_SIZE
+.ids_pow:
+	call	.pow2
+	mov	[g_plan_idsize],eax
+@@:
+	mov	eax,[g_plan_idkeys]
+	mov	ecx,[g_plan_idsize]
+	imul	rax,rcx
+	mov	rcx,ID_MAX_ALL
+	cmp	rax,rcx
+	ja	plan_bad_idemstore
+	jmp	.advance
+; eax: the power of two at or above it
+.pow2:
+	dec	eax
+	bsr	ecx,eax
+	inc	ecx
+	mov	eax,1
+	shl	eax,cl
+	ret
 .drain:
 	mov	rdi,rbx
 	lea	rsi,[str_key_delay]
@@ -2421,6 +2481,13 @@ plan_bad_hedge:
 plan_bad_mirror:
 	call	log_begin
 	out_lit 'mirror: pool NAME, of a pool that exists, then N% from 1 to 100 if not all'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
+
+plan_bad_idemstore:
+	call	log_begin
+	out_lit 'idempotency_store: keys= from 1024 to 67108864, size= from 8KiB to 16MiB, keys times size at most 1TiB'
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process

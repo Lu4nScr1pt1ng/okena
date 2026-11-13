@@ -166,6 +166,7 @@ keysdef k_vrrp, 'vrid', T_ANY, 'priority', T_ANY, 'address', T_ANY, 'advert', T_
 keysdef k_cdisk, 'size', T_SIZE
 keysdef k_tracing, 'sample', T_PERCENT, 'trust', T_ANY
 keysdef k_drain, 'delay', T_DURATION, 'timeout', T_DURATION
+keysdef k_idemstore, 'keys', T_COUNT, 'size', T_SIZE
 keysdef k_signed, 'key', T_ANY, 'key2', T_ANY
 keysdef k_hs_budget, 'wait', T_DURATION
 keysdef k_auth, 'header', T_ANY, 'keys', T_ANY, 'users', T_ANY, 'realm', T_ANY, 'identity', T_ANY, 'forward', T_ANY, 'pool', T_ANY, 'path', T_ANY, 'copy', T_ANY, 'cache', T_DURATION, 'timeout', T_DURATION
@@ -253,6 +254,7 @@ dirdef DIR_TICKET_KEYS, 'ticket_keys', M_OKENA, 0,       F_UNIQUE, 1, 1, T_ANY, 
 dirdef DIR_QUIC_SID, 'quic_server_id', M_OKENA, 0,      F_UNIQUE or F_KEYS_BLOCK, 1, 1, T_NAME, T_NONE, k_quic_sid
 dirdef DIR_QUIC_CC, 'quic_cc',     M_OKENA,   0,           F_UNIQUE, 1, 1, e_quic_cc, T_NONE, 0
 dirdef DIR_DRAIN, 'drain',       M_OKENA,   0,           F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_drain
+dirdef DIR_IDEMSTORE, 'idempotency_store', M_OKENA, 0, F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_idemstore
 dirdef DIR_HS_BUDGET, 'handshake_budget', M_OKENA, 0,    F_UNIQUE or F_KEYS_BLOCK, 1, 1, T_DURATION, T_NONE, k_hs_budget
 dirdef DIR_UDP, 'udp',         M_TOP,     CTX_UDP,     F_BLOCK_REQ, 1, 256, T_LISTEN, T_LISTEN, 0
 dirdef DIR_RESPONSES, 'responses', M_UDP,   0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, 0

@@ -18,7 +18,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 BIN = HERE.parents[1] / "build" / "okena"
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
 BASE = 6000 + os.getpid() % 90 * 6 + (3 if ENGINE == "epoll" else 0)
-BACK, LST = BASE, BASE + 1
+BACK, LST, LST2 = BASE, BASE + 1, BASE + 2
 fails = 0
 runs = {}
 lock = threading.Lock()
@@ -53,6 +53,8 @@ class H(http.server.BaseHTTPRequestHandler):
         b = f"run {k} of {p} for {self.headers.get('x-user-id', '-')}".encode()
         if p.endswith("/big"):
             b = b"x" * 100000
+        if p.endswith("/huge"):
+            b = bytes(range(256)) * 2400
         if p.endswith("/chunked"):
             self.send_response(st)
             self.send_header("Transfer-Encoding", "chunked")
@@ -85,8 +87,8 @@ class S(http.server.ThreadingHTTPServer):
         pass
 
 
-def post(path, key=None, method="POST", body=b"x", **hdr):
-    c = http.client.HTTPConnection("127.0.0.1", LST, timeout=8)
+def post(path, key=None, method="POST", body=b"x", port=None, **hdr):
+    c = http.client.HTTPConnection("127.0.0.1", port or LST, timeout=8)
     h = {k.replace("_", "-"): v for k, v in hdr.items()}
     if key:
         h["Idempotency-Key"] = key
@@ -243,11 +245,40 @@ def main():
     finally:
         p.terminate()
         p.wait(10)
+    # a store of one's own: 1024 keys of 1 MiB
+    conf.write_text(f"""okena {{ drain delay=0s timeout=1s; workers 2; io_engine {ENGINE}; idempotency_store keys=1000 size=1MiB }}
+http 127.0.0.1:{LST2} {{ route /* {{ idempotency header=idempotency-key; to 127.0.0.1:{BACK} }} }}
+""")
+    p = subprocess.Popen([str(BIN), "-c", str(conf)], stderr=open(log, "w"))
+    try:
+        for i in range(50):
+            try:
+                socket.create_connection(("127.0.0.1", LST2), 1).close()
+                break
+            except OSError:
+                time.sleep(0.1)
+        a = post("/s/huge", "h1", port=LST2)
+        r = post("/s/huge", "h1", port=LST2)
+        check("size=1MiB: a 600 KB answer kept and replayed", a[0] == 201 and len(a[1]) == 614400 and r[1] == a[1]
+              and r[2].get("idempotency-replayed") == "true" and runs["/s/huge"] == 1, (r[0], len(r[1]), runs["/s/huge"]))
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(16) as ex:
+            codes = list(ex.map(lambda i: post(f"/s/f{i}", f"f{i}", port=LST2)[0], range(1100)))
+        n = codes.count(201)
+        check(f"keys=1000 (1024): that many held, then 503 rather than a key let go ({n} held)",
+              900 <= n <= 1023 and codes.count(503) == 1100 - n, (n, codes.count(503)))
+    finally:
+        p.terminate()
+        p.wait(10)
     c = tmp / "bad.conf"
     for what, line in (("no header", "idempotency ttl=1s"), ("no time", "idempotency header=x ttl=0s")):
         c.write_text(f"pool b {{ server 127.0.0.1:1 }}\nhttp 127.0.0.1:{LST} {{ route /* {{ {line}; to pool b }} }}\n")
         q = subprocess.run(["timeout", "5", str(BIN), "-c", str(c)], capture_output=True, text=True, timeout=8)
         check(f"{what}: refused", q.returncode not in (0, 124) and q.stderr != "", f"{q.returncode} {q.stderr[-140:]}")
+    for what, line in (("keys past 64M", "keys=100000000"), ("size past 16 MiB", "size=32MiB"), ("over 1 TiB", "keys=67108864 size=1MiB")):
+        c.write_text(f"okena {{ idempotency_store {line} }}\nhttp 127.0.0.1:{LST} {{ route /* {{ respond 200 }} }}\n")
+        q = subprocess.run(["timeout", "5", str(BIN), "-c", str(c)], capture_output=True, text=True, timeout=8)
+        check(f"idempotency_store {what}: refused", q.returncode not in (0, 124) and "idempotency_store" in q.stderr, f"{q.returncode} {q.stderr[-140:]}")
     print(f"idem {ENGINE}: " + ("all passed" if not fails else f"{fails} failed"))
     sys.exit(1 if fails else 0)
 

@@ -1004,8 +1004,24 @@ true`. While the first is running, a repeat gets 409; the same key with a
 different method, target, length or type gets 422. The key is scoped by route
 and authenticated user. After a 502, 503, 504 or a failed connect the key is
 released, so a repeat reaches the backend again (the work may not have been
-done). Answers up to 48 KiB can be replayed; for a larger one, repeats get
-409 until `ttl`. Keys live in memory and survive reloads, not restarts.
+done). Keys live in memory shared by the workers and survive reloads, not
+restarts.
+
+The store is sized in the `okena` block:
+
+```nginx
+okena { idempotency_store keys=4000000 size=16KiB }
+```
+
+`keys=` (65536 by default, up to 64M, rounded up to a power of two) is how
+many keys are held at once: plan for your non-safe requests per `ttl`, with
+room. `size=` (64 KiB by default, 8 KiB to 16 MiB) is the room for one answer,
+head and body; a larger answer is not kept, and its repeats get 409 until
+`ttl`. The address space is reserved at start (`keys` times `size`, at most
+1 TiB) and memory is used only as answers are written. When the store has no
+room left for a new key, okena answers 503 rather than drop a key before its
+`ttl`. It is sized once: a reload keeps it (and its size); a restart or
+`okena upgrade` makes it anew, empty.
 
 ### Signed URLs
 
@@ -1914,7 +1930,7 @@ it leaves the pool just as fast.
 | error page | 1 MiB (64 MiB in all) |
 | `respond` body | 1 MiB (past 4 KiB, sent from the loaded config with no copy) |
 | rate limit keys | about 256k, kept across reloads |
-| idempotency keys | 4096 |
+| idempotency keys | `idempotency_store`: 65536 by default, up to 64M; answers up to 16 MiB |
 | cache purge rules | 1024; past that, older rules widen into "everything fetched before" |
 | include depth | 16 |
 | workers | 1024 |

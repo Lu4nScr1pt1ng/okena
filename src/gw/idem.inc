@@ -5,12 +5,17 @@
 ; no allocator to leave half done, and nothing a worker that dies can hold but its
 ; own slot, until `lock` runs out. It outlives a reload.
 ;
+; `okena { idempotency keys=N size=S }` sizes it: N slots (a power of two, 65536
+; by default) of S bytes (64 KiB by default) each, a head and a body; the address
+; space is taken at once (MAP_NORESERVE), memory only as slots are written. The
+; size is the first plan's: a reload keeps the table (an upgrade makes it anew).
+;
 ; A slot is claimed with one compare-and-swap of a word that is the key's hash and
 ; a state together, so of two workers with one key, one gets it. The key is taken with
 ; the route and who `auth` proved: someone else's key is no way to their answers.
 ;
 ; While the first runs, others get a 409. A key used with another method, target,
-; length or type gets a 422; the body is not compared. An answer past ID_BMAX cannot be
+; length or type gets a 422; the body is not compared. An answer past its slot cannot be
 ; replayed: a retry gets a 409 and not a second run.
 ;
 ; The key is let go only when the backend surely did not do the work: no connection,
@@ -20,8 +25,12 @@
 SF_IDEMF	:= 134217728			; S_FLAGS: its answer goes into a slot
 SF_IDEMS	:= 268435456			; its answer comes from one
 
-ID_SLOTS	:= 4096
-ID_SIZE		:= 65536
+ID_DEF_KEYS	:= 65536
+ID_DEF_SIZE	:= 65536
+ID_MIN_SIZE	:= 8192
+ID_MAX_SIZE	:= 16 shl 20
+ID_MAX_KEYS	:= 1 shl 26
+ID_MAX_ALL	:= 1 shl 40			; the address space, at most
 ID_PROBE	:= 64
 ID_GRACE	:= 300000000			; µs an expired slot stays, for who still reads it
 ID_WORD		:= 0				; q: the key's hash | IS_*, 0 free
@@ -31,10 +40,9 @@ ID_EXP		:= 16				; q: µs, 0 being set
 ID_HLEN		:= 24				; d
 ID_BLEN		:= 28				; d
 ID_FP		:= 32				; 32: what the request was
-ID_HEAD		:= 64
-ID_BODY		:= 16384
-ID_HMAX		:= ID_BODY - ID_HEAD - 64
-ID_BMAX		:= ID_SIZE - ID_BODY
+ID_BOFF		:= 64				; d: where its body begins (past the head and
+						; room for its Content-Length)
+ID_HEAD		:= 80
 IS_CLAIM	:= 1
 IS_DONE		:= 2
 IS_BIG		:= 3				; done, and not kept
@@ -52,6 +60,12 @@ IF_OVER		:= 2				; its body did not fit, or has no sure end
 bss
 	align 8
 	g_idem_tbl	dq ?
+	g_id_size	dq ?			; the table's: a slot's bytes
+	g_id_mask	dd ?			; slots - 1
+	g_id_shift	dd ?			; log2 of g_id_size
+	g_id_hmax	dd ?			; a head's room
+	g_plan_idkeys	dd ?
+	g_plan_idsize	dd ?
 	g_idems:	rb IC_SIZE * MAX_IDEMS
 	g_plan_idems	dd ?
 	g_id_dig:	rb 32
@@ -64,8 +78,23 @@ idem_table_init:
 	je	.none
 	cmp	qword [g_idem_tbl],0
 	jne	.none
+	mov	eax,[g_plan_idkeys]
+	dec	eax
+	mov	[g_id_mask],eax
+	mov	eax,[g_plan_idsize]
+	mov	[g_id_size],rax
+	bsf	ecx,eax
+	mov	[g_id_shift],ecx
+	shr	eax,1				; a head: half of it, at most 16 KiB
+	cmp	eax,16384
+	jbe	@f
+	mov	eax,16384
+@@:
+	sub	eax,ID_HEAD + 64
+	mov	[g_id_hmax],eax
+	mov	esi,[g_plan_idkeys]
+	imul	rsi,[g_id_size]
 	xor	edi,edi
-	mov	esi,ID_SLOTS * ID_SIZE
 	mov	edx,PROT_READ or PROT_WRITE
 	mov	r10d,MAP_SHARED or MAP_ANONYMOUS or MAP_NORESERVE
 	mov	r8,-1
@@ -78,12 +107,22 @@ idem_table_init:
 .none:
 	ret
 
-; eax = a slot: rax = it
+; eax = a slot: rax = it. Keeps all but rax.
 macro id_ptr
-	shl	rax,16				; ID_SIZE
+	imul	rax,[g_id_size]
 	add	rax,[g_idem_tbl]
 end macro
-assert ID_SIZE = 65536
+
+; rcx = a slot's address: ecx = its number. Keeps all but rcx.
+macro id_index
+	sub	rcx,[g_idem_tbl]
+	push	rax
+	mov	rax,rcx
+	mov	ecx,[g_id_shift]
+	shr	rax,cl
+	mov	ecx,eax
+	pop	rax
+end macro
 
 ; g_hm, r15, r12 = its `idempotency`: g_id_dig the key, g_id_fp the request's print
 idem_keys:
@@ -205,7 +244,7 @@ idem_check:
 	shr	r8,3
 .probe:
 	mov	eax,r8d
-	and	eax,ID_SLOTS - 1
+	and	eax,[g_id_mask]
 	id_ptr
 	mov	r9,rax
 .again:
@@ -292,8 +331,7 @@ idem_check:
 	mov	dword [r9+ID_BLEN],0
 	mov	[r9+ID_EXP],rax
 	mov	rcx,r9
-	sub	rcx,[g_idem_tbl]
-	shr	rcx,16
+	id_index
 	mov	rdx,[r15+H_BUF]
 	mov	[rdx+HB_CE],ecx
 	mov	eax,[r9+ID_GEN]
@@ -331,8 +369,7 @@ idem_replay:
 	mov	r12,rdi
 	mov	rax,[r15+H_BUF]
 	mov	rcx,r12
-	sub	rcx,[g_idem_tbl]
-	shr	rcx,16
+	id_index
 	mov	[rax+HB_CE],ecx
 	mov	ecx,[r12+ID_GEN]
 	mov	[rax+HB_CW],ecx
@@ -380,7 +417,9 @@ idem_recv:
 	sub	[r8+HB_CLEFT],ecx
 	mov	edx,[r8+HB_CPOS]
 	add	[r8+HB_CPOS],ecx
-	lea	rsi,[rax+ID_BODY+rdx]
+	mov	r9d,[rax+ID_BOFF]
+	add	rdx,r9
+	lea	rsi,[rax+rdx]
 	mov	eax,ecx
 	rep	movsb
 	jmp	.done
@@ -447,7 +486,8 @@ idem_head:
 	mov	eax,[r14+HF_NLEN]
 	add	eax,[r14+HF_VLEN]
 	lea	rcx,[rdi+rax+4]
-	lea	rax,[r12+ID_HEAD+ID_HMAX]
+	mov	eax,[g_id_hmax]
+	lea	rax,[r12+ID_HEAD+rax]
 	cmp	rcx,rax
 	ja	.too_big
 	mov	rsi,[r14+HF_NAME]
@@ -468,6 +508,9 @@ idem_head:
 	lea	rax,[r12+ID_HEAD]
 	sub	rdi,rax
 	mov	[r12+ID_HLEN],edi
+	lea	eax,[rdi+ID_HEAD+64+7]		; the body: past it, and its Content-Length
+	and	eax,not 7
+	mov	[r12+ID_BOFF],eax
 	; how much, to know its end when it passes: the client may ask again as soon as it
 	; has the last byte, ahead of this exchange's end
 	mov	r8,[r15+H_BUF]
@@ -512,10 +555,13 @@ idem_tee:
 	je	@f
 	sub	[r8+HB_CLEFT],ecx
 @@:
-	cmp	edi,ID_BMAX
+	mov	r9d,[rax+ID_BOFF]
+	lea	r10,[rdi+r9]
+	cmp	r10,[g_id_size]
 	ja	.over
 	mov	[r8+HB_CPOS],edi
-	lea	rdi,[rax+ID_BODY+rdx]
+	add	rdx,r9
+	lea	rdi,[rax+rdx]
 	rep	movsb
 	jmp	.end
 .over:
