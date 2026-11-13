@@ -168,6 +168,7 @@ end bss
 ; Worker: the session states and buffers (address space only; pages
 ; come with use). eax = 0 or -errno.
 http_worker_init:
+	call	fcgi_worker_init
 	mov	ecx,H_SHIFT
 	call	.reserve
 	cmp	rax,-4096
@@ -2106,18 +2107,6 @@ http_write_request_head:
 	pop	rbx
 	ret
 
-cstring hn_x_forwarded_for, 'x-forwarded-for',0
-cstring hn_accept_ranges, 'accept-ranges',0
-cstring hn_etag, 'etag',0
-cstring hn_x_forwarded_proto, 'x-forwarded-proto',0
-cstring hn_x_forwarded_host, 'x-forwarded-host',0
-cstring hn_x_real_ip, 'x-real-ip',0
-cstring hn_true_client_ip, 'true-client-ip',0
-cstring hn_cf_connecting_ip, 'cf-connecting-ip',0
-cstring hn_x_original_url, 'x-original-url',0
-cstring hn_x_rewrite_url, 'x-rewrite-url',0
-cstring hn_forwarded, 'forwarded',0
-cstring hn_x_request_id, 'x-request-id',0
 
 ; Request ids: a random 64-bit base per worker plus a counter, as 16 hex
 ; digits. No system call, unique in practice across workers and
@@ -5255,7 +5244,6 @@ http_exchange_done:
 
 ; r15 = record, g_hm = the request: HX_GRPC when its content-type is
 ; application/grpc (or application/grpc+proto, ...). Keeps rbx, r12-r15.
-cstring hn_content_type, 'content-type',0
 http_grpc_mark:
 	push	rbx
 	push	r12

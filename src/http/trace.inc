@@ -27,7 +27,6 @@ bss
 	g_trc_rng	dq ?
 end bss
 
-cstring hn_traceparent, 'traceparent',0
 
 ; r15 = record, rcx = its listener, g_hm = the request: its trace, or none.
 ; Keeps rbx and r12-r15.

@@ -143,9 +143,12 @@ files_init:
 ; r15 = record, H_ACT: eax = 1 the route has files and it is taken care of.
 ; Keeps rbx, r12-r15.
 files_check:
+	cmp	dword [g_fcgi_any],0
+	je	@f				; (no FastCGI: its page left alone)
 	mov	rax,[r15+H_BUF]			; (fastcgi.inc: this request's, from here)
 	mov	qword [rax+HB_FCGI],0
 	mov	dword [rax+HB_FC+FC_SET],0
+@@:
 	mov	eax,[r15+H_ACT]
 	test	eax,eax
 	jz	.no

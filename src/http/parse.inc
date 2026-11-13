@@ -39,6 +39,7 @@ HF_NLEN		:= 8		; d
 HF_VLEN		:= 12		; d
 HF_VALUE	:= 16		; q
 HF_FLAGS	:= 24		; d: HFF_*
+HF_ID		:= 28		; b: the name's id (hnames below), HID_NONE for others
 HF_SIZE		:= 32
 
 HFF_HOP		:= 1		; hop-by-hop: not forwarded
@@ -412,6 +413,7 @@ hm_fields:
 	sub	eax,r15d
 	jz	.bad
 	mov	[r14+HF_NLEN],eax
+	call	hf_classify
 	inc	ecx
 	; value: leading OWS skipped
 @@:
@@ -476,9 +478,58 @@ hm_fields:
 
 ; ------------------------------------------------------- field meaning
 
+; r14 = a field whose name and length are set: its HF_ID. Keeps all but rax,
+; rdx, rsi, rdi, r8.
+hf_classify:
+	mov	byte [r14+HF_ID],HID_NONE
+	mov	r8d,[r14+HF_NLEN]
+	cmp	r8d,HNAME_MAXLEN
+	ja	.out
+	mov	rsi,[r14+HF_NAME]
+	movzx	eax,byte [rsi]
+	or	eax,0x20
+	imul	eax,eax,14
+	movzx	edx,byte [rsi+r8-1]
+	or	edx,0x20
+	add	eax,edx
+	lea	eax,[rax+r8*2]
+	and	eax,127
+	movzx	eax,byte [hname_slot+rax]
+	test	eax,eax
+	jz	.out
+	cmp	r8b,[hname_len+rax]
+	jne	.out
+	mov	rdi,[hname_ptr+rax*8]
+	mov	[r14+HF_ID],al			; (if the text agrees)
+	xor	edx,edx
+.byte:
+	movzx	eax,byte [rsi+rdx]
+	or	al,0x20				; (exact: the parser let only tchars in)
+	cmp	al,[rdi+rdx]
+	jne	.none
+	inc	edx
+	cmp	edx,r8d
+	jb	.byte
+	ret
+.none:
+	mov	byte [r14+HF_ID],HID_NONE
+.out:
+	ret
+
 ; rdi = field, rsi = lowercase name (NUL-terminated). ZF when it is that
-; field (names are case-insensitive).
+; field (names are case-insensitive). A name of hnames: its id against the
+; field's, a byte.
 hf_is:
+	cmp	rsi,hnames_lo
+	jb	.text
+	cmp	rsi,hnames_hi
+	jae	.text
+	movzx	eax,byte [rsi-1]
+	cmp	al,[rdi+HF_ID]
+	jne	.no
+	xor	eax,eax
+	ret
+.text:
 	mov	ecx,[rdi+HF_NLEN]
 	mov	rdx,[rdi+HF_NAME]
 	xor	r8d,r8d
@@ -532,23 +583,141 @@ token_is:
 	or	eax,1
 	ret
 
-cstring hn_host, 'host',0
-cstring hn_content_length, 'content-length',0
-cstring hn_transfer_encoding, 'transfer-encoding',0
-cstring hn_connection, 'connection',0
-cstring hn_keep_alive, 'keep-alive',0
-cstring hn_upgrade, 'upgrade',0
-cstring hn_te, 'te',0
-cstring hn_trailer, 'trailer',0
-cstring hn_proxy_connection, 'proxy-connection',0
-cstring hn_proxy_authorization, 'proxy-authorization',0
-cstring hn_proxy_authenticate, 'proxy-authenticate',0
-cstring hn_expect, 'expect',0
 cstring tk_chunked, 'chunked',0
 cstring tk_close, 'close',0
 cstring tk_keep_alive, 'keep-alive',0
 cstring tk_upgrade, 'upgrade',0
 cstring tk_100_continue, '100-continue',0
+
+
+; Field names okena compares (hf_is), each with an id in the byte before it;
+; hm_fields gives every parsed field the id of its name (HF_ID, HID_NONE for
+; the others), so hf_is with one of these names compares a byte instead of
+; the text. The ids come from a perfect hash of the length and the first and
+; last letters: (length * 2 + first * 14 + last) & 127.
+HID_NONE	:= 0xFF
+HNAME_MAXLEN	:= 19
+rodata
+	hnames_lo:
+	db 1
+	hn_host = $
+	db 'host',0
+	hn_host.len = $ - hn_host
+	db 2
+	hn_content_length = $
+	db 'content-length',0
+	hn_content_length.len = $ - hn_content_length
+	db 3
+	hn_transfer_encoding = $
+	db 'transfer-encoding',0
+	hn_transfer_encoding.len = $ - hn_transfer_encoding
+	db 4
+	hn_connection = $
+	db 'connection',0
+	hn_connection.len = $ - hn_connection
+	db 5
+	hn_keep_alive = $
+	db 'keep-alive',0
+	hn_keep_alive.len = $ - hn_keep_alive
+	db 6
+	hn_upgrade = $
+	db 'upgrade',0
+	hn_upgrade.len = $ - hn_upgrade
+	db 7
+	hn_te = $
+	db 'te',0
+	hn_te.len = $ - hn_te
+	db 8
+	hn_trailer = $
+	db 'trailer',0
+	hn_trailer.len = $ - hn_trailer
+	db 9
+	hn_proxy_connection = $
+	db 'proxy-connection',0
+	hn_proxy_connection.len = $ - hn_proxy_connection
+	db 10
+	hn_proxy_authorization = $
+	db 'proxy-authorization',0
+	hn_proxy_authorization.len = $ - hn_proxy_authorization
+	db 11
+	hn_proxy_authenticate = $
+	db 'proxy-authenticate',0
+	hn_proxy_authenticate.len = $ - hn_proxy_authenticate
+	db 12
+	hn_expect = $
+	db 'expect',0
+	hn_expect.len = $ - hn_expect
+	db 13
+	hn_x_forwarded_for = $
+	db 'x-forwarded-for',0
+	hn_x_forwarded_for.len = $ - hn_x_forwarded_for
+	db 14
+	hn_accept_ranges = $
+	db 'accept-ranges',0
+	hn_accept_ranges.len = $ - hn_accept_ranges
+	db 15
+	hn_etag = $
+	db 'etag',0
+	hn_etag.len = $ - hn_etag
+	db 16
+	hn_x_forwarded_proto = $
+	db 'x-forwarded-proto',0
+	hn_x_forwarded_proto.len = $ - hn_x_forwarded_proto
+	db 17
+	hn_x_forwarded_host = $
+	db 'x-forwarded-host',0
+	hn_x_forwarded_host.len = $ - hn_x_forwarded_host
+	db 18
+	hn_x_real_ip = $
+	db 'x-real-ip',0
+	hn_x_real_ip.len = $ - hn_x_real_ip
+	db 19
+	hn_true_client_ip = $
+	db 'true-client-ip',0
+	hn_true_client_ip.len = $ - hn_true_client_ip
+	db 20
+	hn_cf_connecting_ip = $
+	db 'cf-connecting-ip',0
+	hn_cf_connecting_ip.len = $ - hn_cf_connecting_ip
+	db 21
+	hn_x_original_url = $
+	db 'x-original-url',0
+	hn_x_original_url.len = $ - hn_x_original_url
+	db 22
+	hn_x_rewrite_url = $
+	db 'x-rewrite-url',0
+	hn_x_rewrite_url.len = $ - hn_x_rewrite_url
+	db 23
+	hn_forwarded = $
+	db 'forwarded',0
+	hn_forwarded.len = $ - hn_forwarded
+	db 24
+	hn_x_request_id = $
+	db 'x-request-id',0
+	hn_x_request_id.len = $ - hn_x_request_id
+	db 25
+	hn_content_type = $
+	db 'content-type',0
+	hn_content_type.len = $ - hn_content_type
+	db 26
+	hn_traceparent = $
+	db 'traceparent',0
+	hn_traceparent.len = $ - hn_traceparent
+	hnames_hi:
+	; hash slot -> id (0: none)
+	hname_slot db 0, 0, 0, 0, 0, 0, 12, 0, 0, 0, 23, 0, 24, 0, 0, 0
+	db 0, 0, 18, 0, 0, 0, 22, 0, 21, 0, 0, 0, 0, 0, 0, 0
+	db 13, 16, 0, 0, 17, 0, 0, 0, 0, 11, 0, 0, 1, 0, 9, 0
+	db 0, 0, 0, 0, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+	db 0, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+	db 0, 0, 0, 5, 0, 0, 0, 0, 8, 6, 0, 14, 0, 0, 0, 0
+	db 0, 3, 26, 0, 19, 0, 0, 25, 0, 0, 0, 0, 4, 0, 2, 0
+	db 0, 0, 0, 0, 0, 15, 0, 0, 0, 0, 20, 0, 0, 0, 0, 0
+	; id -> its name and length
+	align 8
+	hname_ptr dq 0, hn_host, hn_content_length, hn_transfer_encoding, hn_connection, hn_keep_alive, hn_upgrade, hn_te, hn_trailer, hn_proxy_connection, hn_proxy_authorization, hn_proxy_authenticate, hn_expect, hn_x_forwarded_for, hn_accept_ranges, hn_etag, hn_x_forwarded_proto, hn_x_forwarded_host, hn_x_real_ip, hn_true_client_ip, hn_cf_connecting_ip, hn_x_original_url, hn_x_rewrite_url, hn_forwarded, hn_x_request_id, hn_content_type, hn_traceparent
+	hname_len db 0, 4, 14, 17, 10, 10, 7, 2, 7, 16, 19, 18, 6, 15, 13, 4, 17, 16, 9, 14, 16, 14, 13, 9, 12, 12, 11
+end rodata
 
 ; Meaning of the fields common to requests and responses: hop-by-hop
 ; fields, Content-Length, Transfer-Encoding, Connection, Upgrade.

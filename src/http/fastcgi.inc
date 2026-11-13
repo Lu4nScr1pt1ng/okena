@@ -73,7 +73,9 @@ FCGI_END	:= 3
 ; is its generation + 1: a buffer another session had says nothing). Keeps all
 ; but rax and r8.
 fcgi_active:
-	mov	eax,ebx
+	cmp	dword [g_fcgi_any],0
+	je	.no				; (no FastCGI pool: not even a look, its
+	mov	eax,ebx				; tag sits 128 KiB into the buffers)
 	shl	rax,H_SHIFT
 	add	rax,[g_http_base]
 	mov	rax,[rax+H_BUF]
@@ -93,6 +95,25 @@ fcgi_active:
 	ret
 .no:
 	xor	eax,eax
+	ret
+
+bss
+	g_fcgi_any	dd ?		; the plan has a `protocol fastcgi` pool
+end bss
+
+; Worker start: g_fcgi_any.
+fcgi_worker_init:
+	xor	eax,eax
+	xor	ecx,ecx
+.pool:
+	cmp	ecx,[g_plan_pools]
+	jae	.done
+	imul	rdx,rcx,PL_SIZE
+	or	eax,[g_pools+rdx+PL_FCGI]
+	inc	ecx
+	jmp	.pool
+.done:
+	mov	[g_fcgi_any],eax
 	ret
 
 ; In http_route, a request whose pool is `protocol fastcgi`: HB_FCGI. eax = the
