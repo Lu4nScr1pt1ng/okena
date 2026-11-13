@@ -884,6 +884,9 @@ for new flows. On a NIC: not yet (none here).
   a reload keeps an unchanged addon's process. Python SDK (sdk/python).
 * SDKs: Python, C, Go, Rust (sdk/), each tested against okena in
   tests/gateway/addon.py. Done 2026-11-13.
+* Reference WAF: addons/coraza, Coraza 3.8 with CRS 4.25 built in, blocking or
+  detection only (tests/gateway/waf.py). Done 2026-11-13; request bodies wait
+  for the request_body phase.
 * SDKs (C, Rust, Go, Python); a reference WAF addon on Coraza.
 * proxy-wasm plugins (the ABI Envoy, nginx and Traefik run), in a process of
   their own like the other addons.

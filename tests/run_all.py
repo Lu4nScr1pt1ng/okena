@@ -70,6 +70,8 @@ SUITES = [
     ("canonical io_uring", ["tests/httpproxy/canonical.py", "io_uring"]),
     ("canonical epoll", ["tests/httpproxy/canonical.py", "epoll"]),
     ("addon io_uring", ["tests/gateway/addon.py", "io_uring"]),
+    ("waf io_uring", ["tests/gateway/waf.py", "io_uring"]),
+    ("waf epoll", ["tests/gateway/waf.py", "epoll"]),
     ("addon epoll", ["tests/gateway/addon.py", "epoll"]),
     ("respond io_uring", ["tests/httpproxy/respond.py", "io_uring"]),
     ("respond epoll", ["tests/httpproxy/respond.py", "epoll"]),

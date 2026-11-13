@@ -76,7 +76,13 @@ build/addon-hello-rust: $(wildcard sdk/rust/src/*.rs sdk/rust/Cargo.toml sdk/rus
 	@mkdir -p build
 	-command -v cargo >/dev/null && cd sdk/rust && cargo build -q --release --example hello && cp target/release/examples/hello ../../$@
 
-test: $(BIN) $(HTTPH) $(KAT) $(TLSH) $(TLSC) $(TLS12S) $(TLSC12) $(ADDON_EX)
+# the reference WAF addon (addons/coraza): its modules must be in Go's cache
+# (go mod download in addons/coraza, once, with a network)
+build/coraza-okena: $(wildcard addons/coraza/*.go addons/coraza/go.mod addons/coraza/go.sum sdk/go/*.go)
+	@mkdir -p build
+	-command -v go >/dev/null && cd addons/coraza && GOFLAGS=-mod=mod GOPROXY=off go build -o ../../$@ .
+
+test: $(BIN) $(HTTPH) $(KAT) $(TLSH) $(TLSC) $(TLS12S) $(TLSC12) $(ADDON_EX) build/coraza-okena
 	python3 -I tests/run_all.py
 
 # one after the other, all output shown (slower; for reading a suite's log)

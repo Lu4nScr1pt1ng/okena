@@ -90,6 +90,19 @@ An answer is one of:
 HTTP/1.1, HTTP/2 and HTTP/3 requests all go through the same stage: the addon
 always sees an HTTP/1.1 head.
 
+## SDKs and reference addons
+
+| | |
+|---|---|
+| `sdk/python` | one module, the standard library only |
+| `sdk/c` | one C file and its header, libc only |
+| `sdk/go` | handlers on several goroutines at once (`Options.Workers`) |
+| `sdk/rust` | `std` only |
+| `addons/coraza` | a WAF: Coraza with the OWASP Core Rule Set ([README](../addons/coraza/README.md)) |
+
+Each SDK has a `hello` example that `tests/gateway/addon.py` runs against
+okena; `tests/gateway/waf.py` runs the WAF.
+
 ## The protocol (version 1)
 
 Everything is in one memfd per addon, which the addon maps whole (its size is

@@ -1,0 +1,37 @@
+# coraza-okena
+
+A web application firewall addon for okena: [Coraza](https://coraza.io) with
+the [OWASP Core Rule Set](https://coreruleset.org) built in.
+
+```sh
+cd addons/coraza && go build -o /usr/local/bin/coraza-okena .
+```
+
+```nginx
+addon waf {
+    run /usr/local/bin/coraza-okena -paranoia 1
+    timeout 50ms
+    on_error allow          # a WAF that cannot answer lets traffic through; deny to fail closed
+}
+route /* { addon waf; to pool app }
+```
+
+Each request's line, query arguments and fields go through the rules (CRS
+phases 1 and 2, everything that can be judged before a body). A request the
+rules refuse gets their status, 403 unless a rule says otherwise; the matched
+rules are logged to okena's log:
+
+```
+coraza-okena: GET /item?id=1'%20OR%20'1'='1 from 203.0.113.9: deny (rules 942100,949110)
+```
+
+| Flag | |
+|---|---|
+| `-paranoia N` | the CRS paranoia level, 1 (default) to 4 |
+| `-detect` | log only, block nothing; the backend gets the matched rules' ids in `x-waf-rules` |
+| `-rules FILE` | SecLang directives of your own, after the CRS's (exclusions, custom rules) |
+| `-crs=false` | your rules only |
+| `-workers N` | requests judged at once (default: the CPUs) |
+
+Request bodies are not inspected yet (okena calls addons at `request_headers`
+only so far).
