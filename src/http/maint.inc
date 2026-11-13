@@ -49,6 +49,7 @@ errpage_plan_init:
 	mov	dword [g_eps+EP_HI],0
 	mov	dword [g_eps+EP_OFF],0
 	mov	dword [g_eps+EP_LEN],ep_maint_text.len
+	mov	dword [g_eps+EP_SPLIT],ep_maint_text.len
 	mov	dword [g_eps+EP_TYPE],2
 	mov	dword [g_plan_eps],1
 	ret

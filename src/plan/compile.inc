@@ -139,7 +139,8 @@ RA_TRYC		:= 216		; d: `timeout try=`: its class (g_try_secs) + 1, 0 = the listen
 RA_TOTAL	:= 220		; d: `timeout total=`: seconds after which no retry starts, 0 none
 RA_SIZE		:= 224
 MAX_TRYC	:= 32		; distinct try= values
-RESPOND_BODY_MAX := 4096
+RESPOND_BODY_MAX := 1 shl 20	; `respond CODE BODY`
+RESPOND_INLINE	:= 4096		; up to this, in the head's write
 MAX_ACTS	:= MAX_ROUTES
 HD_KIND		:= 0		; d: HOP_SET, HOP_ADD, HOP_DROP
 HD_PREFIX	:= 4		; d: 1 when the name ends with * (drop)

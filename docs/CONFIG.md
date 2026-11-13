@@ -1100,7 +1100,10 @@ maintenance file=/srv/maint.html retry=2m allow=10.0.0.0/8 except=/healthz
 your page; with `backend`,
 the backend's errors too (the status stays, its body never reaches the
 client). `{status}`, `{reason}` and `{request_id}` are filled in. Pages are
-read with the config, up to 16 KiB.
+read with the config, up to 1 MiB each (64 MiB in all). A page up to 8 KiB is
+written with the head; a larger one has its placeholders filled in its first
+8 KiB (a placeholder past that is refused) and the rest goes out straight
+from the loaded page, with no copy.
 
 The `maintenance` line, on an `http` listener, only describes the page: `retry=` for its
 `Retry-After` (30s by default), `allow=` clients that are still served (your
@@ -1905,8 +1908,8 @@ it leaves the pool just as fast.
 | `retry` | 0 to 5 |
 | `source` addresses | 256 per pool, 65536 in all |
 | ACME certificates | 16 per instance (each `acme` line is one, up to 15 names; with `auto`, each name is one) |
-| error page | 16 KiB |
-| `respond` body | 4 KiB |
+| error page | 1 MiB (64 MiB in all) |
+| `respond` body | 1 MiB (past 4 KiB, sent from the loaded config with no copy) |
 | rate limit keys | about 256k, kept across reloads |
 | idempotency keys | 4096 |
 | cache purge rules | 1024; past that, older rules widen into "everything fetched before" |

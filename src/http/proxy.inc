@@ -106,6 +106,8 @@ HS_TUNNEL_UP	:= 11		; 101 sent: bytes the backend sent early go to the client
 HS_TUNNEL_IN	:= 12		; then bytes the client sent early go to the backend
 HS_INTERIM_SEND	:= 13		; writing a 1xx (103 Early Hints...) before the final response
 HS_SELF_SEND	:= 14		; writing okena's own answer (a redirect), connection kept
+HS_SELF_TAIL	:= 52		; its head out, a body from the plan next (HB_TAIL says which)
+HB_TAIL		:= HB_OUT + H_OUT_CAP - 16	; q: the bytes, d: how many, d: the state after
 HS_HEDGED	:= 43		; its copy won: what it writes goes through here
 HS_FAULT	:= 42		; held by fault delay=: its head waits in IN, nothing reads
 HS_H2TUN	:= 41		; WebSocket over an HTTP/2 stream (http_h2tun_*)
@@ -2426,6 +2428,8 @@ http_send_plain:
 	je	.interim_sent
 	cmp	edx,HS_SELF_SEND
 	je	.self_sent
+	cmp	edx,HS_SELF_TAIL
+	je	.self_tail
 	cmp	edx,HS_TLS_FLIGHT
 	je	http_tls_flight_sent
 	cmp	edx,HS_TLS_RETRY
@@ -2453,6 +2457,16 @@ http_send_plain:
 	test	ecx,ecx
 	jz	hedge_sent			; (its old backend: nothing to it now)
 	ret
+.self_tail:
+	; okena's own answer, its head out: the body, as the plan holds it (this
+	; worker's plan stays as long as the worker)
+	mov	rax,[r15+H_BUF]
+	mov	rdi,[rax+HB_TAIL]
+	mov	esi,[rax+HB_TAIL+8]
+	mov	edx,[rax+HB_TAIL+12]
+	mov	[r15+H_STATE],edx
+	mov	ecx,SIDE_CLIENT
+	jmp	h_send
 .self_sent:
 	test	dword [r15+H_FLAGS],HX_CLOSE
 	jnz	.error_sent			; logged, then closed
@@ -4520,7 +4534,7 @@ http_redirect:
 	mov	edx,[g_acts+rax+RA_PCOUNT]
 	push	r13
 	mov	r13,[r15+H_BUF]			; (room kept for a respond body)
-	lea	r13,[r13+HB_OUT+H_OUT_CAP-RESPOND_BODY_MAX-512]
+	lea	r13,[r13+HB_OUT+H_OUT_CAP-RESPOND_INLINE-512]
 	call	hdrop_emit
 	pop	r13
 @@:
@@ -4558,21 +4572,33 @@ http_redirect:
 	memit_x 'Connection: close',13,10
 @@:
 	memit_x 13,10
+	mov	edx,HS_SELF_SEND
 	test	dword [r15+H_FLAGS],HX_HEAD
 	jnz	@f				; (HEAD: its length, no body)
 	mov	ecx,[r12+RA_RBLEN]
 	mov	rsi,[r12+RA_RBODY]
+	cmp	ecx,RESPOND_INLINE
+	ja	.tail
 	rep	movsb
 @@:
+.sendit:
 	mov	rsi,[r15+H_BUF]
 	lea	rsi,[rsi+HB_OUT]
 	sub	rdi,rsi
-	mov	dword [r15+H_STATE],HS_SELF_SEND
+	mov	[r15+H_STATE],edx
 	mov	ecx,SIDE_CLIENT
 	xchg	rsi,rdi				; rdi = OUT, esi = its length
 	pop	r13
 	pop	r12
 	jmp	h_send
+.tail:
+	; a large body: sent from the plan, after the head
+	mov	rax,[r15+H_BUF]
+	mov	[rax+HB_TAIL],rsi
+	mov	[rax+HB_TAIL+8],ecx
+	mov	dword [rax+HB_TAIL+12],HS_SELF_SEND
+	mov	edx,HS_SELF_TAIL
+	jmp	.sendit
 ; rdi = out: the Host's name, without its port; only what a name or an
 ; address is made of ([v6] kept whole)
 .host:
@@ -4902,6 +4928,8 @@ http_phase_expired:
 	cmp	eax,HS_ERROR_SEND
 	je	.silent
 	cmp	eax,HS_SELF_SEND
+	je	.silent
+	cmp	eax,HS_SELF_TAIL
 	je	.silent
 	cmp	eax,HS_ADSEND
 	je	.silent

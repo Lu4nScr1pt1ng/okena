@@ -49,6 +49,9 @@ def raw(req, answers=1):
     return d
 
 
+LARGE = "".join(chr(97 + i % 26) for i in range(200000))
+
+
 def main():
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-respond-"))
     conf = tmp / "okena.conf"
@@ -59,6 +62,7 @@ http 127.0.0.1:{L} {{
     route /json {{ respond 201 "{{\\"made\\":true}}" type=application/json }}
     route /empty {{ respond 204 }}
     route /gone {{ respond 410 }}
+    route /large {{ respond 200 "{LARGE}" }}
 }}
 """)
     log = tmp / "log"
@@ -83,6 +87,13 @@ http 127.0.0.1:{L} {{
               and b"Content-Length" not in r, r)
         r = raw(b"GET /gone HTTP/1.1\r\nHost: a\r\n\r\n")
         check("respond 410: as before", r.startswith(b"HTTP/1.1 410 Gone") and b"Content-Length: 0" in r, r)
+        r = raw(b"GET /large HTTP/1.1\r\nHost: a\r\n\r\n")
+        check("a 200 KB body: after the head, whole", r.startswith(b"HTTP/1.1 200 OK") and b"Content-Length: %d\r\n" % len(LARGE) in r
+              and r.endswith(b"\r\n\r\n" + LARGE.encode()), (r[:120], len(r)))
+        r = raw(b"HEAD /large HTTP/1.1\r\nHost: a\r\n\r\n")
+        check("  HEAD: its length, no body", b"Content-Length: %d\r\n" % len(LARGE) in r and r.endswith(b"\r\n\r\n"), r)
+        r = raw(b"GET /large HTTP/1.1\r\nHost: a\r\n\r\nGET /healthz HTTP/1.1\r\nHost: a\r\n\r\n", 2)
+        check("  kept alive: the next request answered after it", r.count(b"HTTP/1.1 200") == 2 and r.endswith(b"ok"), r[-80:])
         r = raw(b"GET /healthz HTTP/1.1\r\nHost: a\r\n\r\nGET /json HTTP/1.1\r\nHost: a\r\n\r\n", 2)
         check("  kept alive: the next request answered on the same connection", r.count(b"HTTP/1.1 20") == 2, r)
         # a body okena does not read, still coming after the answer: the
@@ -112,6 +123,8 @@ http 127.0.0.1:{L} {{
             c = subprocess.run(["curl", "-s", "--http2-prior-knowledge", "-D", "-", f"http://127.0.0.1:{L}/healthz", f"http://127.0.0.1:{L}/json"],
                                capture_output=True, timeout=10)
             o = c.stdout
+            c2 = subprocess.run(["curl", "-q", "-s", "--http2-prior-knowledge", f"http://127.0.0.1:{L}/large"], capture_output=True, timeout=10)
+            check("HTTP/2: the 200 KB body whole", c2.stdout == LARGE.encode(), len(c2.stdout))
             check("HTTP/2: both answered, bodies and types", o.count(b"HTTP/2 20") == 2 and b"ok" in o and b'{"made":true}' in o
                   and b"application/json" in o, o)
     finally:

@@ -88,6 +88,8 @@ def main():
     (tmp / "api.json").write_text('{"error":{status},"reason":"{reason}","id":"{request_id}"}\n')
     (tmp / "nf.txt").write_text("nothing here ({status})\n")
     (tmp / "four.html").write_text("<p>client error {status}</p>\n")
+    large = "<h1>{status}</h1><p>{request_id}</p>" + "z" * 300000 + "the end\n"
+    (tmp / "large.html").write_text(large)
     conf = tmp / "okena.conf"
     good = f"""okena {{ drain delay=0s timeout=1s; workers 2; io_engine {ENGINE} }}
 pool gone {{ server 127.0.0.1:1 }}
@@ -99,6 +101,7 @@ http 127.0.0.1:{LST} {{
     route /gone/* {{ to pool gone }}
     route /web/* {{ errors 4xx backend file={tmp}/four.html; to pool b }}
     route /other/* {{ errors 500 file={tmp}/down.html; to pool b }}
+    route /large/* {{ errors 502 file={tmp}/large.html; to pool gone }}
 }}
 http 127.0.0.1:{TLSL} {{
     tls {{ cert {tmp}/c.pem; key {tmp}/k.pem }}
@@ -142,6 +145,14 @@ http 127.0.0.1:{TLSL} {{
         st, h, b = req("/api/deny")
         check("  nor a status the page is not for", st == 403 and b == b"SECRET backend trace", (st, b))
 
+        # a page past what goes with the head: its first bytes filled in, the rest as it is
+        st, h, b = req("/large/x")
+        want = large.replace("{status}", "502", 1).replace("{request_id}", h.get("x-request-id", "?")).encode()
+        check("a 300 KB page: filled in, the rest sent from the plan as it is", st == 502 and b == want
+              and int(h.get("content-length", -1)) == len(want), (st, len(b), len(want)))
+        st, h, b = req("/large/x", "HEAD")
+        check("  HEAD: its length", st == 502 and b == b"" and int(h.get("content-length", -1)) == len(want), h)
+
         # over HTTP/2
         q = subprocess.run(["timeout", "8", "curl", "-q", "-sk", "--http2", "-w", "\n%{http_version} %{http_code} %{content_type}",
                             f"https://localhost:{TLSL}/x"], capture_output=True, text=True)
@@ -164,13 +175,15 @@ http 127.0.0.1:{TLSL} {{
         g.write_text(f"pool b {{ server 127.0.0.1:1 }}\nhttp 127.0.0.1:1 {{ {line}; route /* {{ to pool b }} }}\n")
         r = subprocess.run([str(BIN), "check", str(g)], capture_output=True, text=True, timeout=10)
         check(f"{what}: refused", r.returncode != 0, r.stderr[-200:])
-    (tmp / "big.html").write_text("x" * (17 << 10))
+    (tmp / "big.html").write_text("x" * ((1 << 20) + 1))
+    (tmp / "deep.html").write_text("x" * 9000 + "{status}" + "x" * 100)
     bad("a status that is not one", f"errors 600 file={tmp}/down.html")
     bad("a class that is not one", f"errors 6xx file={tmp}/down.html")
     bad("a 2xx", f"errors 200 file={tmp}/down.html")
     bad("no file", "errors 502")
     bad("a file that is not there", f"errors 502 file={tmp}/nothing.html")
-    bad("a page over 16 KiB", f"errors 502 file={tmp}/big.html")
+    bad("a page over 1 MiB", f"errors 502 file={tmp}/big.html")
+    bad("a placeholder past the first 8 KiB", f"errors 502 file={tmp}/deep.html")
     shutil.rmtree(tmp, ignore_errors=True)
     print(f"errpage {ENGINE}: {'all passed' if not fails else f'{fails} failed'}")
     sys.exit(1 if fails else 0)

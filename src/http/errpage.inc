@@ -2,7 +2,7 @@
 ; http listener or a route (the route's first, then its listener's), for the
 ; errors okena answers itself, and with `backend` for those a backend sent
 ; too (its body is dropped, its status kept). A code is a status (502) or a
-; class (5xx). The file is read when the configuration is, at most 16 KiB;
+; class (5xx). The file is read when the configuration is, at most 1 MiB;
 ; its type is its extension's (.html, .json, .txt; else HTML). In it,
 ; {status}, {reason} and {request_id} become this answer's.
 
@@ -12,15 +12,19 @@ EP_OFF		:= 8			; d: in g_ep_store
 EP_LEN		:= 12			; d
 EP_TYPE		:= 16			; d: 0 HTML, 1 JSON, 2 text
 EP_BACKEND	:= 20			; d: a backend's errors too
-EP_SIZE		:= 24
+EP_SPLIT	:= 24			; d: its first bytes, written with the head; the rest
+				; (no {...} in it) sent from g_ep_store as it is
+EP_SIZE		:= 32
 MAX_EPS		:= 16384
-EP_STORE	:= 16 shl 20
-EP_PAGE_MAX	:= 16 shl 10
+EP_STORE	:= 64 shl 20
+EP_PAGE_MAX	:= 1 shl 20
+EP_INLINE	:= 8192			; a page up to this: written whole with the head
 
 bss
 	align 8
 	g_plan_eps	dd ?
 	g_ep_used	dd ?
+	g_ep_split	dd ?			; ep_read's
 	g_eps		rb MAX_EPS * EP_SIZE
 	g_ep_store	rb EP_STORE
 end bss
@@ -133,6 +137,8 @@ compile_errors:
 	mov	[rax+EP_LEN],r9d
 	mov	[rax+EP_TYPE],r15d
 	mov	[rax+EP_BACKEND],r10d
+	mov	edi,[g_ep_split]
+	mov	[rax+EP_SPLIT],edi
 	jmp	.code_next
 .maybe_word:
 	push	rdx
@@ -174,7 +180,7 @@ compile_errors:
 	jmp	.fail
 .too_big:
 	call	log_begin
-	out_lit 'errors: a page is at most 16 KiB (and all of them 1 MiB)'
+	out_lit 'errors: a page is at most 1 MiB (all of them 64 MiB), with any {status}, {reason}, {request_id} in its first 8 KiB'
 	jmp	.fail
 .too_many:
 	call	log_begin
@@ -233,6 +239,51 @@ ep_read:
 	mov	r9,rdx
 	mov	rcx,rdx
 	rep	movsb
+	; how much of it goes with the head: all of a small one, else up to its
+	; last {status}, {reason} or {request_id}
+	mov	[g_ep_split],r9d
+	cmp	r9d,EP_INLINE
+	jbe	.split
+	lea	rsi,[g_ep_store+r14]
+	mov	ecx,r9d
+.back:
+	test	ecx,ecx
+	jz	.none
+	dec	ecx
+	cmp	byte [rsi+rcx],'{'
+	jne	.back
+	mov	eax,r9d
+	sub	eax,ecx				; bytes from it on
+	cmp	eax,8
+	jb	.back
+	cmp	dword [rsi+rcx],'{sta'
+	jne	@f
+	cmp	dword [rsi+rcx+4],'tus}'
+	je	.at8
+@@:
+	cmp	dword [rsi+rcx],'{rea'
+	jne	@f
+	cmp	dword [rsi+rcx+4],'son}'
+	je	.at8
+@@:
+	cmp	eax,12
+	jb	.back
+	cmp	dword [rsi+rcx],'{req'
+	jne	.back
+	cmp	dword [rsi+rcx+4],'uest'
+	jne	.back
+	cmp	dword [rsi+rcx+8],'_id}'
+	jne	.back
+	add	ecx,4
+.at8:
+	add	ecx,8
+	cmp	ecx,EP_INLINE
+	ja	compile_errors.too_big
+	mov	[g_ep_split],ecx
+	jmp	.split
+.none:
+	mov	dword [g_ep_split],0
+.split:
 	ret
 
 ; rsi/ecx = a page's path: eax = a new entry of no status range for it
@@ -252,6 +303,8 @@ errpage_load:
 	mov	[rdx+EP_LEN],r9d
 	mov	[rdx+EP_TYPE],r15d
 	mov	dword [rdx+EP_BACKEND],0
+	mov	ecx,[g_ep_split]
+	mov	[rdx+EP_SPLIT],ecx
 	pop	r15
 	pop	r14
 	ret
@@ -373,6 +426,18 @@ http_error_page:
 	jnz	@f				; (a HEAD: the head alone)
 	mov	ecx,1
 	call	.body
+	mov	ecx,[r12+EP_LEN]
+	sub	ecx,[r12+EP_SPLIT]
+	jz	@f
+	mov	eax,[r12+EP_OFF]		; the rest after the head, from the store
+	add	eax,[r12+EP_SPLIT]
+	lea	rsi,[g_ep_store+rax]
+	mov	rax,[r15+H_BUF]
+	mov	[rax+HB_TAIL],rsi
+	mov	[rax+HB_TAIL+8],ecx
+	mov	edx,[r15+H_STATE]
+	mov	[rax+HB_TAIL+12],edx
+	mov	dword [r15+H_STATE],HS_SELF_TAIL
 @@:
 	mov	rax,[r15+H_BUF]
 	lea	rax,[rax+HB_OUT]
@@ -391,8 +456,9 @@ http_error_page:
 	mov	r14d,ecx
 	mov	eax,[r12+EP_OFF]
 	lea	rsi,[g_ep_store+rax]
-	mov	ebx,[r12+EP_LEN]
-	xor	edx,edx
+	mov	ebx,[r12+EP_SPLIT]
+	mov	edx,[r12+EP_LEN]		; (the rest counted as it is)
+	sub	edx,ebx
 .ch:
 	test	ebx,ebx
 	jz	.end
