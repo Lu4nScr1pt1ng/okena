@@ -819,13 +819,14 @@ cannot slow down routes that do not use them and cannot crash okena.
 ```
 addon waf {
     run /usr/local/bin/coraza-okena      # okena starts and supervises it
-    phases request_headers request_body
-    timeout 2ms on_error=allow           # or deny
+    phases request_headers
+    timeout 2ms
+    on_error allow                       # or deny
     concurrency 1024
 }
 
 route /api/* {
-    use addon waf
+    addon waf
     to pool api
 }
 ```
@@ -836,10 +837,16 @@ route /api/* {
   offset into a shared arena. A worker posts every call of a loop
   iteration and wakes the addon once (one `eventfd` write per batch); the
   addon's answers come back through the worker's io_uring. No lock, no
-  copy of the request beyond what the addon asks for.
+  copy of the request beyond what the addon asks for. **Today:** a call
+  carries a copy of the request head (and an index of its fields into it),
+  the head okena would forward; the addon gets no other view of a worker's
+  memory. The protocol is in [ADDONS.md](ADDONS.md). execve is forbidden in
+  every okena process, so the programs are run by a launcher (okena run
+  anew, `okena-addons`) made before the supervisor's seccomp filter, and
+  only when the configuration has addons.
 * **Phases:** `request_headers`, `request_body` (streamed in chunks or
   buffered, bounded), `response_headers`, `response_body`, `log`
-  (fire-and-forget, never waited for).
+  (fire-and-forget, never waited for). **Today:** `request_headers`.
 * **Actions an addon can return:** continue, set/remove headers, set
   variables for later filters (`addon.waf.score`), pick a pool, rewrite
   the path, replace the body, or answer directly (status, headers, body).

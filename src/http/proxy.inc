@@ -571,7 +571,7 @@ fault_flush:
 	jmp	.next
 @@:
 	mov	r10d,ebx
-	and	ebx,not (FD_HEDGE or FD_FWD or FD_CACHE or FD_HOLD or FD_SLICE)
+	and	ebx,not (FD_HEDGE or FD_FWD or FD_CACHE or FD_HOLD or FD_SLICE or FD_ADDON)
 	push	r8
 	push	r9
 	push	r10
@@ -594,6 +594,11 @@ fault_flush:
 	call	fwd_timeout
 	jmp	.next
 .not_fwd:
+	test	r10d,FD_ADDON
+	jz	.not_addon
+	call	addon_resume
+	jmp	.next
+.not_addon:
 	test	r10d,FD_CACHE
 	jz	.not_cache
 	call	cache_poll
@@ -740,6 +745,7 @@ http_request:
 	test	dword [r15+H_FLAGS],HX_FAULTED	; (its clock started before it waited)
 	jnz	@f
 	call	alog_request
+	call	addon_fresh			; (through no addon yet)
 @@:
 	h_rec
 	lea	r14,[g_hm]
@@ -995,6 +1001,28 @@ http_request:
 	jc	limit_over
 	h_rec
 .limited:
+	mov	edi,[g_acts+rdx+RA_ADDONS]	; addons: what they say of it
+	test	edi,edi
+	jz	.no_addons
+	push	rax
+	push	rcx
+	push	rdx
+	call	addon_stage
+	pop	rdx
+	pop	rcx
+	pop	rax
+	jnc	.addons_through
+	test	r8d,r8d
+	jz	.addon_held
+	cmp	r8d,1
+	je	addon_respond
+	mov	edi,r8d
+	jmp	http_error
+.addon_held:
+	ret
+.addons_through:
+	h_rec
+.no_addons:
 	cmp	dword [g_acts+rdx+RA_RMAP],0
 	je	@f
 	call	rm_check

@@ -158,11 +158,14 @@ supervisor_main:
 	call	alog_pipe_init
 	call	tsc_calibrate			; once, for every worker (busy_poll, access log)
 	call	xdp_setup			; (maps, programs: only before the filter)
+	call	addon_launcher_spawn		; (it runs programs: only before the filter)
 	; from here on the supervisor and everything it forks are confined
 	call	seccomp_supervisor
+	call	addon_sync			; the addons' memory, before the workers fork
 	call	idem_table_init
 	call	spawn_keys
 	call	jwks_wait
+	call	addon_wait_ready
 	xor	ebx,ebx
 .spawn_all:
 	mov	edi,ebx
@@ -253,6 +256,7 @@ supervisor_main:
 	call	api_tick
 	call	watchdog_check
 	call	qz_tick
+	call	addon_tick			; addons a reload dropped, once unused
 	call	cw_tick				; reload on-change: the files changed?
 	test	eax,eax
 	jz	@f
@@ -1014,6 +1018,9 @@ reap_workers:
 	mov	r12d,[g_siginfo+SI_PID]
 	test	r12d,r12d
 	jz	.done
+	mov	edi,r12d
+	call	addon_reaped			; (its addon slot; the launcher)
+	jc	.next
 	cmp	r12d,[g_admin_pid]
 	jne	.not_admin
 	mov	dword [g_admin_pid],0

@@ -118,6 +118,8 @@ macro plan_regions action
 	action g_tls_used, 4
 	action g_tls, TL_SIZE * MAX_TLS, g_plan_tls, TL_SIZE
 	action g_tls_store, TLS_STORE, g_tls_used, 1
+	action g_plan_addons, 4
+	action g_addons, ADE_SIZE * MAX_ADDONS, g_plan_addons, ADE_SIZE
 	action g_plan_acts, 4
 	action g_plan_eps, 4
 	action g_ep_used, 4
@@ -509,6 +511,8 @@ supervisor_reload:
 	call	plan_compile
 	call	cpu_worker_count
 	mov	r15d,eax			; new worker count
+	call	addon_reload_ok
+	jc	.addons_rejected
 	call	reload_sockets
 	test	eax,eax
 	jnz	.sockets_failed
@@ -588,6 +592,8 @@ supervisor_reload:
 	mov	edi,SG_RELOADS
 	call	stats_global_inc
 	call	api_reloaded
+	call	addon_sync			; addons: kept, started, or dropped
+	call	addon_wait_ready
 	inc	dword [g_gen]
 	xor	ebx,ebx
 .spawn:
@@ -660,6 +666,11 @@ supervisor_reload:
 	out_lit 'reload rejected (errors above); keeping the running configuration'
 	mov	edi,AL_RELOAD
 	call	log_end_alert
+	jmp	.undo_arenas
+.addons_rejected:
+	mov	edi,2
+	call	gw_reload_result
+	call	plan_restore
 	jmp	.undo_arenas
 .sockets_failed:
 	mov	edi,2

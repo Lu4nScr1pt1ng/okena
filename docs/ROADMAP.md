@@ -878,6 +878,10 @@ for new flows. On a NIC: not yet (none here).
 ## Phase 13 — Addons
 
 * Shared-memory addon protocol, supervision, deadlines, circuit breakers.
+  Done 2026-11-13 for the request_headers phase (docs/ADDONS.md,
+  tests/gateway/addon.py): continue with the head changed, or answer
+  directly; on_error, concurrency, per-worker breaker; restarts with backoff;
+  a reload keeps an unchanged addon's process. Python SDK (sdk/python).
 * SDKs (C, Rust, Go, Python); a reference WAF addon on Coraza.
 * proxy-wasm plugins (the ABI Envoy, nginx and Traefik run), in a process of
   their own like the other addons.

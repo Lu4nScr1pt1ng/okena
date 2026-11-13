@@ -233,6 +233,9 @@ rodata
 	sc_allow filter_supervisor, SYS_recvmsg	; epoll workers: kTLS control records
 	sc_allow filter_supervisor, SYS_flock		; cache_disk: a worker opens the store (cdisk.inc)
 	sc_allow filter_supervisor, SYS_ftruncate
+	sc_allow filter_supervisor, SYS_memfd_create_	; an addon's memory (addon/super.inc)
+	sc_allow filter_supervisor, SYS_eventfd2_
+	sc_allow filter_supervisor, SYS_munmap_
 	sc_allow filter_supervisor, SYS_getpid
 	sc_allow filter_supervisor, SYS_pread64
 	sc_allow filter_supervisor, SYS_pwritev

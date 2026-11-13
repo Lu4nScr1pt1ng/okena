@@ -66,7 +66,10 @@ fwd_check:
 	mov	qword [rax+HB_FDUE],0
 	and	dword [r15+H_FLAGS],not HX_FAULTED	; (limits and faults are ahead)
 	cmp	ecx,FR_OK
-	je	.good
+	jne	@f
+	call	addon_fwd_mark			; (yes to this request: once)
+	jmp	.good
+@@:
 	mov	[g_fa_mode],ecx
 	stc
 	ret
@@ -74,6 +77,10 @@ fwd_check:
 	clc
 	ret
 .first:
+	push	rax
+	call	addon_fwd_passed
+	pop	rax
+	jc	.good
 	mov	dword [rax+HB_FST],0
 	mov	dword [rax+HB_AUTHL],0
 	mov	dword [rax+HB_JHLEN],0

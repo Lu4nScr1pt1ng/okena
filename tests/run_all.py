@@ -69,6 +69,8 @@ SUITES = [
     ("hdrscope epoll", ["tests/httpproxy/hdrscope.py", "epoll"]),
     ("canonical io_uring", ["tests/httpproxy/canonical.py", "io_uring"]),
     ("canonical epoll", ["tests/httpproxy/canonical.py", "epoll"]),
+    ("addon io_uring", ["tests/gateway/addon.py", "io_uring"]),
+    ("addon epoll", ["tests/gateway/addon.py", "epoll"]),
     ("respond io_uring", ["tests/httpproxy/respond.py", "io_uring"]),
     ("respond epoll", ["tests/httpproxy/respond.py", "epoll"]),
     ("retry io_uring", ["tests/gateway/retry.py", "io_uring"]),

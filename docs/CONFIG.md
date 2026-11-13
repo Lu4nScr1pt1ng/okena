@@ -1125,6 +1125,29 @@ One `fault` per route. `abort=` (400 to 599) answers in place of the backend;
 `abort=` too, answers late: `fault delay=2s percent=10`, `fault delay=1s
 abort=504`. It shows how clients cope with errors and slowness.
 
+### Addons
+
+```nginx
+addon waf {
+    run /usr/local/bin/coraza-okena -rules /etc/crs
+    timeout 50ms
+    on_error allow                 # or deny (the default): 503
+}
+
+route /api/* {
+    addon waf
+    to pool api
+}
+```
+
+An addon is a program okena starts and keeps running, called for each
+request of the routes that name it: it lets the request go on (with fields
+set, added or removed, or its target changed) or answers it itself. It runs
+apart, in any language; a crash or a hang costs only its own routes what
+their `on_error` says. `concurrency` (default 1024) and `breaker errors=5
+open=1s` bound what a slow or failing addon may hold. Everything about them,
+the protocol included: [ADDONS.md](ADDONS.md).
+
 ---
 
 ## Pools and backends

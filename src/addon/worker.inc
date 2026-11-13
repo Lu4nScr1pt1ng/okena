@@ -1,0 +1,1659 @@
+; Addons in a worker: calls posted on the request path, answers taken each turn
+; of the loop, deadlines, the circuit, and what an answer does to the request.
+;
+; A route's addons run after its access checks, auth and rate limits: the
+; cheapest refusals come first. The request is held as for `fault delay=` (its
+; head waits where it was read, no read is posted) for the addon's `timeout`; an
+; answer makes it go on at once, through its head again:
+;
+;   continue    the head is rewritten in place first (fields set, added,
+;               removed, the target changed), so routing, limits, the cache and
+;               the backend all see the request as the addon left it;
+;   respond     okena answers the client with the addon's status, fields and body;
+;   no answer   (in time, a bad one, an addon that exited, a full ring, an open
+;               circuit) `on_error`: allow lets the request go on, deny is 503.
+;
+; Each worker keeps a FIFO of its calls per addon: all of an addon's calls have
+; the same timeout, so the oldest is always the first due. Its length is the
+; worker's share of `concurrency`. What a session waits for is in a side table
+; (one entry a session), with the generation it is for: a session that went
+; meanwhile is never answered.
+
+FD_ADDON	:= 0x04000000			; FD_SESS: a request waits for an addon
+OP_ADDON	:= 48				; io_uring: an addon wrote this worker's eventfd
+EK_ADDON	:= 7				; epoll: the same
+AD_FIFO_MAX	:= 4096
+AD_STASH_MAX	:= H_OUT_CAP - 4096		; an addon's own answer: fields and body
+
+; the worker's state for each addon
+ADW_HDR		:= 0				; q: the addon's header page
+ADW_REQ		:= 8				; q: this worker's ring pair
+ADW_HEAD		:= 16				; q: calls written (ours)
+ADW_TAIL		:= 24				; q: answers read (ours)
+ADW_FIFO		:= 32				; q
+ADW_OPEN		:= 40				; q: µs the circuit is open until, 0 closed
+ADW_SEQ		:= 48				; d: the next call's id
+ADW_FHEAD	:= 52				; d: the oldest not yet over
+ADW_CAP		:= 56				; d: a power of two
+ADW_EPOCH	:= 60				; d: the addon's run we call
+ADW_FAILS	:= 64				; d: failures in a row
+ADW_DIRTY	:= 68				; d: calls posted since the bell
+ADW_LIVE		:= 72				; d
+ADW_SIZE		:= 80
+
+; a call in the FIFO
+AFE_SEQ		:= 0				; d
+AFE_SESS		:= 4				; d
+AFE_SGEN		:= 8				; d
+AFE_STATE	:= 12				; d: 1 waiting, 0 over
+AFE_DUE		:= 16				; q: µs
+AFE_SIZE		:= 32
+
+; what a session waits for (g_ad_side)
+ADSE_GEN		:= 0				; d: the session's generation this is for
+ADSE_STATE	:= 4				; b: ADS_*
+ADSE_ADDON	:= 5				; b: which addon
+ADSE_DONE		:= 8				; d: addons this request is through
+ADSE_SEQ		:= 12				; d: the call waited for
+ADSE_STATUS	:= 16				; d: respond: the status
+ADSE_HLEN		:= 20				; d: its fields' bytes (rendered, in HB_OUT's end)
+ADSE_BLEN		:= 24				; d: its body's
+ADSE_FLAGS	:= 28				; d: ADSF_*
+ADSE_SIZE		:= 32
+ADS_NONE	:= 0
+ADS_WAIT	:= 1
+ADS_CONT	:= 2
+ADS_RESP	:= 3
+ADS_FAIL	:= 4
+ADSF_FWD		:= 1				; `auth forward` said yes to this request
+
+; ADR_HEAD's line holds the next id too: a worker that takes a ring another
+; left starts past every id that one may still get answers for
+ADR_NEXTID	:= 8
+
+bss
+	align 8
+	g_ad_side	dq ?			; the side table, 0 when the plan has no addons
+	g_ad_ri		dd ?			; this worker's slot (its rings, its eventfd)
+	g_ad_wfd	dd ?			; that eventfd
+	g_ad_pid	dd ?
+	g_ad_any	dd ?			; calls may be waiting: look at the answers
+	g_ad_wbuf	dq ?
+	g_ad_one	dq ?
+	align 8
+	g_aw:		rb ADW_SIZE * MAX_ADDONS
+	g_ad_tmp:	rb H_IN_CAP
+end bss
+
+; ------------------------------------------------------------------ setup
+
+; worker, before its engine and its filter: a slot, the side table, the FIFOs
+addon_worker_init:
+	mov	qword [g_ad_side],0
+	mov	dword [g_ad_any],0
+	cmp	dword [g_plan_addons],0
+	je	.none
+	cmp	dword [g_ad_nrw],0
+	je	.none
+	push	rbx
+	push	r12
+	push	r13
+	mov	eax,SYS_getpid
+	syscall
+	mov	[g_ad_pid],eax
+	; a slot no live worker holds
+	mov	rdi,[g_ad_claim]
+	xor	ecx,ecx
+.claim:
+	cmp	ecx,[g_ad_nrw]
+	jae	.full
+	mov	edx,[g_ad_pid]
+	xor	eax,eax
+	lock cmpxchg [rdi+rcx*4],edx
+	je	.claimed
+	inc	ecx
+	jmp	.claim
+.full:
+	call	log_begin
+	out_lit 'no addon slot left for this worker: its addon calls follow on_error'
+	call	log_end
+	mov	dword [g_ad_ri],-1
+	jmp	.side
+.claimed:
+	mov	[g_ad_ri],ecx
+	mov	eax,[g_ad_wake+rcx*4]
+	mov	[g_ad_wfd],eax
+.side:
+	; the side table: address space only until used
+	mov	esi,[g_sessions]
+	shl	rsi,5				; ADSE_SIZE
+	add	rsi,4095
+	and	rsi,not 4095
+	xor	edi,edi
+	mov	edx,PROT_READ or PROT_WRITE
+	mov	r10d,MAP_PRIVATE or MAP_ANONYMOUS or MAP_NORESERVE
+	mov	r8,-1
+	xor	r9d,r9d
+	mov	eax,SYS_mmap
+	syscall
+	cmp	rax,-4096
+	ja	.no_memory
+	mov	[g_ad_side],rax
+	; the FIFOs
+	xor	r12d,r12d			; addon
+	xor	r13d,r13d			; their bytes
+.size:
+	cmp	r12d,[g_plan_addons]
+	jae	.sized
+	imul	rbx,r12,ADE_SIZE
+	mov	eax,[g_addons+rbx+ADE_CONC]
+	add	eax,[g_workers]
+	dec	eax
+	xor	edx,edx
+	div	dword [g_workers]
+	mov	ecx,4
+@@:
+	cmp	ecx,eax
+	jae	@f
+	cmp	ecx,AD_FIFO_MAX
+	jae	@f
+	add	ecx,ecx
+	jmp	@b
+@@:
+	imul	rbx,r12,ADW_SIZE
+	mov	[g_aw+rbx+ADW_CAP],ecx
+	shl	ecx,5				; AFE_SIZE
+	add	r13d,ecx
+	inc	r12d
+	jmp	.size
+.sized:
+	lea	rsi,[r13+4095]
+	and	rsi,not 4095
+	xor	edi,edi
+	mov	edx,PROT_READ or PROT_WRITE
+	mov	r10d,MAP_PRIVATE or MAP_ANONYMOUS or MAP_NORESERVE
+	mov	r8,-1
+	xor	r9d,r9d
+	mov	eax,SYS_mmap
+	syscall
+	cmp	rax,-4096
+	ja	.no_memory
+	mov	r13,rax				; the next FIFO
+	xor	r12d,r12d
+.addon:
+	cmp	r12d,[g_plan_addons]
+	jae	.done
+	imul	rbx,r12,ADW_SIZE
+	lea	rbx,[g_aw+rbx]
+	mov	[rbx+ADW_FIFO],r13
+	mov	eax,[rbx+ADW_CAP]
+	shl	rax,5
+	add	r13,rax
+	mov	dword [rbx+ADW_LIVE],0
+	cmp	dword [g_ad_ri],-1
+	je	.next
+	imul	rax,r12,ADE_SIZE
+	mov	eax,[g_addons+rax+ADE_SLOT]
+	cmp	eax,-1
+	je	.next
+	imul	rax,rax,ADPR_SIZE
+	mov	rdx,[g_adrt+rax+ADPR_BASE]
+	test	rdx,rdx
+	jz	.next
+	mov	[rbx+ADW_HDR],rdx
+	mov	eax,[g_ad_ri]
+	imul	rax,rax,AD_STRIDE
+	lea	rax,[rdx+AD_HDR+rax]
+	mov	[rbx+ADW_REQ],rax
+	mov	rcx,[rax+ADR_HEAD]
+	mov	[rbx+ADW_HEAD],rcx
+	mov	rcx,[rax+ADR_ANS+ADR_TAIL]
+	mov	[rbx+ADW_TAIL],rcx
+	mov	ecx,[rax+ADR_NEXTID]
+	add	ecx,65536			; (past what the last owner asked)
+	mov	[rbx+ADW_SEQ],ecx
+	mov	[rbx+ADW_FHEAD],ecx
+	mov	[rax+ADR_NEXTID],ecx
+	mov	ecx,[g_ad_pid]
+	mov	[rax+ADR_OWNER],ecx
+	mov	ecx,[rdx+ADH_EPOCH]
+	mov	[rbx+ADW_EPOCH],ecx
+	mov	qword [rbx+ADW_OPEN],0
+	mov	dword [rbx+ADW_FAILS],0
+	mov	dword [rbx+ADW_DIRTY],0
+	mov	dword [rbx+ADW_LIVE],1
+.next:
+	inc	r12d
+	jmp	.addon
+.done:
+	pop	r13
+	pop	r12
+	pop	rbx
+.none:
+	ret
+.no_memory:
+	call	log_begin
+	out_lit 'addons: cannot reserve memory'
+	call	log_end
+	mov	edi,EXIT_FATAL
+	jmp	exit_process
+
+; io_uring: this worker's eventfd read (an addon answered)
+addon_arm:
+	cmp	qword [g_ad_side],0
+	je	.none
+	cmp	dword [g_ad_ri],-1
+	je	.none
+	call	ring_get_sqe
+	mov	byte [rax+SQE_OPCODE],IORING_OP_READ
+	mov	ecx,[g_ad_wfd]
+	mov	[rax+SQE_FD],ecx
+	lea	rcx,[g_ad_wbuf]
+	mov	[rax+SQE_ADDR],rcx
+	mov	dword [rax+SQE_LEN],8
+	mov	rcx,(OP_ADDON shl 56) or 0xFFFFFFFF
+	mov	[rax+SQE_USER_DATA],rcx
+.none:
+	ret
+
+on_addon:
+	jmp	addon_arm			; (what came is read at the turn's end)
+
+; epoll: the same eventfd in the set
+addon_ep_add:
+	cmp	qword [g_ad_side],0
+	je	.none
+	cmp	dword [g_ad_ri],-1
+	je	.none
+	mov	edi,[g_ad_wfd]
+	mov	esi,EPOLLIN
+	mov	rdx,EK_ADDON shl 56
+	jmp	ep_add
+.none:
+	ret
+
+addon_ep_ready:
+	mov	edi,[g_ad_wfd]
+	lea	rsi,[g_ad_wbuf]
+	mov	edx,8
+	xor	eax,eax				; SYS_read
+	syscall
+	ret
+
+; ----------------------------------------------------------- each turn
+
+; Before the loop sleeps: an addon that may be asleep is told calls came.
+addon_bells:
+	cmp	qword [g_ad_side],0
+	je	.none
+	push	rbx
+	xor	ebx,ebx
+.next:
+	cmp	ebx,[g_plan_addons]
+	jae	.done
+	imul	rax,rbx,ADW_SIZE
+	lea	rax,[g_aw+rax]
+	cmp	dword [rax+ADW_DIRTY],0
+	je	.skip
+	mov	dword [rax+ADW_DIRTY],0
+	mfence					; (the heads are out before the look)
+	mov	rcx,[rax+ADW_HDR]
+	cmp	dword [rcx+ADH_SLEEP],0
+	je	.skip				; it polls: it sees them
+	imul	rdx,rbx,ADE_SIZE
+	mov	edx,[g_addons+rdx+ADE_SLOT]
+	imul	rdx,rdx,ADPR_SIZE
+	mov	edi,[g_adrt+rdx+ADPR_BELL]
+	mov	qword [g_ad_one],1
+	lea	rsi,[g_ad_one]
+	mov	edx,8
+	mov	eax,SYS_write
+	syscall
+.skip:
+	inc	ebx
+	jmp	.next
+.done:
+	pop	rbx
+.none:
+	ret
+
+; Each turn, before held requests are looked at: answers taken, calls past
+; their time ended, and a run of an addon that is over ends its calls.
+addon_flush:
+	cmp	dword [g_ad_any],0
+	je	.none
+	push	rbx
+	push	rbp
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	call	qs_clock
+	xor	ebp,ebp				; calls still waiting, all addons
+	xor	r12d,r12d
+.addon:
+	cmp	r12d,[g_plan_addons]
+	jae	.done
+	imul	r13,r12,ADW_SIZE
+	lea	r13,[g_aw+r13]
+	cmp	dword [r13+ADW_LIVE],0
+	je	.next
+	mov	eax,[r13+ADW_SEQ]
+	cmp	eax,[r13+ADW_FHEAD]
+	je	.next				; nothing asked
+	mov	r14,[r13+ADW_REQ]
+	mov	rax,[r13+ADW_HDR]
+	mov	eax,[rax+ADH_EPOCH]
+	cmp	eax,[r13+ADW_EPOCH]
+	je	@f
+	call	ad_epoch_over
+@@:
+	call	ad_answers
+	call	ad_expire
+	mov	eax,[r13+ADW_SEQ]
+	sub	eax,[r13+ADW_FHEAD]
+	add	ebp,eax
+.next:
+	inc	r12d
+	jmp	.addon
+.done:
+	mov	[g_ad_any],ebp
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbp
+	pop	rbx
+.none:
+	ret
+
+; r12d = addon, r13 = its state: the answers that came
+ad_answers:
+	mov	r14,[r13+ADW_REQ]
+	mov	rax,[r14+ADR_ANS+ADR_HEAD]
+	cmp	rax,[r13+ADW_TAIL]
+	je	.none
+.next:
+	mov	rcx,[r13+ADW_TAIL]
+	mov	rax,[r14+ADR_ANS+ADR_HEAD]
+	cmp	rcx,rax
+	je	.out
+	sub	rax,rcx				; what is there
+	mov	edx,ecx
+	and	edx,AD_RING - 1
+	lea	r15,[r14+ADR_ANSD+rdx]		; the record
+	mov	r8d,[r15+ANS_LEN]
+	cmp	r8d,8
+	jb	.corrupt
+	test	r8d,7
+	jnz	.corrupt
+	cmp	r8,rax
+	ja	.corrupt
+	mov	r9d,AD_RING
+	sub	r9d,edx
+	cmp	r8d,r9d
+	ja	.corrupt
+	cmp	word [r15+ANS_KIND],1
+	jne	.skip				; padding
+	push	r8
+	call	ad_answer
+	pop	r8
+.skip:
+	add	[r13+ADW_TAIL],r8
+	jmp	.next
+.corrupt:
+	; an addon that writes what is not a record: what it wrote is dropped
+	; (those calls end at their time)
+	mov	rax,[r14+ADR_ANS+ADR_HEAD]
+	mov	[r13+ADW_TAIL],rax
+	inc	qword [r14+ADR_COUNT+ADC_ERROR]
+.out:
+	mov	rax,[r13+ADW_TAIL]
+	mov	[r14+ADR_ANS+ADR_TAIL],rax
+.none:
+	ret
+
+; r15 = an answer, r8d = its length; r12d, r13, r14 as above
+ad_answer:
+	mov	eax,[r15+ANS_ID]
+	mov	ecx,[r13+ADW_CAP]
+	dec	ecx
+	and	ecx,eax
+	shl	rcx,5
+	add	rcx,[r13+ADW_FIFO]
+	cmp	[rcx+AFE_SEQ],eax
+	jne	.stale
+	cmp	dword [rcx+AFE_STATE],1
+	jne	.stale				; (its time was up)
+	mov	dword [rcx+AFE_STATE],0
+	inc	qword [r14+ADR_COUNT+ADC_OK]
+	mov	dword [r13+ADW_FAILS],0
+	mov	qword [r13+ADW_OPEN],0
+	push	rbx
+	mov	ebx,[rcx+AFE_SESS]
+	mov	r9d,[rcx+AFE_SGEN]
+	call	ad_waiter
+	jc	.gone
+	; it is that call's: what it says, its ops within it
+	call	ad_ops_fit
+	jc	.bad
+	movzx	eax,word [r15+ANS_ACTION]
+	cmp	eax,ANA_CONTINUE
+	je	.cont
+	cmp	eax,ANA_RESPOND
+	je	.resp
+	jmp	.bad
+.cont:
+	cmp	word [r15+ANS_NOPS],0
+	je	.cont_ok
+	call	ad_rewrite
+	jc	.bad
+.cont_ok:
+	mov	byte [r10+ADSE_STATE],ADS_CONT
+	jmp	.due
+.resp:
+	call	ad_stash
+	jc	.bad
+	mov	byte [r10+ADSE_STATE],ADS_RESP
+	inc	qword [r14+ADR_COUNT+ADC_RESPOND]
+	jmp	.due
+.bad:
+	mov	byte [r10+ADSE_STATE],ADS_FAIL
+	inc	qword [r14+ADR_COUNT+ADC_ERROR]
+.due:
+	mov	r9d,[r10+ADSE_GEN]
+	call	ad_due
+.gone:
+	pop	rbx
+.stale:
+	ret
+
+; r15 = an answer: CF unless its ops (and a respond's body) lie within it.
+; Keeps all but rax, rcx, rdx, r8.
+ad_ops_fit:
+	mov	edx,[r15+ANS_LEN]
+	movzx	ecx,word [r15+ANS_NOPS]
+	mov	r8d,ANS_OPS
+.op:
+	test	ecx,ecx
+	jz	.body
+	dec	ecx
+	lea	eax,[r8+ANO_HDR]
+	cmp	eax,edx
+	ja	.no
+	movzx	eax,word [r15+r8+2]		; the name's length
+	add	eax,ANO_HDR
+	push	rax
+	movzx	eax,word [r15+r8+4]		; the value's
+	add	[rsp],eax
+	pop	rax
+	add	r8d,eax
+	cmp	r8d,edx
+	ja	.no
+	jmp	.op
+.body:
+	mov	eax,[r15+ANS_BLEN]
+	add	rax,r8
+	cmp	rax,rdx
+	ja	.no
+	clc
+	ret
+.no:
+	stc
+	ret
+
+; ebx = a session, r9d = the generation a call was for, r12d = the addon,
+; [rcx+AFE_SEQ] = the call: CF unless that session is still there, held, and
+; waiting for that very call; if so r10 = its side entry and r15 kept.
+; Keeps r12-r15, rcx.
+ad_waiter:
+	cmp	ebx,[g_sessions]
+	jae	.no
+	call	session_ptr
+	cmp	[rax+S_GEN],r9d
+	jne	.no
+	cmp	dword [rax+S_STATE],ST_OPEN
+	jne	.no
+	mov	r10d,ebx
+	shl	r10,H_SHIFT
+	add	r10,[g_http_base]
+	cmp	dword [r10+H_STATE],HS_FAULT
+	jne	.no
+	mov	r10d,ebx
+	shl	r10,5
+	add	r10,[g_ad_side]
+	cmp	[r10+ADSE_GEN],r9d
+	jne	.no
+	cmp	byte [r10+ADSE_STATE],ADS_WAIT
+	jne	.no
+	cmp	[r10+ADSE_ADDON],r12b
+	jne	.no
+	mov	eax,[rcx+AFE_SEQ]
+	cmp	[r10+ADSE_SEQ],eax
+	jne	.no
+	clc
+	ret
+.no:
+	stc
+	ret
+
+; ebx = a held session, r9d = its generation: it goes on in this turn
+; (fault_flush takes it, through addon_resume). Keeps all but rax, rcx, rdx, r8.
+ad_due:
+	mov	r8d,ebx
+	or	r8d,FD_ADDON
+	mov	edx,[g_fd_n]
+	xor	eax,eax
+.find:
+	test	edx,edx
+	jz	.out				; (none: its time is up already, and it goes)
+	cmp	[g_fd+rax+FD_SESS],r8d
+	jne	.other
+	cmp	[g_fd+rax+FD_GEN],r9d
+	je	.now
+.other:
+	add	rax,FD_SIZE
+	dec	edx
+	jmp	.find
+.now:
+	mov	qword [g_fd+rax+FD_AT],1
+	mov	qword [g_fd_next],1
+.out:
+	ret
+
+; r12d, r13, r14: calls past their time are over (their requests, still held,
+; find so when their own time comes: the same, as all of an addon's calls have
+; the same timeout); the FIFO's head moves past what is over
+ad_expire:
+	mov	rdi,[r13+ADW_FIFO]
+.next:
+	mov	eax,[r13+ADW_FHEAD]
+	cmp	eax,[r13+ADW_SEQ]
+	je	.out
+	mov	ecx,[r13+ADW_CAP]
+	dec	ecx
+	and	ecx,eax
+	shl	rcx,5
+	cmp	dword [rdi+rcx+AFE_STATE],0
+	je	.over
+	mov	rdx,[rdi+rcx+AFE_DUE]
+	cmp	rdx,[g_qnow]
+	ja	.out
+	mov	dword [rdi+rcx+AFE_STATE],0
+	inc	qword [r14+ADR_COUNT+ADC_TIMEOUT]
+	call	ad_failed
+.over:
+	inc	dword [r13+ADW_FHEAD]
+	jmp	.next
+.out:
+	ret
+
+; r13 = an addon's state: one more failure in a row; the circuit opens at its
+; limit. Keeps all but rax, rdx.
+ad_failed:
+	inc	dword [r13+ADW_FAILS]
+	imul	rax,r12,ADE_SIZE
+	mov	edx,[g_addons+rax+ADE_BREAK]
+	cmp	[r13+ADW_FAILS],edx
+	jb	.out
+	cmp	qword [r13+ADW_OPEN],0
+	jne	@f
+	mov	rdx,[r13+ADW_REQ]
+	inc	qword [rdx+ADR_COUNT+ADC_OPENED]
+@@:
+	mov	rdx,[g_addons+rax+ADE_OPEN]
+	add	rdx,[g_qnow]
+	mov	[r13+ADW_OPEN],rdx
+.out:
+	ret
+
+; r12d, r13, r14: the addon exited or started again: its calls are over now,
+; their requests follow on_error at once
+ad_epoch_over:
+	mov	rax,[r13+ADW_HDR]
+	mov	eax,[rax+ADH_EPOCH]
+	mov	[r13+ADW_EPOCH],eax
+	mov	r15d,[r13+ADW_FHEAD]
+.next:
+	cmp	r15d,[r13+ADW_SEQ]
+	je	.out
+	mov	ecx,[r13+ADW_CAP]
+	dec	ecx
+	and	ecx,r15d
+	shl	rcx,5
+	add	rcx,[r13+ADW_FIFO]
+	cmp	dword [rcx+AFE_STATE],1
+	jne	.skip
+	mov	dword [rcx+AFE_STATE],0
+	inc	qword [r14+ADR_COUNT+ADC_CRASHED]
+	push	rbx
+	mov	ebx,[rcx+AFE_SESS]
+	mov	r9d,[rcx+AFE_SGEN]
+	call	ad_waiter
+	jc	@f
+	mov	byte [r10+ADSE_STATE],ADS_FAIL
+	call	ad_due
+@@:
+	pop	rbx
+.skip:
+	inc	r15d
+	jmp	.next
+.out:
+	ret
+
+; ----------------------------------------------------------- the request
+
+; http_request, a request's first pass (not one back from waiting): nothing
+; is through any addon yet. ebx = session. Keeps all but rax, rcx.
+addon_fresh:
+	mov	rcx,[g_ad_side]
+	test	rcx,rcx
+	jz	.none
+	call	session_ptr
+	mov	eax,[rax+S_GEN]
+	push	rdx
+	mov	edx,ebx
+	shl	rdx,5
+	add	rcx,rdx
+	pop	rdx
+	mov	[rcx+ADSE_GEN],eax
+	mov	dword [rcx+ADSE_STATE],0
+	mov	dword [rcx+ADSE_DONE],0
+	mov	dword [rcx+ADSE_FLAGS],0
+.none:
+	ret
+
+; `auth forward` and addons: a request back from waiting for an addon is not
+; asked about again. CF when the service said yes to it already. Keeps all
+; but rax, rcx.
+addon_fwd_passed:
+	call	ad_side_cur
+	jc	.no
+	test	dword [rcx+ADSE_FLAGS],ADSF_FWD
+	jz	.no
+	stc
+	ret
+.no:
+	clc
+	ret
+
+addon_fwd_mark:
+	call	ad_side_cur
+	jc	.out
+	or	dword [rcx+ADSE_FLAGS],ADSF_FWD
+.out:
+	ret
+
+; ebx = session: rcx = its side entry, CF when there is none for it
+ad_side_cur:
+	mov	rcx,[g_ad_side]
+	test	rcx,rcx
+	jz	.no
+	call	session_ptr
+	mov	eax,[rax+S_GEN]
+	push	rdx
+	mov	edx,ebx
+	shl	rdx,5
+	add	rcx,rdx
+	pop	rdx
+	cmp	[rcx+ADSE_GEN],eax
+	jne	.no
+	clc
+	ret
+.no:
+	stc
+	ret
+
+; The route's addons (edi = its mask), ebx = session, r15 = record, g_hm = the
+; request. CF clear: through them all, go on. CF set: they have it, r8d says
+; how: 0 held (or answered already), 1 the addon's own answer (addon_respond),
+; else a status for http_error. Keeps rbx, r12-r15.
+addon_stage:
+	push	r12
+	push	r13
+	push	r14
+	mov	r13d,edi
+	call	ad_side_cur
+	jnc	@f
+	call	addon_fresh			; (never had a first pass: one now)
+	call	ad_side_cur
+	jc	.through			; no side table: no addons in this worker
+@@:
+	mov	r14,rcx
+	mov	eax,[r14+ADSE_DONE]
+	not	eax
+	and	r13d,eax
+.next:
+	bsf	r12d,r13d
+	jz	.through
+	cmp	byte [r14+ADSE_STATE],ADS_NONE
+	je	.ask
+	cmp	[r14+ADSE_ADDON],r12b
+	jne	.ask
+	movzx	eax,byte [r14+ADSE_STATE]
+	mov	byte [r14+ADSE_STATE],ADS_NONE
+	cmp	eax,ADS_CONT
+	je	.done_one
+	cmp	eax,ADS_RESP
+	je	.respond
+	cmp	eax,ADS_FAIL
+	je	.error
+	; still waiting (back for another reason): its own time brings it back
+	mov	byte [r14+ADSE_STATE],al
+	xor	r8d,r8d
+	jmp	.taken
+.ask:
+	call	addon_call
+	jnc	.held
+.error:
+	imul	rax,r12,ADE_SIZE
+	imul	rcx,r12,ADW_SIZE
+	mov	rcx,[g_aw+rcx+ADW_REQ]
+	cmp	dword [g_addons+rax+ADE_ONERR],0
+	je	.deny
+	test	rcx,rcx
+	jz	.done_one
+	inc	qword [rcx+ADR_COUNT+ADC_ALLOWED]
+.done_one:
+	bts	dword [r14+ADSE_DONE],r12d
+	btr	r13d,r12d
+	jmp	.next
+.deny:
+	test	rcx,rcx
+	jz	@f
+	inc	qword [rcx+ADR_COUNT+ADC_DENIED]
+@@:
+	bts	dword [r14+ADSE_DONE],r12d
+	mov	r8d,503
+	jmp	.taken
+.respond:
+	bts	dword [r14+ADSE_DONE],r12d
+	mov	r8d,1
+	jmp	.taken
+.held:
+	xor	r8d,r8d
+.taken:
+	stc
+	jmp	.out
+.through:
+	clc
+.out:
+	pop	r14
+	pop	r13
+	pop	r12
+	ret
+
+; r12d = an addon, r14 = the side entry, ebx, r15, g_hm: the call posted and the
+; request held. CF: it could not be (the side entry untouched). Keeps rbx,
+; r12-r15.
+addon_call:
+	push	r13
+	imul	r13,r12,ADW_SIZE
+	lea	r13,[g_aw+r13]
+	cmp	dword [r13+ADW_LIVE],0
+	je	.no
+	mov	rax,[r13+ADW_HDR]
+	mov	ecx,[rax+ADH_EPOCH]
+	cmp	ecx,[r13+ADW_EPOCH]
+	je	@f
+	push	r14
+	push	r15
+	mov	r14,[r13+ADW_REQ]
+	call	ad_epoch_over			; (its calls end; this one goes to the new run)
+	pop	r15
+	pop	r14
+	mov	rax,[r13+ADW_HDR]
+@@:
+	cmp	dword [rax+ADH_READY],1
+	jne	.error
+	cmp	dword [g_fd_n],FD_MAX
+	jae	.error
+	call	qs_clock
+	mov	rax,[r13+ADW_OPEN]
+	test	rax,rax
+	jz	.closed
+	cmp	rax,[g_qnow]
+	ja	.error				; open
+	imul	rax,r12,ADE_SIZE		; half open: this one goes, none other
+	mov	rax,[g_addons+rax+ADE_OPEN]	; until it is answered or its time is up
+	add	rax,[g_qnow]
+	mov	[r13+ADW_OPEN],rax
+.closed:
+	mov	eax,[r13+ADW_SEQ]
+	sub	eax,[r13+ADW_FHEAD]
+	cmp	eax,[r13+ADW_CAP]
+	jae	.error				; concurrency
+	call	ad_post
+	jc	.error
+	; the FIFO
+	mov	eax,[r13+ADW_SEQ]
+	mov	ecx,[r13+ADW_CAP]
+	dec	ecx
+	and	ecx,eax
+	shl	rcx,5
+	add	rcx,[r13+ADW_FIFO]
+	mov	[rcx+AFE_SEQ],eax
+	mov	[rcx+AFE_SESS],ebx
+	push	rax
+	call	session_ptr
+	mov	edx,[rax+S_GEN]
+	pop	rax
+	mov	[rcx+AFE_SGEN],edx
+	mov	dword [rcx+AFE_STATE],1
+	imul	rdx,r12,ADE_SIZE
+	mov	r8,[g_addons+rdx+ADE_TIMEOUT]
+	mov	r9,r8
+	add	r9,[g_qnow]
+	mov	[rcx+AFE_DUE],r9
+	mov	[r14+ADSE_SEQ],eax
+	inc	eax
+	mov	[r13+ADW_SEQ],eax
+	mov	rdx,[r13+ADW_REQ]
+	mov	[rdx+ADR_NEXTID],eax
+	inc	qword [rdx+ADR_COUNT+ADC_CALLS]
+	mov	byte [r14+ADSE_STATE],ADS_WAIT
+	mov	[r14+ADSE_ADDON],r12b
+	mov	dword [r13+ADW_DIRTY],1
+	mov	dword [g_ad_any],1
+	; held, for as long as it is given
+	mov	rax,r8
+	call	fault_hold
+	or	dword [g_fd+rcx+FD_SESS],FD_ADDON
+	clc
+	jmp	.out
+.error:
+	mov	rax,[r13+ADW_REQ]
+	inc	qword [rax+ADR_COUNT+ADC_ERROR]
+.no:
+	stc
+.out:
+	pop	r13
+	ret
+
+; r13 = the addon's state, ebx, r15, g_hm: the call into its ring. CF: no room.
+; Keeps rbx, r12-r15.
+ad_post:
+	push	rbx
+	push	r12
+	push	r14
+	call	http_client_resolve		; (who the client is: the peer, or what trusted proxies say)
+	; its size: the fixed part, the index, the head
+	mov	r12d,[g_hm+HM_NHDR]
+	lea	eax,[ADQ_INDEX+r12*8]
+	add	eax,[r15+H_INOFF]
+	add	eax,7
+	and	eax,not 7
+	mov	r10d,eax			; the record
+	mov	r14,[r13+ADW_REQ]
+	mov	rcx,[r13+ADW_HEAD]
+	mov	edx,ecx
+	and	edx,AD_RING - 1
+	mov	r9d,AD_RING
+	sub	r9d,edx				; to the ring's end
+	xor	r11d,r11d			; padding first
+	cmp	r9d,r10d
+	jae	@f
+	mov	r11d,r9d
+@@:
+	mov	rax,rcx
+	sub	rax,[r14+ADR_TAIL]
+	mov	r8d,AD_RING
+	sub	r8,rax				; room
+	lea	eax,[r10+r11]
+	cmp	rax,r8
+	ja	.full
+	test	r11d,r11d
+	jz	.at
+	lea	rdi,[r14+ADR_CALLS+rdx]
+	mov	[rdi+ADQ_LEN],r11d
+	mov	dword [rdi+ADQ_KIND],0
+	add	rcx,r11
+	xor	edx,edx
+.at:
+	lea	rdi,[r14+ADR_CALLS+rdx]
+	push	rcx
+	mov	[rdi+ADQ_LEN],r10d
+	mov	word [rdi+ADQ_KIND],1
+	mov	word [rdi+ADQ_PHASE],ADP_REQ_HEADERS
+	mov	eax,[r13+ADW_SEQ]
+	mov	[rdi+ADQ_ID],eax
+	; what the client spoke
+	xor	r8d,r8d
+	push	rax
+	push	rdi
+	call	session_ptr
+	pop	rdi
+	mov	edx,[rax+S_FLAGS]
+	mov	ecx,[rax+S_LST]
+	pop	rax
+	test	edx,SF_H2S
+	jz	@f
+	or	r8d,ADQF_H2
+@@:
+	test	edx,SF_H3S
+	jz	@f
+	or	r8d,ADQF_H3 or ADQF_TLS
+@@:
+	imul	rcx,rcx,LS_SIZE
+	cmp	dword [g_listeners+rcx+LS_TLS],0
+	je	@f
+	or	r8d,ADQF_TLS
+@@:
+	mov	[rdi+ADQ_FLAGS],r8d
+	mov	eax,[r15+H_INOFF]
+	mov	[rdi+ADQ_HLEN],eax
+	mov	[rdi+ADQ_NHDR],r12w
+	mov	eax,[r15+H_CKIND]
+	mov	[rdi+ADQ_FAMILY],ax
+	mov	rax,[r15+H_CLIENT]
+	mov	[rdi+ADQ_CLIENT],rax
+	mov	rax,[r15+H_CLIENT+8]
+	mov	[rdi+ADQ_CLIENT+8],rax
+	mov	rsi,[r15+H_BUF]			; the head: offsets from here
+	lea	rsi,[rsi+HB_IN]
+	mov	rax,[g_hm+HM_METHOD]
+	sub	rax,rsi
+	mov	[rdi+ADQ_METHOD],ax
+	mov	eax,[g_hm+HM_MLEN]
+	mov	[rdi+ADQ_METHOD+2],ax
+	mov	rax,[g_hm+HM_TARGET]
+	sub	rax,rsi
+	mov	[rdi+ADQ_TARGET],ax
+	mov	eax,[g_hm+HM_TLEN]
+	mov	[rdi+ADQ_TARGET+2],ax
+	mov	eax,[r15+H_ACT]
+	mov	[rdi+ADQ_ROUTE],eax
+	mov	dword [rdi+ADQ_RSV],0
+	; the index
+	lea	r9,[g_hm+HM_HDRS]
+	lea	r8,[rdi+ADQ_INDEX]
+	mov	ecx,r12d
+.field:
+	test	ecx,ecx
+	jz	.fields
+	mov	rax,[r9+HF_NAME]
+	sub	rax,rsi
+	mov	[r8],ax
+	mov	eax,[r9+HF_NLEN]
+	mov	[r8+2],ax
+	mov	rax,[r9+HF_VALUE]
+	sub	rax,rsi
+	mov	[r8+4],ax
+	mov	eax,[r9+HF_VLEN]
+	mov	[r8+6],ax
+	add	r9,HF_SIZE
+	add	r8,8
+	dec	ecx
+	jmp	.field
+.fields:
+	mov	rdi,r8
+	mov	ecx,[r15+H_INOFF]
+	rep	movsb
+	pop	rcx
+	add	rcx,r10
+	mov	[r13+ADW_HEAD],rcx
+	mov	[r14+ADR_HEAD],rcx		; published (the stores before it are seen first)
+	clc
+	jmp	.out
+.full:
+	stc
+.out:
+	pop	r14
+	pop	r12
+	pop	rbx
+	ret
+
+; fault_flush: a request held for an addon, its time come (or an answer made it
+; due). ebx, r15, r9 = its time.
+addon_resume:
+	cmp	dword [r15+H_STATE],HS_FAULT
+	jne	.none
+	call	ad_side_cur
+	jc	.go
+	cmp	byte [rcx+ADSE_STATE],ADS_WAIT
+	jne	.go
+	; no answer in time
+	mov	byte [rcx+ADSE_STATE],ADS_FAIL
+	movzx	eax,byte [rcx+ADSE_ADDON]
+	mov	edx,[rcx+ADSE_SEQ]
+	imul	rax,rax,ADW_SIZE
+	lea	r8,[g_aw+rax]
+	mov	eax,[r8+ADW_CAP]
+	dec	eax
+	and	eax,edx
+	shl	rax,5
+	add	rax,[r8+ADW_FIFO]
+	cmp	[rax+AFE_SEQ],edx
+	jne	.go
+	cmp	dword [rax+AFE_STATE],1
+	jne	.go
+	mov	dword [rax+AFE_STATE],0
+	mov	rdx,[r8+ADW_REQ]
+	inc	qword [rdx+ADR_COUNT+ADC_TIMEOUT]
+	push	r12
+	push	r13
+	movzx	r12d,byte [rcx+ADSE_ADDON]
+	mov	r13,r8
+	call	qs_clock
+	call	ad_failed
+	pop	r13
+	pop	r12
+.go:
+	mov	eax,[r15+H_INOFF]
+	jmp	http_request
+.none:
+	ret
+
+; ------------------------------------------------- what an answer does
+
+; r15 = an answer to continue with fields to change, ebx = the session (held):
+; its head rewritten in place. CF: the answer is not fit (a field that is not
+; one, a target that is not a path) or the head would not fit.
+; Keeps rbx, r12-r15, r10.
+ad_rewrite:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	push	rbp
+	push	r10
+	mov	r14d,ebx
+	shl	r14,H_SHIFT
+	add	r14,[g_http_base]		; the request's record
+	mov	r12,[r14+H_BUF]
+	lea	r12,[r12+HB_IN]			; the head
+	lea	rdi,[g_ad_tmp]
+	lea	rbp,[g_ad_tmp+H_IN_CAP-2]	; the room
+	; its first line, or one with the target the addon gives
+	mov	rsi,r12
+	mov	ecx,[r14+H_INOFF]
+	call	ad_line
+	jc	.bad
+	mov	r13,rax				; the next line
+	movzx	ecx,word [r15+ANS_NOPS]
+	lea	r8,[r15+ANS_OPS]
+	call	ad_op_find_target
+	test	r9,r9
+	jz	.line_as_is
+	; METHOD SP target SP VERSION
+	mov	rsi,r12
+@@:
+	lodsb
+	stosb
+	cmp	al,' '
+	jne	@b
+	mov	r10,rsi				; past the method
+	movzx	ecx,word [r9+4]			; the target
+	lea	rsi,[r9+ANO_HDR]
+	movzx	eax,word [r9+2]
+	add	rsi,rax
+	test	ecx,ecx
+	jz	.bad
+	cmp	byte [rsi],'/'
+	jne	.bad
+	lea	rax,[rdi+rcx+16]
+	cmp	rax,rbp
+	ja	.bad
+.target:
+	lodsb
+	cmp	al,0x21
+	jb	.bad
+	cmp	al,0x7E
+	ja	.bad
+	cmp	al,'#'
+	je	.bad
+	stosb
+	dec	ecx
+	jnz	.target
+	; the version: after the old target
+	mov	rsi,r10
+@@:
+	lodsb
+	cmp	al,' '
+	jne	@b
+	mov	byte [rdi],' '
+	inc	rdi
+@@:
+	lodsb
+	stosb
+	cmp	al,10
+	jne	@b
+	jmp	.fields
+.line_as_is:
+	mov	rsi,r12
+	mov	rcx,r13
+	sub	rcx,r12
+	rep	movsb
+.fields:
+	; each field, unless an op sets or removes it
+	mov	rsi,r13
+	mov	ecx,[r14+H_INOFF]
+	add	rcx,r12
+	sub	rcx,rsi
+	call	ad_line
+	jc	.bad
+	mov	r10,rax				; the next
+	mov	rcx,rax
+	sub	rcx,r13
+	cmp	byte [r13],13
+	je	.own
+	cmp	byte [r13],10
+	je	.own
+	; its name
+	xor	edx,edx
+@@:
+	cmp	edx,ecx
+	jae	.bad
+	cmp	byte [r13+rdx],':'
+	je	@f
+	inc	edx
+	jmp	@b
+@@:
+	push	rcx
+	push	rdi
+	mov	rsi,r13				; rsi/edx = the name
+	movzx	ecx,word [r15+ANS_NOPS]
+	lea	r8,[r15+ANS_OPS]
+	call	ad_op_drops
+	pop	rdi
+	pop	rcx
+	jc	.dropped
+	lea	rax,[rdi+rcx]
+	cmp	rax,rbp
+	ja	.bad
+	mov	rsi,r13
+	rep	movsb
+.dropped:
+	mov	r13,r10
+	jmp	.fields
+.own:
+	; then what the ops set and add
+	movzx	ebx,word [r15+ANS_NOPS]
+	lea	r8,[r15+ANS_OPS]
+.op:
+	test	ebx,ebx
+	jz	.end
+	dec	ebx
+	movzx	eax,byte [r8]
+	movzx	ecx,word [r8+2]			; name
+	movzx	edx,word [r8+4]			; value
+	lea	rsi,[r8+ANO_HDR]
+	lea	r9,[rsi+rcx]
+	lea	r9,[r9+rdx]			; the next op
+	cmp	eax,ANO_SET
+	je	.emit
+	cmp	eax,ANO_ADD
+	jne	.op_next
+.emit:
+	push	rcx
+	push	rdx
+	call	ad_field_ok
+	pop	rdx
+	pop	rcx
+	jc	.bad
+	jz	.op_next			; (one an addon may not change: left as it is)
+	lea	rax,[rdi+rcx]
+	lea	rax,[rax+rdx+4]
+	cmp	rax,rbp
+	ja	.bad
+	rep	movsb
+	mov	word [rdi],': '
+	add	rdi,2
+	mov	ecx,edx
+	rep	movsb
+	mov	word [rdi],0x0A0D
+	add	rdi,2
+.op_next:
+	mov	r8,r9
+	jmp	.op
+.end:
+	mov	word [rdi],0x0A0D
+	add	rdi,2
+	; into the buffer, the body (or what was pipelined) moved after it
+	lea	rax,[g_ad_tmp]
+	sub	rdi,rax
+	mov	r13d,edi			; the new head
+	mov	ecx,[r14+H_INLEN]
+	sub	ecx,[r14+H_INOFF]		; what follows it
+	lea	eax,[r13+rcx]
+	cmp	eax,H_IN_CAP
+	ja	.bad
+	mov	esi,[r14+H_INOFF]
+	add	rsi,r12
+	lea	rdi,[r12+r13]
+	cmp	rdi,rsi
+	jbe	.down
+	lea	rsi,[rsi+rcx-1]			; up: from the end
+	lea	rdi,[rdi+rcx-1]
+	std
+	rep	movsb
+	cld
+	jmp	.moved
+.down:
+	rep	movsb
+.moved:
+	mov	eax,[r14+H_INLEN]
+	sub	eax,[r14+H_INOFF]
+	add	eax,r13d
+	mov	[r14+H_INLEN],eax
+	mov	[r14+H_INOFF],r13d
+	mov	rdi,r12
+	lea	rsi,[g_ad_tmp]
+	mov	ecx,r13d
+	rep	movsb
+	clc
+	jmp	.out
+.bad:
+	stc
+.out:
+	pop	r10
+	pop	rbp
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; rsi = a line, ecx = what is left of the head: rax = past its LF. CF: none.
+; Keeps rdi, rsi, r8-r15.
+ad_line:
+	test	ecx,ecx
+	jz	.no
+	xor	eax,eax
+@@:
+	cmp	byte [rsi+rax],10
+	je	@f
+	inc	eax
+	cmp	eax,ecx
+	jb	@b
+.no:
+	stc
+	ret
+@@:
+	lea	rax,[rsi+rax+1]
+	clc
+	ret
+
+; r8 = the ops, ecx = how many: r9 = the last ANO_TARGET, or 0. Keeps rdi, rsi.
+ad_op_find_target:
+	xor	r9d,r9d
+.next:
+	test	ecx,ecx
+	jz	.out
+	dec	ecx
+	cmp	byte [r8],ANO_TARGET
+	jne	@f
+	mov	r9,r8
+@@:
+	movzx	eax,word [r8+2]
+	movzx	edx,word [r8+4]
+	lea	r8,[r8+rax+ANO_HDR]
+	add	r8,rdx
+	jmp	.next
+.out:
+	ret
+
+; rsi/edx = a field's name in the head, r8 = the ops, ecx = how many: CF when
+; one sets or removes it (it is not copied). Keeps rdi, rsi, rdx.
+ad_op_drops:
+.next:
+	test	ecx,ecx
+	jz	.keep
+	dec	ecx
+	movzx	eax,byte [r8]
+	cmp	eax,ANO_SET
+	je	.cmp
+	cmp	eax,ANO_REMOVE
+	jne	.skip
+.cmp:
+	movzx	eax,word [r8+2]
+	cmp	eax,edx
+	jne	.skip
+	push	rcx
+	push	rdi
+	push	rsi
+	push	rdx
+	lea	rdi,[r8+ANO_HDR]
+	call	mem_eq_nocase_n
+	pop	rdx
+	pop	rsi
+	pop	rdi
+	pop	rcx
+	jnz	.skip
+	; not one an addon may change
+	push	rsi
+	push	rdx
+	mov	ecx,edx
+	call	ad_name_fixed
+	pop	rdx
+	pop	rsi
+	jz	.keep
+	stc
+	ret
+.skip:
+	movzx	eax,word [r8+2]
+	movzx	r9d,word [r8+4]
+	lea	r8,[r8+rax+ANO_HDR]
+	add	r8,r9
+	jmp	.next
+.keep:
+	clc
+	ret
+
+; rdi, rsi = names, edx = their length: ZF when equal but for case
+mem_eq_nocase_n:
+	test	edx,edx
+	jz	.eq
+.ch:
+	mov	al,[rdi]
+	mov	ah,[rsi]
+	or	ax,0x2020
+	cmp	al,ah
+	jne	.out
+	inc	rdi
+	inc	rsi
+	dec	edx
+	jnz	.ch
+.eq:
+	xor	eax,eax
+.out:
+	ret
+
+; rsi = a name, ecx = its length: ZF when an addon may not set it (the body's
+; framing, the connection's own fields). Keeps rdi, r8-r15.
+ad_name_fixed:
+	push	rdi
+	push	rbx
+	mov	ebx,ecx
+	lea	rdi,[.names]
+.next:
+	movzx	ecx,byte [rdi]
+	test	ecx,ecx
+	jz	.free
+	cmp	ecx,ebx
+	jne	.skip
+	push	rsi
+	push	rdi
+	inc	rdi
+	mov	edx,ecx
+	call	mem_eq_nocase_n
+	pop	rdi
+	pop	rsi
+	jz	.fixed
+.skip:
+	movzx	ecx,byte [rdi]
+	lea	rdi,[rdi+rcx+1]
+	jmp	.next
+.free:
+	or	eax,1				; ZF clear
+	jmp	.out
+.fixed:
+	xor	eax,eax
+.out:
+	pop	rbx
+	pop	rdi
+	ret
+.names	db 14,'content-length'
+	db 17,'transfer-encoding'
+	db 10,'connection'
+	db 10,'keep-alive'
+	db 2,'te'
+	db 7,'trailer'
+	db 7,'upgrade'
+	db 16,'proxy-connection'
+	db 0
+
+; rsi = a name, ecx = its length, rdx = its value's (after it): CF when it is
+; not a field (a name that is no token, a value with a control character); ZF
+; when it is one an addon may not set. Keeps rdi, rsi, r8-r15.
+ad_field_ok:
+	test	ecx,ecx
+	jz	.bad
+	cmp	ecx,256
+	ja	.bad
+	cmp	edx,8192
+	ja	.bad
+	xor	eax,eax
+.name:
+	movzx	r10d,byte [rsi+rax]
+	cmp	byte [http_tchar+r10],0
+	je	.bad
+	inc	eax
+	cmp	eax,ecx
+	jb	.name
+	lea	r11,[rsi+rcx]			; the value
+	xor	eax,eax
+.value:
+	cmp	eax,edx
+	jae	.valid
+	movzx	r10d,byte [r11+rax]
+	cmp	r10d,9
+	je	@f
+	cmp	r10d,0x20
+	jb	.bad
+	cmp	r10d,0x7F
+	je	.bad
+@@:
+	inc	eax
+	jmp	.value
+.valid:
+	push	rdx
+	push	rcx
+	call	ad_name_fixed
+	pop	rcx
+	pop	rdx
+	clc
+	ret
+.bad:
+	stc
+	ret
+
+; r15 = an answer to respond with, ebx = the session (held): its fields and body
+; put at the end of HB_OUT until the request comes back to answer. CF: not fit.
+; Keeps rbx, r12-r15, r10.
+ad_stash:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	push	r10
+	movzx	eax,word [r15+ANS_STATUS]
+	cmp	eax,200
+	jb	.bad
+	cmp	eax,599
+	ja	.bad
+	mov	[r10+ADSE_STATUS],eax
+	mov	r14d,ebx
+	shl	r14,H_SHIFT
+	add	r14,[g_http_base]
+	; how much: each field rendered, the body
+	movzx	ebx,word [r15+ANS_NOPS]
+	lea	r8,[r15+ANS_OPS]
+	xor	r12d,r12d			; fields' bytes
+.size:
+	test	ebx,ebx
+	jz	.sized
+	dec	ebx
+	movzx	ecx,word [r8+2]
+	movzx	edx,word [r8+4]
+	cmp	byte [r8],ANO_SET
+	je	@f
+	cmp	byte [r8],ANO_ADD
+	jne	.bad
+@@:
+	lea	r12d,[r12+rcx+4]
+	add	r12d,edx
+	lea	r8,[r8+rcx+ANO_HDR]
+	add	r8,rdx
+	jmp	.size
+.sized:
+	mov	r13d,[r15+ANS_BLEN]
+	; the body is within the record
+	mov	rax,r8
+	sub	rax,r15
+	add	rax,r13
+	cmp	eax,[r15+ANS_LEN]
+	ja	.bad
+	lea	eax,[r12+r13]
+	cmp	eax,AD_STASH_MAX
+	ja	.bad
+	mov	rdi,[r14+H_BUF]
+	lea	rdi,[rdi+HB_OUT+H_OUT_CAP]
+	sub	rdi,rax
+	push	r8				; (the body)
+	movzx	ebx,word [r15+ANS_NOPS]
+	lea	r8,[r15+ANS_OPS]
+	xor	r11d,r11d			; fields kept
+.field:
+	test	ebx,ebx
+	jz	.fields
+	dec	ebx
+	movzx	ecx,word [r8+2]
+	movzx	edx,word [r8+4]
+	lea	rsi,[r8+ANO_HDR]
+	lea	r9,[rsi+rcx]
+	add	r9,rdx
+	push	rcx
+	push	rdx
+	call	ad_field_ok
+	pop	rdx
+	pop	rcx
+	jc	.bad_pop
+	jz	.next_field			; (okena writes those itself)
+	rep	movsb
+	mov	word [rdi],': '
+	add	rdi,2
+	mov	ecx,edx
+	rep	movsb
+	mov	word [rdi],0x0A0D
+	add	rdi,2
+.next_field:
+	mov	r8,r9
+	jmp	.field
+.fields:
+	; the fields kept may be fewer: the body follows them at once
+	pop	rsi
+	mov	ecx,r13d
+	rep	movsb
+	mov	r10,[rsp]
+	; where they begin, and how long they are
+	mov	rax,[r14+H_BUF]
+	lea	rax,[rax+HB_OUT+H_OUT_CAP]
+	sub	rax,rdi				; what was not used (dropped fields)
+	mov	ecx,r12d
+	sub	ecx,eax
+	mov	[r10+ADSE_HLEN],ecx
+	mov	[r10+ADSE_BLEN],r13d
+	; moved to the end, so the start is found from the lengths alone
+	test	eax,eax
+	jz	.ok
+	mov	ecx,[r10+ADSE_HLEN]
+	add	ecx,r13d
+	lea	rsi,[rdi-1]
+	lea	rdi,[rdi+rax-1]
+	std
+	rep	movsb
+	cld
+.ok:
+	clc
+	jmp	.out
+.bad_pop:
+	pop	rax
+.bad:
+	stc
+.out:
+	pop	r10
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; http_request, an addon's own answer: ebx, r15. Its fields and body wait at
+; the end of HB_OUT (ad_stash).
+addon_respond:
+	call	ad_side_cur
+	jc	.lost
+	mov	r8d,[rcx+ADSE_STATUS]
+	mov	r9d,[rcx+ADSE_HLEN]
+	mov	r10d,[rcx+ADSE_BLEN]
+	push	r8
+	push	r9
+	push	r10
+	or	dword [r15+H_FLAGS],HX_SELF or HX_STARTED
+	test	dword [r15+H_FLAGS],HX_NOBODY
+	jnz	@f
+	or	dword [r15+H_FLAGS],HX_CLOSE	; (a body it will not read)
+@@:
+	mov	[r15+H_STATUS],r8d
+	mov	edi,r8d
+	mov	esi,5
+	call	http_count
+	cmp	dword [r15+H_RIDLEN],0
+	jne	@f
+	call	rid_new
+@@:
+	mov	rdi,[r15+H_BUF]
+	lea	rdi,[rdi+HB_OUT]
+	memit_x 'HTTP/1.1 '
+	mov	eax,[rsp+16]
+	call	fmt_u64
+	mov	byte [rdi],' '
+	inc	rdi
+	mov	eax,[rsp+16]
+	call	http_reason
+	call	fmt_cstr
+	memit_x 13,10
+	; its fields (the source is further on: copied forward)
+	mov	rsi,[r15+H_BUF]
+	lea	rsi,[rsi+HB_OUT+H_OUT_CAP]
+	mov	eax,[rsp+8]
+	add	eax,[rsp]
+	sub	rsi,rax
+	mov	ecx,[rsp+8]
+	rep	movsb
+	push	rsi				; (the body)
+	call	cors_emit
+	mov	eax,[rsp+24]
+	cmp	eax,204
+	je	@f
+	cmp	eax,304
+	je	@f
+	memit_x 'Content-Length: '
+	mov	eax,[rsp+8]
+	call	fmt_u64
+	memit_x 13,10
+@@:
+	memit_x 'X-Request-Id: '
+	lea	rsi,[r15+H_RID]
+	mov	ecx,[r15+H_RIDLEN]
+	rep	movsb
+	memit_x 13,10
+	test	dword [r15+H_FLAGS],HX_CLOSE
+	jz	@f
+	memit_x 'Connection: close',13,10
+@@:
+	memit_x 13,10
+	pop	rsi
+	mov	ecx,[rsp]
+	test	dword [r15+H_FLAGS],HX_HEAD
+	jnz	@f
+	cmp	dword [rsp+16],204
+	je	@f
+	cmp	dword [rsp+16],304
+	je	@f
+	rep	movsb
+@@:
+	add	rsp,24
+	mov	rsi,[r15+H_BUF]
+	lea	rsi,[rsi+HB_OUT]
+	sub	rdi,rsi
+	mov	dword [r15+H_STATE],HS_SELF_SEND
+	mov	ecx,SIDE_CLIENT
+	xchg	rsi,rdi
+	jmp	h_send
+.lost:
+	mov	edi,503
+	jmp	http_error

@@ -381,6 +381,7 @@ cfg_begin:
 	mov	dword [g_cfg_warnings],0
 	mov	dword [g_chk_listeners],0
 	mov	dword [g_chk_pools],0
+	mov	dword [g_chk_addons],0
 	mov	dword [g_chk_servers],0
 	mov	[g_cfg_files],rdi		; the first file
 	mov	[g_cfg_files+8],rsi

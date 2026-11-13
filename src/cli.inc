@@ -64,6 +64,12 @@ cli_main:
 	jb	.run_default
 	mov	rax,[g_argv]
 	mov	rdi,[rax+8]
+	lea	rsi,[str_cmd_launcher]
+	call	cstr_eq
+	test	eax,eax
+	jnz	launcher_exec_main		; (okena's own addon launcher: addon/launcher.inc)
+	mov	rax,[g_argv]
+	mov	rdi,[rax+8]
 	lea	rsi,[str_cmd_check]
 	call	cstr_eq
 	test	eax,eax

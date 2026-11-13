@@ -76,6 +76,7 @@ worker_main:
 	call	sessions_init
 	test	eax,eax
 	js	.no_memory
+	call	addon_worker_init
 	call	qz_worker_init			; a crash notes the request it was on
 	call	cache_init
 	call	files_init
@@ -108,6 +109,7 @@ worker_main:
 	call	arm_accepts
 	call	arm_timer
 	call	arm_signal
+	call	addon_arm
 	call	qs_worker_init			; http3: the UDP sockets
 	call	udp_worker_init
 	call	hash_tables_init
@@ -191,10 +193,12 @@ worker_main:
 .spin:
 	mov	eax,[g_reaped]
 	mov	[g_reaped_mark],eax
+	call	addon_bells
 	xor	edi,edi
 	call	ring_enter
 	call	ring_reap
 	call	ep_http_ready			; user-space TLS deliveries
+	call	addon_flush			; addons' answers
 	call	fault_flush			; requests held by fault delay=
 	call	h2_flush			; HTTP/2: one send a connection an iteration
 	call	qs_flush			; QUIC: the answers first,
@@ -237,12 +241,16 @@ worker_main:
 	or	rax,rdx
 	mov	[g_bp_t0],rax
 @@:
+	push	rdi
+	call	addon_bells			; (an addon asleep: calls came)
+	pop	rdi
 	pin_wait_begin
 	call	ring_enter
 	pin_wait_end
 	call	bp_seen
 	call	ring_reap
 	call	ep_http_ready			; user-space TLS deliveries
+	call	addon_flush			; addons' answers
 	call	fault_flush			; requests held by fault delay=
 	call	h2_flush			; HTTP/2: one send a connection an iteration
 	call	qs_flush			; QUIC: the answers first,

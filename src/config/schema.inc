@@ -20,6 +20,7 @@ CTX_TLS		:= 10
 CTX_AUTH	:= 11
 CTX_UDP		:= 12
 CTX_ALERTS	:= 13
+CTX_ADDON	:= 14
 
 ; Flags
 F_BLOCK_REQ	:= 1		; must have a block
@@ -120,6 +121,7 @@ M_TLS		:= 1 shl CTX_TLS
 M_AUTH		:= 1 shl CTX_AUTH
 M_UDP		:= 1 shl CTX_UDP
 M_ALERTS	:= 1 shl CTX_ALERTS
+M_ADDON		:= 1 shl CTX_ADDON
 
 enumdef e_io_engine, 'auto', 'io_uring', 'epoll'
 enumdef e_samesite, 'lax', 'strict', 'none'
@@ -204,15 +206,18 @@ keysdef k_synrate, 'burst', T_COUNT
 keysdef k_health, 'every', T_DURATION, 'timeout', T_DURATION, 'rise', T_COUNT, 'fall', T_COUNT, \
 	'expect', T_STATUSES, 'host', T_HOSTNAME
 keysdef k_uptls, 'trust', T_ANY, 'sni', T_HOSTNAME, 'cert', T_ANY, 'key', T_ANY
+keysdef k_breaker, 'errors', T_COUNT, 'open', T_DURATION
+enumdef e_ad_phases, 'request_headers'
+enumdef e_ad_onerr, 'deny', 'allow'
 keysdef k_connect, 'timeout', T_DURATION, 'max', T_UINT, 'idle', T_DURATION, \
 	'warm', T_UINT, 'rate', T_RATE
 
 ; Names of the contexts, for messages, in CTX_* order starting at 1.
-enumdef ctx_names, 'the top level', '`okena`', '`tcp`', '`pool`', '`limits`', '`timeout`', '`http`', '`route`', '`host`', '`tls`', '`auth`', '`udp`', '`alerts`'
+enumdef ctx_names, 'the top level', '`okena`', '`tcp`', '`pool`', '`limits`', '`timeout`', '`http`', '`route`', '`host`', '`tls`', '`auth`', '`udp`', '`alerts`', '`addon`'
 
 ; Directives of the language that this version does not implement yet.
 enumdef future_names, \
-	'addon', 'log', \
+	'log', \
 	'acme', \
 	'body', \
 	'cert', 'warm'
@@ -265,6 +270,14 @@ dirdef DIR_TELEGRAM, 'telegram', M_ALERTS, 0,           F_KEYS_BLOCK, 0, 0, T_NO
 dirdef DIR_ALERT_ON, 'on',      M_ALERTS,  0,           F_UNIQUE, 1, 5, e_alert_on, e_alert_on, 0
 dirdef DIR_EVERY, 'every',      M_ALERTS,  0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
 dirdef DIR_ALERT_NAME, 'name',  M_ALERTS,  0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
+dirdef DIR_ADDON, 'addon',      M_TOP,     CTX_ADDON,   F_BLOCK_REQ, 1, 1, T_NAME, T_NONE, 0
+dirdef DIR_ADRUN, 'run',        M_ADDON,   0,           F_UNIQUE, 1, 64, T_ANY, T_ANY, 0
+dirdef DIR_ADPHASES, 'phases',  M_ADDON,   0,           F_UNIQUE, 1, 5, e_ad_phases, e_ad_phases, 0
+dirdef DIR_ADTIMEOUT, 'timeout', M_ADDON,  0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
+dirdef DIR_ADONERR, 'on_error', M_ADDON,   0,           F_UNIQUE, 1, 1, e_ad_onerr, T_NONE, 0
+dirdef DIR_ADCONC, 'concurrency', M_ADDON, 0,           F_UNIQUE, 1, 1, T_COUNT, T_NONE, 0
+dirdef DIR_ADBREAKER, 'breaker', M_ADDON,  0,           F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_breaker
+dirdef DIR_RADDON, 'addon',     M_ROUTE,   0,           0, 1, 1, T_NAME, T_NONE, 0
 dirdef DIR_POOL, 'pool',        M_TOP,     CTX_POOL,    F_BLOCK_REQ, 1, 1, T_NAME, T_NONE, 0
 dirdef DIR_TO, 'to',          M_TCP or M_UDP or M_ROUTE, 0,           F_UNIQUE, 1, 64, T_TARGET, T_TARGET, 0
 dirdef DIR_PROXY_PROTOCOL, 'proxy_protocol', M_TCP, 0,      F_UNIQUE, 2, 2, e_pp_mode, e_pp_version, 0

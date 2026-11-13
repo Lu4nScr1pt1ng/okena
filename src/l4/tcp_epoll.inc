@@ -81,6 +81,7 @@ ep_main:
 	mov	esi,EPOLLIN
 	mov	rdx,EK_SIGNAL shl 56
 	call	ep_add
+	call	addon_ep_add
 	call	ep_clock
 	mov	rax,[g_now_ms]
 	add	rax,1000
@@ -115,6 +116,9 @@ ep_main:
 	jbe	@f
 	mov	edx,10
 @@:
+	push	rdx
+	call	addon_bells			; (an addon asleep: calls came)
+	pop	rdx
 	mov	edi,[g_epfd]
 	lea	rsi,[g_ep_events]
 	mov	r10d,edx
@@ -144,6 +148,7 @@ ep_main:
 	jmp	.event
 .timers:
 	call	ep_http_ready
+	call	addon_flush			; addons' answers
 	call	fault_flush			; requests held by fault delay=
 	call	h2_flush			; HTTP/2: one send a connection an iteration
 	call	qs_flush			; QUIC: the answers first,
@@ -347,6 +352,8 @@ ep_dispatch:
 @@:
 	cmp	eax,EK_UDP
 	je	udp_ready
+	cmp	eax,EK_ADDON
+	je	addon_ep_ready
 	; a session side: check the generation
 	mov	r8d,eax				; side
 	mov	r9,rsi

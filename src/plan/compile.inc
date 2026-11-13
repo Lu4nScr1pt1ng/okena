@@ -427,6 +427,14 @@ plan_compile:
 	call	compile_vrrp			; (rbx = the node)
 	jmp	@f
 .not_vrrp:
+	lea	rcx,[dir_table + D_SIZE*DIR_ADDON]
+	cmp	rax,rcx
+	jne	.not_addon
+	mov	rdi,rbx
+	call	compile_addon
+	mov	rax,[rbx+N_DEF]
+	jmp	@f
+.not_addon:
 	lea	rcx,[dir_table + D_SIZE*DIR_POOL]
 	cmp	rax,rcx
 	jne	@f
@@ -1460,6 +1468,9 @@ compile_route_action:
 	lea	rcx,[dir_table + D_SIZE*DIR_ERRORS]
 	cmp	rax,rcx
 	je	@f
+	lea	rcx,[dir_table + D_SIZE*DIR_RADDON]
+	cmp	rax,rcx
+	je	@f
 	mov	rbx,[rbx+N_NEXT]
 	jmp	@b
 .listener_compress:
@@ -1774,6 +1785,7 @@ compile_route_action:
 	call	compile_auth
 	mov	[r13+RA_AUTH],eax
 .no_auth:
+	call	compile_route_addons
 	mov	rdi,r12
 	mov	ecx,DIR_FAULT
 	call	find_child

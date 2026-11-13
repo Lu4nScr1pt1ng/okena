@@ -1355,6 +1355,11 @@ check_semantics:
 	lea	rcx,[dir_table + D_SIZE*DIR_HTTP]
 	cmp	rax,rcx
 	je	.http
+	lea	rcx,[dir_table + D_SIZE*DIR_ADDON]
+	cmp	rax,rcx
+	jne	.advance
+	mov	rdi,rbx
+	call	check_addon
 	jmp	.advance
 .http:
 	inc	dword [g_chk_listeners]
@@ -1407,6 +1412,7 @@ check_semantics:
 	mov	rbx,[rbx+N_NEXT]
 	jmp	.next
 .unused:
+	call	check_addon_refs
 	call	check_unused_pools
 	pop	r13
 	pop	r12
