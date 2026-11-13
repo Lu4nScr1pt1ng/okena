@@ -1,10 +1,11 @@
 #!/bin/bash
-# HTTP/1.1 reverse proxy against Envoy, HAProxy and nginx: the same two cores,
+# HTTP/1.1 reverse proxy against Envoy, HAProxy, nginx, Caddy and Traefik: the same two cores,
 # the same backend (nginx answering "ok" from memory), plain HTTP, keep-alive
 # both sides, a small answer: what a proxy costs per request. Each proxy tuned
 # by its own documentation: upstream keep-alive (nginx `keepalive`, HAProxy
-# `http-reuse always`), Envoy's circuit breakers out of the way, each with as
-# many threads as cores. First the most each does (closed loop, wrk), then the
+# `http-reuse always`, Caddy's and Traefik's idle connections per host raised
+# to 1024), Envoy's circuit breakers out of the way, each with as many threads
+# as cores (GOMAXPROCS for the two in Go). First the most each does (closed loop, wrk), then the
 # latency each gives at fixed rates (open loop, okena bench: from the
 # schedule, as wrk2), each point REPEAT times and the median of each
 # percentile given (on a host that is not quiet, one bad run moves a tail).
@@ -38,6 +39,8 @@ ENGINE=${ENGINE:-io_uring}
 ENVOY_IMAGE=${ENVOY_IMAGE:-envoyproxy/envoy:v1.40-latest}
 HAPROXY_IMAGE=${HAPROXY_IMAGE:-haproxy:3.2}
 NGINX_IMAGE=${NGINX_IMAGE:-nginx:1.27-alpine}
+CADDY_IMAGE=${CADDY_IMAGE:-caddy:2.10-alpine}
+TRAEFIK_IMAGE=${TRAEFIK_IMAGE:-traefik:v3.5}
 PROXY_CPUS=${PROXY_CPUS:-1,2}
 NPROXY=${NPROXY:-2}
 BACK_CPUS=${BACK_CPUS:-4,5,12,13}
@@ -53,11 +56,11 @@ H2_STREAMS=${H2_STREAMS:-16}
 H2LOAD_IMAGE=${H2LOAD_IMAGE:-okena-h2load-h3}
 SCHEME=http
 [ -n "$TLS" ] && SCHEME=https
-ONLY=${ONLY:-okena envoy haproxy nginx}
-B=28600 OK=28601 EN=28602 HA=28603 NG=28604
+ONLY=${ONLY:-okena envoy haproxy nginx caddy traefik}
+B=28600 OK=28601 EN=28602 HA=28603 NG=28604 CA=28605 TR=28606
 W=$(mktemp -d)
 chmod 755 "$W"
-trap 'docker rm -f okh-back okh-okena okh-envoy okh-haproxy okh-nginx >/dev/null 2>&1 || true; rm -rf "$W"' EXIT
+trap 'docker rm -f okh-back okh-okena okh-envoy okh-haproxy okh-nginx okh-caddy okh-traefik >/dev/null 2>&1 || true; rm -rf "$W"' EXIT
 docker build -q -t "$OKENA_IMAGE" "$ROOT" >/dev/null
 
 cat > "$W/back.conf" <<EOF
@@ -69,7 +72,7 @@ http {
 	server { listen 127.0.0.1:$B reuseport backlog=65535; location / { return 200 "ok"; } }
 }
 EOF
-OKTLS= ENTLS= HATLS= NGTLS=
+OKTLS= ENTLS= HATLS= NGTLS= CATLS= TRTLS= TRROUTE= CASCHEME=http
 if [ -n "$TLS" ]; then
 	openssl ecparam -genkey -name prime256v1 -noout -out "$W/key.pem" 2>/dev/null
 	openssl req -new -x509 -key "$W/key.pem" -subj /CN=localhost -addext subjectAltName=DNS:localhost \
@@ -79,6 +82,15 @@ if [ -n "$TLS" ]; then
 	OKTLS="tls { cert /w/cert.pem; key /w/key.pem; versions $TLS }"
 	HATLS="ssl crt /w/combined.pem ssl-min-ver TLSv$TLS ssl-max-ver TLSv$TLS alpn http/1.1"
 	NGTLS="ssl; ssl_certificate /w/cert.pem; ssl_certificate_key /w/key.pem; ssl_protocols TLSv$TLS"
+	CASCHEME=https
+	CATLS="tls /w/cert.pem /w/key.pem {
+		protocols tls$TLS tls$TLS
+	}"
+	TRROUTE=", tls: {}"
+	TRTLS="tls:
+  certificates: [ { certFile: /w/cert.pem, keyFile: /w/key.pem } ]
+  stores: { default: { defaultCertificate: { certFile: /w/cert.pem, keyFile: /w/key.pem } } }
+  options: { default: { minVersion: VersionTLS${TLS/./}, maxVersion: VersionTLS${TLS/./}, alpnProtocols: [http/1.1] } }"
 	ENTLS="
       transport_socket:
         name: envoy.transport_sockets.tls
@@ -91,9 +103,9 @@ if [ -n "$TLS" ]; then
             - certificate_chain: { filename: /w/cert.pem }
               private_key: { filename: /w/key.pem }"
 fi
-OKH2= ENCODEC=HTTP1 HAH2= NGH2=
+OKH2= ENCODEC=HTTP1 HAH2= NGH2= CAPROTO=h1
 if [ -n "$H2" ]; then
-	OKH2="http2 on" ENCODEC=AUTO HAH2="proto h2" NGH2="http2 on;"
+	OKH2="http2 on" ENCODEC=AUTO HAH2="proto h2" NGH2="http2 on;" CAPROTO="h1 h2c"
 fi
 cat > "$W/okena.conf" <<EOF
 okena { workers $NPROXY; io_engine $ENGINE }
@@ -171,6 +183,46 @@ http {
 	}
 }
 EOF
+# Caddy: no admin endpoint, no automatic HTTPS; access logs are off unless asked
+cat > "$W/Caddyfile" <<EOF
+{
+	admin off
+	auto_https disable_redirects
+	persist_config off
+	default_sni localhost
+	servers {
+		protocols $CAPROTO
+	}
+}
+$CASCHEME://127.0.0.1:$CA, $CASCHEME://localhost:$CA {
+	bind 127.0.0.1
+	$CATLS
+	reverse_proxy 127.0.0.1:$B {
+		transport http {
+			keepalive 120s
+			keepalive_idle_conns 1024
+			keepalive_idle_conns_per_host 1024
+		}
+	}
+}
+EOF
+# Traefik: a file provider, no access log (its default), h2c served by itself
+cat > "$W/traefik.yml" <<EOF
+global: { checkNewVersion: false, sendAnonymousUsage: false }
+log: { level: ERROR }
+entryPoints:
+  web: { address: "127.0.0.1:$TR" }
+serversTransport: { maxIdleConnsPerHost: 1024 }
+providers: { file: { filename: /w/traefik-dyn.yml } }
+EOF
+cat > "$W/traefik-dyn.yml" <<EOF
+http:
+  routers:
+    r: { entryPoints: [web], rule: "PathPrefix(\`/\`)", service: s$TRROUTE }
+  services:
+    s: { loadBalancer: { servers: [ { url: "http://127.0.0.1:$B" } ] } }
+$TRTLS
+EOF
 chmod 644 "$W"/*
 
 docker run -d --rm --name okh-back --network host --cpuset-cpus "$BACK_CPUS" \
@@ -241,11 +293,15 @@ start() {	# name
 		-v "$W/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro" -v "$W:/w:ro" "$HAPROXY_IMAGE" >/dev/null ;;
 	nginx) docker run -d --rm --name okh-nginx --network host --cpuset-cpus "$PROXY_CPUS" \
 		-v "$W/nginx.conf:/etc/nginx/nginx.conf:ro" -v "$W:/w:ro" "$NGINX_IMAGE" >/dev/null ;;
+	caddy) docker run -d --rm --name okh-caddy --network host --cpuset-cpus "$PROXY_CPUS" -e GOMAXPROCS="$NPROXY" \
+		-v "$W:/w:ro" "$CADDY_IMAGE" caddy run --config /w/Caddyfile --adapter caddyfile >/dev/null ;;
+	traefik) docker run -d --rm --name okh-traefik --network host --cpuset-cpus "$PROXY_CPUS" -e GOMAXPROCS="$NPROXY" \
+		-v "$W:/w:ro" "$TRAEFIK_IMAGE" --configFile=/w/traefik.yml >/dev/null ;;
 	esac
 	sleep 2
 }
 stop() { docker rm -f "okh-$1" >/dev/null; }
-port() { case $1 in okena) echo $OK ;; envoy) echo $EN ;; haproxy) echo $HA ;; nginx) echo $NG ;; esac; }
+port() { case $1 in okena) echo $OK ;; envoy) echo $EN ;; haproxy) echo $HA ;; nginx) echo $NG ;; caddy) echo $CA ;; traefik) echo $TR ;; esac; }
 
 MAXRUN=${MAXRUN:-1}
 if [ "$MAXRUN" = 1 ]; then

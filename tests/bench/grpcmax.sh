@@ -1,5 +1,5 @@
 #!/bin/bash
-# gRPC, the most each proxy does: okena, Envoy, HAProxy and nginx, each in a
+# gRPC, the most each proxy does: okena, Envoy, HAProxy, nginx, Caddy and Traefik, each in a
 # container on the same two cores, gRPC over h2c on both sides, in front of
 # the same backend (tests/bench/grpc, Go grpc-go, an echo). The load is h2load
 # posting one unary call after another (a 64-byte message in its gRPC frame,
@@ -21,6 +21,8 @@ OKENA_IMAGE=${OKENA_IMAGE:-okena:bench}
 ENVOY_IMAGE=${ENVOY_IMAGE:-envoyproxy/envoy:v1.40-latest}
 HAPROXY_IMAGE=${HAPROXY_IMAGE:-haproxy:3.2}
 NGINX_IMAGE=${NGINX_IMAGE:-nginx:1.27-alpine}
+CADDY_IMAGE=${CADDY_IMAGE:-caddy:2.10-alpine}
+TRAEFIK_IMAGE=${TRAEFIK_IMAGE:-traefik:v3.5}
 H2LOAD_IMAGE=${H2LOAD_IMAGE:-okena-h2load-h3}
 PROXY_CPUS=${PROXY_CPUS:-1,2}
 NPROXY=${NPROXY:-2}
@@ -29,15 +31,15 @@ LOAD_CPUS=${LOAD_CPUS:-0,3,6,7,8,11,14,15}
 DUR=${DUR:-10}
 H2_CONNS=${H2_CONNS:-64}
 H2_STREAMS=${H2_STREAMS:-16}
-ONLY=${ONLY:-direct okena envoy haproxy nginx}
+ONLY=${ONLY:-direct okena envoy haproxy nginx caddy traefik}
 RATES=${RATES:-}		# unary calls a second: latency at each (grpcbench, open loop)
 REPEAT=${REPEAT:-3}		# each point, the median of each percentile
 MOSTRUN=${MOSTRUN:-1}
-B=28700 OK=28701 EN=28702 HA=28703 NG=28704
+B=28700 OK=28701 EN=28702 HA=28703 NG=28704 CA=28705 TR=28706
 W=$(mktemp -d)
 chmod 755 "$W"
 BPID=
-trap 'docker rm -f okg-okena okg-envoy okg-haproxy okg-nginx >/dev/null 2>&1 || true; [ -n "$BPID" ] && kill $BPID 2>/dev/null; rm -rf "$W"' EXIT
+trap 'docker rm -f okg-okena okg-envoy okg-haproxy okg-nginx okg-caddy okg-traefik >/dev/null 2>&1 || true; [ -n "$BPID" ] && kill $BPID 2>/dev/null; rm -rf "$W"' EXIT
 
 (cd "$ROOT/tests/bench/grpc" && go build -o "$GB" .)
 docker build -q -t "$OKENA_IMAGE" "$ROOT" >/dev/null
@@ -123,6 +125,41 @@ http {
 	}
 }
 EOF
+cat > "$W/Caddyfile" <<EOF
+{
+	admin off
+	auto_https off
+	persist_config off
+	servers {
+		protocols h1 h2c
+	}
+}
+http://127.0.0.1:$CA {
+	bind 127.0.0.1
+	reverse_proxy h2c://127.0.0.1:$B {
+		transport http {
+			keepalive 120s
+			keepalive_idle_conns 1024
+			keepalive_idle_conns_per_host 1024
+		}
+	}
+}
+EOF
+cat > "$W/traefik.yml" <<EOF
+global: { checkNewVersion: false, sendAnonymousUsage: false }
+log: { level: ERROR }
+entryPoints:
+  web: { address: "127.0.0.1:$TR" }
+serversTransport: { maxIdleConnsPerHost: 1024 }
+providers: { file: { filename: /w/traefik-dyn.yml } }
+EOF
+cat > "$W/traefik-dyn.yml" <<EOF
+http:
+  routers:
+    r: { entryPoints: [web], rule: "PathPrefix(\`/\`)", service: s }
+  services:
+    s: { loadBalancer: { servers: [ { url: "h2c://127.0.0.1:$B" } ] } }
+EOF
 chmod 644 "$W"/*
 
 start() {
@@ -136,11 +173,15 @@ start() {
 		-v "$W/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro" "$HAPROXY_IMAGE" >/dev/null ;;
 	nginx) docker run -d --rm --name okg-nginx --network host --cpuset-cpus "$PROXY_CPUS" \
 		-v "$W/nginx.conf:/etc/nginx/nginx.conf:ro" "$NGINX_IMAGE" >/dev/null ;;
+	caddy) docker run -d --rm --name okg-caddy --network host --cpuset-cpus "$PROXY_CPUS" --ulimit nofile=1048576 -e GOMAXPROCS="$NPROXY" \
+		-v "$W:/w:ro" "$CADDY_IMAGE" caddy run --config /w/Caddyfile --adapter caddyfile >/dev/null ;;
+	traefik) docker run -d --rm --name okg-traefik --network host --cpuset-cpus "$PROXY_CPUS" --ulimit nofile=1048576 -e GOMAXPROCS="$NPROXY" \
+		-v "$W:/w:ro" "$TRAEFIK_IMAGE" --configFile=/w/traefik.yml >/dev/null ;;
 	esac
 	sleep 2
 }
 stop() { [ "$1" = direct ] || docker rm -f "okg-$1" >/dev/null; }
-port() { case $1 in direct) echo $B ;; okena) echo $OK ;; envoy) echo $EN ;; haproxy) echo $HA ;; nginx) echo $NG ;; esac; }
+port() { case $1 in direct) echo $B ;; okena) echo $OK ;; envoy) echo $EN ;; haproxy) echo $HA ;; nginx) echo $NG ;; caddy) echo $CA ;; traefik) echo $TR ;; esac; }
 
 # grpcbench, 2000 calls a second for 2 s: its errors (grpc-status not 0, or none)
 check() {

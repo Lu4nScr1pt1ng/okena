@@ -1,7 +1,7 @@
 #!/bin/bash
 # L4, TCP and UDP: okena, HAProxy 3.2 (TCP only: UDP is not in its open
-# source edition), nginx 1.27 (`stream`) and Envoy 1.40 (tcp_proxy,
-# udp_proxy), each in a container on the host network on the same two
+# source edition), nginx 1.27 (`stream`), Envoy 1.40 (tcp_proxy,
+# udp_proxy) and Traefik 3.5 (TCP and UDP routers; Caddy has no L4 without a plugin), each in a container on the host network on the same two
 # cores, in front of the same backends (tests/bench/l4bench.c: an echo, a
 # sink, a UDP echo). The load, from l4bench on cores of its own:
 #
@@ -27,19 +27,20 @@ OKENA_IMAGE=${OKENA_IMAGE:-okena:bench}
 ENVOY_IMAGE=${ENVOY_IMAGE:-envoyproxy/envoy:v1.40-latest}
 HAPROXY_IMAGE=${HAPROXY_IMAGE:-haproxy:3.2}
 NGINX_IMAGE=${NGINX_IMAGE:-nginx:1.27-alpine}
+TRAEFIK_IMAGE=${TRAEFIK_IMAGE:-traefik:v3.5}
 PROXY_CPUS=${PROXY_CPUS:-1,2}
 NPROXY=${NPROXY:-2}
 BACK_CPUS=${BACK_CPUS:-4,5,12,13}
 LOAD_CPUS=${LOAD_CPUS:-0,3,6,7,8,11,14,15}
 DUR=${DUR:-6}
 REPEAT=${REPEAT:-3}
-ONLY=${ONLY:-direct okena haproxy nginx envoy}
+ONLY=${ONLY:-direct okena haproxy nginx envoy traefik}
 TESTS=${TESTS:-ping1 ping256 bulk bulk256 connect udp1 udp256}
 W=$(mktemp -d)
 chmod 755 "$W"
 BENCH=$W/l4bench
 PIDS=
-trap 'docker rm -f okl4-okena okl4-haproxy okl4-nginx okl4-envoy >/dev/null 2>&1 || true; for p in $PIDS; do kill $p 2>/dev/null; done; rm -rf "$W"' EXIT
+trap 'docker rm -f okl4-okena okl4-haproxy okl4-nginx okl4-envoy okl4-traefik >/dev/null 2>&1 || true; for p in $PIDS; do kill $p 2>/dev/null; done; rm -rf "$W"' EXIT
 
 gcc -O2 -pthread -o "$BENCH" "$ROOT/tests/bench/l4bench.c"
 docker build -q -t "$OKENA_IMAGE" "$ROOT" >/dev/null
@@ -49,7 +50,7 @@ taskset -c "$BACK_CPUS" "$BENCH" sink 29001 4 & PIDS="$PIDS $!"
 taskset -c "$BACK_CPUS" "$BENCH" uecho 29002 4 & PIDS="$PIDS $!"
 
 # ports: proxy base + 0 echo, + 1 sink, + 2 UDP echo
-base() { case $1 in direct) echo 29000 ;; okena) echo 29100 ;; haproxy) echo 29200 ;; nginx) echo 29300 ;; envoy) echo 29400 ;; esac; }
+base() { case $1 in direct) echo 29000 ;; okena) echo 29100 ;; haproxy) echo 29200 ;; nginx) echo 29300 ;; envoy) echo 29400 ;; traefik) echo 29500 ;; esac; }
 
 cat > "$W/okena.conf" <<EOF
 okena { workers $NPROXY; ${OKENA_EXTRA:-} }
@@ -136,6 +137,29 @@ EOF
 	cluster sink 29001
 	cluster uecho 29002
 } > "$W/envoy.yaml"
+cat > "$W/traefik.yml" <<EOF
+global: { checkNewVersion: false, sendAnonymousUsage: false }
+log: { level: ERROR }
+entryPoints:
+  e: { address: "127.0.0.1:29500" }
+  k: { address: "127.0.0.1:29501" }
+  u: { address: "127.0.0.1:29502/udp", udp: { timeout: 60s } }
+providers: { file: { filename: /w/traefik-dyn.yml } }
+EOF
+cat > "$W/traefik-dyn.yml" <<EOF
+tcp:
+  routers:
+    e: { entryPoints: [e], rule: "HostSNI(\`*\`)", service: e }
+    k: { entryPoints: [k], rule: "HostSNI(\`*\`)", service: k }
+  services:
+    e: { loadBalancer: { servers: [ { address: "127.0.0.1:29000" } ] } }
+    k: { loadBalancer: { servers: [ { address: "127.0.0.1:29001" } ] } }
+udp:
+  routers:
+    u: { entryPoints: [u], service: u }
+  services:
+    u: { loadBalancer: { servers: [ { address: "127.0.0.1:29002" } ] } }
+EOF
 chmod 644 "$W"/*.conf "$W"/*.cfg "$W"/*.yaml
 
 start() {
@@ -149,6 +173,8 @@ start() {
 		-v "$W/nginx.conf:/etc/nginx/nginx.conf:ro" "$NGINX_IMAGE" >/dev/null ;;
 	envoy) docker run -d --rm --name okl4-envoy --network host --cpuset-cpus "$PROXY_CPUS" --ulimit nofile=1048576 \
 		-v "$W:/w:ro" "$ENVOY_IMAGE" envoy -c /w/envoy.yaml --concurrency "$NPROXY" -l warn >/dev/null ;;
+	traefik) docker run -d --rm --name okl4-traefik --network host --cpuset-cpus "$PROXY_CPUS" --ulimit nofile=1048576 -e GOMAXPROCS="$NPROXY" \
+		-v "$W:/w:ro" "$TRAEFIK_IMAGE" --configFile=/w/traefik.yml >/dev/null ;;
 	esac
 	sleep 2
 }

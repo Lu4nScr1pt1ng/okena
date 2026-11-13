@@ -17,17 +17,19 @@ OKENA_IMAGE=${OKENA_IMAGE:-okena:bench}
 ENVOY_IMAGE=${ENVOY_IMAGE:-envoyproxy/envoy:v1.40-latest}
 HAPROXY_IMAGE=${HAPROXY_IMAGE:-haproxy:3.2}
 NGINX_IMAGE=${NGINX_IMAGE:-nginx:1.27-alpine}
+CADDY_IMAGE=${CADDY_IMAGE:-caddy:2.10-alpine}
+TRAEFIK_IMAGE=${TRAEFIK_IMAGE:-traefik:v3.5}
 H2LOAD_IMAGE=${H2LOAD_IMAGE:-okena-h2load-h3}	# (its Debian runs the client)
 PROXY_CPUS=${PROXY_CPUS:-1,2}
 NPROXY=${NPROXY:-2}
 N=${N:-100000}
 SETTLE=${SETTLE:-5}
-ONLY=${ONLY:-okena haproxy nginx envoy}
+ONLY=${ONLY:-okena haproxy nginx envoy caddy traefik}
 B=29900
 W=$(mktemp -d)
 chmod 755 "$W"
 BPID= HPID=
-trap 'docker rm -f oki-okena oki-haproxy oki-nginx oki-envoy oki-client >/dev/null 2>&1 || true; for p in $BPID $HPID; do kill $p 2>/dev/null; done; rm -rf "$W"' EXIT
+trap 'docker rm -f oki-okena oki-haproxy oki-nginx oki-envoy oki-caddy oki-traefik oki-client >/dev/null 2>&1 || true; for p in $BPID $HPID; do kill $p 2>/dev/null; done; rm -rf "$W"' EXIT
 
 gcc -O2 -pthread -o "$W/l4bench" "$ROOT/tests/bench/l4bench.c"
 gcc -O2 -static -pthread -o "$W/l4bench-static" "$ROOT/tests/bench/l4bench.c" 2>/dev/null	# (the client, in a container)
@@ -104,9 +106,47 @@ static_resources:
       - lb_endpoints:
         - endpoint: { address: { socket_address: { address: 127.0.0.1, port_value: $B } } }
 EOF
-chmod 644 "$W"/*.conf "$W"/*.cfg "$W"/*.yaml
+cat > "$W/Caddyfile" <<EOF
+{
+	admin off
+	auto_https off
+	persist_config off
+	servers {
+		protocols h1
+		timeouts {
+			idle 10m
+		}
+	}
+}
+http://127.0.0.1:29914 {
+	bind 127.0.0.1
+	reverse_proxy 127.0.0.1:$B {
+		transport http {
+			keepalive 120s
+			keepalive_idle_conns 1024
+			keepalive_idle_conns_per_host 1024
+		}
+	}
+}
+EOF
+cat > "$W/traefik.yml" <<EOF
+global: { checkNewVersion: false, sendAnonymousUsage: false }
+log: { level: ERROR }
+entryPoints:
+  web: { address: "127.0.0.1:29915", transport: { respondingTimeouts: { idleTimeout: 600s } } }
+serversTransport: { maxIdleConnsPerHost: 1024 }
+providers: { file: { filename: /w/traefik-dyn.yml } }
+EOF
+cat > "$W/traefik-dyn.yml" <<EOF
+http:
+  routers:
+    r: { entryPoints: [web], rule: "PathPrefix(\`/\`)", service: s }
+  services:
+    s: { loadBalancer: { servers: [ { url: "http://127.0.0.1:$B" } ] } }
+EOF
+chmod 644 "$W"/*.conf "$W"/*.cfg "$W"/*.yaml "$W"/Caddyfile
 
-port() { case $1 in okena) echo 29910 ;; haproxy) echo 29911 ;; nginx) echo 29912 ;; envoy) echo 29913 ;; esac; }
+port() { case $1 in okena) echo 29910 ;; haproxy) echo 29911 ;; nginx) echo 29912 ;; envoy) echo 29913 ;; caddy) echo 29914 ;; traefik) echo 29915 ;; esac; }
 start() {
 	case $1 in
 	okena) docker run -d --rm --name oki-okena --network host --cpuset-cpus "$PROXY_CPUS" --ulimit nofile=1048576 \
@@ -118,6 +158,10 @@ start() {
 		-v "$W/nginx.conf:/etc/nginx/nginx.conf:ro" "$NGINX_IMAGE" >/dev/null ;;
 	envoy) docker run -d --rm --name oki-envoy --network host --cpuset-cpus "$PROXY_CPUS" --ulimit nofile=1048576 \
 		-v "$W:/w:ro" "$ENVOY_IMAGE" envoy -c /w/envoy.yaml --concurrency "$NPROXY" -l warn >/dev/null ;;
+	caddy) docker run -d --rm --name oki-caddy --network host --cpuset-cpus "$PROXY_CPUS" --ulimit nofile=1048576 -e GOMAXPROCS="$NPROXY" \
+		-v "$W:/w:ro" "$CADDY_IMAGE" caddy run --config /w/Caddyfile --adapter caddyfile >/dev/null ;;
+	traefik) docker run -d --rm --name oki-traefik --network host --cpuset-cpus "$PROXY_CPUS" --ulimit nofile=1048576 -e GOMAXPROCS="$NPROXY" \
+		-v "$W:/w:ro" "$TRAEFIK_IMAGE" --configFile=/w/traefik.yml >/dev/null ;;
 	esac
 	sleep 3
 }

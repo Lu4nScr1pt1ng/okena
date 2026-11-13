@@ -18,6 +18,8 @@ OKENA_IMAGE=${OKENA_IMAGE:-okena:bench}
 ENVOY_IMAGE=${ENVOY_IMAGE:-envoyproxy/envoy:v1.40-latest}
 HAPROXY_IMAGE=${HAPROXY_IMAGE:-haproxy:3.2}
 NGINX_IMAGE=${NGINX_IMAGE:-nginx:1.27-alpine}
+CADDY_IMAGE=${CADDY_IMAGE:-caddy:2.10-alpine}
+TRAEFIK_IMAGE=${TRAEFIK_IMAGE:-traefik:v3.5}
 H2LOAD_IMAGE=${H2LOAD_IMAGE:-okena-h2load-h3}
 PROXY_CPUS=${PROXY_CPUS:-1,2}
 NPROXY=${NPROXY:-2}
@@ -27,17 +29,17 @@ DUR=${DUR:-6}
 CONNS=${CONNS:-64}
 SIZES=${SIZES:-65536 1048576}
 REPEAT=${REPEAT:-3}
-ONLY=${ONLY:-direct okena haproxy nginx envoy}
+ONLY=${ONLY:-direct okena haproxy nginx envoy caddy traefik}
 OKENA_EXTRA=${OKENA_EXTRA:-}
 B=29600
 W=$(mktemp -d)
 chmod 755 "$W"
 BPID=
-trap 'docker rm -f okb-okena okb-haproxy okb-nginx okb-envoy >/dev/null 2>&1 || true; [ -n "$BPID" ] && kill $BPID 2>/dev/null; rm -rf "$W"' EXIT
+trap 'docker rm -f okb-okena okb-haproxy okb-nginx okb-envoy okb-caddy okb-traefik >/dev/null 2>&1 || true; [ -n "$BPID" ] && kill $BPID 2>/dev/null; rm -rf "$W"' EXIT
 
 gcc -O2 -pthread -o "$W/l4bench" "$ROOT/tests/bench/l4bench.c"
 docker build -q -t "$OKENA_IMAGE" "$ROOT" >/dev/null
-port() { case $1 in direct) echo $B ;; okena) echo 29610 ;; haproxy) echo 29611 ;; nginx) echo 29612 ;; envoy) echo 29613 ;; esac; }
+port() { case $1 in direct) echo $B ;; okena) echo 29610 ;; haproxy) echo 29611 ;; nginx) echo 29612 ;; envoy) echo 29613 ;; caddy) echo 29614 ;; traefik) echo 29615 ;; esac; }
 
 cat > "$W/okena.conf" <<EOF
 okena { workers $NPROXY; $OKENA_EXTRA }
@@ -108,7 +110,42 @@ static_resources:
       - lb_endpoints:
         - endpoint: { address: { socket_address: { address: 127.0.0.1, port_value: $B } } }
 EOF
-chmod 644 "$W"/*.conf "$W"/*.cfg "$W"/*.yaml
+cat > "$W/Caddyfile" <<EOF
+{
+	admin off
+	auto_https off
+	persist_config off
+	servers {
+		protocols h1
+	}
+}
+http://127.0.0.1:29614 {
+	bind 127.0.0.1
+	reverse_proxy 127.0.0.1:$B {
+		transport http {
+			keepalive 120s
+			keepalive_idle_conns 1024
+			keepalive_idle_conns_per_host 1024
+		}
+	}
+}
+EOF
+cat > "$W/traefik.yml" <<EOF
+global: { checkNewVersion: false, sendAnonymousUsage: false }
+log: { level: ERROR }
+entryPoints:
+  web: { address: "127.0.0.1:29615" }
+serversTransport: { maxIdleConnsPerHost: 1024 }
+providers: { file: { filename: /w/traefik-dyn.yml } }
+EOF
+cat > "$W/traefik-dyn.yml" <<EOF
+http:
+  routers:
+    r: { entryPoints: [web], rule: "PathPrefix(\`/\`)", service: s }
+  services:
+    s: { loadBalancer: { servers: [ { url: "http://127.0.0.1:$B" } ] } }
+EOF
+chmod 644 "$W"/*.conf "$W"/*.cfg "$W"/*.yaml "$W"/Caddyfile
 
 start() {
 	case $1 in
@@ -121,6 +158,10 @@ start() {
 		-v "$W/nginx.conf:/etc/nginx/nginx.conf:ro" "$NGINX_IMAGE" >/dev/null ;;
 	envoy) docker run -d --rm --name okb-envoy --network host --cpuset-cpus "$PROXY_CPUS" --ulimit nofile=1048576 \
 		-v "$W:/w:ro" "$ENVOY_IMAGE" envoy -c /w/envoy.yaml --concurrency "$NPROXY" -l warn >/dev/null ;;
+	caddy) docker run -d --rm --name okb-caddy --network host --cpuset-cpus "$PROXY_CPUS" --ulimit nofile=1048576 -e GOMAXPROCS="$NPROXY" \
+		-v "$W:/w:ro" "$CADDY_IMAGE" caddy run --config /w/Caddyfile --adapter caddyfile >/dev/null ;;
+	traefik) docker run -d --rm --name okb-traefik --network host --cpuset-cpus "$PROXY_CPUS" --ulimit nofile=1048576 -e GOMAXPROCS="$NPROXY" \
+		-v "$W:/w:ro" "$TRAEFIK_IMAGE" --configFile=/w/traefik.yml >/dev/null ;;
 	esac
 	sleep 2
 }
