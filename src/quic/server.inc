@@ -184,6 +184,8 @@ PACE_MIN_RTT	:= 4000				; µs: below it no pacing (the pacing timer: 0.2 ms at l
 assert QC_PCHALO + 8 <= QC_FIELDS_END
 QUIC_RETRY_AT	:= 64				; connections not validated yet, a worker:
 						; past it new ones get a Retry first
+QUIC_UNVAL_IDLE	:= 5				; s: silence that ends a connection whose
+						; address is not validated yet
 QTOK_LIFE	:= 10000000			; a Retry token is good 10 s (µs)
 QUIC_CWND0	:= 14720			; the initial window
 QUIC_CWNDMIN	:= 2 * QUIC_DGRAM
@@ -4384,6 +4386,16 @@ qs_tick:
 	call	qc_free
 	jmp	.next
 .pto:
+	test	dword [r15+QC_FLAGS],QF_VALID	; an address never proven and nothing
+	jnz	@f				; from it for QUIC_UNVAL_IDLE: gone, without
+	call	session_ptr			; a word. A flood's leftovers would hold
+	mov	ecx,[g_tick]			; the Retry mode (QUIC_RETRY_AT) for the
+	sub	ecx,[rax+S_LAST]		; idle timeout; a live client sends its
+	cmp	ecx,QUIC_UNVAL_IDLE		; Initial again at 1, 2, 4 s (its probes)
+	jb	@f
+	call	qc_free
+	jmp	.next
+@@:
 	call	qc_heads_expire			; http3.inc
 	mov	rax,[r15+QC_PS+QL_APP*PS_SIZE+PS_ACKAT]	; an ACK held: its time has come
 	test	rax,rax

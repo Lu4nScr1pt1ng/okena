@@ -2,9 +2,13 @@
 """HTTP/3 at the edges this review touched, on one engine (argument): limits {
 body_size } (413 for a content-length past it and for a body that grows past it);
 a head larger than okena takes resets that stream alone (H3_EXCESSIVE_LOAD), and
-the next request on the connection is served, a Huffman-coded one and a raw one."""
+the next request on the connection is served, a Huffman-coded one and a raw one.
+Handshakes never answered (a flood's) put new clients through a Retry, and
+go after 5 s without a word: a few seconds later clients come straight
+in again, not after the idle timeout."""
 import asyncio
 import http.server
+import socket
 import os
 import pathlib
 import shutil
@@ -25,6 +29,7 @@ try:
     from aioquic.h3.connection import H3Connection
     from aioquic.h3.events import HeadersReceived
     from aioquic.quic.configuration import QuicConfiguration
+    from aioquic.quic.connection import QuicConnection
     from aioquic.quic.events import ConnectionTerminated, StreamReset
 except ImportError:
     if VENV.exists() and sys.executable != str(VENV):
@@ -103,6 +108,34 @@ async def cases():
         check("  and a raw one: no connection error", c.closed is None, (r, c.closed))
         r = await c.req("GET", "/")
         check("  still serving", r.get("status") == b"200", r)
+    # 80 handshakes begun and never answered: past 64 not yet validated
+    # (QUIC_RETRY_AT) a new client gets a Retry first
+    flood = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    fcfg = QuicConfiguration(is_client=True, alpn_protocols=["h3"], verify_mode=ssl.CERT_NONE)
+    for _ in range(80):
+        q = QuicConnection(configuration=fcfg)
+        q.connect(("127.0.0.1", L), now=time.time())
+        for d, _ in q.datagrams_to_send(now=time.time()):
+            flood.sendto(d, ("127.0.0.1", L))
+        await asyncio.sleep(0.002)
+
+    async def retries():
+        async with connect("127.0.0.1", L, configuration=cfg, create_protocol=C) as c:
+            r = await c.req("GET", "/")
+            return c._quic._retry_count, r.get("status")
+    await asyncio.sleep(0.3)
+    n, st = await retries()
+    check("80 handshakes never answered: a new client goes through a Retry", n == 1 and st == b"200", (n, st))
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < 20:
+        n, st = await retries()
+        if n == 0:
+            break
+        await asyncio.sleep(0.5)
+    took = time.monotonic() - t0
+    check("  they go after 5 s of silence: no Retry again", n == 0 and st == b"200" and took < 12,
+          (n, st, round(took, 1)))
+    flood.close()
 
 
 def main():
