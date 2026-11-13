@@ -64,8 +64,11 @@ http_counted_try:
 	pop	r14
 	pop	r13
 	mov	dword [r15+H_STATE],HS_RESP_READ
-	mov	edi,ebx
+	test	byte [g_sbig+rbx],SX_FDREQ	; the descriptors asked for: the loop
+	jnz	@f				; starts when they come (bulk_fd_handler),
+	mov	edi,ebx				; no first piece copied through the ring
 	call	post_recv_u
+@@:
 	clc
 	ret
 .no:

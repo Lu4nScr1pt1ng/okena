@@ -192,20 +192,45 @@ bulk_want:
 macro bulk_fd_handler name, arr
 name:
 	local stale, failed
+	local refused, maybe_free
 	call	sess_complete
 	jc	stale
 	test	r14,r14
-	js	failed
+	js	refused
 	lea	eax,[r14+1]
 	mov	[arr+rbx*4],eax
 	mov	edi,r14d			; non-blocking: a splice must not wait
 	call	zc_nonblock			; (the ring's own operations do not look)
 	cmp	dword [g_bfd_c+rbx*4],0
-	je	failed
+	je	maybe_free
 	cmp	dword [g_bfd_u+rbx*4],0
-	je	failed
+	je	maybe_free
 	or	byte [g_sbig+rbx],SX_FDS
-failed:
+	; an HTTP body that waited for them (counted.inc): the loop takes it
+	cmp	qword [g_cnt+rbx*8],0
+	je	maybe_free
+	test	byte [g_sbig+rbx],SX_FDREQ
+	jz	maybe_free
+	call	session_ptr
+	cmp	dword [rax+S_STATE],ST_OPEN
+	jne	maybe_free
+	mov	r13,rax
+	or	byte [g_sbig+rbx],SX_SYNC_U
+	jmp	bulk_pump_u
+refused:
+	; an HTTP body that waited for them: read through the ring after all
+	; (once: the other descriptor's answer finds SX_FDREQ gone)
+	cmp	qword [g_cnt+rbx*8],0
+	je	maybe_free
+	test	byte [g_sbig+rbx],SX_FDREQ
+	jz	maybe_free
+	and	byte [g_sbig+rbx],not SX_FDREQ
+	call	session_ptr
+	cmp	dword [rax+S_STATE],ST_OPEN
+	jne	maybe_free
+	mov	edi,ebx
+	jmp	post_recv_u
+maybe_free:
 	mov	edi,ebx
 	jmp	session_maybe_free
 stale:
