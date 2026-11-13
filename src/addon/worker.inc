@@ -81,6 +81,7 @@ ADSE_POOL	:= 6				; w: the pool an addon chose + 1, 0 the route's
 HS_ADBODY	:= 48				; H_STATE: the request's body read for an addon
 HS_ADRBODY	:= 49				; H_STATE: a response's body read for an addon
 HS_ADCONT	:= 50				; H_STATE: our 100 Continue going out, for an addon
+HS_ADSEND	:= 51				; H_STATE: an addon's own answer's head out, its body (a buffer) next
 ADREP_Q		:= 1				; g_ad_rep: the client's next bytes come from a body buffer
 ADREP_P		:= 2				; the backend's, the same (S_FLAGS has no bit left)
 AD_BB_MEM	:= 1 shl 30			; the most a worker reserves for body buffers
@@ -98,6 +99,7 @@ ADSF_FWD		:= 1				; `auth forward` said yes to this request
 ADSF_RESP	:= 2				; the call waited for is about the response
 ADSF_WHOLE	:= 4				; the call carried the request's whole body
 ADSF_RWHOLE	:= 8				; and the response's
+ADSF_RBB		:= 16				; an addon's own answer: its body in a buffer (ADSE_PBB)
 
 ; ADR_HEAD's line holds the next id too: a worker that takes a ring another
 ; left starts past every id that one may still get answers for
@@ -2190,9 +2192,11 @@ ad_stash:
 	add	rax,r13
 	cmp	eax,[r15+ANS_LEN]
 	ja	.bad
+	and	dword [r10+ADSE_FLAGS],not ADSF_RBB
 	lea	eax,[r12+r13]
 	cmp	eax,AD_STASH_MAX
-	ja	.bad
+	ja	.big
+.stash:
 	mov	rdi,[r14+H_BUF]
 	lea	rdi,[rdi+HB_OUT+H_OUT_CAP]
 	sub	rdi,rax
@@ -2251,8 +2255,38 @@ ad_stash:
 	rep	movsb
 	cld
 .ok:
+	test	dword [r10+ADSE_FLAGS],ADSF_RBB
+	jz	@f
+	mov	eax,[r10+ADSE_PBB]		; (the body's length: its buffer's)
+	dec	eax
+	imul	rax,rax,BBM_SIZE
+	mov	eax,[g_bb_meta+rax+BBM_LEN]
+	mov	[r10+ADSE_BLEN],eax
+@@:
 	clc
 	jmp	.out
+; fields and body past HB_OUT: the body into a buffer, sent after the head
+; (up to the addon's `body`: its ring holds no more)
+.big:
+	cmp	r12d,AD_STASH_MAX
+	ja	.bad
+	cmp	r13d,[g_bb_size]
+	ja	.bad
+	push	r8
+	push	r12
+	mov	ebx,[rsp+48]			; the session
+	mov	r12d,r13d
+	lea	r9,[r10+ADSE_PBB]		; (a response's body there: replaced)
+	call	ad_bb_fill
+	pop	r12
+	pop	r8
+	jc	.bad
+	and	byte [g_ad_rep+rbx],not ADREP_P
+	or	dword [r10+ADSE_FLAGS],ADSF_RBB
+	add	r8,r13				; (no body in HB_OUT)
+	xor	r13d,r13d
+	mov	eax,r12d
+	jmp	.stash
 .bad_pop:
 	pop	rax
 .bad:
@@ -2273,6 +2307,13 @@ addon_respond:
 	mov	r8d,[rcx+ADSE_STATUS]
 	mov	r9d,[rcx+ADSE_HLEN]
 	mov	r10d,[rcx+ADSE_BLEN]
+	xor	r11d,r11d
+	test	dword [rcx+ADSE_FLAGS],ADSF_RBB
+	jz	@f
+	mov	r11d,r10d			; its body in a buffer: sent after the head
+	xor	r10d,r10d
+@@:
+	push	r11
 	push	r8
 	push	r9
 	push	r10
@@ -2317,6 +2358,7 @@ addon_respond:
 	je	@f
 	memit_x 'Content-Length: '
 	mov	eax,[rsp+8]
+	add	eax,[rsp+32]
 	call	fmt_u64
 	memit_x 13,10
 @@:
@@ -2340,17 +2382,50 @@ addon_respond:
 	je	@f
 	rep	movsb
 @@:
-	add	rsp,24
+	mov	edx,HS_SELF_SEND
+	cmp	dword [rsp+24],0
+	je	@f
+	test	dword [r15+H_FLAGS],HX_HEAD
+	jnz	@f
+	cmp	dword [rsp+16],204
+	je	@f
+	cmp	dword [rsp+16],304
+	je	@f
+	mov	edx,HS_ADSEND			; (the buffer next)
+@@:
+	add	rsp,32
+	mov	[r15+H_STATE],edx
 	mov	rsi,[r15+H_BUF]
 	lea	rsi,[rsi+HB_OUT]
 	sub	rdi,rsi
-	mov	dword [r15+H_STATE],HS_SELF_SEND
 	mov	ecx,SIDE_CLIENT
 	xchg	rsi,rdi
 	jmp	h_send
 .lost:
 	mov	edi,503
 	jmp	http_error
+
+; http_send_plain, HS_ADSEND: an addon's own answer's head is out, its body
+; from the buffer it waits in. ebx, r15.
+addon_rbb_send:
+	call	ad_side_cur
+	jc	.lost
+	mov	eax,[rcx+ADSE_PBB]
+	test	eax,eax
+	jz	.lost
+	dec	eax
+	imul	rdx,rax,BBM_SIZE
+	mov	esi,[g_bb_meta+rdx+BBM_LEN]
+	push	rsi
+	call	bb_ptr
+	pop	rsi
+	mov	rdi,rax
+	mov	dword [r15+H_STATE],HS_SELF_SEND
+	mov	ecx,SIDE_CLIENT
+	jmp	h_send
+.lost:
+	mov	edi,ebx
+	jmp	session_close
 
 ; ------------------------------------------------------------ the response
 
@@ -3104,9 +3179,12 @@ ad_bb_init:
 	cmp	ecx,[g_plan_addons]
 	jae	.sized
 	imul	rax,rcx,ADE_SIZE
-	test	dword [g_addons+rax+ADE_PHASES],ADP_REQ_BODY or ADP_RESP_BODY
-	jz	.next
 	mov	edx,[g_addons+rax+ADE_BODY]
+	test	dword [g_addons+rax+ADE_PHASES],ADP_REQ_BODY or ADP_RESP_BODY
+	jnz	@f
+	cmp	edx,AD_STASH_MAX		; (or its own answers' bodies: past HB_OUT)
+	jbe	.next
+@@:
 	cmp	edx,r8d
 	jbe	@f
 	mov	r8d,edx
@@ -3490,7 +3568,7 @@ ad_body_replace:
 	jz	.no
 @@:
 	lea	r9,[r14+ADSE_QBB]
-	call	.into
+	call	ad_bb_fill
 	jc	.out
 	mov	eax,[r13+H_INOFF]		; (its old bytes after the head: gone)
 	mov	[r13+H_INLEN],eax
@@ -3507,7 +3585,7 @@ ad_body_replace:
 	test	dword [r14+ADSE_FLAGS],ADSF_RWHOLE
 	jz	.no
 	lea	r9,[r14+ADSE_PBB]
-	call	.into
+	call	ad_bb_fill
 	jc	.out
 	mov	eax,[r14+ADSE_HSTART]
 	add	eax,[r14+ADSE_RHLEN]
@@ -3528,44 +3606,6 @@ ad_body_replace:
 	pop	r14
 	pop	r13
 	pop	r12
-	ret
-; r8 = the bytes, r12d = how many, r9 = where its buffer goes (+1): into it
-; (one taken if need be; none when there are none: the old one goes)
-.into:
-	mov	eax,[r9]
-	test	r12d,r12d
-	jnz	@f
-	test	eax,eax				; empty: no buffer at all
-	jz	.into_ok
-	dec	eax
-	call	bb_free
-	mov	dword [r9],0
-	jmp	.into_ok
-@@:
-	cmp	r12d,[g_bb_size]
-	ja	.into_no
-	test	eax,eax
-	jnz	@f
-	call	bb_alloc
-	jc	.into_no
-	inc	eax
-	mov	[r9],eax
-@@:
-	dec	eax
-	imul	rdx,rax,BBM_SIZE
-	mov	[g_bb_meta+rdx+BBM_LEN],r12d
-	mov	dword [g_bb_meta+rdx+BBM_POS],0
-	mov	dword [g_bb_meta+rdx+BBM_SCAN],0
-	call	bb_ptr
-	mov	rdi,rax
-	mov	rsi,r8
-	mov	ecx,r12d
-	rep	movsb
-.into_ok:
-	clc
-	ret
-.into_no:
-	stc
 	ret
 ; g_ad_synth: an answer of two ops, Transfer-Encoding removed, Content-Length
 ; set to r12d
@@ -3597,3 +3637,43 @@ ad_body_replace:
 	ret
 .te	db 'transfer-encoding'
 .cl	db 'content-length'
+
+; ebx = a session, r8 = the bytes, r12d = how many, r9 = where its buffer goes
+; (+1): into it (one taken if need be; none when there are none: the old one
+; goes). CF: no buffer for them. Keeps rbx, r8-r15.
+ad_bb_fill:
+	mov	eax,[r9]
+	test	r12d,r12d
+	jnz	@f
+	test	eax,eax				; empty: no buffer at all
+	jz	.fill_ok
+	dec	eax
+	call	bb_free
+	mov	dword [r9],0
+	jmp	.fill_ok
+@@:
+	cmp	r12d,[g_bb_size]
+	ja	.fill_no
+	test	eax,eax
+	jnz	@f
+	call	bb_alloc
+	jc	.fill_no
+	inc	eax
+	mov	[r9],eax
+@@:
+	dec	eax
+	imul	rdx,rax,BBM_SIZE
+	mov	[g_bb_meta+rdx+BBM_LEN],r12d
+	mov	dword [g_bb_meta+rdx+BBM_POS],0
+	mov	dword [g_bb_meta+rdx+BBM_SCAN],0
+	call	bb_ptr
+	mov	rdi,rax
+	mov	rsi,r8
+	mov	ecx,r12d
+	rep	movsb
+.fill_ok:
+	clc
+	ret
+.fill_no:
+	stc
+	ret

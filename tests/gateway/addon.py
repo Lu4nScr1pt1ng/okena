@@ -24,6 +24,7 @@ import sys
 import tempfile
 import threading
 import time
+import http.client
 import http.server
 
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
@@ -435,6 +436,34 @@ http 127.0.0.1:{L} {{
         s, hd, body = full("/big/big", [("X-Size", "300000")])
         check("  past `body`: its first bytes in the call, said truncated; all of it at the client", s == 200
               and hd.get("x-rlen") == "131072" and hd.get("x-rtrunc") == "True" and len(body) == 300000, (s, hd, len(body)))
+        # an addon's own answer past HB_OUT: its body from a buffer, after the head
+        large = bytes(range(251)) * 400
+        s, hd, body = full("/big/large", [])
+        check("the addon's own 100 KB answer: whole, its length", s == 200 and body == large
+              and hd.get("content-length") == "100400", (s, hd, len(body)))
+
+        cn = http.client.HTTPConnection("127.0.0.1", L, timeout=5)
+        cn.request("GET", "/big/large")
+        r = cn.getresponse()
+        b1 = r.read()
+        cn.request("HEAD", "/big/large")
+        r2 = cn.getresponse()
+        b2 = r2.read()
+        cn.request("GET", "/big/pass")
+        r3 = cn.getresponse()
+        r3.read()
+        cn.close()
+        check("  the connection kept: HEAD gets the length, no body; the next request served", b1 == large
+              and r2.status == 200 and r2.getheader("content-length") == "100400" and b2 == b"" and r3.status == 200,
+              (len(b1), r2.status, r2.getheader("content-length"), r3.status))
+        s, hd, body = full("/big/rlarge", [("X-Size", "5000")])
+        check("  in place of a response: the addon's 120 KB", s == 201 and hd.get("x-rlarge") == "yes"
+              and body == bytes(range(256)) * 470, (s, hd, len(body)))
+        if shutil.which("curl"):
+            for proto in ("--http2-prior-knowledge", "--http1.1"):
+                c = subprocess.run(["curl", "-q", "-s", proto, "-o", "-", f"http://127.0.0.1:{L}/big/large"],
+                                   capture_output=True, timeout=10)
+                check(f"  over curl {proto}: the whole body", c.stdout == large, len(c.stdout))
         # a body of the addon's in place of the one that came
         s, h, b = get("/big/swapreq", method="POST", body=b"abcdefghijklmnopqrstuvwxyz" * 4000)
         check("the request's body replaced: the backend gets the addon's, its length", s == 200 and b"body-len: 25" in b

@@ -814,6 +814,8 @@ h_send_clock:
 	je	.arm
 	cmp	edx,HS_SELF_SEND
 	je	.arm
+	cmp	edx,HS_ADSEND
+	je	.arm
 	cmp	edx,HS_INTERIM_SEND
 	jne	.out
 .arm:

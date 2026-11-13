@@ -36,6 +36,8 @@ def on_request(req):
             import hashlib
             return oa.Continue(set=[("x-rlen", str(len(req.body))), ("x-rtrunc", str(req.body_truncated)),
                                     ("x-rsha", hashlib.sha256(req.body).hexdigest()[:16])])
+        if last == "rlarge":
+            return oa.Respond(201, [("x-rlarge", "yes")], bytes(range(256)) * 470)
         if last == "rbody":
             return oa.Respond(200, [("x-rbody-len", str(len(req.body)))], req.body.upper())
         return oa.Continue()
@@ -47,6 +49,8 @@ def on_request(req):
         import hashlib
         return oa.Continue(set=[("x-blen", str(len(req.body))), ("x-btrunc", str(req.body_truncated)),
                                 ("x-bsha", hashlib.sha256(req.body).hexdigest()[:16])])
+    if last == "large":
+        return oa.Respond(200, [("content-type", "application/octet-stream")], bytes(range(251)) * 400)
     if last == "pass":
         return oa.Continue()
     if last == "pid":

@@ -2408,6 +2408,8 @@ http_send_plain:
 	je	.continued
 	cmp	edx,HS_ADCONT
 	je	addon_cont_sent			; (our 100 Continue, for an addon that wants the body)
+	cmp	edx,HS_ADSEND
+	je	addon_rbb_send			; (an addon's own answer: its body after its head)
 	cmp	edx,HS_SEND_HEAD
 	je	http_req_pump
 	cmp	edx,HS_REQ_SEND
@@ -4900,6 +4902,8 @@ http_phase_expired:
 	cmp	eax,HS_ERROR_SEND
 	je	.silent
 	cmp	eax,HS_SELF_SEND
+	je	.silent
+	cmp	eax,HS_ADSEND
 	je	.silent
 	cmp	eax,HS_INTERIM_SEND
 	je	.silent

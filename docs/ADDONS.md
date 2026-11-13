@@ -117,7 +117,9 @@ An answer is one of:
   Transfer-Encoding, Connection, Keep-Alive, TE, Trailer, Upgrade and
   Proxy-Connection are okena's: changes to them are ignored.
 * **respond**: okena answers the client with the addon's status (200-599),
-  fields and body (up to about 16 KiB together). okena adds Content-Length
+  fields and body. Up to about 16 KiB together they go out in one write; a
+  larger body (up to the addon's `body`) waits in one of the worker's body
+  buffers and goes out right after the head. okena adds Content-Length
   (none on 204 and 304), the request id, CORS fields when the route has
   `cors`, and `Connection: close` when the request has a body it did not
   read. A HEAD gets the length and no body.
