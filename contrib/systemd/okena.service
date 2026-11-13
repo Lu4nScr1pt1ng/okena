@@ -15,7 +15,7 @@ ExecReload=/bin/kill -HUP $MAINPID
 # the watchdog: okena says WATCHDOG=1 each second while its supervisor lives
 WatchdogSec=10s
 Restart=on-failure
-# okena's drain (drain timeout=, 7 s by default) fits inside this
+# okena's drain (drain timeout=, 8 s by default) fits inside this
 TimeoutStopSec=15s
 # `okena { user okena }` drops the processes that face the network to this user;
 # the supervisor stays root to read keys and bind low ports on a reload

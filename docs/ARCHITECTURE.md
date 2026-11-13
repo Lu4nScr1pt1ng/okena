@@ -1028,8 +1028,9 @@ docker run -v ./okena.conf:/etc/okena/okena.conf:ro okena
 ```
 
 `OKENA_*` environment variables are not a second config system: the
-command line and `OKENA_CONFIG` are config text, and `${env:NAME}`
-inside a file reads any variable, so secrets come from the orchestrator.
+command line and `OKENA_CONFIG` are config text. **Today:** there is no
+`${env:NAME}` substitution; secrets come from files the orchestrator mounts
+(`keys=FILE`, `token=FILE`, `dns_token=FILE`).
 
 The image is `FROM scratch`: the static binary, the seccomp profile, a
 default config that serves a status page, runs as a non-root user with
