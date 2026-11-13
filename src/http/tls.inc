@@ -1108,6 +1108,13 @@ http_close_notify:
 	cmp	dword [g_listeners+rcx+LS_TLS],0
 	jne	@f
 	h_rec
+	cmp	dword [r15+H_BODY],BK_LENGTH	; a body not read whole (an answer from a
+	jne	.chunked			; kept one: an idempotent replay, the cache)
+	cmp	qword [r15+H_REMAIN],0
+	jne	http_linger
+.chunked:
+	cmp	dword [r15+H_BODY],BK_CHUNKED
+	je	http_linger
 	cmp	dword [r15+H_STATE],HS_ERROR_SEND
 	je	http_linger
 	cmp	dword [r15+H_STATE],HS_SELF_SEND	; okena's own answer (`respond`, a
