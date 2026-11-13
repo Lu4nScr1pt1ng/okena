@@ -95,7 +95,9 @@ http 127.0.0.1:{PLAIN} {{ route /* {{ to pool b }} }}
         c.request("GET", "/status")
         return json.loads(c.getresponse().read())
     try:
-        check("okena starts, out of maintenance", until(lambda: req("/x")[0] == 200) and cli().stdout == "off\n", log.read_text()[-300:])
+        # (started: every worker serves and /ready is 200; one worker may answer before)
+        check("okena starts, out of maintenance", until(lambda: "started with" in log.read_text()) and until(lambda: req("/x")[0] == 200)
+              and cli().stdout == "off\n", log.read_text()[-300:])
 
         r = cli("on")
         check("okena maintenance on: said", r.returncode == 0 and r.stdout == "on\n", (r.stdout, r.stderr))
