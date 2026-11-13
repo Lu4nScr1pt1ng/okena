@@ -1,4 +1,4 @@
 exit: 2
 --- stdout
 --- stderr
-okena: source takes up to 8 addresses of this host (10.0.0.2, 2001:db8::2), no port and no range: each connection to a server of the pool leaves from the next one of its family
+okena: source takes up to 256 addresses of this host (10.0.0.2, 2001:db8::2), no port and no range: each connection to a server of the pool leaves from the next one of its family

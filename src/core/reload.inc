@@ -96,6 +96,8 @@ macro plan_regions action
 	action g_plan_mtoken, 256
 	action g_listeners, LS_SIZE * MAX_LISTENERS, g_plan_listeners, LS_SIZE
 	action g_pools, PL_SIZE * MAX_POOLS, g_plan_pools, PL_SIZE
+	action g_plan_srcs, 4
+	action g_srcs, PL_SRCSZ * MAX_SRCS, g_plan_srcs, PL_SRCSZ
 	action g_servers, SV_SIZE * MAX_SERVERS, g_plan_servers, SV_SIZE
 	action g_groups, GR_SIZE * MAX_GROUPS
 	action g_plan_routes, 4

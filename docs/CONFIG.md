@@ -164,7 +164,7 @@ directive argument argument key=value {
 * `include "conf.d/*.conf"` inserts files in sorted order, as if written
   there. It goes at the top level only; the path is relative to the file that
   includes it; `*` and `?` work in the last part of the path, and a pattern that
-  matches nothing is fine. Includes can nest up to 8 deep.
+  matches nothing is fine. Includes can nest up to 16 deep.
 
 ### Units
 
@@ -213,7 +213,7 @@ spacing, and leaves comments where they are.
 
 ## Listeners
 
-A listener is a keyword (`http`, `tcp`, `udp`) followed by up to 16
+A listener is a keyword (`http`, `tcp`, `udp`) followed by up to 256
 addresses:
 
 ```nginx
@@ -632,7 +632,7 @@ For a request, okena looks at:
 2. regular expressions, in the order written;
 3. prefixes, longest first.
 
-A route may list up to 32 paths and methods. When a route matches the path
+A route may list up to 256 paths and methods. When a route matches the path
 but not the method, the next shorter prefix is tried. Two routes that could
 match the same request the same way are an error at load time.
 
@@ -1268,8 +1268,9 @@ source 10.0.0.2 10.0.0.3
   drained server's cookie keep going to it (until the cookie's `ttl`); new
   clients go elsewhere. WebSocket upgrades follow
   the cookie.
-* **`source ADDR...`** spreads outgoing connections over up to 8 local
-  addresses, each adding about 28 000 ports per backend, for proxies that run
+* **`source ADDR...`** spreads outgoing connections over up to 256 local
+  addresses, each adding about 28 000 ports per backend (256 of them: about 7
+  million connections to one backend), for proxies that run
   out of ephemeral ports.
 
 ### Per worker or per instance
@@ -1894,20 +1895,20 @@ it leaves the pool just as fast.
 
 | What | Limit |
 |---|---|
-| addresses per listener | 16 |
-| paths and methods per route | 32 |
-| `match` blocks per route | 32 |
+| addresses per listener | 256 (1024 listener addresses in all) |
+| paths and methods per route | 256 |
+| `match` blocks per route | 1024 |
 | request head | 16 KiB |
 | request body | unlimited by default, `limits { body_size }` up to 4 GiB |
 | HTTP/2 streams per connection | 100 |
 | `split` pools | 2 to 8 |
 | `retry` | 0 to 5 |
-| `source` addresses | 8 |
+| `source` addresses | 256 per pool, 65536 in all |
 | ACME certificates | 16 per instance (each `acme` line is one, up to 15 names; with `auto`, each name is one) |
 | error page | 16 KiB |
 | `respond` body | 4 KiB |
 | rate limit keys | about 256k, kept across reloads |
 | idempotency keys | 4096 |
 | cache purge rules | 1024; past that, older rules widen into "everything fetched before" |
-| include depth | 8 |
+| include depth | 16 |
 | workers | 1024 |

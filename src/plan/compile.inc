@@ -228,10 +228,11 @@ PL_RBMIN	:= 768		; d: `min=`: the floor each second, in 1/10000 of a retry
 PL_RBCAP	:= 772		; d: the most it holds
 PL_SRCN		:= 776		; d: `source`: how many addresses
 PL_CMAX		:= 780		; d: `connect max=`: idle connections kept per server (a worker's)
-PL_SRC		:= 784		; PL_SRCMAX of { sockaddr (28), its length (d) }
+PL_SRC		:= 784		; d: its first in g_srcs, each { sockaddr (28), its length (d) }
 PL_SRCSZ	:= 32
-PL_SRCMAX	:= 8
-PL_CIDLE	:= PL_SRC + PL_SRCMAX * PL_SRCSZ	; d: `idle=`: seconds one is kept
+PL_SRCMAX	:= 256		; a pool's, at most (CFG_MAX_ARGS)
+MAX_SRCS	:= 65536		; all pools'
+PL_CIDLE	:= PL_SRC + 8 * PL_SRCSZ	; (room the layout kept)	; d: `idle=`: seconds one is kept
 PL_CWARM	:= PL_CIDLE + 4	; d: `warm=`: kept open ahead of need, per server (a worker's)
 PL_CRATE	:= PL_CWARM + 4	; d: `rate=`: new connections a second per server, 0 no limit
 PL_CCMODE	:= PL_CWARM + 8	; d: `concurrency`: CC_FIXED, CC_ADAPTIVE, 0 none
@@ -310,6 +311,8 @@ bss
 	g_plan_mtoken:		rb 256
 	g_listeners:	rb LS_SIZE * MAX_LISTENERS
 	g_pools:	rb PL_SIZE * MAX_POOLS
+	g_plan_srcs	dd ?
+	g_srcs:		rb PL_SRCSZ * MAX_SRCS
 	g_trust_path:	rb 4096			; a trust file's path, NUL-terminated
 	g_trust_der:	rb 1 shl 14		; the first certificate's DER
 	g_trust_pub:	rb 544			; a scratch anchor key blob (config check)
@@ -3174,7 +3177,7 @@ plan_bad_concurrency:
 
 plan_bad_source:
 	call	log_begin
-	out_lit 'source takes up to 8 addresses of this host (10.0.0.2, 2001:db8::2), no port and no range: each connection to a server of the pool leaves from the next one of its family'
+	out_lit 'source takes up to 256 addresses of this host (10.0.0.2, 2001:db8::2), no port and no range: each connection to a server of the pool leaves from the next one of its family'
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process
@@ -3482,9 +3485,18 @@ compile_pool:
 	mov	eax,[r13+PL_SRCN]
 	cmp	eax,PL_SRCMAX
 	jae	plan_bad_source
+	test	eax,eax
+	jnz	@f
+	mov	ecx,[g_plan_srcs]		; the first: where the pool's begin
+	mov	[r13+PL_SRC],ecx
+@@:
+	mov	eax,[g_plan_srcs]
+	cmp	eax,MAX_SRCS
+	jae	plan_bad_source
+	inc	dword [g_plan_srcs]
 	inc	dword [r13+PL_SRCN]
 	imul	eax,eax,PL_SRCSZ
-	lea	rdi,[r13+PL_SRC+rax]
+	lea	rdi,[g_srcs+rax]
 	cmp	dword [g_cmp_tr+TR_KIND],4
 	jne	.source6
 	mov	word [rdi],AF_INET		; port 0: the kernel's, at connect

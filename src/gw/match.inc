@@ -34,7 +34,7 @@ MB_SIZE		:= 16
 
 MAX_MATCH	:= 65536
 MAX_MCOND	:= 262144
-ROUTE_MATCH_MAX	:= 32
+ROUTE_MATCH_MAX	:= 1024
 
 CV_ACT		:= 0				; d
 CV_POOL		:= 4				; d
@@ -706,7 +706,7 @@ match_entries:
 
 plan_bad_match:
 	call	log_begin
-	out_lit 'match needs conditions: method=, header:NAME[=VALUE], query:NAME[=VALUE], cookie:NAME[=VALUE], client.ip=CIDR, client.country=CC, path=~REGEX (and NAME=~REGEX); pools that exist; no `match` or `use` inside; at most 32 in a route'
+	out_lit 'match needs conditions: method=, header:NAME[=VALUE], query:NAME[=VALUE], cookie:NAME[=VALUE], client.ip=CIDR, client.country=CC, path=~REGEX (and NAME=~REGEX); pools that exist; no `match` or `use` inside; at most 1024 in a route'
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process

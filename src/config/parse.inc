@@ -100,7 +100,7 @@ end bss
 
 CFG_FILES	:= 256
 CFG_DIRS	:= 64
-CFG_INC_DEPTH	:= 8
+CFG_INC_DEPTH	:= 16
 SYS_getdents64_	:= 217
 
 ; ---------------------------------------------------------------- errors
@@ -1216,7 +1216,7 @@ parse_include:
 	mov	esi,7
 	mov	edx,r15d
 	call	cfg_error
-	out_lit 'files include each other too deeply (the limit is 8)'
+	out_lit 'files include each other too deeply (the limit is 16)'
 	call	cfg_diag_end
 	call	cfg_error_limit
 	jmp	.out

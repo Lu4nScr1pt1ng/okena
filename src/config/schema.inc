@@ -254,14 +254,14 @@ dirdef DIR_QUIC_SID, 'quic_server_id', M_OKENA, 0,      F_UNIQUE or F_KEYS_BLOCK
 dirdef DIR_QUIC_CC, 'quic_cc',     M_OKENA,   0,           F_UNIQUE, 1, 1, e_quic_cc, T_NONE, 0
 dirdef DIR_DRAIN, 'drain',       M_OKENA,   0,           F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_drain
 dirdef DIR_HS_BUDGET, 'handshake_budget', M_OKENA, 0,    F_UNIQUE or F_KEYS_BLOCK, 1, 1, T_DURATION, T_NONE, k_hs_budget
-dirdef DIR_UDP, 'udp',         M_TOP,     CTX_UDP,     F_BLOCK_REQ, 1, 16, T_LISTEN, T_LISTEN, 0
+dirdef DIR_UDP, 'udp',         M_TOP,     CTX_UDP,     F_BLOCK_REQ, 1, 256, T_LISTEN, T_LISTEN, 0
 dirdef DIR_RESPONSES, 'responses', M_UDP,   0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
 dirdef DIR_CANONICAL, 'canonical', M_HTTP,  0,           F_UNIQUE, 1, 1, T_HOSTNAME, T_NONE, 0
 dirdef DIR_MSS, 'mss',         M_TCP or M_HTTP, 0,         F_UNIQUE, 1, 1, T_UINT, T_NONE, 0
-dirdef DIR_TCP, 'tcp',         M_TOP,     CTX_TCP,     F_BLOCK_REQ, 1, 16, T_LISTEN, T_LISTEN, 0
-dirdef DIR_HTTP, 'http',        M_TOP,     CTX_HTTP,    F_BLOCK_REQ, 1, 16, T_LISTEN, T_LISTEN, 0
+dirdef DIR_TCP, 'tcp',         M_TOP,     CTX_TCP,     F_BLOCK_REQ, 1, 256, T_LISTEN, T_LISTEN, 0
+dirdef DIR_HTTP, 'http',        M_TOP,     CTX_HTTP,    F_BLOCK_REQ, 1, 256, T_LISTEN, T_LISTEN, 0
 dirdef DIR_HOST, 'host',        M_HTTP,    CTX_HOST,    F_BLOCK_REQ, 1, 64, T_HOSTNAME, T_HOSTNAME, 0
-dirdef DIR_ROUTE, 'route',      M_HTTP or M_HOST,    CTX_ROUTE,   F_BLOCK_REQ, 1, 32, T_ROUTE, T_ROUTE, 0
+dirdef DIR_ROUTE, 'route',      M_HTTP or M_HOST,    CTX_ROUTE,   F_BLOCK_REQ, 1, 256, T_ROUTE, T_ROUTE, 0
 dirdef DIR_ALERTS, 'alerts',    M_TOP,     CTX_ALERTS,  F_BLOCK_REQ or F_UNIQUE, 0, 0, T_NONE, T_NONE, 0
 dirdef DIR_VRRP, 'vrrp',        M_TOP,     0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, k_vrrp
 dirdef DIR_WEBHOOK, 'webhook',  M_ALERTS,  0,           0, 1, 1, T_ANY, T_NONE, k_alert
@@ -316,7 +316,7 @@ dirdef DIR_MAINTENANCE, 'maintenance', M_HTTP, 0,     F_UNIQUE, 0, 0, T_NONE, T_
 dirdef DIR_REDIRECTS, 'redirects', M_ROUTE, 0,         F_UNIQUE, 1, 1, T_ANY, T_NONE, k_rmap
 dirdef DIR_FILES, 'files',      M_ROUTE,   0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, k_files
 dirdef DIR_PHP, 'php',          M_ROUTE,   0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, k_php
-dirdef DIR_MATCH, 'match',      M_ROUTE,   CTX_ROUTE,   F_BLOCK_REQ or F_FREE_KEYS, 0, 16, T_ANY, T_ANY, 0
+dirdef DIR_MATCH, 'match',      M_ROUTE,   CTX_ROUTE,   F_BLOCK_REQ or F_FREE_KEYS, 0, 256, T_ANY, T_ANY, 0
 dirdef DIR_CACHE, 'cache',      M_ROUTE,   0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, k_cache
 dirdef DIR_SIGNED, 'signed_urls', M_ROUTE, 0,           F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_signed
 dirdef DIR_PRIORITY, 'priority', M_ROUTE,   0,           F_UNIQUE, 1, 1, e_priority, T_NONE, 0
@@ -354,7 +354,7 @@ dirdef DIR_BODY_IDLE, 'body_idle', M_TIMEOUT, 0,           F_UNIQUE, 1, 1, T_DUR
 dirdef DIR_SERVER, 'server',      M_POOL,    0,           0, 1, 2, T_BACKEND, e_server_flags, k_server
 dirdef DIR_DISCOVER, 'discover', M_POOL,    0,           0, 1, 2, e_discover, T_ANY, k_discover
 dirdef DIR_QUEUE, 'queue',       M_POOL,    0,           F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_queue
-dirdef DIR_SOURCE, 'source',     M_POOL,    0,           F_UNIQUE, 1, 8, T_ANY, T_ANY, 0
+dirdef DIR_SOURCE, 'source',     M_POOL,    0,           F_UNIQUE, 1, 256, T_ANY, T_ANY, 0
 dirdef DIR_OUTLIER, 'outlier',   M_POOL,    0,           F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_outlier
 dirdef DIR_CONCURRENCY, 'concurrency', M_POOL, 0,       F_UNIQUE, 1, 1, T_ANY, T_NONE, k_concurrency
 dirdef DIR_RETRY_BUDGET, 'retry_budget', M_POOL, 0,      F_UNIQUE, 1, 1, T_PERCENT, T_NONE, k_rbudget

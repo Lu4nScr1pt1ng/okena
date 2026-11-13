@@ -2281,8 +2281,9 @@ pool_source:
 	inc	dword [g_src_next+rdi*4]
 	xor	edx,edx
 	div	dword [r8+PL_SRCN]
+	add	edx,[r8+PL_SRC]
 	imul	eax,edx,PL_SRCSZ
-	lea	rax,[r8+PL_SRC+rax]
+	lea	rax,[g_srcs+rax]
 	movzx	edx,word [rax]
 	cmp	edx,esi
 	je	.out
