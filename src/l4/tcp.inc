@@ -148,13 +148,17 @@ MAX_TRIES	:= 3
 FAIL_THRESHOLD	:= 3		; consecutive connect failures before ejection
 EJECT_TICKS	:= 10
 
-ACC_PER_SOCKET	:= 8		; accepts in flight per socket that needs addresses
+ACC_PER_SOCKET	:= 8		; accept slots per socket that needs addresses
+ACC_BURST	:= 2		; accepts in flight per socket at most, a worker
 ACC_MAX		:= MAX_LISTENERS * ACC_PER_SOCKET	; (shared out when sockets are more)
 AW_MAX		:= 4096		; sockets accept_watch looks at, in a worker
 AC_SID		:= 0		; d: socket id
 AC_LEN		:= 4		; d: address length
 AC_SA		:= 8		; 28 bytes
-AC_SIZE		:= 40
+AC_GFIRST	:= 36		; d: its socket's first slot
+AC_GN		:= 40		; d: and how many it has
+AC_ARMED	:= 44		; d: 1 while in the kernel
+AC_SIZE		:= 48
 
 bss
 	align 8
@@ -170,6 +174,8 @@ bss
 					; completes takes a connection it must serve)
 	g_acc_socks	dd ?		; (counting them)
 	g_acc:		rb AC_SIZE * ACC_MAX
+	g_acc_armed	rb MAX_LISTENERS * MAX_WORKERS	; accepts in the kernel, a socket
+	g_acc_cur	dd ?		; the slot that just completed (acc_slot_again)
 	g_acc_addr:	rb 28
 	g_sessions	dd ?		; slots per worker
 	g_sess_hwm	dd ?		; slots ever used (memory follows load)
@@ -734,13 +740,29 @@ balance_stagger:
 
 ; ---------------------------------------------------------------- accept
 
-; A listener has one socket per worker, or more after a reload that
-; lowered the worker count: no socket is closed while it may hold queued
-; connections. Worker w serves sockets w, w + workers, w + 2 * workers...
+; A TCP or HTTP listener has one socket, every worker accepting from it:
+; an accept waits exclusively and in turn (the kernel hands an arrival to
+; the accept waiting longest), so connections go round the workers instead
+; of by a hash of their addresses. With SO_REUSEPORT and a socket each, 8
+; clients at once landed 6 and 2 often enough to set the p99; one queue
+; took that tail down by a fifth (and the epoll engine's waits, level-
+; triggered on all workers, go to whichever is idle). A UDP listener keeps
+; a socket per worker (flows hashed to one worker each): worker w serves
+; sockets w, w + workers... A listener can hold more sockets than that
+; after a reload or an upgrade from an older binary: none is closed while it
+; may hold queued connections, and the workers serve them all.
 ; A socket id is listener | index << SID_SHIFT (listeners: 16 bits).
 SID_SHIFT	:= 16
 SID_LISTENER	:= 0xFFFF
 assert MAX_LISTENERS <= SID_LISTENER + 1
+
+; edi = listener, esi = workers: eax = the sockets it is opened with.
+listener_nsocks:
+	imul	rax,rdi,LS_SIZE
+	cmp	dword [g_listeners+rax+LS_KIND],LK_UDP
+	mov	eax,1
+	cmove	eax,esi
+	ret
 
 ; edi = socket id. eax = its fd.
 listener_fd:
@@ -764,7 +786,7 @@ for_each_socket:
 .listener:
 	cmp	ebx,[g_plan_listeners]
 	jae	.done
-	mov	r12d,[g_worker_id]		; socket index
+	xor	r12d,r12d			; socket index: all of them
 .socket:
 	cmp	r12d,[g_lsocks+rbx*4]
 	jae	.next
@@ -775,7 +797,7 @@ for_each_socket:
 	shl	edi,SID_SHIFT
 	or	edi,ebx
 	call	r13
-	add	r12d,[g_workers]
+	inc	r12d
 	jmp	.socket
 .next:
 	inc	ebx
@@ -786,10 +808,15 @@ for_each_socket:
 	pop	rbx
 	ret
 
-; Multishot accept into direct descriptors on every socket of this worker;
-; ACC_MAX accepts with addresses shared out between the sockets that need
-; them, ACC_PER_SOCKET each at most and one at least, so that no listener
-; is left without any.
+; Accepts on every socket. One waits on each at rest, so that arrivals go
+; round the workers (an accept that ends and is armed again queues behind
+; the others'); one that completes with more connections queued behind it
+; (IORING_CQE_F_SOCK_NONEMPTY) brings another, up to ACC_PER_SOCKET, and
+; one that finds the queue empty is not armed again while another waits:
+; a burst is taken several at a time, a trickle in turn. Into direct
+; descriptors; a listener that needs client addresses gets slots of its own
+; (an address buffer each): ACC_MAX shared out between such sockets,
+; ACC_PER_SOCKET each at most and one at least.
 arm_accepts:
 	mov	dword [g_acc_socks],0
 	lea	rsi,[.count]
@@ -859,18 +886,71 @@ arm_accept:
 	push	r12
 	mov	r12d,edi
 	mov	ebx,[g_acc_per]
+	mov	edx,[g_acc_count]		; the group: slots edx .. edx + ebx - 1
+	mov	eax,ACC_MAX
+	sub	eax,edx
+	jbe	.done
+	cmp	ebx,eax
+	cmova	ebx,eax
+	add	[g_acc_count],ebx
+	mov	ecx,ebx
+	mov	eax,edx
 .slot:
-	mov	eax,[g_acc_count]
-	cmp	eax,ACC_MAX
-	jae	.done
-	inc	dword [g_acc_count]
-	imul	rcx,rax,AC_SIZE
-	mov	[g_acc+rcx+AC_SID],r12d
-	mov	edi,eax
-	call	arm_accept_slot
-	dec	ebx
+	imul	r8,rax,AC_SIZE
+	mov	[g_acc+r8+AC_SID],r12d
+	mov	[g_acc+r8+AC_GFIRST],edx
+	mov	[g_acc+r8+AC_GN],ebx
+	mov	dword [g_acc+r8+AC_ARMED],0
+	inc	eax
+	dec	ecx
 	jnz	.slot
+	mov	edi,edx				; the first one waits, the others are kept
+	call	arm_accept_slot
 .done:
+	pop	r12
+	pop	rbx
+	ret
+
+; edi = socket id: eax = its g_acc_armed index
+acc_index:
+	mov	eax,edi
+	and	eax,SID_LISTENER
+	imul	eax,eax,MAX_WORKERS
+	mov	ecx,edi
+	shr	ecx,SID_SHIFT
+	add	eax,ecx
+	ret
+
+; edi = socket id, esi = the completion's flags, rdx = what arms one more
+; on it (edi = the socket id, or the slot): after an accept of it ended,
+; arm what it needs (one at least, more while connections queue).
+acc_again:
+	push	rbx
+	push	r12
+	push	r13
+	mov	ebx,edi
+	mov	r12d,esi
+	mov	r13,rdx
+	call	acc_index
+	movzx	ecx,byte [g_acc_armed+rax]
+	test	r12d,IORING_CQE_F_SOCK_NONEMPTY
+	jnz	.more
+	test	ecx,ecx
+	jnz	.out				; others wait: this one rests
+	mov	edi,ebx
+	call	r13
+	jmp	.out
+.more:
+	mov	edi,ebx
+	call	r13
+	mov	edi,ebx
+	call	acc_index
+	cmp	byte [g_acc_armed+rax],ACC_BURST
+	jae	.out
+	mov	edi,ebx
+	call	r13
+.out:
+	pop	r13
 	pop	r12
 	pop	rbx
 	ret
@@ -939,9 +1019,31 @@ arm_accept_one:
 	inc	dword [g_acc_count]
 	imul	rcx,rax,AC_SIZE
 	mov	[g_acc+rcx+AC_SID],edi
+	mov	[g_acc+rcx+AC_GFIRST],eax	; a group of its own
+	mov	dword [g_acc+rcx+AC_GN],1
 	mov	edi,eax
 	jmp	arm_accept_slot
 .none:
+	ret
+
+; edi = socket id (acc_again): one more of its slots into the kernel, the
+; first resting one of the group of the slot that just completed
+; (g_acc_cur); none when all of them wait already.
+acc_slot_again:
+	mov	ecx,[g_acc_cur]
+	imul	rcx,rcx,AC_SIZE
+	mov	eax,[g_acc+rcx+AC_GFIRST]
+	mov	edx,[g_acc+rcx+AC_GN]
+.find:
+	imul	rcx,rax,AC_SIZE
+	cmp	dword [g_acc+rcx+AC_ARMED],0
+	jne	@f
+	mov	edi,eax
+	jmp	arm_accept_slot
+@@:
+	inc	eax
+	dec	edx
+	jnz	.find
 	ret
 
 ; edi = accept slot.
@@ -949,6 +1051,11 @@ arm_accept_slot:
 	inc	dword [g_acc_live]
 	push	rbx
 	mov	ebx,edi
+	imul	rcx,rbx,AC_SIZE
+	mov	dword [g_acc+rcx+AC_ARMED],1
+	mov	edi,[g_acc+rcx+AC_SID]
+	call	acc_index
+	inc	byte [g_acc_armed+rax]
 	imul	rcx,rbx,AC_SIZE
 	mov	dword [g_acc+rcx+AC_LEN],28
 	call	ring_get_sqe
@@ -983,12 +1090,21 @@ on_accept_a:
 	lea	rdi,[g_acc_addr]
 	mov	ecx,28
 	rep	movsb
+	imul	rcx,r12,AC_SIZE
+	mov	dword [g_acc+rcx+AC_ARMED],0
+	mov	edi,[g_acc+rcx+AC_SID]
+	call	acc_index
+	dec	byte [g_acc_armed+rax]
 	cmp	dword [g_draining],2
 	jae	@f
 	cmp	r14,-ECANCELED
 	je	@f
-	mov	edi,ebx
-	call	arm_accept_slot			; ready for the next one
+	imul	rcx,r12,AC_SIZE
+	mov	edi,[g_acc+rcx+AC_SID]
+	mov	esi,r15d
+	mov	[g_acc_cur],r12d
+	lea	rdx,[acc_slot_again]
+	call	acc_again			; ready for the next ones
 @@:
 	test	r14,r14
 	js	.out
@@ -1084,9 +1200,10 @@ arm_accept_multi:
 	inc	dword [g_acc_live]
 	push	rbx
 	mov	ebx,edi
+	call	acc_index
+	inc	byte [g_acc_armed+rax]
 	call	ring_get_sqe
-	mov	byte [rax+SQE_OPCODE],IORING_OP_ACCEPT
-	mov	word [rax+SQE_IOPRIO],IORING_ACCEPT_MULTISHOT
+	mov	byte [rax+SQE_OPCODE],IORING_OP_ACCEPT	; one shot: see arm_accepts
 	push	rax
 	mov	edi,ebx
 	call	listener_fd
@@ -1103,13 +1220,20 @@ arm_accept_multi:
 
 ; ebx = socket id, r14 = direct descriptor or -errno, r15d = flags.
 on_accept:
-	test	r15d,IORING_CQE_F_MORE
-	jnz	@f
-	dec	dword [g_acc_live]		; the multishot ended
+	dec	dword [g_acc_live]
+	mov	edi,ebx
+	call	acc_index
+	dec	byte [g_acc_armed+rax]
 	cmp	dword [g_draining],2
 	jae	@f
+	cmp	r14,-ECANCELED
+	je	@f
+	push	rbx
 	mov	edi,ebx
-	call	arm_accept			; the multishot ended: re-arm it
+	mov	esi,r15d
+	lea	rdx,[arm_accept_multi]
+	call	acc_again
+	pop	rbx
 @@:
 	and	ebx,SID_LISTENER		; the listener
 	test	r14,r14

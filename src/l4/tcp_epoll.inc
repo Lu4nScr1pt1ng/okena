@@ -28,7 +28,9 @@ ENGINE_URING	:= 0
 ENGINE_EPOLL	:= 1
 
 EP_EVENTS	:= 256
-ACCEPT_BATCH	:= 64
+ACCEPT_BATCH	:= 4		; accepts a wake-up: every worker waits on the one
+				; socket and the idle one wakes first; 64 at a
+				; time let one worker take most keep-alive clients
 
 bss
 	align 8

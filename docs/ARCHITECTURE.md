@@ -46,7 +46,8 @@ byte of its traffic.
 
 ```
 supervisor (PID 1 in a container, or under systemd)
- ├─ owns all listening sockets (SO_REUSEPORT, one per worker per listener)
+ ├─ owns all listening sockets (TCP: one per listener, every worker
+ │  accepting from it; UDP and QUIC: SO_REUSEPORT, one per worker)
  ├─ runs a short-lived compiler child that validates the configuration
  │  before the supervisor compiles it; watches worker heartbeats
  ├─ worker 0 ── on CPU 0 under load ── its own io_uring, memory, upstream connections
@@ -67,8 +68,21 @@ worker, so none of it can delay a request.
 The design carries over what was measured in fasm2crud: shared-nothing
 worker processes, one ring each, supervisor holding the listeners so a
 crashed worker loses no queued connection, graceful drain on SIGTERM,
-`PR_SET_PDEATHSIG`. A shared accept queue measured 4x worse there and is
-not used.
+`PR_SET_PDEATHSIG`.
+
+**One accept queue.** A shared accept queue measured 4x worse in
+fasm2crud. Here too a multishot accept per worker on one socket does badly
+(the first waiter takes every connection: 14k against 22k new connections
+a second), so okena's io_uring workers hold one-shot accepts instead, and the kernel hands an arrival to the accept that has
+waited longest, so connections go round the workers; an accept that comes
+back with more queued behind it (`IORING_CQE_F_SOCK_NONEMPTY`) brings a
+second. The epoll workers all wait on the socket, level-triggered, and take
+four at a wake-up: the idle one wakes first. A socket per worker
+(SO_REUSEPORT) splits by a hash of the addresses instead, and with eight
+clients at once one worker often held six. Measured on two workers, new
+connections from 8 clients: p99 630 → 510 µs (io_uring), 730 → 549 µs
+(epoll), the rate a little higher; from 64 clients p99 4.9 → 2.8 ms and
+5.5 → 3.0 ms.
 
 **Connection steering.** A `SO_ATTACH_REUSEPORT_EBPF` program picks the
 worker whose CPU received the packet (`SO_INCOMING_CPU`/RX queue), so a

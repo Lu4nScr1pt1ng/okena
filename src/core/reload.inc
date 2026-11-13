@@ -714,9 +714,12 @@ reload_sockets:
 	test	eax,eax
 	jnz	.failed
 .reuse:
-	; sockets: one per new worker, and every old one of an address that
-	; stays (queued connections must not be reset)
-	mov	r14d,r15d
+	; sockets: as many as listener_nsocks says, and every old one of an
+	; address that stays (queued connections must not be reset)
+	mov	edi,r12d
+	mov	esi,r15d
+	call	listener_nsocks
+	mov	r14d,eax
 	test	r13d,r13d
 	js	@f
 	mov	eax,[g_prev_lsocks+r13*4]

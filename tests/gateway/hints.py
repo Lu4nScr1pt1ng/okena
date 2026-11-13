@@ -136,10 +136,13 @@ http 127.0.0.1:{TLS} {{
             c.sendall(b"GET /slow HTTP/1.1\r\nHost: x\r\n\r\n")
             b = b""
             while not b.endswith(b"ok"):
-                b += c.recv(65536)
+                x = c.recv(65536)
+                if not x:               # closed: counted short below, not a hang
+                    break
+                b += x
             d += b
         c.close()
-        check("each request on a connection has its own", d.count(b"103 Early") == 3, d.count(b"103 Early"))
+        check("each request on a connection has its own", d.count(b"103 Early") == 3, (d.count(b"103 Early"), d[-300:]))
         q = subprocess.run(["timeout", "--foreground", "5", "curl", "-q", "-skv", "--http2", "-o", "/dev/null", f"https://localhost:{TLS}/slow"], capture_output=True, text=True)
         check("over HTTP/2", "HTTP/2 103" in q.stderr or "103" in q.stderr and "link:" in q.stderr.lower(), q.stderr[-400:])
 

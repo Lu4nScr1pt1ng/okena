@@ -78,6 +78,7 @@ IORING_ASYNC_CANCEL_FD_FIXED := 1 shl 3
 
 ; cqe->flags
 IORING_CQE_F_MORE	:= 1 shl 1
+IORING_CQE_F_SOCK_NONEMPTY := 1 shl 2		; (accept, 6.10+) more connections queued
 
 ; struct io_uring_sqe (64 bytes)
 SQE_OPCODE	:= 0

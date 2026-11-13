@@ -119,7 +119,7 @@ supervisor_main:
 	mov	[g_sup_pid],eax
 	call	sd_init				; systemd: its sockets, its notify socket
 
-	; one socket per worker for each listener
+	; the sockets of each listener (listener_nsocks)
 	xor	r12d,r12d
 .listener:
 	cmp	r12d,[g_plan_listeners]
@@ -132,7 +132,10 @@ supervisor_main:
 	mov	edi,r12d
 	call	listener_probe
 .socket:
-	cmp	ebx,[g_workers]
+	mov	edi,r12d
+	mov	esi,[g_workers]
+	call	listener_nsocks
+	cmp	ebx,eax
 	jae	.sockets
 	mov	edi,r12d
 	call	listener_open
