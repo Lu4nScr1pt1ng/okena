@@ -1091,6 +1091,15 @@ okena purge tag product-42              # tags from the origin's Cache-Tag or Su
 curl -X POST -H "Authorization: Bearer $TOKEN" 'http://10.0.0.1:9464/purge?tag=product-42'
 ```
 
+There is no limit on purges by URL or tag: each sets the time of two cells of
+a 1M-cell table (8 MiB, shared, in the store with `cache_disk`), and an
+answer is purged when both cells of its URL or of one of its tags are newer
+than its fetch. A purge never misses what it names; two names that share
+cells only make an answer of the other fetched again (about 1% of older
+answers after 100 000 purges since they were fetched). Purges by prefix are
+kept as rules, the last 4096; past that, what was fetched before the oldest
+one dropped is fetched again.
+
 **A shield tier.** Put a pool of okenas between edges and the origin and
 hash by URL, so each object is fetched from the origin once:
 
@@ -1931,6 +1940,6 @@ it leaves the pool just as fast.
 | `respond` body | 1 MiB (past 4 KiB, sent from the loaded config with no copy) |
 | rate limit keys | about 256k, kept across reloads |
 | idempotency keys | `idempotency_store`: 65536 by default, up to 64M; answers up to 16 MiB |
-| cache purge rules | 1024; past that, older rules widen into "everything fetched before" |
+| cache purges | by URL and tag: no limit (a shared table of times); by prefix: the last 4096, older answers fetched again past that |
 | include depth | 16 |
 | workers | 1024 |

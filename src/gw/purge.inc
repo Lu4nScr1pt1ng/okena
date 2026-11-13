@@ -6,13 +6,22 @@
 ;   okena purge tag product-42           (Cache-Tag, Surrogate-Key)
 ;   POST /purge?url=...|prefix=...|tag=...   on the metrics listener, with its token
 ;
-; A purge is a rule in a ring that every worker reads: its time, its kind, what it
-; names. Nothing is looked for when it is made; an answer is checked when it is
-; about to be served, against the rules made after it was fetched (the time its
-; fetch began: one in flight when the purge came is purged too). The newest rule's
-; time says at once that most answers need no look. When the ring goes round, what
-; was fetched before the rule it loses is taken as purged: never served after a
-; purge, at worst fetched again.
+; Nothing is looked for when a purge is made; an answer is checked when it is
+; about to be served, against the purges made after it was fetched (the time its
+; fetch began: one in flight when the purge came is purged too). The newest
+; purge's time says at once that most answers need no look.
+;
+; A purge by URL or by tag is a time in a sketch every worker reads: the name's
+; hash picks two of PS_N cells and each keeps the newest purge time it was given.
+; An answer is purged when both cells of its URL (or of one of its tags) are newer
+; than its fetch. There is no count of such purges to run out of: two names may
+; share cells, and then an answer of the other is fetched again, never one purged
+; served (with 1M cells, 100 000 purges since an answer was fetched make about 1%
+; of such answers fetched again needlessly).
+;
+; A purge by prefix is a rule in a ring (only those): its time, what it names.
+; When the ring goes round, what was fetched before the rule it loses is taken as
+; purged: never served after a purge, at worst fetched again.
 ;
 ; With `cache_disk` the ring is in okena.idx: every okena process on the store sees
 ; it, and it outlives them, as what is on disk does. Without, the supervisor's.
@@ -25,11 +34,13 @@
 ; then its tags, a byte of length each; a tag of length 0 says there were more than
 ; the room held (then any tag purge takes it).
 
-PR_N		:= 1024
+PR_N		:= 4096
 PR_HDR		:= 64
 PR_SEQ		:= 0				; q: rules made, ever
-PR_LAST		:= 8				; q: µs (wall clock) of the newest
+PR_LAST		:= 8				; q: µs (wall clock) of the newest purge, any kind
 PR_FLOOR	:= 16				; q: fetched before this: purged (the ring went round)
+PR_LASTPFX	:= 24				; q: of the newest prefix rule
+PR_LASTTAG	:= 32				; q: of the newest tag purge
 RL_SEQ		:= 0				; q: its number + 1, once whole
 RL_TIME		:= 8				; q: µs
 RL_KIND		:= 16				; d
@@ -38,7 +49,12 @@ RL_LEN		:= 24				; d: TEXT's length
 RL_TEXT		:= 32
 RL_SIZE		:= 256
 RL_TMAX		:= RL_SIZE - RL_TEXT
-PR_SIZE		:= PR_HDR + PR_N * RL_SIZE
+PR_SK		:= PR_HDR + PR_N * RL_SIZE	; the sketch: PS_N q, µs
+PS_N		:= 1 shl 20
+PR_DECMAX	:= 4096				; a URL or tag asked for, at most
+PR_SIZE		:= PR_SK + PS_N * 8
+PS_URL		:= 0xCBF29CE484222325		; seeds: a URL's, a tag's
+PS_TAG		:= 0x84222325CBF29CE4
 PK_URL		:= 1
 PK_PREFIX	:= 2
 PK_TAG		:= 3
@@ -56,7 +72,7 @@ bss
 	g_plan_fleet_tx	rq MAX_FLEET		; as written (its Host)
 	g_plan_fleet_tl	rd MAX_FLEET
 	g_pm:		rb PM_MAX		; an answer's facts, in one piece, to look at
-	g_pr_dec:	rb RL_TMAX + 16		; a value from a query, decoded
+	g_pr_dec:	rb PR_DECMAX + 16	; a value from a query, decoded
 end bss
 
 ; the supervisor, before any fork: a ring for those without a store
@@ -110,15 +126,58 @@ pr_add:
 	mov	r13,rsi
 	mov	r14d,edx
 	mov	r15,rcx
-	lea	eax,[rdx+r8]
-	cmp	eax,RL_TMAX
-	ja	.long
 	push	r8
 	call	pr_clock
 	pop	r8
 	mov	rbx,[g_pr_base]
 	test	rbx,rbx
 	jz	.long
+	cmp	r12d,PK_PREFIX
+	je	.ring
+	; a URL or a tag: its two cells
+	mov	rax,PS_TAG
+	cmp	r12d,PK_TAG
+	je	@f
+	mov	rax,PS_URL
+	mov	rsi,r13
+	mov	ecx,r14d
+	push	r8
+	mov	r9d,1
+	call	pr_hash
+	pop	r8
+@@:
+	mov	rsi,r15
+	mov	ecx,r8d
+	xor	r9d,r9d
+	call	pr_hash
+	call	pr_cells
+	mov	r10,[g_pr_now]
+	lea	rdi,[rbx+PR_SK+rcx*8]
+	call	.newer
+	lea	rdi,[rbx+PR_SK+rdx*8]
+	call	.newer
+	cmp	r12d,PK_TAG
+	jne	.last
+	lea	rdi,[rbx+PR_LASTTAG]
+	call	.newer
+	jmp	.last
+; [rdi] = r10, if that is newer
+.newer:
+	mov	rax,[rdi]
+@@:
+	cmp	rax,r10
+	jae	@f
+	lock cmpxchg [rdi],r10
+	jne	@b
+@@:
+	ret
+.ring:
+	lea	eax,[r14+r8]
+	cmp	eax,RL_TMAX
+	ja	.long
+	mov	r10,[g_pr_now]
+	lea	rdi,[rbx+PR_LASTPFX]
+	call	.newer
 	mov	eax,1
 	lock xadd [rbx+PR_SEQ],rax		; its number
 	mov	rcx,rax
@@ -159,6 +218,7 @@ pr_add:
 	pop	rdi
 	inc	rax
 	mov	[rdi+RL_SEQ],rax		; whole (x86 keeps stores in order)
+.last:
 	mov	rcx,[g_pr_now]
 	mov	rax,[rbx+PR_LAST]
 @@:
@@ -206,6 +266,10 @@ pr_check:
 	jae	.kept
 	cmp	r12,[rbx+PR_FLOOR]
 	jb	.purged
+	call	pr_sketch
+	jc	.purged
+	cmp	r12,[rbx+PR_LASTPFX]
+	jae	.kept				; no prefix rule since
 	mov	r14,[rbx+PR_SEQ]		; newest first
 	mov	r15d,PR_N
 .rule:
@@ -239,6 +303,121 @@ pr_check:
 	pop	r13
 	pop	r12
 	pop	rbx
+	ret
+
+; rax = a state, rsi/ecx = bytes, r9d = 1 to fold ASCII case: rax on them.
+; Keeps all but rax, rcx, rdx, rsi.
+pr_hash:
+	push	r11
+	mov	rdx,0x100000001B3
+.byte:
+	test	ecx,ecx
+	jz	.out
+	movzx	r11d,byte [rsi]
+	test	r9d,r9d
+	jz	@f
+	cmp	r11d,'A'
+	jb	@f
+	cmp	r11d,'Z'
+	ja	@f
+	or	r11d,0x20
+@@:
+	xor	rax,r11
+	imul	rax,rdx
+	inc	rsi
+	dec	ecx
+	jmp	.byte
+.out:
+	pop	r11
+	ret
+
+; rax = a name's hash: ecx, edx = its two cells. Keeps all but rax, rcx, rdx.
+pr_cells:
+	mov	rdx,rax
+	shr	rdx,31
+	xor	rax,rdx
+	mov	rdx,0x9E3779B97F4A7C15
+	imul	rax,rdx
+	mov	ecx,eax
+	and	ecx,PS_N - 1
+	shr	rax,32
+	mov	edx,eax
+	and	edx,PS_N - 1
+	cmp	edx,ecx
+	jne	@f
+	xor	edx,1
+@@:
+	ret
+
+; rbx = the purges, r12 = µs its fetch began, g_pm/r13d = its facts: CF when its
+; URL, or one of its tags, has both cells newer. Keeps rbx, r12-r15.
+pr_sketch:
+	push	r14
+	push	r15
+	lea	r14,[g_pm]
+	lea	r15,[r14+r13]			; the end
+	movzx	ecx,word [r14]			; its host
+	lea	rsi,[r14+2]
+	lea	rax,[rsi+rcx]
+	cmp	rax,r15
+	ja	.kept
+	movzx	edx,word [rax]			; its target
+	lea	r8,[rax+2]
+	lea	r14,[r8+rdx]			; past it: its tags
+	cmp	r14,r15
+	ja	.kept
+	push	r8
+	push	rdx
+	mov	rax,PS_URL
+	mov	r9d,1
+	call	pr_hash
+	pop	rcx
+	pop	rsi
+	xor	r9d,r9d
+	call	pr_hash
+	call	.both
+	jc	.out
+	; its tags, if a tag purge came since
+	cmp	r12,[rbx+PR_LASTTAG]
+	jae	.kept
+.tag:
+	cmp	r14,r15
+	jae	.kept
+	movzx	ecx,byte [r14]
+	inc	r14
+	test	ecx,ecx
+	jz	.purged				; (more tags than room: any tag purge)
+	lea	rax,[r14+rcx]
+	cmp	rax,r15
+	ja	.kept
+	mov	rsi,r14
+	mov	r14,rax
+	mov	rax,PS_TAG
+	xor	r9d,r9d
+	call	pr_hash
+	call	.both
+	jc	.out
+	jmp	.tag
+.purged:
+	stc
+	jmp	.out
+.kept:
+	clc
+.out:
+	pop	r15
+	pop	r14
+	ret
+; rax = a hash: CF when both its cells are newer than r12
+.both:
+	call	pr_cells
+	cmp	r12,[rbx+PR_SK+rcx*8]
+	jae	@f
+	cmp	r12,[rbx+PR_SK+rdx*8]
+	jae	@f
+	stc
+	ret
+@@:
+	clc
 	ret
 
 ; rdi = a rule, g_pm/esi = an answer's facts: CF when the rule names it
@@ -710,7 +889,7 @@ admin_purge:
 	jbe	.decoded
 	cmp	al,'&'
 	je	.decoded
-	cmp	ecx,RL_TMAX
+	cmp	ecx,PR_DECMAX
 	jae	.bad
 	inc	rsi
 	cmp	al,'+'

@@ -208,7 +208,7 @@ http 127.0.0.1:{LB} {{ route /* {{ cache 1h; to pool b }} }}
         out = many("/r/a", 8)
         check("a restart: what was purged stays purged (the ring is in the store)", old not in out, set(out))
 
-        # the ring gone round: what came before is taken as purged, what came after kept
+        # purges by tag and URL take no room: 1100 of them leave the rest alone
         old = get("/w/old")
         for i in range(1100):
             st = post(MA, f"tag=noise{i}")
@@ -217,8 +217,22 @@ http 127.0.0.1:{LB} {{ route /* {{ cache 1h; to pool b }} }}
         new = get("/w/new")
         h_old, h_new = hits["/w/old"], hits["/w/new"]
         get("/w/old"), get("/w/new")
-        check("1100 purges (more than the ring): older answers fetched again, newer ones kept",
-              st == 200 and hits["/w/old"] == h_old + 1 and hits["/w/new"] == h_new, (st, hits["/w/old"] - h_old, hits["/w/new"] - h_new))
+        check("1100 tag purges: nothing they do not name is taken back", st == 200 and hits["/w/old"] == h_old
+              and hits["/w/new"] == h_new, (st, hits["/w/old"] - h_old, hits["/w/new"] - h_new))
+        post(MA, f"url={HOST}/w/new")
+        get("/w/new")
+        check("  and a URL purge after them still takes its answer", hits["/w/new"] == h_new + 1, hits["/w/new"] - h_new)
+
+        # the prefix ring gone round: what came before is taken as purged, what came after kept
+        old = get("/w/old")
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(32) as ex:
+            sts = set(ex.map(lambda i: post(MA, f"prefix={HOST}/nothing{i}/"), range(4100)))
+        new = get("/w/new")
+        h_old, h_new = hits["/w/old"], hits["/w/new"]
+        get("/w/old"), get("/w/new")
+        check("4100 prefix purges (more than the ring): older answers fetched again, newer ones kept",
+              sts == {200} and hits["/w/old"] == h_old + 1 and hits["/w/new"] == h_new, (sts, hits["/w/old"] - h_old, hits["/w/new"] - h_new))
 
         r = purge(ca, "colour", "blue")
         check("okena purge with something else: said, and refused", r.returncode != 0 and "purge url" in (r.stdout + r.stderr), (r.stdout, r.stderr))
