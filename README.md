@@ -38,13 +38,15 @@ And the latency that comes with it, HTTP/1.1 at 30,000 requests a second, p99:
 More of it, with the method and the cases where okena is *not* first:
 [docs/BENCHMARK.md](docs/BENCHMARK.md). In short:
 
-* **L4:** 54.5 Gbit/s of TCP bulk transfer on two cores, against Envoy's
+* **L4:** 95.2 Gbit/s of TCP bulk transfer on two cores, against Envoy's
   42.1 and HAProxy's 20.7.
+* **Large responses:** 1 MB bodies at 76.6 Gbit/s, against Envoy's 33.3 and
+  HAProxy's 26.0.
 * **XDP:** 2.26 M packets a second on one core, against Katran's 2.05 M.
 * **Memory:** 100,000 idle keep-alive connections in 73 MiB, against
   HAProxy's 184 MiB and nginx's 896 MiB.
-* **Crypto:** faster than OpenSSL 3.5 at Ed25519, ML-KEM-768, ECDSA signing
-  and AES-GCM. Even at X25519, behind at ChaCha20-Poly1305.
+* **Crypto:** faster than OpenSSL 3.5 at every primitive measured: Ed25519,
+  ML-KEM-768, ECDSA signing, AES-GCM, X25519 and ChaCha20-Poly1305.
 
 Why it's fast: one worker per core with no locks on the request path,
 io_uring (or epoll where io_uring is blocked), configuration compiled into

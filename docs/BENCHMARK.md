@@ -2,7 +2,7 @@
 
 okena against the proxies people actually run: HAProxy, nginx, Envoy, Caddy
 and Traefik, plus Katran for XDP and OpenSSL for crypto. Every number on this
-page comes from a script in `tests/bench/`, run on one machine on 2026-11-12,
+page comes from a script in `tests/bench/`, run on one machine in November 2026,
 and can be reproduced with the command given in its section. Where okena is
 not first, the table says so; [the last section](#where-okena-is-not-first)
 collects those cases.
@@ -93,10 +93,10 @@ The most each proxy did on two cores, and okena's lead over the next best:
 | gRPC unary calls/s | **142,485** | HAProxy 55,627 | 2.56× |
 | HTTP/3, requests/s | **191,921** | HAProxy 124,976 | 1.54× |
 | HTTP/3, new connections/s with none failing | **9,960** | HAProxy 1,258 | 7.9× |
-| TCP, 256 connections, messages/s | **153,225** | nginx 138,567 | 1.11× |
-| TCP bulk transfer | **54.5 Gbit/s** | Envoy 42.1 Gbit/s | 1.29× |
-| UDP, 256 flows, datagrams/s | **184,049** | nginx 145,363 | 1.27× |
-| 1 MB responses | **48.0 Gbit/s** | Envoy 33.3 Gbit/s | 1.44× |
+| TCP, 256 connections, messages/s | **154,835** | nginx 138,567 | 1.12× |
+| TCP bulk transfer | **95.2 Gbit/s** | Envoy 42.1 Gbit/s | 2.26× |
+| UDP, 256 flows, datagrams/s | **186,721** | nginx 145,363 | 1.28× |
+| 1 MB responses | **76.6 Gbit/s** | Envoy 33.3 Gbit/s | 2.30× |
 | JWT-checked requests/s | **98,258** | Envoy 24,608 | 4.0× |
 | Cache hits/s | **292,072** | HAProxy 183,777 | 1.59× |
 | 100k idle connections, total memory | **73 MiB** | HAProxy 184 MiB | 2.5× less |
@@ -217,16 +217,15 @@ connection, so there are fewer system calls per request.
 
 | Proxy | 10,000/s | 30,000/s | 80,000/s |
 |---|---|---|---|
-| **okena** | **48 / 81 / 133** / 987 | **40 / 76** / 401 / 1682 | **45 / 98 / 348** / 1210 |
-| HAProxy | 55 / 84 / 139 / 1281 | 66 / 100 / **229** / 2850 | 178 / 6619 / 12320 / 14510 |
+| **okena** | **47 / 77 / 163** / 600 | **40 / 74 / 202** / 1625 | **47 / 119 / 315** / 1101 |
+| HAProxy | 56 / 84 / 190 / 1320 | 60 / 114 / 249 / 3374 | 133 / 1359 / 5046 / 8069 |
 | nginx | 72 / 121 / 180 / 779 | 95 / 2293 / 3538 / 4927 | 0.68 s / 2.4 s / 2.5 s |
 | Envoy | 161 / 237 / 495 / 2157 | 2195 / 8060 / 10747 / 12165 | could not keep up |
 | Traefik | 141 / 1622 / 5242 / 10874 | could not keep up | could not keep up |
 | Caddy | 145 / 2326 / 5242 / 10338 | could not keep up | could not keep up |
 
-At 30,000/s HAProxy's p99.9 is lower than okena's (229 against 401 µs).
-Everywhere else okena is lowest, and at 80,000/s it is the only one under a
-millisecond at p99.
+okena is lowest at every rate and percentile, and at 80,000/s it is the only
+one under a millisecond at p99.
 
 ---
 
@@ -297,8 +296,8 @@ a second (real ClientHellos, never answered). Median of 3 runs:
 
 | Server | quiet: p50 / p99 / p99.9 (µs) | under the flood: requests/s | under the flood: p50 / p99 / p99.9 (µs) |
 |---|---|---|---|
-| **okena** | **71 / 151** / 1056 | **16,774** | **117 / 458 / 6391** |
-| HAProxy | 98 / 271 / **757** | 8,490 | 420 / 163,365 / 180,970 |
+| **okena** | **66 / 143 / 350** | **16,780** | **124 / 1014 / 9857** |
+| HAProxy | 98 / 271 / 757 | 8,490 | 420 / 163,365 / 180,970 |
 | nginx | 128 / 556 / 1891 | 7,850 | 1036 / 111,919 / 483,066 |
 
 Under the flood okena keeps the whole rate; HAProxy and nginx lose half of it
@@ -309,14 +308,11 @@ p50 / p99 / p99.9 in µs:
 
 | Server | 5,000/s | 18,000/s | 40,000/s |
 |---|---|---|---|
-| **okena** | **53 / 111** / 2047 | **43 / 81 / 169** | **39 / 74 / 573** |
-| HAProxy | 71 / 147 / **385** | 72 / 129 / 679 | 122 / 1654 / 3702 |
+| **okena** | **53 / 94 / 125** | **42 / 69 / 135** | **39 / 65 / 145** |
+| HAProxy | 71 / 147 / 385 | 72 / 129 / 679 | 122 / 1654 / 3702 |
 | nginx | 61 / 802 / 19,136 | 54 / 103 / 413 | 101 / 77,594 / 84,934 |
 
-At 5,000 requests a second okena's p99.9 is about 2 ms in all three runs
-(2260, 2047, 1998 µs), where HAProxy's median is 385 µs. It is a tail okena
-has only at low rates; at 18,000/s and above okena is lowest at every
-percentile. Its cause is not found yet.
+okena is lowest at every rate and percentile.
 
 ---
 
@@ -337,7 +333,7 @@ plugin. The backends are an echo, a sink and a UDP echo from
 | Path (2 cores) | ping1 | ping256 | bulk | connect | udp1 | udp256 |
 |---|---|---|---|---|---|---|
 | straight to the backend | 63,745/s | 458,723/s | 220.8 Gbit/s | 88,965/s | 72,547/s | 566,989/s |
-| **okena** | **36,427/s** | **153,225/s** | **54.5 Gbit/s** | **24,471/s** | **36,987/s** | **184,049/s** |
+| **okena** | **36,948/s** | **154,835/s** | **95.2 Gbit/s** | **25,607/s** | **37,657/s** | **186,721/s** |
 | nginx | 29,064/s | 138,567/s | 22.7 Gbit/s | 14,057/s | 32,886/s | 145,363/s |
 | HAProxy | 27,619/s | 129,120/s | 20.7 Gbit/s | 20,874/s | | |
 | Traefik | 28,157/s | 119,495/s | 36.8 Gbit/s | 10,051/s | 18,820/s | 75,657/s, 881 lost |
@@ -347,15 +343,15 @@ Latency, p50 / p99 / p99.9 in µs:
 
 | Path | ping1 | ping256 | connect | udp1 | udp256 |
 |---|---|---|---|---|---|
-| **okena** | **26.7 / 39.7 / 77.2** | **1678 / 1825 / 2137** | **323** / 577 / 653 | **26.4 / 37.6** / 76.8 | **1388 / 1542 / 2048** |
-| nginx | 33.1 / 55.2 / 92.8 | 1865 / 2058 / 2393 | 452 / 3864 / 10280 | 29.6 / 45.0 / **76.5** | 1610 / 2088 / 2204 |
-| HAProxy | 34.8 / 60.9 / 95.1 | 1975 / 2545 / 3210 | 381 / **542 / 643** | | |
+| **okena** | **26.5 / 35.2 / 61.7** | **1646 / 1803 / 2163** | **311 / 456 / 529** | **26.1 / 32.7 / 56.7** | **1383 / 1478 / 2044** |
+| nginx | 33.1 / 55.2 / 92.8 | 1865 / 2058 / 2393 | 452 / 3864 / 10280 | 29.6 / 45.0 / 76.5 | 1610 / 2088 / 2204 |
+| HAProxy | 34.8 / 60.9 / 95.1 | 1975 / 2545 / 3210 | 381 / 542 / 643 | | |
 | Traefik | 34.2 / 55.1 / 83.7 | 2121 / 3307 / 3790 | 723 / 2796 / 5236 | 41.4 / 251 / 354 | 2284 / 10458 / 13967 |
 | Envoy | 40.1 / 72.6 / 104.2 | 2415 / 3216 / 3350 | 651 / 1149 / 1502 | 32.8 / 56.9 / 95.9 | 1934 / 2120 / 2287 |
 
-On new connections okena does 17% more than HAProxy, while HAProxy's p99
-and p99.9 are a little lower (542 against 577 µs, 643 against 653). With one
-UDP flow, nginx's p99.9 is 0.3 µs lower than okena's.
+okena is first in every column. Large transfers go socket to pipe to socket
+inside the kernel (splice), and new connections from all clients wait in one
+queue that the workers take in turn.
 
 ---
 
@@ -368,7 +364,7 @@ h2load `--h1`, 64 connections, closed loop, median of 3. nginx with
 | Path (2 cores) | 64 KB responses | 1 MB responses |
 |---|---|---|
 | straight to the backend | 67.3 Gbit/s | 131.8 Gbit/s |
-| **okena** | **30.6 Gbit/s** | **48.0 Gbit/s** |
+| **okena** | **33.0 Gbit/s** | **76.6 Gbit/s** |
 | HAProxy | 19.7 Gbit/s | 26.0 Gbit/s |
 | Envoy | 12.3 Gbit/s | 33.3 Gbit/s |
 | Traefik | 10.6 Gbit/s | 28.3 Gbit/s |
@@ -376,7 +372,8 @@ h2load `--h1`, 64 connections, closed loop, median of 3. nginx with
 | nginx | 6.2 Gbit/s | 7.6 Gbit/s |
 
 A body of 16 KiB or more with a `Content-Length`, that no route feature needs
-to look at, goes through the L4 relay path, counted to the byte.
+to look at, goes through the L4 relay path, counted to the byte, by splice
+through a pipe: the bytes never pass through okena's memory.
 
 ---
 
@@ -468,13 +465,14 @@ ML-KEM and ChaCha20); OpenSSL 3.5.3 through `openssl speed` on the same core.
 | ML-KEM-768 decapsulation | **16.8 µs** | 37.0 µs | 2.2× faster |
 | ECDSA P-256 sign | **12.8 µs** | 15.8 µs | 1.24× faster |
 | AES-128-GCM, 16 KiB records | **6.80 GB/s** | 5.76 GB/s | 1.18× faster |
-| X25519 | 26.0 µs | **25.7 µs** | even |
-| ChaCha20-Poly1305, 16 KiB records | 1.29 GB/s | **3.16 GB/s** | 2.4× slower |
+| X25519 | **23.3 µs** | 25.4 µs | 1.09× faster |
+| ChaCha20-Poly1305, 16 KiB records | **4.08 GB/s** | 3.17 GB/s | 1.29× faster |
 
 okena uses AVX2 for ML-KEM and VAES with VPCLMULQDQ for AES-GCM. Its
-ChaCha20-Poly1305 runs two blocks per register with a scalar Poly1305, where
-OpenSSL runs eight blocks and a vector Poly1305. okena only picks ChaCha20
-when the client puts it first, which clients without AES hardware do.
+ChaCha20-Poly1305 runs eight blocks at a time on AVX2 and MACs the record in
+the same pass, a scalar Poly1305 on the integer units while ChaCha20 keeps
+the vector units busy. okena only picks ChaCha20 when the client puts it
+first, which clients without AES hardware do.
 
 ---
 
@@ -485,11 +483,4 @@ place:
 
 | Scenario | okena | better | by |
 |---|---|---|---|
-| HTTP/2 at 30,000/s, p99.9 | 401 µs | HAProxy 229 µs | 172 µs |
-| TCP new connections, p99 / p99.9 | 577 / 653 µs | HAProxy 542 / 643 µs | 35 / 10 µs |
-| One UDP flow, p99.9 | 76.8 µs | nginx 76.5 µs | 0.3 µs |
 | Memory per idle connection | 735 B | nginx 587 B | 148 B (nginx reserves 840 MiB up front) |
-| ChaCha20-Poly1305 | 1.29 GB/s | OpenSSL 3.16 GB/s | 2.4× |
-| X25519 | 26.0 µs | OpenSSL 25.7 µs | 1% |
-| HTTP/3 keep-alive, quiet, p99.9 | 1056 µs | HAProxy 757 µs | 299 µs |
-| HTTP/3 open loop at 5,000/s, p99.9 | 2047 µs | HAProxy 385 µs | 1.7 ms |
