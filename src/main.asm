@@ -4,6 +4,7 @@
 ; SPDX-License-Identifier: AGPL-3.0-only
 
 format ELF64 executable 3
+use vex2			; VEX only: no EVEX for a shorter displacement (no AVX-512 here)
 entry start
 
 BSS_FIXED := 0x10000000		; where the zero-initialised state is mapped (start)

@@ -103,6 +103,40 @@ for i in range(1, 1001):
         check("RFC 7748 iterated x1", r.hex(), "422c8e7a6227d7bca1350b3e2bb7279f7897b87bb6854b783c60e80311ae3079")
 check("RFC 7748 iterated x1000", k.hex(), "684cf59ba83309552800ef566f2f4d3c1c3887c49360e3875f2eb94d99532c51")
 
+
+def x25519_ref(k, u):
+    """RFC 7748 section 5, straight from the text."""
+    P = 2**255 - 19
+    k = bytearray(k)
+    k[0] &= 248
+    k[31] = (k[31] & 127) | 64
+    k = int.from_bytes(k, "little")
+    x1 = int.from_bytes(u, "little") & ((1 << 255) - 1)
+    x2, z2, x3, z3, swap = 1, 0, x1, 1, 0
+    for t in reversed(range(255)):
+        kt = (k >> t) & 1
+        swap ^= kt
+        if swap:
+            x2, x3, z2, z3 = x3, x2, z3, z2
+        swap = kt
+        A, B, C, D = x2 + z2, x2 - z2, x3 + z3, x3 - z3
+        AA, BB, DA, CB = A * A, B * B, D * A, C * B
+        E = AA - BB
+        x3, z3 = (DA + CB) ** 2 % P, x1 * (DA - CB) ** 2 % P
+        x2, z2 = AA * BB % P, E * (AA + 121665 * E) % P
+    if swap:
+        x2, z2 = x3, z3
+    return (x2 * pow(z2, P - 2, P) % P).to_bytes(32, "little")
+
+
+# u at the edges: non-canonical (p and above, bit 255 set), small, all ones
+P25519 = 2**255 - 19
+edge_u = [0, 1, 2, 9, P25519 - 1, P25519, P25519 + 1, 2**255 - 1, 2**256 - 1, 2**255, 2**254, 38, 2**64 - 1]
+for u in edge_u + [rng_u for rng_u in (random.Random(7).getrandbits(256) for _ in range(20))]:
+    for k in (b"\xff" * 32, bytes(32), random.Random(u & 0xffff).randbytes(32)):
+        ub = u.to_bytes(32, "little")
+        check(f"x25519 edge u {u:#x}", run(b"x", k + ub), x25519_ref(k, ub).hex())
+
 # --- differential
 rng = random.Random(1)
 sizes = list(range(0, 300)) + [rng.randrange(300, 400_000) for _ in range(20)]
@@ -789,16 +823,18 @@ try:
            b"sunscreen would be it.")
     check("chacha20 RFC 8439 2.4.2", run(b"c", bytes(range(32)) + bytes.fromhex("000000000000004a00000000")
                                          + le16(1) + b"\0\0" + sun)[:32], "6e2e359a2568f98041ba0728dd0d6981")
-    for n in list(range(0, 260, 7)) + [16384, 16391]:
+    for n in list(range(0, 260, 7)) + [511, 512, 513, 1023, 1024, 1025, 1536 + 77, 16384, 16391]:
         k, nc, ctr, d = rng.randbytes(32), rng.randbytes(12), rng.randrange(1 << 28), rng.randbytes(n)
         want = Cipher(algorithms.ChaCha20(k, ctr.to_bytes(4, "little") + nc), mode=None).encryptor().update(d)
         check(f"chacha20 len {n}", run(b"c", k + nc + ctr.to_bytes(4, "little") + d), want.hex())
     edge_keys = [b"\xff" * 32, bytes(16) + b"\xff" * 16, b"\xff" * 16 + bytes(16), bytes(32)]
-    edge_msgs = [b"\xff" * 16 * k for k in (1, 2, 3, 16, 64)] + [bytes(64), (b"\xfb" + b"\xff" * 15) * 3]
+    edge_msgs = [b"\xff" * 16 * k for k in (1, 2, 3, 15, 16, 17, 20, 64, 1024)] + [bytes(64), (b"\xfb" + b"\xff" * 15) * 3]
     for k in edge_keys + [rng.randbytes(32) for _ in range(10)]:
         for m in edge_msgs + [rng.randbytes(16 * rng.randrange(1, 40)) for _ in range(3)]:
             check("poly1305", run(b"e", k + m), Poly1305.generate_tag(k, m).hex())
-    for n in (0, 1, 15, 16, 17, 64, 129, 1000, 16384):
+    # sealed and opened in one pass from 512 bytes on (the MAC a group
+    # behind when sealing), Poly1305 four lanes wide from 256
+    for n in (0, 1, 15, 16, 17, 64, 129, 255, 256, 257, 511, 512, 513, 1000, 1024, 1088, 1535, 16384, 16401):
         for al in (0, 5, 13, 16):
             k, iv, aad, pt = rng.randbytes(32), rng.randbytes(12), rng.randbytes(al), rng.randbytes(n)
             ct = ChaCha20Poly1305(k).encrypt(iv, pt, aad)
@@ -807,7 +843,7 @@ try:
             check(f"chacha20-poly1305 open {n}/{al}", run(b"Z", head + ct), pt.hex())
             forged = bytearray(ct)
             forged[rng.randrange(len(ct))] ^= 1 << rng.randrange(8)
-            check(f"chacha20-poly1305 forged {n}/{al}", run(b"Z", head + bytes(forged)), "FAIL")
+            check(f"chacha20-poly1305 forged {n}/{al}", run(b"Z", head + bytes(forged)), "FAIL" + forged[:n].hex())
 except ImportError:
     print("note: no cryptography package; ChaCha20-Poly1305 checked on RFC 8439 only")
 

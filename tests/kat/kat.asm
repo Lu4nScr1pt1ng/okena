@@ -39,6 +39,7 @@
 ;   '#' QUIC Retry tag: version (4), original dcid len (1), dcid, the packet
 
 format ELF64 executable 3
+use vex2			; VEX only: no EVEX for a shorter displacement (no AVX-512 here)
 entry start
 
 include '../../src/core/sections.inc'
@@ -419,16 +420,16 @@ start:
 	test	eax,eax
 	jz	.cp_fail
 	jmp	.print
-.cp_fail:
-	mov	dword [g_out],'FAIL'
+.cp_fail:					; 'FAIL', then the buffer: as it came
+	push	rsi
+	mov	dword [g_in],'FAIL'
 	mov	edi,1
-	lea	rsi,[g_out]
+	lea	rsi,[g_in]
 	mov	edx,4
 	mov	eax,1
 	syscall
-	xor	edi,edi
-	mov	eax,SYS_exit_group
-	syscall
+	pop	rsi
+	jmp	.print
 .keccak_x4:					; rate (1 byte), prefix (32), lanes 4 (4 x 8)
 	movzx	r12d,byte [rsi]			; -> two blocks of each of the four
 	lea	rdx,[rsi+33]

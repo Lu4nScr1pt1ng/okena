@@ -79,13 +79,10 @@ fe_mul_generic:
 	ret
 
 ; out = r8..r11 + 38 * r12..r15 (an eight-limb product), below 2^256.
-; Clobbers rax, rbx, rdx, r12.
-macro fe_reduce_store
-	local plain, fold
+; Clobbers rax, rbx, rdx, r12. fe_reduce_adx on both carry chains (the
+; callers run only where the CPU has ADX), fe_reduce_plain on one.
+macro fe_reduce_adx
 	mov	edx,38
-	cmp	byte [g_cpu_adx],0
-	je	plain
-	; with ADX: 38 * high half added on both carry chains
 	xor	ebx,ebx				; (clears CF and OF)
 	mulx	rbx,rax,r12
 	adcx	r8,rax
@@ -101,8 +98,11 @@ macro fe_reduce_store
 	mov	ebx,0
 	adox	r12,rbx
 	adcx	r12,rbx				; r12 = what is above 2^256 (small)
-	jmp	fold
-plain:
+	fe_fold_store
+end macro
+
+macro fe_reduce_plain
+	mov	edx,38
 	mulx	rbx,rax,r12
 	add	r8,rax
 	adc	r9,rbx
@@ -117,7 +117,10 @@ plain:
 	mulx	rbx,rax,r15
 	adc	r11,rax
 	adc	r12,rbx				; r12 = what is above 2^256 (small)
-fold:
+	fe_fold_store
+end macro
+
+macro fe_fold_store
 	imul	r12,r12,38
 	add	r8,r12
 	adc	r9,0
@@ -181,7 +184,7 @@ fe_mul_core:
 		mov	eax,0
 		adcx	c4,rax
 	end irp
-	fe_reduce_store
+	fe_reduce_adx
 	ret
 
 ; rdi = out, rsi = a: a^2, below 2^256 (mulx, no ADX needed).
@@ -252,7 +255,7 @@ fe_sq_core:
 	adox	r14,rbx
 	adcx	r15,r15
 	adox	r15,rcx
-	fe_reduce_store
+	fe_reduce_adx
 	ret
 .plain:
 	; doubled
@@ -279,7 +282,7 @@ fe_sq_core:
 	mulx	rcx,rbx,rdx
 	adc	r14,rbx
 	adc	r15,rcx
-	fe_reduce_store
+	fe_reduce_plain
 	ret
 
 ; rdi = a (in place), ecx = n: a^(2^n).
@@ -617,6 +620,75 @@ macro ladder_cswap
 	end irp
 end macro
 
+; rbx, rcx, rsi, rdi -= r12..r15, into [rsp+dif] too (below 2^256: a
+; borrow out comes back as -38). Clobbers rax.
+macro fe_sub_regs dif*
+	sub	rbx,r12
+	sbb	rcx,r13
+	sbb	rsi,r14
+	sbb	rdi,r15
+	sbb	rax,rax
+	and	eax,38
+	sub	rbx,rax
+	sbb	rcx,0
+	sbb	rsi,0
+	sbb	rdi,0
+	sbb	rax,rax
+	and	eax,38
+	sub	rbx,rax
+	mov	[rsp+dif],rbx
+	mov	[rsp+dif+8],rcx
+	mov	[rsp+dif+16],rsi
+	mov	[rsp+dif+24],rdi
+end macro
+
+; r8..r11 + r12..r15 into [rsp+sum], r8..r11 - r12..r15 into [rsp+dif]
+; (each below 2^256: a carry out comes back as 38, a borrow as -38).
+; Clobbers rax, rbx, rcx, rsi, rdi, r8..r11.
+macro fe_addsub_regs sum*, dif*
+	mov	rbx,r8
+	mov	rcx,r9
+	mov	rsi,r10
+	mov	rdi,r11
+	add	r8,r12
+	adc	r9,r13
+	adc	r10,r14
+	adc	r11,r15
+	sbb	rax,rax
+	and	eax,38
+	add	r8,rax
+	adc	r9,0
+	adc	r10,0
+	adc	r11,0
+	sbb	rax,rax
+	and	eax,38
+	add	r8,rax
+	mov	[rsp+sum],r8
+	mov	[rsp+sum+8],r9
+	mov	[rsp+sum+16],r10
+	mov	[rsp+sum+24],r11
+	fe_sub_regs dif
+end macro
+
+; r8..r11 = [rsp+a], r12..r15 = [rsp+b], each swapped with its partner
+; [rsp+pa], [rsp+pb] when rdx is all ones (masks, no branch). Clobbers rax.
+macro fe_load_sel a*, pa*, b*, pb*
+	irp <reg,off>, r8,0, r9,8, r10,16, r11,24
+		mov	reg,[rsp+a+off]
+		mov	rax,[rsp+pa+off]
+		xor	rax,reg
+		and	rax,rdx
+		xor	reg,rax
+	end irp
+	irp <reg,off>, r12,0, r13,8, r14,16, r15,24
+		mov	reg,[rsp+b+off]
+		mov	rax,[rsp+pb+off]
+		xor	rax,reg
+		and	rax,rdx
+		xor	reg,rax
+	end irp
+end macro
+
 ; rdi = out[32], rsi = scalar[32], rdx = u[32] (RFC 7748 encodings).
 x25519:
 	push	rbx
@@ -667,25 +739,13 @@ x25519:
 	mov	[rsp+XL_SWAP],eax		; swap = k_t (for the next step)
 	xor	edx,eax				; swap ^ k_t
 	neg	rdx				; 0 or all ones
-	ladder_cswap
-	; the order of OpenSSL's ladder: additions first, then independent
-	; multiplications next to each other, so they overlap in the CPU
-	lea	rdi,[rsp+XL_A]
-	lea	rsi,[rsp+XL_X2]
-	lea	rdx,[rsp+XL_Z2]
-	fe_add_inline
-	lea	rdi,[rsp+XL_B]
-	lea	rsi,[rsp+XL_X2]
-	lea	rdx,[rsp+XL_Z2]
-	fe_sub_inline
-	lea	rdi,[rsp+XL_C]
-	lea	rsi,[rsp+XL_X3]
-	lea	rdx,[rsp+XL_Z3]
-	fe_add_inline
-	lea	rdi,[rsp+XL_D]
-	lea	rsi,[rsp+XL_X3]
-	lea	rdx,[rsp+XL_Z3]
-	fe_sub_inline
+	; the swap folded into the loads: the step overwrites x2, z2, x3,
+	; z3, so the swapped values are only ever needed in registers
+	fe_load_sel XL_X2,XL_X3, XL_Z2,XL_Z3
+	fe_addsub_regs XL_A, XL_B		; A = x2 + z2, B = x2 - z2
+	fe_load_sel XL_X3,XL_X2, XL_Z3,XL_Z2
+	fe_addsub_regs XL_C, XL_D		; C = x3 + z3, D = x3 - z3
+	; independent multiplications next to each other, so they overlap
 	lea	rdi,[rsp+XL_DA]
 	lea	rsi,[rsp+XL_D]
 	lea	rdx,[rsp+XL_A]
@@ -700,35 +760,54 @@ x25519:
 	lea	rdi,[rsp+XL_BB]
 	lea	rsi,[rsp+XL_B]
 	call	fe_sq_core
+	irp <reg,off>, r8,0, r9,8, r10,16, r11,24, r12,32, r13,40, r14,48, r15,56
+		mov	reg,[rsp+XL_DA+off]	; DA then CB (adjacent)
+	end irp
+	fe_addsub_regs XL_X3, XL_Z3		; DA + CB, DA - CB
 	lea	rdi,[rsp+XL_X3]
-	lea	rsi,[rsp+XL_DA]
-	lea	rdx,[rsp+XL_CB]
-	fe_add_inline
+	lea	rsi,[rsp+XL_X3]
+	call	fe_sq_core
+	irp <reg,off>, rbx,0, rcx,8, rsi,16, rdi,24
+		mov	reg,[rsp+XL_AA+off]
+	end irp
+	irp <reg,off>, r12,0, r13,8, r14,16, r15,24
+		mov	reg,[rsp+XL_BB+off]
+	end irp
+	fe_sub_regs XL_E			; E = AA - BB
+	; z2 = AA + 121665 E, E in rbx, rcx, rsi, rdi
+	mov	edx,121665
+	mulx	r9,r8,rbx
+	mulx	r11,r10,rcx
+	add	r9,r10
+	mulx	r12,r10,rsi
+	adc	r11,r10
+	mulx	r13,r10,rdi
+	adc	r12,r10
+	adc	r13,0
+	add	r8,[rsp+XL_AA]
+	adc	r9,[rsp+XL_AA+8]
+	adc	r11,[rsp+XL_AA+16]
+	adc	r12,[rsp+XL_AA+24]
+	adc	r13,0
+	imul	r13,r13,38
+	add	r8,r13
+	adc	r9,0
+	adc	r11,0
+	adc	r12,0
+	sbb	rax,rax
+	and	eax,38
+	add	r8,rax
+	mov	[rsp+XL_Z2],r8
+	mov	[rsp+XL_Z2+8],r9
+	mov	[rsp+XL_Z2+16],r11
+	mov	[rsp+XL_Z2+24],r12
 	lea	rdi,[rsp+XL_Z3]
-	lea	rsi,[rsp+XL_DA]
-	lea	rdx,[rsp+XL_CB]
-	fe_sub_inline
-	lea	rdi,[rsp+XL_E]
-	lea	rsi,[rsp+XL_AA]
-	lea	rdx,[rsp+XL_BB]
-	fe_sub_inline
+	lea	rsi,[rsp+XL_Z3]
+	call	fe_sq_core
 	lea	rdi,[rsp+XL_X2]
 	lea	rsi,[rsp+XL_AA]
 	lea	rdx,[rsp+XL_BB]
 	call	fe_mul_l
-	lea	rdi,[rsp+XL_X3]
-	lea	rsi,[rsp+XL_X3]
-	call	fe_sq_core
-	lea	rdi,[rsp+XL_Z3]
-	lea	rsi,[rsp+XL_Z3]
-	call	fe_sq_core
-	lea	rdi,[rsp+XL_Z2]
-	lea	rsi,[rsp+XL_E]
-	call	fe_mul_a24
-	lea	rdi,[rsp+XL_Z2]
-	lea	rsi,[rsp+XL_AA]
-	lea	rdx,[rsp+XL_Z2]
-	fe_add_inline
 	lea	rdi,[rsp+XL_Z3]
 	lea	rsi,[rsp+XL_Z3]
 	lea	rdx,[rsp+XL_X1]

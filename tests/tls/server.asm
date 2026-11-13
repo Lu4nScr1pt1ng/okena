@@ -9,6 +9,7 @@
 ; Each connection: the handshake, then every byte received is sent back.
 
 format ELF64 executable 3
+use vex2			; VEX only: no EVEX for a shorter displacement (no AVX-512 here)
 entry start
 
 include '../../src/core/sections.inc'

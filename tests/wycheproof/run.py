@@ -91,8 +91,8 @@ def aead(vec, name, file, key_bits, seal, open_):
                 return False, f"seal {got[:32]}"
             got = run(open_, head + ct + tag)
             return got == msg.hex(), f"open {got[:32]}"
-        got = run(open_, head + ct + tag)
-        return got == "FAIL", f"opened: {got[:32]}"
+        got = run(open_, head + ct + tag)       # (ChaCha20-Poly1305 shows the buffer: as it came)
+        return got in ("FAIL", "FAIL" + ct.hex()), f"opened: {got[:32]}"
 
     family(name, file, ((t["tcId"], t["result"], (lambda g=g, t=t: case(g, t)))
                         for g in d["testGroups"] if g["keySize"] == key_bits and g["ivSize"] == 96

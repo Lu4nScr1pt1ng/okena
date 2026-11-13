@@ -6,6 +6,7 @@
 ; application record "okena12\n". openssl s_client -tls1_2 drives it.
 
 format ELF64 executable 3
+use vex2			; VEX only: no EVEX for a shorter displacement (no AVX-512 here)
 entry start
 
 include '../../src/core/sections.inc'
