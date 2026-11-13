@@ -886,6 +886,9 @@ for new flows. On a NIC: not yet (none here).
   an addon choosing the pool, 2026-11-13: the WAF judges form and JSON
   bodies, plugins get proxy_on_request_body, ext_authz with_request_body and
   ext_proc's body phase.
+* Phases: response_headers (the response's fields changed, or the response
+  replaced), response_body (counted bodies up to 16 KiB), log (never waited
+  for); a stream key shared by one request's calls. 2026-11-13.
 * SDKs: Python, C, Go, Rust (sdk/), each tested against okena in
   tests/gateway/addon.py. Done 2026-11-13.
 * Reference WAF: addons/coraza, Coraza 3.8 with CRS 4.25 built in, blocking or

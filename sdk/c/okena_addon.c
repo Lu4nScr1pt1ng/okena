@@ -239,17 +239,25 @@ static unsigned poll_rings(okena_addon *a, okena_handler fn, void *ctx, okena_an
 				memcpy(&mo, p + 40, 2), memcpy(&ml, p + 42, 2), memcpy(&to, p + 44, 2), memcpy(&tl, p + 46, 2);
 				memcpy(&q.route, p + 48, 4);
 				q.phase = ph, q.nfields = nh, q.family = fam, q.client = p + 24;
-				q.index_ = p + 56;
-				q.head = (const char *)(p + 56 + 8 * nh), q.head_len = hl;
+				q.stream_slot = r;
+				memcpy(&q.stream_key, p + 56, 8);
+				q.index_ = p + 64;
+				q.head = (const char *)(p + 64 + 8 * nh), q.head_len = hl;
 				uint32_t bl;
 				memcpy(&bl, p + 52, 4);
 				q.body = q.head + hl, q.body_len = bl;
+				q.status = 0;
+				if (ph & 12) {	/* after the head: method, target, then the body */
+					q.body = q.head + to + tl;
+					q.body_len = (size_t)(q.head + hl + bl - q.body);
+					q.status = atoi(memchr(q.head, ' ', hl) ? (char *)memchr(q.head, ' ', hl) + 1 : "0");
+				}
 				q.method = q.head + mo, q.method_len = ml;
 				q.target = q.head + to, q.target_len = tl;
 				ans->len = 24, ans->body_len = 0, ans->nops = 0, ans->action = 0;
 				ans->status = 0, ans->none = 0, ans->overflow = 0, ans->body = NULL;
 				fn(&q, ans, ctx);
-				if (!ans->none)
+				if (!ans->none && ph != 16)	/* (the log is never answered) */
 					answered |= put(a, r, q.id, ans);
 				n++;
 			}

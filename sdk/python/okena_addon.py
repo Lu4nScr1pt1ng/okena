@@ -31,7 +31,8 @@ H_BELL, H_WAKE0, H_PHASES, H_READY, H_EPOCH, H_SLEEP, H_NAME = 32, 36, 40, 48, 5
 # ring pair
 R_HEAD, R_TAIL = 0, 64
 
-PHASE_REQUEST_HEADERS, PHASE_REQUEST_BODY = 1, 2
+PHASE_REQUEST_HEADERS, PHASE_REQUEST_BODY, PHASE_RESPONSE_HEADERS, PHASE_RESPONSE_BODY, PHASE_LOG = 1, 2, 4, 8, 16
+PHASES_RESPONSE = PHASE_RESPONSE_HEADERS | PHASE_RESPONSE_BODY
 FLAG_TLS, FLAG_H2, FLAG_H3 = 1, 2, 4
 FLAG_BODY_TRUNCATED, FLAG_BODY_CHUNKED, FLAG_BODY_UNREAD = 8, 16, 32
 
@@ -49,7 +50,13 @@ class Request:
     """A call: the request's head as okena forwards it (HTTP/1.1 form, also
     for HTTP/2 and HTTP/3 clients), and what okena knows of the client."""
     __slots__ = ("id", "phase", "flags", "head", "method", "target", "headers", "family", "client", "route",
-                 "body", "body_truncated", "body_unread")
+                 "body", "body_truncated", "body_unread", "status", "stream")
+
+    @property
+    def is_response(self):
+        """A call about the backend's response: headers are the response's,
+        status its status, body its body; method and target the request's."""
+        return bool(self.phase & PHASES_RESPONSE)
 
     def header(self, name, default=None):
         name = name.lower()
@@ -156,13 +163,15 @@ class Addon:
                     break
                 if kind == 1:
                     req = self._call(v, cd + pos)
+                    req.stream = (r, _U64.unpack_from(v, cd + pos + 56)[0])	# (one request's calls share it)
+                    phase = req.phase
                     try:
                         out = handler(req)
                     except Exception as e:		# the call goes unanswered: on_error
                         import sys
                         print(f"okena addon {self.name}: {e!r}", file=sys.stderr, flush=True)
                         out = None
-                    if out is not None:
+                    if out is not None and phase != PHASE_LOG:	# (the log is never answered)
                         answered |= self._answer(ah, ad, req.id, out)
                     n += 1
                 tail += length
@@ -174,15 +183,24 @@ class Addon:
     def _call(self, v, at):
         (length, kind, phase, cid, flags, hlen, nhdr, family, client,
          moff, mlen, toff, tlen, route, blen) = _CALL.unpack_from(v, at)
-        idx = at + 56
+        idx = at + 64
         hat = idx + 8 * nhdr
-        head = bytes(v[hat:hat + hlen])
-        body = bytes(v[hat + hlen:hat + hlen + blen])
+        allb = bytes(v[hat:hat + hlen + blen])	# the head, then what follows it
+        head = allb[:hlen]
+        body = allb[hlen:]
+        if phase & PHASES_RESPONSE:		# (the request's method and target, then the body)
+            body = allb[toff + tlen:]
         req = Request()
         req.id, req.phase, req.flags, req.head = cid, phase, flags, head
         req.family, req.client, req.route = family, client, route
-        req.method = head[moff:moff + mlen].decode("latin-1")
-        req.target = head[toff:toff + tlen].decode("latin-1")
+        req.method = allb[moff:moff + mlen].decode("latin-1")
+        req.target = allb[toff:toff + tlen].decode("latin-1")
+        req.status = 0
+        if phase & PHASES_RESPONSE:
+            try:
+                req.status = int(head.split(b" ", 2)[1])
+            except (IndexError, ValueError):
+                pass
         hs = []
         for i in range(nhdr):
             no, nl, vo, vl = _FIELD.unpack_from(v, idx + 8 * i)

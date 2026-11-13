@@ -175,6 +175,32 @@ addon brk {{
     on_error allow
     breaker errors=3 open=5s
 }}
+addon resper {{
+    run {run} resper
+    phases response_headers
+    timeout 300ms
+    on_error allow
+}}
+addon resperd {{
+    run {run} resperd
+    phases response_headers
+    timeout 300ms
+}}
+addon rbodyer {{
+    run {run} rbodyer
+    phases response_body
+    body 4KiB
+    timeout 300ms
+}}
+addon streamer {{
+    run {run} streamer
+    phases request_headers response_headers
+    timeout 300ms
+}}
+addon logger {{
+    run /usr/bin/env ADDON_LOG_FILE={tmp}/addon.log /usr/bin/python3 {PEER} logger
+    phases log
+}}
 addon bodyer {{
     run {run} bodyer
     phases request_body
@@ -191,6 +217,11 @@ http 127.0.0.1:{L} {{
     route /k/* {{ addon brk; to pool echo }}
     route /c/* {{ addon chello; to pool echo }}
     route /body/* {{ addon bodyer; to pool echo }}
+    route /rh/* {{ addon resper; to pool echo }}
+    route /rhd/* {{ addon resperd; to pool echo }}
+    route /rb/* {{ addon rbodyer; to pool echo }}
+    route /st/* {{ addon streamer; to pool echo }}
+    route /lg/* {{ addon tagger; addon logger; to pool echo }}
     route /g/* {{ addon ghello; to pool echo }}
     route /r/* {{ addon rhello; to pool echo }}
     route /both/* {{ addon tagger; addon strict; to pool echo }}
@@ -264,6 +295,46 @@ http 127.0.0.1:{L} {{
             c = subprocess.run(["curl", "-q", "-s", "--http2-prior-knowledge", "-D", "-", "-d", "x" * 2000, f"http://127.0.0.1:{L}/body/body"],
                                capture_output=True, timeout=10)
             check("  over HTTP/2: the body in the call", b"HTTP/2 200" in c.stdout and b"x-body-len: 2000" in c.stdout, c.stdout[:300])
+        # response_headers: the backend's response, before the client gets it
+        s, h, b = get("/rh/rset")
+        check("response_headers: a field set (it saw the status and the method), one removed", s == 200
+              and h.get("x-resp") == ["200 GET"] and "server" not in h and b"GET /rh/rset" in b, (s, h))
+        s, h, b = get("/rh/rreplace")
+        check("  the response replaced by the addon's own", s == 418 and h.get("x-replaced") == ["yes"] and b == b"short and stout\n", (s, h, b))
+        s, h, b = get("/rh/rfail", method="HEAD")
+        check("  it cannot decide: on_error allow, the backend's response", s == 200 and b == b"", (s, b))
+        s, h, b = get("/rhd/rfail")
+        check("  on_error deny: 502", s == 502, s)
+        s, h, b = get("/rh/rset", method="POST", body=b"q" * 2000)
+        check("  a request with a body: the response held all the same", s == 200 and h.get("x-resp") == ["200 POST"] and b"body-len: 2000" in b, (s, h))
+        s, h, b = get("/st/stream")
+        sent = [l.split(":", 1)[1].strip() for l in b.decode().splitlines() if l.lower().startswith("x-stream-req:")]
+        check("one request's calls share their stream: the request's and the response's", s == 200 and sent
+              and h.get("x-stream-resp") == sent, (sent, h.get("x-stream-resp")))
+        s, h2, b = get("/st/stream")
+        check("  another request, another stream", h2.get("x-stream-resp") != h.get("x-stream-resp"), (h, h2))
+        s, h, b = get("/rb/rbody")
+        check("response_body: the addon gets the body and answers with it changed", s == 200 and b.startswith(b"GET /RB/RBODY")
+              and h.get("x-rbody-len") == [str(len(b))], (s, h, b[:60]))
+        if shutil.which("curl"):
+            c = subprocess.run(["curl", "-q", "-s", "--http2-prior-knowledge", "-D", "-", "-o", "/dev/null", f"http://127.0.0.1:{L}/rh/rset"],
+                               capture_output=True, timeout=10)
+            check("  over HTTP/2: the response's field set", b"x-resp: 200 GET" in c.stdout, c.stdout[:300])
+        # the log: after the exchange, never waited for
+        for i in range(3):
+            get(f"/lg/x{i}")
+        end = time.time() + 3
+        lines = []
+        while time.time() < end:
+            try:
+                lines = (tmp / "addon.log").read_text().splitlines()
+            except OSError:
+                pass
+            if len(lines) >= 3:
+                break
+            time.sleep(0.05)
+        check("log: each exchange, its method, target, host, status, bytes and time", len(lines) == 3
+              and all(l.startswith(f"GET /lg/x{i} t 200 ") and int(l.split()[4]) > 0 for i, l in enumerate(lines)), lines)
         # the pool an addon chooses
         s, h, b = get("/a/pool")
         check("the addon chooses the pool: another backend answers", s == 200 and b.startswith(b"OTHER POOL"), b[:80])

@@ -12,8 +12,29 @@ import okena_addon as oa  # noqa: E402
 START = time.time()
 
 
+LOG = os.environ.get("ADDON_LOG_FILE")
+
+
 def on_request(req):
     last = req.path.rstrip("/").rsplit("/", 1)[-1]
+    if req.phase == oa.PHASE_LOG:
+        with open(LOG or "/dev/null", "a") as f:
+            f.write(f"{req.method} {req.target} {req.header('host')} {req.header('okena-status')} {req.header('okena-bytes')} {req.header('okena-us')}\n")
+        return None
+    if req.is_response:
+        if last == "rset":
+            return oa.Continue(set=[("x-resp", f"{req.status} {req.method}")], remove=["server"])
+        if last == "rreplace":
+            return oa.Respond(418, [("x-replaced", "yes")], b"short and stout\n")
+        if last == "rfail":
+            return oa.Fail()
+        if last == "stream":
+            return oa.Continue(set=[("x-stream-resp", repr(req.stream))])
+        if last == "rbody":
+            return oa.Respond(200, [("x-rbody-len", str(len(req.body)))], req.body.upper())
+        return oa.Continue()
+    if last == "stream":
+        return oa.Continue(set=[("x-stream-req", repr(req.stream))])
     if last == "pass":
         return oa.Continue()
     if last == "pid":

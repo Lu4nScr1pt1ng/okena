@@ -45,6 +45,10 @@ const (
 
 	PhaseRequestHeaders = 1
 	PhaseRequestBody    = 2
+	PhaseResponseHeaders = 4
+	PhaseResponseBody   = 8
+	PhaseLog            = 16
+	phasesResponse      = PhaseResponseHeaders | PhaseResponseBody
 	FlagTLS             = 1
 	FlagH2              = 2
 	FlagH3              = 4
@@ -83,7 +87,21 @@ type Request struct {
 	Body          []byte
 	BodyTruncated bool
 	BodyUnread    bool // the client waits for 100 Continue: not read
+	// Stream is the same in every call about one request (its phases, its log).
+	Stream StreamID
+	// Status is the backend's status in the response phases (Headers and Body
+	// are then the response's; Method and Target stay the request's).
+	Status int
 }
+
+// StreamID identifies a request across its calls: a map key.
+type StreamID struct {
+	Slot uint32
+	Key  uint64
+}
+
+// IsResponse says the call is about the backend's response.
+func (r *Request) IsResponse() bool { return r.Phase&phasesResponse != 0 }
 
 // Header returns the first field of that name (any case).
 func (r *Request) Header(name string) (string, bool) {
@@ -338,7 +356,11 @@ func (a *Addon) poll(h Handler, ans *Answer, queue chan call) int {
 				var c call
 				c.ring = r
 				a.parse(at, &c.req)
-				if queue != nil {
+				c.req.Stream = StreamID{r, le.Uint64(a.m[at+56:])}
+				if c.req.Phase == PhaseLog {
+					ans.reset()
+					h(&c.req, ans) // (never answered)
+				} else if queue != nil {
 					queue <- c
 				} else {
 					ans.reset()
@@ -368,10 +390,11 @@ func (a *Addon) parse(at uint64, q *Request) {
 	q.Family = le.Uint16(m[at+22:])
 	copy(q.Client[:], m[at+24:at+40])
 	q.Route = le.Uint32(m[at+48:])
-	hat := at + 56 + 8*nh
-	q.Head = append([]byte(nil), m[hat:hat+hl]...)
+	hat := at + 64 + 8*nh
 	bl := uint64(le.Uint32(m[at+52:]))
-	q.Body = append([]byte(nil), m[hat+hl:hat+hl+bl]...)
+	all := string(m[hat : hat+hl+bl]) // the head, then what follows it
+	q.Head = []byte(all[:hl])
+	q.Body = []byte(all[hl:])
 	q.BodyTruncated = q.Flags&FlagBodyTruncated != 0
 	q.BodyUnread = q.Flags&FlagBodyUnread != 0
 	if q.Flags&FlagBodyChunked != 0 {
@@ -379,18 +402,27 @@ func (a *Addon) parse(at uint64, q *Request) {
 		q.Body, whole = Dechunk(q.Body)
 		q.BodyTruncated = !whole
 	}
-	head := string(q.Head)
 	sub := func(o, l uint16) string {
-		if int(o)+int(l) > len(head) {
+		if int(o)+int(l) > len(all) {
 			return ""
 		}
-		return head[o : o+l]
+		return all[o : o+l]
 	}
 	q.Method = sub(le.Uint16(m[at+40:]), le.Uint16(m[at+42:]))
-	q.Target = sub(le.Uint16(m[at+44:]), le.Uint16(m[at+46:]))
+	to, tl := le.Uint16(m[at+44:]), le.Uint16(m[at+46:])
+	q.Target = sub(to, tl)
+	if q.Phase&phasesResponse != 0 {
+		// after the head: the request's method and target, then the body
+		if e := int(to) + int(tl); e <= len(all) {
+			q.Body = []byte(all[e:])
+		}
+		if f := strings.Fields(all[:hl]); len(f) > 1 {
+			q.Status, _ = strconv.Atoi(f[1])
+		}
+	}
 	q.Headers = make([]Field, nh)
 	for i := uint64(0); i < nh; i++ {
-		x := at + 56 + 8*i
+		x := at + 64 + 8*i
 		q.Headers[i] = Field{sub(le.Uint16(m[x:]), le.Uint16(m[x+2:])), sub(le.Uint16(m[x+4:]), le.Uint16(m[x+6:]))}
 	}
 }

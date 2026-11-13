@@ -38,6 +38,9 @@ pub const FLAG_TLS: u32 = 1;
 pub const FLAG_H2: u32 = 2;
 pub const FLAG_H3: u32 = 4;
 pub const PHASE_REQUEST_BODY: u16 = 2;
+pub const PHASE_RESPONSE_HEADERS: u16 = 4;
+pub const PHASE_RESPONSE_BODY: u16 = 8;
+pub const PHASE_LOG: u16 = 16;
 pub const FLAG_BODY_TRUNCATED: u32 = 8;
 pub const FLAG_BODY_CHUNKED: u32 = 16;
 pub const FLAG_BODY_UNREAD: u32 = 32;
@@ -63,6 +66,9 @@ pub struct Request<'a> {
     /// The body as it came (phases request_body): `dechunk` it when
     /// `flags & FLAG_BODY_CHUNKED`.
     pub body: &'a [u8],
+    /// The same in every call about one request (its phases, its log).
+    pub stream: (u32, u64),
+    all: &'a [u8],
     method: (usize, usize),
     target: (usize, usize),
     index: &'a [u8],
@@ -70,7 +76,16 @@ pub struct Request<'a> {
 
 impl<'a> Request<'a> {
     fn slice(&self, o: usize, l: usize) -> &'a [u8] {
-        self.head.get(o..o + l).unwrap_or(&[])
+        self.all.get(o..o + l).unwrap_or(&[])
+    }
+    /// A call about the backend's response: fields and body are the
+    /// response's, method and target the request's.
+    pub fn is_response(&self) -> bool {
+        self.phase & (PHASE_RESPONSE_HEADERS | PHASE_RESPONSE_BODY) != 0
+    }
+    /// The backend's status (the response phases).
+    pub fn status(&self) -> u16 {
+        std::str::from_utf8(self.head).ok().and_then(|h| h.split(' ').nth(1)).and_then(|s| s.parse().ok()).unwrap_or(0)
     }
     pub fn method(&self) -> &'a [u8] {
         self.slice(self.method.0, self.method.1)
@@ -309,13 +324,22 @@ impl Addon {
                         client,
                         method: (self.u16at(at + 40) as usize, self.u16at(at + 42) as usize),
                         target: (self.u16at(at + 44) as usize, self.u16at(at + 46) as usize),
-                        index: self.bytes(at + 56, 8 * nh),
-                        head: self.bytes(at + 56 + 8 * nh as u64, hl),
-                        body: self.bytes(at + 56 + 8 * nh as u64 + hl as u64, self.u32at(at + 52) as usize),
+                        index: self.bytes(at + 64, 8 * nh),
+                        head: self.bytes(at + 64 + 8 * nh as u64, hl),
+                        body: self.bytes(at + 64 + 8 * nh as u64 + hl as u64, self.u32at(at + 52) as usize),
+                        all: self.bytes(at + 64 + 8 * nh as u64, hl + self.u32at(at + 52) as usize),
+                        stream: (r, self.u32at(at + 56) as u64 | (self.u32at(at + 60) as u64) << 32),
                     };
+                    let mut req = req;
+                    if req.is_response() {
+                        let e = (req.target.0 + req.target.1).min(req.all.len());
+                        req.body = &req.all[e..];
+                    }
                     ans.reset();
                     f(&req, ans);
-                    answered |= self.answer(r, req.id, ans);
+                    if req.phase != PHASE_LOG {
+                        answered |= self.answer(r, req.id, ans);
+                    }
                     n += 1;
                 }
                 tail += len;

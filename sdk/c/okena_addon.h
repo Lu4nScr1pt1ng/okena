@@ -29,6 +29,9 @@
 #define OKENA_FLAG_H2 2
 #define OKENA_FLAG_H3 4
 #define OKENA_PHASE_REQUEST_BODY 2
+#define OKENA_PHASE_RESPONSE_HEADERS 4	/* fields and body: the response's; method, target: the request's */
+#define OKENA_PHASE_RESPONSE_BODY 8
+#define OKENA_PHASE_LOG 16		/* after the exchange: never answered */
 #define OKENA_FLAG_BODY_TRUNCATED 8
 #define OKENA_FLAG_BODY_CHUNKED 16	/* body as it came; okena_dechunk decodes it */
 #define OKENA_FLAG_BODY_UNREAD 32
@@ -57,6 +60,9 @@ typedef struct {
 	const uint8_t *index_;		/* (the fields, okena_field_at) */
 	const char *body;		/* phases request_body: the body, or its first `body` bytes */
 	size_t body_len;
+	int status;			/* the response phases: the backend's status */
+	uint32_t stream_slot;		/* with stream_key: the same in every call */
+	uint64_t stream_key;		/* about one request (its phases, its log) */
 } okena_request;
 
 /* a chunk-framed body decoded in place: its length; *whole when its last chunk

@@ -76,6 +76,11 @@ ADR_ANSD		:= AD_HDR * 2 + AD_RING		; the answers' bytes
 ; phases
 ADP_REQ_HEADERS	:= 1
 ADP_REQ_BODY	:= 2				; the call carries the request's body too
+ADP_RESP_HEADERS := 4				; the backend's response head
+ADP_RESP_BODY	:= 8				; and its body (counted, small enough)
+ADP_LOG		:= 16				; after the exchange, never answered
+ADP_REQ		:= ADP_REQ_HEADERS or ADP_REQ_BODY
+ADP_RESP	:= ADP_RESP_HEADERS or ADP_RESP_BODY
 
 ; a call (worker -> addon)
 ADQ_LEN		:= 0				; d: the record, a multiple of 8
@@ -91,7 +96,8 @@ ADQ_METHOD	:= 40				; w offset, w length (into the head)
 ADQ_TARGET	:= 44				; w offset, w length
 ADQ_ROUTE	:= 48				; d: the route's action + 1
 ADQ_BLEN	:= 52				; d: the body's bytes, after the head
-ADQ_INDEX	:= 56				; the fields: w name offset, w length, w value offset, w length
+ADQ_STREAM	:= 56				; q: the same in every call about one request (its phases, its log)
+ADQ_INDEX	:= 64				; the fields: w name offset, w length, w value offset, w length
 ADQF_TLS		:= 1
 ADQF_H2		:= 2
 ADQF_H3		:= 4

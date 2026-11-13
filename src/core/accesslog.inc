@@ -464,6 +464,8 @@ alog_request:
 	cmp	dword [rcx+LS_ALOG],0
 	jne	@f
 	cmp	dword [rcx+LS_TRACE],0
+	jne	@f
+	cmp	qword [g_ad_side],0		; (addons' response and log phases read them too)
 	je	.out
 @@:
 	lea	r8,[g_hm]

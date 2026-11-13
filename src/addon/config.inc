@@ -294,8 +294,7 @@ compile_addon:
 	dec	r8d
 	jmp	.phase
 .phases_set:
-	or	r9d,ADP_REQ_HEADERS		; (the body's call carries the headers too)
-	mov	[r13+ADE_PHASES],r9d
+	mov	[r13+ADE_PHASES],r9d		; (a body's call carries the head too)
 .phases_done:
 	mov	rdi,r12
 	mov	ecx,DIR_ADPOLL

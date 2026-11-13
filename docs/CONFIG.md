@@ -1145,8 +1145,9 @@ request of the routes that name it: it lets the request go on (with fields
 set, added or removed, or its target changed) or answers it itself. It runs
 apart, in any language; a crash or a hang costs only its own routes what
 their `on_error` says. `concurrency` (default 1024) and `breaker errors=5
-open=1s` bound what a slow or failing addon may hold; `phases request_body`
-gives it the body as well (`body`, up to 16 KiB). Everything about them,
+open=1s` bound what a slow or failing addon may hold; `phases` adds the
+request's body, the backend's response (`response_headers`,
+`response_body`) and a `log` of each exchange. Everything about them,
 the protocol included: [ADDONS.md](ADDONS.md).
 
 ---

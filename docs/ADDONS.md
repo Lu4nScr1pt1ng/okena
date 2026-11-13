@@ -14,8 +14,8 @@ protocol, for writing an SDK. The SDKs in `sdk/` implement it.
 ```nginx
 addon waf {
     run /usr/local/bin/coraza-okena -rules /etc/crs   # absolute path, then its arguments
-    phases request_headers       # the default; request_body: the call carries the body too
-    body 8KiB                    # request_body: the most of a body a call carries (at most 16 KiB)
+    phases request_headers       # the default; also request_body, response_headers, response_body, log
+    body 8KiB                    # the most of a body a call carries (at most 16 KiB)
     timeout 50ms                 # a call's time (default 200ms)
     on_error allow               # or deny (the default): 503
     concurrency 1024             # calls waiting at once, the whole instance (default 1024)
@@ -80,6 +80,22 @@ A request with no body is asked at once; one whose client sends its body only
 after `100 Continue` is asked without it (said unread). The body's reading has
 the listener's `body_idle` clock (408). Once the addon lets the request on,
 the body goes to the backend whole, as it came.
+
+**Phases.** `request_headers` (the default) and `request_body` are asked
+before the backend, once (with the body when `request_body` is listed).
+`response_headers` is asked with the backend's response head, after okena
+has counted its status (retries and outlier detection have had their say)
+and before anything reaches the client; `response_body` the same, the call
+carrying the response's body when it is counted (Content-Length) and no
+larger than `body` (nor than the 16 KiB response buffer), else none; the
+response waits meanwhile. `log` is told of each exchange once its access log
+line is written, and never waited for: the request line, `host`,
+`okena-status`, `okena-bytes`, `okena-us`. An addon listed for response or
+log phases only is not asked about the request. Every call about one request
+carries the same `stream`, so an addon can keep state from the request to its
+response and its log. A response phase's continue changes the response's
+fields; respond replaces the response (the backend's connection is closed);
+no answer with `on_error deny` is 502.
 
 ## What an addon can do
 
@@ -180,7 +196,7 @@ Every record begins with `len` (u32, the record's bytes) and `kind` (u16:
 |---|---|---|
 | 0 | 4 | len |
 | 4 | 2 | kind: 1 |
-| 6 | 2 | phase: 1 (request_headers), 2 (request_body: the body follows the head) |
+| 6 | 2 | phase: 1 request_headers, 2 request_body (the body follows the head), 4 response_headers, 8 response_body, 16 log (never answered) |
 | 8 | 4 | id: echoed in the answer |
 | 12 | 4 | flags: 1 TLS, 2 HTTP/2, 4 HTTP/3, 8 the body is truncated, 16 the body is chunk-framed, 32 the body was not read (100 Continue) |
 | 16 | 4 | `hlen`: the head's bytes |
@@ -190,10 +206,18 @@ Every record begins with `len` (u32, the record's bytes) and `kind` (u16:
 | 40 | 2+2 | the method: offset in the head, length |
 | 44 | 2+2 | the target: offset, length |
 | 48 | 4 | the route's action + 1 |
-| 52 | 4 | `blen`: the body's bytes, after the head |
-| 56 | 8 each | the index: name offset, name length, value offset, value length (u16 each) |
-| 56 + 8 `nhdr` | `hlen` | the head: request line, fields, empty line, as okena would forward it |
-| 56 + 8 `nhdr` + `hlen` | `blen` | the body |
+| 52 | 4 | `blen`: the bytes after the head |
+| 56 | 8 | `stream`: the same in every call about one request (with the worker slot: unique) |
+| 64 | 8 each | the index: name offset, name length, value offset, value length (u16 each) |
+| 64 + 8 `nhdr` | `hlen` | the head: request line, fields, empty line, as okena would forward it |
+| 64 + 8 `nhdr` + `hlen` | `blen` | the body |
+
+In the response phases the head is the backend's response head (its status
+line and fields, the index over them); after it come the request's method
+and target (the method and target offsets point there), then the response's
+body when the call carries it. In the log phase the head is the request line
+and the `host`, `okena-status`, `okena-bytes` and `okena-us` fields, and the
+call's id is 0.
 
 ### An answer (addon → okena)
 

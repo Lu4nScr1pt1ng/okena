@@ -2279,6 +2279,8 @@ http_recv_plain:
 	je	.body
 	cmp	edx,HS_ADBODY
 	je	addon_body_in			; (a body an addon waits for)
+	cmp	edx,HS_ADRBODY
+	je	addon_rbody_in			; (a response's body, the same)
 	cmp	edx,HS_RESP_HEAD
 	je	.resp_head
 	cmp	edx,HS_RESP_READ
@@ -2908,6 +2910,24 @@ http_resp_head:
 	call	cache_sie_ok
 	pop	rax
 	jnc	cache_sie_serve
+.addons:
+	push	rax				; addons with a response phase: theirs to say
+	call	addon_resp_stage
+	pop	rax
+	jnc	.addons_through
+	test	r8d,r8d
+	jz	.addon_held
+	cmp	r8d,1
+	jne	.addon_error
+	call	h_upclose			; their own answer: the backend's goes
+	jmp	addon_respond
+.addon_error:
+	mov	edi,r8d
+	jmp	http_error
+.addon_held:
+	ret
+.addons_through:
+	h_rec
 	lea	r14,[g_hm]
 	mov	edi,eax
 	xor	esi,esi
@@ -4919,8 +4939,11 @@ http_phase_expired:
 	inc	qword [g_st_http_trimmed]
 	ret
 .response:
+	cmp	dword [r15+H_STATE],HS_ADRBODY	; (its body, read for an addon)
+	je	.resp_504
 	cmp	dword [r15+H_STATE],HS_RESP_HEAD
 	jne	.out
+.resp_504:
 	call	session_ptr
 	mov	edi,[rax+S_SERVER]
 	call	server_5xx			; a silent backend counts as failing
@@ -5164,6 +5187,7 @@ http_exchange_done:
 	call	alog_exchange
 .logged:
 	h_rec
+	call	addon_log			; addons with the log phase: what came of it
 	and	dword [r15+H_FLAGS],not HX_LASTCHUNK
 	test	dword [r15+H_FLAGS],HX_UPKEEP
 	jz	.drop
