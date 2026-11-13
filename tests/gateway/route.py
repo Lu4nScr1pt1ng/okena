@@ -53,6 +53,7 @@ pool one {{ server 127.0.0.1:{A} }}
 pool two {{ server 127.0.0.1:{B} }}
 http 127.0.0.1:{LST} {{
     route /a/* {{ to pool one }}
+    route /up {{ respond 200 "fine" }}
     route /b/* {{
         match header:x-c=yes {{ to pool two }}
         match query:v=2 {{ to pool two }}
@@ -92,6 +93,14 @@ http 127.0.0.1:{LS2} {{
             check(f"{spec.strip()[-44:]}: {r}", rc == 0 and d.get("pool") == r, d)
         rc, d = said(f"POST http://x:{LST}/b/x")
         check("a block's redirect", d.get("redirect") == "303 /done", d)
+        rc, d = said(f"GET http://x:{LST}/up")
+        c = http.client.HTTPConnection("127.0.0.1", LST, timeout=5)
+        c.request("GET", "/up", headers={"Host": "x"})
+        got = c.getresponse()
+        body = got.read().decode()
+        c.close()
+        check("a respond route: said as respond, as it answers", d.get("respond") == '200 "fine"' and "redirect" not in d
+              and got.status == 200 and body == "fine", (d, got.status, body))
         rc, d = said(f"GET http://x:{LST}/b/x x-c:no")
         check("a condition not met", d.get("pool") == "one" and "match" not in d, d)
         q = subprocess.run([str(BIN), "route", "nonsense", "-c", str(conf)], capture_output=True, text=True, timeout=5)

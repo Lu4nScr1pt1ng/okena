@@ -439,6 +439,10 @@ cr_action:
 	mov	eax,[r12+RA_CODE]
 	test	eax,eax
 	jz	@f
+	cmp	eax,300				; respond's statuses are 2xx, 4xx, 5xx;
+	jb	.respond			; a redirect's are 3xx
+	cmp	eax,400
+	jae	.respond
 	push	rax
 	out_lit 'redirect  '
 	pop	rax
@@ -448,6 +452,22 @@ cr_action:
 	mov	rsi,[r12+RA_TGT]
 	mov	edx,[r12+RA_TLEN]
 	call	out_str
+	mov	edi,10
+	jmp	out_char
+.respond:					; okena answers: the status, the body
+	push	rax
+	out_lit 'respond   '
+	pop	rax
+	call	out_u64
+	cmp	qword [r12+RA_RBODY],0
+	je	.respond_end
+	out_lit ' "'
+	mov	rsi,[r12+RA_RBODY]
+	mov	edx,[r12+RA_RBLEN]
+	call	out_str
+	mov	edi,'"'
+	call	out_char
+.respond_end:
 	mov	edi,10
 	jmp	out_char
 @@:

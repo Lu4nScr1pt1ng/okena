@@ -899,7 +899,27 @@ check_value:
 	je	.cidr
 	cmp	r12,T_STATUSES
 	je	.statuses
+	cmp	r12,T_DURAUTO
+	je	.durauto
+	cmp	r12,T_COUNTAUTO
+	je	.countauto
 	jmp	.ok
+.countauto:
+	lea	rdx,[e_auto]
+	call	mem_eq_cstr
+	test	eax,eax
+	jnz	.ok
+	mov	rdi,[rbx+A_VAL]
+	mov	esi,[rbx+A_VLEN]
+	jmp	.count
+.durauto:
+	lea	rdx,[e_auto]
+	call	mem_eq_cstr
+	test	eax,eax
+	jnz	.ok
+	mov	rdi,[rbx+A_VAL]
+	mov	esi,[rbx+A_VLEN]
+	jmp	.duration
 .statuses:
 	call	parse_statuses
 	jc	.bad
@@ -1244,6 +1264,16 @@ type_help:
 	cmp	rbx,T_WORKERS
 	jne	@f
 	out_lit '`auto` or a number of workers from 1 to 1024'
+	jmp	.end
+@@:
+	cmp	rbx,T_COUNTAUTO
+	jne	@f
+	out_lit '`auto` (what the workers can hold) or a whole number from 1 to 100000000'
+	jmp	.end
+@@:
+	cmp	rbx,T_DURAUTO
+	jne	@f
+	out_lit '`auto` or a duration: 50us, 200us (0us: never)'
 	jmp	.end
 @@:
 	cmp	rbx,T_ROUTE
@@ -1662,7 +1692,35 @@ check_listener:
 	mov	esi,[r13+A_VLEN]
 	call	pool_find
 	test	rax,rax
-	jnz	.addresses
+	jz	.no_pool
+	; a pool's `tls` is spoken by http listeners only: from a tcp or udp
+	; listener the bytes would reach its servers in the clear (epoll) or
+	; not at all (io_uring). (A route's `to` comes here too: fine there.)
+	lea	rcx,[dir_table + D_SIZE*DIR_TCP]
+	cmp	[r12+N_DEF],rcx
+	je	@f
+	lea	rcx,[dir_table + D_SIZE*DIR_UDP]
+	cmp	[r12+N_DEF],rcx
+	jne	.addresses
+@@:
+	mov	rdi,rax
+	mov	ecx,DIR_UPTLS
+	call	find_child
+	test	rax,rax
+	jz	.addresses
+	mov	rdi,r13
+	call	arg_value_span
+	mov	edx,[r13+A_LINE]
+	call	cfg_error
+	out_lit 'pool '
+	mov	rsi,[r13+A_VAL]
+	mov	edx,[r13+A_VLEN]
+	call	cfg_quote
+	out_lit ' has `tls`, which only http listeners speak to their backends: here the bytes would go unencrypted'
+	call	cfg_diag_end
+	call	cfg_error_limit
+	jmp	.addresses
+.no_pool:
 	mov	rdi,r13
 	call	arg_value_span
 	mov	edx,[r13+A_LINE]

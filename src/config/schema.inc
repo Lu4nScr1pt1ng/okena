@@ -40,7 +40,7 @@ T_RATE		:= 8
 T_PERCENT	:= 9
 T_LISTEN	:= 10		; listen address
 T_BACKEND	:= 11		; backend address (names and unix paths too)
-T_WORKERS	:= 12		; auto or 1 .. 256
+T_WORKERS	:= 12		; auto or 1 .. 1024 (MAX_WORKERS)
 T_TARGET	:= 13		; `to pool NAME` or `to ADDR...`
 T_FUTURE	:= 14		; an option of the language not implemented yet
 T_HOSTNAME	:= 16		; a host name, or *.example.com
@@ -48,6 +48,8 @@ T_ROUTE		:= 15		; a path ("/x", "/x/*", "/*") or a method (GET, POST...)
 T_LOGDEST	:= 17		; stdout, stderr, off, an absolute file path, or a syslog or OTLP URL
 T_CIDR		:= 18		; an IP address or a range: 10.0.0.0/8, 2001:db8::/32
 T_STATUSES	:= 19		; an HTTP status or a range: 200, 200..299
+T_DURAUTO	:= 20		; `auto` or a duration
+T_COUNTAUTO	:= 21		; `auto` or a count (1 .. 100 000 000)
 
 ; Directive entry
 D_NAME		:= 0		; 24 bytes, NUL-padded
@@ -241,7 +243,7 @@ dirdef DIR_LAST_GOOD, 'last_good', M_OKENA,  0,           F_UNIQUE, 1, 1, e_onof
 dirdef DIR_PIN_WORKERS, 'pin_workers', M_OKENA, 0,        F_UNIQUE, 1, 1, e_pin, T_NONE, 0
 dirdef DIR_WATCHDOG, 'watchdog',    M_OKENA,   0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
 dirdef DIR_METRICS, 'metrics',     M_OKENA,   0,           F_UNIQUE, 1, 1, T_LISTEN, T_NONE, k_metrics
-dirdef DIR_BUSY_POLL, 'busy_poll',   M_OKENA,   0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
+dirdef DIR_BUSY_POLL, 'busy_poll',   M_OKENA,   0,           F_UNIQUE, 1, 1, T_DURAUTO, T_NONE, 0
 dirdef DIR_TICKET_KEYS, 'ticket_keys', M_OKENA, 0,       F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
 dirdef DIR_QUIC_SID, 'quic_server_id', M_OKENA, 0,      F_UNIQUE or F_KEYS_BLOCK, 1, 1, T_NAME, T_NONE, k_quic_sid
 dirdef DIR_QUIC_CC, 'quic_cc',     M_OKENA,   0,           F_UNIQUE, 1, 1, e_quic_cc, T_NONE, 0
@@ -260,14 +262,14 @@ dirdef DIR_VRRP, 'vrrp',        M_TOP,     0,           F_UNIQUE, 1, 1, T_ANY, T
 dirdef DIR_WEBHOOK, 'webhook',  M_ALERTS,  0,           0, 1, 1, T_ANY, T_NONE, k_alert
 dirdef DIR_SLACK, 'slack',      M_ALERTS,  0,           0, 1, 1, T_ANY, T_NONE, k_alert
 dirdef DIR_TELEGRAM, 'telegram', M_ALERTS, 0,           F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_telegram
-dirdef DIR_ALERT_ON, 'on',      M_ALERTS,  0,           F_UNIQUE, 1, 4, e_alert_on, e_alert_on, 0
+dirdef DIR_ALERT_ON, 'on',      M_ALERTS,  0,           F_UNIQUE, 1, 5, e_alert_on, e_alert_on, 0
 dirdef DIR_EVERY, 'every',      M_ALERTS,  0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
 dirdef DIR_ALERT_NAME, 'name',  M_ALERTS,  0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
 dirdef DIR_POOL, 'pool',        M_TOP,     CTX_POOL,    F_BLOCK_REQ, 1, 1, T_NAME, T_NONE, 0
 dirdef DIR_TO, 'to',          M_TCP or M_UDP or M_ROUTE, 0,           F_UNIQUE, 1, 64, T_TARGET, T_TARGET, 0
 dirdef DIR_PROXY_PROTOCOL, 'proxy_protocol', M_TCP, 0,      F_UNIQUE, 2, 2, e_pp_mode, e_pp_version, 0
 dirdef DIR_LIMITS, 'limits',      M_TCP or M_UDP or M_HTTP,     CTX_LIMITS,  F_BLOCK_REQ or F_UNIQUE, 0, 0, T_NONE, T_NONE, 0
-dirdef DIR_CONNECTIONS, 'connections', M_LIMITS,  0,           F_UNIQUE, 1, 1, T_COUNT, T_NONE, 0
+dirdef DIR_CONNECTIONS, 'connections', M_LIMITS,  0,           F_UNIQUE, 1, 1, T_COUNTAUTO, T_NONE, 0
 dirdef DIR_PER_SOURCE, 'per_source', M_LIMITS,  0,           F_UNIQUE, 1, 1, T_COUNT, T_NONE, 0
 dirdef DIR_BODY_SIZE, 'body_size', M_LIMITS,  0,           F_UNIQUE, 1, 1, T_SIZE, T_NONE, 0
 dirdef DIR_TIMEOUT, 'timeout',     M_TCP or M_UDP or M_HTTP,     CTX_TIMEOUT, F_BLOCK_REQ or F_UNIQUE, 0, 0, T_NONE, T_NONE, 0

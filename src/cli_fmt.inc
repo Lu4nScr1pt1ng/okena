@@ -189,7 +189,7 @@ fmt_text:
 	cmp	al,';'
 	je	.sep
 	test	edx,edx
-	jz	.word
+	jz	.in_word
 	cmp	al,'#'
 	je	.comment
 	cmp	al,'{'
@@ -200,6 +200,68 @@ fmt_text:
 	cmp	al,'}'
 	jne	.word
 	dec	ebx
+	jmp	.sep
+	; inside a word, as the lexer reads it: `{*}` and `{name}` belong to the
+	; word (a redirect's placeholders); any other brace is a token of its own
+	; (`{respond 200}`: `200` then `}`)
+.in_word:
+	cmp	al,'}'
+	jne	@f
+	dec	ebx
+	jmp	.sep
+@@:
+	cmp	al,'{'
+	jne	.word
+	mov	rcx,rsi				; (rsi is past the '{')
+	cmp	rcx,r14
+	jae	.brace
+	cmp	byte [rcx],'*'
+	jne	.ph_name
+	inc	rcx
+	cmp	rcx,r14
+	jae	.brace
+	cmp	byte [rcx],'}'
+	jne	.brace
+	jmp	.ph_copy
+.ph_name:
+	cmp	rcx,r14
+	jae	.brace
+	movzx	eax,byte [rcx]
+	cmp	al,'}'
+	je	.ph_end
+	cmp	al,'_'
+	je	.ph_ok
+	cmp	al,'.'
+	je	.ph_ok
+	cmp	al,'-'
+	je	.ph_ok
+	cmp	al,'0'
+	jb	.brace
+	cmp	al,'9'
+	jbe	.ph_ok
+	or	al,0x20
+	cmp	al,'a'
+	jb	.brace
+	cmp	al,'z'
+	ja	.brace
+.ph_ok:
+	inc	rcx
+	lea	rax,[rsi+33]
+	cmp	rcx,rax
+	jb	.ph_name
+	jmp	.brace
+.ph_end:
+	cmp	rcx,rsi
+	je	.brace				; ("{}": not a name)
+.ph_copy:					; rcx at its '}': the placeholder, as written
+	inc	rcx
+@@:
+	cmp	rsi,rcx
+	jae	.word
+	movsb
+	jmp	@b
+.brace:
+	inc	ebx
 	jmp	.sep
 .word:
 	xor	edx,edx

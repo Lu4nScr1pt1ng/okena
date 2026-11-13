@@ -1,0 +1,4 @@
+exit: 2
+--- stdout
+--- stderr
+okena: tls { alpn h2 } and http2 off say opposite things: alpn h2 turns HTTP/2 on (write http2 on, or alpn http/1.1)

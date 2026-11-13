@@ -706,7 +706,7 @@ match_entries:
 
 plan_bad_match:
 	call	log_begin
-	out_lit 'match needs conditions: method=, header:NAME[=VALUE], query:NAME[=VALUE], cookie:NAME[=VALUE], client.ip=CIDR; pools that exist; no `match` or `use` inside; at most 32 in a route'
+	out_lit 'match needs conditions: method=, header:NAME[=VALUE], query:NAME[=VALUE], cookie:NAME[=VALUE], client.ip=CIDR, client.country=CC, path=~REGEX (and NAME=~REGEX); pools that exist; no `match` or `use` inside; at most 32 in a route'
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process

@@ -27,9 +27,13 @@ explain_print:
 	out_lit 'okena {',10,'    workers '
 	mov	eax,[g_workers]			; (a running instance: what it has)
 	test	eax,eax
-	jnz	@f
-	call	cpu_worker_count
+	jnz	.workers_known
+	cmp	dword [g_cpu_count],0		; (the CLI: the mask and quota not read yet)
+	jne	@f
+	call	cpu_discover
 @@:
+	call	cpu_worker_count
+.workers_known:
 	call	out_u64
 	out_lit 10,'    profile '
 	mov	eax,[g_plan_profile]
@@ -183,6 +187,29 @@ explain_print:
 	lea	rsi,[.h_grpc]
 .h_kind:
 	call	out_cstr
+	cmp	dword [r12+PL_H_HTTP],1		; http: its method and path
+	jne	.h_grpc_svc
+	cmp	dword [r12+PL_H_HEAD],0
+	jne	.h_head
+	out_lit ' GET '
+	jmp	.h_path
+.h_head:
+	out_lit ' HEAD '
+.h_path:
+	mov	rsi,[r12+PL_H_PATH]
+	mov	edx,[r12+PL_H_PLEN]
+	call	out_str
+	jmp	.h_times
+.h_grpc_svc:
+	cmp	dword [r12+PL_H_HTTP],2		; grpc: its service, when named
+	jne	.h_times
+	cmp	dword [r12+PL_H_PLEN],0
+	je	.h_times
+	out_lit ' '
+	mov	rsi,[r12+PL_H_PATH]
+	mov	edx,[r12+PL_H_PLEN]
+	call	out_str
+.h_times:
 	out_lit ' every='
 	mov	eax,[r12+PL_H_EVERY]
 	imul	rax,rax,1000
@@ -197,6 +224,21 @@ explain_print:
 	out_lit ' fall='
 	mov	eax,[r12+PL_H_FALL]
 	call	out_u64
+	cmp	dword [r12+PL_H_HTTP],1
+	jne	.h_host
+	out_lit ' expect='
+	mov	eax,[r12+PL_H_LO]
+	call	out_u64
+	out_lit '..'
+	mov	eax,[r12+PL_H_HI]
+	call	out_u64
+.h_host:
+	cmp	dword [r12+PL_H_HLEN],0
+	je	@f
+	out_lit ' host='
+	mov	rsi,[r12+PL_H_HOST]
+	mov	edx,[r12+PL_H_HLEN]
+	call	out_str
 @@:
 	cmp	dword [r12+PL_H2],0
 	je	@f

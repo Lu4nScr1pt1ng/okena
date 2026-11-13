@@ -1,4 +1,4 @@
-; HTTP/1.1 reverse proxy: the exchange state machine (docs/HTTP.md).
+; HTTP/1.1 reverse proxy: the exchange state machine (docs/ARCHITECTURE.md, Request path).
 ;
 ; Written once for both engines. It talks to them through four
 ; primitives each engine implements:

@@ -15,7 +15,7 @@ pool api {
     queue timeout=2s
     outlier errors=3 eject=10s max_ejected=50%
     retry_budget 10% min=5/s
-    health http every=2s timeout=1s rise=2 fall=3
+    health http GET /healthz every=2s timeout=1s rise=2 fall=3 expect=200..399
     server 10.0.0.1:80 weight=2 max=100
     server 10.0.0.2:80 weight=1 backup
 }

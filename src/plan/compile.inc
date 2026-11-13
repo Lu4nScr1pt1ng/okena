@@ -473,6 +473,20 @@ plan_compile:
 	lea	rdi,[g_rh_pend]
 	mov	esi,8 * MAX_ROUTES
 	call	pages_release
+	; `mode xdp`, `drop` and `syn_rate` go on the `xdp` interfaces: without
+	; them, said by `okena check` and a reload, not only at the start
+	cmp	dword [g_plan_nxif],0
+	jne	.xdp_ok
+	mov	eax,[g_plan_nxvip]
+	or	eax,[g_plan_xdrop]
+	or	rax,[g_plan_syn_ivl]
+	jz	.xdp_ok
+	call	log_begin
+	out_lit '`mode xdp`, `drop` and `syn_rate` need the interfaces they go on: okena { xdp IFACE }'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
+.xdp_ok:
 	; `profile`: what it sets that was not set
 	cmp	dword [g_plan_profile],PROFILE_LATENCY
 	jne	@f
@@ -494,6 +508,10 @@ plan_compile:
 	cmp	qword [g_plan_cmem],0
 	jne	@f
 	mov	qword [g_plan_cmem],CACHE_MEM_DEF / 4
+@@:
+	cmp	qword [g_plan_busy_poll],-2	; `busy_poll auto`: auto after all
+	jne	@f
+	mov	qword [g_plan_busy_poll],0
 @@:
 	pop	r12
 	pop	rbx
@@ -833,6 +851,16 @@ compile_settings:
 	call	compile_xdp_syn_rate
 	jmp	.advance
 .busy_poll:
+	mov	rax,[rbx+N_ARGS]
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	lea	rdx,[e_auto]
+	call	mem_eq_cstr
+	test	eax,eax
+	jz	.busy_time
+	mov	qword [g_plan_busy_poll],-2	; written: auto, whatever the profile says
+	jmp	.advance
+.busy_time:
 	mov	rdi,rbx
 	call	node_duration
 	test	rax,rax
@@ -876,9 +904,18 @@ compile_settings:
 .upgrade:
 	mov	rax,[rbx+N_ARGS]
 	mov	rcx,[rax+A_VAL]
+	mov	edx,[rax+A_VLEN]
+	cmp	edx,6				; unix:PATH, like admin; a bare path too
+	jb	@f
+	cmp	dword [rcx],'unix'
+	jne	@f
+	cmp	byte [rcx+4],':'
+	jne	@f
+	add	rcx,5
+	sub	edx,5
+@@:
 	mov	[g_plan_up],rcx
-	mov	ecx,[rax+A_VLEN]
-	mov	[g_plan_uplen],ecx
+	mov	[g_plan_uplen],edx
 	jmp	.advance
 .user:
 	mov	rdi,rbx
@@ -2607,7 +2644,7 @@ compile_cors:
 
 plan_bad_limit:
 	call	log_begin
-	out_lit 'limit: RATE is N/s, N/m or N/h, of 1 to 1000000000; key= is client.ip, method, header:NAME, query:NAME or cookie:NAME; at most 256 limits'
+	out_lit 'limit: RATE is N/s, N/m, N/h or N/d, of 1 to 1000000000; key= is client.ip, method, header:NAME, query:NAME, cookie:NAME, auth.user or jwt.sub; at most 256 limits'
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process
@@ -4200,7 +4237,15 @@ compile_listener:
 	call	find_child
 	test	rax,rax
 	jz	@f
-	mov	rdi,rax
+	push	rax
+	mov	rcx,[rax+N_ARGS]
+	mov	rdi,[rcx+A_VAL]
+	mov	esi,[rcx+A_VLEN]
+	lea	rdx,[e_auto]
+	call	mem_eq_cstr
+	pop	rdi
+	test	eax,eax
+	jnz	@f				; `auto`: what the workers can hold
 	call	node_decimal
 	mov	r15d,eax
 @@:
@@ -4676,6 +4721,19 @@ compile_tls_policy:
 	and	dword [g_cmp_flags],not LSF_H2
 	test	ebx,1
 	jz	@f
+	mov	rdi,r12				; h2 offered: not with `http2 off` written
+	mov	ecx,DIR_HTTP2
+	call	find_child
+	test	rax,rax
+	jz	.alpn_h2
+	mov	rax,[rax+N_ARGS]
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	lea	rdx,[e_onoff]
+	call	list_index
+	cmp	eax,1				; `off`
+	je	plan_bad_alpn_h2
+.alpn_h2:
 	or	dword [g_cmp_flags],LSF_H2
 @@:
 	test	ebx,2
@@ -4730,6 +4788,13 @@ compile_tls_policy:
 	pop	r13
 	pop	r12
 	ret
+
+plan_bad_alpn_h2:
+	call	log_begin
+	out_lit 'tls { alpn h2 } and http2 off say opposite things: alpn h2 turns HTTP/2 on (write http2 on, or alpn http/1.1)'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
 
 plan_bad_tls12_h3:
 	call	log_begin
@@ -5589,7 +5654,7 @@ cstring str_key_bound, 'bound',0
 
 plan_bad_key:
 	call	log_begin
-	out_lit 'balance key= is for maglev and ring-hash: source, path, header:NAME, cookie:NAME or query:NAME'
+	out_lit 'balance key= is for maglev and ring-hash: source, path, url, header:NAME, cookie:NAME or query:NAME'
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process

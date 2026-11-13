@@ -1,0 +1,4 @@
+exit: 2
+--- stdout
+--- stderr
+okena: `mode xdp`, `drop` and `syn_rate` need the interfaces they go on: okena { xdp IFACE }

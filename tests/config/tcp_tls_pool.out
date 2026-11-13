@@ -1,0 +1,7 @@
+exit: 2
+--- stdout
+--- stderr
+tcp_tls_pool.conf:3:21: error: pool `secure` has `tls`, which only http listeners speak to their backends: here the bytes would go unencrypted
+     3 | tcp :9443 { to pool secure }
+       |                     ^^^^^^
+1 error in tcp_tls_pool.conf

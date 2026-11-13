@@ -79,6 +79,24 @@ policies_expand:
 	jne	.def_next
 	cmp	dword [rbx+N_ARGC],1
 	jne	.def_next
+	; no `use` inside it, said where it is written, used or not
+	mov	r12,[rbx+N_CHILD]
+.uses:
+	test	r12,r12
+	jz	.uses_done
+	mov	rdi,r12
+	lea	rsi,[str_use]
+	call	node_is
+	jne	.uses_next
+	mov	rdi,r12
+	call	policy_error
+	out_lit 'a policy cannot use another'
+	call	cfg_diag_end
+	call	cfg_error_limit
+.uses_next:
+	mov	r12,[r12+N_NEXT]
+	jmp	.uses
+.uses_done:
 	mov	r12,[rbx+N_NEXT]
 .later:
 	test	r12,r12
@@ -204,12 +222,7 @@ policy_route:
 	lea	rsi,[str_use]
 	call	node_is
 	jne	.fresh
-	mov	rdi,r15
-	call	policy_error
-	out_lit 'a policy cannot use another'
-	call	cfg_diag_end
-	call	cfg_error_limit
-	jmp	.take_next
+	jmp	.take_next			; (said where the policy is written)
 .fresh:
 	mov	r8,[r12+N_CHILD]
 .own:

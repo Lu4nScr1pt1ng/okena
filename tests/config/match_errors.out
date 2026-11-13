@@ -1,4 +1,4 @@
 exit: 2
 --- stdout
 --- stderr
-okena: match needs conditions: method=, header:NAME[=VALUE], query:NAME[=VALUE], cookie:NAME[=VALUE], client.ip=CIDR; pools that exist; no `match` or `use` inside; at most 32 in a route
+okena: match needs conditions: method=, header:NAME[=VALUE], query:NAME[=VALUE], cookie:NAME[=VALUE], client.ip=CIDR, client.country=CC, path=~REGEX (and NAME=~REGEX); pools that exist; no `match` or `use` inside; at most 32 in a route

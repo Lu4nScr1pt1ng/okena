@@ -461,22 +461,41 @@ cli_help:
 	mov	edi,1
 	call	out_select
 	out_lit 'okena ', OKENA_VERSION, ': L4/L7 load balancer, reverse proxy and API gateway', 10, 10
-	out_lit 'usage:', 10
-	out_lit '  okena [run] [-c FILE]        serve (default /etc/okena/okena.conf)', 10
-	out_lit '  okena check [FILE]           validate a configuration and exit', 10
-	out_lit '  okena tcp :5432 to db:5432   configuration given on the command line', 10
-	out_lit '  okena reload [-c FILE]       reload the running instance, and say how it went', 10
-	out_lit '  okena backend list|drain|up|weight [POOL SERVER [N]] [-c FILE]', 10
-	out_lit '  okena drain [wait] | resume [-c FILE]  the instance out of rotation (/ready 503) and back', 10
-	out_lit '  okena top [once] [-c FILE]   listeners, pools and servers now, with their rates', 10
-	out_lit '  okena maintenance [on|off [ROUTE]] [-c FILE]  503 and the maintenance page, for all or a route', 10
-	out_lit '  okena health [FILE]          exit 0 when the running instance is ready (/ready)', 10
-	out_lit '  okena certs [-c FILE]        the certificates served: names, issuer, expiry, ACME state', 10
-	out_lit '  okena trust [remove] [-c FILE]  the local CA (tls { local NAME... }) in the system',39,'s trust store', 10
-	out_lit '  okena regex PATTERN TEXT...  what a route',39,'s ~PATTERN makes of each TEXT: the match, its groups', 10
-	out_lit '  okena cert selfsigned|csr DIR NAME... [days=N]  a key, and a certificate or a CSR', 10
-	out_lit '  okena bench URL [rate=N] ... open-loop load: latency corrected for coordinated omission', 10
-	out_lit '  okena version', 10, 10
+	out_lit 'Run', 10
+	out_lit '  okena [run] [-c FILE]              serve (default /etc/okena/okena.conf)', 10
+	out_lit '  okena tcp :5432 to db:5432         the configuration itself, on the command line', 10
+	out_lit '  okena upgrade -c FILE              take over from the running instance with a new binary', 10
+	out_lit 10
+	out_lit 'Configuration', 10
+	out_lit '  okena check [FILE]                 validate and exit', 10
+	out_lit '  okena check --diff [FILE]          what a reload with FILE would change', 10
+	out_lit '  okena check --host [FILE]          host settings that would hold okena back', 10
+	out_lit '  okena explain [FILE]               the configuration as it will run, defaults written out', 10
+	out_lit '  okena fmt [-w] FILE                canonical layout (stdout, or -w: in place)', 10
+	out_lit '  okena route ',39,'GET URL [h:v...]',39,'     which route and pool a request takes', 10
+	out_lit '  okena regex PATTERN TEXT...        what a route',39,'s ~PATTERN makes of each TEXT', 10
+	out_lit 10
+	out_lit 'A running instance (each takes -c FILE to find its admin socket)', 10
+	out_lit '  okena reload                       reload, and say how it went', 10
+	out_lit '  okena drain [wait] | resume        out of rotation (/ready 503) and back', 10
+	out_lit '  okena backend list|drain|up|weight [POOL SERVER [N]]', 10
+	out_lit '  okena maintenance [on|off [ROUTE]] 503 and the maintenance page', 10
+	out_lit '  okena top [once]                   listeners, pools and servers, with their rates', 10
+	out_lit '  okena purge url|prefix|tag VALUE   cached answers out, here and on the fleet', 10
+	out_lit '  okena health                       exit 0 when the instance is ready', 10
+	out_lit 10
+	out_lit 'Certificates and keys', 10
+	out_lit '  okena certs                        certificates served: names, issuer, expiry, ACME state', 10
+	out_lit '  okena cert selfsigned|csr DIR NAME... [days=N]', 10
+	out_lit '  okena trust [remove]               the local CA in the system',39,'s trust store', 10
+	out_lit '  okena ech new FILE | ech print     Encrypted Client Hello keys, and their DNS value', 10
+	out_lit '  okena sign KEYFILE PATH TTL        a signed URL', 10
+	out_lit '  okena ranges NAME                  a provider',39,'s address ranges, as built in', 10
+	out_lit 10
+	out_lit 'Tools', 10
+	out_lit '  okena bench URL [rate=N] ...       open-loop load, corrected for coordinated omission', 10
+	out_lit '  okena version', 10
+	out_lit 10
 	out_lit 'OKENA_CONFIG, when set, holds configuration text used instead of the file.', 10
 	xor	edi,edi
 	jmp	exit_process

@@ -1,0 +1,4 @@
+exit: 0
+--- stdout
+auto_values.conf: ok (2 listeners, 1 pool, 1 server)
+--- stderr

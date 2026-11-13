@@ -51,5 +51,32 @@ o = explain("okena { workers 1; busy_poll 0us }\n" + base)
 check("  busy_poll 0us: off", "busy_poll 0s" in o, o[:300])
 o = explain("okena { workers 1; profile throughput }\n" + base)
 check("profile throughput: no polling", "busy_poll 0s" in o, o[:300])
+o = explain("okena { workers 1; profile latency; busy_poll auto }\n" + base)
+check("busy_poll auto, written: auto whatever the profile", "busy_poll auto" in o, o[:300])
+o = explain("okena { }\n" + base)
+check("workers auto: what this host gives, never 0", "workers 0\n" not in o and "workers " in o, o[:100])
+
+# explain is a view, not all of a file (no route filters, no certificates,
+# inline pools as `pool (inline N)`), but what it prints of a configuration
+# with named pools and no filters is configuration again: it checks, and
+# explaining it gives it back (every default it writes out can be written)
+full = """okena { workers 2; profile latency; busy_poll auto }
+pool api { server 127.0.0.1:3000; health http HEAD /healthz expect=200..204 host=api.internal }
+pool g { server 127.0.0.1:9000; protocol h2; health grpc my.Svc }
+pool t { server 127.0.0.1:5000; health tcp every=1s }
+tcp 127.0.0.1:9432 { to pool t; limits { connections 5000 } }
+udp 127.0.0.1:9053 { to pool t; responses 1 }
+http 127.0.0.1:9080 { http2 on; route /api/* { to pool api }; route /g/* { to pool g } }
+"""
+once = explain(full)
+with tempfile.NamedTemporaryFile("w", suffix=".conf") as f:
+    f.write(once)
+    f.flush()
+    r = subprocess.run([str(BIN), "check", f.name], capture_output=True, text=True, timeout=10)
+check("its output is configuration that checks", r.returncode == 0, r.stdout[-300:] + r.stderr[-300:])
+check("  and explaining it again gives the same", explain(once) == once, once[:300])
+check("  a health check keeps its method, path, expect and host",
+      "health http HEAD /healthz every=2s timeout=1s rise=2 fall=3 expect=200..204 host=api.internal" in once
+      and "health grpc my.Svc " in once, once)
 print("explain: " + ("all passed" if not fails else f"{fails} failed"))
 sys.exit(1 if fails else 0)

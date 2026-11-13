@@ -35,6 +35,12 @@ with tempfile.TemporaryDirectory() as d:
     r = subprocess.run([str(BIN), "fmt", "-w", str(f)], capture_output=True, text=True, timeout=10)
     check("-w: written back, its mode kept", r.returncode == 0 and f.read_text() == WANT and (f.stat().st_mode & 0o777) == 0o640,
           (r.returncode, oct(f.stat().st_mode)))
+    # braces that touch a word count as the lexer reads them; {host} and {*} don't
+    f.write_text("http :8080 {\n  route /b {respond 200}\n  route /a/* { redirect 301 https://{host}/n/{*} }\n}\n")
+    r = subprocess.run([str(BIN), "fmt", str(f)], capture_output=True, text=True, timeout=10)
+    check("a brace against a word: the block still closes where it does",
+          r.returncode == 0 and r.stdout == "http :8080 {\n    route /b {respond 200}\n    route /a/* { redirect 301 https://{host}/n/{*} }\n}\n",
+          repr(r.stdout))
     bad = "http :8080 {\n  route /x { respond 404\n"
     f.write_text(bad)
     r = subprocess.run([str(BIN), "fmt", "-w", str(f)], capture_output=True, text=True, timeout=10)
