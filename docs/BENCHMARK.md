@@ -403,6 +403,43 @@ caches responses without a plugin or their commercial editions.
 
 ---
 
+## Addons: what an addon that answers at once adds
+
+`tests/bench/addon.sh`. Phase 13's exit: okena (2 workers) in front of
+l4bench http, two routes to it, one through an addon in C
+(`sdk/c/examples/hello.c`, continue with nothing changed), one without.
+okena bench in open loop, 32 connections, each route run alternately three
+times for 10 s; the median of each percentile. Cores pinned: okena, the
+addon, the backend and the load each on their own (Ryzen 7 5700G). The
+round trip is okena's own histogram of the calls
+(`okena_addon_call_seconds`: from posting the call to taking its answer;
+upper bounds of its buckets).
+
+With `poll 2ms` (the addon polls 2 ms after a call before it sleeps, so
+under this traffic it never sleeps):
+
+| Rate | p50 without / with | p99 without / with | p99.9 without / with | the call's round trip p50 / p99 / p99.9 |
+|---|---|---|---|---|
+| 5,000/s | 43.5 / 46.1 µs | 69.6 / 72.7 µs (**+3.1**) | 94.2 / 98.3 µs | ≤ 1 / **≤ 2** / ≤ 8 µs |
+| 20,000/s | 33.3 / 34.8 µs | 57.3 / 58.4 µs (**+1.0**) | 107.5 / 107.5 µs | ≤ 1 / **≤ 2** / ≤ 20 µs |
+
+With the default `poll 50us`, a call that comes after a longer gap finds
+the addon asleep and pays its wakeup (the eventfd, then a core out of its
+idle state):
+
+| Rate | p50 without / with | p99 without / with | the call's round trip p50 / p99 / p99.9 |
+|---|---|---|---|
+| 5,000/s | 45.1 / 50.7 µs | 84.0 / 80.9 µs | ≤ 10 / ≤ 20 / ≤ 50 µs |
+| 20,000/s | 34.3 / 35.8 µs | 57.3 / 65.0 µs | ≤ 1 / ≤ 12.5 / ≤ 20 µs |
+
+At 50,000/s two workers on two cores are saturated (the route without the
+addon already has a p99 of 112-332 µs from run to run) and the difference
+says nothing; the round trip's p99 is ≤ 8 µs there, mostly the call waiting
+for its worker's loop. A single run's p99 moves by 10-15 µs on this desktop,
+which is why the round trip is measured inside okena as well.
+
+---
+
 ## Memory per idle connection
 
 `tests/bench/idlemem.sh`. 100,000 clients each make one request, read the

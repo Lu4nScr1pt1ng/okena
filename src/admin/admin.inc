@@ -1025,6 +1025,7 @@ metrics_render:
 	jmp	.l7
 .l7_done:
 	call	metrics_more
+	call	addon_metrics
 	; backends
 	memit '# TYPE okena_backend_connects_total counter',10
 	mov	r12d,OFF_S_CONNECTS

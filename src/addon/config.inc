@@ -8,6 +8,7 @@
 ;       on_error allow               ; or deny (the default): 503
 ;       concurrency 1024             ; calls waiting at once, the whole instance
 ;       breaker errors=5 open=1s     ; failures in a row that open the circuit, and for how long
+;       poll 50us                    ; the addon polls this long after a call before it sleeps
 ;   }
 ;   route /api/* { addon waf; to pool api }
 ;
@@ -18,6 +19,7 @@ AD_DEF_TIMEOUT	:= 200000			; µs
 AD_DEF_CONC	:= 1024
 AD_DEF_BREAK	:= 5
 AD_DEF_OPEN	:= 1000000			; µs
+AD_DEF_POLL	:= 50				; µs
 
 ; plan entry
 ADE_NAME		:= 0				; q
@@ -32,7 +34,8 @@ ADE_SLOT		:= 44				; d: its process (the supervisor's g_adrt)
 ADE_BREAK	:= 48				; d
 ADE_OPEN		:= 56				; q: µs
 ADE_HASH		:= 64				; q: what makes it the same process across a reload
-ADE_SIZE		:= 72
+ADE_POLL		:= 72				; q: µs it polls after a call
+ADE_SIZE		:= 80
 
 RA_ADDONS	:= 140				; d: a route's addons, bit i for g_addons[i]
 
@@ -239,6 +242,20 @@ compile_addon:
 	mov	dword [r13+ADE_SLOT],-1
 	mov	dword [r13+ADE_BREAK],AD_DEF_BREAK
 	mov	qword [r13+ADE_OPEN],AD_DEF_OPEN
+	mov	qword [r13+ADE_POLL],AD_DEF_POLL
+	mov	rdi,r12
+	mov	ecx,DIR_ADPOLL
+	call	find_child
+	test	rax,rax
+	jz	@f
+	mov	rdi,rax
+	call	node_duration
+	jc	plan_bad_addon
+	mov	rcx,10000000			; (10 s: more is a mistake)
+	cmp	rax,rcx
+	ja	plan_bad_addon
+	mov	[r13+ADE_POLL],rax
+@@:
 	mov	rdi,r12
 	mov	ecx,DIR_ADRUN
 	call	find_child

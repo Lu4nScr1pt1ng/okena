@@ -19,6 +19,7 @@ addon waf {
     on_error allow               # or deny (the default): 503
     concurrency 1024             # calls waiting at once, the whole instance (default 1024)
     breaker errors=5 open=1s     # failures in a row that open the circuit (the defaults)
+    poll 50us                    # the addon polls this long after a call before it sleeps
 }
 
 route /api/* {
@@ -33,6 +34,14 @@ An addon is asked after the route's `allow`/`deny`, CORS, signed URLs, `auth`
 and rate limits: the cheapest refusals come first, and an addon sees who the
 client is (`auth` fields are on the request) and never a request a limit
 refused.
+
+**Polling.** After a call, an addon on okena's SDKs polls for the next one
+for `poll` (default 50 µs) before it sleeps; a call that finds it asleep
+pays a wakeup (around 10 µs, more on a core in a deep idle state). Under
+steady traffic, or with a `poll` longer than the gaps between calls, an
+addon that answers at once adds about 1 µs (p99 2 µs, docs/BENCHMARK.md); it
+costs a core while it polls. `OKENA_ADDON_SPIN_US` in the addon's
+environment overrides `poll`.
 
 **The process.** okena starts every addon of the configuration before it
 serves (waiting up to 5 s for each to say it is ready), as `user` when that is
@@ -107,6 +116,7 @@ the file's). The addon finds it at the descriptor `OKENA_ADDON_FD` names
 | 64 | 64 | the addon's name, NUL-terminated |
 | 128 | 8 | `timeout` in µs (for the addon's information) |
 | 136 | 4 | the largest head a call carries |
+| 140 | 4 | `poll`: µs the addon should poll after a call before it sleeps (the configuration's) |
 
 ### Rings
 
@@ -116,7 +126,7 @@ Ring pair `i` starts at `hbytes + i * stride`:
 |---|---|
 | 0 | calls ring header: `head` (u64, at 0, okena's), `tail` (u64, at 64, the addon's) |
 | `hbytes` | calls data (`rbytes`) |
-| `hbytes + rbytes` | answers ring header: `head` (at 0, the addon's), `tail` (at 64, okena's) |
+| `hbytes + rbytes` | answers ring header: `head` (at 0, the addon's), `tail` (at 64, okena's), `awake` (u32 at 128, okena's: 1 while the worker polls for answers) |
 | `2 * hbytes + rbytes` | answers data (`rbytes`) |
 
 `head` and `tail` count bytes since the ring was made; they never wrap. A
@@ -182,7 +192,10 @@ the bell whenever it has nothing to do (the counter makes a wakeup between
 its last look and its read come back at once).
 
 An addon that wrote answers into slot `i` writes 1 to that slot's eventfd
-(`wake0 + i`), once a batch.
+(`wake0 + i`), once a batch, unless the slot's `awake` is 1 (read after a
+full fence that follows the new `head`): a worker that just asked an addon
+that polls waits for the answer a few microseconds itself, and before it
+sleeps sets `awake` to 0 and looks once more. An addon may also always write.
 
 ### Starting
 

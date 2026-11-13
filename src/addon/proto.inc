@@ -47,11 +47,14 @@ ADH_SLEEP	:= 60				; d: the addon may block on the bell: ring it
 ADH_NAME		:= 64				; 64: NUL-terminated
 ADH_TIMEOUT	:= 128				; q: µs a call is given
 ADH_MAXHEAD	:= 136				; d: the largest head a call carries
+ADH_POLL	:= 140				; d: µs the addon polls after a call before it sleeps (`poll`)
 
 ; a ring pair, at AD_HDR + slot * AD_STRIDE
 ADR_HEAD		:= 0				; q: bytes produced (the producer's line)
 ADR_TAIL		:= 64				; q: bytes consumed (the consumer's line)
 ADR_OWNER	:= 128				; d: calls: the worker's pid, 0 none
+ADR_WAWAKE	:= 128				; d: answers: 1 while the worker polls for them
+						; (no need to write its eventfd), 0 otherwise
 ADR_COUNT	:= 256				; calls: counters (q each, the worker's own)
 ADC_CALLS	:= 0				; calls posted
 ADC_OK		:= 8				; answers taken
@@ -63,6 +66,9 @@ ADC_DENIED	:= 48				; on_error deny refused one
 ADC_RESPOND	:= 56				; the addon answered the client itself
 ADC_CRASHED	:= 64				; calls pending when the addon exited
 ADC_N		:= 9
+ADC_HSUM	:= 120				; ns of the answered calls, summed
+ADR_HIST	:= ADR_COUNT + 128		; their round trips: ADH_NB counts (q), by AD_HBOUNDS
+AD_NB		:= 32
 ADR_CALLS	:= AD_HDR			; the calls' bytes
 ADR_ANS		:= AD_HDR + AD_RING		; the answers' ring header
 ADR_ANSD		:= AD_HDR * 2 + AD_RING		; the answers' bytes

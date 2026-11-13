@@ -194,6 +194,8 @@ addon_sync:
 	mov	[rdx+ADH_TIMEOUT],rax
 	mov	eax,[r13+ADE_PHASES]
 	mov	[rdx+ADH_PHASES],eax
+	mov	eax,[r13+ADE_POLL]
+	mov	[rdx+ADH_POLL],eax
 	mov	[rdx+ADH_INDEX],r12d
 .next:
 	inc	r12d
@@ -634,3 +636,262 @@ addon_tick:
 	pop	rbx
 .out:
 	ret
+
+; admin, /metrics: each addon's counters, summed over the worker slots (each
+; slot's are written by the worker holding it), and whether it serves
+addon_metrics:
+	cmp	dword [g_plan_addons],0
+	je	.none
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	memit '# HELP okena_addon_calls_total Calls to an addon, by what came of them: answered, timeout (no answer in time), crashed (the addon exited first), error (not asked: not ready, concurrency, circuit open; or a bad answer).',10
+	memit '# TYPE okena_addon_calls_total counter',10
+	lea	r14,[.results]
+	call	.each
+	memit '# HELP okena_addon_on_error_total Requests that went on (allow) or were refused (deny) for want of an answer.',10
+	memit '# TYPE okena_addon_on_error_total counter',10
+	lea	r14,[.onerr]
+	call	.each
+	memit '# HELP okena_addon_responses_total Requests the addon answered itself.',10
+	memit '# TYPE okena_addon_responses_total counter',10
+	lea	r14,[.resp]
+	call	.each
+	memit '# HELP okena_addon_circuit_opened_total Times a worker stopped asking an addon after failures in a row.',10
+	memit '# TYPE okena_addon_circuit_opened_total counter',10
+	lea	r14,[.opened]
+	call	.each
+	memit '# HELP okena_addon_call_seconds Round trip of answered calls, from posting the call to taking its answer.',10
+	memit '# TYPE okena_addon_call_seconds histogram',10
+	xor	ebx,ebx
+.h:
+	cmp	ebx,[g_plan_addons]
+	jae	.h_done
+	call	.base
+	test	r12,r12
+	jz	.h_next
+	xor	r13d,r13d			; bucket
+	xor	r14d,r14d			; cumulative
+.hb:
+	mov	ecx,r13d
+	lea	r8,[r12+AD_HDR+ADR_HIST+rcx*8]
+	call	.slots
+	add	r14,rax
+	memit 'okena_addon_call_seconds_bucket{addon="'
+	call	.name
+	memit '",le="'
+	cmp	r13d,AD_NB - 1
+	jae	.inf
+	mov	rax,[ad_hbounds+r13*8]
+	call	.seconds
+	jmp	.le
+.inf:
+	memit '+Inf'
+.le:
+	memit '"} '
+	mov	rax,r14
+	call	fmt_u64
+	mov	byte [rdi],10
+	inc	rdi
+	inc	r13d
+	cmp	r13d,AD_NB
+	jb	.hb
+	memit 'okena_addon_call_seconds_sum{addon="'
+	call	.name
+	memit '"} '
+	lea	r8,[r12+AD_HDR+ADR_COUNT+ADC_HSUM]
+	call	.slots
+	call	.seconds
+	mov	byte [rdi],10
+	inc	rdi
+	memit 'okena_addon_call_seconds_count{addon="'
+	call	.name
+	memit '"} '
+	mov	rax,r14
+	call	fmt_u64
+	mov	byte [rdi],10
+	inc	rdi
+.h_next:
+	inc	ebx
+	jmp	.h
+.h_done:
+	memit '# HELP okena_addon_starts_total Times the addon was started (restarts are this less one).',10
+	memit '# TYPE okena_addon_starts_total counter',10
+	xor	ebx,ebx
+.s:
+	cmp	ebx,[g_plan_addons]
+	jae	.s_done
+	call	.base
+	test	r12,r12
+	jz	.s_next
+	memit 'okena_addon_starts_total{addon="'
+	call	.name
+	memit '"} '
+	mov	eax,[r12+ADH_EPOCH]
+	inc	eax
+	shr	eax,1
+	call	fmt_u64
+	mov	byte [rdi],10
+	inc	rdi
+.s_next:
+	inc	ebx
+	jmp	.s
+.s_done:
+	memit '# HELP okena_addon_up Whether the addon serves (it said it is ready).',10
+	memit '# TYPE okena_addon_up gauge',10
+	xor	ebx,ebx
+.u:
+	cmp	ebx,[g_plan_addons]
+	jae	.u_done
+	call	.base
+	test	r12,r12
+	jz	.u_next
+	memit 'okena_addon_up{addon="'
+	call	.name
+	memit '"} '
+	mov	eax,[r12+ADH_READY]
+	call	fmt_u64
+	mov	byte [rdi],10
+	inc	rdi
+.u_next:
+	inc	ebx
+	jmp	.u
+.u_done:
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+.none:
+	ret
+; r14 = a list (counter offset, label text; 0 ends it): a line for each addon
+; and entry
+.each:
+	xor	ebx,ebx
+.e_addon:
+	cmp	ebx,[g_plan_addons]
+	jae	.e_done
+	call	.base
+	test	r12,r12
+	jz	.e_next
+	mov	r13,r14
+.e_item:
+	cmp	qword [r13],-1
+	je	.e_next
+	mov	rsi,[r13+8]
+	call	fmt_cstr
+	call	.name
+	mov	rsi,[r13+16]
+	call	fmt_cstr
+	; the sum over the slots
+	xor	eax,eax
+	xor	ecx,ecx
+	mov	rdx,[r13]
+	lea	r8,[r12+AD_HDR+ADR_COUNT+rdx]
+.sum:
+	cmp	ecx,[g_ad_nrw]
+	jae	.summed
+	add	rax,[r8]
+	add	r8,AD_STRIDE
+	inc	ecx
+	jmp	.sum
+.summed:
+	call	fmt_u64
+	mov	byte [rdi],10
+	inc	rdi
+	add	r13,24
+	jmp	.e_item
+.e_next:
+	inc	ebx
+	jmp	.e_addon
+.e_done:
+	ret
+; r8 = a counter in ring pair 0: rax = its sum over the slots
+.slots:
+	xor	eax,eax
+	xor	ecx,ecx
+.sl:
+	cmp	ecx,[g_ad_nrw]
+	jae	.sl_done
+	add	rax,[r8]
+	add	r8,AD_STRIDE
+	inc	ecx
+	jmp	.sl
+.sl_done:
+	ret
+; rax = ns: written as seconds (up to 9 decimals, trailing zeros dropped)
+.seconds:
+	xor	edx,edx
+	mov	ecx,1000000000
+	div	rcx
+	push	rdx
+	call	fmt_u64
+	pop	rax
+	test	rax,rax
+	jz	.s_out
+	mov	byte [rdi],'.'
+	inc	rdi
+	mov	r8,100000000
+.digit:
+	xor	edx,edx
+	div	r8
+	add	al,'0'
+	mov	[rdi],al
+	inc	rdi
+	mov	rax,rdx
+	test	rax,rax
+	jz	.s_out
+	push	rax
+	mov	rax,r8
+	xor	edx,edx
+	mov	r8d,10
+	div	r8
+	mov	r8,rax
+	pop	rax
+	test	r8,r8
+	jnz	.digit
+.s_out:
+	ret
+; ebx = an addon: r12 = its memory, 0 when it has none
+.base:
+	xor	r12d,r12d
+	imul	rax,rbx,ADE_SIZE
+	mov	eax,[g_addons+rax+ADE_SLOT]
+	cmp	eax,-1
+	je	.b_out
+	imul	rax,rax,ADPR_SIZE
+	mov	r12,[g_adrt+rax+ADPR_BASE]
+.b_out:
+	ret
+.name:
+	imul	rax,rbx,ADE_SIZE
+	mov	rsi,[g_addons+rax+ADE_NAME]
+	mov	edx,[g_addons+rax+ADE_NLEN]
+	jmp	fmt_label
+.results:
+	dq ADC_OK, .m_calls, .r_answered
+	dq ADC_TIMEOUT, .m_calls, .r_timeout
+	dq ADC_CRASHED, .m_calls, .r_crashed
+	dq ADC_ERROR, .m_calls, .r_error
+	dq -1
+.onerr:
+	dq ADC_ALLOWED, .m_onerr, .a_allow
+	dq ADC_DENIED, .m_onerr, .a_deny
+	dq -1
+.resp:
+	dq ADC_RESPOND, .m_resp, .close
+	dq -1
+.opened:
+	dq ADC_OPENED, .m_opened, .close
+	dq -1
+.m_calls	db 'okena_addon_calls_total{addon="',0
+.m_onerr	db 'okena_addon_on_error_total{addon="',0
+.m_resp		db 'okena_addon_responses_total{addon="',0
+.m_opened	db 'okena_addon_circuit_opened_total{addon="',0
+.r_answered	db '",result="answered"} ',0
+.r_timeout	db '",result="timeout"} ',0
+.r_crashed	db '",result="crashed"} ',0
+.r_error	db '",result="error"} ',0
+.a_allow	db '",action="allow"} ',0
+.a_deny		db '",action="deny"} ',0
+.close		db '"} ',0

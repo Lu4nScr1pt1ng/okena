@@ -243,7 +243,12 @@ worker_main:
 @@:
 	push	rdi
 	call	addon_bells			; (an addon asleep: calls came)
+	call	addon_spin			; (or one that polls: its answer, soon)
 	pop	rdi
+	test	eax,eax
+	jz	@f
+	xor	edi,edi				; it came: no sleep
+@@:
 	pin_wait_begin
 	call	ring_enter
 	pin_wait_end

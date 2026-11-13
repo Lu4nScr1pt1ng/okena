@@ -882,10 +882,16 @@ for new flows. On a NIC: not yet (none here).
   tests/gateway/addon.py): continue with the head changed, or answer
   directly; on_error, concurrency, per-worker breaker; restarts with backoff;
   a reload keeps an unchanged addon's process. Python SDK (sdk/python).
+* SDKs: Python, C, Go, Rust (sdk/), each tested against okena in
+  tests/gateway/addon.py. Done 2026-11-13.
 * SDKs (C, Rust, Go, Python); a reference WAF addon on Coraza.
 * proxy-wasm plugins (the ABI Envoy, nginx and Traefik run), in a process of
   their own like the other addons.
 * `ext_authz` / `ext_proc` adapter.
 
 Exit: an addon that answers immediately adds under 5 us at p99; a crashing
-or hanging addon never affects routes that do not use it.
+or hanging addon never affects routes that do not use it. Measured
+2026-11-13 (docs/BENCHMARK.md, tests/bench/addon.sh): with `poll 2ms`, p99
++3.1 us at 5,000/s and +1.0 us at 20,000/s, the call's round trip p99 at
+most 2 us; tests/gateway/addon.py has a hanging and a crashing addon beside
+routes that never wait for them.

@@ -118,7 +118,12 @@ ep_main:
 @@:
 	push	rdx
 	call	addon_bells			; (an addon asleep: calls came)
+	call	addon_spin			; (or one that polls: its answer, soon)
 	pop	rdx
+	test	eax,eax
+	jz	@f
+	xor	edx,edx				; it came: no sleep
+@@:
 	mov	edi,[g_epfd]
 	lea	rsi,[g_ep_events]
 	mov	r10d,edx

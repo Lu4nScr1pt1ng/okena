@@ -32,6 +32,7 @@ BIN = ROOT / "build" / "okena"
 PEER = ROOT / "tests" / "gateway" / "addon_peer.py"
 L = 41000 + os.getpid() % 90 * 10 + (5 if ENGINE == "epoll" else 0)
 B = L + 1
+M = L + 2
 fails = 0
 
 
@@ -104,7 +105,29 @@ def main():
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     conf = tmp / "okena.conf"
     run = f"/usr/bin/python3 {PEER}"
-    base = f"""okena {{ workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s }}
+    # the SDKs' examples, built by make (when their toolchains are there)
+    hello, ghello, rhello = (ROOT / "build" / f"addon-hello-{x}" for x in ("c", "go", "rust"))
+    cbuilt, gbuilt, rbuilt = (os.access(x, os.X_OK) for x in (hello, ghello, rhello))
+    if not cbuilt:
+        hello = pathlib.Path("/bin/false")
+    if not gbuilt:
+        ghello = pathlib.Path("/bin/false")
+    if not rbuilt:
+        rhello = pathlib.Path("/bin/false")
+    base = f"""okena {{ workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s; metrics 127.0.0.1:{M} }}
+addon chello {{
+    run {hello}
+    timeout 150ms
+}}
+addon ghello {{
+    run {ghello}
+    timeout 150ms
+}}
+addon rhello {{
+    run {rhello}
+    timeout 150ms
+    poll 200us
+}}
 addon tagger {{
     run {run}
     timeout 150ms
@@ -134,6 +157,9 @@ http 127.0.0.1:{L} {{
     route /s/* {{ addon strict; to pool echo }}
     route /f/* {{ addon flaky; to pool echo }}
     route /k/* {{ addon brk; to pool echo }}
+    route /c/* {{ addon chello; to pool echo }}
+    route /g/* {{ addon ghello; to pool echo }}
+    route /r/* {{ addon rhello; to pool echo }}
     route /both/* {{ addon tagger; addon strict; to pool echo }}
     route /* {{ to pool echo }}
 }}
@@ -175,6 +201,25 @@ http 127.0.0.1:{L} {{
         check("  the first answering itself: the second is not asked", s == 403, s)
         s, h, b = get("/plain")
         check("a route without addons: as before", s == 200 and b"GET /plain" in b, (s, b))
+        if not cbuilt:
+            print("skip the C SDK: no build/addon-hello-c", flush=True)
+        if cbuilt:
+            s, h, b = get("/c/x", [("X-Debug", "1")])
+            check("the C SDK: continue with a field set, one removed", s == 200 and b"x-checked: yes" in b and b"X-Debug" not in b, b)
+            s, h, b = get("/c/blocked")
+            check("  its own answer", s == 403 and b == b"blocked by the addon\n" and h.get("content-type") == ["text/plain"], (s, h, b))
+            s, h, b = get("/c/pass", [("X-Debug", "1")])
+            check("  continue as is", s == 200 and b"X-Debug: 1" in b, b)
+        for name, pre, built in (("Go", "/g", gbuilt), ("Rust", "/r", rbuilt)):
+            if not built:
+                print(f"skip the {name} SDK: no toolchain", flush=True)
+                continue
+            s1, h1, b1 = get(pre + "/x", [("X-Debug", "1")])
+            s2, h2, b2 = get(pre + "/blocked")
+            s3, h3, b3 = get(pre + "/pass", [("X-Debug", "1")])
+            check(f"the {name} SDK: a field set and one removed, its own answer, continue as is",
+                  s1 == 200 and b"x-checked: yes" in b1 and b"X-Debug" not in b1 and s2 == 403 and b2 == b"blocked by the addon\n"
+                  and s3 == 200 and b"X-Debug: 1" in b3, (s1, b1, s2, b2, s3, b3))
         # HTTP/2 through the same stage
         if shutil.which("curl"):
             c = subprocess.run(["curl", "-q", "-s", "--http2-prior-knowledge", "-D", "-", "-H", "X-Drop: 1",
@@ -227,6 +272,32 @@ http 127.0.0.1:{L} {{
         check("  its exit is logged", "addon tagger exited with status 3" in t, t[-500:])
         s, h, b = get("/a/set")
         check("  and answers as before", s == 200 and b"x-addon: yes" in b, b)
+        k = socket.create_connection(("127.0.0.1", M), 5)
+        k.sendall(b"GET /metrics HTTP/1.1\r\nHost: m\r\nConnection: close\r\n\r\n")
+        mt = b""
+        while True:
+            x = k.recv(65536)
+            if not x:
+                break
+            mt += x
+        k.close()
+        mt = mt.decode()
+
+        def metric(line):
+            for l in mt.splitlines():
+                if l.startswith(line + " "):
+                    return int(l.rsplit(" ", 1)[1])
+            return -1
+        check("/metrics: calls answered, timeouts, crashes, errors", metric('okena_addon_calls_total{addon="tagger",result="answered"}') > 10
+              and metric('okena_addon_calls_total{addon="tagger",result="timeout"}') >= 1
+              and metric('okena_addon_calls_total{addon="tagger",result="crashed"}') >= 1
+              and metric('okena_addon_calls_total{addon="tagger",result="error"}') >= 1, mt[-2500:])
+        check("  on_error allow and deny, its own answers, the circuit", metric('okena_addon_on_error_total{addon="tagger",action="allow"}') >= 3
+              and metric('okena_addon_on_error_total{addon="strict",action="deny"}') >= 3
+              and metric('okena_addon_responses_total{addon="tagger"}') >= 3
+              and metric('okena_addon_circuit_opened_total{addon="brk"}') >= 1, mt[-2500:])
+        check("  starts (twice after its crash) and up", metric('okena_addon_starts_total{addon="tagger"}') == 2
+              and metric('okena_addon_up{addon="tagger"}') == 1, mt[-2500:])
         # a reload: the same run line keeps the process; a new one starts another
         pid_t = get("/a/pid")[1].get("x-addon-pid")
         pid_s = get("/s/pid")[1].get("x-addon-pid")

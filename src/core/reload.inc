@@ -526,6 +526,7 @@ supervisor_reload:
 	call	arenas_empty_at
 	call	tls_tickets_apply		; the ticket_keys file again (an operator's rotation)
 	call	retire_take			; (they accept on until the new ones serve)
+	call	addon_sync			; addons kept, started, dropped (before admin forks)
 	mov	[g_workers],r15d
 	mov	edi,[g_control_pid]
 	test	edi,edi
@@ -592,8 +593,7 @@ supervisor_reload:
 	mov	edi,SG_RELOADS
 	call	stats_global_inc
 	call	api_reloaded
-	call	addon_sync			; addons: kept, started, or dropped
-	call	addon_wait_ready
+	call	addon_wait_ready		; (the new ones: addon_sync above)
 	inc	dword [g_gen]
 	xor	ebx,ebx
 .spawn:

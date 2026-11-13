@@ -1,0 +1,11 @@
+[package]
+name = "okena-addon"
+version = "0.1.0"
+edition = "2021"
+description = "okena addon SDK: the addon side of okena's shared-memory protocol (version 1)"
+license = "AGPL-3.0-only"
+
+[dependencies]
+
+[[example]]
+name = "hello"

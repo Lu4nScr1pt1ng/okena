@@ -276,6 +276,7 @@ dirdef DIR_ADPHASES, 'phases',  M_ADDON,   0,           F_UNIQUE, 1, 5, e_ad_pha
 dirdef DIR_ADTIMEOUT, 'timeout', M_ADDON,  0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
 dirdef DIR_ADONERR, 'on_error', M_ADDON,   0,           F_UNIQUE, 1, 1, e_ad_onerr, T_NONE, 0
 dirdef DIR_ADCONC, 'concurrency', M_ADDON, 0,           F_UNIQUE, 1, 1, T_COUNT, T_NONE, 0
+dirdef DIR_ADPOLL, 'poll',      M_ADDON,   0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
 dirdef DIR_ADBREAKER, 'breaker', M_ADDON,  0,           F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_breaker
 dirdef DIR_RADDON, 'addon',     M_ROUTE,   0,           0, 1, 1, T_NAME, T_NONE, 0
 dirdef DIR_POOL, 'pool',        M_TOP,     CTX_POOL,    F_BLOCK_REQ, 1, 1, T_NAME, T_NONE, 0

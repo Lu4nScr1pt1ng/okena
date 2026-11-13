@@ -24,6 +24,8 @@ OP_ADDON	:= 48				; io_uring: an addon wrote this worker's eventfd
 EK_ADDON	:= 7				; epoll: the same
 AD_FIFO_MAX	:= 4096
 AD_STASH_MAX	:= H_OUT_CAP - 4096		; an addon's own answer: fields and body
+AD_WSPIN_US	:= 20				; a worker that just asked a polling addon waits this
+						; long for the answer before it sleeps
 
 ; the worker's state for each addon
 ADW_HDR		:= 0				; q: the addon's header page
@@ -47,6 +49,7 @@ AFE_SESS		:= 4				; d
 AFE_SGEN		:= 8				; d
 AFE_STATE	:= 12				; d: 1 waiting, 0 over
 AFE_DUE		:= 16				; q: µs
+AFE_T0		:= 24				; q: TSC when it was posted
 AFE_SIZE		:= 32
 
 ; what a session waits for (g_ad_side)
@@ -71,6 +74,14 @@ ADSF_FWD		:= 1				; `auth forward` said yes to this request
 ; left starts past every id that one may still get answers for
 ADR_NEXTID	:= 8
 
+; the histogram's upper bounds, ns (the last bucket: above them all)
+rodata
+	align 8
+	ad_hbounds	dq 500, 1000, 1500, 2000, 2500, 3000, 4000, 5000, 6000, 8000, 10000, 12500, 15000
+			dq 20000, 25000, 30000, 40000, 50000, 75000, 100000, 150000, 200000, 300000
+			dq 500000, 1000000, 2500000, 5000000, 10000000, 25000000, 50000000, 100000000
+end rodata
+
 bss
 	align 8
 	g_ad_side	dq ?			; the side table, 0 when the plan has no addons
@@ -78,6 +89,7 @@ bss
 	g_ad_wfd	dd ?			; that eventfd
 	g_ad_pid	dd ?
 	g_ad_any	dd ?			; calls may be waiting: look at the answers
+	g_ad_posted	dd ?			; calls posted since the loop last slept
 	g_ad_wbuf	dq ?
 	g_ad_one	dq ?
 	align 8
@@ -317,6 +329,107 @@ addon_bells:
 .none:
 	ret
 
+; The loop is about to sleep, having just asked addons that poll: their answer
+; usually comes within a few microseconds, sooner than a sleep and a wakeup.
+; The worker polls for it AD_WSPIN_US at most, saying so in its answer rings
+; (the addon then writes no eventfd). eax = 1 when an answer came (do not
+; sleep), 0 otherwise. Keeps rdi, rbx, r12-r15.
+addon_spin:
+	xor	eax,eax
+	cmp	dword [g_ad_posted],0
+	je	.none
+	mov	dword [g_ad_posted],0
+	mov	rcx,[g_tsc_per_us]
+	test	rcx,rcx
+	jz	.none
+	push	rbx
+	push	r12
+	imul	r12,rcx,AD_WSPIN_US
+	rdtsc
+	shl	rdx,32
+	or	rax,rdx
+	add	r12,rax				; until
+	mov	edx,1
+	call	.say				; polling, where the addon polls too
+	test	ebx,ebx
+	jz	.asleep				; none does: nothing to wait for
+.spin:
+	call	.look
+	jnz	.came
+	pause
+	rdtsc
+	shl	rdx,32
+	or	rax,rdx
+	cmp	rax,r12
+	jb	.spin
+.asleep:
+	xor	edx,edx				; asleep from now on: said, then one more look
+	call	.say
+	mfence
+	call	.look
+	jnz	.came2
+	xor	eax,eax
+	jmp	.out
+.came:
+	xor	edx,edx
+	call	.say
+.came2:
+	mov	eax,1
+.out:
+	pop	r12
+	pop	rbx
+.none:
+	ret
+; edx = 1 polling, 0 not: into the answer rings of addons with calls out;
+; ebx = how many of them poll themselves
+.say:
+	xor	ebx,ebx
+	xor	ecx,ecx
+.say_next:
+	cmp	ecx,[g_plan_addons]
+	jae	.said
+	imul	rax,rcx,ADW_SIZE
+	lea	rax,[g_aw+rax]
+	cmp	dword [rax+ADW_LIVE],0
+	je	.say_skip
+	push	rcx
+	mov	ecx,[rax+ADW_SEQ]
+	cmp	ecx,[rax+ADW_FHEAD]
+	pop	rcx
+	je	.say_skip
+	mov	r8,[rax+ADW_REQ]
+	mov	[r8+ADR_ANS+ADR_WAWAKE],edx
+	mov	r8,[rax+ADW_HDR]
+	cmp	dword [r8+ADH_SLEEP],0
+	jne	.say_skip
+	inc	ebx
+.say_skip:
+	inc	ecx
+	jmp	.say_next
+.said:
+	ret
+; ZF clear when an addon's answers ring has something new
+.look:
+	xor	ecx,ecx
+.look_next:
+	cmp	ecx,[g_plan_addons]
+	jae	.nothing
+	imul	rax,rcx,ADW_SIZE
+	lea	rax,[g_aw+rax]
+	cmp	dword [rax+ADW_LIVE],0
+	je	.look_skip
+	mov	r8,[rax+ADW_REQ]
+	mov	r8,[r8+ADR_ANS+ADR_HEAD]
+	cmp	r8,[rax+ADW_TAIL]
+	jne	.something
+.look_skip:
+	inc	ecx
+	jmp	.look_next
+.nothing:
+	cmp	eax,eax				; ZF set
+.something:
+	ret
+
 ; Each turn, before held requests are looked at: answers taken, calls past
 ; their time ended, and a run of an addon that is over ends its calls.
 addon_flush:
@@ -427,6 +540,7 @@ ad_answer:
 	jne	.stale				; (its time was up)
 	mov	dword [rcx+AFE_STATE],0
 	inc	qword [r14+ADR_COUNT+ADC_OK]
+	call	ad_timed
 	mov	dword [r13+ADW_FAILS],0
 	mov	qword [r13+ADW_OPEN],0
 	push	rbx
@@ -500,6 +614,33 @@ ad_ops_fit:
 	ret
 .no:
 	stc
+	ret
+
+; rcx = a call answered, r14 = its rings: its round trip into the histogram.
+; Keeps all but rax, rdx, r8.
+ad_timed:
+	mov	r8,[g_tsc_per_us]
+	test	r8,r8
+	jz	.out
+	rdtsc
+	shl	rdx,32
+	or	rax,rdx
+	sub	rax,[rcx+AFE_T0]
+	imul	rax,rax,1000
+	xor	edx,edx
+	div	r8				; ns
+	add	[r14+ADR_COUNT+ADC_HSUM],rax
+	xor	edx,edx
+.b:
+	cmp	edx,AD_NB - 1
+	jae	.in
+	cmp	rax,[ad_hbounds+rdx*8]
+	jbe	.in
+	inc	edx
+	jmp	.b
+.in:
+	inc	qword [r14+ADR_HIST+rdx*8]
+.out:
 	ret
 
 ; ebx = a session, r9d = the generation a call was for, r12d = the addon,
@@ -840,6 +981,14 @@ addon_call:
 	pop	rax
 	mov	[rcx+AFE_SGEN],edx
 	mov	dword [rcx+AFE_STATE],1
+	push	rax
+	push	rdx
+	rdtsc
+	shl	rdx,32
+	or	rax,rdx
+	mov	[rcx+AFE_T0],rax
+	pop	rdx
+	pop	rax
 	imul	rdx,r12,ADE_SIZE
 	mov	r8,[g_addons+rdx+ADE_TIMEOUT]
 	mov	r9,r8
@@ -855,6 +1004,7 @@ addon_call:
 	mov	[r14+ADSE_ADDON],r12b
 	mov	dword [r13+ADW_DIRTY],1
 	mov	dword [g_ad_any],1
+	mov	dword [g_ad_posted],1
 	; held, for as long as it is given
 	mov	rax,r8
 	call	fault_hold

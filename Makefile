@@ -61,7 +61,22 @@ $(TLSC12): tests/tls/client12.asm $(SOURCES) | $(FASMG)
 	@chmod +x $@.tmp
 	@mv -f $@.tmp $@
 
-test: $(BIN) $(HTTPH) $(KAT) $(TLSH) $(TLSC) $(TLS12S) $(TLSC12)
+# the addon SDKs' examples (tests/gateway/addon.py), each when its toolchain is here
+ADDON_EX  := build/addon-hello-c build/addon-hello-go build/addon-hello-rust
+
+build/addon-hello-c: sdk/c/okena_addon.c sdk/c/okena_addon.h sdk/c/examples/hello.c
+	@mkdir -p build
+	-cc -O2 -o $@ sdk/c/examples/hello.c sdk/c/okena_addon.c -Isdk/c
+
+build/addon-hello-go: $(wildcard sdk/go/*.go sdk/go/go.mod sdk/go/examples/hello/*.go)
+	@mkdir -p build
+	-command -v go >/dev/null && cd sdk/go && GOFLAGS=-mod=mod GOPROXY=off go build -o ../../$@ ./examples/hello
+
+build/addon-hello-rust: $(wildcard sdk/rust/src/*.rs sdk/rust/Cargo.toml sdk/rust/examples/*.rs)
+	@mkdir -p build
+	-command -v cargo >/dev/null && cd sdk/rust && cargo build -q --release --example hello && cp target/release/examples/hello ../../$@
+
+test: $(BIN) $(HTTPH) $(KAT) $(TLSH) $(TLSC) $(TLS12S) $(TLSC12) $(ADDON_EX)
 	python3 -I tests/run_all.py
 
 # one after the other, all output shown (slower; for reading a suite's log)
