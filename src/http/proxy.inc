@@ -1094,6 +1094,11 @@ http_request:
 	call	split_pick
 	mov	r13d,eax
 .its_pool:
+	call	addon_pool			; an addon chose another: that one
+	jnc	@f
+	mov	r13d,eax
+	mov	[g_c_pool],eax
+@@:
 	mov	eax,[r15+H_ACT]			; mirror: a copy to another pool
 	test	eax,eax
 	jz	.pool_chosen
@@ -2272,6 +2277,8 @@ http_recv_plain:
 	je	.head
 	cmp	edx,HS_REQ_READ
 	je	.body
+	cmp	edx,HS_ADBODY
+	je	addon_body_in			; (a body an addon waits for)
 	cmp	edx,HS_RESP_HEAD
 	je	.resp_head
 	cmp	edx,HS_RESP_READ
@@ -4860,6 +4867,8 @@ http_phase_expired:
 	; the client stopped sending its body (a stall, or slow upload abuse)
 	mov	eax,[r15+H_STATE]
 	cmp	eax,HS_REQ_READ
+	je	.body_408
+	cmp	eax,HS_ADBODY
 	je	.body_408
 	; or taking ours: no byte of the answer taken for body_idle (a slow
 	; read). Waiting for the backend instead (a stream with long gaps) is not

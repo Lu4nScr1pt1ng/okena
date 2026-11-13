@@ -56,5 +56,7 @@ know: every plugin loads. Tested with plugins on the Go SDK
 (github.com/proxy-wasm/proxy-wasm-go-sdk) and the Rust SDK (the
 `proxy-wasm` crate).
 
-Request bodies and responses are not given to plugins yet (okena calls
-addons at `request_headers` only so far).
+With the addon's `phases request_body`, the plugin's `proxy_on_request_body`
+gets the body (its first `body` bytes; `end_of_stream` false when there was
+more) through `HttpRequestBody`; changing it is not supported. Responses are
+not given to plugins yet.

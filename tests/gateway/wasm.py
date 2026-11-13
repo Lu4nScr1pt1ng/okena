@@ -42,11 +42,14 @@ class Echo(http.server.BaseHTTPRequestHandler):
     wbufsize = -1
 
     def do_GET(self):
-        b = (self.requestline + "\n" + str(self.headers)).encode()
+        n = int(self.headers.get("content-length") or 0)
+        got = self.rfile.read(n) if n else b""
+        b = (self.requestline + "\n" + str(self.headers)).encode() + b"body: " + got
         self.send_response(200)
         self.send_header("Content-Length", str(len(b)))
         self.end_headers()
         self.wfile.write(b)
+    do_POST = do_GET
 
     def log_message(self, *a):
         pass
@@ -62,10 +65,11 @@ class Auth(Echo):
         self.wfile.write(b)
 
 
-def get(path, headers=()):
+def get(path, headers=(), body=None):
     k = socket.create_connection(("127.0.0.1", L), 5)
-    k.sendall((f"GET {path} HTTP/1.1\r\nHost: t\r\n" + "".join(f"{a}: {b}\r\n" for a, b in headers)
-               + "Connection: close\r\n\r\n").encode())
+    hs = list(headers) + ([("Content-Length", str(len(body)))] if body is not None else [])
+    k.sendall((f"{'POST' if body is not None else 'GET'} {path} HTTP/1.1\r\nHost: t\r\n" + "".join(f"{a}: {b}\r\n" for a, b in hs)
+               + "Connection: close\r\n\r\n").encode() + (body or b""))
     d = b""
     while True:
         x = k.recv(65536)
@@ -99,6 +103,12 @@ addon plug {{
     run {HOST} -plugin {GOP} -config hello-config -cluster authsvc=127.0.0.1:{A} -instances 2 -cache {CACHE}
     timeout 2s
 }}
+addon bplug {{
+    run {HOST} -plugin {GOP} -instances 1 -cache {CACHE}
+    phases request_body
+    body 1KiB
+    timeout 2s
+}}
 addon rplug {{
     run {HOST} -plugin {RUSTP if rust else GOP} -instances 1 -cache {CACHE}
     timeout 2s
@@ -112,6 +122,7 @@ pool echo {{ server 127.0.0.1:{B} }}
 http 127.0.0.1:{L} {{
     http2 on
     route /r/* {{ addon rplug; to pool echo }}
+    route /bd/* {{ addon bplug; to pool echo }}
     route /b/* {{ addon broken; to pool echo }}
     route /* {{ addon plug; to pool echo }}
 }}
@@ -153,6 +164,12 @@ http 127.0.0.1:{L} {{
                   s == 200 and b"x-rust: yes" in b and b"X-Drop" not in b and s2 == 451 and b2 == b"unavailable\n", (s, b, s2, b2))
         else:
             print("skip the Rust plugin: not built (rustup target add wasm32-wasip1)")
+        s, h, b = get("/bd/x", body=b"hello wasm")
+        check("request_body: proxy_on_request_body sees the body", s == 200 and b"x-body-size: 10" in b and b"x-body-more" not in b, (s, b))
+        s, h, b = get("/bd/x", body=b"this is forbidden")
+        check("  and answers from it", s == 413 and h.get("x-plugin") == "body", (s, h))
+        s, h, b = get("/bd/x", body=b"y" * 3000)
+        check("  past `body 1KiB`: its first bytes, end_of_stream false", s == 200 and b"x-body-size: 1024" in b and b"x-body-more: yes" in b, (s, b[-300:]))
         s, h, b = get("/b/x")
         check("not a plugin: the addon exits, on_error allow lets the request on", s == 200 and b"GET /b/x" in b, (s, b))
         check("  and the log says why", "compiling the plugin" in log.read_text(), log.read_text()[-500:])

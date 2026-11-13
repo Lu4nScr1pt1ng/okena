@@ -38,6 +38,18 @@ def on_request(req):
         return None
     if last == "fail":
         return oa.Fail()
+    if last == "body":
+        import hashlib
+        return oa.Respond(200, [("x-body-len", str(len(req.body))), ("x-body-trunc", str(req.body_truncated)),
+                                ("x-body-unread", str(req.body_unread)), ("x-phase", str(req.phase))], req.body[:64])
+    if last == "attack":
+        if b"DROP TABLE" in req.body:
+            return oa.Respond(403, [], b"body refused\n")
+        return oa.Continue(set=[("x-body-ok", str(len(req.body)))])
+    if last == "pool":
+        return oa.Continue(pool="other")
+    if last == "nopool":
+        return oa.Continue(pool="nowhere")
     if last == "info":
         return oa.Respond(200, [("x-client", req.client_ip), ("x-flags", str(req.flags)), ("x-method", req.method),
                                 ("x-target", req.target), ("x-host", req.header("host", ""))], b"info")

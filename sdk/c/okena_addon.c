@@ -138,6 +138,32 @@ void okena_set(okena_answer *ans, const char *n, const char *v) { op(ans, 1, n, 
 void okena_add(okena_answer *ans, const char *n, const char *v) { op(ans, 2, n, strlen(n), v, strlen(v)); }
 void okena_remove(okena_answer *ans, const char *n) { op(ans, 3, n, strlen(n), "", 0); }
 void okena_target(okena_answer *ans, const char *t) { op(ans, 4, "", 0, t, strlen(t)); }
+void okena_pool(okena_answer *ans, const char *p) { op(ans, 5, "", 0, p, strlen(p)); }
+
+size_t okena_dechunk(char *b, size_t len, int *whole)
+{
+	size_t in = 0, out = 0;
+	*whole = 0;
+	for (;;) {
+		size_t i = in;
+		while (i + 1 < len && !(b[i] == '\r' && b[i + 1] == '\n'))
+			i++;
+		if (i + 1 >= len)
+			return out;
+		size_t n = (size_t)strtoul(b + in, NULL, 16);
+		if (n == 0) {
+			*whole = 1;
+			return out;
+		}
+		in = i + 2;
+		size_t take = n < len - in ? n : len - in;
+		memmove(b + out, b + in, take);
+		out += take;
+		if (take < n || in + n + 2 > len)
+			return out;
+		in += n + 2;
+	}
+}
 void okena_respond(okena_answer *ans, int status) { ans->action = 1, ans->status = (uint16_t)status; }
 void okena_no_answer(okena_answer *ans) { ans->none = 1; }
 void okena_fail(okena_answer *ans) { ans->action = 2; }
@@ -215,6 +241,9 @@ static unsigned poll_rings(okena_addon *a, okena_handler fn, void *ctx, okena_an
 				q.phase = ph, q.nfields = nh, q.family = fam, q.client = p + 24;
 				q.index_ = p + 56;
 				q.head = (const char *)(p + 56 + 8 * nh), q.head_len = hl;
+				uint32_t bl;
+				memcpy(&bl, p + 52, 4);
+				q.body = q.head + hl, q.body_len = bl;
 				q.method = q.head + mo, q.method_len = ml;
 				q.target = q.head + to, q.target_len = tl;
 				ans->len = 24, ans->body_len = 0, ans->nops = 0, ans->action = 0;

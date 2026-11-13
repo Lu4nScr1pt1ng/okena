@@ -55,8 +55,10 @@ func (m *multi) Set(v string) error { *m = append(*m, v); return nil }
 var (
 	authz   authv3.AuthorizationClient
 	proc    procv3.ExternalProcessorClient
-	timeout time.Duration
-	extras  = map[string]string{}
+	timeout   time.Duration
+	extras    = map[string]string{}
+	authzBody bool
+	procBody  bool
 )
 
 func dial(addr string, useTLS bool, ca string) *grpc.ClientConn {
@@ -90,6 +92,8 @@ func main() {
 	ca := flag.String("ca", "", "the CA that signs their certificates (with -tls; default: the system's)")
 	flag.DurationVar(&timeout, "timeout", 5*time.Second, "a call's time")
 	workers := flag.Int("workers", 256, "requests asked about at once")
+	flag.BoolVar(&authzBody, "authz-body", false, "ext_authz: the request's body too (with_request_body; the addon's phases request_body)")
+	flag.BoolVar(&procBody, "proc-body", false, "ext_proc: send the body too, after the headers (the addon's phases request_body)")
 	var ctxext multi
 	flag.Var(&ctxext, "context", "KEY=VALUE, sent in ext_authz's context_extensions (repeatable)")
 	flag.Parse()
@@ -162,7 +166,7 @@ func handle(r *addon.Request, a *addon.Answer) {
 		}
 	}
 	if proc != nil {
-		if err := process(ctx, v, a); err != nil {
+		if err := process(ctx, v, r, a); err != nil {
 			log.Printf("ext_proc: %v", err)
 			a.Fail()
 		}
@@ -190,9 +194,18 @@ func check(ctx context.Context, r *addon.Request, v *view, a *addon.Answer) (boo
 			SocketAddress: &corev3.SocketAddress{Address: client, PortSpecifier: &corev3.SocketAddress_PortValue{PortValue: 0}}}}},
 		Request: &authv3.AttributeContext_Request{Time: timestamppb.Now(), Http: &authv3.AttributeContext_HttpRequest{
 			Method: v.method, Headers: hs, Path: v.target, Host: v.host, Scheme: v.scheme, Protocol: v.protocol, Query: query,
+			Size: -1,
 		}},
 		ContextExtensions: extras,
 	}}
+	if authzBody && len(r.Body) > 0 {
+		h := req.Attributes.Request.Http
+		h.RawBody = r.Body
+		h.Body = string(r.Body)
+		if !r.BodyTruncated {
+			h.Size = int64(len(r.Body))
+		}
+	}
 	resp, err := authz.Check(ctx, req)
 	if err != nil {
 		return false, err
@@ -280,7 +293,7 @@ func option(v *view, h *corev3.HeaderValueOption, a *addon.Answer) {
 }
 
 // ext_proc: the request headers on a stream of their own, one answer
-func process(ctx context.Context, v *view, a *addon.Answer) error {
+func process(ctx context.Context, v *view, r *addon.Request, a *addon.Answer) error {
 	s, err := proc.Process(ctx)
 	if err != nil {
 		return err
@@ -306,22 +319,47 @@ func process(ctx context.Context, v *view, a *addon.Answer) error {
 		return err
 	}
 	if im := resp.GetImmediateResponse(); im != nil {
-		status := int(im.GetStatus().GetCode())
-		if status < 200 || status > 599 {
-			status = 200
-		}
-		a.Respond(status)
-		for _, h := range im.GetHeaders().GetSetHeaders() {
-			a.Add(h.GetHeader().GetKey(), value(h.GetHeader()))
-		}
-		a.Body(im.GetBody())
+		immediate(im, a)
 		return nil
 	}
 	rh := resp.GetRequestHeaders()
 	if rh == nil {
 		return fmt.Errorf("an answer to request_headers was expected, not %T", resp.GetResponse())
 	}
-	m := rh.GetResponse().GetHeaderMutation()
+	mutate(v, rh.GetResponse().GetHeaderMutation(), a)
+	if !procBody || !hasBody || len(r.Body) == 0 {
+		return nil
+	}
+	if err := s.Send(&procv3.ProcessingRequest{Request: &procv3.ProcessingRequest_RequestBody{
+		RequestBody: &procv3.HttpBody{Body: r.Body, EndOfStream: !r.BodyTruncated}}}); err != nil {
+		return err
+	}
+	if resp, err = s.Recv(); err != nil {
+		return err
+	}
+	if im := resp.GetImmediateResponse(); im != nil {
+		immediate(im, a)
+		return nil
+	}
+	if rb := resp.GetRequestBody(); rb != nil {
+		mutate(v, rb.GetResponse().GetHeaderMutation(), a)
+	}
+	return nil
+}
+
+func immediate(im *procv3.ImmediateResponse, a *addon.Answer) {
+	status := int(im.GetStatus().GetCode())
+	if status < 200 || status > 599 {
+		status = 200
+	}
+	a.Respond(status)
+	for _, h := range im.GetHeaders().GetSetHeaders() {
+		a.Add(h.GetHeader().GetKey(), value(h.GetHeader()))
+	}
+	a.Body(im.GetBody())
+}
+
+func mutate(v *view, m *procv3.HeaderMutation, a *addon.Answer) {
 	for _, k := range m.GetRemoveHeaders() {
 		if !strings.HasPrefix(k, ":") {
 			a.Remove(k)
@@ -330,5 +368,4 @@ func process(ctx context.Context, v *view, a *addon.Answer) error {
 	for _, h := range m.GetSetHeaders() {
 		option(v, h, a)
 	}
-	return nil
 }

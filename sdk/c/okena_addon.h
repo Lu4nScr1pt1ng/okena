@@ -28,6 +28,10 @@
 #define OKENA_FLAG_TLS 1
 #define OKENA_FLAG_H2 2
 #define OKENA_FLAG_H3 4
+#define OKENA_PHASE_REQUEST_BODY 2
+#define OKENA_FLAG_BODY_TRUNCATED 8
+#define OKENA_FLAG_BODY_CHUNKED 16	/* body as it came; okena_dechunk decodes it */
+#define OKENA_FLAG_BODY_UNREAD 32
 
 typedef struct {
 	const char *name;
@@ -51,7 +55,13 @@ typedef struct {
 	unsigned family;		/* 4, 6, or 0 */
 	const uint8_t *client;		/* 16 bytes; IPv4 in the first 4 */
 	const uint8_t *index_;		/* (the fields, okena_field_at) */
+	const char *body;		/* phases request_body: the body, or its first `body` bytes */
+	size_t body_len;
 } okena_request;
+
+/* a chunk-framed body decoded in place: its length; *whole when its last chunk
+   was there */
+size_t okena_dechunk(char *body, size_t len, int *whole);
 
 typedef struct okena_answer okena_answer;
 typedef struct okena_addon okena_addon;
@@ -68,6 +78,7 @@ void okena_add(okena_answer *ans, const char *name, const char *value);
 void okena_add_n(okena_answer *ans, const char *name, size_t nlen, const char *value, size_t vlen);
 void okena_remove(okena_answer *ans, const char *name);
 void okena_target(okena_answer *ans, const char *target);
+void okena_pool(okena_answer *ans, const char *pool);	/* another pool, by its name */
 void okena_respond(okena_answer *ans, int status);	/* then okena_add: its fields */
 void okena_body(okena_answer *ans, const void *body, size_t len);
 void okena_no_answer(okena_answer *ans);		/* okena's on_error, at its time */

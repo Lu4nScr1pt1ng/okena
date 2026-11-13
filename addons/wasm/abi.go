@@ -95,6 +95,9 @@ func (h *host) functions() map[string]hostFn {
 				return in.answer.body, true
 			}
 		case bufRequestBody:
+			if in.cur != nil {
+				return in.cur.body, true
+			}
 			return nil, true
 		}
 		return nil, false

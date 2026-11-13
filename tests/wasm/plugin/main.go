@@ -98,3 +98,19 @@ func (s *stream) OnHttpRequestHeaders(int, bool) types.Action {
 	}
 	return types.ActionContinue
 }
+
+func (s *stream) OnHttpRequestBody(size int, end bool) types.Action {
+	body, err := proxywasm.GetHttpRequestBody(0, size)
+	if err != nil {
+		return types.ActionContinue
+	}
+	if strings.Contains(string(body), "forbidden") {
+		proxywasm.SendHttpResponse(413, [][2]string{{"x-plugin", "body"}}, []byte("not this body\n"), -1)
+		return types.ActionPause
+	}
+	proxywasm.AddHttpRequestHeader("x-body-size", strconv.Itoa(len(body)))
+	if !end {
+		proxywasm.AddHttpRequestHeader("x-body-more", "yes")
+	}
+	return types.ActionContinue
+}

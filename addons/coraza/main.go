@@ -8,8 +8,9 @@
 //	}
 //	route /* { addon waf; to pool app }
 //
-// Each request's line, query arguments and fields go through the rules
-// (CRS phases 1 and 2: what can be judged before a body). A request the rules
+// Each request's line, query arguments and fields go through the rules (CRS
+// phases 1 and 2), and its body too when the addon has `phases request_body`
+// (its first `body` bytes: up to 16 KiB). A request the rules
 // refuse gets their status (403 unless a rule says otherwise) and a short
 // body; the rules that matched are logged to okena's log. -detect only logs
 // and lets everything through, telling the backend the matched rules'
@@ -97,8 +98,12 @@ func judge(waf coraza.WAF, r *addon.Request, a *addon.Answer, detect bool) {
 		}
 	}
 	it := tx.ProcessRequestHeaders()
+	if it == nil && len(r.Body) > 0 {
+		// (the addon's phases request_body: the body, or its first `body` bytes)
+		it, _, _ = tx.WriteRequestBody(r.Body)
+	}
 	if it == nil {
-		// phase 2 with no body: the CRS's rules on the query's arguments
+		// phase 2: the CRS's rules on the arguments, the query's and the body's
 		it, _ = tx.ProcessRequestBody()
 	}
 	if it == nil {

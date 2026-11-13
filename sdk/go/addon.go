@@ -44,14 +44,19 @@ const (
 	version = 1
 
 	PhaseRequestHeaders = 1
+	PhaseRequestBody    = 2
 	FlagTLS             = 1
 	FlagH2              = 2
 	FlagH3              = 4
+	FlagBodyTruncated   = 8
+	FlagBodyChunked     = 16
+	FlagBodyUnread      = 32
 
 	opSet    = 1
 	opAdd    = 2
 	opRemove = 3
 	opTarget = 4
+	opPool   = 5
 
 	answerMax = 1 << 16
 )
@@ -73,6 +78,11 @@ type Request struct {
 	Headers []Field
 	Family  uint16
 	Client  [16]byte
+	// Body is the request's body (phases request_body), decoded when it came
+	// chunked: all of it, or its first `body` bytes (BodyTruncated).
+	Body          []byte
+	BodyTruncated bool
+	BodyUnread    bool // the client waits for 100 Continue: not read
 }
 
 // Header returns the first field of that name (any case).
@@ -139,6 +149,9 @@ func (a *Answer) Remove(name string) { a.op(opRemove, name, "") }
 
 // Target replaces the request target (path and query).
 func (a *Answer) Target(target string) { a.op(opTarget, "", target) }
+
+// Pool sends the request to another pool (its name in okena's configuration).
+func (a *Answer) Pool(name string) { a.op(opPool, "", name) }
 
 // Respond answers the client here with this status; Add gives its fields.
 func (a *Answer) Respond(status int) { a.action, a.status = 1, uint16(status) }
@@ -357,6 +370,15 @@ func (a *Addon) parse(at uint64, q *Request) {
 	q.Route = le.Uint32(m[at+48:])
 	hat := at + 56 + 8*nh
 	q.Head = append([]byte(nil), m[hat:hat+hl]...)
+	bl := uint64(le.Uint32(m[at+52:]))
+	q.Body = append([]byte(nil), m[hat+hl:hat+hl+bl]...)
+	q.BodyTruncated = q.Flags&FlagBodyTruncated != 0
+	q.BodyUnread = q.Flags&FlagBodyUnread != 0
+	if q.Flags&FlagBodyChunked != 0 {
+		var whole bool
+		q.Body, whole = Dechunk(q.Body)
+		q.BodyTruncated = !whole
+	}
 	head := string(q.Head)
 	sub := func(o, l uint16) string {
 		if int(o)+int(l) > len(head) {
@@ -370,6 +392,38 @@ func (a *Addon) parse(at uint64, q *Request) {
 	for i := uint64(0); i < nh; i++ {
 		x := at + 56 + 8*i
 		q.Headers[i] = Field{sub(le.Uint16(m[x:]), le.Uint16(m[x+2:])), sub(le.Uint16(m[x+4:]), le.Uint16(m[x+6:]))}
+	}
+}
+
+// Dechunk decodes a chunk-framed body: its bytes, and whether its last chunk
+// was there.
+func Dechunk(raw []byte) ([]byte, bool) {
+	var out []byte
+	for {
+		i := strings.Index(string(raw), "\r\n")
+		if i < 0 {
+			return out, false
+		}
+		size := string(raw[:i])
+		if j := strings.IndexByte(size, ';'); j >= 0 {
+			size = size[:j]
+		}
+		n, err := strconv.ParseUint(strings.TrimSpace(size), 16, 31)
+		if err != nil {
+			return out, false
+		}
+		if n == 0 {
+			return out, true
+		}
+		raw = raw[i+2:]
+		if uint64(len(raw)) < n {
+			return append(out, raw...), false
+		}
+		out = append(out, raw[:n]...)
+		if uint64(len(raw)) < n+2 {
+			return out, false
+		}
+		raw = raw[n+2:]
 	}
 }
 

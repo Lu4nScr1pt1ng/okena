@@ -36,7 +36,9 @@ class Echo(http.server.BaseHTTPRequestHandler):
     wbufsize = -1
 
     def do_GET(self):
-        b = (self.requestline + "\n" + str(self.headers)).encode()
+        n = int(self.headers.get("content-length") or 0)
+        got = self.rfile.read(n) if n else b""
+        b = (self.requestline + "\n" + str(self.headers)).encode() + b"body: " + got
         self.send_response(200)
         self.send_header("Content-Length", str(len(b)))
         self.end_headers()
@@ -47,10 +49,11 @@ class Echo(http.server.BaseHTTPRequestHandler):
         pass
 
 
-def get(path, headers=()):
+def get(path, headers=(), body=None):
     k = socket.create_connection(("127.0.0.1", L), 5)
-    k.sendall((f"GET {path} HTTP/1.1\r\nHost: shop.example\r\n" + "".join(f"{a}: {b}\r\n" for a, b in headers)
-               + "Connection: close\r\n\r\n").encode())
+    hs = list(headers) + ([("Content-Length", str(len(body)))] if body is not None else [])
+    k.sendall((f"{'POST' if body is not None else 'GET'} {path} HTTP/1.1\r\nHost: shop.example\r\n" + "".join(f"{a}: {b}\r\n" for a, b in hs)
+               + "Connection: close\r\n\r\n").encode() + (body or b""))
     d = b""
     while True:
         x = k.recv(65536)
@@ -75,6 +78,12 @@ addon waf {{
     run {WAF} -workers 2
     timeout 500ms
 }}
+addon wafb {{
+    run {WAF} -workers 2
+    phases request_body
+    body 16KiB
+    timeout 500ms
+}}
 addon wafd {{
     run {WAF} -detect -workers 1
     timeout 500ms
@@ -83,6 +92,7 @@ pool echo {{ server 127.0.0.1:{B} }}
 http 127.0.0.1:{L} {{
     http2 on
     route /d/* {{ addon wafd; to pool echo }}
+    route /b/* {{ addon wafb; to pool echo }}
     route /* {{ addon waf; to pool echo }}
 }}
 """)
@@ -106,6 +116,15 @@ http 127.0.0.1:{L} {{
                                 "-A", "Mozilla/5.0", f"http://127.0.0.1:{L}/item?id=1%27%20OR%20%271%27=%271"],
                                capture_output=True, text=True, timeout=10)
             check("HTTP/2: refused too", c.stdout == "403", c.stdout)
+        form = [("Content-Type", "application/x-www-form-urlencoded")]
+        s, b = get("/b/login", ua + form, b"user=admin&pass=1%27%20OR%20%271%27%3D%271")
+        check("request_body: SQL injection in a form body refused", s == 403, (s, b))
+        s, b = get("/b/api", ua + [("Content-Type", "application/json")], b'{"comment": "<script>alert(document.cookie)</script>"}')
+        check("  XSS in a JSON body refused", s == 403, (s, b))
+        s, b = get("/b/login", ua + form, b"user=alice&pass=correct-horse-battery")
+        check("  an ordinary form: on, the backend gets its body", s == 200 and b"body: user=alice&pass=correct-horse-battery" in b, (s, b))
+        s, b = get("/login", ua + form, b"user=admin&pass=1%27%20OR%20%271%27%3D%271")
+        check("  without request_body: the body is not judged", s == 200, s)
         s, b = get("/d/item?id=1%27%20OR%20%271%27=%271", ua)
         check("-detect: it goes on, the backend hears the rules (942100: SQL injection)", s == 200 and b"x-waf-rules:" in b
               and b"942100" in b, (s, b))

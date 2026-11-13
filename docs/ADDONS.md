@@ -14,7 +14,8 @@ protocol, for writing an SDK. The SDKs in `sdk/` implement it.
 ```nginx
 addon waf {
     run /usr/local/bin/coraza-okena -rules /etc/crs   # absolute path, then its arguments
-    phases request_headers       # the default (the only phase so far)
+    phases request_headers       # the default; request_body: the call carries the body too
+    body 8KiB                    # request_body: the most of a body a call carries (at most 16 KiB)
     timeout 50ms                 # a call's time (default 200ms)
     on_error allow               # or deny (the default): 503
     concurrency 1024             # calls waiting at once, the whole instance (default 1024)
@@ -71,6 +72,15 @@ for T: its calls end at once; after T, one call is let through, and its
 answer closes the circuit again. The circuit and the concurrency limit are
 each worker's (`concurrency` is split between the workers).
 
+**The body.** With `phases request_body`, okena reads the request's body
+before it calls the addon, and the call carries it: all of it, or its first
+`body` bytes (said truncated), or what fits in the request's 16 KiB buffer
+after its head. A chunked body comes as it was framed, and the SDKs decode it.
+A request with no body is asked at once; one whose client sends its body only
+after `100 Continue` is asked without it (said unread). The body's reading has
+the listener's `body_idle` clock (408). Once the addon lets the request on,
+the body goes to the backend whole, as it came.
+
 ## What an addon can do
 
 An answer is one of:
@@ -87,6 +97,8 @@ An answer is one of:
   (none on 204 and 304), the request id, CORS fields when the route has
   `cors`, and `Connection: close` when the request has a body it did not
   read. A HEAD gets the length and no body.
+* **pool**, with continue: the request goes to another pool, named as in the
+  configuration (a name that is not there makes the answer a bad one).
 
 HTTP/1.1, HTTP/2 and HTTP/3 requests all go through the same stage: the addon
 always sees an HTTP/1.1 head.
@@ -168,9 +180,9 @@ Every record begins with `len` (u32, the record's bytes) and `kind` (u16:
 |---|---|---|
 | 0 | 4 | len |
 | 4 | 2 | kind: 1 |
-| 6 | 2 | phase: 1 (request_headers) |
+| 6 | 2 | phase: 1 (request_headers), 2 (request_body: the body follows the head) |
 | 8 | 4 | id: echoed in the answer |
-| 12 | 4 | flags: 1 TLS, 2 HTTP/2, 4 HTTP/3 |
+| 12 | 4 | flags: 1 TLS, 2 HTTP/2, 4 HTTP/3, 8 the body is truncated, 16 the body is chunk-framed, 32 the body was not read (100 Continue) |
 | 16 | 4 | `hlen`: the head's bytes |
 | 20 | 2 | `nhdr`: the fields in the index |
 | 22 | 2 | the client's address family: 4, 6, 0 (a Unix socket) |
@@ -178,9 +190,10 @@ Every record begins with `len` (u32, the record's bytes) and `kind` (u16:
 | 40 | 2+2 | the method: offset in the head, length |
 | 44 | 2+2 | the target: offset, length |
 | 48 | 4 | the route's action + 1 |
-| 52 | 4 | reserved |
+| 52 | 4 | `blen`: the body's bytes, after the head |
 | 56 | 8 each | the index: name offset, name length, value offset, value length (u16 each) |
 | 56 + 8 `nhdr` | `hlen` | the head: request line, fields, empty line, as okena would forward it |
+| 56 + 8 `nhdr` + `hlen` | `blen` | the body |
 
 ### An answer (addon → okena)
 
@@ -198,7 +211,8 @@ Every record begins with `len` (u32, the record's bytes) and `kind` (u16:
 
 An op is `op` (u8), 0 (u8), the name's length (u16), the value's length (u16),
 then the name and the value, with no padding. Ops: 1 set a field, 2 add one,
-3 remove every field of that name (no value), 4 the request target (no name).
+3 remove every field of that name (no value), 4 the request target (no name),
+5 the pool (its name as the value).
 For respond, ops 1 and 2 are the response's fields. An answer to a call that
 is over (its time passed, or its addon's run ended) is ignored.
 

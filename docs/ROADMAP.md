@@ -882,6 +882,10 @@ for new flows. On a NIC: not yet (none here).
   tests/gateway/addon.py): continue with the head changed, or answer
   directly; on_error, concurrency, per-worker breaker; restarts with backoff;
   a reload keeps an unchanged addon's process. Python SDK (sdk/python).
+* Phases: request_body (the body read first, up to 16 KiB, in the call) and
+  an addon choosing the pool, 2026-11-13: the WAF judges form and JSON
+  bodies, plugins get proxy_on_request_body, ext_authz with_request_body and
+  ext_proc's body phase.
 * SDKs: Python, C, Go, Rust (sdk/), each tested against okena in
   tests/gateway/addon.py. Done 2026-11-13.
 * Reference WAF: addons/coraza, Coraza 3.8 with CRS 4.25 built in, blocking or

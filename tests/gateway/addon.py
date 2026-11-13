@@ -46,8 +46,20 @@ class Echo(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     wbufsize = -1			# head and body in one write (no Nagle wait)
 
+    marker = b""
+
     def do_GET(self):
-        b = (self.requestline + "\n" + str(self.headers)).encode()
+        n = int(self.headers.get("content-length") or 0)
+        got = self.rfile.read(n) if n else b""
+        if self.headers.get("transfer-encoding") == "chunked":
+            while True:
+                size = int(self.rfile.readline().split(b";")[0], 16)
+                if not size:
+                    self.rfile.readline()
+                    break
+                got += self.rfile.read(size)
+                self.rfile.readline()
+        b = self.marker + (self.requestline + "\n" + str(self.headers)).encode() + b"body-len: %d\nbody-head: %s\n" % (len(got), got[:32])
         self.send_response(200)
         self.send_header("Content-Length", str(len(b)))
         self.end_headers()
@@ -59,10 +71,21 @@ class Echo(http.server.BaseHTTPRequestHandler):
         pass
 
 
-def get(path, headers=(), method="GET", timeout=5):
+class Other(Echo):
+    marker = b"OTHER POOL\n"
+
+
+def get(path, headers=(), method="GET", timeout=5, body=None, pieces=None):
     k = socket.create_connection(("127.0.0.1", L), timeout)
-    req = f"{method} {path} HTTP/1.1\r\nHost: t\r\n" + "".join(f"{a}: {b}\r\n" for a, b in headers) + "Connection: close\r\n\r\n"
+    hs = list(headers)
+    if body is not None:
+        hs.append(("Content-Length", str(len(body))))
+    req = f"{method} {path} HTTP/1.1\r\nHost: t\r\n" + "".join(f"{a}: {b}\r\n" for a, b in hs) + "Connection: close\r\n\r\n"
     k.sendall(req.encode())
+    for x in pieces or ([body] if body else []):
+        if pieces:
+            time.sleep(0.05)
+        k.sendall(x)
     d = b""
     try:
         while True:
@@ -103,6 +126,8 @@ def main():
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-addon-"))
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", B), Echo)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
+    srv2 = http.server.ThreadingHTTPServer(("127.0.0.1", L + 3), Other)
+    threading.Thread(target=srv2.serve_forever, daemon=True).start()
     conf = tmp / "okena.conf"
     run = f"/usr/bin/python3 {PEER}"
     # the SDKs' examples, built by make (when their toolchains are there)
@@ -150,7 +175,14 @@ addon brk {{
     on_error allow
     breaker errors=3 open=5s
 }}
+addon bodyer {{
+    run {run} bodyer
+    phases request_body
+    body 4KiB
+    timeout 500ms
+}}
 pool echo {{ server 127.0.0.1:{B} }}
+pool other {{ server 127.0.0.1:{L + 3} }}
 http 127.0.0.1:{L} {{
     http2 on
     route /a/* {{ addon tagger; to pool echo }}
@@ -158,6 +190,7 @@ http 127.0.0.1:{L} {{
     route /f/* {{ addon flaky; to pool echo }}
     route /k/* {{ addon brk; to pool echo }}
     route /c/* {{ addon chello; to pool echo }}
+    route /body/* {{ addon bodyer; to pool echo }}
     route /g/* {{ addon ghello; to pool echo }}
     route /r/* {{ addon rhello; to pool echo }}
     route /both/* {{ addon tagger; addon strict; to pool echo }}
@@ -205,6 +238,37 @@ http 127.0.0.1:{L} {{
         check("  the first answering itself: the second is not asked", s == 403, s)
         s, h, b = get("/plain")
         check("a route without addons: as before", s == 200 and b"GET /plain" in b, (s, b))
+        # request_body: the call carries the body
+        s, h, b = get("/body/body", method="POST", body=b"a" * 100)
+        check("request_body: the body in the call, whole", s == 200 and h.get("x-body-len") == ["100"] and h.get("x-body-trunc") == ["False"]
+              and h.get("x-phase") == ["2"] and b == b"a" * 64, (s, h, b))
+        s, h, b = get("/body/body", method="POST", body=b"b" * 10000)
+        check("  past `body 4KiB`: its first 4096 bytes, said truncated", s == 200 and h.get("x-body-len") == ["4096"]
+              and h.get("x-body-trunc") == ["True"], (s, h))
+        s, h, b = get("/body/body", method="POST", headers=[("Content-Length", "300")], pieces=[b"c" * 100, b"d" * 100, b"e" * 100])
+        check("  a body that comes in pieces: waited for", s == 200 and h.get("x-body-len") == ["300"] and h.get("x-body-trunc") == ["False"], (s, h))
+        s, h, b = get("/body/body", method="POST", headers=[("Transfer-Encoding", "chunked")], pieces=[b"5\r\nhello\r\n", b"6\r\n world\r\n0\r\n\r\n"])
+        check("  a chunked one: decoded, whole", s == 200 and h.get("x-body-len") == ["11"] and b == b"hello world", (s, h, b))
+        s, h, b = get("/body/body")
+        check("  no body: the call at once, the headers' phase", s == 200 and h.get("x-body-len") == ["0"] and h.get("x-phase") == ["1"], (s, h))
+        s, h, b = get("/body/body", method="POST", headers=[("Content-Length", "50"), ("Expect", "100-continue")])
+        check("  Expect: 100-continue: not waited for, said unread", s == 200 and h.get("x-body-unread") == ["True"], (s, h))
+        s, h, b = get("/body/attack", method="POST", body=b"name=x'; DROP TABLE users; --")
+        check("  the body refused by the addon", s == 403 and b == b"body refused\n", (s, b))
+        s, h, b = get("/body/attack", method="POST", body=b"name=bob&" + b"z" * 3000)
+        check("  a body let on: the backend gets it whole, with the addon's field", s == 200 and b"body-len: 3009" in b
+              and b"x-body-ok: 3009" in b, b[-300:])
+        s, h, b = get("/body/attack", method="POST", headers=[("Transfer-Encoding", "chunked")], pieces=[b"4\r\nabcd\r\n", b"0\r\n\r\n"])
+        check("  a chunked body let on: the backend gets it", s == 200 and b"body-len: 4" in b and b"x-body-ok: 4" in b, b[-300:])
+        if shutil.which("curl"):
+            c = subprocess.run(["curl", "-q", "-s", "--http2-prior-knowledge", "-D", "-", "-d", "x" * 2000, f"http://127.0.0.1:{L}/body/body"],
+                               capture_output=True, timeout=10)
+            check("  over HTTP/2: the body in the call", b"HTTP/2 200" in c.stdout and b"x-body-len: 2000" in c.stdout, c.stdout[:300])
+        # the pool an addon chooses
+        s, h, b = get("/a/pool")
+        check("the addon chooses the pool: another backend answers", s == 200 and b.startswith(b"OTHER POOL"), b[:80])
+        s, h, b = get("/a/nopool")
+        check("  a pool that is not there: a bad answer, on_error allow, the route's pool", s == 200 and not b.startswith(b"OTHER"), b[:80])
         if not cbuilt:
             print("skip the C SDK: no build/addon-hello-c", flush=True)
         if cbuilt:

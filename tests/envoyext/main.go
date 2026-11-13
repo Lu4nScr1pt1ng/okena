@@ -13,6 +13,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
@@ -33,6 +34,11 @@ func hv(k, v string) *corev3.HeaderValueOption {
 
 func (authz) Check(ctx context.Context, r *authv3.CheckRequest) (*authv3.CheckResponse, error) {
 	h := r.GetAttributes().GetRequest().GetHttp()
+	if strings.Contains(string(h.GetRawBody()), "deny me") {
+		return &authv3.CheckResponse{Status: &rpcstatus.Status{Code: int32(codes.PermissionDenied)},
+			HttpResponse: &authv3.CheckResponse_DeniedResponse{DeniedResponse: &authv3.DeniedHttpResponse{
+				Status: &typev3.HttpStatus{Code: typev3.StatusCode_Forbidden}, Body: "its body says no\n"}}}, nil
+	}
 	if h.GetHeaders()["authorization"] == "Bearer good" && h.GetHeaders()[":method"] == h.GetMethod() {
 		return &authv3.CheckResponse{Status: &rpcstatus.Status{Code: int32(codes.OK)},
 			HttpResponse: &authv3.CheckResponse_OkResponse{OkResponse: &authv3.OkHttpResponse{
@@ -56,6 +62,13 @@ func (proc) Process(s procv3.ExternalProcessor_ProcessServer) error {
 		req, err := s.Recv()
 		if err != nil {
 			return nil
+		}
+		if b := req.GetRequestBody(); b != nil {
+			s.Send(&procv3.ProcessingResponse{Response: &procv3.ProcessingResponse_RequestBody{RequestBody: &procv3.BodyResponse{
+				Response: &procv3.CommonResponse{HeaderMutation: &procv3.HeaderMutation{
+					SetHeaders: []*corev3.HeaderValueOption{hv("x-proc-body", strconv.Itoa(len(b.GetBody())))}}},
+			}}})
+			continue
 		}
 		hs := req.GetRequestHeaders()
 		if hs == nil {

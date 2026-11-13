@@ -10,6 +10,8 @@ cd addons/coraza && go build -o /usr/local/bin/coraza-okena .
 ```nginx
 addon waf {
     run /usr/local/bin/coraza-okena -paranoia 1
+    phases request_body     # the body's arguments too (form fields, JSON)
+    body 16KiB              # its first 16 KiB, the most a call carries
     timeout 50ms
     on_error allow          # a WAF that cannot answer lets traffic through; deny to fail closed
 }
@@ -17,7 +19,7 @@ route /* { addon waf; to pool app }
 ```
 
 Each request's line, query arguments and fields go through the rules (CRS
-phases 1 and 2, everything that can be judged before a body). A request the
+phases 1 and 2). A request the
 rules refuse gets their status, 403 unless a rule says otherwise; the matched
 rules are logged to okena's log:
 
@@ -33,5 +35,7 @@ coraza-okena: GET /item?id=1'%20OR%20'1'='1 from 203.0.113.9: deny (rules 942100
 | `-crs=false` | your rules only |
 | `-workers N` | requests judged at once (default: the CPUs) |
 
-Request bodies are not inspected yet (okena calls addons at `request_headers`
-only so far).
+With `phases request_body` the body goes through the rules too (URL-encoded
+forms, JSON, multipart, by the CRS's body processors); a body longer than
+`body` is judged on its first bytes, as with `SecRequestBodyLimitAction
+ProcessPartial`. Responses are not inspected.

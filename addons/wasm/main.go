@@ -205,6 +205,22 @@ func (in *instance) request(ctx context.Context, r *addon.Request, a *addon.Answ
 			return fmt.Errorf("the plugin paused the request and neither continued nor answered it")
 		}
 	}
+	// the body, when the addon's call carries one (phases request_body)
+	if st.local == nil && !st.closed && !eos && (len(r.Body) > 0 || !r.BodyUnread) && in.fn["proxy_on_request_body"] != nil {
+		st.body = r.Body
+		st.continued = false
+		e := uint64(1)
+		if r.BodyTruncated {
+			e = 0
+		}
+		res, err := in.call(ctx, "proxy_on_request_body", uint64(st.id), uint64(len(r.Body)), e)
+		if err != nil {
+			return err
+		}
+		if res != nil && res[0] == actionPause && st.local == nil {
+			in.runCallouts(ctx, in.root)
+		}
+	}
 	if st.closed && st.local == nil {
 		st.local = &localResponse{status: 403}
 	}

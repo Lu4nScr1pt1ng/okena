@@ -75,6 +75,7 @@ type stream struct {
 	closed    bool
 	props     map[string][]byte
 	req       *requestInfo
+	body      []byte
 }
 
 type requestInfo struct {
@@ -191,7 +192,7 @@ func (h *host) instantiate(ctx context.Context, n int) (*instance, error) {
 		}
 	}
 	for _, f := range []string{"proxy_on_memory_allocate", "malloc", "proxy_on_context_create", "proxy_on_vm_start",
-		"proxy_on_configure", "proxy_on_request_headers", "proxy_on_done", "proxy_on_log", "proxy_on_delete",
+		"proxy_on_configure", "proxy_on_request_headers", "proxy_on_request_body", "proxy_on_done", "proxy_on_log", "proxy_on_delete",
 		"proxy_on_tick", "proxy_on_http_call_response"} {
 		if fn := m.ExportedFunction(f); fn != nil {
 			in.fn[f] = fn

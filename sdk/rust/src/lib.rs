@@ -37,6 +37,10 @@ pub const PHASE_REQUEST_HEADERS: u16 = 1;
 pub const FLAG_TLS: u32 = 1;
 pub const FLAG_H2: u32 = 2;
 pub const FLAG_H3: u32 = 4;
+pub const PHASE_REQUEST_BODY: u16 = 2;
+pub const FLAG_BODY_TRUNCATED: u32 = 8;
+pub const FLAG_BODY_CHUNKED: u32 = 16;
+pub const FLAG_BODY_UNREAD: u32 = 32;
 
 extern "C" {
     fn mmap(addr: *mut u8, len: usize, prot: i32, flags: i32, fd: i32, off: i64) -> *mut u8;
@@ -56,6 +60,9 @@ pub struct Request<'a> {
     pub head: &'a [u8],
     pub family: u16,
     pub client: [u8; 16],
+    /// The body as it came (phases request_body): `dechunk` it when
+    /// `flags & FLAG_BODY_CHUNKED`.
+    pub body: &'a [u8],
     method: (usize, usize),
     target: (usize, usize),
     index: &'a [u8],
@@ -140,6 +147,10 @@ impl Answer {
     /// Takes away every request field of that name.
     pub fn remove(&mut self, name: &str) {
         self.op(3, name.as_bytes(), b"")
+    }
+    /// Sends the request to another pool (its name in okena's configuration).
+    pub fn pool(&mut self, name: &str) {
+        self.op(5, b"", name.as_bytes())
     }
     /// Replaces the request target (path and query).
     pub fn target(&mut self, target: &str) {
@@ -300,6 +311,7 @@ impl Addon {
                         target: (self.u16at(at + 44) as usize, self.u16at(at + 46) as usize),
                         index: self.bytes(at + 56, 8 * nh),
                         head: self.bytes(at + 56 + 8 * nh as u64, hl),
+                        body: self.bytes(at + 56 + 8 * nh as u64 + hl as u64, self.u32at(at + 52) as usize),
                     };
                     ans.reset();
                     f(&req, ans);
@@ -358,6 +370,29 @@ impl Addon {
         }
         self.a64(h).store(head + size, Ordering::Release);
         true
+    }
+}
+
+/// Decodes a chunk-framed body: its bytes, and whether its last chunk was there.
+pub fn dechunk(mut raw: &[u8]) -> (Vec<u8>, bool) {
+    let mut out = Vec::new();
+    loop {
+        let Some(i) = raw.windows(2).position(|w| w == b"\r\n") else { return (out, false) };
+        let size = std::str::from_utf8(&raw[..i]).unwrap_or("").split(';').next().unwrap_or("").trim();
+        let Ok(n) = usize::from_str_radix(size, 16) else { return (out, false) };
+        if n == 0 {
+            return (out, true);
+        }
+        raw = &raw[i + 2..];
+        if raw.len() < n {
+            out.extend_from_slice(raw);
+            return (out, false);
+        }
+        out.extend_from_slice(&raw[..n]);
+        if raw.len() < n + 2 {
+            return (out, false);
+        }
+        raw = &raw[n + 2..];
     }
 }
 

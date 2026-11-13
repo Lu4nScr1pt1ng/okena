@@ -9,6 +9,8 @@
 ;       concurrency 1024             ; calls waiting at once, the whole instance
 ;       breaker errors=5 open=1s     ; failures in a row that open the circuit, and for how long
 ;       poll 50us                    ; the addon polls this long after a call before it sleeps
+;       phases request_body          ; the call waits for the body and carries it (up to `body`)
+;       body 8KiB                    ; the most of a body a call carries (at most 16 KiB)
 ;   }
 ;   route /api/* { addon waf; to pool api }
 ;
@@ -20,6 +22,7 @@ AD_DEF_CONC	:= 1024
 AD_DEF_BREAK	:= 5
 AD_DEF_OPEN	:= 1000000			; µs
 AD_DEF_POLL	:= 50				; µs
+AD_DEF_BODY	:= 8192
 
 ; plan entry
 ADE_NAME		:= 0				; q
@@ -35,7 +38,8 @@ ADE_BREAK	:= 48				; d
 ADE_OPEN		:= 56				; q: µs
 ADE_HASH		:= 64				; q: what makes it the same process across a reload
 ADE_POLL		:= 72				; q: µs it polls after a call
-ADE_SIZE		:= 80
+ADE_BODY		:= 80				; d: request_body: the most of a body a call carries
+ADE_SIZE		:= 88
 
 RA_ADDONS	:= 140				; d: a route's addons, bit i for g_addons[i]
 
@@ -243,6 +247,56 @@ compile_addon:
 	mov	dword [r13+ADE_BREAK],AD_DEF_BREAK
 	mov	qword [r13+ADE_OPEN],AD_DEF_OPEN
 	mov	qword [r13+ADE_POLL],AD_DEF_POLL
+	mov	dword [r13+ADE_BODY],AD_DEF_BODY
+	mov	rdi,r12
+	mov	ecx,DIR_ADBODY
+	call	find_child
+	test	rax,rax
+	jz	@f
+	mov	rax,[rax+N_ARGS]
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_size
+	jc	plan_bad_addon
+	cmp	rax,H_IN_CAP
+	jbe	.body_fits
+	mov	eax,H_IN_CAP			; (as much as a request's buffer holds)
+.body_fits:
+	mov	[r13+ADE_BODY],eax
+@@:
+	mov	rdi,r12
+	mov	ecx,DIR_ADPHASES
+	call	find_child
+	test	rax,rax
+	jz	.phases_done
+	mov	rbx,[rax+N_ARGS]
+	mov	r8d,[rax+N_ARGC]
+	xor	r9d,r9d
+.phase:
+	test	r8d,r8d
+	jz	.phases_set
+	push	r8
+	push	r9
+	mov	rdi,[rbx+A_VAL]
+	mov	esi,[rbx+A_VLEN]
+	lea	rdx,[e_ad_phases]
+	call	list_index
+	pop	r9
+	pop	r8
+	cmp	eax,-1
+	je	.phase_next
+	mov	ecx,eax
+	mov	eax,1
+	shl	eax,cl
+	or	r9d,eax
+.phase_next:
+	add	rbx,A_SIZE
+	dec	r8d
+	jmp	.phase
+.phases_set:
+	or	r9d,ADP_REQ_HEADERS		; (the body's call carries the headers too)
+	mov	[r13+ADE_PHASES],r9d
+.phases_done:
 	mov	rdi,r12
 	mov	ecx,DIR_ADPOLL
 	call	find_child

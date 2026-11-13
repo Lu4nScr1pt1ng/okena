@@ -846,7 +846,8 @@ route /api/* {
   only when the configuration has addons.
 * **Phases:** `request_headers`, `request_body` (streamed in chunks or
   buffered, bounded), `response_headers`, `response_body`, `log`
-  (fire-and-forget, never waited for). **Today:** `request_headers`.
+  (fire-and-forget, never waited for). **Today:** `request_headers`, and
+  `request_body` buffered up to 16 KiB (the request's own buffer).
 * **Actions an addon can return:** continue, set/remove headers, set
   variables for later filters (`addon.waf.score`), pick a pool, rewrite
   the path, replace the body, or answer directly (status, headers, body).

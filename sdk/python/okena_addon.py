@@ -31,10 +31,11 @@ H_BELL, H_WAKE0, H_PHASES, H_READY, H_EPOCH, H_SLEEP, H_NAME = 32, 36, 40, 48, 5
 # ring pair
 R_HEAD, R_TAIL = 0, 64
 
-PHASE_REQUEST_HEADERS = 1
+PHASE_REQUEST_HEADERS, PHASE_REQUEST_BODY = 1, 2
 FLAG_TLS, FLAG_H2, FLAG_H3 = 1, 2, 4
+FLAG_BODY_TRUNCATED, FLAG_BODY_CHUNKED, FLAG_BODY_UNREAD = 8, 16, 32
 
-OP_SET, OP_ADD, OP_REMOVE, OP_TARGET = 1, 2, 3, 4
+OP_SET, OP_ADD, OP_REMOVE, OP_TARGET, OP_POOL = 1, 2, 3, 4, 5
 ACTION_CONTINUE, ACTION_RESPOND = 0, 1
 
 _U32 = struct.Struct("<I")
@@ -47,7 +48,8 @@ _ANSWER = struct.Struct("<IHHIHHII")
 class Request:
     """A call: the request's head as okena forwards it (HTTP/1.1 form, also
     for HTTP/2 and HTTP/3 clients), and what okena knows of the client."""
-    __slots__ = ("id", "phase", "flags", "head", "method", "target", "headers", "family", "client", "route")
+    __slots__ = ("id", "phase", "flags", "head", "method", "target", "headers", "family", "client", "route",
+                 "body", "body_truncated", "body_unread")
 
     def header(self, name, default=None):
         name = name.lower()
@@ -73,12 +75,13 @@ class Request:
 class Continue:
     """Let the request go on, its head changed first: `set` replaces every field
     of a name, `add` adds one more, `remove` takes them away, `target` is the
-    new request target (a path, with its query). Content-Length,
-    Transfer-Encoding, Connection and the like are okena's and stay as they are."""
-    __slots__ = ("set", "add", "remove", "target")
+    new request target (a path, with its query), `pool` the pool it goes to (by
+    its name in okena's configuration). Content-Length, Transfer-Encoding,
+    Connection and the like are okena's and stay as they are."""
+    __slots__ = ("set", "add", "remove", "target", "pool")
 
-    def __init__(self, set=(), add=(), remove=(), target=None):
-        self.set, self.add, self.remove, self.target = set, add, remove, target
+    def __init__(self, set=(), add=(), remove=(), target=None, pool=None):
+        self.set, self.add, self.remove, self.target, self.pool = set, add, remove, target, pool
 
 
 class Respond:
@@ -170,10 +173,11 @@ class Addon:
 
     def _call(self, v, at):
         (length, kind, phase, cid, flags, hlen, nhdr, family, client,
-         moff, mlen, toff, tlen, route, _rsv) = _CALL.unpack_from(v, at)
+         moff, mlen, toff, tlen, route, blen) = _CALL.unpack_from(v, at)
         idx = at + 56
         hat = idx + 8 * nhdr
         head = bytes(v[hat:hat + hlen])
+        body = bytes(v[hat + hlen:hat + hlen + blen])
         req = Request()
         req.id, req.phase, req.flags, req.head = cid, phase, flags, head
         req.family, req.client, req.route = family, client, route
@@ -184,6 +188,12 @@ class Addon:
             no, nl, vo, vl = _FIELD.unpack_from(v, idx + 8 * i)
             hs.append((head[no:no + nl].decode("latin-1"), head[vo:vo + vl].decode("latin-1")))
         req.headers = hs
+        req.body_unread = bool(flags & FLAG_BODY_UNREAD)
+        req.body_truncated = bool(flags & FLAG_BODY_TRUNCATED)
+        if flags & FLAG_BODY_CHUNKED:
+            body, whole = dechunk(body)
+            req.body_truncated = not whole
+        req.body = body
         return req
 
     def _answer(self, ah, ad, cid, out):
@@ -204,6 +214,8 @@ class Addon:
                 ops.append((OP_REMOVE, _b(k), b""))
             if out.target is not None:
                 ops.append((OP_TARGET, b"", _b(out.target)))
+            if out.pool is not None:
+                ops.append((OP_POOL, b"", _b(out.pool)))
         elif isinstance(out, Fail) or out is Fail:
             action, status = 2, 0
         else:
@@ -229,6 +241,25 @@ class Addon:
         v[ad + pos:ad + pos + size] = rec
         _U64.pack_into(v, ah + R_HEAD, head + size)
         return True
+
+
+def dechunk(raw):
+    """A chunk-framed body: (its bytes, whether its last chunk was there)."""
+    out, i = bytearray(), 0
+    while True:
+        j = raw.find(b"\r\n", i)
+        if j < 0:
+            return bytes(out), False
+        try:
+            n = int(raw[i:j].split(b";", 1)[0], 16)
+        except ValueError:
+            return bytes(out), False
+        if n == 0:
+            return bytes(out), True
+        out += raw[j + 2:j + 2 + n]
+        if j + 2 + n > len(raw):
+            return bytes(out), False
+        i = j + 4 + n
 
 
 def run(handler):

@@ -207,7 +207,7 @@ keysdef k_health, 'every', T_DURATION, 'timeout', T_DURATION, 'rise', T_COUNT, '
 	'expect', T_STATUSES, 'host', T_HOSTNAME
 keysdef k_uptls, 'trust', T_ANY, 'sni', T_HOSTNAME, 'cert', T_ANY, 'key', T_ANY
 keysdef k_breaker, 'errors', T_COUNT, 'open', T_DURATION
-enumdef e_ad_phases, 'request_headers'
+enumdef e_ad_phases, 'request_headers', 'request_body'
 enumdef e_ad_onerr, 'deny', 'allow'
 keysdef k_connect, 'timeout', T_DURATION, 'max', T_UINT, 'idle', T_DURATION, \
 	'warm', T_UINT, 'rate', T_RATE
@@ -276,6 +276,7 @@ dirdef DIR_ADPHASES, 'phases',  M_ADDON,   0,           F_UNIQUE, 1, 5, e_ad_pha
 dirdef DIR_ADTIMEOUT, 'timeout', M_ADDON,  0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
 dirdef DIR_ADONERR, 'on_error', M_ADDON,   0,           F_UNIQUE, 1, 1, e_ad_onerr, T_NONE, 0
 dirdef DIR_ADCONC, 'concurrency', M_ADDON, 0,           F_UNIQUE, 1, 1, T_COUNT, T_NONE, 0
+dirdef DIR_ADBODY, 'body',      M_ADDON,   0,           F_UNIQUE, 1, 1, T_SIZE, T_NONE, 0
 dirdef DIR_ADPOLL, 'poll',      M_ADDON,   0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
 dirdef DIR_ADBREAKER, 'breaker', M_ADDON,  0,           F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_breaker
 dirdef DIR_RADDON, 'addon',     M_ROUTE,   0,           0, 1, 1, T_NAME, T_NONE, 0

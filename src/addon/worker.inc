@@ -68,6 +68,8 @@ ADS_WAIT	:= 1
 ADS_CONT	:= 2
 ADS_RESP	:= 3
 ADS_FAIL	:= 4
+ADSE_POOL	:= 6				; w: the pool an addon chose + 1, 0 the route's
+HS_ADBODY	:= 48				; H_STATE: the request's body read for an addon
 ADSF_FWD		:= 1				; `auth forward` said yes to this request
 
 ; ADR_HEAD's line holds the next id too: a worker that takes a ring another
@@ -90,6 +92,8 @@ bss
 	g_ad_pid	dd ?
 	g_ad_any	dd ?			; calls may be waiting: look at the answers
 	g_ad_posted	dd ?			; calls posted since the loop last slept
+	g_ad_blen	dd ?			; ad_post: the body the call carries
+	g_ad_bflags	dd ?
 	g_ad_wbuf	dq ?
 	g_ad_one	dq ?
 	align 8
@@ -562,6 +566,8 @@ ad_answer:
 .cont:
 	cmp	word [r15+ANS_NOPS],0
 	je	.cont_ok
+	call	ad_pool_op
+	jc	.bad
 	call	ad_rewrite
 	jc	.bad
 .cont_ok:
@@ -797,6 +803,78 @@ ad_epoch_over:
 
 ; ----------------------------------------------------------- the request
 
+; r15 = an answer to continue, r10 = the side entry: an ANO_POOL op's pool,
+; looked up by name, into ADSE_POOL. CF: no pool of that name. Keeps rbx,
+; r10, r12-r15.
+ad_pool_op:
+	movzx	ecx,word [r15+ANS_NOPS]
+	lea	r8,[r15+ANS_OPS]
+.op:
+	test	ecx,ecx
+	jz	.done
+	dec	ecx
+	movzx	eax,word [r8+2]
+	movzx	edx,word [r8+4]
+	lea	r9,[r8+ANO_HDR+rax]		; the value
+	cmp	byte [r8],ANO_POOL
+	jne	.next
+	push	rcx
+	push	r8
+	xor	r11d,r11d
+.pool:
+	cmp	r11d,[g_plan_pools]
+	jae	.unknown
+	imul	rax,r11,PL_SIZE
+	cmp	[g_pools+rax+PL_NLEN],edx
+	jne	.other
+	push	rdx
+	mov	rsi,[g_pools+rax+PL_NAME]
+	mov	rdi,r9
+	mov	ecx,edx
+	repe	cmpsb
+	pop	rdx
+	je	.found
+.other:
+	inc	r11d
+	jmp	.pool
+.found:
+	inc	r11d
+	mov	[r10+ADSE_POOL],r11w
+	pop	r8
+	pop	rcx
+.next:
+	movzx	eax,word [r8+2]
+	movzx	edx,word [r8+4]
+	lea	r8,[r8+ANO_HDR+rax]
+	add	r8,rdx
+	jmp	.op
+.unknown:
+	pop	r8
+	pop	rcx
+	stc
+	ret
+.done:
+	clc
+	ret
+
+; http_request, the pool chosen: CF when an addon chose another, eax = it.
+; Keeps all but rax.
+addon_pool:
+	push	rcx
+	call	ad_side_cur
+	jc	.none
+	movzx	eax,word [rcx+ADSE_POOL]
+	test	eax,eax
+	jz	.none
+	dec	eax
+	pop	rcx
+	stc
+	ret
+.none:
+	pop	rcx
+	clc
+	ret
+
 ; http_request, a request's first pass (not one back from waiting): nothing
 ; is through any addon yet. ebx = session. Keeps all but rax, rcx.
 addon_fresh:
@@ -977,6 +1055,14 @@ addon_call:
 	sub	eax,[r13+ADW_FHEAD]
 	cmp	eax,[r13+ADW_CAP]
 	jae	.error				; concurrency
+	imul	rax,r12,ADE_SIZE
+	test	dword [g_addons+rax+ADE_PHASES],ADP_REQ_BODY
+	jz	@f
+	call	ad_body_ready			; its body first
+	jnc	@f
+	clc					; held while it comes (its own clock: body_idle)
+	jmp	.out
+@@:
 	call	ad_post
 	jc	.error
 	; the FIFO
@@ -1033,6 +1119,139 @@ addon_call:
 	pop	r13
 	ret
 
+; r12d = an addon whose call carries the body, ebx, r15, g_hm: CF when the body is
+; not in yet (what the call carries of it: the whole, or `body`, or what the
+; buffer holds); its reading is then posted and the request waits in
+; HS_ADBODY. A body the client sends only after 100 Continue is not waited for
+; (ADQF_UNREAD). Keeps rbx, r12-r15.
+ad_body_ready:
+	call	ad_body_want			; eax = bytes wanted, ecx = bytes there
+	cmp	ecx,eax
+	jae	.ready
+	mov	eax,[r15+H_INLEN]
+	cmp	eax,H_IN_CAP
+	jae	.ready				; (full: as much as it holds)
+	mov	rdi,[r15+H_BUF]			; chunked: the last chunk came already?
+	mov	esi,[r15+H_INOFF]
+	lea	rsi,[rdi+HB_IN+rsi]
+	call	ad_chunked_end
+	jnc	.ready
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	mov	dword [r15+H_STATE],HS_ADBODY
+	mov	edi,ebx
+	mov	esi,PH_BODY
+	call	ph_arm
+	h_rec
+	mov	ecx,SIDE_CLIENT
+	mov	esi,H_IN_CAP
+	sub	esi,[r15+H_INLEN]
+	mov	eax,[r15+H_INLEN]
+	mov	rdi,[r15+H_BUF]
+	lea	rdi,[rdi+HB_IN+rax]
+	call	h_recv
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	stc
+	ret
+.ready:
+	clc
+	ret
+
+; r12d = the addon, r15, g_hm: eax = the body's bytes a call wants (0: no body,
+; or one not to wait for), ecx = those in the buffer. Keeps rbx, rsi, r8-r15.
+ad_body_want:
+	mov	ecx,[r15+H_INLEN]
+	sub	ecx,[r15+H_INOFF]
+	xor	eax,eax
+	cmp	dword [r15+H_BODY],BK_LENGTH
+	je	.length
+	cmp	dword [r15+H_BODY],BK_CHUNKED
+	jne	.out
+	test	dword [g_hm+HM_FLAGS],HMF_CONTINUE
+	jnz	.out
+	call	.max
+	ret
+.length:
+	test	dword [g_hm+HM_FLAGS],HMF_CONTINUE
+	jnz	.out
+	call	.max
+	cmp	rax,[g_hm+HM_LENGTH]
+	jbe	.out
+	mov	rax,[g_hm+HM_LENGTH]
+.out:
+	ret
+; eax = `body`, within what the buffer holds after the head
+.max:
+	imul	rax,r12,ADE_SIZE
+	mov	eax,[g_addons+rax+ADE_BODY]
+	mov	edx,H_IN_CAP
+	sub	edx,[r15+H_INOFF]
+	cmp	eax,edx
+	jbe	@f
+	mov	eax,edx
+@@:
+	ret
+
+; rsi = a chunked body's start, r15: CF unless its last chunk (0 CRLF CRLF)
+; is in the buffer. Keeps rbx, r12-r15.
+ad_chunked_end:
+	cmp	dword [r15+H_BODY],BK_CHUNKED
+	jne	.no
+	mov	rdi,[r15+H_BUF]
+	mov	ecx,[r15+H_INLEN]
+	lea	rdi,[rdi+HB_IN+rcx]		; the end
+	mov	rcx,rdi
+	sub	rcx,rsi
+	cmp	rcx,5
+	jb	.no
+	cmp	dword [rsi],0x0D0A0D30		; "0\r\n\r" at the start: an empty body
+	jne	.scan
+	cmp	byte [rsi+4],10
+	je	.yes
+.scan:
+	lea	rdi,[rdi-7]
+.at:
+	cmp	rsi,rdi
+	ja	.no
+	cmp	word [rsi],0x0A0D
+	jne	.next
+	cmp	dword [rsi+2],0x0D0A0D30
+	jne	.next
+	cmp	byte [rsi+6],10
+	je	.yes
+.next:
+	inc	rsi
+	jmp	.at
+.yes:
+	clc
+	ret
+.no:
+	stc
+	ret
+
+; http_recv_plain, HS_ADBODY: more of the body came (rax). Through the request
+; again: its addon finds the body in, or waits for more.
+addon_body_in:
+	test	rax,rax
+	jle	.gone
+	add	[r15+H_INLEN],eax
+	mov	edi,ebx
+	call	idle_touch
+	h_rec
+	or	dword [r15+H_FLAGS],HX_FAULTED	; (a request back, not a new one)
+	mov	eax,[r15+H_INOFF]
+	jmp	http_request
+.gone:
+	mov	edi,ebx				; the client went in the middle of its body
+	jmp	session_close
+
 ; r13 = the addon's state, ebx, r15, g_hm: the call into its ring. CF: no room.
 ; Keeps rbx, r12-r15.
 ad_post:
@@ -1041,9 +1260,41 @@ ad_post:
 	push	r14
 	call	http_client_resolve		; (who the client is: the peer, or what trusted proxies say)
 	; its size: the fixed part, the index, the head
+	; the body it carries, when its addon asks for it (r12d = the addon)
+	xor	eax,eax
+	xor	r8d,r8d				; flags
+	imul	rdx,r12,ADE_SIZE
+	test	dword [g_addons+rdx+ADE_PHASES],ADP_REQ_BODY
+	jz	.sized_body
+	call	ad_body_want
+	cmp	dword [r15+H_BODY],BK_NONE
+	je	.sized_body
+	test	dword [g_hm+HM_FLAGS],HMF_CONTINUE
+	jz	@f
+	mov	r8d,ADQF_UNREAD
+	xor	eax,eax
+	jmp	.sized_body
+@@:
+	cmp	eax,ecx
+	jbe	@f
+	mov	eax,ecx				; (what is there: as much as the buffer holds)
+@@:
+	cmp	dword [r15+H_BODY],BK_CHUNKED
+	jne	.counted
+	or	r8d,ADQF_CHUNKED
+	jmp	.sized_body
+.counted:
+	mov	ecx,eax
+	cmp	rcx,[g_hm+HM_LENGTH]
+	jae	.sized_body
+	or	r8d,ADQF_TRUNC
+.sized_body:
+	mov	[g_ad_blen],eax
+	mov	[g_ad_bflags],r8d
 	mov	r12d,[g_hm+HM_NHDR]
 	lea	eax,[ADQ_INDEX+r12*8]
 	add	eax,[r15+H_INOFF]
+	add	eax,[g_ad_blen]
 	add	eax,7
 	and	eax,not 7
 	mov	r10d,eax			; the record
@@ -1078,10 +1329,14 @@ ad_post:
 	mov	[rdi+ADQ_LEN],r10d
 	mov	word [rdi+ADQ_KIND],1
 	mov	word [rdi+ADQ_PHASE],ADP_REQ_HEADERS
+	cmp	dword [g_ad_blen],0
+	je	@f
+	mov	word [rdi+ADQ_PHASE],ADP_REQ_BODY
+@@:
 	mov	eax,[r13+ADW_SEQ]
 	mov	[rdi+ADQ_ID],eax
 	; what the client spoke
-	xor	r8d,r8d
+	mov	r8d,[g_ad_bflags]
 	push	rax
 	push	rdi
 	call	session_ptr
@@ -1126,7 +1381,8 @@ ad_post:
 	mov	[rdi+ADQ_TARGET+2],ax
 	mov	eax,[r15+H_ACT]
 	mov	[rdi+ADQ_ROUTE],eax
-	mov	dword [rdi+ADQ_RSV],0
+	mov	eax,[g_ad_blen]
+	mov	[rdi+ADQ_BLEN],eax
 	; the index
 	lea	r9,[g_hm+HM_HDRS]
 	lea	r8,[rdi+ADQ_INDEX]
@@ -1151,6 +1407,7 @@ ad_post:
 .fields:
 	mov	rdi,r8
 	mov	ecx,[r15+H_INOFF]
+	add	ecx,[g_ad_blen]			; the head, then the body after it
 	rep	movsb
 	pop	rcx
 	add	rcx,r10

@@ -75,6 +75,7 @@ ADR_ANSD		:= AD_HDR * 2 + AD_RING		; the answers' bytes
 
 ; phases
 ADP_REQ_HEADERS	:= 1
+ADP_REQ_BODY	:= 2				; the call carries the request's body too
 
 ; a call (worker -> addon)
 ADQ_LEN		:= 0				; d: the record, a multiple of 8
@@ -89,11 +90,14 @@ ADQ_CLIENT	:= 24				; 16: the client's address
 ADQ_METHOD	:= 40				; w offset, w length (into the head)
 ADQ_TARGET	:= 44				; w offset, w length
 ADQ_ROUTE	:= 48				; d: the route's action + 1
-ADQ_RSV		:= 52				; d
+ADQ_BLEN	:= 52				; d: the body's bytes, after the head
 ADQ_INDEX	:= 56				; the fields: w name offset, w length, w value offset, w length
 ADQF_TLS		:= 1
 ADQF_H2		:= 2
 ADQF_H3		:= 4
+ADQF_TRUNC	:= 8				; the body goes on past what the call carries
+ADQF_CHUNKED	:= 16				; the body as it came: chunk-framed
+ADQF_UNREAD	:= 32				; a body not read (the client waits for 100 Continue)
 
 ; an answer (addon -> worker)
 ANS_LEN		:= 0				; d
@@ -112,4 +116,5 @@ ANO_SET		:= 1				; a request field set (respond: a response field)
 ANO_ADD		:= 2				; one more
 ANO_REMOVE	:= 3				; gone
 ANO_TARGET	:= 4				; the request target (path and query)
+ANO_POOL	:= 5				; the pool the request goes to (value: its name)
 ANO_HDR		:= 6
