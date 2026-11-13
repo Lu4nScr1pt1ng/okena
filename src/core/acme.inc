@@ -2195,6 +2195,86 @@ acme_read:
 	stc
 	ret
 
+; g_ac_fpath = where, rsi/edx = what, made only if it is not there (0600): written
+; beside it under a name of this process's own, then linked in, which fails if
+; another instance (a fleet sharing DIR) made it meanwhile. eax = 0 made, 1 it was
+; there already (left as it is). CF when it could not be.
+acme_create:
+	push	rbx
+	push	r12
+	push	r13
+	mov	r12,rsi
+	mov	r13d,edx
+	lea	rsi,[g_ac_fpath]
+	lea	rdi,[g_ac_tmp]
+@@:
+	lodsb
+	stosb
+	test	al,al
+	jnz	@b
+	mov	dword [rdi-1],'.new'
+	add	rdi,3
+	mov	byte [rdi],'.'
+	inc	rdi
+	mov	eax,SYS_getpid
+	syscall
+	call	fmt_u64
+	mov	byte [rdi],0
+	mov	edi,AT_FDCWD
+	lea	rsi,[g_ac_tmp]
+	mov	edx,O_WRONLY or O_CREAT or O_APPEND or O_CLOEXEC	; (the filter's way: no O_TRUNC)
+	mov	r10d,0x180			; 0600
+	mov	eax,SYS_openat
+	syscall
+	test	eax,eax
+	js	.bad
+	mov	ebx,eax
+	mov	edi,ebx
+	xor	esi,esi
+	mov	eax,SYS_ftruncate
+	syscall
+	mov	edi,ebx
+	mov	rsi,r12
+	mov	edx,r13d
+	call	write_all
+	pushf
+	mov	edi,ebx
+	mov	eax,SYS_fdatasync
+	syscall
+	mov	edi,ebx
+	mov	eax,SYS_close
+	syscall
+	popf
+	jc	.unlink_bad
+	lea	rdi,[g_ac_tmp]
+	lea	rsi,[g_ac_fpath]
+	mov	eax,SYS_link_
+	syscall
+	mov	r12d,eax
+	lea	rdi,[g_ac_tmp]
+	mov	eax,SYS_unlink_
+	syscall
+	xor	eax,eax
+	test	r12d,r12d
+	jz	.ok
+	cmp	r12d,-17			; EEXIST
+	jne	.bad
+	mov	eax,1
+.ok:
+	clc
+	jmp	.out
+.unlink_bad:
+	lea	rdi,[g_ac_tmp]
+	mov	eax,SYS_unlink_
+	syscall
+.bad:
+	stc
+.out:
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
 ; g_ac_fpath = where, rsi/edx = what: written beside it and renamed over it (0600).
 ; CF when it could not be.
 acme_write:
@@ -2285,14 +2365,19 @@ acme_account:
 	lea	rsi,[g_x5_pem]
 	mov	rdx,rdi
 	sub	rdx,rsi
-	call	acme_write
+	call	acme_create
 	jc	.broken
+	test	eax,eax
+	jnz	.taken				; another instance made it first: its key
 	call	log_begin
 	out_lit 'acme: a new account key, in '
 	lea	rsi,[g_ac_fpath]
 	call	out_cstr
 	call	log_end
 	jmp	.have
+.taken:
+	call	acme_read
+	jc	.broken
 .read:
 	lea	rsi,[g_ac_file]
 	lea	rdx,[g_ac_file+rax]
