@@ -38,6 +38,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	addon "github.com/Lu4nScr1pt1ng/okena/sdk/go"
@@ -123,20 +124,96 @@ func main() {
 		pool <- in
 	}
 	log.Printf("%s ready: %s, %d instances", h.name, *plugin, *instances)
+	go sweep(ctx)
 	log.Fatal(addon.Run(func(r *addon.Request, a *addon.Answer) {
-		in := <-pool
-		defer func() { pool <- in }()
-		in.mu.Lock()
-		defer in.mu.Unlock()
-		if err := in.request(ctx, r, a); err != nil {
+		var err error
+		switch {
+		case r.Phase&(addon.PhaseRequestHeaders|addon.PhaseRequestBody) != 0:
+			in := <-pool
+			in.mu.Lock()
+			err = in.request(ctx, r, a)
+			in.mu.Unlock()
+			pool <- in
+		case r.IsResponse():
+			l := take(r.Stream)
+			if l == nil { // (an addon asked about the response only)
+				in := <-pool
+				in.mu.Lock()
+				l = &live{in: in, st: in.open(ctx, r)}
+				in.mu.Unlock()
+				pool <- in
+			}
+			l.in.mu.Lock()
+			err = l.in.response(ctx, l.st, r, a)
+			if r.Last || err != nil {
+				l.in.finish(ctx, l.st)
+			} else {
+				keep(r.Stream, l)
+			}
+			l.in.mu.Unlock()
+		case r.Phase == addon.PhaseLog:
+			if l := take(r.Stream); l != nil {
+				l.in.mu.Lock()
+				l.in.finish(ctx, l.st)
+				l.in.mu.Unlock()
+			}
+		}
+		if err != nil {
 			log.Printf("%s: %v", h.name, err)
 			a.Fail()
 		}
 	}, addon.Options{Workers: *instances}))
 }
 
-// a request through the plugin's HTTP context: what it decides into a
-func (in *instance) request(ctx context.Context, r *addon.Request, a *addon.Answer) error {
+// streams whose later phases are still to come: their context, in its instance
+type live struct {
+	in *instance
+	st *stream
+}
+
+var lives = struct {
+	sync.Mutex
+	m map[addon.StreamID]*live
+}{m: map[addon.StreamID]*live{}}
+
+func keep(id addon.StreamID, l *live) {
+	l.st.at = time.Now()
+	lives.Lock()
+	lives.m[id] = l
+	lives.Unlock()
+}
+
+func take(id addon.StreamID) *live {
+	lives.Lock()
+	defer lives.Unlock()
+	l := lives.m[id]
+	delete(lives.m, id)
+	return l
+}
+
+// a stream whose response or log never came (answered by okena, the client
+// gone): its context goes after a minute
+func sweep(ctx context.Context) {
+	for range time.Tick(10 * time.Second) {
+		var old []*live
+		lives.Lock()
+		for id, l := range lives.m {
+			if time.Since(l.st.at) > time.Minute {
+				old = append(old, l)
+				delete(lives.m, id)
+			}
+		}
+		lives.Unlock()
+		for _, l := range old {
+			l.in.mu.Lock()
+			l.in.finish(ctx, l.st)
+			l.in.mu.Unlock()
+		}
+	}
+}
+
+// a new HTTP context for this request
+func (in *instance) open(ctx context.Context, r *addon.Request) *stream {
 	host, _ := r.Header("host")
 	scheme := "http"
 	if r.Flags&addon.FlagTLS != 0 {
@@ -154,6 +231,87 @@ func (in *instance) request(ctx context.Context, r *addon.Request, a *addon.Answ
 	}
 	st := &stream{id: in.next, req: &requestInfo{method: r.Method, path: r.Target, host: host, scheme: scheme, protocol: proto, client: client}}
 	in.next++
+	in.cur = st
+	in.effective = st.id
+	in.call(ctx, "proxy_on_context_create", uint64(st.id), uint64(in.root))
+	return st
+}
+
+// the end of a stream's context: its log, done, deleted
+func (in *instance) finish(ctx context.Context, st *stream) {
+	in.cur = st
+	in.effective = st.id
+	in.call(ctx, "proxy_on_log", uint64(st.id))
+	in.call(ctx, "proxy_on_done", uint64(st.id))
+	in.call(ctx, "proxy_on_delete", uint64(st.id))
+	in.cur = nil
+	in.pending = nil
+}
+
+// the response's head (and body) through the stream's context
+func (in *instance) response(ctx context.Context, st *stream, r *addon.Request, a *addon.Answer) error {
+	in.cur = st
+	in.effective = st.id
+	st.local, st.continued, st.closed = nil, false, false
+	st.resp = []pair{{":status", fmt.Sprint(r.Status)}}
+	for _, f := range r.Headers {
+		st.resp = append(st.resp, pair{strings.ToLower(f.Name), f.Value})
+	}
+	orig := append([]pair(nil), st.resp...)
+	body := r.Phase == addon.PhaseResponseBody && len(r.Body) > 0
+	eos := uint64(1)
+	if body {
+		eos = 0
+	}
+	res, err := in.call(ctx, "proxy_on_response_headers", uint64(st.id), uint64(len(st.resp)), eos)
+	if err != nil {
+		return err
+	}
+	if res != nil && res[0] == actionPause && st.local == nil {
+		in.runCallouts(ctx, in.root)
+	}
+	if st.local == nil && body && in.fn["proxy_on_response_body"] != nil {
+		st.respBody = r.Body
+		res, err = in.call(ctx, "proxy_on_response_body", uint64(st.id), uint64(len(r.Body)), 1)
+		if err != nil {
+			return err
+		}
+		if res != nil && res[0] == actionPause && st.local == nil {
+			in.runCallouts(ctx, in.root)
+		}
+	}
+	if in.answerLocal(st, a) {
+		return nil
+	}
+	diff(orig, st.resp, a)
+	return nil
+}
+
+// a local response (or a closed stream) as the addon's own answer
+func (in *instance) answerLocal(st *stream, a *addon.Answer) bool {
+	if st.closed && st.local == nil {
+		st.local = &localResponse{status: 403}
+	}
+	l := st.local
+	if l == nil {
+		return false
+	}
+	status := l.status
+	if status < 200 || status > 599 {
+		status = 403
+	}
+	a.Respond(status)
+	for _, p := range l.headers {
+		a.Add(p[0], p[1])
+	}
+	a.Body(l.body)
+	return true
+}
+
+// a request through the plugin's HTTP context: what it decides into a
+func (in *instance) request(ctx context.Context, r *addon.Request, a *addon.Answer) error {
+	st := in.open(ctx, r)
+	host, scheme := st.req.host, st.req.scheme
 	st.headers = []pair{{":authority", host}, {":path", r.Target}, {":method", r.Method}, {":scheme", scheme}}
 	eos := true
 	for _, f := range r.Headers {
@@ -167,19 +325,12 @@ func (in *instance) request(ctx context.Context, r *addon.Request, a *addon.Answ
 		st.headers = append(st.headers, pair{n, f.Value})
 	}
 	orig := append([]pair(nil), st.headers...)
-	in.cur = st
-	in.effective = st.id
+	kept := false
 	defer func() {
-		in.effective = st.id
-		in.call(ctx, "proxy_on_log", uint64(st.id))
-		in.call(ctx, "proxy_on_done", uint64(st.id))
-		in.call(ctx, "proxy_on_delete", uint64(st.id))
-		in.cur = nil
-		in.pending = nil
+		if !kept {
+			in.finish(ctx, st)
+		}
 	}()
-	if _, err := in.call(ctx, "proxy_on_context_create", uint64(st.id), uint64(in.root)); err != nil {
-		return err
-	}
 	var res []uint64
 	var err error
 	if in.abi01 {
@@ -221,22 +372,15 @@ func (in *instance) request(ctx context.Context, r *addon.Request, a *addon.Answ
 			in.runCallouts(ctx, in.root)
 		}
 	}
-	if st.closed && st.local == nil {
-		st.local = &localResponse{status: 403}
+	answered := in.answerLocal(st, a)
+	if !r.Last && !answered {
+		kept = true // its response (or log) comes later
+		in.cur = nil
+		keep(r.Stream, &live{in: in, st: st})
 	}
-	if l := st.local; l != nil {
-		status := l.status
-		if status < 200 || status > 599 {
-			status = 403
-		}
-		a.Respond(status)
-		for _, p := range l.headers {
-			a.Add(p[0], p[1])
-		}
-		a.Body(l.body)
-		return nil
+	if !answered {
+		diff(orig, st.headers, a)
 	}
-	diff(orig, st.headers, a)
 	return nil
 }
 

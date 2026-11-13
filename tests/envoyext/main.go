@@ -58,10 +58,27 @@ func (authz) Check(ctx context.Context, r *authv3.CheckRequest) (*authv3.CheckRe
 type proc struct{ procv3.UnimplementedExternalProcessorServer }
 
 func (proc) Process(s procv3.ExternalProcessor_ProcessServer) error {
+	seen := "" // the request's path, kept on this stream for its response
 	for {
 		req, err := s.Recv()
 		if err != nil {
 			return nil
+		}
+		if rh := req.GetResponseHeaders(); rh != nil {
+			s.Send(&procv3.ProcessingResponse{Response: &procv3.ProcessingResponse_ResponseHeaders{ResponseHeaders: &procv3.HeadersResponse{
+				Response: &procv3.CommonResponse{HeaderMutation: &procv3.HeaderMutation{
+					SetHeaders: []*corev3.HeaderValueOption{hv("x-proc-resp", "seen "+seen)}, RemoveHeaders: []string{"server"}}},
+			}}})
+			continue
+		}
+		if rb := req.GetResponseBody(); rb != nil {
+			if strings.Contains(string(rb.GetBody()), "secret") {
+				s.Send(&procv3.ProcessingResponse{Response: &procv3.ProcessingResponse_ImmediateResponse{ImmediateResponse: &procv3.ImmediateResponse{
+					Status: &typev3.HttpStatus{Code: typev3.StatusCode(500)}, Body: []byte("withheld\n")}}})
+			} else {
+				s.Send(&procv3.ProcessingResponse{Response: &procv3.ProcessingResponse_ResponseBody{ResponseBody: &procv3.BodyResponse{}}})
+			}
+			continue
 		}
 		if b := req.GetRequestBody(); b != nil {
 			s.Send(&procv3.ProcessingResponse{Response: &procv3.ProcessingResponse_RequestBody{RequestBody: &procv3.BodyResponse{
@@ -80,6 +97,7 @@ func (proc) Process(s procv3.ExternalProcessor_ProcessServer) error {
 				path = string(h.GetRawValue())
 			}
 		}
+		seen = path
 		if strings.HasSuffix(path, "/immediate") {
 			s.Send(&procv3.ProcessingResponse{Response: &procv3.ProcessingResponse_ImmediateResponse{ImmediateResponse: &procv3.ImmediateResponse{
 				Status:  &typev3.HttpStatus{Code: typev3.StatusCode(418)},

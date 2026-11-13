@@ -45,5 +45,11 @@ apply `on_error` at once, and counts toward the addon's circuit breaker.
 | `-context KEY=VALUE` | `context_extensions` for ext_authz (repeatable) |
 | `-workers N` | requests asked about at once (default 256) |
 
-Not yet: request bodies (`with_request_body`, ext_proc's body phases) and
-response phases, which wait for okena to call addons at those phases.
+**Bodies and responses.** With the addon's `phases request_body`,
+`-authz-body` sends the body (`with_request_body`: `raw_body`, `body`) and
+`-proc-body` sends ext_proc a `request_body` after the headers. With
+`response_headers` or `response_body`, the request's ext_proc stream stays
+open and gets `response_headers` (and, with `-proc-body`, a counted
+`response_body` up to `body`): their header mutations change the response,
+an `immediate_response` replaces it. A stream whose response never comes is
+closed after a minute.

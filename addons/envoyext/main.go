@@ -34,6 +34,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
@@ -116,6 +117,7 @@ func main() {
 		proc = procv3.NewExternalProcessorClient(dial(*p, *useTLS, *ca))
 	}
 	log.Printf("ready: ext_authz %q, ext_proc %q", *a, *p)
+	go sweepProcs()
 	log.Fatal(addon.Run(handle, addon.Options{Workers: *workers}))
 }
 
@@ -136,6 +138,22 @@ func (v *view) get(k string) (string, bool) {
 }
 
 func handle(r *addon.Request, a *addon.Answer) {
+	if r.Phase == addon.PhaseLog {
+		if p := takeProc(r.Stream); p != nil {
+			p.close()
+		}
+		return
+	}
+	if r.IsResponse() {
+		if proc == nil {
+			return
+		}
+		if err := processResponse(r, a); err != nil {
+			log.Printf("ext_proc: %v", err)
+			a.Fail()
+		}
+		return
+	}
 	v := &view{method: r.Method, target: r.Target, scheme: "http", protocol: "HTTP/1.1"}
 	v.host, _ = r.Header("host")
 	if r.Flags&addon.FlagTLS != 0 {
@@ -292,13 +310,140 @@ func option(v *view, h *corev3.HeaderValueOption, a *addon.Answer) {
 	}
 }
 
-// ext_proc: the request headers on a stream of their own, one answer
-func process(ctx context.Context, v *view, r *addon.Request, a *addon.Answer) error {
-	s, err := proc.Process(ctx)
+// an ext_proc stream kept from a request to its response, as Envoy keeps one
+// a request
+type procStream struct {
+	s      procv3.ExternalProcessor_ProcessClient
+	cancel context.CancelFunc
+	at     time.Time
+}
+
+func (p *procStream) close() {
+	p.s.CloseSend()
+	p.cancel()
+}
+
+var procs = struct {
+	sync.Mutex
+	m map[addon.StreamID]*procStream
+}{m: map[addon.StreamID]*procStream{}}
+
+func keepProc(id addon.StreamID, p *procStream) {
+	p.at = time.Now()
+	procs.Lock()
+	procs.m[id] = p
+	procs.Unlock()
+}
+
+func takeProc(id addon.StreamID) *procStream {
+	procs.Lock()
+	defer procs.Unlock()
+	p := procs.m[id]
+	delete(procs.m, id)
+	return p
+}
+
+// streams whose response never came: closed after a minute
+func sweepProcs() {
+	for range time.Tick(10 * time.Second) {
+		procs.Lock()
+		for id, p := range procs.m {
+			if time.Since(p.at) > time.Minute {
+				p.close()
+				delete(procs.m, id)
+			}
+		}
+		procs.Unlock()
+	}
+}
+
+// with a deadline for one exchange on it
+func recvWithin(s procv3.ExternalProcessor_ProcessClient) (*procv3.ProcessingResponse, error) {
+	type got struct {
+		r   *procv3.ProcessingResponse
+		err error
+	}
+	c := make(chan got, 1)
+	go func() {
+		r, err := s.Recv()
+		c <- got{r, err}
+	}()
+	select {
+	case g := <-c:
+		return g.r, g.err
+	case <-time.After(timeout):
+		return nil, fmt.Errorf("no answer in %v", timeout)
+	}
+}
+
+// ext_proc, the response: its headers (and body) on the request's stream
+func processResponse(r *addon.Request, a *addon.Answer) error {
+	p := takeProc(r.Stream)
+	if p == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		s, err := proc.Process(ctx)
+		if err != nil {
+			cancel()
+			return err
+		}
+		p = &procStream{s: s, cancel: cancel}
+	}
+	defer p.close()
+	v := &view{}
+	hm := &corev3.HeaderMap{Headers: []*corev3.HeaderValue{{Key: ":status", RawValue: []byte(fmt.Sprint(r.Status))}}}
+	for _, f := range r.Headers {
+		k := strings.ToLower(f.Name)
+		v.headers = append(v.headers, field{k, f.Value})
+		hm.Headers = append(hm.Headers, &corev3.HeaderValue{Key: k, RawValue: []byte(f.Value)})
+	}
+	body := procBody && len(r.Body) > 0
+	if err := p.s.Send(&procv3.ProcessingRequest{Request: &procv3.ProcessingRequest_ResponseHeaders{
+		ResponseHeaders: &procv3.HttpHeaders{Headers: hm, EndOfStream: !body}}}); err != nil {
+		return err
+	}
+	resp, err := recvWithin(p.s)
 	if err != nil {
 		return err
 	}
-	defer s.CloseSend()
+	if im := resp.GetImmediateResponse(); im != nil {
+		immediate(im, a)
+		return nil
+	}
+	mutate(v, resp.GetResponseHeaders().GetResponse().GetHeaderMutation(), a)
+	if !body {
+		return nil
+	}
+	if err := p.s.Send(&procv3.ProcessingRequest{Request: &procv3.ProcessingRequest_ResponseBody{
+		ResponseBody: &procv3.HttpBody{Body: r.Body, EndOfStream: true}}}); err != nil {
+		return err
+	}
+	if resp, err = recvWithin(p.s); err != nil {
+		return err
+	}
+	if im := resp.GetImmediateResponse(); im != nil {
+		immediate(im, a)
+		return nil
+	}
+	mutate(v, resp.GetResponseBody().GetResponse().GetHeaderMutation(), a)
+	return nil
+}
+
+// ext_proc: the request headers (and body) on a stream of their own, kept for
+// the response when the addon has a response phase
+func process(ctx context.Context, v *view, r *addon.Request, a *addon.Answer) error {
+	sctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	s, err := proc.Process(sctx)
+	if err != nil {
+		cancel()
+		return err
+	}
+	ps := &procStream{s: s, cancel: cancel}
+	kept := false
+	defer func() {
+		if !kept {
+			ps.close()
+		}
+	}()
 	hm := &corev3.HeaderMap{}
 	for _, f := range v.headers {
 		hm.Headers = append(hm.Headers, &corev3.HeaderValue{Key: f.k, RawValue: []byte(f.v)})
@@ -314,13 +459,19 @@ func process(ctx context.Context, v *view, r *addon.Request, a *addon.Answer) er
 		RequestHeaders: &procv3.HttpHeaders{Headers: hm, EndOfStream: !hasBody}}}); err != nil {
 		return err
 	}
-	resp, err := s.Recv()
+	resp, err := recvWithin(s)
 	if err != nil {
 		return err
 	}
 	if im := resp.GetImmediateResponse(); im != nil {
 		immediate(im, a)
 		return nil
+	}
+	if !r.Last {
+		defer func() {
+			kept = true
+			keepProc(r.Stream, ps)
+		}()
 	}
 	rh := resp.GetRequestHeaders()
 	if rh == nil {
@@ -334,7 +485,7 @@ func process(ctx context.Context, v *view, r *addon.Request, a *addon.Answer) er
 		RequestBody: &procv3.HttpBody{Body: r.Body, EndOfStream: !r.BodyTruncated}}}); err != nil {
 		return err
 	}
-	if resp, err = s.Recv(); err != nil {
+	if resp, err = recvWithin(s); err != nil {
 		return err
 	}
 	if im := resp.GetImmediateResponse(); im != nil {
@@ -348,6 +499,7 @@ func process(ctx context.Context, v *view, r *addon.Request, a *addon.Answer) er
 }
 
 func immediate(im *procv3.ImmediateResponse, a *addon.Answer) {
+	a.Reset() // (mutations of an earlier step do not go with it)
 	status := int(im.GetStatus().GetCode())
 	if status < 200 || status > 599 {
 		status = 200

@@ -102,6 +102,12 @@ addon procb {{
     phases request_body
     timeout 1s
 }}
+addon procr {{
+    run {EXT} -proc 127.0.0.1:{G} -proc-body
+    phases request_headers response_body
+    body 4KiB
+    timeout 1s
+}}
 addon gone {{
     run {EXT} -authz 127.0.0.1:1 -timeout 300ms
     timeout 1s
@@ -113,6 +119,7 @@ http 127.0.0.1:{L} {{
     route /gone/* {{ addon gone; to pool echo }}
     route /ab/* {{ addon authzb; to pool echo }}
     route /pb/* {{ addon procb; to pool echo }}
+    route /pr/* {{ addon procr; to pool echo }}
     route /moved {{ to pool echo }}
     route /* {{ addon authz; to pool echo }}
 }}
@@ -152,6 +159,11 @@ http 127.0.0.1:{L} {{
         check("  a body it lets on", s == 200 and b"x-user: alice" in b, (s, b))
         s, h, b = get("/pb/x", body=b"12345")
         check("ext_proc: the body after the headers, its answer applied", s == 200 and b"x-proc: seen" in b and b"x-proc-body: 5" in b, (s, b))
+        s, h, b = get("/pr/page")
+        check("ext_proc response phases: on the request's stream (it kept the path), a field set, one removed",
+              s == 200 and h.get("x-proc-resp") == "seen /pr/page" and "server" not in h and b"x-proc: seen" in b, (s, h))
+        s, h, b = get("/pr/page", [("X-Note", "a secret")])
+        check("  the response's body judged: an immediate response replaces it", s == 500 and b == b"withheld\n", (s, b))
         t = time.monotonic()
         s, h, b = get("/gone/x")
         d = time.monotonic() - t

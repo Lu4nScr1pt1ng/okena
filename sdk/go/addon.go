@@ -89,6 +89,11 @@ type Request struct {
 	BodyUnread    bool // the client waits for 100 Continue: not read
 	// Stream is the same in every call about one request (its phases, its log).
 	Stream StreamID
+	// Last says no later call about this stream is planned: the addon's
+	// phases have none after this one. (A request okena or an addon answered
+	// itself gets no response call, nor one whose client went: state kept
+	// for a later call should also expire.)
+	Last bool
 	// Status is the backend's status in the response phases (Headers and Body
 	// are then the response's; Method and Target stay the request's).
 	Status int
@@ -184,6 +189,9 @@ func (a *Answer) NoAnswer() { a.none = true }
 // okena's on_error at once, and a failure for the circuit.
 func (a *Answer) Fail() { a.action = 2 }
 
+// Reset forgets what was decided so far (back to continue, nothing changed).
+func (a *Answer) Reset() { a.reset() }
+
 func (a *Answer) reset() {
 	a.buf = a.buf[:24]
 	a.nops, a.action, a.status, a.body, a.none, a.overflow = 0, 0, 0, nil, false, false
@@ -209,7 +217,11 @@ type Addon struct {
 	wake0  int
 	Name   string
 	locks  []sync.Mutex
+	phases uint32
 }
+
+// Phases are the addon's configured phases (Phase* bits).
+func (a *Addon) Phases() uint32 { return a.phases }
 
 // Open maps the memory OKENA_ADDON_FD names.
 func Open() (*Addon, error) {
@@ -247,6 +259,7 @@ func Open() (*Addon, error) {
 		a.Name = a.Name[:i]
 	}
 	a.locks = make([]sync.Mutex, a.nrings)
+	a.phases = le.Uint32(m[40:])
 	return a, nil
 }
 
@@ -357,6 +370,15 @@ func (a *Addon) poll(h Handler, ans *Answer, queue chan call) int {
 				c.ring = r
 				a.parse(at, &c.req)
 				c.req.Stream = StreamID{r, le.Uint64(a.m[at+56:])}
+				ph := atomic.LoadUint32(a.u32(40))
+				switch {
+				case c.req.Phase&(PhaseRequestHeaders|PhaseRequestBody) != 0:
+					c.req.Last = ph&(phasesResponse|PhaseLog) == 0
+				case c.req.Phase&phasesResponse != 0:
+					c.req.Last = ph&PhaseLog == 0
+				default:
+					c.req.Last = true
+				}
 				if c.req.Phase == PhaseLog {
 					ans.reset()
 					h(&c.req, ans) // (never answered)

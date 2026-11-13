@@ -38,6 +38,8 @@ func (h *host) inst(m api.Module) *instance {
 
 func u32(s []uint64, i int) uint32 { return uint32(s[i]) }
 
+func mutable(t uint32) bool { return t == mapRequestHeaders || t == mapResponseHeaders }
+
 func (h *host) functions() map[string]hostFn {
 	f := map[string]hostFn{}
 	add := func(name string, params int, fn func(ctx context.Context, in *instance, m api.Module, s []uint64) uint64) {
@@ -99,6 +101,11 @@ func (h *host) functions() map[string]hostFn {
 				return in.cur.body, true
 			}
 			return nil, true
+		case bufResponseBody:
+			if in.cur != nil {
+				return in.cur.respBody, true
+			}
+			return nil, true
 		}
 		return nil, false
 	}
@@ -135,6 +142,10 @@ func (h *host) functions() map[string]hostFn {
 			if in.cur != nil {
 				return &in.cur.headers
 			}
+		case mapResponseHeaders:
+			if in.cur != nil && in.cur.resp != nil {
+				return &in.cur.resp
+			}
 		case mapCallHeaders:
 			if in.answer != nil {
 				return &in.answer.headers
@@ -154,7 +165,7 @@ func (h *host) functions() map[string]hostFn {
 	})
 	add("proxy_set_header_map_pairs", 3, func(ctx context.Context, in *instance, m api.Module, s []uint64) uint64 {
 		hs := headers(in, u32(s, 0))
-		if hs == nil || u32(s, 0) != mapRequestHeaders {
+		if hs == nil || !mutable(u32(s, 0)) {
 			return rNotFound
 		}
 		b, ok := readBytes(m, u32(s, 1), u32(s, 2))
@@ -199,7 +210,7 @@ func (h *host) functions() map[string]hostFn {
 	edit := func(name string, fn func(hs *[]pair, k, v string)) {
 		add(name, 5, func(ctx context.Context, in *instance, m api.Module, s []uint64) uint64 {
 			hs := headers(in, u32(s, 0))
-			if hs == nil || u32(s, 0) != mapRequestHeaders {
+			if hs == nil || !mutable(u32(s, 0)) {
 				return rNotFound
 			}
 			k, ok := key(m, s, 1)
@@ -231,7 +242,7 @@ func (h *host) functions() map[string]hostFn {
 	edit("proxy_add_header_map_value", func(hs *[]pair, k, v string) { *hs = append(*hs, pair{k, v}) })
 	add("proxy_remove_header_map_value", 3, func(ctx context.Context, in *instance, m api.Module, s []uint64) uint64 {
 		hs := headers(in, u32(s, 0))
-		if hs == nil || u32(s, 0) != mapRequestHeaders {
+		if hs == nil || !mutable(u32(s, 0)) {
 			return rNotFound
 		}
 		k, ok := key(m, s, 1)

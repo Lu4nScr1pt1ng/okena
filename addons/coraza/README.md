@@ -38,4 +38,11 @@ coraza-okena: GET /item?id=1'%20OR%20'1'='1 from 203.0.113.9: deny (rules 942100
 With `phases request_body` the body goes through the rules too (URL-encoded
 forms, JSON, multipart, by the CRS's body processors); a body longer than
 `body` is judged on its first bytes, as with `SecRequestBodyLimitAction
-ProcessPartial`. Responses are not inspected.
+ProcessPartial`.
+
+With `response_headers` or `response_body` among its phases, the request's
+transaction goes on into the response: its status and fields (phase 3) and,
+with `response_body`, a counted body up to `body` (phase 4: the CRS's data
+leakage rules, for the MIME types `SecResponseBodyMimeType` names). A
+response the rules refuse is replaced by the rules' status and a short body;
+the backend's never reaches the client.

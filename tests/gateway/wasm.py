@@ -109,6 +109,12 @@ addon bplug {{
     body 1KiB
     timeout 2s
 }}
+addon resp {{
+    run {HOST} -plugin {GOP} -instances 2 -cache {CACHE}
+    phases request_headers response_body
+    body 4KiB
+    timeout 2s
+}}
 addon rplug {{
     run {HOST} -plugin {RUSTP if rust else GOP} -instances 1 -cache {CACHE}
     timeout 2s
@@ -123,6 +129,7 @@ http 127.0.0.1:{L} {{
     http2 on
     route /r/* {{ addon rplug; to pool echo }}
     route /bd/* {{ addon bplug; to pool echo }}
+    route /resp/* {{ addon resp; to pool echo }}
     route /b/* {{ addon broken; to pool echo }}
     route /* {{ addon plug; to pool echo }}
 }}
@@ -170,6 +177,12 @@ http 127.0.0.1:{L} {{
         check("  and answers from it", s == 413 and h.get("x-plugin") == "body", (s, h))
         s, h, b = get("/bd/x", body=b"y" * 3000)
         check("  past `body 1KiB`: its first bytes, end_of_stream false", s == 200 and b"x-body-size: 1024" in b and b"x-body-more: yes" in b, (s, b[-300:]))
+        s, h, b = get("/resp/page")
+        check("response phases: the request's context goes on (it kept the path), a field added, one removed",
+              s == 200 and h.get("x-wasm-resp") == "for /resp/page" and "server" not in h and b"x-wasm: yes" in b, (s, h))
+        s, h, b = get("/resp/page", [("X-Note", "a secret")])
+        check("  proxy_on_response_body: the body judged, the response replaced", s == 500 and h.get("x-plugin") == "leak"
+              and b == b"withheld\n", (s, h, b))
         s, h, b = get("/b/x")
         check("not a plugin: the addon exits, on_error allow lets the request on", s == 200 and b"GET /b/x" in b, (s, b))
         check("  and the log says why", "compiling the plugin" in log.read_text(), log.read_text()[-500:])

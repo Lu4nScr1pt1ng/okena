@@ -37,6 +37,8 @@ const (
 	actionContinue    = 0
 	actionPause       = 1
 	mapRequestHeaders = 0
+	mapResponseHeaders = 2
+	bufResponseBody   = 1
 	mapCallHeaders    = 6
 	mapCallTrailers   = 7
 	bufRequestBody    = 0
@@ -76,6 +78,9 @@ type stream struct {
 	props     map[string][]byte
 	req       *requestInfo
 	body      []byte
+	resp      []pair // the response's headers (:status first)
+	respBody  []byte
+	at        time.Time
 }
 
 type requestInfo struct {
@@ -192,7 +197,8 @@ func (h *host) instantiate(ctx context.Context, n int) (*instance, error) {
 		}
 	}
 	for _, f := range []string{"proxy_on_memory_allocate", "malloc", "proxy_on_context_create", "proxy_on_vm_start",
-		"proxy_on_configure", "proxy_on_request_headers", "proxy_on_request_body", "proxy_on_done", "proxy_on_log", "proxy_on_delete",
+		"proxy_on_configure", "proxy_on_request_headers", "proxy_on_request_body", "proxy_on_response_headers",
+		"proxy_on_response_body", "proxy_on_done", "proxy_on_log", "proxy_on_delete",
 		"proxy_on_tick", "proxy_on_http_call_response"} {
 		if fn := m.ExportedFunction(f); fn != nil {
 			in.fn[f] = fn

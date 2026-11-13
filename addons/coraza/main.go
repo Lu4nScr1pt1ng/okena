@@ -29,6 +29,8 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/corazawaf/coraza/v3"
 	"github.com/corazawaf/coraza/v3/types"
@@ -73,16 +75,110 @@ func main() {
 	}
 	log.Printf("ready: CRS %v, paranoia %d, %s", *crs, *paranoia, map[bool]string{true: "detection only", false: "blocking"}[*detect])
 
+	go sweep()
 	log.Fatal(addon.Run(func(r *addon.Request, a *addon.Answer) {
-		judge(waf, r, a, *detect)
+		switch {
+		case r.Phase == addon.PhaseLog:
+			if k := take(r.Stream); k != nil {
+				end(k.tx)
+			}
+		case r.IsResponse():
+			judgeResponse(waf, r, a)
+		default:
+			judge(waf, r, a, *detect)
+		}
 	}, addon.Options{Workers: *workers}))
+}
+
+// transactions kept from a request to its response (the addon's response
+// phases: the CRS's phases 3 and 4) or its log
+type kept struct {
+	tx types.Transaction
+	at time.Time
+}
+
+var txs = struct {
+	sync.Mutex
+	m map[addon.StreamID]*kept
+}{m: map[addon.StreamID]*kept{}}
+
+func keep(id addon.StreamID, tx types.Transaction) {
+	txs.Lock()
+	txs.m[id] = &kept{tx, time.Now()}
+	txs.Unlock()
+}
+
+func take(id addon.StreamID) *kept {
+	txs.Lock()
+	defer txs.Unlock()
+	k := txs.m[id]
+	delete(txs.m, id)
+	return k
+}
+
+func end(tx types.Transaction) {
+	tx.ProcessLogging()
+	tx.Close()
+}
+
+// a response that never came (okena answered, the client went): its
+// transaction ends after a minute
+func sweep() {
+	for range time.Tick(10 * time.Second) {
+		txs.Lock()
+		for id, k := range txs.m {
+			if time.Since(k.at) > time.Minute {
+				end(k.tx)
+				delete(txs.m, id)
+			}
+		}
+		txs.Unlock()
+	}
+}
+
+func judgeResponse(waf coraza.WAF, r *addon.Request, a *addon.Answer) {
+	k := take(r.Stream)
+	var tx types.Transaction
+	if k != nil {
+		tx = k.tx
+	} else {
+		tx = waf.NewTransaction()
+		tx.ProcessURI(r.Target, r.Method, "HTTP/1.1")
+	}
+	for _, f := range r.Headers {
+		tx.AddResponseHeader(f.Name, f.Value)
+	}
+	it := tx.ProcessResponseHeaders(r.Status, "HTTP/1.1")
+	if it == nil && len(r.Body) > 0 {
+		if it, _, _ = tx.WriteResponseBody(r.Body); it == nil {
+			it, _ = tx.ProcessResponseBody()
+		}
+	}
+	if it != nil {
+		ids := matched(tx)
+		log.Printf("the response to %s %s: %s (rules %s)", r.Method, r.Target, it.Action, ids)
+		status := it.Status
+		if status < 200 || status > 599 {
+			status = 403
+		}
+		a.Respond(status)
+		a.Add("content-type", "text/plain")
+		a.Body([]byte(strconv.Itoa(status) + " withheld by the web application firewall\n"))
+	}
+	if r.Last || it != nil {
+		end(tx)
+	} else {
+		keep(r.Stream, tx)
+	}
 }
 
 func judge(waf coraza.WAF, r *addon.Request, a *addon.Answer, detect bool) {
 	tx := waf.NewTransaction()
+	ended := false
 	defer func() {
-		tx.ProcessLogging()
-		tx.Close()
+		if !ended {
+			end(tx)
+		}
 	}()
 	ip := r.ClientIP()
 	client := ""
@@ -111,6 +207,10 @@ func judge(waf coraza.WAF, r *addon.Request, a *addon.Answer, detect bool) {
 			if ids := matched(tx); ids != "" {
 				a.Set("x-waf-rules", ids)
 			}
+		}
+		if !r.Last { // its response (or log) comes later: the same transaction
+			ended = true
+			keep(r.Stream, tx)
 		}
 		return
 	}

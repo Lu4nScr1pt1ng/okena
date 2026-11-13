@@ -334,7 +334,8 @@ http 127.0.0.1:{L} {{
                 break
             time.sleep(0.05)
         check("log: each exchange, its method, target, host, status, bytes and time", len(lines) == 3
-              and all(l.startswith(f"GET /lg/x{i} t 200 ") and int(l.split()[4]) > 0 for i, l in enumerate(lines)), lines)
+              and sorted(l.split()[1] for l in lines) == ["/lg/x0", "/lg/x1", "/lg/x2"]	# (workers' rings: no order between them)
+              and all(l.startswith("GET /lg/x") and l.split()[2:4] == ["t", "200"] and int(l.split()[4]) > 0 for l in lines), lines)
         # the pool an addon chooses
         s, h, b = get("/a/pool")
         check("the addon chooses the pool: another backend answers", s == 200 and b.startswith(b"OTHER POOL"), b[:80])

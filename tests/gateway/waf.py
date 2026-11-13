@@ -40,6 +40,9 @@ class Echo(http.server.BaseHTTPRequestHandler):
         got = self.rfile.read(n) if n else b""
         b = (self.requestline + "\n" + str(self.headers)).encode() + b"body: " + got
         self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        if self.headers.get("x-echo-leak"):
+            self.send_header("X-Leak", "yes")
         self.send_header("Content-Length", str(len(b)))
         self.end_headers()
         self.wfile.write(b)
@@ -72,6 +75,9 @@ def main():
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-waf-"))
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", B), Echo)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
+    (tmp / "resp.rules").write_text("""SecRule RESPONSE_HEADERS:X-Leak "@streq yes" "id:9001,phase:3,deny,status:403,log,msg:'a leaky field'"
+SecRule RESPONSE_BODY "@contains BEGIN RSA PRIVATE KEY" "id:9002,phase:4,deny,status:502,log,msg:'a key in the body'"
+""")
     conf = tmp / "okena.conf"
     conf.write_text(f"""okena {{ workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s }}
 addon waf {{
@@ -84,6 +90,12 @@ addon wafb {{
     body 16KiB
     timeout 500ms
 }}
+addon wafr {{
+    run {WAF} -workers 2 -rules {tmp}/resp.rules
+    phases request_headers response_body
+    body 8KiB
+    timeout 500ms
+}}
 addon wafd {{
     run {WAF} -detect -workers 1
     timeout 500ms
@@ -93,6 +105,7 @@ http 127.0.0.1:{L} {{
     http2 on
     route /d/* {{ addon wafd; to pool echo }}
     route /b/* {{ addon wafb; to pool echo }}
+    route /r/* {{ addon wafr; to pool echo }}
     route /* {{ addon waf; to pool echo }}
 }}
 """)
@@ -125,6 +138,14 @@ http 127.0.0.1:{L} {{
         check("  an ordinary form: on, the backend gets its body", s == 200 and b"body: user=alice&pass=correct-horse-battery" in b, (s, b))
         s, b = get("/login", ua + form, b"user=admin&pass=1%27%20OR%20%271%27%3D%271")
         check("  without request_body: the body is not judged", s == 200, s)
+        s, b = get("/r/page", ua)
+        check("response phases: an ordinary response goes on", s == 200 and b"GET /r/page" in b, (s, b[:60]))
+        s, b = get("/r/page", ua + [("X-Echo-Leak", "yes")])
+        check("  a rule on the response's fields (phase 3): refused, 403", s == 403 and b"withheld" in b, (s, b))
+        s, b = get("/r/page", ua + [("X-Payload", "-----BEGIN RSA PRIVATE KEY-----")])
+        check("  a rule on the response's body (phase 4): withheld, 502", s == 502 and b"withheld" in b and b"PRIVATE" not in b, (s, b))
+        s, b = get("/r/item?id=1%27%20OR%20%271%27=%271", ua)
+        check("  the request still judged first (SQL injection: 403, no backend)", s == 403 and b"refused" in b, (s, b))
         s, b = get("/d/item?id=1%27%20OR%20%271%27=%271", ua)
         check("-detect: it goes on, the backend hears the rules (942100: SQL injection)", s == 200 and b"x-waf-rules:" in b
               and b"942100" in b, (s, b))

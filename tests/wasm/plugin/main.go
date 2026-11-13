@@ -37,11 +37,28 @@ func (p *plugin) NewHttpContext(uint32) types.HttpContext { return &stream{p: p}
 
 type stream struct {
 	types.DefaultHttpContext
-	p *plugin
+	p    *plugin
+	path string // kept from the request to its response
+}
+
+func (s *stream) OnHttpResponseHeaders(int, bool) types.Action {
+	proxywasm.AddHttpResponseHeader("x-wasm-resp", "for "+s.path)
+	proxywasm.RemoveHttpResponseHeader("server")
+	return types.ActionContinue
+}
+
+func (s *stream) OnHttpResponseBody(size int, end bool) types.Action {
+	body, err := proxywasm.GetHttpResponseBody(0, size)
+	if err == nil && strings.Contains(string(body), "secret") {
+		proxywasm.SendHttpResponse(500, [][2]string{{"x-plugin", "leak"}}, []byte("withheld\n"), -1)
+		return types.ActionPause
+	}
+	return types.ActionContinue
 }
 
 func (s *stream) OnHttpRequestHeaders(int, bool) types.Action {
 	path, _ := proxywasm.GetHttpRequestHeader(":path")
+	s.path = path
 	switch {
 	case strings.HasSuffix(path, "/deny"):
 		proxywasm.SendHttpResponse(403, [][2]string{{"x-plugin", "test"}, {"content-type", "text/plain"}}, []byte("denied by wasm\n"), -1)
