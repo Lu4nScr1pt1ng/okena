@@ -34,6 +34,8 @@ bss
 	g_hd_t		rd UPSLOT_MAX		; tick it was parked at
 	g_hd_pooled	rb UPSLOT_MAX		; 1 while in a pool
 	g_us_wgen	rd UPSLOT_MAX		; io_uring: watch generation per slot
+	g_hd_watched	rb UPSLOT_MAX		; io_uring: 1 while a watch is posted
+	g_take_peek	db ?			; pool_take: the one taken had none (h_connect peeks)
 	g_hd_server	rd UPSLOT_MAX		; pooled handle -> its server
 end bss
 
@@ -42,7 +44,17 @@ end bss
 ; instead of failing the next request that would reuse it.
 ;   io_uring: a POLL_ADD (POLLIN, POLLRDHUP) that reads nothing; taking
 ;   the connection cancels it, and a late completion is recognised by
-;   the slot's watch generation.
+;   the slot's watch generation. Posted by the tick (pool_expire) for the
+;   connections parked since the one before, not at each park: under load a
+;   connection goes back to work within microseconds, and a watch and its
+;   cancel for every request cost 5% of the rate, and after 1000 connections
+;   closed at once held a worker inside io_uring_enter for seconds (a
+;   reproducible stall; without them, none). One taken before its first tick
+;   is looked at instead (h_connect): a peek that does not wait, before the
+;   request goes; a FIN or bytes nobody asked for there and it is closed
+;   and another taken, so the request (even with a body) never meets it.
+;   `connect warm=` ones are watched at once (their connect's outcome comes
+;   through it), and so are TLS ones (a kTLS socket may hold a ticket).
 ;   epoll: the descriptor's registration names the pool (EK_POOL).
 
 EK_POOL		:= 4
@@ -52,6 +64,7 @@ pool_watch:
 	mov	[g_hd_server+rsi*4],edi
 	cmp	dword [g_engine],ENGINE_EPOLL
 	je	.epoll
+	mov	byte [g_hd_watched+rsi],1
 	push	rsi
 	call	ring_get_sqe
 	pop	rsi
@@ -82,10 +95,16 @@ pool_unwatch:
 	push	rax
 	mov	ecx,eax
 	inc	dword [g_us_wgen+rcx*4]		; a late completion is now stale
+	mov	byte [g_take_peek],1
+	cmp	byte [g_hd_watched+rcx],0
+	je	.unwatched			; (parked since the last tick: none posted)
+	mov	byte [g_take_peek],0
+	mov	byte [g_hd_watched+rcx],0
 	call	ring_get_sqe
 	pop	rcx
 	push	rcx
 	mov	byte [rax+SQE_OPCODE],IORING_OP_ASYNC_CANCEL
+	mov	byte [rax+SQE_FLAGS],IOSQE_CQE_SKIP_SUCCESS
 	; cancel by user_data: the watch as it was posted
 	mov	edx,[g_us_wgen+rcx*4]
 	dec	edx
@@ -97,6 +116,7 @@ pool_unwatch:
 	mov	[rax+SQE_ADDR],rdx
 	mov	rcx,OP_IGNORE shl 56
 	mov	[rax+SQE_USER_DATA],rcx
+.unwatched:
 	pop	rax
 .done:
 	ret
@@ -109,6 +129,7 @@ on_pool_watch:
 	jne	.stale				; taken since; the cancel or its use won
 	cmp	r14,-ECANCELED
 	je	.stale
+	mov	byte [g_hd_watched+rbx],0	; (it ended)
 	mov	edi,ebx
 	jmp	pool_drop_handle
 .stale:
@@ -207,7 +228,19 @@ pool_put:
 	mov	eax,[g_tick]
 	mov	[g_hd_t+rsi*4],eax
 	call	pool_link
+	cmp	dword [g_engine],ENGINE_EPOLL
+	je	.now				; (epoll: its registration, at once)
+	mov	eax,[g_sv_pool+rdi*4]
+	imul	rax,rax,PL_SIZE
+	cmp	dword [g_pools+rax+PL_TLS],0
+	je	@f
+.now:
 	call	pool_watch
+	clc
+	ret
+@@:
+	mov	[g_hd_server+rsi*4],edi		; io_uring: watched from the next tick
+	mov	byte [g_hd_watched+rsi],0
 	clc
 	ret
 .full:
@@ -274,6 +307,8 @@ pool_close_handle:
 
 ; Tick: close idle connections parked longer than their pool's `connect idle=`
 ; (POOL_IDLE; they are at the old end of each list).
+; io_uring: then the ones parked since the last tick get their watch (they
+; are the newest, at the head).
 pool_expire:
 	push	rbx
 	push	r12
@@ -292,7 +327,7 @@ pool_expire:
 	mov	eax,[g_tick]
 	sub	eax,[g_hd_t+r12*4]
 	cmp	eax,ecx
-	jbe	.next
+	jbe	.fresh
 	mov	edi,ebx
 	mov	esi,r12d
 	call	pool_unlink
@@ -304,6 +339,26 @@ pool_expire:
 	mov	edi,r12d
 	call	pool_close_handle
 	jmp	.oldest
+.fresh:
+	cmp	dword [g_engine],ENGINE_EPOLL
+	je	.next
+	mov	r12d,[g_pool_head+rbx*4]
+.walk:
+	test	r12d,r12d
+	jz	.next
+	dec	r12d
+	mov	eax,[g_hd_t+r12*4]
+	inc	eax
+	cmp	eax,[g_tick]
+	jb	.next				; parked before the last tick: watched then
+	cmp	byte [g_hd_watched+r12],0
+	jne	@f
+	mov	edi,ebx
+	mov	esi,r12d
+	call	pool_watch
+@@:
+	mov	r12d,[g_hd_next+r12*4]
+	jmp	.walk
 .next:
 	inc	ebx
 	jmp	.server
@@ -458,8 +513,11 @@ warm_one:
 	mov	[rax+SQE_USER_DATA],rcx
 	mov	edi,ebx
 	mov	esi,r12d
-	call	pool_put			; (its watch: the next SQE, linked)
-	jnc	.ok
+	call	pool_put
+	jc	@f
+	call	pool_watch			; (the next SQE, linked: the connect's outcome)
+	jmp	.ok
+@@:
 	mov	edi,r12d			; (not reached: room was looked at)
 	call	pool_close_handle
 	jmp	.fail

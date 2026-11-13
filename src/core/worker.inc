@@ -15,6 +15,8 @@ bss
 	g_bp_gap	dq ?		; the recent gap between events (moving average)
 	g_bp_t0		dq ?		; when this wait began
 	g_reaped_mark	dd ?
+	g_tick_due	dq ?		; TSC of the next tick (0: the ring's timer drives it)
+	g_tick_len	dq ?		; a second, in TSC ticks
 end bss
 
 rodata
@@ -107,7 +109,7 @@ worker_main:
 	call	bulk_pipes_init			; (after the lockdown, which says whether the
 						; ring makes normal descriptors; before seccomp)
 	call	arm_accepts
-	call	arm_timer
+	call	tick_clock_init
 	call	arm_signal
 	call	addon_arm
 	call	qs_worker_init			; http3: the UDP sockets
@@ -155,6 +157,8 @@ worker_main:
 	; last completion instead of sleeping: a sleep and a wakeup per
 	; message cost more than the message. When the window passes, block.
 .loop:
+	call	tick_due
+	call	acc_resume			; accepts left to the others, back
 	cmp	dword [g_draining],2
 	jne	.poll
 	cmp	dword [g_active],0
@@ -210,6 +214,7 @@ worker_main:
 	mov	eax,[g_reaped]
 	cmp	eax,[g_reaped_mark]
 	jne	.spin_hit			; progress: restart the window
+	call	tick_due
 	pause
 	rdtsc
 	shl	rdx,32
@@ -250,7 +255,7 @@ worker_main:
 	xor	edi,edi				; it came: no sleep
 @@:
 	pin_wait_begin
-	call	ring_enter
+	call	ring_enter_tick			; (asleep no later than the next tick)
 	pin_wait_end
 	call	bp_seen
 	call	ring_reap
@@ -438,7 +443,50 @@ tsc_calibrate:
 	pop	rbx
 	ret
 
-; Multishot one-second tick: idle timeouts and drain deadlines.
+; The one-second tick (idle timeouts, drain deadlines, the heartbeat, the
+; overload manager's lateness) runs on the loop's own clock, as the epoll
+; engine's does: the loop looks at the TSC each turn and never sleeps past the
+; next tick. The ring's own timer was the clock before; under a burst of new
+; connections its completion came 0.3-1.4 s late while the loop turned every
+; millisecond, so a late tick said the loop was late when it was not (overload
+; level 2-4: `Connection: close` on every answer halved the rate at 400
+; connections and up), and a heartbeat that late is near the watchdog's 2 s.
+; Without a calibrated TSC, the ring's multishot timer stays.
+tick_clock_init:
+	mov	rcx,[g_tsc_per_us]
+	test	rcx,rcx
+	jz	arm_timer
+	imul	rcx,rcx,1000000
+	mov	[g_tick_len],rcx
+	rdtsc
+	shl	rdx,32
+	or	rax,rdx
+	add	rax,rcx
+	mov	[g_tick_due],rax
+	ret
+
+; Each turn of the loop: the tick when it is due. Clobbers what tick_work does.
+tick_due:
+	mov	rcx,[g_tick_due]
+	test	rcx,rcx
+	jz	.no
+	rdtsc
+	shl	rdx,32
+	or	rax,rdx
+	cmp	rax,rcx
+	jb	.no
+	add	rcx,[g_tick_len]		; the next one, a second on
+	cmp	rax,rcx
+	jb	@f
+	mov	rcx,rax				; far behind (a stopped worker): no
+	add	rcx,[g_tick_len]		; replay of the ticks it missed
+@@:
+	mov	[g_tick_due],rcx
+	jmp	tick_work
+.no:
+	ret
+
+; Multishot one-second tick, without a TSC clock.
 arm_timer:
 	call	ring_get_sqe
 	mov	byte [rax+SQE_OPCODE],IORING_OP_TIMEOUT

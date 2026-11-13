@@ -2413,7 +2413,7 @@ http_send_plain:
 	cmp	edx,HS_ADSEND
 	je	addon_rbb_send			; (an addon's own answer: its body after its head)
 	cmp	edx,HS_SEND_HEAD
-	je	http_req_pump
+	je	.head_sent
 	cmp	edx,HS_REQ_SEND
 	je	http_req_pump
 	cmp	edx,HS_RESP_SEND
@@ -2453,6 +2453,12 @@ http_send_plain:
 	cmp	edx,HS_H2TUN
 	je	http_h2tun_read			; (its sends to the client: the next read)
 	ret
+.head_sent:
+	cmp	byte [g_up_peek+rbx],UPK_BAD	; its pooled connection was closed or
+	jne	http_req_pump			; dirty before it went (on_h_peek):
+	mov	byte [g_up_peek+rbx],0		; again, on another (a request without
+	call	http_retry_fresh		; a body, from a reused connection)
+	jmp	http_req_pump
 .hedged:
 	test	ecx,ecx
 	jz	hedge_sent			; (its old backend: nothing to it now)

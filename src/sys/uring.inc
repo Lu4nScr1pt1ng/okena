@@ -19,6 +19,7 @@ IORING_OFF_SQES			:= 0x10000000
 
 ; io_uring_enter flags
 IORING_ENTER_GETEVENTS		:= 1 shl 0
+IORING_ENTER_EXT_ARG		:= 1 shl 3
 IORING_ENTER_REGISTERED_RING	:= 1 shl 4
 
 ; io_uring_register opcodes

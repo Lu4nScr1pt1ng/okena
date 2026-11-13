@@ -180,6 +180,7 @@ h_sqe_fd:
 ; ebx = session: a connection to a server of its pool, an idle one from
 ; that server's pool when there is one.
 h_connect:
+	mov	byte [g_up_peek+rbx],0
 	call	session_ptr
 	mov	ecx,[rax+S_POOL]
 	imul	rcx,rcx,PL_SIZE
@@ -255,7 +256,31 @@ h_connect:
 	mov	[g_upslot+rbx*4],eax
 	pop	r13
 	pop	r12
+	cmp	byte [g_take_peek],0
+	je	http_connected
+	; parked since the last tick, so not watched: whether the backend
+	; closed it or wrote to it meanwhile (on_h_peek). A request without a
+	; body goes in the same submission, right behind the peek (it may be
+	; sent again: http_send_plain); one with a body waits for it.
+	h_rec
+	mov	byte [g_up_peek+rbx],UPK_WAIT
+	test	dword [r15+H_FLAGS],HX_NOBODY
+	jz	@f
+	mov	byte [g_up_peek+rbx],UPK_BESIDE
+	call	.peek
 	jmp	http_connected
+@@:
+.peek:
+	mov	edi,OP_H_PEEK
+	mov	esi,ebx
+	call	sess_sqe
+	mov	byte [rax+SQE_OPCODE],IORING_OP_RECV
+	lea	rcx,[g_peek_byte]
+	mov	[rax+SQE_ADDR],rcx
+	mov	dword [rax+SQE_LEN],1
+	mov	dword [rax+SQE_OP_FLAGS],MSG_PEEK or MSG_DONTWAIT
+	mov	ecx,SIDE_UP
+	jmp	h_sqe_fd
 .epoll_reuse:
 	mov	[r12+S_UPFD],eax
 	; its epoll registration still names the session that parked it
@@ -379,6 +404,50 @@ h_upclose:
 	syscall
 .done:
 	pop	r12
+	ret
+
+bss
+	g_peek_byte	db ?
+	g_up_peek	rb 1 shl 20	; a session's peek of its pooled connection: UPK_*
+end bss
+UPK_WAIT	:= 1		; the request waits for it
+UPK_BESIDE	:= 2		; the request went right behind it
+UPK_BAD		:= 3		; and the connection was closed or dirty: send it again
+
+; A pooled connection's peek (h_connect): -EAGAIN, nothing there, and the
+; request goes (or went); a FIN, an error or bytes the backend had no reason
+; to send, and it is closed and another one found (for a request already
+; sent behind the peek: when that send is done, http_send_plain).
+on_h_peek:
+	mov	[g_cur_sess],ebx
+	call	sess_complete
+	jc	.out
+	cmp	dword [rax+S_STATE],ST_CLOSING
+	je	.closing
+	movzx	eax,byte [g_up_peek+rbx]
+	mov	byte [g_up_peek+rbx],0
+	cmp	r14,-EAGAIN
+	je	.clean
+	cmp	eax,UPK_BESIDE
+	jne	.another
+	mov	byte [g_up_peek+rbx],UPK_BAD
+	ret
+.clean:
+	cmp	eax,UPK_WAIT
+	je	http_connected
+	ret
+.another:
+	cmp	eax,UPK_WAIT
+	jne	.out
+	call	h_upclose
+	h_rec
+	and	dword [r15+H_FLAGS],not HX_REUSED
+	mov	dword [r15+H_STATE],HS_CONNECT
+	jmp	h_connect
+.closing:
+	mov	edi,ebx
+	jmp	session_maybe_free
+.out:
 	ret
 
 ; completions: ebx = session, r12d = generation, r14 = res

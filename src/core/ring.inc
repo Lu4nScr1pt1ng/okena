@@ -28,6 +28,9 @@ bss
 	g_enter_flags	dd ?
 	g_reaped	dd ?		; completions handled so far
 	g_uparams:	rb UP_SIZE
+	align 8
+	g_wait_ts	rq 2		; __kernel_timespec: how long a wait may last
+	g_wait_arg	rq 3		; io_uring_getevents_arg: no sigmask, ts = g_wait_ts
 end bss
 
 ; eax = 0 or -errno (or -1 when the kernel lacks a required feature).
@@ -336,9 +339,49 @@ ring_get_sqe:
 ; Submit pending SQEs without waiting.
 ring_flush:
 	xor	edi,edi
+	jmp	ring_enter
+
+; Submit pending SQEs and wait for at least edi completions, but not past the
+; next tick (g_tick_due, worker.inc): the wait ends there (-ETIME), and the loop
+; runs the tick.
+ring_enter_tick:
+	test	edi,edi
+	jz	ring_enter
+	mov	rcx,[g_tick_due]
+	test	rcx,rcx
+	jz	ring_enter
+	rdtsc
+	shl	rdx,32
+	or	rax,rdx
+	sub	rcx,rax
+	jbe	.due
+	mov	rax,rcx
+	xor	edx,edx
+	div	qword [g_tsc_per_us]		; µs to the tick
+	inc	rax				; (never early)
+	imul	rax,rax,1000
+	xor	edx,edx
+	mov	ecx,1000000000
+	div	rcx
+	mov	[g_wait_ts],rax
+	mov	[g_wait_ts+8],rdx
+	lea	rax,[g_wait_ts]
+	mov	[g_wait_arg+16],rax
+	lea	r8,[g_wait_arg]
+	mov	r9d,24
+	mov	r10d,[g_enter_flags]
+	or	r10d,IORING_ENTER_EXT_ARG
+	jmp	ring_enter_arg
+.due:
+	xor	edi,edi				; due already: no wait
 
 ; Submit pending SQEs and wait for at least edi completions.
 ring_enter:
+	mov	r10d,[g_enter_flags]
+	xor	r8d,r8d
+	xor	r9d,r9d
+; r8 = io_uring_getevents_arg or 0, r9 = its size, r10d = the flags
+ring_enter_arg:
 	mov	eax,[g_sq_tail]
 	mov	rdx,[g_sq_tail_ptr]
 	mov	[rdx],eax			; x86 stores are ordered: SQE contents first
@@ -346,9 +389,6 @@ ring_enter:
 	sub	esi,[g_sq_flushed]
 	mov	edx,edi
 	mov	edi,[g_enter_fd]
-	mov	r10d,[g_enter_flags]
-	xor	r8d,r8d
-	xor	r9d,r9d
 	mov	eax,SYS_io_uring_enter
 	syscall
 	test	eax,eax
@@ -409,7 +449,8 @@ OP_B_RD_c	:= 44		; the client is readable
 OP_B_RD_u	:= 45
 OP_B_WR_c	:= 46		; room to the upstream (client to upstream)
 OP_B_WR_u	:= 47		; room to the client
-OP_COUNT	:= 49			; (OP_ADDON = 48: addon/worker.inc)
+OP_H_PEEK	:= 49		; http: a pooled connection looked at before reuse
+OP_COUNT	:= 50			; (OP_ADDON = 48: addon/worker.inc)
 
 rodata
 	align 8
@@ -425,7 +466,7 @@ rodata
 			dq on_zc_in, on_zc_out, on_zc_drain
 			dq on_zc_fd, on_zc_poll
 			dq on_b_fd_c, on_b_fd_u, on_b_rd_c, on_b_rd_u, on_b_wr_c, on_b_wr_u
-			dq on_addon
+			dq on_addon, on_h_peek
 end rodata
 
 ring_reap:
@@ -480,10 +521,12 @@ ring_reap:
 	call	qword [dispatch_tbl+rax*8]
 	dec	ebp
 	jnz	.next
-	; long batch: hand the kernel what is queued so far
-	call	ring_flush
-	mov	ebp,REAP_BUDGET
-	jmp	.next
+	; A long batch ends here, the rest left in the queue: the loop's own work
+	; (the tick, HTTP/2 and QUIC sends, hellos waiting for the budget) comes
+	; between batches, and its next wait returns at once for what is left.
+	; Flushing and reaping on instead never ended under steady load (each
+	; flush ran more completions): 0.3-1.2 s without a tick at 2000
+	; connections.
 .done:
 	pop	r15
 	pop	r14

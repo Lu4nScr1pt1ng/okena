@@ -84,6 +84,16 @@ connections from 8 clients: p99 630 → 510 µs (io_uring), 730 → 549 µs
 (epoll), the rate a little higher; from 64 clients p99 4.9 → 2.8 ms and
 5.5 → 3.0 ms.
 
+A busy io_uring worker wins a burst all the same: its accept is armed again
+at once and finds the queue full, while a sleeping worker's wakes up to an
+empty one. With 512 keep-alive connections opened at once, one of two
+workers held all of them for their whole life, at half the service's rate.
+So each worker says in its heartbeat line how many sessions it holds, and
+one that holds more than another ready worker by over 16 (and a sixteenth)
+leaves its accepts unarmed until the others catch up; the least loaded never
+does, so an accept always waits somewhere. On two workers, 512 connections:
+77k → 158k requests a second, 2000: 75k → 123k.
+
 **Connection steering.** A `SO_ATTACH_REUSEPORT_EBPF` program picks the
 worker whose CPU received the packet (`SO_INCOMING_CPU`/RX queue), so a
 connection's interrupts, softirq, socket and worker share one core and its
@@ -348,6 +358,18 @@ the client side.
   if it is idempotent or had no body sent yet; this does not count
   against the retry budget. Pools close idle connections a little before
   the backend would (`idle`, default below the common 60 s / 75 s).
+* **Idle connections are watched, without a cost per request.** A
+  connection in a pool is watched (io_uring: a poll) so that one the backend
+  closes, or writes to unasked, leaves the pool before a request meets it.
+  The watch is posted by the next tick, not at each park: under load a
+  connection goes back to work within microseconds, and a poll and its
+  cancel for every request cost 5% of the rate and, after a thousand
+  connections closed at once, held a worker inside `io_uring_enter` for
+  seconds. One taken before its watch is peeked at instead (a receive that
+  does not wait): a request without a body goes right behind the peek and
+  is sent again on another connection if the peek found a FIN or bytes; one
+  with a body waits for the peek. Unlike the watch, which a reuse could
+  outrun, the peek is exact.
 * **Black holes.** A backend that vanishes without RST is found by
   `TCP_USER_TIMEOUT` and keepalive on upstream sockets, connect
   deadlines, and response deadlines, not by waiting for the kernel's
@@ -412,7 +434,17 @@ What buys them:
   the kernel offers it.
 * **Fewer syscalls, not faster ones.** One `io_uring_enter` per iteration
   for everything; completions reaped in budgets so a burst on one
-  connection cannot delay the others by more than one budget.
+  connection cannot delay the others by more than one budget. A budget
+  spent ends the reaping: the loop's own work (the tick, HTTP/2 and QUIC
+  sends, hellos waiting) comes between budgets, and what is left is reaped
+  next. (Flushing and reaping on never ended under steady load.)
+* **The loop keeps its own time.** The one-second tick (timeouts, the
+  heartbeat, the overload manager's lateness) runs when the TSC says it is
+  due, looked at each turn, and a wait never lasts past it. io_uring's own
+  timeout was the clock before: under a burst of connections its completion
+  came 0.3-1.4 s late while the loop turned every millisecond, so the
+  overload manager saw a late loop that was not and answered with
+  `Connection: close` (half the rate from 400 connections up).
 * **Predictable CPU.** Workers pinned under load (`pin_workers auto`: one
   that uses more than half a core pins itself, one under a fifth lets go,
   measured: pinned all the time on a host shared with anything else, p99.9

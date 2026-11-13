@@ -631,7 +631,7 @@ SOPS_UP		:= (1 shl OP_S_SOCKET) or (1 shl OP_S_CONNECT) or (1 shl OP_S_LTIMEOUT)
 		or (1 shl OP_S_RECV_U) or (1 shl OP_S_SEND_U) or (1 shl OP_S_SEND_PP) \
 		or (1 shl OP_S_SEND_PFX) or (1 shl OP_H_RECV_U) or (1 shl OP_H_SEND_U) \
 		or (1 shl OP_H_UKTLS) or (1 shl OP_H_UDRAIN) or (1 shl OP_B_RD_u) \
-		or (1 shl OP_B_WR_c) or (1 shl OP_B_FD_U)
+		or (1 shl OP_B_WR_c) or (1 shl OP_B_FD_U) or (1 shl OP_H_PEEK)
 
 ; ebx = session, r12 = its record, rdx = the ops to cancel (a mask), ecx =
 ; what the cancels complete as (OP_S_CANCEL, counted in S_INFL; OP_IGNORE,
@@ -931,6 +931,10 @@ acc_again:
 	mov	ebx,edi
 	mov	r12d,esi
 	mov	r13,rdx
+	call	load_publish
+	call	acc_rest
+	jc	.rest
+	mov	edi,ebx
 	call	acc_index
 	movzx	ecx,byte [g_acc_armed+rax]
 	test	r12d,IORING_CQE_F_SOCK_NONEMPTY
@@ -953,6 +957,139 @@ acc_again:
 	pop	r13
 	pop	r12
 	pop	rbx
+	ret
+.rest:
+	mov	dword [g_acc_resting],1		; (acc_resume arms it again)
+	jmp	.out
+
+; The accepts' balance (io_uring). A worker busy serving takes a burst of new
+; connections ahead of one that sleeps: its accept is armed again at once and
+; finds the queue full, while the other's wakes up to find it empty. With
+; 512 connections opened at once, one worker took all of them and the other
+; none; kept alive, they stayed so, and the service ran at half its rate. So
+; each worker says how many sessions it holds (HB_LOAD_OFF in its heartbeat
+; line), and one holding more than a ready worker of its generation by over
+; ACC_SLACK (+ a sixteenth) leaves its accepts unarmed: arrivals go to the
+; others' (an accept waits exclusively, one arrival waking one). The least
+; loaded never rests, so some accept always waits. acc_resume, from the loop,
+; arms them again once the others have caught up.
+ACC_SLACK	:= 16
+ACC_RECHECK_US	:= 100
+
+bss
+	g_acc_resting	dd ?		; an accept was left unarmed by acc_rest
+	align 8
+	g_acc_rchk	dq ?		; TSC of acc_resume's next look
+end bss
+
+; This worker's sessions into its heartbeat line. Clobbers rax, rcx.
+load_publish:
+	mov	rax,[g_hb]
+	test	rax,rax
+	jz	.out				; (a test build: no supervisor)
+	mov	ecx,[g_hb_slot]
+	add	rax,rcx
+	mov	ecx,[g_active]
+	mov	[rax+HB_LOAD_OFF],ecx
+.out:
+	ret
+
+; CF when another ready worker holds fewer sessions by more than the slack.
+; Clobbers rax, rcx, rdx, rsi, r8.
+acc_rest:
+	cmp	dword [g_engine],ENGINE_EPOLL
+	je	.no
+	mov	rsi,[g_hb]
+	test	rsi,rsi
+	jz	.no
+	mov	r8d,[g_active]
+	mov	eax,r8d
+	shr	eax,4
+	add	eax,ACC_SLACK
+	sub	r8d,eax				; below this, another is lighter
+	jbe	.no
+	mov	eax,[g_gen]
+	and	eax,1
+	imul	eax,eax,MAX_WORKERS
+	shl	rax,6
+	add	rsi,rax				; this generation's lines
+	xor	ecx,ecx
+.worker:
+	cmp	ecx,[g_workers]
+	jae	.no
+	cmp	ecx,[g_worker_id]
+	je	.next
+	mov	eax,ecx
+	shl	eax,6
+	cmp	dword [rsi+rax+HB_READY_OFF],0
+	je	.next
+	cmp	[rsi+rax+HB_LOAD_OFF],r8d
+	jb	.yes
+.next:
+	inc	ecx
+	jmp	.worker
+.yes:
+	stc
+	ret
+.no:
+	clc
+	ret
+
+; From the loop, every ACC_RECHECK_US while accepts rest: arm them again
+; (one on each socket that has none of this worker's) when this worker is no
+; longer the heavy one.
+acc_resume:
+	cmp	dword [g_acc_resting],0
+	je	.out
+	rdtsc
+	shl	rdx,32
+	or	rax,rdx
+	cmp	rax,[g_acc_rchk]
+	jb	.out
+	mov	rcx,[g_tsc_per_us]
+	imul	rcx,rcx,ACC_RECHECK_US
+	add	rax,rcx
+	mov	[g_acc_rchk],rax
+	cmp	dword [g_draining],0
+	jne	.stop
+	call	load_publish
+	call	acc_rest
+	jc	.out
+.stop:
+	mov	dword [g_acc_resting],0
+	cmp	dword [g_draining],0
+	jne	.out
+	lea	rsi,[.socket]
+	jmp	for_each_socket
+.out:
+	ret
+; edi = socket id: one accept on it unless this worker has one there
+.socket:
+	push	rdi
+	call	acc_index
+	pop	rdi
+	cmp	byte [g_acc_armed+rax],0
+	jne	.has
+	mov	eax,edi
+	and	eax,SID_LISTENER
+	imul	rax,rax,LS_SIZE
+	test	dword [g_listeners+rax+LS_FLAGS],LSF_PEER
+	jz	arm_accept_multi
+	xor	eax,eax				; a resting slot of its group
+.slot:
+	cmp	eax,[g_acc_count]
+	jae	.has
+	imul	rcx,rax,AC_SIZE
+	cmp	[g_acc+rcx+AC_SID],edi
+	jne	@f
+	cmp	dword [g_acc+rcx+AC_ARMED],0
+	jne	@f
+	mov	edi,eax
+	jmp	arm_accept_slot
+@@:
+	inc	eax
+	jmp	.slot
+.has:
 	ret
 
 ; io_uring, once a tick: the listening sockets looked at, and one that has
@@ -3448,6 +3585,7 @@ session_maybe_free:
 	mov	eax,[r12+S_LST]
 	dec	dword [g_ls_active+rax*4]
 	dec	dword [g_active]
+	call	load_publish
 @@:
 	call	hbuf_freed			; (its buffers go back in a while)
 	mov	eax,[g_sess_free]

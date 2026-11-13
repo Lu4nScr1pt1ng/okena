@@ -894,8 +894,10 @@ sleep_ms:
 	ret
 
 ; A heartbeat line: the beat (q, at 0), the crash quarantine's (q, at 8,
-; quarantine.inc), and 1 once the worker serves (d, at HB_READY_OFF)
+; quarantine.inc), 1 once the worker serves (d, at HB_READY_OFF), and the
+; sessions it holds (d, at HB_LOAD_OFF: the accepts' balance, tcp.inc)
 HB_READY_OFF	:= 16
+HB_LOAD_OFF	:= 20
 WORKERS_READY_MS := 3000		; how long the supervisor waits for them
 
 ; edi = worker index.
@@ -910,6 +912,7 @@ spawn_worker:
 	mov	[g_hb_slot],eax			; inherited by the worker
 	add	rax,[g_hb]
 	mov	dword [rax+HB_READY_OFF],0	; (it says when it serves)
+	mov	dword [rax+HB_LOAD_OFF],0
 	mov	rax,[rax]
 	mov	[g_hb_seen+rbx*8],rax
 	call	monotonic_seconds
