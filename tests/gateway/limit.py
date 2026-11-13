@@ -59,7 +59,7 @@ def get(path, headers={}, conn=None):
     return r
 
 
-CONF = """okena {{ drain delay=0s timeout=1s; workers 4; io_engine {engine} }}
+CONF = """okena {{ drain delay=0s timeout=1s; workers 4; io_engine {engine}; rate_limit_keys 16384 }}
 http 127.0.0.1:{tls} {{
     http2 on
     http3 on
@@ -99,7 +99,7 @@ def hammer(path, secs, threads=16):
     return sum(x[0] for x in r), sum(x[1] for x in r)
 
 
-def flood(i, n=100000, batch=200):
+def flood(i, n=25000, batch=200):
     """pipelined requests, each its own key: (let through, refused)"""
     c = socket.create_connection(("127.0.0.1", LST), timeout=20)
     a = b = 0
@@ -208,8 +208,8 @@ def main():
             r = list(ex.map(flood, range(4)))
         through, refused = sum(x[0] for x in r), sum(x[1] for x in r)
         total = through + refused
-        check(f"{total} new keys, past the table of 262144: at most that many through ({through})",
-              total == 400000 and 0 < through <= 262144 + 2048, f"{through} {refused}")
+        check(f"{total} new keys, past the table (rate_limit_keys 16384): at most that many through ({through})",
+              total == 100000 and 0 < through <= 16384 + 2048, f"{through} {refused}")
         check("  the key limited before it still is", s == [302, 429] and get("/flood", v).status == 429, str(s))
         check("  and the workers live, routes as before", get("/fine").status == 200, "")
     finally:

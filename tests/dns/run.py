@@ -237,7 +237,11 @@ try:
     t = wait_for(8002, b"three", 6)
     check("a changed address is followed", t is not None, f"{t:.1f}s" if t else "never")
     # SRV: the records' ports, the lowest priority, backups behind
-    seen = {ask(8010) for _ in range(30)}
+    # (each target's address comes from a lookup of its own: under load, the
+    # second may come a moment after the first)
+    seen, t0 = set(), time.time()
+    while seen != {b"srv-a", b"srv-b"} and time.time() - t0 < 5:
+        seen.add(ask(8010))
     check("discover srv: each record's target and port", seen == {b"srv-a", b"srv-b"}, str(seen))
     check("  asked with EDNS0", asked_edns and all(asked_edns), str(asked_edns[:4]))
     log.seek(0)

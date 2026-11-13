@@ -982,7 +982,9 @@ open. Without `key=`, all clients share one bucket. `key=` is `client.ip`, `meth
 one key, so dropping a header doesn't escape the limit. `burst` defaults to
 one second of the rate (at least 1): set it for hourly and daily quotas, or
 a `10000/d` limit allows one request every 8.6 seconds. A route may have several limits, and each one must
-pass. The table holds about 256k keys and survives reloads.
+pass. The table holds 1M keys by default (`okena { rate_limit_keys N }`, up
+to 256M, 64 bytes each, memory used as keys come) and survives reloads; it
+is sized at start.
 
 ### CORS
 
@@ -1942,7 +1944,7 @@ it leaves the pool just as fast.
 | ACME certificates | 4096 configured per instance (each `acme` line is one, up to 15 names; with `auto`, each name is one), plus 262144 `on_demand` |
 | error page | 1 MiB (64 MiB in all) |
 | `respond` body | 1 MiB (past 4 KiB, sent from the loaded config with no copy) |
-| rate limit keys | about 256k, kept across reloads |
+| rate limit keys | 1M by default, `rate_limit_keys` up to 256M, kept across reloads |
 | idempotency keys | `idempotency_store`: 65536 by default, up to 64M; answers up to 16 MiB |
 | cache purges | by URL and tag: no limit (a shared table of times); by prefix: the last 4096, older answers fetched again past that |
 | include depth | 16 |

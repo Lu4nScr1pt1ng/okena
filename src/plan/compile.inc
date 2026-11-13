@@ -398,6 +398,7 @@ plan_compile:
 	call	errpage_plan_init		; (g_eps[0]: maintenance's text)
 	mov	qword [g_plan_drain_timeout],DEFAULT_DRAIN_US
 	mov	dword [g_plan_idkeys],ID_DEF_KEYS
+	mov	dword [g_plan_lkeys],LB_DEF
 	mov	dword [g_plan_idsize],ID_DEF_SIZE
 	mov	qword [g_plan_watchdog],2000000
 	mov	dword [g_plan_last_good],0
@@ -756,6 +757,9 @@ compile_settings:
 	lea	rcx,[dir_table + D_SIZE*DIR_IDEMSTORE]
 	cmp	rax,rcx
 	je	.idemstore
+	lea	rcx,[dir_table + D_SIZE*DIR_LKEYS]
+	cmp	rax,rcx
+	je	.lkeys
 	lea	rcx,[dir_table + D_SIZE*DIR_BUSY_POLL]
 	cmp	rax,rcx
 	je	.busy_poll
@@ -1019,6 +1023,22 @@ compile_settings:
 	mov	ecx,PIN_OFF
 @@:
 	mov	[g_plan_pin],ecx
+	jmp	.advance
+.lkeys:
+	; rate_limit_keys N: rounded up to a power of two
+	mov	rax,[rbx+N_ARGS]
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_decimal
+	jc	plan_bad_lkeys
+	cmp	rax,LB_MAX
+	ja	plan_bad_lkeys
+	cmp	eax,LB_MIN
+	jae	@f
+	mov	eax,LB_MIN
+@@:
+	call	.pow2
+	mov	[g_plan_lkeys],eax
 	jmp	.advance
 .idemstore:
 	; idempotency_store keys=N size=S: each rounded up to a power of two
@@ -2481,6 +2501,13 @@ plan_bad_hedge:
 plan_bad_mirror:
 	call	log_begin
 	out_lit 'mirror: pool NAME, of a pool that exists, then N% from 1 to 100 if not all'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
+
+plan_bad_lkeys:
+	call	log_begin
+	out_lit 'rate_limit_keys: from 4096 to 268435456'
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process

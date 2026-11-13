@@ -11,7 +11,9 @@
 ; batch leaves unused goes back when it runs out of time. A refused request
 ; only reads the bucket: a client over its limit writes nothing shared.
 ;
-; The table has a fixed size. A key that finds its neighbourhood taken pushes
+; The table's size is `okena { rate_limit_keys N }` (1M by default, up to 256M:
+; 64 bytes a key, address space reserved, memory used as keys come), taken once
+; at start: it outlives reloads. A key that finds its neighbourhood taken pushes
 ; out the one with the oldest TAT if that is in the past: such a bucket is
 ; full, so it carries no information. If all are in use the key shares the
 ; limit's own bucket: a flood of new keys cannot get past the limit, and only
@@ -36,8 +38,9 @@ LK_COOKIE	:= 5
 LK_AUTH		:= 6				; who `auth` proved
 LK_COUNTRY	:= 7				; (`match`: client.country)
 
-LB_BITS		:= 18				; 256k keys, 16 MiB of address space
-LB_N		:= 1 shl LB_BITS
+LB_DEF		:= 1 shl 20			; keys, by default
+LB_MIN		:= 1 shl 12
+LB_MAX		:= 1 shl 28
 LB_PROBE	:= 4
 LB_KEY		:= 0				; q: 0 free
 LB_TAT		:= 8				; q
@@ -57,6 +60,9 @@ LEASE_SECS	:= 2
 bss
 	align 8
 	g_lim_tbl	dq ?			; shared
+	g_lb_n		dd ?			; its keys: a power of two
+	g_lb_mask	dd ?
+	g_plan_lkeys	dd ?
 	g_lim_seed	rq 2
 	g_lim_retry	dq ?			; refused: seconds to wait
 	g_lim_status	dd ?			; and with what
@@ -65,8 +71,18 @@ end bss
 
 ; Supervisor, once: the table, its random key.
 limit_global_init:
+	mov	eax,[g_plan_lkeys]
+	test	eax,eax
+	jnz	@f
+	mov	eax,LB_DEF
+@@:
+	mov	[g_lb_n],eax
+	dec	eax
+	mov	[g_lb_mask],eax
+	mov	esi,[g_lb_n]
+	add	esi,MAX_LIMITS
+	shl	rsi,6				; LB_SIZE
 	xor	edi,edi
-	mov	esi,(LB_N + MAX_LIMITS) * LB_SIZE
 	mov	edx,PROT_READ or PROT_WRITE
 	mov	r10d,MAP_SHARED or MAP_ANONYMOUS or MAP_NORESERVE
 	mov	r8,-1
@@ -293,7 +309,7 @@ limit_find:
 limit_bucket:
 	mov	rax,r13
 	shr	rax,20
-	and	eax,LB_N - 1
+	and	eax,[g_lb_mask]
 	and	eax,not (LB_PROBE - 1)		; a neighbourhood
 	shl	rax,6				; LB_SIZE
 	mov	r8,[g_lim_tbl]
@@ -345,7 +361,7 @@ limit_bucket:
 	ret
 .shared:
 	mov	eax,[r12+LM_ID]			; all in use: the limit's own bucket
-	add	eax,LB_N
+	add	eax,[g_lb_n]
 	shl	rax,6
 	mov	r8,[g_lim_tbl]
 	add	r8,rax
