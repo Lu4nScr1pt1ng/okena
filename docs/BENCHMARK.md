@@ -86,7 +86,7 @@ The most each proxy did on two cores, and okena's lead over the next best:
 
 | Scenario | okena | next best | lead |
 |---|---|---|---|
-| HTTP/1.1, requests/s | **144,005** | HAProxy 103,830 | 1.39× |
+| HTTP/1.1, requests/s | **150,665** | HAProxy 103,830 | 1.45× |
 | HTTPS (TLS 1.3), requests/s | **142,775** | HAProxy 77,865 | 1.83× |
 | HTTPS (TLS 1.3), handshakes per CPU-second | **6,548** | Envoy 5,108 | 1.28× |
 | HTTP/2, requests/s | **193,296** | HAProxy 97,235 | 1.99× |
@@ -113,7 +113,7 @@ The most each proxy did on two cores, and okena's lead over the next best:
 
 | Proxy (2 cores) | requests/s | per core |
 |---|---|---|
-| **okena** | **144,005** | 72,002 |
+| **okena** | **150,665** | 75,332 |
 | HAProxy | 103,830 | 51,915 |
 | nginx | 81,737 | 40,868 |
 | Envoy | 35,444 | 17,722 |
@@ -125,7 +125,7 @@ connections), p50 / p99 / p99.9 / max in µs:
 
 | Proxy | 10,000/s | 30,000/s | 80,000/s |
 |---|---|---|---|
-| **okena** | **45 / 74 / 111** / 758 | **40 / 73 / 121** / 818 | **37 / 73 / 167** / 730 |
+| **okena** | **44 / 56 / 80** / 563 | **40 / 52 / 79** / 731 | **35 / 54 / 74** / 444 |
 | HAProxy | 54 / 82 / 167 / 1901 | 51 / 115 / 1114 / 2611 | 135 / 9699 / 13500 / 15475 |
 | nginx | 58 / 100 / 145 / 908 | 62 / 376 / 1097 / 3851 | 356 / 1.6 s / 1.7 s / 1.7 s |
 | Caddy | 92 / 1441 / 4456 / 11582 | 0.31 s / 0.65 s / 0.70 s | could not keep up |
@@ -134,8 +134,12 @@ connections), p50 / p99 / p99.9 / max in µs:
 
 okena has the lowest p50, p99 and p99.9 at every rate, and is the only one
 whose latency doesn't move between 10k and 80k requests a second: at 80k/s
-its p99 is 73 µs, HAProxy's 9.7 ms. "Could not keep up" means the proxy
+its p99 is 54 µs, HAProxy's 9.7 ms. "Could not keep up" means the proxy
 fell behind the schedule by hundreds of thousands of requests.
+
+okena's row is from a later run than the others (`ONLY=okena`, after the
+io_uring fixes of f5c2f49; 80,000/s the median of 5 runs). The competitors'
+rows are from the full run and were not run again.
 
 ---
 

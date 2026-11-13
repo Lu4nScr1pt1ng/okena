@@ -22,7 +22,7 @@ tuned by its own documentation. Requests per second, higher is better:
 
 | | okena | HAProxy 3.2 | nginx 1.27 | Envoy 1.40 | Traefik 3.5 | Caddy 2.10 |
 |---|---|---|---|---|---|---|
-| HTTP/1.1 | **144,005** | 103,830 | 81,737 | 35,444 | 33,106 | 25,526 |
+| HTTP/1.1 | **150,665** | 103,830 | 81,737 | 35,444 | 33,106 | 25,526 |
 | HTTPS, TLS 1.3 | **142,775** | 77,865 | 73,544 | 30,826 | 30,386 | 23,848 |
 | HTTP/2 | **193,296** | 97,235 | 71,363 | 38,764 | 24,210 | 20,405 |
 | gRPC unary calls | **142,485** | 55,627 | 35,051 | 49,540 | 19,008 | 18,459 |
@@ -33,7 +33,7 @@ And the latency that comes with it, HTTP/1.1 at 30,000 requests a second, p99:
 
 | okena | HAProxy | nginx | Envoy | Traefik | Caddy |
 |---|---|---|---|---|---|
-| **73 µs** | 115 µs | 376 µs | 1.5 ms | 20 ms | 654 ms |
+| **52 µs** | 115 µs | 376 µs | 1.5 ms | 20 ms | 654 ms |
 
 More of it, with the method and the cases where okena is *not* first:
 [docs/BENCHMARK.md](docs/BENCHMARK.md). In short:
