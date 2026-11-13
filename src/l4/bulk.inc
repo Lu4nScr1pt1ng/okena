@@ -25,16 +25,119 @@ BK_BUDGET	:= 4			; reads a turn (1 MiB of large buffers)
 BK_PEND		:= 4096			; directions whose turn ran out, at most
 BK_POLLOUT	:= 4
 
+; Splice: a direction that holds a pipe moves its bytes socket -> pipe -> socket
+; inside the kernel (pages handed on, not copied through okena's memory): one
+; direction on loopback, 51 Gbit/s through a buffer, 69 through a pipe of 256 KiB,
+; less CPU per byte. A worker makes its pipes at its start (pipe2 is not in its
+; seccomp filter); a direction takes one for a read and gives it back once the
+; pipe is empty, so the pipes in use are the directions moving or waiting for
+; room. None free, or a kernel that refuses: the buffer, as before.
+; In a direction's buffer id (bidf), BK_PIPE and the pipe's index; lenf and
+; offf as for a buffer: what went into the pipe, what came out of it.
+BK_PIPES	:= 64			; a worker's pipes
+BK_PSZ		:= 1 shl 18		; each 256 KiB (64 per worker: 16 MiB of the user's pipe pages)
+BK_PIPE		:= 0x40000000
+SPLICE_F_MOVE	:= 1
 
 bss
 	align 4
 	g_bfd_c		rd 1 shl 20
 	g_bfd_u		rd 1 shl 20
 	g_bk_pn		dd ?		; entries in g_bk_pend
+	g_bkp_nfree	dd ?		; free pipes, on g_bkp_free
+	g_bkp_off	dd ?		; 1: a splice was refused, pipes not used again
+	g_bkp_max	dd ?		; pipes to make (the descriptor limit's share)
+	g_bkp_fd	rd BK_PIPES * 2	; read end, write end
+	g_bkp_free	rd BK_PIPES
 	align 8
 	g_bk_pend	rq BK_PEND	; gen << 32 | direction << 31 | session
 	g_bk_snap	rq BK_PEND
+	g_bkp_trash	rb 1 shl 16	; a pipe left with bytes is emptied here
 end bss
+
+; The worker's pipes, before its seccomp filter. As many as the kernel gives at
+; BK_PSZ (the user's pipe pages run out: fewer, the buffers for the rest).
+bulk_pipes_init:
+	mov	dword [g_bkp_nfree],0
+	mov	dword [g_bkp_off],0
+	cmp	dword [g_zc_inst],0		; io_uring: no bulk without normal descriptors
+	je	bulk_pipes_none
+; (epoll: its sockets are normal descriptors already)
+bulk_pipes_make:
+	push	rbx
+	mov	dword [g_bkp_nfree],0
+	mov	dword [g_bkp_off],0
+	; a pipe is two descriptors the connections might want: no more than a
+	; 64th of what RLIMIT_NOFILE leaves them (none under a low limit)
+	mov	rax,[g_nofile]
+	sub	rax,64
+	jbe	.out
+	shr	rax,6
+	cmp	rax,BK_PIPES
+	jbe	@f
+	mov	eax,BK_PIPES
+@@:
+	test	eax,eax
+	jz	.out
+	mov	[g_bkp_max],eax
+	xor	ebx,ebx
+.make:
+	lea	rdi,[g_bkp_fd+rbx*8]
+	mov	esi,O_CLOEXEC or O_NONBLOCK
+	mov	eax,SYS_pipe2
+	syscall
+	test	eax,eax
+	js	.out
+	mov	edi,[g_bkp_fd+rbx*8+4]
+	mov	esi,F_SETPIPE_SZ
+	mov	edx,BK_PSZ
+	mov	eax,SYS_fcntl
+	syscall
+	cmp	eax,BK_PSZ
+	jae	.kept
+	mov	edi,[g_bkp_fd+rbx*8]		; smaller than a step: not this one
+	mov	eax,SYS_close
+	syscall
+	mov	edi,[g_bkp_fd+rbx*8+4]
+	mov	eax,SYS_close
+	syscall
+	jmp	.out
+.kept:
+	mov	ecx,[g_bkp_nfree]
+	mov	[g_bkp_free+rcx*4],ebx
+	inc	dword [g_bkp_nfree]
+	inc	ebx
+	cmp	ebx,[g_bkp_max]
+	jb	.make
+.out:
+	pop	rbx
+bulk_pipes_none:
+	ret
+
+; edi = a pipe's buffer id (BK_PIPE | index), esi = bytes still in it: back to
+; the free ones, emptied first (a session that went with bytes on their way).
+; Keeps rbx, r12-r15.
+bulk_pipe_put:
+	and	edi,not BK_PIPE
+	push	rdi
+	test	esi,esi
+	jz	.free
+	mov	edi,[g_bkp_fd+rdi*8]
+.drain:
+	push	rdi
+	lea	rsi,[g_bkp_trash]
+	mov	edx,1 shl 16
+	mov	eax,SYS_read
+	syscall
+	pop	rdi
+	test	rax,rax
+	jg	.drain				; (non-blocking: -EAGAIN once empty)
+.free:
+	pop	rdi
+	mov	ecx,[g_bkp_nfree]
+	mov	[g_bkp_free+rcx*4],edi
+	inc	dword [g_bkp_nfree]
+	ret
 
 ; ebx = session, r13 = its record: a direction moved to large buffers. The
 ; normal descriptors, once (a plain `tcp` session only). Keeps rbx, r13, r14.
@@ -71,7 +174,8 @@ bulk_want:
 	mov	eax,[r13+S_CLIENT]		; a normal descriptor already
 	inc	eax
 	mov	[g_bfd_c+rbx*4],eax
-	ret
+	mov	edi,[r13+S_CLIENT]		; non-blocking: a splice must not wait
+	jmp	zc_nonblock
 .install_c:
 	mov	edi,OP_B_FD_C
 	mov	esi,ebx
@@ -94,6 +198,8 @@ name:
 	js	failed
 	lea	eax,[r14+1]
 	mov	[arr+rbx*4],eax
+	mov	edi,r14d			; non-blocking: a splice must not wait
+	call	zc_nonblock			; (the ring's own operations do not look)
 	cmp	dword [g_bfd_c+rbx*4],0
 	je	failed
 	cmp	dword [g_bfd_u+rbx*4],0
@@ -190,6 +296,11 @@ bulk_buf_get:
 ; read's (a small one goes back as always, for whoever waits for one).
 ; Keeps rbx, r13, r14.
 bulk_buf_put:
+	test	edi,BK_PIPE
+	jz	@f
+	xor	esi,esi				; a pipe, empty here
+	jmp	bulk_pipe_put
+@@:
 	cmp	edi,BUF_MAX
 	jb	.small
 	mov	eax,[g_pbgl+PG_SN]
@@ -266,6 +377,8 @@ bulk_write_#sfx:
 	sub	edx,eax
 	jz	.done
 	mov	esi,[r13+bidf]
+	test	esi,BK_PIPE
+	jnz	.from_pipe
 	buf_ptr rsi, esi
 	add	rsi,rax
 	mov	edi,[dst+rbx*4]
@@ -275,6 +388,19 @@ bulk_write_#sfx:
 	xor	r9d,r9d
 	mov	eax,SYS_sendto
 	syscall
+	jmp	.sent
+.from_pipe:					; pipe -> destination, in the kernel
+	and	esi,not BK_PIPE
+	mov	r8d,edx				; len
+	mov	edi,[g_bkp_fd+rsi*8]		; the pipe's read end
+	mov	edx,[dst+rbx*4]
+	dec	edx
+	xor	esi,esi
+	xor	r10d,r10d
+	mov	r9d,SPLICE_F_MOVE or SPLICE_F_NONBLOCK
+	mov	eax,SYS_splice
+	syscall
+.sent:
 	test	rax,rax
 	jle	.short
 	add	[r13+offf],eax
@@ -314,6 +440,48 @@ bulk_pump_#sfx:
 	push	r14
 	mov	r14d,BK_BUDGET
 .read:
+	; a pipe when one is free: the bytes stay in the kernel
+	cmp	dword [g_bkp_off],0
+	jne	.buffer
+	mov	ecx,[g_bkp_nfree]
+	test	ecx,ecx
+	jz	.buffer
+	dec	ecx
+	mov	[g_bkp_nfree],ecx
+	mov	eax,[g_bkp_free+rcx*4]
+	mov	ecx,eax
+	or	eax,BK_PIPE
+	mov	[r13+bidf],eax
+	mov	edx,BK_PSZ
+	if dir
+	mov	r8,[g_cnt+rbx*8]		; an HTTP body: no more than is left
+	test	r8,r8
+	jz	@f
+	dec	r8
+	cmp	r8,rdx
+	cmovb	edx,r8d
+@@:
+	end if
+	push	rdx
+	mov	r8d,edx				; len
+	mov	edx,[g_bkp_fd+rcx*8+4]		; the pipe's write end
+	mov	edi,[src+rbx*4]
+	dec	edi
+	xor	esi,esi
+	xor	r10d,r10d
+	mov	r9d,SPLICE_F_MOVE or SPLICE_F_NONBLOCK
+	mov	eax,SYS_splice
+	syscall
+	pop	rdx
+	cmp	rax,-EINVAL
+	jne	.got
+	; this kernel or socket takes no splice: the buffers, from now on
+	mov	dword [g_bkp_off],1
+	mov	edi,[r13+bidf]
+	mov	dword [r13+bidf],NIL
+	xor	esi,esi
+	call	bulk_pipe_put
+.buffer:
 	call	bulk_buf_get
 	cmp	eax,NIL
 	je	.later
@@ -343,6 +511,7 @@ bulk_pump_#sfx:
 	mov	eax,SYS_recvfrom
 	syscall
 	pop	rdx
+.got:
 	test	rax,rax
 	jle	.no_data
 	mov	ecx,[r13+S_LST]

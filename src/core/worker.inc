@@ -103,7 +103,8 @@ worker_main:
 	call	ring_lockdown
 	test	eax,eax
 	js	.no_uring
-
+	call	bulk_pipes_init			; (after the lockdown, which says whether the
+						; ring makes normal descriptors; before seccomp)
 	call	arm_accepts
 	call	arm_timer
 	call	arm_signal

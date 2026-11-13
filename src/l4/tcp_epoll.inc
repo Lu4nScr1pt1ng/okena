@@ -69,6 +69,7 @@ ep_main:
 	test	eax,eax
 	js	.no_epoll
 	mov	[g_epfd],eax
+	call	bulk_pipes_make			; (splice for large directions; before seccomp)
 	call	ep_add_listeners
 	call	qs_worker_init			; http3: the UDP sockets
 	call	udp_worker_init
@@ -970,6 +971,11 @@ ep_buf_get:
 
 ; edi = buffer id.
 ep_buf_put:
+	test	edi,BK_PIPE
+	jz	@f
+	xor	esi,esi				; a pipe, empty here (bulk.inc)
+	jmp	bulk_pipe_put
+@@:
 	cmp	edi,BUF_MAX
 	jae	.large
 	mov	ecx,[g_buf_top]
@@ -1077,6 +1083,43 @@ ep_pump:
 	jnz	.out				; source already ended
 	movzx	edi,byte [g_sbig+rbx]
 	and	edi,ebp				; this direction on large buffers
+	jz	.copy
+	; large: through a pipe when one is free (bulk.inc), the bytes stay in
+	; the kernel
+	cmp	dword [g_bkp_off],0
+	jne	.copy
+	mov	ecx,[g_bkp_nfree]
+	test	ecx,ecx
+	jz	.copy
+	dec	ecx
+	mov	[g_bkp_nfree],ecx
+	mov	eax,[g_bkp_free+rcx*4]
+	mov	ecx,eax
+	or	eax,BK_PIPE
+	mov	[r12+r15],eax
+	mov	edi,r13d
+	xor	esi,esi
+	mov	edx,[g_bkp_fd+rcx*8+4]		; the pipe's write end
+	xor	r10d,r10d
+	mov	r8d,BK_PSZ
+	mov	r9d,SPLICE_F_MOVE or SPLICE_F_NONBLOCK
+	mov	eax,SYS_splice
+	syscall
+	cmp	rax,-EINVAL
+	jne	.spliced
+	mov	dword [g_bkp_off],1		; no splice here: buffers from now on
+	mov	edi,[r12+r15]
+	mov	dword [r12+r15],NIL
+	xor	esi,esi
+	call	bulk_pipe_put
+	movzx	edi,byte [g_sbig+rbx]
+	and	edi,ebp
+	jmp	.copy
+.spliced:
+	test	rax,rax
+	jle	.no_data
+	jmp	.sized				; (stays large)
+.copy:
 	call	ep_buf_get
 	cmp	eax,NIL
 	je	.wait
@@ -1216,11 +1259,14 @@ ep_flush_dir:
 	sub	edx,eax
 	jz	.done
 	mov	esi,[r12+r15]
+	test	esi,BK_PIPE
+	jnz	.from_pipe
 	buf_ptr rsi, esi
 	add	rsi,rax
 	mov	edi,r14d
 	mov	eax,SYS_write
 	syscall
+.wrote:
 	test	rax,rax
 	jle	.short
 	add	[r12+r15+8],eax
@@ -1247,6 +1293,17 @@ ep_flush_dir:
 	call	ep_buf_put
 	clc
 	ret
+.from_pipe:					; pipe -> destination, in the kernel
+	and	esi,not BK_PIPE
+	mov	r8d,edx				; len
+	mov	edi,[g_bkp_fd+rsi*8]		; the pipe's read end
+	mov	edx,r14d
+	xor	esi,esi
+	xor	r10d,r10d
+	mov	r9d,SPLICE_F_MOVE or SPLICE_F_NONBLOCK
+	mov	eax,SYS_splice
+	syscall
+	jmp	.wrote
 
 ; edi = session, esi = side that became writable: finish the buffer that
 ; was waiting for it, then read its source again (edge-triggered).
@@ -1354,12 +1411,16 @@ ep_close:
 	mov	edi,[r12+S_CU_BID]
 	cmp	edi,NIL
 	je	@f
-	call	ep_buf_put
+	mov	esi,[r12+S_CU_LEN]
+	sub	esi,[r12+S_CU_OFF]
+	call	.give_back
 @@:
 	mov	edi,[r12+S_UC_BID]
 	cmp	edi,NIL
 	je	@f
-	call	ep_buf_put
+	mov	esi,[r12+S_UC_LEN]
+	sub	esi,[r12+S_UC_OFF]
+	call	.give_back
 @@:
 	mov	dword [r12+S_CU_BID],NIL
 	mov	dword [r12+S_UC_BID],NIL
@@ -1386,3 +1447,9 @@ ep_close:
 	pop	r12
 	pop	rbx
 	ret
+; edi = a direction's buffer id, esi = bytes it held still on their way:
+; a buffer back to its stack, a pipe of bulk.inc emptied and back to its pool
+.give_back:
+	test	edi,BK_PIPE
+	jnz	bulk_pipe_put			; (keeps rbx, r12)
+	jmp	ep_buf_put

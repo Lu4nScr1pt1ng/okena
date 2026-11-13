@@ -3291,22 +3291,23 @@ session_maybe_free:
 	call	session_close_fds
 	jmp	.done
 .free:
-	; buffers still held (their sends completed with an error)
+	; buffers still held (their sends completed with an error); a pipe of
+	; bulk.inc goes back emptied of what was on its way
 	mov	edi,[r12+S_CU_BID]
 	cmp	edi,NIL
 	je	@f
 	mov	dword [r12+S_CU_BID],NIL
-	push	rbx
-	call	buf_release
-	pop	rbx
+	mov	esi,[r12+S_CU_LEN]
+	sub	esi,[r12+S_CU_OFF]
+	call	.release
 @@:
 	mov	edi,[r12+S_UC_BID]
 	cmp	edi,NIL
 	je	@f
 	mov	dword [r12+S_UC_BID],NIL
-	push	rbx
-	call	buf_release
-	pop	rbx
+	mov	esi,[r12+S_UC_LEN]
+	sub	esi,[r12+S_UC_OFF]
+	call	.release
 @@:
 	call	session_uncount
 	test	dword [r12+S_FLAGS],SF_PEER
@@ -3329,6 +3330,14 @@ session_maybe_free:
 	mov	[g_sess_free],ebx
 .done:
 	pop	r12
+	pop	rbx
+	ret
+; edi = a direction's buffer id, esi = bytes it held still on their way
+.release:
+	test	edi,BK_PIPE
+	jnz	bulk_pipe_put			; (keeps rbx, r12)
+	push	rbx
+	call	buf_release
 	pop	rbx
 	ret
 

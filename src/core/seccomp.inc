@@ -239,6 +239,7 @@ rodata
 	sc_allow filter_supervisor, SYS_fdatasync
 	sc_allow filter_supervisor, SYS_msync
 	sc_allow filter_supervisor, SYS_pipe2		; zero copy: a worker's pipes (zc.inc)
+	sc_allow filter_supervisor, SYS_splice		; (a worker's: bulk.inc; filters stack)
 	sc_allow filter_supervisor, SYS_sendfile	; (and an epoll worker's sendfile: filters stack)
 	sc_allow filter_supervisor, SYS_pwrite64	; the cache keeper (ckeep.inc)
 	sc_allow filter_supervisor, SYS_copy_file_range
@@ -270,6 +271,8 @@ rodata
 	sc_allow filter_worker_uring, SYS_poll		; (a listening socket nobody takes from: accept_watch)
 	sc_allow filter_worker_uring, SYS_recvfrom	; bulk: reads and writes in the loop (bulk.inc)
 	sc_allow filter_worker_uring, SYS_sendto
+	sc_allow filter_worker_uring, SYS_splice		; bulk: socket -> pipe -> socket (bulk.inc)
+	sc_allow filter_worker_uring, SYS_read		; (a pipe emptied of what a closed session left)
 	sc_allow filter_worker_uring, SYS_sched_setaffinity	; (pin_workers auto: pinned under load)
 	sc_end filter_worker_uring
 
@@ -303,6 +306,8 @@ rodata
 	sc_allow filter_worker_uring_u, SYS_close
 	sc_allow filter_worker_uring_u, SYS_poll		; (a listening socket nobody takes from: accept_watch)
 	sc_allow filter_worker_uring_u, SYS_sendto	; bulk (bulk.inc)
+	sc_allow filter_worker_uring_u, SYS_splice		; bulk: socket -> pipe -> socket (bulk.inc)
+	sc_allow filter_worker_uring_u, SYS_read		; (a pipe emptied of what a closed session left)
 	sc_allow filter_worker_uring_u, SYS_sched_setaffinity	; (pin_workers auto: pinned under load)
 	sc_end filter_worker_uring_u
 
@@ -335,6 +340,7 @@ rodata
 	sc_allow filter_worker_epoll, SYS_sendmmsg
 	sc_allow filter_worker_epoll, SYS_recvmsg	; kTLS upstream: control records (tickets)
 	sc_allow filter_worker_epoll, SYS_sched_setaffinity	; (pin_workers auto: pinned under load)
+	sc_allow filter_worker_epoll, SYS_splice		; bulk: socket -> pipe -> socket (bulk.inc)
 	sc_end filter_worker_epoll
 
 	; workers with `files` routes: they open beneath their roots (files.inc)
@@ -361,6 +367,8 @@ rodata
 	sc_allow filter_worker_uring_f, SYS_poll		; (a listening socket nobody takes from: accept_watch)
 	sc_allow filter_worker_uring_f, SYS_recvfrom	; bulk: reads and writes in the loop (bulk.inc)
 	sc_allow filter_worker_uring_f, SYS_sendto
+	sc_allow filter_worker_uring_f, SYS_splice		; bulk: socket -> pipe -> socket (bulk.inc)
+	sc_allow filter_worker_uring_f, SYS_read		; (a pipe emptied of what a closed session left)
 	sc_allow filter_worker_uring_f, SYS_sched_setaffinity	; (pin_workers auto: pinned under load)
 	sc_end filter_worker_uring_f
 
@@ -395,6 +403,7 @@ rodata
 	sc_allow filter_worker_epoll_f, SYS_fstat
 	sc_allow filter_worker_epoll_f, SYS_lseek_
 	sc_allow filter_worker_epoll_f, SYS_sched_setaffinity	; (pin_workers auto: pinned under load)
+	sc_allow filter_worker_epoll_f, SYS_splice		; bulk: socket -> pipe -> socket (bulk.inc)
 	sc_end filter_worker_epoll_f
 
 	; control process: DNS over UDP, resolv.conf and hosts read-only

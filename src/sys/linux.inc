@@ -240,6 +240,7 @@ SYS_getsockname	= 51
 MSG_PEEK	:= 0x02
 
 SYS_pipe2	= 293
+SYS_splice	= 275
 SYS_fcntl	= 72
 F_SETPIPE_SZ	:= 1031
 F_SETFL		:= 4
