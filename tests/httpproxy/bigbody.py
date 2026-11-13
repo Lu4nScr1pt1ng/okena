@@ -158,6 +158,41 @@ http 127.0.0.1:{lst} {{
             t.join(30)
         check("16 clients at once, 3 bodies of 1 MB each, every byte", len(res) == 16 and all(res), f"{sum(res)}/{len(res)}")
 
+        # a client that reads slowly (a small window): the relay waits for room
+        # many times, then the next response on the connection is whole; and 40
+        # that leave in the middle of 3 MB (their pipes back), then 1 MB whole
+        c = socket.socket()
+        c.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8192)
+        c.settimeout(10)
+        c.connect(("127.0.0.1", lst))
+        c.sendall(b"GET /2000000 HTTP/1.1\r\nHost: a\r\n\r\nGET /30000 HTTP/1.1\r\nHost: a\r\n\r\n")
+        cf = c.makefile("rb")
+        st, h = cf.readline(), b""
+        n = 0
+        while (line := cf.readline()) not in (b"\r\n", b""):
+            if line.lower().startswith(b"content-length:"):
+                n = int(line.split(b":")[1])
+        body = b""
+        while len(body) < n:
+            body += cf.read1(min(4096, n - len(body)))
+            if len(body) % 65536 < 4096:
+                time.sleep(0.002)
+        _, body2, _ = read_response(cf)
+        c.close()
+        check("a slow reader: 2 MB whole, then the next response", body == BODY[:2000000] and body2 == BODY[:30000],
+              f"{len(body)} {len(body2)}")
+        for _ in range(40):
+            k = socket.create_connection(("127.0.0.1", lst), timeout=5)
+            k.sendall(b"GET /3000000 HTTP/1.1\r\nHost: a\r\n\r\n")
+            k.recv(20000)
+            k.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, b"\x01\x00\x00\x00\x00\x00\x00\x00")
+            k.close()
+        s = socket.create_connection(("127.0.0.1", lst), timeout=10)
+        f = s.makefile("rb")
+        s.sendall(b"GET /1048576 HTTP/1.1\r\nHost: a\r\n\r\n")
+        check("  40 clients gone in the middle of 3 MB, then 1 MB whole", read_response(f)[1] == BODY[:1 << 20])
+        s.close()
+
         # a body cut short by the backend
         s = socket.create_connection(("127.0.0.1", lst), timeout=5)
         f = s.makefile("rb")

@@ -704,7 +704,17 @@ ep_http_ready:
 	je	.plain_recv
 	cmp	edx,4
 	je	.plain_send
+	cmp	edx,5
+	je	.counted
 	call	http_recv_done
+	jmp	.next
+.counted:					; a body by splice: on, or done
+	test	rax,rax
+	jz	.counted_on
+	call	http_counted_done
+	jmp	.next
+.counted_on:
+	call	hep_counted_pump
 	jmp	.next
 .send:
 	call	http_send_done
@@ -766,6 +776,8 @@ hep_event:
 	jne	.out
 	cmp	dword [r15+H_EPOP],1
 	je	.recv
+	cmp	dword [r15+H_EPOP],4
+	je	.counted
 	test	edi,EPOLLOUT or EPOLLERR or EPOLLHUP
 	jz	.out
 	cmp	dword [r15+H_EPOP],3
@@ -775,6 +787,9 @@ hep_event:
 	test	edi,EPOLLIN or EPOLLRDHUP or EPOLLHUP or EPOLLERR
 	jz	.out
 	jmp	hep_try_recv
+.counted:					; the body by splice (counted.inc)
+	mov	dword [r15+H_EPOP],0
+	jmp	hep_counted_pump
 .out:
 	ret
 

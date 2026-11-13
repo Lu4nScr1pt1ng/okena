@@ -1351,6 +1351,7 @@ ep_close:
 	cmp	eax,ST_CLOSING
 	je	.done
 	mov	dword [r12+S_STATE],ST_CLOSING
+	call	hep_counted_release		; a body's pipe (counted.inc)
 	call	cache_gone
 	mov	edi,ebx
 	call	idle_remove
