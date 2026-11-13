@@ -324,6 +324,7 @@ compile_matches:
 	dec	eax
 	imul	rax,rax,SL_SIZE
 	mov	r15d,[g_splits+rax+SL_P]
+	mov	r15d,[g_split_p+r15*8]
 .pooled:
 	mov	[r14+CV_POOL],r15d
 	inc	dword [g_cmv_n]

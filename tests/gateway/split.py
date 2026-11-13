@@ -60,6 +60,7 @@ def get(path, headers=None):
 CONF = """okena {{ drain delay=0s timeout=1s; workers 2; io_engine {engine} }}
 pool stable {{ server 127.0.0.1:{one} }}
 pool canary {{ server 127.0.0.1:{two} }}
+{many_pools}
 http 127.0.0.1:{tls} {{
     http2 on
     http3 on
@@ -71,6 +72,8 @@ http 127.0.0.1:{lst} {{
     route /c {{ split stable={a}% canary={b}% sticky=cookie:okena_split }}
     route /h {{ split stable=50% canary=50% sticky=header:x-user }}
     route /fine {{ to pool stable }}
+    route /many {{ split {many_split} sticky=cookie:m }}
+    route /frac {{ split stable=99.95% canary=0.05% sticky=cookie:f }}
 }}
 """
 
@@ -85,7 +88,9 @@ def main():
     backend(ONE, b"one")
     backend(TWO, b"two")
     conf = tmp / "okena.conf"
-    args = dict(engine=ENGINE, one=ONE, two=TWO, lst=LST, tls=TLS, tmp=tmp)
+    args = dict(engine=ENGINE, one=ONE, two=TWO, lst=LST, tls=TLS, tmp=tmp,
+                many_pools="\n".join(f"pool p{i} {{ server 127.0.0.1:{ONE if i % 2 == 0 else TWO} }}" for i in range(40)),
+                many_split=" ".join(f"p{i}=2.5%" for i in range(40)))
     text = CONF.format(a=95, b=5, **args)
     conf.write_text(text)
     log = tmp / "log"
@@ -106,20 +111,29 @@ def main():
         check("a route with `to` as ever", get("/fine")[0] == b"one", "")
         def one(i):
             b, q = get("/c")
-            m = re.fullmatch(r"okena_split=(\d+); Path=/; HttpOnly; SameSite=Lax", q.getheader("set-cookie") or "")
+            m = re.fullmatch(r"okena_split=(\d{4}); Path=/; HttpOnly; SameSite=Lax", q.getheader("set-cookie") or "")
             return (m and int(m[1]), b)
         with ThreadPoolExecutor(16) as ex:
             given = list(ex.map(one, range(400)))
-        check("sticky: each new client gets a number of 0 to 99", all(x is not None and 0 <= x < 100 for x, _ in given),
+        check("sticky: each new client gets a number of 0000 to 9999", all(x is not None and 0 <= x < 10000 for x, _ in given),
               str(given[:4]))
-        check("  which decides its pool", all((b == b"two") == (x >= 95) for x, b in given), str(given[:9]))
+        check("  which decides its pool", all((b == b"two") == (x >= 9500) for x, b in given), str(given[:9]))
+        g4 = lambda v: {get("/c", {"cookie": f"okena_split={v}"})[0] for _ in range(5)}
+        check("  four digits: 9499 stable, 9500 canary", g4("9499") == {b"one"} and g4("9500") == {b"two"}, str((g4("9499"), g4("9500"))))
         seen = {}
         for v in (3, 94, 95, 99):
             rs = [get("/c", {"cookie": f"a=1; okena_split={v}; b=2"}) for _ in range(20)]
             seen[v] = {x[0] for x in rs}
             check(f"  the cookie {v} stays, and is not given again",
                   len(seen[v]) == 1 and all(x[1].getheader("set-cookie") is None for x in rs), str(seen[v]))
-        check("  95% and 5%", seen[3] == {b"one"} and seen[94] == {b"one"} and seen[95] == {b"two"}, str(seen))
+        check("  95% and 5% (a cookie of one or two digits, given before: a percent)", seen[3] == {b"one"} and seen[94] == {b"one"}
+              and seen[95] == {b"two"}, str(seen))
+        gm = lambda v: {get("/many", {"cookie": f"m={v:04d}"})[0] for _ in range(3)}
+        check("40 pools of 2.5% each: the number finds its own", all(gm(v) == ({b"one"} if (v // 250) % 2 == 0 else {b"two"})
+              for v in (0, 249, 250, 499, 500, 4999, 5000, 9749, 9750, 9999)), str([(v, gm(v)) for v in (249, 250, 9999)]))
+        gf = lambda v: {get("/frac", {"cookie": f"f={v}"})[0] for _ in range(3)}
+        check("a canary of 0.05%: 9994 stable, 9995 canary", gf("9994") == {b"one"} and gf("9995") == {b"two"} and gf("9999") == {b"two"},
+              str((gf("9994"), gf("9995"))))
         got = {get("/c", {"cookie": "okena_split=hello"})[0] for _ in range(20)}
         check("a cookie that is no number: hashed, stays", len(got) == 1, str(got))
         check("  and is not replaced", get("/c", {"cookie": "okena_split=hello"})[1].getheader("set-cookie") is None)
@@ -155,7 +169,8 @@ def main():
         p.wait(10)
     line = "split stable=80% canary=20%"
     for bad in ("split stable=80% canary=30%", "split stable=100%", "split nosuch=50% canary=50%", "split stable=x canary=y",
-                "split stable=50% canary=50% sticky=ip", "split stable=0% canary=100%", "split stable=50% canary=50%; to pool stable"):
+                "split stable=50% canary=50% sticky=ip", "split stable=0% canary=100%", "split stable=50% canary=50%; to pool stable",
+                "split stable=99.995% canary=0.005%", "split stable=99.9.5% canary=0.05%", "split stable=.5% canary=99.5%"):
         c = tmp / "bad.conf"
         c.write_text(text.replace(line, bad, 1))
         q = subprocess.run(["timeout", "5", str(BIN), "-c", str(c)], capture_output=True, text=True)

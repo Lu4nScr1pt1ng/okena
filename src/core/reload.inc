@@ -136,6 +136,8 @@ macro plan_regions action
 	action g_plan_cors, 4
 	action g_splits, SL_SIZE * MAX_SPLITS, g_plan_splits, SL_SIZE
 	action g_plan_splits, 4
+	action g_plan_split_p, 4
+	action g_split_p, 8 * MAX_SPLIT_P, g_plan_split_p, 8
 	action g_auths, AU_SIZE * MAX_AUTHS, g_plan_auths, AU_SIZE
 	action g_plan_auths, 4
 	action g_plan_akeys, 4

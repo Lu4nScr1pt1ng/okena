@@ -740,10 +740,13 @@ split stable=95% canary=5% sticky=cookie:okena_split
 mirror pool shadow 10%                       # copy 10% of requests, ignore the answers
 ```
 
-**`split`** shares traffic between 2 to 8 pools, adding up to 100%. Without
-`sticky=` each request is drawn. With `sticky=cookie:NAME` a client gets a
-number from 0 to 99 in a cookie and keeps its pool, so raising a canary from
-5% to 10% moves only the next 5% of clients. `sticky=header:NAME` hashes a
+**`split`** shares traffic between 2 to 256 pools, adding up to 100%, in
+hundredths of a percent (`stable=99.95% canary=0.05%`). The pool is found by
+halves, so 256 cost about what 2 do. Without `sticky=` each request is drawn.
+With `sticky=cookie:NAME` a client gets a number from 0000 to 9999 in a cookie
+and keeps its pool, so raising a canary from 5% to 10% moves only the next 5%
+of clients (a cookie of one or two digits, as older okena gave, is read as a
+percent: its client stays where it was). `sticky=header:NAME` hashes a
 header. A client can set its own cookie, so use this for releases, not
 security.
 
@@ -1904,7 +1907,7 @@ it leaves the pool just as fast.
 | request head | 16 KiB |
 | request body | unlimited by default, `limits { body_size }` up to 4 GiB |
 | HTTP/2 streams per connection | 100 |
-| `split` pools | 2 to 8 |
+| `split` pools | 2 to 256 per split (65536 in all), shares to 0.01% |
 | `retry` | 0 to 5 |
 | `source` addresses | 256 per pool, 65536 in all |
 | ACME certificates | 16 per instance (each `acme` line is one, up to 15 names; with `auto`, each name is one) |

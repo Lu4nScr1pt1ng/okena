@@ -367,6 +367,8 @@ bss
 	g_plan_cors	dd ?
 	g_splits:	rb SL_SIZE * MAX_SPLITS
 	g_plan_splits	dd ?
+	g_plan_split_p	dd ?
+	g_split_p	rd 2 * MAX_SPLIT_P
 	g_auths:	rb AU_SIZE * MAX_AUTHS
 	g_plan_auths	dd ?
 	g_plan_akeys	dd ?
@@ -2425,7 +2427,7 @@ plan_bad_mirror:
 
 plan_bad_split:
 	call	log_begin
-	out_lit 'split: pools as NAME=N%, 2 to 8 of them, adding up to 100%; sticky= is cookie:NAME or header:NAME'
+	out_lit 'split: pools as NAME=N% (to hundredths: 0.05%), 2 to 256 of them, adding up to 100%; sticky= is cookie:NAME or header:NAME'
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process
@@ -2442,6 +2444,8 @@ compile_split:
 	inc	dword [g_plan_splits]
 	imul	r12,rax,SL_SIZE
 	lea	r12,[g_splits+r12]
+	mov	eax,[g_plan_split_p]
+	mov	[r12+SL_P],eax
 	mov	r13,[rbx+N_ARGS]
 	mov	r14d,[rbx+N_ARGC]
 	xor	ebx,ebx				; shares so far
@@ -2464,9 +2468,11 @@ compile_split:
 	call	plan_pool_index
 	cmp	eax,-1
 	je	plan_bad_split
-	mov	ecx,[r12+SL_N]
-	mov	[r12+SL_P+rcx*8],eax
-	; N%
+	mov	ecx,[g_plan_split_p]
+	cmp	ecx,MAX_SPLIT_P
+	jae	plan_bad_split
+	mov	[g_split_p+rcx*8],eax
+	; N%, N.N% or N.NN%: in hundredths
 	mov	rsi,[r13+A_VAL]
 	mov	ecx,[r13+A_VLEN]
 	cmp	ecx,2
@@ -2476,23 +2482,53 @@ compile_split:
 	jne	plan_bad_split
 	xor	eax,eax
 	xor	edx,edx
+	mov	r9d,-1				; decimals seen, -1 before the point
 .digit:
 	movzx	r8d,byte [rsi+rdx]
+	cmp	r8d,'.'
+	jne	@f
+	test	r9d,r9d
+	jns	plan_bad_split			; (a second point)
+	test	edx,edx
+	jz	plan_bad_split
+	xor	r9d,r9d
+	jmp	.digit_next
+@@:
 	sub	r8d,'0'
 	cmp	r8d,9
 	ja	plan_bad_split
 	imul	eax,eax,10
 	add	eax,r8d
-	cmp	eax,100
+	cmp	eax,1000000
 	ja	plan_bad_split
+	test	r9d,r9d
+	js	.digit_next
+	inc	r9d
+	cmp	r9d,2
+	ja	plan_bad_split
+.digit_next:
 	inc	edx
 	cmp	edx,ecx
 	jb	.digit
+	cmp	r9d,0
+	je	plan_bad_split			; ("5.%")
+	jg	.scale
+	xor	r9d,r9d
+.scale:
+	cmp	r9d,2				; to hundredths
+	je	.scaled
+	imul	eax,eax,10
+	inc	r9d
+	jmp	.scale
+.scaled:
 	test	eax,eax
 	jz	plan_bad_split
+	cmp	eax,SL_ALL
+	ja	plan_bad_split
 	add	ebx,eax
-	mov	ecx,[r12+SL_N]
-	mov	[r12+SL_P+rcx*8+4],ebx
+	mov	ecx,[g_plan_split_p]
+	mov	[g_split_p+rcx*8+4],ebx
+	inc	dword [g_plan_split_p]
 	inc	dword [r12+SL_N]
 	jmp	.next
 .is_sticky:
@@ -2527,7 +2563,7 @@ compile_split:
 	dec	r14d
 	jmp	.arg
 .args_done:
-	cmp	ebx,100
+	cmp	ebx,SL_ALL
 	jne	plan_bad_split
 	cmp	dword [r12+SL_N],2
 	jb	plan_bad_split
@@ -5955,6 +5991,7 @@ compile_routes:
 	cmp	r13d,-1
 	jne	.route_pool
 	mov	r13d,[g_splits+rax+SL_P]
+	mov	r13d,[g_split_p+r13*8]
 .route_pool:
 	call	compile_matches
 	mov	rdi,rbx
