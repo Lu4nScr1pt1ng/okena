@@ -104,7 +104,18 @@ build/wasm-cache/.made: $(WASM_T)
 	-[ -x build/wasm-okena ] && for p in build/test-plugin-go.wasm build/test-plugin-rust.wasm; do \
 		[ -f $$p ] && build/wasm-okena -plugin $$p -cache build/wasm-cache -compile; done; touch $@
 
-test: $(BIN) $(HTTPH) $(KAT) $(TLSH) $(TLSC) $(TLS12S) $(TLSC12) $(ADDON_EX) build/coraza-okena $(WASM_T) build/wasm-cache/.made
+# Envoy's ext_authz and ext_proc for okena (addons/envoyext), and a service of
+# both kinds for its tests
+build/ext-okena: $(wildcard addons/envoyext/*.go addons/envoyext/go.mod addons/envoyext/go.sum sdk/go/*.go)
+	@mkdir -p build
+	-command -v go >/dev/null && cd addons/envoyext && GOFLAGS=-mod=mod GOPROXY=off go build -o ../../$@ .
+
+build/envoyext-test-server: $(wildcard tests/envoyext/*.go tests/envoyext/go.mod tests/envoyext/go.sum)
+	@mkdir -p build
+	-command -v go >/dev/null && cd tests/envoyext && GOFLAGS=-mod=mod GOPROXY=off go build -o ../../$@ .
+
+test: $(BIN) $(HTTPH) $(KAT) $(TLSH) $(TLSC) $(TLS12S) $(TLSC12) $(ADDON_EX) build/coraza-okena $(WASM_T) build/wasm-cache/.made \
+	build/ext-okena build/envoyext-test-server
 	python3 -I tests/run_all.py
 
 # one after the other, all output shown (slower; for reading a suite's log)

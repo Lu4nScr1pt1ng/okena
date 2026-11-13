@@ -157,6 +157,11 @@ impl Answer {
     pub fn no_answer(&mut self) {
         self.none = true
     }
+    /// Says the addon could not decide: okena's on_error at once, and a
+    /// failure for the circuit.
+    pub fn fail(&mut self) {
+        self.action = 2
+    }
 }
 
 /// The memory okena shares with this addon.

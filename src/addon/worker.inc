@@ -539,6 +539,8 @@ ad_answer:
 	cmp	dword [rcx+AFE_STATE],1
 	jne	.stale				; (its time was up)
 	mov	dword [rcx+AFE_STATE],0
+	cmp	word [r15+ANS_ACTION],ANA_FAIL
+	je	.fail
 	inc	qword [r14+ADR_COUNT+ADC_OK]
 	call	ad_timed
 	mov	dword [r13+ADW_FAILS],0
@@ -572,8 +574,9 @@ ad_answer:
 	inc	qword [r14+ADR_COUNT+ADC_RESPOND]
 	jmp	.due
 .bad:
-	mov	byte [r10+ADSE_STATE],ADS_FAIL
 	inc	qword [r14+ADR_COUNT+ADC_ERROR]
+.failed:
+	mov	byte [r10+ADSE_STATE],ADS_FAIL
 .due:
 	mov	r9d,[r10+ADSE_GEN]
 	call	ad_due
@@ -581,6 +584,16 @@ ad_answer:
 	pop	rbx
 .stale:
 	ret
+; the addon said it could not decide: on_error at once, a failure for the circuit
+.fail:
+	inc	qword [r14+ADR_COUNT+ADC_ERROR]
+	call	ad_failed			; (g_qnow: addon_flush's)
+	push	rbx
+	mov	ebx,[rcx+AFE_SESS]
+	mov	r9d,[rcx+AFE_SGEN]
+	call	ad_waiter
+	jc	.gone
+	jmp	.failed
 
 ; r15 = an answer: CF unless its ops (and a respond's body) lie within it.
 ; Keeps all but rax, rcx, rdx, r8.

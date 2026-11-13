@@ -130,7 +130,7 @@ func main() {
 		defer in.mu.Unlock()
 		if err := in.request(ctx, r, a); err != nil {
 			log.Printf("%s: %v", h.name, err)
-			a.NoAnswer()
+			a.Fail()
 		}
 	}, addon.Options{Workers: *instances}))
 }

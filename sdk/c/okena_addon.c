@@ -140,6 +140,7 @@ void okena_remove(okena_answer *ans, const char *n) { op(ans, 3, n, strlen(n), "
 void okena_target(okena_answer *ans, const char *t) { op(ans, 4, "", 0, t, strlen(t)); }
 void okena_respond(okena_answer *ans, int status) { ans->action = 1, ans->status = (uint16_t)status; }
 void okena_no_answer(okena_answer *ans) { ans->none = 1; }
+void okena_fail(okena_answer *ans) { ans->action = 2; }
 
 void okena_body(okena_answer *ans, const void *body, size_t len)
 {

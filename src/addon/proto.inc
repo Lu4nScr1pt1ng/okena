@@ -107,6 +107,7 @@ ANS_RSV		:= 20				; d
 ANS_OPS		:= 24				; ops: b op, b 0, w name length, w value length, name, value
 ANA_CONTINUE	:= 0
 ANA_RESPOND	:= 1
+ANA_FAIL	:= 2				; it could not decide: on_error now (a failure, for the circuit)
 ANO_SET		:= 1				; a request field set (respond: a response field)
 ANO_ADD		:= 2				; one more
 ANO_REMOVE	:= 3				; gone

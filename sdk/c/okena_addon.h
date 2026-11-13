@@ -71,6 +71,7 @@ void okena_target(okena_answer *ans, const char *target);
 void okena_respond(okena_answer *ans, int status);	/* then okena_add: its fields */
 void okena_body(okena_answer *ans, const void *body, size_t len);
 void okena_no_answer(okena_answer *ans);		/* okena's on_error, at its time */
+void okena_fail(okena_answer *ans);			/* it could not decide: on_error now */
 
 /* the addon */
 okena_addon *okena_open(void);		/* from OKENA_ADDON_FD; NULL and errno on failure */

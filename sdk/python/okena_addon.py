@@ -90,6 +90,12 @@ class Respond:
         self.status, self.headers, self.body = status, headers, body if isinstance(body, bytes) else body.encode()
 
 
+class Fail:
+    """The addon could not decide (its own service is down, say): okena's
+    on_error at once, and a failure for the circuit."""
+    __slots__ = ()
+
+
 def _b(x):
     return x if isinstance(x, bytes) else str(x).encode("latin-1")
 
@@ -198,8 +204,10 @@ class Addon:
                 ops.append((OP_REMOVE, _b(k), b""))
             if out.target is not None:
                 ops.append((OP_TARGET, b"", _b(out.target)))
+        elif isinstance(out, Fail) or out is Fail:
+            action, status = 2, 0
         else:
-            raise TypeError("a handler returns okena_addon.Continue or okena_addon.Respond (or None: no answer)")
+            raise TypeError("a handler returns okena_addon.Continue, Respond, Fail, or None (no answer)")
         rec = bytearray(_ANSWER.size)
         for op, k, val in ops:
             rec += struct.pack("<BBHH", op, 0, len(k), len(val)) + k + val

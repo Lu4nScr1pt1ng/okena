@@ -36,6 +36,8 @@ def on_request(req):
         return oa.Continue(set=[("bad name", "x")])
     if last == "none":
         return None
+    if last == "fail":
+        return oa.Fail()
     if last == "info":
         return oa.Respond(200, [("x-client", req.client_ip), ("x-flags", str(req.flags)), ("x-method", req.method),
                                 ("x-target", req.target), ("x-host", req.header("host", ""))], b"info")

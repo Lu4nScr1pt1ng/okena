@@ -149,6 +149,10 @@ func (a *Answer) Body(b []byte) { a.body = b }
 // NoAnswer leaves the call unanswered: okena's on_error, at its time.
 func (a *Answer) NoAnswer() { a.none = true }
 
+// Fail says the addon could not decide (its own service is down, say):
+// okena's on_error at once, and a failure for the circuit.
+func (a *Answer) Fail() { a.action = 2 }
+
 func (a *Answer) reset() {
 	a.buf = a.buf[:24]
 	a.nops, a.action, a.status, a.body, a.none, a.overflow = 0, 0, 0, nil, false, false

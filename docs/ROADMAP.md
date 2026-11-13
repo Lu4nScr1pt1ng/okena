@@ -891,6 +891,10 @@ for new flows. On a NIC: not yet (none here).
   names; headers, properties, local answers, HTTP callouts, shared data,
   ticks; plugins on the Go and Rust SDKs tested (tests/gateway/wasm.py).
   Done 2026-11-13 for request headers.
+* ext_authz / ext_proc: addons/envoyext (ext-okena), the gRPC APIs as Envoy
+  speaks them; OK with header and query changes, denials, header mutations,
+  immediate responses (tests/gateway/envoyext.py). Done 2026-11-13 for
+  request headers.
 * SDKs (C, Rust, Go, Python); a reference WAF addon on Coraza.
 * proxy-wasm plugins (the ABI Envoy, nginx and Traefik run), in a process of
   their own like the other addons.

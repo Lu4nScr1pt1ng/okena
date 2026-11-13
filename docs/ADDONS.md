@@ -58,7 +58,8 @@ when it starts, so a reload can bring addons only into an okena that started
 with at least one; otherwise the reload is rejected and says so (`okena
 upgrade` starts okena again with no connection lost).
 
-**Failures.** A call ends without an answer when: the addon does not answer
+**Failures.** A call ends without an answer when: the addon says it could
+not decide (an SDK's `Fail`: its own service is down, say); the addon does not answer
 within `timeout`; its answer is not one (a field name that is not a token, a
 value with a control character, a target that is not a path, a status
 outside 200-599); the addon exits (its calls end at once, not at their
@@ -100,10 +101,12 @@ always sees an HTTP/1.1 head.
 | `sdk/rust` | `std` only |
 | `addons/coraza` | a WAF: Coraza with the OWASP Core Rule Set ([README](../addons/coraza/README.md)) |
 | `addons/wasm` | proxy-wasm plugins, the ABI Envoy, nginx and Traefik run, on wazero ([README](../addons/wasm/README.md)) |
+| `addons/envoyext` | Envoy's `ext_authz` and `ext_proc` gRPC services ([README](../addons/envoyext/README.md)) |
 
 Each SDK has a `hello` example that `tests/gateway/addon.py` runs against
 okena; `tests/gateway/waf.py` runs the WAF, `tests/gateway/wasm.py` proxy-wasm
-plugins built on the Go and Rust proxy-wasm SDKs.
+plugins built on the Go and Rust proxy-wasm SDKs, `tests/gateway/envoyext.py`
+a gRPC service of both Envoy kinds.
 
 `run`'s words go to the program as they are written, `name=value` ones
 included.
@@ -185,7 +188,7 @@ Every record begins with `len` (u32, the record's bytes) and `kind` (u16:
 |---|---|---|
 | 0 | 4 | len |
 | 4 | 2 | kind: 1 |
-| 6 | 2 | action: 0 continue, 1 respond |
+| 6 | 2 | action: 0 continue, 1 respond, 2 fail (it could not decide: on_error at once, a failure for the circuit) |
 | 8 | 4 | the call's id |
 | 12 | 2 | respond: the status |
 | 14 | 2 | `nops` |
