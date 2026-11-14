@@ -2964,9 +2964,14 @@ bench_loop:
 	call	bench_ns
 	sub	rax,BENCH_SPIN_NS
 	jbe	.poll
-	cmp	rax,100000000
+	mov	ecx,100000000
+	cmp	dword [g_b_h3],0		; (HTTP/3: ACKs owed go within 25 ms)
+	je	@f
+	mov	ecx,5000000
+@@:
+	cmp	rax,rcx
 	jbe	@f
-	mov	eax,100000000
+	mov	rax,rcx
 @@:
 	xor	edx,edx
 	mov	ecx,1000000000

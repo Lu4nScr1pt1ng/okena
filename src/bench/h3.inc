@@ -38,7 +38,9 @@ BQ_BAD		:= BQ_FIN + 4			; d: reset, or the connection closed
 BQ_RECV		:= BQ_BAD + 4			; q: stream bytes received
 BQ_CREDIT	:= BQ_RECV + 8			; q: MAX_DATA given
 BQ_RESENT	:= BQ_CREDIT + 8		; q: when the request last went
-BQ_END		:= BQ_RESENT + 8
+BQ_ACKAT	:= BQ_RESENT + 8		; q: a deferred ACK goes by then (TSC), 0 none
+BQ_RXT		:= BQ_ACKAT + 8			; q: when the largest acknowledged came (TSC)
+BQ_END		:= BQ_RXT + 8
 assert BQ_END <= BC_CCAP
 BC_Q		:= BC_CBUF			; (https's new=on only otherwise)
 
@@ -60,6 +62,10 @@ bss
 	g_bq_lg		rq 2			; largest received there
 	g_bq_next	dq ?			; bench_h3_sweep: next look
 	g_bq_ms200	dq ?			; 200 ms in ticks
+	g_bq_ms25	dq ?		; max_ack_delay, in TSC ticks
+	g_bq_ms5	dq ?
+	g_bq_us8	dq ?		; an ack delay unit
+	g_bq_acknext	dq ?
 	g_bq_scid	rb 8
 	g_bq_ikc	rb QK_SIZE
 	g_bq_iks	rb QK_SIZE
@@ -280,21 +286,62 @@ bench_h3_tx:
 	syscall
 	ret
 
-; rbx = connection: what the last packets ask: an ACK, MAX_DATA
-bench_h3_flush:
-	cmp	dword [rbx+BC_Q+BQ_NEEDACK],0
-	je	.out
+; ACKs as a browser sends them (RFC 9000 13.2.1): after two ack-eliciting
+; packets at once, else within max_ack_delay (25 ms, the default) or on the
+; next packet that goes anyway, the next request (bench_h3_request). An ACK
+; sent the moment an answer came was a datagram of its own for every
+; request, which no real client makes the server read.
+; rbx = connection, at the end of a read: the ACK now or later
+bench_h3_flush_lazy:
+	mov	eax,[rbx+BC_Q+BQ_NEEDACK]
+	test	eax,eax
+	jz	.out
+	cmp	eax,2
+	jae	bench_h3_flush
+	mov	rax,[rbx+BC_Q+BQ_RECV]		; credit to give: now
+	add	rax,BQ_WINDOW / 2
+	cmp	rax,[rbx+BC_Q+BQ_CREDIT]
+	jae	bench_h3_flush
+	cmp	qword [rbx+BC_Q+BQ_ACKAT],0
+	jne	.out
+	bench_now
+	add	rax,[g_bq_ms25]
+	mov	[rbx+BC_Q+BQ_ACKAT],rax
+.out:
+	ret
+
+; rbx = connection, rdi = where: the ACK frame (its delay as it is), rdi after
+bench_h3_ack_frame:
 	mov	dword [rbx+BC_Q+BQ_NEEDACK],0
-	lea	rdi,[g_bq_pl]
+	mov	qword [rbx+BC_Q+BQ_ACKAT],0
 	mov	byte [rdi],2
 	inc	rdi
 	mov	rax,[rbx+BC_Q+BQ_ACKH]
 	bq_v4
-	mov	word [rdi],0			; no delay, no more ranges
-	add	rdi,2
+	bench_now				; ack delay, in 8 us units (exponent 3)
+	sub	rax,[rbx+BC_Q+BQ_RXT]
+	xor	edx,edx
+	div	qword [g_bq_us8]
+	cmp	rax,0x3FFF
+	jbe	@f
+	mov	eax,0x3FFF
+@@:
+	or	eax,0x4000			; two bytes
+	xchg	al,ah
+	mov	[rdi],ax
+	mov	byte [rdi+2],0			; no more ranges
+	add	rdi,3
 	mov	rax,[rbx+BC_Q+BQ_ACKH]
 	sub	rax,[rbx+BC_Q+BQ_ACKL]
 	bq_v4
+	ret
+
+; rbx = connection: what the last packets ask: an ACK, MAX_DATA
+bench_h3_flush:
+	cmp	dword [rbx+BC_Q+BQ_NEEDACK],0
+	je	.out
+	lea	rdi,[g_bq_pl]
+	call	bench_h3_ack_frame
 	mov	rax,[rbx+BC_Q+BQ_RECV]
 	add	rax,BQ_WINDOW / 2
 	cmp	rax,[rbx+BC_Q+BQ_CREDIT]
@@ -314,9 +361,13 @@ bench_h3_flush:
 .out:
 	ret
 
-; rbx = connection: its request, on the stream in flight
+; rbx = connection: its request, on the stream in flight (an ACK owed with it)
 bench_h3_request:
 	lea	rdi,[g_bq_pl]
+	cmp	dword [rbx+BC_Q+BQ_NEEDACK],0
+	je	@f
+	call	bench_h3_ack_frame
+@@:
 	mov	byte [rdi],0x0B			; STREAM, a length, FIN
 	inc	rdi
 	mov	rax,[rbx+BC_Q+BQ_CUR]
@@ -354,9 +405,39 @@ bench_h3_send:
 	mov	[rbx+BC_SOFF],eax
 	ret
 
-; from the loop, often: requests not answered go again. Keeps r12-r15.
+; from the loop, often: ACKs past max_ack_delay (every 5 ms), then requests
+; not answered go again (every 200 ms). Keeps r12-r15.
 bench_h3_sweep:
 	bench_now
+	cmp	rax,[g_bq_acknext]
+	jb	.lost
+	mov	rdx,[g_bq_ms5]
+	lea	rcx,[rax+rdx]
+	mov	[g_bq_acknext],rcx
+	push	rbx
+	push	r12
+	push	r13
+	mov	r13,rax
+	mov	rbx,[g_b_conn]
+	mov	r12d,[g_b_nc]
+.ack_next:
+	test	r12d,r12d
+	jz	.acks_done
+	dec	r12d
+	cmp	qword [rbx+BC_Q+BQ_ACKAT],0
+	je	.ack_skip
+	cmp	r13,[rbx+BC_Q+BQ_ACKAT]
+	jb	.ack_skip
+	call	bench_h3_flush
+.ack_skip:
+	add	rbx,BC_SIZE
+	jmp	.ack_next
+.acks_done:
+	pop	r13
+	pop	r12
+	pop	rbx
+	bench_now
+.lost:
 	cmp	rax,[g_bq_next]
 	jb	.out
 	mov	rdx,[g_bq_ms200]
@@ -750,7 +831,9 @@ bench_h3_packet:
 	mov	[rbx+BC_Q+BQ_ACKL],r13
 @@:
 	mov	[rbx+BC_Q+BQ_ACKH],r13
-	mov	dword [rbx+BC_Q+BQ_NEEDACK],1
+	inc	dword [rbx+BC_Q+BQ_NEEDACK]
+	bench_now
+	mov	[rbx+BC_Q+BQ_RXT],rax
 .out:
 	pop	r14
 	pop	r13
@@ -786,7 +869,7 @@ bench_h3_readable:
 	call	bench_h3_flush
 	jmp	.read
 .drained:
-	call	bench_h3_flush
+	call	bench_h3_flush_lazy
 	pop	r12
 	cmp	dword [rbx+BC_Q+BQ_BAD],0
 	jne	bench_fail
@@ -1183,6 +1266,19 @@ bench_h3_connect:
 	mov	eax,200000
 	call	bench_us_ticks
 	mov	[g_bq_ms200],rax
+	mov	eax,25000
+	call	bench_us_ticks
+	mov	[g_bq_ms25],rax
+	mov	eax,5000
+	call	bench_us_ticks
+	mov	[g_bq_ms5],rax
+	mov	eax,8
+	call	bench_us_ticks
+	test	rax,rax
+	jnz	@f
+	inc	eax
+@@:
+	mov	[g_bq_us8],rax
 	; our state
 	lea	rdi,[rbx+BC_Q]
 	mov	ecx,BQ_END
