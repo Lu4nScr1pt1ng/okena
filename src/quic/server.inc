@@ -3035,6 +3035,14 @@ qc_on_ack:
 	jae	@f
 	mov	r10,r8
 @@:
+	; and from the lowest maybe still out (QC_SPLOW): below it each was
+	; acknowledged or lost, or is an ACK alone that nothing waits on. A
+	; client's ACK names all it has, a hundred numbers for one new.
+	mov	r9d,[rsp+16+8+QA_LEVEL]
+	cmp	r10,[r15+QC_SPLOW+r9*8]
+	jae	@f
+	mov	r10,[r15+QC_SPLOW+r9*8]
+@@:
 	mov	r9d,[rsp+16+8+QA_LEVEL]
 	imul	r9d,r9d,SP_N * SP_SIZE
 	lea	r9,[r15+QC_SP+r9]		; (lowest first: stream bytes arrive in order)
