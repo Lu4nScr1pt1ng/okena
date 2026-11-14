@@ -457,7 +457,8 @@ OP_B_WR_c	:= 46		; room to the upstream (client to upstream)
 OP_B_WR_u	:= 47		; room to the client
 OP_H_PEEK	:= 49		; http: a pooled connection looked at before reuse
 OP_UD_SEND	:= 50		; udp: a datagram to a backend failed (udp.inc)
-OP_COUNT	:= 51			; (OP_ADDON = 48: addon/worker.inc)
+OP_UD_RECV	:= 51		; udp: a backend's answer came into a slot
+OP_COUNT	:= 52			; (OP_ADDON = 48: addon/worker.inc)
 
 rodata
 	align 8
@@ -473,7 +474,7 @@ rodata
 			dq on_zc_in, on_zc_out, on_zc_drain
 			dq on_zc_fd, on_zc_poll
 			dq on_b_fd_c, on_b_fd_u, on_b_rd_c, on_b_rd_u, on_b_wr_c, on_b_wr_u
-			dq on_addon, on_h_peek, on_ud_send
+			dq on_addon, on_h_peek, on_ud_send, on_ud_recv
 end rodata
 
 ring_reap:

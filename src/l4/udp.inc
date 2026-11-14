@@ -37,6 +37,7 @@ UD_RX		:= 32			; datagrams in a batch
 UD_BATCHES	:= 8			; batches a socket gets in a turn
 UD_REPLY_RX	:= 8			; from a backend at a time
 UD_EV		:= 128
+UD_ASLOTS	:= 256			; io_uring: receives from backends in flight, at most
 UD_SLOT		:= 65536
 UD_RCVBUF	:= 1048576
 UD_EVICT_TRIES	:= 8
@@ -103,6 +104,9 @@ bss
 	g_ud_tab	dq ?
 	g_ud_heads	dq ?
 	g_ud_buf	dq ?
+	g_ud_abuf	dq ?		; io_uring: UD_ASLOTS slots the backends' answers come into
+	g_ud_aslot	dd ?		; the next one
+	g_ud_aout	dd ?		; receives posted whose completion has not come
 	g_ud_k		rq 3
 	g_ud_qh		rd MAX_LISTENERS	; the queues, + 1
 	g_ud_qt		rd MAX_LISTENERS
@@ -174,6 +178,9 @@ udp_worker_init:
 	mov	esi,UD_SLOT * UD_RX
 	call	.map
 	mov	[g_ud_buf],rax
+	mov	esi,UD_SLOT * UD_ASLOTS		; (address space: pages as answers use them)
+	call	.map
+	mov	[g_ud_abuf],rax
 	; what never changes in the batches
 	xor	ecx,ecx
 .slot:
@@ -338,6 +345,10 @@ udp_stop:
 
 ; before the engine sleeps
 udp_resume:
+	cmp	dword [g_ud_tn],0		; (answers the ring's receives queued)
+	je	@f
+	call	udp_flush
+@@:
 	cmp	dword [g_ud_pend],0
 	jne	udp_ready
 	ret
@@ -347,6 +358,11 @@ udp_ready:
 	push	rbx
 	push	r12
 	push	r13
+	call	udp_flush			; (answers queued from the ring's slots: out
+	cmp	dword [g_ud_aout],0		; before the slots are taken again)
+	jne	@f
+	mov	dword [g_ud_aslot],0
+@@:
 	mov	dword [g_ud_pend],0
 	mov	edi,[g_ud_ep]
 	lea	rsi,[g_ud_ev]
@@ -384,6 +400,11 @@ udp_ready:
 	add	rdi,[g_ud_tab]
 	cmp	[rdi+FL_GEN],eax
 	jne	.next				; closed earlier in this batch
+	cmp	dword [g_engine],ENGINE_EPOLL
+	je	.flow_read
+	call	udp_recv_ring
+	jmp	.next
+.flow_read:
 	call	udp_flow_read
 	jmp	.next
 .listener:
@@ -401,6 +422,9 @@ udp_ready:
 	jmp	.event
 .done:
 	call	udp_flush
+	cmp	dword [g_engine],ENGINE_EPOLL
+	je	.out
+	call	ring_flush			; (the receives: they complete as they go in)
 .out:
 	pop	r13
 	pop	r12
@@ -667,6 +691,153 @@ udp_send_ring:
 	mov	rcx,OP_UD_SEND shl 56
 	or	rax,rcx
 	mov	[r8+SQE_USER_DATA],rax
+	ret
+
+; io_uring: a backend's answer is a RECV on the ring into a slot of its own
+; (g_ud_abuf), not a recvmmsg of its own (one datagram on one flow's socket:
+; a system call each, with its msghdr copied in and out, ~10% of the CPU for
+; ~5% of UDP work). udp_ready posts one for each flow epoll says is readable
+; and submits them together; on_ud_recv does with each what udp_flow_read
+; does. An answer read sets g_ud_pend: the next turn asks epoll again for the
+; flows with more waiting. The slots go round; they start again when none is in flight
+; and the answers that used them are out (udp_ready, after udp_flush); all
+; taken, the flow waits for the next turn.
+; rdi = flow (generation checked).
+udp_recv_ring:
+	mov	eax,[g_ud_aslot]
+	cmp	eax,UD_ASLOTS
+	jae	.later
+	inc	dword [g_ud_aslot]
+	inc	dword [g_ud_aout]
+	push	rax
+	push	rdi
+	call	ring_get_sqe
+	pop	rdi
+	pop	rcx
+	mov	byte [rax+SQE_OPCODE],IORING_OP_RECV
+	mov	edx,[rdi+FL_FD]
+	mov	[rax+SQE_FD],edx
+	mov	rdx,rcx
+	shl	rdx,16				; UD_SLOT
+	add	rdx,[g_ud_abuf]
+	mov	[rax+SQE_ADDR],rdx
+	mov	dword [rax+SQE_LEN],UD_SLOT
+	mov	dword [rax+SQE_OP_FLAGS],MSG_DONTWAIT
+	mov	r8,rax
+	mov	rax,rdi				; user_data: op, generation, slot << 24 | flow
+	sub	rax,[g_ud_tab]
+	xor	edx,edx
+	mov	r9d,FL_SIZE
+	div	r9
+	shl	ecx,24
+	or	eax,ecx
+	mov	ecx,[rdi+FL_GEN]
+	and	ecx,0xFFFFFF
+	shl	rcx,32
+	or	rax,rcx
+	mov	rcx,OP_UD_RECV shl 56
+	or	rax,rcx
+	mov	[r8+SQE_USER_DATA],rax
+	ret
+.later:
+	mov	dword [g_ud_pend],1
+	ret
+
+; ebx = slot << 24 | flow, r12d = generation, r14 = bytes or -errno, r15d =
+; flags: a backend's answer, as udp_flow_read takes one.
+on_ud_recv:
+	dec	dword [g_ud_aout]
+	push	r14				; (its length, across the calls below)
+	push	rbx
+	push	r12
+	mov	ecx,ebx
+	shr	ecx,24				; the slot
+	and	ebx,0xFFFFFF
+	mov	r12d,r12d
+	mov	rdi,rbx
+	imul	rdi,rdi,FL_SIZE
+	add	rdi,[g_ud_tab]
+	mov	eax,[rdi+FL_GEN]
+	and	eax,0xFFFFFF
+	cmp	eax,[rsp]			; (r12d pushed: the generation)
+	jne	.out				; closed since
+	test	r14,r14
+	js	.failed
+	; maybe more there (a game's several answers to one datagram): epoll is
+	; asked again on the next turn, as it hears of a socket only when it gets
+	; ready (and UDP gives no IORING_CQE_F_SOCK_NONEMPTY)
+	mov	dword [g_ud_pend],1
+	mov	r12,rdi				; the flow
+	mov	ebx,ecx
+	; into the batch to its listening socket (another socket's, or full: out first)
+	cmp	dword [g_ud_tn],0
+	je	.room
+	mov	eax,[r12+FL_LFD]
+	cmp	eax,[g_ud_tfd]
+	jne	.flush
+	cmp	dword [g_ud_tn],UD_RX
+	jb	.room
+.flush:
+	call	udp_flush
+.room:
+	mov	eax,[r12+FL_LFD]
+	mov	[g_ud_tfd],eax
+	mov	qword [g_ud_tflow],0
+	mov	eax,[g_tick]
+	mov	[r12+FL_LAST],eax
+	mov	ecx,[r12+FL_SERVER]
+	mov	eax,[g_sv_fails+rcx*4]
+	or	eax,[g_sv_down+rcx*4]
+	jz	@f
+	mov	edi,ecx
+	call	server_ok
+@@:
+	mov	eax,[r12+FL_LEFT]		; no more than it may have
+	cmp	eax,UD_NO_LIMIT
+	je	.counted
+	test	eax,eax
+	jz	.out
+	dec	dword [r12+FL_LEFT]
+.counted:
+	mov	r14,[rsp+16]			; the length
+	mov	r8d,[r12+FL_LST]
+	add	[g_st_l_out+r8*8],r14
+	inc	qword [g_st_l_dgout+r8*8]
+	mov	ecx,[g_ud_tn]
+	inc	dword [g_ud_tn]
+	imul	rax,rcx,MM_SIZE
+	lea	r10,[r12+FL_SA]
+	mov	[g_ud_tm+rax+MM_NAME],r10
+	mov	r10d,[r12+FL_SALEN]
+	mov	[g_ud_tm+rax+MM_NAMELEN],r10d
+	lea	r10,[r12+FL_CTL]
+	mov	[g_ud_tm+rax+MM_CTL],r10
+	mov	r10d,[r12+FL_CTLLEN]
+	mov	[g_ud_tm+rax+MM_CTLLEN],r10
+	shl	rcx,4
+	mov	r10,rbx
+	shl	r10,16				; UD_SLOT
+	add	r10,[g_ud_abuf]
+	mov	[g_ud_tio+rcx],r10
+	mov	[g_ud_tio+rcx+8],r14
+	cmp	dword [r12+FL_LEFT],0
+	jne	.out
+	mov	rdi,r12				; its last answer: gone (its name stays
+	call	udp_close			; readable until the next flush)
+	jmp	.out
+.failed:
+	cmp	r14,-ECONNREFUSED
+	jne	.out
+	push	rdi
+	mov	rsi,r14
+	mov	edi,[rdi+FL_SERVER]
+	call	server_failed
+	pop	rdi
+	call	udp_close
+.out:
+	pop	r12
+	pop	rbx
+	pop	r14
 	ret
 
 ; io_uring: a datagram to a backend failed (ebx = flow, r12d = generation,
