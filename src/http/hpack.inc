@@ -377,7 +377,7 @@ hpack_decode:
 	push	rdi
 	mov	rsi,rcx
 	mov	rcx,r8
-	rep	movsb
+	call	copy_small
 	pop	rax
 	mov	rdx,r8
 	clc
@@ -562,10 +562,10 @@ hd_insert:
 	lea	rdi,[rbx+HPD_DATA+rax]
 	mov	rsi,r12
 	mov	ecx,r13d
-	rep	movsb
+	call	copy_small
 	mov	rsi,r14
 	mov	ecx,r15d
-	rep	movsb
+	call	copy_small
 	lea	rax,[rbx+HPD_DATA]
 	sub	rdi,rax
 	mov	[rbx+HPD_DLEN],edi
@@ -761,7 +761,7 @@ hp_put_str:
 	call	hp_put_int
 	mov	rsi,r12
 	mov	ecx,r13d
-	rep	movsb
+	call	copy_small
 	jmp	.out
 .huff:
 	mov	rax,rbx

@@ -2325,7 +2325,7 @@ h2_stream_new:
 	call	peer_ptr
 	mov	rsi,rax
 	mov	ecx,P_SIZE
-	rep	movsb
+	call	copy_small
 	pop	rbx				; the connection
 	pop	r9
 	; the stream's record
@@ -3108,6 +3108,8 @@ h2_untable:
 	dec	dword [r13+C2_NSTR]
 	ret
 .scan:
+	cmp	dword [r13+C2_AWAY],0		; none away from its home slot: not in
+	je	.gone				; the table (taken out already, nearly always)
 	lea	r8,[r13+C2_ST]
 	mov	ecx,H2_MAXS
 .next:
@@ -3123,6 +3125,8 @@ h2_untable:
 	add	r8,S2_SIZE
 	dec	ecx
 	jnz	.next
+	ret
+.gone:
 	ret
 
 ; r15 = stream record whose pending bytes start with an HTTP/1.1 head
@@ -3297,9 +3301,15 @@ h2_head_out:
 	call	h2_zero_length			; rsi = head, ebp = its length
 @@:
 	mov	[g_h2tmp_es],eax
-	mov	eax,r12d
+	mov	eax,r12d			; its frames: one when it fits (nearly
+	cmp	eax,[r13+C2_PMAXF]		; always), no division
+	jae	.frames
+	xor	eax,eax
+	jmp	.one
+.frames:
 	xor	edx,edx
 	div	dword [r13+C2_PMAXF]
+.one:
 	inc	eax
 	imul	eax,eax,9
 	lea	eax,[rax+r12+H2_CTRL]
