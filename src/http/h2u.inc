@@ -1136,6 +1136,7 @@ h2u_head_out:
 	jmp	@b
 .slot:
 	mov	[r8+S2_SID],eax
+	h2_away	add, r8
 	mov	[r8+S2_SESS],ebp
 	push	rbx
 	mov	ebx,ebp
@@ -1462,6 +1463,7 @@ h2u_block_done:
 .stale:
 	push	rbp
 	mov	ebp,[r8+S2_SESS]
+	h2_away	sub, r8
 	mov	dword [r8+S2_SID],0
 	dec	dword [r13+C2_NSTR]
 	pop	rbp

@@ -98,6 +98,7 @@ C2_RSTT		:= 88				; and the tick they count in
 C2_CHEAPN	:= 92				; cheap frames this second
 C2_CHEAPT	:= 96				; and the tick they count in
 C2_HBN		:= 100				; CONTINUATION frames in the block
+C2_AWAY		:= 104				; streams in the table away from their home slot
 C2_ST		:= 128				; the stream table: H2_MAXS of S2_*
 S2_SID		:= 0
 S2_SESS		:= 4
@@ -1262,6 +1263,28 @@ h2_unpad:
 ; eax = stream: edi = its session or NIL; r8 = its table entry. A stream
 ; sits in slot (id / 2) mod H2_MAXS when that was free (nearly always:
 ; ids are sequential, at most 100 are open), else anywhere.
+; A stream sits in slot (id / 2) mod H2_MAXS when that was free; C2_AWAY
+; counts those that are not, so a miss there (a new stream's id, a frame for
+; one that ended) looks no further, nearly always: the whole table (2 KiB)
+; was read for every request's HEADERS.
+; op = add or sub, reg = an entry: C2_AWAY moved by one when it is away from
+; its home. Keeps all but flags.
+macro h2_away op*, reg*
+	push	rax
+	push	rcx
+	mov	eax,[reg+S2_SID]
+	shr	eax,1
+	and	eax,H2_MAXS - 1
+	shl	eax,4				; * S2_SIZE
+	lea	rax,[r13+C2_ST+rax]
+	cmp	rax,reg
+	setne	cl
+	movzx	ecx,cl
+	op	[r13+C2_AWAY],ecx
+	pop	rcx
+	pop	rax
+end macro
+
 h2_find:
 	mov	r8d,eax
 	shr	r8d,1
@@ -1273,12 +1296,17 @@ h2_find:
 	mov	edi,[r8+S2_SESS]
 	ret
 .scan:
+	cmp	dword [r13+C2_AWAY],0
+	je	.none
 	lea	r8,[r13+C2_ST]
 	mov	ecx,H2_MAXS
 .next:
 	cmp	[r8+S2_SID],eax
 	jne	.skip
 	mov	edi,[r8+S2_SESS]
+	ret
+.none:
+	mov	edi,NIL
 	ret
 .skip:
 	add	r8,S2_SIZE
@@ -2523,6 +2551,7 @@ h2_stream_new:
 .slot_found:
 	mov	eax,[rsp+H2N_SID]
 	mov	[r8+S2_SID],eax
+	h2_away	add, r8
 	mov	eax,[rsp+H2N_SESS]
 	mov	[r8+S2_SESS],eax
 	push	rbx
@@ -2636,6 +2665,7 @@ h2_streams_close:
 	cmp	dword [r12+S2_SID],0
 	je	.skip
 	mov	edi,[r12+S2_SESS]
+	h2_away	sub, r12
 	mov	dword [r12+S2_SID],0		; out of the table first
 	dec	dword [r13+C2_NSTR]
 	test	dword [r13+C2_FLAGS],C2F_CLIENT
@@ -2702,6 +2732,7 @@ h2u_goaway_streams:
 	cmp	eax,r9d
 	jbe	.skip
 	mov	edi,[r12+S2_SESS]
+	h2_away	sub, r12
 	mov	dword [r12+S2_SID],0
 	dec	dword [r13+C2_NSTR]
 	call	h2u_fail
@@ -3072,6 +3103,7 @@ h2_untable:
 	je	.scan
 	cmp	[r8+S2_SESS],ebp
 	jne	.scan
+	h2_away	sub, r8
 	mov	dword [r8+S2_SID],0
 	dec	dword [r13+C2_NSTR]
 	ret
@@ -3083,6 +3115,7 @@ h2_untable:
 	je	.skip
 	cmp	[r8+S2_SESS],ebp
 	jne	.skip
+	h2_away	sub, r8
 	mov	dword [r8+S2_SID],0
 	dec	dword [r13+C2_NSTR]
 	ret
