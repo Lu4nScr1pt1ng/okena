@@ -12,6 +12,8 @@ HI_MAX		:= 4096
 
 ; ebx, r15, its request just sent: eax = 1 when there is a 103 in UP
 hints_inject:
+	cmp	dword [g_eh_any],0
+	je	.none				; (HB_EH never set)
 	mov	rax,[r15+H_BUF]
 	cmp	dword [rax+HB_EH],0
 	je	.none

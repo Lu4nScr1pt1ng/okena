@@ -31,6 +31,8 @@ end bss
 ; r15 = record, rcx = its listener, g_hm = the request: its trace, or none.
 ; Keeps rbx and r12-r15.
 trace_begin:
+	cmp	dword [g_trace_any],0
+	je	.none				; (its flags never set: zero)
 	mov	rdi,[r15+H_BUF]
 	mov	dword [rdi+HB_TRC+TRC_FLAGS],0
 	cmp	dword [rcx+LS_TRACE],0
@@ -239,6 +241,8 @@ trace_hex16:
 ; r15 = record, rdi = the upstream head: `traceparent` with okena's span as
 ; the parent, when the request has a trace. rdi = after it.
 trace_emit:
+	cmp	dword [g_trace_any],0
+	je	.none
 	mov	rax,[r15+H_BUF]
 	test	dword [rax+HB_TRC+TRC_FLAGS],TF_ON
 	jz	.none
@@ -266,6 +270,8 @@ trace_emit:
 ; r15 = record, r14 = a request field: ZF when it is the client's
 ; traceparent and okena sends its own instead. Keeps rdi.
 trace_drops:
+	cmp	dword [g_trace_any],0
+	je	.keep
 	mov	rax,[r15+H_BUF]
 	test	dword [rax+HB_TRC+TRC_FLAGS],TF_ON
 	jz	.keep

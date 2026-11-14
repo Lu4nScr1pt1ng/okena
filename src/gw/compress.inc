@@ -208,6 +208,8 @@ zip_tables:
 ; g_hm = the request, r15: whether this answer may be compressed, for when its head
 ; comes. rax, rcx, rdx, rsi, rdi, r8-r11 are free. Keeps rbx, r12-r15.
 zip_request:
+	cmp	dword [g_zip_any],0
+	je	.none				; (HB_ZOK never set)
 	mov	rax,[r15+H_BUF]
 	mov	dword [rax+HB_ZOK],0
 	mov	eax,[r15+H_ACT]
@@ -276,6 +278,8 @@ zip_request:
 ; g_hm = an answer's head, ebx, r15: g_zh, and a context, if it is to be compressed
 zip_head:
 	mov	dword [g_zh],0
+	cmp	dword [g_zip_any],0
+	je	.none
 	mov	rax,[r15+H_BUF]
 	mov	edx,[rax+HB_ZOK]
 	test	edx,edx

@@ -97,23 +97,57 @@ fcgi_active:
 	xor	eax,eax
 	ret
 
+; Features a plan may not have at all. A session's buffers belong to its
+; worker and start zeroed, so the fields of a feature the plan lacks
+; (FastCGI's tag, early hints', compression's, a trace's flags) stay zero:
+; nothing needs to clear or read them on each request, and they sit on
+; pages of the buffers no other part of a plain request touches (a cache
+; miss each, ~1% of the CPU between them).
 bss
 	g_fcgi_any	dd ?		; the plan has a `protocol fastcgi` pool
+	g_eh_any	dd ?		; a route with `early_hints`
+	g_zip_any	dd ?		; a route with `compress`
+	g_trace_any	dd ?		; a listener with tracing
 end bss
 
-; Worker start: g_fcgi_any.
+; Worker start: the g_*_any above.
 fcgi_worker_init:
 	xor	eax,eax
 	xor	ecx,ecx
 .pool:
 	cmp	ecx,[g_plan_pools]
-	jae	.done
+	jae	.pools
 	imul	rdx,rcx,PL_SIZE
 	or	eax,[g_pools+rdx+PL_FCGI]
 	inc	ecx
 	jmp	.pool
-.done:
+.pools:
 	mov	[g_fcgi_any],eax
+	xor	eax,eax				; early hints
+	xor	r8d,r8d				; compression
+	xor	ecx,ecx
+.act:
+	cmp	ecx,[g_plan_acts]
+	jae	.acts
+	imul	rdx,rcx,RA_SIZE
+	or	eax,[g_acts+rdx+RA_EHLEN]
+	or	r8d,[g_acts+rdx+RA_ZMIN]
+	inc	ecx
+	jmp	.act
+.acts:
+	mov	[g_eh_any],eax
+	mov	[g_zip_any],r8d
+	xor	eax,eax
+	xor	ecx,ecx
+.listener:
+	cmp	ecx,[g_plan_listeners]
+	jae	.listeners
+	imul	rdx,rcx,LS_SIZE
+	or	eax,[g_listeners+rdx+LS_TRACE]
+	inc	ecx
+	jmp	.listener
+.listeners:
+	mov	[g_trace_any],eax
 	ret
 
 ; In http_route, a request whose pool is `protocol fastcgi`: HB_FCGI. eax = the
@@ -136,6 +170,8 @@ fcgi_mark:
 	mov	edi,411
 	jmp	http_error
 .off:
+	cmp	dword [g_fcgi_any],0
+	je	.out				; (never set: zero already)
 	mov	rax,[r15+H_BUF]
 	mov	qword [rax+HB_FCGI],0
 .out:
