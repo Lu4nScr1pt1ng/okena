@@ -5,7 +5,7 @@
 ;   }
 ;
 ; A directive ends at a newline or ';'. '#' at the start of a token starts
-; a comment. Strings are double-quoted with \" \\ \n \t escapes. A word
+; a comment. Strings are double-quoted with \" \\ \n \r \t \xHH escapes. A word
 ; whose part before the first '=' is a key ([a-z0-9_.:-]+) is key=value;
 ; the value may be a quoted string.
 ;
@@ -740,8 +740,24 @@ lex_string:
 	je	.esc_ok
 	cmp	al,'t'
 	je	.esc_ok
+	cmp	al,'r'
+	je	.esc_ok
 	cmp	al,'$'
 	je	.esc_ok
+	cmp	al,'x'				; \xHH: two hex digits
+	jne	.esc_bad
+	lea	rax,[r12+2]
+	cmp	rax,[g_cfg_end]
+	jae	.esc_bad
+	movzx	eax,byte [r12+1]
+	call	.hex
+	jc	.esc_bad
+	movzx	eax,byte [r12+2]
+	call	.hex
+	jc	.esc_bad
+	add	r12,2
+	jmp	.esc_ok
+.esc_bad:
 	lea	rdi,[r12-1]
 	mov	esi,2
 	mov	edx,[g_lex_line]
@@ -749,7 +765,7 @@ lex_string:
 	out_lit 'unknown escape in a string'
 	call	cfg_diag_end
 	call	cfg_note
-	out_lit 'help: the escapes are \" \\ \n \t and \$'
+	out_lit 'help: the escapes are \" \\ \n \r \t \xHH and \$'
 	call	cfg_note_end
 	call	cfg_error_limit
 .esc_ok:
@@ -804,8 +820,25 @@ lex_string:
 	jmp	.store
 @@:
 	cmp	al,'t'
-	jne	.store
+	jne	@f
 	mov	al,9
+	jmp	.store
+@@:
+	cmp	al,'r'
+	jne	@f
+	mov	al,13
+	jmp	.store
+@@:
+	cmp	al,'x'
+	jne	.store
+	movzx	eax,byte [rsi]
+	call	.hex
+	mov	ecx,eax
+	shl	ecx,4
+	movzx	eax,byte [rsi+1]
+	call	.hex
+	or	eax,ecx
+	add	rsi,2
 .store:
 	mov	[rdi],al
 	inc	rdi
@@ -819,6 +852,22 @@ lex_string:
 	pop	r13
 	pop	r12
 	pop	rbx
+	ret
+; al = a hex digit: eax = its value, CF when it is not one. Keeps all else.
+.hex:
+	sub	eax,'0'
+	cmp	eax,9
+	jbe	.hex_ok
+	or	eax,0x20
+	sub	eax,'a' - '0'
+	cmp	eax,5
+	ja	.hex_no
+	add	eax,10
+.hex_ok:
+	clc
+	ret
+.hex_no:
+	stc
 	ret
 .unterminated:
 	mov	rdi,rbx

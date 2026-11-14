@@ -2935,18 +2935,82 @@ check_uptls:
 	call	cfg_error_limit
 	jmp	.out
 
+; r12 = health node: send= for tcp and udp only, match= not for grpc and at
+; most 255 bytes.
+check_health_sm:
+	push	rbx
+	mov	rax,[r12+N_ARGS]
+	mov	rax,[rax+A_VAL]
+	movzx	ebx,byte [rax]			; t, h, g, u
+	mov	rdi,r12
+	cstring .k_send, 'send',0
+	lea	rsi,[.k_send]
+	call	node_option
+	test	rax,rax
+	jz	.match
+	cmp	bl,'h'
+	je	.send_bad
+	cmp	bl,'g'
+	jne	.match
+.send_bad:
+	mov	rdi,rax
+	call	arg_value_span
+	mov	edx,[r12+N_LINE]
+	call	cfg_error
+	out_lit 'send= is for tcp and udp checks: an http check sends its request'
+	call	cfg_diag_end
+	call	cfg_error_limit
+.match:
+	mov	rdi,r12
+	cstring .k_match, 'match',0
+	lea	rsi,[.k_match]
+	call	node_option
+	test	rax,rax
+	jz	.out
+	cmp	bl,'g'
+	je	.match_grpc
+	cmp	dword [rax+A_VLEN],255
+	ja	.match_long
+	cmp	dword [rax+A_VLEN],0
+	jne	.out
+.match_long:
+	mov	rdi,rax
+	call	arg_value_span
+	mov	edx,[r12+N_LINE]
+	call	cfg_error
+	out_lit 'match= is 1 to 255 bytes: what the answer must hold'
+	call	cfg_diag_end
+	call	cfg_error_limit
+	jmp	.out
+.match_grpc:
+	mov	rdi,rax
+	call	arg_value_span
+	mov	edx,[r12+N_LINE]
+	call	cfg_error
+	out_lit 'a gRPC check passes when the service is SERVING: match= is for tcp, udp and http checks'
+	call	cfg_diag_end
+	call	cfg_error_limit
+.out:
+	pop	rbx
+	ret
+
 ; rdi = health node. `health tcp` takes nothing more; `health http`
 ; takes a path, after GET or HEAD if a method is given.
 check_health:
 	push	rbx
 	push	r12
 	mov	r12,rdi
+	call	check_health_sm			; send=, match=
+	mov	rdi,r12
 	mov	rbx,[r12+N_ARGS]
 	call	positional_count
 	mov	ecx,eax
 	mov	rdi,[rbx+A_VAL]
+	cmp	byte [rdi],'u'			; udp: as tcp, nothing positional
+	je	@f
 	cmp	byte [rdi],'t'			; tcp
 	jne	.http
+@@:
 	cmp	ecx,1
 	je	.out
 	lea	rdi,[rbx+A_SIZE]

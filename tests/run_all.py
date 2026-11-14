@@ -105,6 +105,7 @@ SUITES = [
     ("onchange", ["tests/reload/onchange.py"]),
     ("check diff", ["tests/reload/diff.py"]),
     ("health", ["tests/health/run.py"]),
+    ("health match", ["tests/health/match.py"]),
     ("lb", ["tests/lb/run.py"]),
     ("admin io_uring", ["tests/admin/run.py", "io_uring"]),
     ("admin epoll", ["tests/admin/run.py", "epoll"]),

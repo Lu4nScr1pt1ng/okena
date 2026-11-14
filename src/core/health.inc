@@ -36,6 +36,10 @@ bss
 	g_hc_active	rd MAX_SERVERS	; slot held an address at the last look
 	g_hc_skip	rd MAX_SERVERS	; gRPC: bytes of a frame too big to hold, still to drop
 	g_hc_gbuf	rb MAX_SERVERS * HC_GBUF	; gRPC: frames of the answer
+	g_hc_stage	rd MAX_SERVERS	; match=: 0 the status, 1 the head, 2 the body (or a tcp answer)
+	g_hc_looked	rd MAX_SERVERS	; and the answer's bytes looked at so far
+	g_hc_clen	rd MAX_SERVERS	; the carry: an answer's last bytes, a match may span reads
+	g_hc_carry	rb MAX_SERVERS * HC_CARRY
 	g_hc_events:	rb EPOLL_EVENT * 64
 end bss
 
@@ -49,6 +53,9 @@ HC_STATUS_BASE	:= 100000	; -(HC_STATUS_BASE + N): answered with status N
 HC_GRPC_BASE	:= 200000	; -(HC_GRPC_BASE + N): gRPC serving status N
 HC_GRPC_FAILED	:= 300000	; the gRPC call ended without a status
 HC_GBUF		:= 512
+HC_CARRY	:= 256		; match= is at most 255 bytes
+HC_NOMATCH	:= 400000	; -HC_NOMATCH: the answer did not hold match=
+HC_SCAN_MAX	:= 1 shl 20	; and gave up on after this much
 
 ; Shared table, before forking a generation (zero: everyone up).
 health_table_init:
@@ -275,6 +282,10 @@ hc_start:
 	lea	r12,[g_servers+r12]
 	mov	edi,[r12+SV_FAMILY]
 	mov	esi,SOCK_STREAM or SOCK_NONBLOCK or SOCK_CLOEXEC
+	cmp	dword [r13+PL_H_HTTP],3
+	jne	@f
+	mov	esi,SOCK_DGRAM or SOCK_NONBLOCK or SOCK_CLOEXEC
+@@:
 	xor	edx,edx
 	mov	eax,SYS_socket
 	syscall
@@ -283,6 +294,9 @@ hc_start:
 	mov	[g_hc_fd+rbx*4],eax
 	mov	dword [g_hc_phase+rbx*4],0	; connecting
 	mov	dword [g_hc_rlen+rbx*4],0
+	mov	dword [g_hc_stage+rbx*4],0
+	mov	dword [g_hc_looked+rbx*4],0
+	mov	dword [g_hc_clen+rbx*4],0
 	mov	eax,[r13+PL_H_TIMEOUT]
 	add	rax,[g_hc_now]
 	mov	[g_hc_deadline+rbx*8],rax
@@ -294,10 +308,13 @@ hc_start:
 	mov	edx,[r12+SV_SALEN]
 	mov	eax,SYS_connect
 	syscall
+	cmp	dword [r13+PL_H_HTTP],3
+	je	.udp
 	test	eax,eax
-	jz	.passed
+	jz	@f				; (at once: the same way, writable at once)
 	cmp	eax,-EINPROGRESS
 	jne	.failed
+@@:
 	sub	rsp,16
 	mov	dword [rsp],EPOLLOUT
 	mov	[rsp+4],rbx
@@ -309,10 +326,29 @@ hc_start:
 	syscall
 	add	rsp,16
 	jmp	.out
-.passed:
-	mov	edi,ebx
-	xor	esi,esi
-	call	hc_result
+.udp:
+	; a datagram: send= goes at once, then the answer is waited for
+	test	eax,eax
+	jnz	.failed
+	mov	edi,[g_hc_fd+rbx*4]
+	mov	rsi,[r13+PL_H_SEND]
+	mov	edx,[r13+PL_H_SLEN]
+	mov	eax,SYS_write
+	syscall
+	test	rax,rax
+	js	.failed
+	mov	dword [g_hc_phase+rbx*4],1
+	mov	dword [g_hc_stage+rbx*4],2
+	sub	rsp,16
+	mov	dword [rsp],EPOLLIN
+	mov	[rsp+4],rbx
+	mov	edi,[g_hc_epfd]
+	mov	esi,EPOLL_CTL_ADD
+	mov	edx,[g_hc_fd+rbx*4]
+	mov	r10,rsp
+	mov	eax,SYS_epoll_ctl
+	syscall
+	add	rsp,16
 	jmp	.out
 .failed:
 	mov	edi,ebx
@@ -352,7 +388,7 @@ hc_connect_done:
 	jnz	.result
 	call	hc_pool_of			; r12 = pool (rbx = server)
 	cmp	dword [r12+PL_H_HTTP],0
-	je	.result
+	je	.tcp
 	mov	edi,ebx
 	cmp	dword [r12+PL_H_HTTP],2
 	je	.grpc
@@ -368,6 +404,37 @@ hc_connect_done:
 	pop	r12
 	pop	rbx
 	ret
+.tcp:
+	; connected: that is the check, unless it says send= or match=
+	cmp	dword [r12+PL_H_SLEN],0
+	je	@f
+	mov	edi,[g_hc_fd+rbx*4]
+	mov	rsi,[r12+PL_H_SEND]
+	mov	edx,[r12+PL_H_SLEN]
+	mov	eax,SYS_write
+	syscall
+	test	rax,rax
+	js	.write_failed
+@@:
+	xor	esi,esi				; (passed, unless match= says more)
+	cmp	dword [r12+PL_H_MLEN],0
+	je	.result
+	mov	dword [g_hc_phase+rbx*4],1	; the answer: what match= looks for
+	mov	dword [g_hc_stage+rbx*4],2
+	sub	rsp,16
+	mov	dword [rsp],EPOLLIN or EPOLLRDHUP
+	mov	[rsp+4],rbx
+	mov	edi,[g_hc_epfd]
+	mov	esi,EPOLL_CTL_MOD
+	mov	edx,[g_hc_fd+rbx*4]
+	mov	r10,rsp
+	mov	eax,SYS_epoll_ctl
+	syscall
+	add	rsp,16
+	jmp	.out
+.write_failed:
+	mov	rsi,rax
+	jmp	.result
 
 ; edi = server whose check connection is up: write the request, then
 ; wait for the answer.
@@ -497,9 +564,21 @@ hc_http_read:
 	jb	.status
 	cmp	eax,[r12+PL_H_HI]
 	ja	.status
+	cmp	dword [r12+PL_H_MLEN],0
+	jne	.body				; and its body must hold match=
 	mov	edi,ebx
 	xor	esi,esi				; passed
 	call	hc_result
+	jmp	.out
+.body:
+	mov	dword [g_hc_stage+rbx*4],1	; the head's end first
+	mov	ecx,ebx
+	shl	ecx,4
+	lea	rsi,[g_hc_rbuf+rcx+12]		; what came after the status code
+	mov	edx,[g_hc_rlen+rbx*4]
+	sub	edx,12
+	mov	edi,ebx
+	call	hc_feed
 	jmp	.out
 .status:
 	neg	eax
@@ -528,6 +607,10 @@ hc_http_read:
 
 ; edi = server with answer bytes: an HTTP or a gRPC check's. Keeps r12.
 hc_answer:
+	cmp	edi,MAX_SERVERS
+	jae	.none
+	cmp	dword [g_hc_stage+rdi*4],0
+	jne	hc_scan_read			; match=: past the status (or tcp, udp)
 	push	rbx
 	push	r12
 	mov	ebx,edi
@@ -539,6 +622,161 @@ hc_answer:
 	cmp	eax,2
 	je	hc_grpc_read
 	jmp	hc_http_read
+.none:
+	ret
+
+; edi = server whose answer is looked through for match=: read what came
+; (a datagram, or more of the stream) and feed it on.
+hc_scan_read:
+	push	rbx
+	mov	ebx,edi
+	mov	edi,[g_hc_fd+rbx*4]
+	cmp	edi,-1
+	je	.out
+	sub	rsp,4096
+	mov	rsi,rsp
+	mov	edx,4096
+	xor	eax,eax				; SYS_read
+	syscall
+	cmp	rax,-EAGAIN
+	je	.done
+	test	rax,rax
+	jle	.ended
+	mov	rsi,rsp
+	mov	edx,eax
+	mov	edi,ebx
+	call	hc_feed
+	jmp	.done
+.ended:
+	; the stream ended (or an error, a refusal by ICMP) before match= was seen
+	test	rax,rax
+	jnz	@f
+	mov	rax,-HC_NOMATCH
+@@:
+	mov	rsi,rax
+	mov	edi,ebx
+	call	hc_result
+.done:
+	add	rsp,4096
+.out:
+	pop	rbx
+	ret
+
+; edi = server, rsi/edx = answer bytes (edx up to 4096): through its stage.
+; Stage 1, an HTTP head: its end ("\r\n\r\n") is looked for, then the rest
+; is the body. Stage 2: match= is looked for (udp: a datagram has it, or
+; not, with nothing before it). Found: passed. Matches may span reads: the
+; last bytes are carried to the next.
+hc_feed:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	mov	ebx,edi
+	mov	r14,rsi
+	mov	r15d,edx
+	call	hc_pool_of			; r12 = pool
+	add	[g_hc_looked+rbx*4],r15d
+	cmp	dword [g_hc_looked+rbx*4],HC_SCAN_MAX
+	ja	.nomatch			; (an endless answer without it)
+.again:
+	; what to look for
+	lea	r13,[hc_head_end]
+	mov	r8d,4
+	cmp	dword [g_hc_stage+rbx*4],1
+	je	@f
+	mov	r13,[r12+PL_H_MATCH]
+	mov	r8d,[r12+PL_H_MLEN]
+	test	r8d,r8d
+	jz	.passed				; (udp without match=: any answer)
+@@:
+	; carry + these bytes, side by side
+	sub	rsp,4096 + HC_CARRY
+	mov	rdi,rsp
+	mov	ecx,ebx
+	shl	ecx,8				; HC_CARRY
+	lea	rsi,[g_hc_carry+rcx]
+	mov	ecx,[g_hc_clen+rbx*4]
+	mov	r9d,ecx				; carried
+	rep	movsb
+	mov	rsi,r14
+	mov	ecx,r15d
+	rep	movsb
+	lea	r10d,[r9+r15]			; all of it
+	; look for the r8d bytes at r13
+	xor	r11d,r11d			; start
+.look:
+	lea	eax,[r11+r8]
+	cmp	eax,r10d
+	ja	.not_here
+	mov	rsi,r13
+	lea	rdi,[rsp+r11]
+	mov	ecx,r8d
+	repe	cmpsb
+	je	.found
+	inc	r11d
+	jmp	.look
+.not_here:
+	; keep the last r8d - 1 bytes for the next read (udp: none comes)
+	cmp	dword [r12+PL_H_HTTP],3
+	je	.nomatch_pop
+	lea	ecx,[r8-1]
+	cmp	ecx,r10d
+	jbe	@f
+	mov	ecx,r10d
+@@:
+	mov	[g_hc_clen+rbx*4],ecx
+	mov	eax,r10d
+	sub	eax,ecx
+	lea	rsi,[rsp+rax]
+	mov	eax,ebx
+	shl	eax,8
+	lea	rdi,[g_hc_carry+rax]
+	rep	movsb
+	add	rsp,4096 + HC_CARRY
+	jmp	.out
+.found:
+	cmp	dword [g_hc_stage+rbx*4],1
+	jne	.found_pop
+	; the head ended: what follows is the body's first bytes
+	mov	dword [g_hc_stage+rbx*4],2
+	mov	dword [g_hc_clen+rbx*4],0
+	lea	eax,[r11+r8]			; past the head in the joined bytes
+	sub	eax,r9d				; and so in this read's
+	jns	@f
+	xor	eax,eax
+@@:
+	add	r14,rax
+	sub	r15d,eax
+	add	rsp,4096 + HC_CARRY
+	test	r15d,r15d
+	jnz	.again
+	jmp	.out
+.found_pop:
+	add	rsp,4096 + HC_CARRY
+.passed:
+	mov	edi,ebx
+	xor	esi,esi
+	call	hc_result
+	jmp	.out
+.nomatch_pop:
+	add	rsp,4096 + HC_CARRY
+.nomatch:
+	mov	edi,ebx
+	mov	rsi,-HC_NOMATCH
+	call	hc_result
+.out:
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+rodata
+	hc_head_end	db 13,10,13,10
+end rodata
 
 ; edi = server whose check connection is up: the HTTP/2 preface, SETTINGS,
 ; then HEADERS and DATA of one Check call on stream 1, in one write.
@@ -910,6 +1148,8 @@ hc_result:
 	out_lit ' is down (health check: '
 	mov	rax,r13
 	neg	rax
+	cmp	rax,HC_NOMATCH
+	je	.nomatch
 	cmp	rax,HC_GRPC_FAILED
 	je	.grpc_failed
 	cmp	rax,HC_GRPC_BASE
@@ -931,6 +1171,9 @@ hc_result:
 	jmp	.reason
 .grpc_failed:
 	out_lit 'the gRPC call failed, no status (an unknown service?)'
+	jmp	.reason
+.nomatch:
+	out_lit 'its answer does not hold match='
 	jmp	.reason
 .errno:
 	call	errno_text

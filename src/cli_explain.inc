@@ -185,6 +185,10 @@ explain_print:
 	cmp	eax,1
 	je	.h_kind
 	lea	rsi,[.h_grpc]
+	cmp	eax,2
+	je	.h_kind
+	cstring .h_udp, 'udp',0
+	lea	rsi,[.h_udp]
 .h_kind:
 	call	out_cstr
 	cmp	dword [r12+PL_H_HTTP],1		; http: its method and path
@@ -234,10 +238,31 @@ explain_print:
 	call	out_u64
 .h_host:
 	cmp	dword [r12+PL_H_HLEN],0
-	je	@f
+	je	.h_send
 	out_lit ' host='
 	mov	rsi,[r12+PL_H_HOST]
 	mov	edx,[r12+PL_H_HLEN]
+	call	out_str
+.h_send:
+	cmp	dword [r12+PL_H_SLEN],0
+	je	.h_match
+	out_lit ' send='
+	mov	rsi,[r12+PL_H_SEND]
+	mov	edx,[r12+PL_H_SLEN]
+	call	explain_qstr
+.h_match:
+	cmp	dword [r12+PL_H_MLEN],0
+	je	@f
+	out_lit ' match='
+	mov	rsi,[r12+PL_H_MATCH]
+	mov	edx,[r12+PL_H_MLEN]
+	call	explain_qstr
+@@:
+	cmp	dword [r12+PL_HOSTL],0
+	je	@f
+	out_lit 10,'    host '
+	mov	rsi,[r12+PL_HOSTN]
+	mov	edx,[r12+PL_HOSTL]
 	call	out_str
 @@:
 	cmp	dword [r12+PL_H2],0
@@ -1209,3 +1234,79 @@ explain_ms:
 	call	out_u64
 	out_lit 'ms'
 	ret
+
+; rsi/edx = bytes: a quoted string of the configuration that gives them
+; back (\" \\ \n \r \t, \xHH for any other byte not printable)
+explain_qstr:
+	push	rbx
+	push	r12
+	mov	rbx,rsi
+	lea	r12,[rsi+rdx]
+	out_lit '"'
+.byte:
+	cmp	rbx,r12
+	jae	.end
+	movzx	eax,byte [rbx]
+	inc	rbx
+	cmp	al,'"'
+	je	.esc
+	cmp	al,'\'
+	je	.esc
+	cmp	al,'$'
+	je	.esc
+	cmp	al,10
+	je	.n
+	cmp	al,13
+	je	.r
+	cmp	al,9
+	je	.t
+	cmp	al,' '
+	jb	.hex
+	cmp	al,0x7E
+	ja	.hex
+	sub	rsp,8
+	mov	[rsp],al
+	mov	rsi,rsp
+	mov	edx,1
+	call	out_str
+	add	rsp,8
+	jmp	.byte
+.esc:
+	sub	rsp,8
+	mov	byte [rsp],'\'
+	mov	[rsp+1],al
+	mov	rsi,rsp
+	mov	edx,2
+	call	out_str
+	add	rsp,8
+	jmp	.byte
+.n:
+	out_lit '\n'
+	jmp	.byte
+.r:
+	out_lit '\r'
+	jmp	.byte
+.t:
+	out_lit '\t'
+	jmp	.byte
+.hex:
+	sub	rsp,8
+	mov	word [rsp],'\x'
+	mov	ecx,eax
+	shr	ecx,4
+	movzx	ecx,byte [.digits+rcx]
+	mov	[rsp+2],cl
+	and	eax,15
+	movzx	eax,byte [.digits+rax]
+	mov	[rsp+3],al
+	mov	rsi,rsp
+	mov	edx,4
+	call	out_str
+	add	rsp,8
+	jmp	.byte
+.end:
+	out_lit '"'
+	pop	r12
+	pop	rbx
+	ret
+.digits	db '0123456789abcdef'

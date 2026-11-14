@@ -14,5 +14,5 @@ syntax-misc.conf:5:1: error: expected a directive name
 syntax-misc.conf:6:15: error: unknown escape in a string
      6 | tcp :2 { to "a\qb:1" }
        |               ^^
-       = help: the escapes are \" \\ \n \t and \$
+       = help: the escapes are \" \\ \n \r \t \xHH and \$
 4 errors in syntax-misc.conf

@@ -253,7 +253,11 @@ PL_CCMIN	:= PL_CWARM + 16	; d: adaptive: the instance's limit at least
 PL_CCMAX	:= PL_CWARM + 20	; d: and at most
 PL_HOSTL	:= PL_CWARM + 24	; d: `host`: the Host its backends get, 0 = the client's
 PL_HOSTN	:= PL_CWARM + 28	; q: and the name
-PL_SIZE		:= PL_CWARM + 36		; room for PL_TLS_ANCHOR + a PK blob (16 + 528), then PL_H2
+PL_H_SEND	:= PL_CWARM + 36	; q: health `send=`: bytes written first (tcp, udp)
+PL_H_SLEN	:= PL_CWARM + 44	; d
+PL_H_MATCH	:= PL_CWARM + 48	; q: `match=`: what the answer must hold (http: its body)
+PL_H_MLEN	:= PL_CWARM + 56	; d
+PL_SIZE		:= PL_CWARM + 60		; room for PL_TLS_ANCHOR + a PK blob (16 + 528), then PL_H2
 assert PL_TLS_ANCHOR <= PL_H2
 
 ; Server
@@ -3460,6 +3464,11 @@ compile_pool:
 	mov	rdi,[rax+A_VAL]
 	cmp	byte [rdi],'g'
 	je	.health_grpc
+	cmp	byte [rdi],'u'
+	jne	@f
+	mov	dword [r13+PL_H_HTTP],3		; udp: a datagram, an answer
+	jmp	.health_keys
+@@:
 	cmp	byte [rdi],'h'
 	jne	.health_keys
 	mov	dword [r13+PL_H_HTTP],1
@@ -3520,6 +3529,28 @@ compile_pool:
 	mov	[r13+PL_H_PLEN],eax
 	jmp	.health_host
 .health_keys:
+	mov	rdi,rbx				; send=, match=
+	cstring str_key_hsend, 'send',0
+	lea	rsi,[str_key_hsend]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	mov	rcx,[rax+A_VAL]
+	mov	[r13+PL_H_SEND],rcx
+	mov	ecx,[rax+A_VLEN]
+	mov	[r13+PL_H_SLEN],ecx
+@@:
+	mov	rdi,rbx
+	cstring str_key_hmatch, 'match',0
+	lea	rsi,[str_key_hmatch]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	mov	rcx,[rax+A_VAL]
+	mov	[r13+PL_H_MATCH],rcx
+	mov	ecx,[rax+A_VLEN]
+	mov	[r13+PL_H_MLEN],ecx
+@@:
 	mov	rdi,rbx
 	lea	rsi,[str_key_every]
 	call	node_option
@@ -4172,6 +4203,11 @@ compile_pool:
 	jz	.out
 	cmp	qword [r13+PL_H_HOST],0
 	jne	@f
+	cmp	dword [r13+PL_H_HTTP],1		; (the checks that send a Host: http, grpc)
+	je	.h_host
+	cmp	dword [r13+PL_H_HTTP],2
+	jne	@f
+.h_host:
 	mov	rax,[r13+PL_HOSTN]
 	mov	[r13+PL_H_HOST],rax
 	mov	[r13+PL_H_HLEN],ecx

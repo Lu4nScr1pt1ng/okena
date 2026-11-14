@@ -127,7 +127,7 @@ enumdef e_io_engine, 'auto', 'io_uring', 'epoll'
 enumdef e_samesite, 'lax', 'strict', 'none'
 enumdef e_balance, 'round-robin', 'least-conn', 'random', 'least-request', 'peak-ewma', 'maglev', 'ring-hash', 'source-hash', 'first'
 enumdef e_server_flags, 'backup'
-enumdef e_health, 'tcp', 'http', 'grpc'
+enumdef e_health, 'tcp', 'http', 'grpc', 'udp'
 enumdef e_pp_mode, 'send', 'accept'
 enumdef e_listen_mode, 'xdp'
 enumdef e_redirect_codes, '301', '302', '303', '307', '308'
@@ -205,7 +205,7 @@ keysdef k_cca, 'crl', T_ANY
 keysdef k_mode, 'encap', T_ANY, 'port', T_UINT
 keysdef k_synrate, 'burst', T_COUNT
 keysdef k_health, 'every', T_DURATION, 'timeout', T_DURATION, 'rise', T_COUNT, 'fall', T_COUNT, \
-	'expect', T_STATUSES, 'host', T_HOSTNAME
+	'expect', T_STATUSES, 'host', T_HOSTNAME, 'send', T_ANY, 'match', T_ANY
 keysdef k_uptls, 'trust', T_ANY, 'sni', T_HOSTNAME, 'cert', T_ANY, 'key', T_ANY, 'verify', e_onoff
 keysdef k_breaker, 'errors', T_COUNT, 'open', T_DURATION
 enumdef e_ad_phases, 'request_headers', 'request_body', 'response_headers', 'response_body', 'log'

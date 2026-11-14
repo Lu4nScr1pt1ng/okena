@@ -964,7 +964,11 @@ use it unchanged.
    SHA-384 and SHA-512 vectors (2048 to 4096 bits). Left: ES384 (P-384).
 7. Health checks: `http` with `body=` and headers; `tcp send=/expect=`
    (Redis `role:master`, a PostgreSQL primary, MySQL); `udp` (a DNS
-   query); an agent check.
+   query); an agent check. **Done 2026-11-14** (tests/health/match.py), but
+   the agent check (HAProxy's own protocol) is left out: `match=` on the
+   answer (an HTTP body, a TCP stream, a datagram), `send=` for tcp and udp,
+   matches across reads with a carry of 255 bytes a server; config strings
+   gained \r and \xHH.
 8. `limits { body_size }` per route and host.
 9. `Location`, `Content-Location` and `Set-Cookie` (domain, path)
    rewritten back from the backend (`response rewrite location`).

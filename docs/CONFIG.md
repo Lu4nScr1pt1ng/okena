@@ -1316,6 +1316,20 @@ health http GET /healthz every=2s expect=200..299 host=api.internal
 health grpc my.Service every=2s
 ```
 
+**Looking at the answer.** `match=TEXT` passes only when the answer holds
+TEXT: an HTTP check's body (after its status passes `expect`), or what a TCP
+server writes. `send=TEXT` writes TEXT first on a `tcp` or `udp` check.
+Strings take `\r`, `\n`, `\t` and `\xHH`. A UDP check sends one datagram and
+passes on an answer (one holding `match=`, when it is given); an ICMP refusal
+or silence fails it.
+
+```nginx
+health tcp send="INFO replication\r\n" match="role:master"   # the Redis primary, not its replicas
+health tcp match="220 "                                    # a server that speaks first (SMTP)
+health http GET /health match="\"status\":\"ok\""             # 200 is not enough: the body says so
+health udp send="\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x01"   # a DNS query (the root, A)
+```
+
 Defaults: `every=2s timeout=1s rise=2 fall=3`, and servers start as up.
 Active checks run once per instance, in a process of their own, not once per
 worker. `rise` successes bring a server up, `fall` failures take it down.
