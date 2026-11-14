@@ -1343,6 +1343,54 @@ pp_directive:
 	pop	rbx
 	ret
 
+; rdi = a pool's `host` line: a host name or address, with a port or not
+; (api.example.com, api.example.com:8443, [2001:db8::1]:80), 255 bytes at most.
+check_pool_host:
+	mov	rax,[rdi+N_ARGS]
+	mov	rsi,[rax+A_VAL]
+	mov	ecx,[rax+A_VLEN]
+	test	ecx,ecx
+	jz	.bad
+	cmp	ecx,255
+	ja	.bad
+.char:
+	movzx	edx,byte [rsi]
+	inc	rsi
+	mov	r8d,edx
+	or	r8d,0x20
+	sub	r8d,'a'
+	cmp	r8d,25
+	jbe	.ok
+	lea	r8d,[rdx-'0']
+	cmp	r8d,9
+	jbe	.ok
+	cmp	dl,'.'
+	je	.ok
+	cmp	dl,'-'
+	je	.ok
+	cmp	dl,'_'
+	je	.ok
+	cmp	dl,':'
+	je	.ok
+	cmp	dl,'['
+	je	.ok
+	cmp	dl,']'
+	jne	.bad
+.ok:
+	dec	ecx
+	jnz	.char
+	ret
+.bad:
+	push	rax
+	mov	rdi,rax
+	call	arg_value_span
+	pop	rax
+	mov	edx,[rax+A_LINE]
+	call	cfg_error
+	out_lit 'host is the Host the pool''s backends get: a name or an address, with a port or not (api.example.com, api.example.com:8443)'
+	call	cfg_diag_end
+	ret
+
 ; rdi = tcp or http listener: its `proxy_protocol` lines. `send v1|v2` (tcp
 ; only: an http listener's backends get X-Forwarded-For) and `accept
 ; [FROM...]`, each at most once.
@@ -2756,6 +2804,12 @@ check_pool:
 	mov	rsi,rbx
 	call	check_duplicate_server
 @@:
+	lea	rax,[dir_table + D_SIZE*DIR_PHOST]
+	cmp	[rbx+N_DEF],rax
+	jne	@f
+	mov	rdi,rbx
+	call	check_pool_host
+@@:
 	mov	rbx,[rbx+N_NEXT]
 	jmp	.server
 .counted:
@@ -3295,6 +3349,17 @@ check_header_ops:
 	call	cfg_error
 	out_lit 'okena writes this header itself (framing, connection or forwarding): it cannot be changed here'
 	call	cfg_diag_end
+	cmp	dword [r14+A_SIZE+A_VLEN],4
+	jne	@f
+	mov	rax,[r14+A_SIZE+A_VAL]
+	mov	eax,[rax]
+	or	eax,0x20202020
+	cmp	eax,'host'
+	jne	@f
+	call	cfg_note
+	out_lit 'help: the Host a backend gets is its pool''s: `pool api { host api.example.com; server ... }`'
+	call	cfg_note_end
+@@:
 	call	cfg_error_limit
 	jmp	.next
 .bad_var:

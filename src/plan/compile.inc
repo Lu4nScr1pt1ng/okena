@@ -243,7 +243,9 @@ PL_CCMODE	:= PL_CWARM + 8	; d: `concurrency`: CC_FIXED, CC_ADAPTIVE, 0 none
 PL_CCN		:= PL_CWARM + 12	; d: N (fixed), or where adaptive starts
 PL_CCMIN	:= PL_CWARM + 16	; d: adaptive: the instance's limit at least
 PL_CCMAX	:= PL_CWARM + 20	; d: and at most
-PL_SIZE		:= PL_CWARM + 28		; room for PL_TLS_ANCHOR + a PK blob (16 + 528), then PL_H2
+PL_HOSTL	:= PL_CWARM + 24	; d: `host`: the Host its backends get, 0 = the client's
+PL_HOSTN	:= PL_CWARM + 28	; q: and the name
+PL_SIZE		:= PL_CWARM + 36		; room for PL_TLS_ANCHOR + a PK blob (16 + 528), then PL_H2
 assert PL_TLS_ANCHOR + PK_SIZE <= PL_H2
 
 ; Server
@@ -3392,6 +3394,16 @@ compile_pool:
 	lea	rcx,[dir_table + D_SIZE*DIR_UPTLS]
 	cmp	rax,rcx
 	je	.uptls
+	lea	rcx,[dir_table + D_SIZE*DIR_PHOST]
+	cmp	rax,rcx
+	jne	@f
+	mov	rax,[rbx+N_ARGS]		; host NAME: the Host its backends get
+	mov	rcx,[rax+A_VAL]
+	mov	[r13+PL_HOSTN],rcx
+	mov	ecx,[rax+A_VLEN]
+	mov	[r13+PL_HOSTL],ecx
+	jmp	.advance
+@@:
 	lea	rcx,[dir_table + D_SIZE*DIR_PROTOCOL]
 	cmp	rax,rcx
 	jne	.advance
@@ -4114,6 +4126,39 @@ compile_pool:
 	mov	rbx,[rbx+N_NEXT]
 	jmp	.next
 .done:
+	; `host`: also the name TLS asks for and verifies, and the health
+	; check's Host, unless they say otherwise
+	mov	ecx,[r13+PL_HOSTL]
+	test	ecx,ecx
+	jz	.out
+	cmp	qword [r13+PL_H_HOST],0
+	jne	@f
+	mov	rax,[r13+PL_HOSTN]
+	mov	[r13+PL_H_HOST],rax
+	mov	[r13+PL_H_HLEN],ecx
+@@:
+	cmp	dword [r13+PL_TLS_SNILEN],0
+	jne	.out
+	mov	rsi,[r13+PL_HOSTN]
+	movzx	eax,byte [rsi]
+	cmp	al,'['
+	je	.out				; an address names no server
+	sub	al,'0'
+	cmp	al,9
+	jbe	.out
+@@:
+	dec	ecx				; without its port
+	jz	.sni
+	cmp	byte [rsi+rcx],':'
+	jne	@b
+	mov	[r13+PL_TLS_SNILEN],ecx
+	jmp	.sni_name
+.sni:
+	mov	ecx,[r13+PL_HOSTL]
+	mov	[r13+PL_TLS_SNILEN],ecx
+.sni_name:
+	mov	[r13+PL_TLS_SNI],rsi
+.out:
 	pop	r13
 	pop	r12
 	pop	rbx

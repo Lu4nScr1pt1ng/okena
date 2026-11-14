@@ -934,8 +934,11 @@ use it unchanged.
    system calls, no ring wait, TCP_DEFER_ACCEPT on tcp listeners where every
    peer sends one), the ring or epoll only for a header in pieces. Left:
    TLVs exposed (authority, unique ID, AWS VPC endpoint) to routes and logs.
-2. The `Host` (and `:authority`) sent to a pool: `host NAME` in a pool,
-   `host_rewrite` per route (the pool's `sni` by default when written).
+2. The `Host` (and `:authority`) sent to a pool: `host NAME` in a pool.
+   **Done 2026-11-14** (tests/gateway/hostrw.py): the client's Host in
+   X-Forwarded-Host, also the TLS name (SNI, verification) and the health
+   check's Host by default; written while the head is copied, so routes
+   without it pay one compare per request.
 3. Upstream TLS: `trust` takes a bundle (every anchor), `trust system`
    for the system's roots, `verify off` for a private backend; TLS
    origination from `tcp` listeners.

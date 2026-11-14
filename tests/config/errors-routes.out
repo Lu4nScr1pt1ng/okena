@@ -11,6 +11,7 @@ errors-routes.conf:4:29: error: a redirect goes to a path or an http(s) URL, pri
 errors-routes.conf:6:20: error: okena writes this header itself (framing, connection or forwarding): it cannot be changed here
      6 |         header set host evil
        |                    ^^^^
+       = help: the Host a backend gets is its pool's: `pool api { host api.example.com; server ... }`
 errors-routes.conf:7:9: error: set and add take a name and a value, drop a name
      7 |         header set x-a
        |         ^^^^^^

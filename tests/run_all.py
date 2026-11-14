@@ -164,6 +164,8 @@ SUITES = [
     ("h3 bbr epoll", ["tests/h3/bbr.py", "epoll"]),
     ("h3 bench io_uring", ["tests/h3/bench.py", "io_uring"]),
     ("h3 bench epoll", ["tests/h3/bench.py", "epoll"]),
+    ("host rewrite io_uring", ["tests/gateway/hostrw.py", "io_uring"]),
+    ("host rewrite epoll", ["tests/gateway/hostrw.py", "epoll"]),
     ("fault io_uring", ["tests/gateway/fault.py", "io_uring"]),
     ("fault epoll", ["tests/gateway/fault.py", "epoll"]),
     ("limit io_uring", ["tests/gateway/limit.py", "io_uring"]),
@@ -324,6 +326,9 @@ def netns_ok():
 
 
 # a private network with loopback up, then the suite
+# A suite whose backends bind port 0 keeps its fixed ports below 32768: the
+# kernel hands out ephemeral ones from 32768 up, and one landing on a fixed
+# port answers in okena's place (retry epoll, 2026-11-14).
 NETNS = ["unshare", "-rn", "sh", "-c", 'ip link set lo up && exec "$0" "$@"']
 
 

@@ -1363,6 +1363,22 @@ pool grpc {
 }
 ```
 
+**The Host backends get.** By default a backend gets the client's `Host`.
+`host NAME` in a pool sends `NAME` instead (`:authority` to an HTTP/2 pool),
+which an origin behind its own virtual hosts needs: object storage, a PaaS, a
+SaaS API, another company's CDN. The client's `Host` then goes on in
+`X-Forwarded-Host` (a trusted proxy's own `X-Forwarded-Host` is kept instead).
+`host` is also the name the pool's `tls` asks for and verifies when there is
+no `sni`, and the `Host` of its HTTP health check when there is no `host=`:
+
+```nginx
+pool origin {
+    server origin.example.net:443
+    host origin.example.net                 # Host, SNI and the name verified
+    tls { trust /etc/okena/origin-root.pem }
+}
+```
+
 `protocol h2` multiplexes requests over a few connections per server (at
 most 4 in each worker), with prior knowledge on plaintext or ALPN under `tls`. Clients may
 speak any protocol; a backend's trailers reach HTTP/2 clients as trailers and
@@ -1937,7 +1953,8 @@ okena { cache_memory 1GiB; cache_disk /var/cache/okena size=200GiB }
 
 pool origin {
     server origin.example.net:443
-    tls { trust /etc/okena/origin-root.pem; sni origin.example.net }   # the root the origin's chain ends at
+    host origin.example.net                  # the Host it serves, and its TLS name
+    tls { trust /etc/okena/origin-root.pem } # the root the origin's chain ends at
 }
 
 http :443 {

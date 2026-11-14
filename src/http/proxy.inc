@@ -1782,6 +1782,44 @@ host_find:
 	xor	ecx,ecx
 	ret
 
+; eax = session: rsi/ecx = its pool's `host` (the Host its backends get),
+; ecx = 0 for none. Keeps everything else.
+http_pool_host:
+	shl	rax,S_SHIFT
+	add	rax,[g_sess_base]
+	mov	eax,[rax+S_POOL]
+	xor	ecx,ecx
+	cmp	eax,-1
+	je	.none
+	imul	rax,rax,PL_SIZE
+	mov	rsi,[g_pools+rax+PL_HOSTN]
+	mov	ecx,[g_pools+rax+PL_HOSTL]
+.none:
+	ret
+
+; g_hm: CF when the request has an X-Forwarded-Host. Keeps all but rax, rcx, rsi.
+http_has_xfh:
+	push	rdi
+	push	rbx
+	xor	ebx,ebx
+.field:
+	cmp	ebx,[g_hm+HM_NHDR]
+	jae	.no
+	imul	rdi,rbx,HF_SIZE
+	lea	rdi,[g_hm+HM_HDRS+rdi]
+	inc	ebx
+	lea	rsi,[hn_x_forwarded_host]
+	call	hf_is
+	jnz	.field
+	stc
+	jmp	.out
+.no:
+	clc
+.out:
+	pop	rbx
+	pop	rdi
+	ret
+
 ; OUT = the request head okena sends upstream. ebx = session, r15 =
 ; record, g_hm = the parsed request. CF when it does not fit.
 http_write_request_head:
@@ -1853,6 +1891,38 @@ http_write_request_head:
 	jnz	.skip
 	jmp	.copy
 .end_to_end:
+	cmp	ebx,[r12+HM_HOST]
+	jne	.not_host
+	mov	eax,[rsp+24]			; the session (pushed rbx)
+	call	http_pool_host
+	test	ecx,ecx
+	jz	.not_host
+	; the pool's `host`: its name to the backend, the client's in
+	; X-Forwarded-Host (unless a trusted proxy's comes through)
+	lea	rax,[rdi+rcx+8]
+	mov	edx,[r14+HF_VLEN]
+	lea	rax,[rax+rdx+20]
+	cmp	rax,r13
+	ja	.full
+	mov	dword [rdi],'Host'
+	mov	word [rdi+4],': '
+	add	rdi,6
+	call	copy_small
+	mov	word [rdi],0x0A0D
+	add	rdi,2
+	test	dword [r15+H_FLAGS],HX_TRUSTED
+	jz	@f
+	call	http_has_xfh
+	jc	.skip
+@@:
+	memit_hot 'X-Forwarded-Host: '
+	mov	rsi,[r14+HF_VALUE]
+	mov	ecx,[r14+HF_VLEN]
+	call	copy_small
+	mov	word [rdi],0x0A0D
+	add	rdi,2
+	jmp	.skip
+.not_host:
 	call	trace_drops			; (the client's traceparent: ours goes)
 	je	.skip
 	push	rdi				; (what `auth` keeps from the backend)
@@ -1977,9 +2047,17 @@ http_write_request_head:
 .own:
 	cmp	dword [r12+HM_HOST],-1
 	jne	.has_host
-	; HTTP/1.0 without Host goes on as HTTP/1.1, which needs one: the address
-	; the client reached (as nginx sends the upstream's own name)
+	; HTTP/1.0 without Host goes on as HTTP/1.1, which needs one: the pool's
+	; `host`, else the address the client reached (as nginx sends the
+	; upstream's own name)
 	memit_hot 'Host: '
+	mov	eax,ebx
+	call	http_pool_host
+	test	ecx,ecx
+	jz	@f
+	call	copy_small
+	jmp	.host_done
+@@:
 	call	session_ptr
 	mov	eax,[rax+S_LST]
 	imul	rax,rax,LS_SIZE
