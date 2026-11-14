@@ -251,10 +251,37 @@ mem_eq_cstr:
 
 ; rdi, rsi = buffers, edx = length. eax = 1 when equal.
 mem_eq:
+	; eight bytes at a time, then the rest (repe cmpsb is microcode: a few
+	; dozen cycles before the first byte; and with edx = 0 it set no flags,
+	; so sete read whatever came before: empty buffers are equal)
 	mov	ecx,edx
-	repe	cmpsb
-	sete	al
-	movzx	eax,al
+	cmp	ecx,8
+	jb	.tail
+.qword:
+	mov	rax,[rdi]
+	cmp	rax,[rsi]
+	jne	.ne
+	add	rdi,8
+	add	rsi,8
+	sub	ecx,8
+	cmp	ecx,8
+	jae	.qword
+.tail:
+	test	ecx,ecx
+	jz	.eq
+.byte:
+	mov	al,[rdi]
+	cmp	al,[rsi]
+	jne	.ne
+	inc	rdi
+	inc	rsi
+	dec	ecx
+	jnz	.byte
+.eq:
+	mov	eax,1
+	ret
+.ne:
+	xor	eax,eax
 	ret
 
 ; rdi, rsi = buffers, edx = length. eax = 1 when equal ignoring ASCII case.

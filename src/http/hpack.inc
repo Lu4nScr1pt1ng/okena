@@ -580,36 +580,74 @@ hd_insert:
 ; rsi = Huffman-coded bytes, ecx = their length, rdi = where to, r8 = the
 ; end of the room: rax = the end of what was written. CF with eax =
 ; HPE_COMPRESSION (an invalid code, EOS, or padding that is longer than 7
-; bits or not all ones) or HPE_TOO_BIG (no room). Canonical decoding, a
-; bit at a time: the code so far against the first code of its length.
+; bits or not all ones) or HPE_TOO_BIG (no room). The bits wait in r11, the
+; next one at the top (ebx of them): a code of at most HP_LUT_BITS bits is
+; one look in hp_hlut, nearly every symbol; a longer one is decoded a bit at
+; a time, canonically (the code so far against the first code of its
+; length), which is what all of it was (60-odd instructions a character).
 huff_decode:
 	push	rbx
 	push	r12
 	lea	r12,[rsi+rcx]			; the input's end
+	xor	r11d,r11d			; the bits
+	xor	ebx,ebx				; how many
+.fill:
+	cmp	ebx,56
+	ja	.look
+	cmp	rsi,r12
+	jae	.look
+	movzx	eax,byte [rsi]
+	inc	rsi
+	mov	ecx,56
+	sub	ecx,ebx
+	shl	rax,cl
+	or	r11,rax
+	add	ebx,8
+	jmp	.fill
+.look:
+	test	ebx,ebx
+	jz	.done				; all of it, to the last bit
+	mov	rax,r11
+	shr	rax,64 - HP_LUT_BITS
+	lea	rdx,[hp_hlut]
+	movzx	eax,word [rdx+rax*2]
+	test	eax,eax
+	jz	.long
+	mov	ecx,eax
+	shr	ecx,9				; its length
+	cmp	ecx,ebx
+	ja	.tail				; more than is left: the end, padding
+	cmp	rdi,r8
+	jae	.full
+	mov	[rdi],al			; (the symbol's low byte: below 256)
+	inc	rdi
+	shl	r11,cl
+	sub	ebx,ecx
+	jmp	.fill
+.long:
+	; a code past HP_LUT_BITS: a bit at a time (at most 30, and after .fill
+	; there are 57 or all that is left)
 	xor	r9d,r9d				; the code so far
 	xor	r10d,r10d			; its length
-.byte:
-	cmp	rsi,r12
-	jae	.end
-	movzx	ebx,byte [rsi]
-	inc	rsi
-	mov	r11d,8
 .bit:
+	test	ebx,ebx
+	jz	.pad				; the input ended inside it
 	add	r9d,r9d
-	shl	bl,1
+	shl	r11,1
 	adc	r9d,0
+	dec	ebx
 	inc	r10d
 	cmp	r10d,30
 	ja	.bad
 	lea	rax,[hp_hcount]
 	movzx	ecx,word [rax+r10*2]
 	test	ecx,ecx
-	jz	.nextbit
+	jz	.bit
 	lea	rax,[hp_hfirst]
 	mov	edx,r9d
 	sub	edx,[rax+r10*4]
 	cmp	edx,ecx
-	jae	.nextbit			; (below the first code: wraps, also above)
+	jae	.bit				; (below the first code: wraps, also above)
 	lea	rax,[hp_hstart]
 	movzx	ecx,word [rax+r10*2]
 	add	edx,ecx
@@ -621,13 +659,15 @@ huff_decode:
 	jae	.full
 	mov	[rdi],al
 	inc	rdi
-	xor	r9d,r9d
-	xor	r10d,r10d
-.nextbit:
-	dec	r11d
-	jnz	.bit
-	jmp	.byte
-.end:
+	jmp	.fill
+.tail:
+	; fewer bits left than the code they begin: they are the padding
+	mov	r10d,ebx
+	mov	r9,r11
+	mov	ecx,64
+	sub	ecx,ebx
+	shr	r9,cl
+.pad:
 	cmp	r10d,7				; padding: at most 7 bits, all ones
 	ja	.bad
 	mov	ecx,r10d
@@ -636,6 +676,7 @@ huff_decode:
 	dec	eax
 	cmp	r9d,eax
 	jne	.bad
+.done:
 	mov	rax,rdi
 	clc
 	jmp	.out
@@ -785,15 +826,18 @@ hpack_encode:
 	mov	r14,rcx
 	mov	r15d,r8d
 	xor	ebp,ebp				; a static index with this name, 0 = none
-	mov	r9d,1
-.search:
-	cmp	r9d,61
+	; the static entries whose names have this length (hp_bylen), not all 61
+	cmp	r13d,HP_NAME_MAX
 	ja	.searched
+	movzx	eax,word [hp_bystart+r13*2]
+	lea	r11,[hp_bylen+rax]
+.search:
+	movzx	r9d,byte [r11]
+	test	r9d,r9d
+	jz	.searched
+	inc	r11
 	lea	r10,[hp_static-8]
 	lea	r10,[r10+r9*8]
-	movzx	eax,word [r10+2]
-	cmp	eax,r13d
-	jne	.skip
 	lea	rsi,[hp_pool]
 	movzx	eax,word [r10]
 	add	rsi,rax
@@ -801,31 +845,32 @@ hpack_encode:
 	mov	edx,r13d
 	push	r9
 	push	r10
+	push	r11
 	call	mem_eq
+	pop	r11
 	pop	r10
 	pop	r9
 	test	eax,eax
-	jz	.skip
+	jz	.search
 	test	ebp,ebp
 	jnz	@f
 	mov	ebp,r9d				; the first with this name
 @@:
 	movzx	eax,word [r10+6]		; and its value too?
 	cmp	eax,r15d
-	jne	.skip
+	jne	.search
 	lea	rsi,[hp_pool]
 	movzx	eax,word [r10+4]
 	add	rsi,rax
 	mov	rdi,r14
 	mov	edx,r15d
 	push	r9
+	push	r11
 	call	mem_eq
+	pop	r11
 	pop	r9
 	test	eax,eax
-	jnz	.indexed
-.skip:
-	inc	r9d
-	jmp	.search
+	jz	.search
 .indexed:
 	mov	rdi,rbx
 	mov	eax,r9d

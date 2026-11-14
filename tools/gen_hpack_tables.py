@@ -7,7 +7,9 @@
   length; for decoding, the code is canonical (codes of a length are
   consecutive and follow the shorter ones), so per length the first code,
   how many there are and where they start in the symbols sorted by
-  (length, symbol).
+  (length, symbol); and a lookup of the next HP_LUT_BITS bits for the codes
+  that short (every letter, digit and common sign), so that most symbols
+  take one look instead of a bit at a time.
 
 The values come from the hpack package (pip install hpack), checked here
 to be canonical; the output is committed, so building okena needs none of
@@ -43,6 +45,24 @@ def main():
             first[n], start[n] = CODES[s], i
         count[n] += 1
 
+    LUT_BITS = 10
+    lut = [0] * (1 << LUT_BITS)
+    for sym in range(256):
+        n = LENS[sym]
+        if n <= LUT_BITS:
+            base = CODES[sym] << (LUT_BITS - n)
+            for k in range(1 << (LUT_BITS - n)):
+                assert lut[base + k] == 0
+                lut[base + k] = sym | n << 9
+
+    # static entries by name length: per length its list's start in
+    # hp_bylen (dw), each list the indices (db, increasing) then 0
+    maxn = max(len(n) for n, _ in static)
+    bylen, bystart = [], []
+    for n in range(maxn + 1):
+        bystart.append(len(bylen))
+        bylen += [i + 1 for i, (name, _) in enumerate(static) if len(name) == n] + [0]
+
     def rows(directive, values, per=12):
         return "\n".join(f"\t{directive} " + ", ".join(str(v) for v in values[i:i + per])
                          for i in range(0, len(values), per))
@@ -58,6 +78,13 @@ def main():
         "\thp_static:",
         rows("dw", [x for i in range(61) for x in (offs[2 * i][0], offs[2 * i][1],
                                                      offs[2 * i + 1][0], offs[2 * i + 1][1])], 8),
+        f"HP_NAME_MAX := {maxn}",
+        "\t; by name length 0..HP_NAME_MAX: where its entries' list starts in hp_bylen",
+        "\thp_bystart:",
+        rows("dw", bystart, 16),
+        "\t; the lists: static indices with that name length, increasing, then 0",
+        "\thp_bylen:",
+        rows("db", bylen, 16),
         "\thp_pool:",
         rows("db", list(pool), 16),
         "\talign 4",
@@ -77,6 +104,12 @@ def main():
         rows("dw", start, 16),
         "\thp_hsyms:",
         rows("dw", syms, 16),
+        "\talign 4",
+        f"\t; Huffman, decoding the codes of at most {LUT_BITS} bits at once: by the next",
+        f"\t; {LUT_BITS} bits, the symbol | its length << 9 (0: a longer code)",
+        f"HP_LUT_BITS := {LUT_BITS}",
+        "\thp_hlut:",
+        rows("dw", lut, 16),
         "end rodata",
         "",
     ]
