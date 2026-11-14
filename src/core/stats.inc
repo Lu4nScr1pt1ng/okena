@@ -10,6 +10,8 @@ bss
 	g_st_l_accepted	rq MAX_LISTENERS
 	g_st_l_full	rq MAX_LISTENERS	; refused: no slot left
 	g_st_l_source	rq MAX_LISTENERS	; refused: per_source
+	g_st_l_denied	rq MAX_LISTENERS	; refused: allow/deny (tcp, udp)
+	g_st_l_ppbad	rq MAX_LISTENERS	; refused: not a PROXY header (proxy_protocol accept)
 	g_st_l_in	rq MAX_LISTENERS	; bytes from clients
 	g_st_l_out	rq MAX_LISTENERS	; bytes to clients
 	g_st_s_connects	rq MAX_SERVERS
@@ -44,7 +46,7 @@ end bss
 
 ST_BLOCK	:= g_st_end - g_st_begin
 ; every table stats_publish copies, and nothing else before the scalars
-assert g_st_ud_drops - g_st_begin = 8 * (MAX_LISTENERS * (34 + LAT_B) + MAX_SERVERS * 2)
+assert g_st_ud_drops - g_st_begin = 8 * (MAX_LISTENERS * (36 + LAT_B) + MAX_SERVERS * 2)
 ; a worker's page: counters, then active connections per listener and
 ; per server, then its engine
 STP_LACTIVE	:= ST_BLOCK
@@ -124,7 +126,8 @@ stats_publish:
 	; only the listeners and servers there are: the tables are sized for
 	; the largest configuration, and a second's copy stays what is used
 	irp <sym,per,cnt>, g_st_l_accepted,1,g_plan_listeners, g_st_l_full,1,g_plan_listeners, \
-		g_st_l_source,1,g_plan_listeners, g_st_l_in,1,g_plan_listeners, \
+		g_st_l_source,1,g_plan_listeners, g_st_l_denied,1,g_plan_listeners, \
+		g_st_l_ppbad,1,g_plan_listeners, g_st_l_in,1,g_plan_listeners, \
 		g_st_l_out,1,g_plan_listeners, g_st_s_connects,1,g_plan_servers, \
 		g_st_s_fails,1,g_plan_servers, g_st_l_evicted,1,g_plan_listeners, \
 		g_st_l_http,10,g_plan_listeners, g_st_l_retries,1,g_plan_listeners, \

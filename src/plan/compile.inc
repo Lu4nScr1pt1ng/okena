@@ -57,7 +57,8 @@ LS_CANONLEN	:= 204		; d: `canonical NAME`: its length, 0 none
 LS_CANON	:= 208		; q: and it
 LS_PFIRST	:= 216		; d: `proxy_protocol accept`: its senders' first range (g_trust)
 LS_PCOUNT	:= 220		; d: and how many, 0 = every peer sends a header
-LS_SIZE		:= 224
+LS_ACL		:= 224		; d: tcp, udp: `allow`/`deny` (g_acls) + 1, 0 none
+LS_SIZE		:= 232
 assert LS_PA6 + 28 <= LS_RESP
 
 ; Host block name (http): routes for requests to that host
@@ -348,6 +349,8 @@ bss
 	g_cmp_tlsi	dd ?
 	g_cmp_tfirst	dd ?
 	g_cmp_pfirst	dd ?
+	g_cmp_lacl	dd ?
+	g_cmp_lacl_ra:	rb RA_SIZE		; (compile_acl writes an action's RA_ACL)
 	g_cmp_pcount	dd ?
 	g_cmp_tcount	dd ?
 	g_cmp_t_response dd ?
@@ -4530,6 +4533,17 @@ compile_listener:
 @@:
 	mov	dword [g_cmp_pfirst],0
 	mov	dword [g_cmp_pcount],0
+	mov	dword [g_cmp_lacl_ra+RA_ACL],0	; tcp, udp: allow/deny for the connection
+	push	r13
+	lea	r13,[g_cmp_lacl_ra]
+	call	compile_acl			; (r12: the listener)
+	pop	r13
+	mov	eax,[g_cmp_lacl_ra+RA_ACL]
+	mov	[g_cmp_lacl],eax
+	test	eax,eax
+	jz	@f
+	or	dword [g_cmp_flags],LSF_PEER	; (its address, kept)
+@@:
 	mov	rdi,r12
 	mov	esi,1
 	call	pp_directive			; `proxy_protocol accept [FROM...]`
@@ -4844,6 +4858,8 @@ compile_listener:
 	mov	[rcx+LS_PFIRST],eax
 	mov	eax,[g_cmp_pcount]
 	mov	[rcx+LS_PCOUNT],eax
+	mov	eax,[g_cmp_lacl]
+	mov	[rcx+LS_ACL],eax
 	push	rcx
 	lea	rdi,[rcx+LS_PA4]
 	lea	rsi,[g_cmp_pa4]

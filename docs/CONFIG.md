@@ -314,6 +314,21 @@ tcp :5432 {
 Bytes are relayed in both directions with backpressure, half-close and
 graceful drain.
 
+**Who may connect.** `allow` and `deny` work on `tcp` and `udp` listeners as
+on routes (ranges, `file:`, `cloudflare`, `country:` with GeoIP): a refused
+TCP client is closed before a backend is asked, a refused UDP datagram is
+dropped (judged once per flow, not per datagram). Behind `proxy_protocol
+accept`, the header's client is the one judged. Refusals show in
+`okena_listener_refused_total{reason="denied"}`.
+
+```nginx
+tcp :5432 {
+    allow 10.0.0.0/8
+    deny 10.66.0.0/16
+    to pool db
+}
+```
+
 **Behind another balancer.** `proxy_protocol accept` reads the PROXY header
 (v1 or v2) that a balancer in front writes before the connection's first byte
 (AWS NLB, HAProxy, Cloudflare Spectrum, another okena), on `tcp` and `http`
@@ -927,7 +942,7 @@ allow country:BR,PT                    # with okena { geoip FILE }
 ```
 
 `allow` and `deny` look at the client after `trusted_proxies` and answer 403.
-A deny wins; with any `allow`, everything not allowed is refused. Lists of
+A deny wins; with any `allow`, everything not allowed is refused. The same lines work on `tcp` and `udp` listeners. Lists of
 thousands of entries cost one lookup. `okena { geoip /path/GeoLite2-Country.mmdb }`
 loads a MaxMind country database for `country:`.
 

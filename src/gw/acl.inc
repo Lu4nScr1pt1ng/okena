@@ -26,6 +26,7 @@ bss
 	g_plan_acls	dd ?
 	g_tr_tmp:	rb TR_SIZE
 	g_acl_sink	dq ?		; not 0: acl_add hands each range to it instead
+	g_acl_ip:	rb 16		; acl_check_sa: the client, normalized
 end bss
 
 ; rax = a trie's root, 0 none, rsi = the address, ecx = its bits: CF when in it.
@@ -79,6 +80,7 @@ acl_check:
 	jne	@f
 	mov	ecx,128
 @@:
+.addr:						; (acl_check_sa joins here)
 	mov	rax,[r12+ACL_DENY4]
 	cmp	r11d,6
 	cmove	rax,[r12+ACL_DENY6]
@@ -144,6 +146,26 @@ acl_check:
 	pop	rdx
 	pop	rcx
 	ret
+
+; eax = an acl + 1 (a tcp or udp listener's LS_ACL), rsi = the client's
+; sockaddr: CF when refused. Keeps rbx, r12-r15.
+acl_check_sa:
+	push	rcx
+	push	rdx
+	push	r12
+	push	r13
+	dec	eax
+	imul	r12,rax,ACL_SIZE
+	lea	r12,[g_acls+r12]
+	lea	rdi,[g_acl_ip]
+	call	peer_normalize
+	mov	r11d,eax
+	lea	rsi,[g_acl_ip]
+	mov	ecx,32
+	cmp	r11d,6
+	jne	acl_check.addr
+	mov	ecx,128
+	jmp	acl_check.addr
 
 ; r12 = a route's node, r13 = the action
 compile_acl:

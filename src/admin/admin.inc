@@ -816,6 +816,8 @@ stats_sum_d:
 OFF_L_ACCEPTED	:= g_st_l_accepted - g_st_begin
 OFF_L_FULL	:= g_st_l_full - g_st_begin
 OFF_L_SOURCE	:= g_st_l_source - g_st_begin
+OFF_L_DENIED	:= g_st_l_denied - g_st_begin
+OFF_L_PPBAD	:= g_st_l_ppbad - g_st_begin
 OFF_L_IN	:= g_st_l_in - g_st_begin
 OFF_L_OUT	:= g_st_l_out - g_st_begin
 OFF_S_CONNECTS	:= g_st_s_connects - g_st_begin
@@ -940,6 +942,18 @@ metrics_render:
 	call	listener_label
 	memit ',reason="per_source"} '
 	lea	rcx,[OFF_L_SOURCE+rbx*8]
+	call	stats_sum_q
+	call	fmt_u64
+	memit 10,'okena_listener_refused_total'
+	call	listener_label
+	memit ',reason="denied"} '
+	lea	rcx,[OFF_L_DENIED+rbx*8]
+	call	stats_sum_q
+	call	fmt_u64
+	memit 10,'okena_listener_refused_total'
+	call	listener_label
+	memit ',reason="proxy_protocol"} '
+	lea	rcx,[OFF_L_PPBAD+rbx*8]
 	call	stats_sum_q
 	call	fmt_u64
 	memit 10

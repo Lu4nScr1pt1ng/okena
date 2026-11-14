@@ -1308,8 +1308,7 @@ on_accept_a:
 	mov	edi,ebx
 	jmp	session_connect
 .over:
-	; refused, not admitted: count it there only
-	inc	qword [g_st_l_source+r13*8]
+	; refused, not admitted: counted there only (peer_admit says why)
 	dec	qword [g_st_l_accepted+r13*8]
 	mov	edi,ebx
 	jmp	session_close
@@ -1335,6 +1334,18 @@ peer_admit_pp:
 	mov	dword [rax+P_SLOT],-1		; (its PROXY header record: written by
 						; pp_build, read only where the listener sends one)
 	imul	rcx,r13,LS_SIZE
+	mov	ecx,[g_listeners+rcx+LS_ACL]
+	test	ecx,ecx
+	jz	.source
+	lea	rsi,[rax+P_PEER]		; allow/deny: before it costs anything
+	mov	eax,ecx
+	call	acl_check_sa
+	jnc	.source
+	inc	qword [g_st_l_denied+r13*8]
+	stc
+	ret
+.source:
+	imul	rcx,r13,LS_SIZE
 	cmp	dword [g_listeners+rcx+LS_PER_SOURCE],0
 	je	.pp
 	call	src_acquire
@@ -1354,6 +1365,7 @@ peer_admit_pp:
 	clc
 	ret
 .over:
+	inc	qword [g_st_l_source+r13*8]
 	stc
 	ret
 

@@ -945,7 +945,9 @@ use it unchanged.
    (src/tls/upanchors.inc, tests/tls/uptrust.py): anchors in the plan,
    picked by the issuer's name hash as client_ca does.
 4. `allow`/`deny` and `access_log` on `tcp` and `udp` listeners (one
-   line per connection or flow: bytes both ways, duration, upstream).
+   line per connection or flow: bytes both ways, duration, upstream). allow/deny: **done 2026-11-14** (tests/l4/acl.py): checked in
+   peer_admit (after a PROXY header) and once per UDP flow; refusals by
+   reason in okena_listener_refused_total (denied, proxy_protocol).
 5. Sub-second timeouts everywhere (`timeout try=200ms total=1500ms`).
 6. JWT authorization: `require CLAIM=VALUE[,VALUE]` (scope lists,
    arrays, roles); RS384, RS512, ES384, PS384, PS512.

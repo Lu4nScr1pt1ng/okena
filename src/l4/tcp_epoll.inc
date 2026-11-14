@@ -527,8 +527,7 @@ ep_accept:
 	pop	r12
 	jmp	.next
 .over:
-	inc	qword [g_st_l_source+r13*8]
-	dec	qword [g_st_l_accepted+r13*8]	; refused, not admitted
+	dec	qword [g_st_l_accepted+r13*8]	; refused, not admitted (peer_admit counted why)
 	mov	edi,ebx
 	call	ep_close
 	jmp	.next

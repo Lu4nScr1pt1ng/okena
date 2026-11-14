@@ -141,6 +141,8 @@ SUITES = [
     ("peer epoll", ["tests/peer/run.py", "epoll"]),
     ("peer accept io_uring", ["tests/peer/accept.py", "io_uring"]),
     ("peer accept epoll", ["tests/peer/accept.py", "epoll"]),
+    ("l4 acl io_uring", ["tests/l4/acl.py", "io_uring"]),
+    ("l4 acl epoll", ["tests/l4/acl.py", "epoll"]),
     ("config fuzz", ["tests/config/fuzz.py", "2000"]),
     ("config", ["tests/config/run.py"]),
     ("host check", ["tests/config/host.py"]),

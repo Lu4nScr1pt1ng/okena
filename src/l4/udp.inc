@@ -649,6 +649,26 @@ udp_in:
 	pop	r9
 	pop	r8
 .new:
+	imul	rax,r13,LS_SIZE
+	mov	eax,[g_listeners+rax+LS_ACL]
+	test	eax,eax
+	jz	.admit
+	push	r8				; allow/deny: once a flow, not a datagram
+	push	r9
+	push	r10
+	push	r11
+	mov	rsi,rbx
+	shl	rsi,5
+	lea	rsi,[g_ud_rsa+rsi]
+	call	acl_check_sa
+	pop	r11
+	pop	r10
+	pop	r9
+	pop	r8
+	jnc	.admit
+	inc	qword [g_st_l_denied+r13*8]
+	ret
+.admit:
 	call	udp_new
 	test	rdi,rdi
 	jnz	.send

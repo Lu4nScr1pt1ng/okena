@@ -180,7 +180,7 @@ pp_in_recv:
 	pop	rcx
 	h_rec
 	test	eax,eax
-	js	.close				; not a PROXY header
+	js	.bad				; not a PROXY header
 	jz	.more
 	sub	eax,[r15+H_INLEN]		; whole: its bytes still in the socket
 	call	pp_take
@@ -194,6 +194,10 @@ pp_in_recv:
 	cmp	dword [r15+H_INLEN],PP_MAX
 	jae	.close
 	jmp	pp_in_wait
+.bad:
+	call	session_ptr
+	mov	eax,[rax+S_LST]
+	inc	qword [g_st_l_ppbad+rax*8]
 .close:
 	mov	edi,ebx
 	jmp	session_close
@@ -227,8 +231,7 @@ pp_in_done:
 	je	ep_connect
 	jmp	session_connect
 .over:
-	inc	qword [g_st_l_source+r13*8]
-	dec	qword [g_st_l_accepted+r13*8]	; refused, not admitted
+	dec	qword [g_st_l_accepted+r13*8]	; refused, not admitted (peer_admit counted why)
 	pop	r13
 	mov	edi,ebx
 	jmp	session_close
