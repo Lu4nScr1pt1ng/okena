@@ -3332,6 +3332,104 @@ check_redirect_target:
 	pop	rbx
 	ret
 
+; rdi = a `response rewrite` line: location auto, location FROM -> TO,
+; cookie_domain FROM -> TO, cookie_path FROM -> TO. FROM and TO up to 1 KiB,
+; no CR, LF or NUL.
+check_resp_rewrite:
+	push	rbx
+	push	r12
+	mov	rbx,rdi
+	mov	r12,[rbx+N_ARGS]
+	cmp	dword [rbx+N_ARGC],2
+	jb	.bad
+	mov	rdi,[r12+A_SIZE+A_VAL]
+	mov	esi,[r12+A_SIZE+A_VLEN]
+	cstring .w_loc, 'location',0
+	lea	rdx,[.w_loc]
+	call	mem_eq_cstr
+	test	eax,eax
+	jnz	.location
+	mov	rdi,[r12+A_SIZE+A_VAL]
+	mov	esi,[r12+A_SIZE+A_VLEN]
+	cstring .w_cd, 'cookie_domain',0
+	lea	rdx,[.w_cd]
+	call	mem_eq_cstr
+	test	eax,eax
+	jnz	.from_to
+	mov	rdi,[r12+A_SIZE+A_VAL]
+	mov	esi,[r12+A_SIZE+A_VLEN]
+	cstring .w_cp, 'cookie_path',0
+	lea	rdx,[.w_cp]
+	call	mem_eq_cstr
+	test	eax,eax
+	jnz	.from_to
+	jmp	.bad
+.location:
+	cmp	dword [rbx+N_ARGC],3
+	jne	.from_to
+	mov	rdi,[r12+2*A_SIZE+A_VAL]
+	mov	esi,[r12+2*A_SIZE+A_VLEN]
+	cstring .w_auto, 'auto',0
+	lea	rdx,[.w_auto]
+	call	mem_eq_cstr
+	test	eax,eax
+	jz	.bad
+	jmp	.out
+.from_to:
+	cmp	dword [rbx+N_ARGC],5
+	jne	.bad
+	cmp	dword [r12+3*A_SIZE+A_VLEN],2
+	jne	.bad
+	mov	rax,[r12+3*A_SIZE+A_VAL]
+	cmp	word [rax],'->'
+	jne	.bad
+	lea	rdi,[r12+2*A_SIZE]
+	call	.clean
+	jc	.bad
+	lea	rdi,[r12+4*A_SIZE]
+	call	.clean
+	jc	.bad
+.out:
+	pop	r12
+	pop	rbx
+	ret
+.bad:
+	mov	rdi,[rbx+N_NAME]
+	mov	esi,[rbx+N_NLEN]
+	mov	edx,[rbx+N_LINE]
+	call	cfg_error
+	out_lit 'response rewrite takes `location auto`, or `location`, `cookie_domain` or `cookie_path` with FROM -> TO (each up to 1 KiB)'
+	call	cfg_diag_end
+	call	cfg_note
+	out_lit 'help: `response rewrite location http://10.0.0.5:8080/ -> /`, `response rewrite cookie_domain internal.test -> example.com`'
+	call	cfg_note_end
+	call	cfg_error_limit
+	jmp	.out
+; rdi = an argument: CF when it is empty, past 1 KiB, or holds CR, LF, NUL
+.clean:
+	mov	ecx,[rdi+A_VLEN]
+	test	ecx,ecx
+	jz	.unclean
+	cmp	ecx,1024
+	ja	.unclean
+	mov	rsi,[rdi+A_VAL]
+@@:
+	mov	al,[rsi]
+	cmp	al,13
+	je	.unclean
+	cmp	al,10
+	je	.unclean
+	test	al,al
+	jz	.unclean
+	inc	rsi
+	dec	ecx
+	jnz	@b
+	clc
+	ret
+.unclean:
+	stc
+	ret
+
 ; rdi = route: its `header` and `response header` lines. set/add take a
 ; name and a value, drop a name (or a prefix: x-internal-*). Names are
 ; lower-case tokens and never one okena owns (framing, hop-by-hop,
@@ -3353,6 +3451,14 @@ check_header_ops:
 	lea	rax,[dir_table + D_SIZE*DIR_RRESPONSE]
 	cmp	[rbx+N_DEF],rax
 	jne	.next
+	mov	rax,[rbx+N_ARGS]		; `response rewrite ...`: its own shape
+	mov	rax,[rax+A_VAL]
+	cmp	byte [rax],'r'
+	jne	@f
+	mov	rdi,rbx
+	call	check_resp_rewrite
+	jmp	.next
+@@:
 	inc	r13d				; after "header"
 	mov	rax,[rbx+N_ARGS]
 	mov	rdi,[rax+A_SIZE+A_VAL]		; the operation must be there

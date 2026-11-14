@@ -151,6 +151,8 @@ macro plan_regions action
 	action g_plan_jreqv, 4
 	action g_jreq, RQ_SIZE * MAX_JREQ, g_plan_jreq, RQ_SIZE
 	action g_jreqv, 16 * MAX_JREQV, g_plan_jreqv, 16
+	action g_plan_lrw, 4
+	action g_lrw, LW_SIZE * MAX_LRW, g_plan_lrw, LW_SIZE
 	action g_plan_upa, 4
 	action g_upa_sys, 4
 	action g_upa_sysn, 4

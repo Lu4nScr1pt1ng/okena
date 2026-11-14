@@ -177,6 +177,8 @@ SUITES = [
     ("jwt require epoll", ["tests/gateway/jwtreq.py", "epoll"]),
     ("body_size io_uring", ["tests/gateway/bodysize.py", "io_uring"]),
     ("body_size epoll", ["tests/gateway/bodysize.py", "epoll"]),
+    ("response rewrite io_uring", ["tests/gateway/resprw.py", "io_uring"]),
+    ("response rewrite epoll", ["tests/gateway/resprw.py", "epoll"]),
     ("host rewrite io_uring", ["tests/gateway/hostrw.py", "io_uring"]),
     ("host rewrite epoll", ["tests/gateway/hostrw.py", "epoll"]),
     ("fault io_uring", ["tests/gateway/fault.py", "io_uring"]),

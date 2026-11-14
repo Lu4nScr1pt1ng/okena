@@ -973,7 +973,11 @@ use it unchanged.
    `body_size SIZE|off` on a route or host block, judged once the route is
    known and still before a byte of the body (100 Continue included).
 9. `Location`, `Content-Location` and `Set-Cookie` (domain, path)
-   rewritten back from the backend (`response rewrite location`).
+   rewritten back from the backend (`response rewrite location`). **Done
+   2026-11-14** (src/http/resprw.inc, tests/gateway/resprw.py): auto (the
+   backend's authority, the route's rewrite path undone, http:// behind
+   TLS) and FROM -> TO; cookie_domain, cookie_path; only routes with lines
+   pay for it.
 10. Observability: metrics per route/host and per server (latency,
     status classes), counters of 401/403/429 by cause; access log fields
     (user agent, referer, TLS version, upstream time, bytes in), a

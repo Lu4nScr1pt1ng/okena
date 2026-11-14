@@ -889,6 +889,25 @@ compress br gzip min=1KiB                    # on a listener, a host or a route
 early_hints /assets/app.css /assets/app.js   # 103 with preload links, for GET
 ```
 
+**What a backend says of itself.** A backend behind a `rewrite path`, a pool
+`host` or TLS here writes its own idea of its URLs into its answers;
+`response rewrite` puts them the way the client sees them:
+
+```nginx
+response rewrite location auto                         # Location, Content-Location
+response rewrite location http://10.0.0.5:8080/ -> /   # a prefix, as nginx's proxy_redirect
+response rewrite cookie_domain internal.test -> example.com
+response rewrite cookie_path /app -> /v1/app
+```
+
+`auto` turns an absolute URL that names the backend (the pool's `host`, the
+server as written, or the client's own Host on the wrong scheme, as an app
+behind TLS here writes `http://`) into the client's scheme and Host, and
+undoes the route's `rewrite path` on the path (`/login` from a route that
+strips `/v1` becomes `/v1/login`). Cookie lines change the `Domain` and
+`Path` of `Set-Cookie`. The lines stand on a route, a host block or the
+listener; a route's are tried first, and the first that applies is used.
+
 * Header values may use `${client.ip}`, `${request.id}`, `${time.us}` and
   `${time.s}`: `header set x-request-start "t=${time.us}"`.
 * Names okena owns can't be changed: `host`, framing, hop-by-hop fields,

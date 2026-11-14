@@ -144,7 +144,9 @@ RA_RTYPE	:= 208		; q
 RA_TRYC		:= 216		; d: `timeout try=`: its class (g_try_ms) + 1, 0 = the listener's response
 RA_TOTAL	:= 220		; d: `timeout total=`: ms after which no retry starts, 0 none
 RA_BODYMAX	:= 224		; d: `body_size` of the route or its host: bytes; 0 the listener's; -1 no limit
-RA_SIZE		:= 232
+RA_WRFIRST	:= 228		; d: `response rewrite` lines (g_lrw), the route's first
+RA_WRN		:= 232		; d
+RA_SIZE		:= 240
 MAX_TRYC	:= 32		; distinct try= values
 RESPOND_BODY_MAX := 1 shl 20	; `respond CODE BODY`
 RESPOND_INLINE	:= 4096		; up to this, in the head's write
@@ -2041,6 +2043,13 @@ compile_route_action:
 	mov	eax,[g_plan_hdrops]
 	sub	eax,[r13+RA_PFIRST]
 	mov	[r13+RA_PCOUNT],eax
+	mov	eax,[g_plan_lrw]		; response rewrite: nearest first
+	mov	[r13+RA_WRFIRST],eax
+	mov	rdi,r12
+	call	compile_resp_rewrites
+	mov	eax,[g_plan_lrw]
+	sub	eax,[r13+RA_WRFIRST]
+	mov	[r13+RA_WRN],eax
 	pop	rax
 	inc	eax
 	jmp	.out
@@ -2082,6 +2091,13 @@ compile_route_action:
 .line:
 	test	rbx,rbx
 	jz	.collected
+	test	r15d,r15d			; `response rewrite ...`: not a header change
+	jz	@f
+	mov	rax,[rbx+N_ARGS]
+	mov	rax,[rax+A_VAL]
+	cmp	byte [rax],'r'
+	je	.next_line
+@@:
 	mov	ecx,[g_plan_hdrops]
 	too_many	ecx,MAX_HDROPS,str_tm_max_hdrops
 	inc	dword [g_plan_hdrops]

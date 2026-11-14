@@ -133,7 +133,7 @@ enumdef e_listen_mode, 'xdp'
 enumdef e_redirect_codes, '301', '302', '303', '307', '308'
 keysdef k_respond, 'type', T_ANY
 enumdef e_header_ops, 'set', 'add', 'drop'
-enumdef e_response_what, 'header'
+enumdef e_response_what, 'header', 'rewrite'
 enumdef e_rewrite_what, 'path'
 enumdef e_pp_version, 'v1', 'v2'
 enumdef e_tls_mode, 'passthrough'
@@ -335,7 +335,7 @@ dirdef DIR_REDIRECT, 'redirect',  M_ROUTE,   0,           F_UNIQUE, 2, 2, e_redi
 dirdef DIR_RESPOND, 'respond',   M_ROUTE,   0,           F_UNIQUE, 1, 2, T_UINT, T_ANY, k_respond
 dirdef DIR_REWRITE, 'rewrite',    M_ROUTE,   0,           F_UNIQUE, 4, 4, e_rewrite_what, T_ANY, 0
 dirdef DIR_RHEADER, 'header',      M_ROUTE or M_HTTP or M_HOST, 0, 0, 2, 3, e_header_ops, T_ANY, 0
-dirdef DIR_RRESPONSE, 'response',  M_ROUTE or M_HTTP or M_HOST, 0, 0, 3, 4, e_response_what, T_ANY, 0
+dirdef DIR_RRESPONSE, 'response',  M_ROUTE or M_HTTP or M_HOST, 0, 0, 3, 5, e_response_what, T_ANY, 0
 dirdef DIR_TLS, 'tls',          M_TCP or M_HTTP, CTX_TLS,   F_BLOCK_REQ or F_UNIQUE, 0, 1, e_tls_mode, T_NONE, 0
 dirdef DIR_SNI, 'sni',          M_TLS,     0,           0, 4, 64, T_ANY, T_ANY, 0
 dirdef DIR_DEFAULT, 'default',  M_TLS,     0,           F_UNIQUE, 1, 3, T_ANY, T_ANY, 0

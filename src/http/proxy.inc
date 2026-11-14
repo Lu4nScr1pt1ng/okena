@@ -1869,6 +1869,7 @@ http_write_request_head:
 	add	rdi,11
 	push	rdi
 	call	http_client_resolve
+	call	resp_rewrite_keep_host		; (response rewrite location auto)
 	pop	rdi
 	; fields, except hop-by-hop ones and those okena writes itself
 	xor	ebx,ebx
@@ -3236,6 +3237,17 @@ http_write_response_head:
 	mov	edx,1				; gRPC-Web's content-type (grpcweb.inc)
 	call	gweb_field
 	jc	.skip
+	mov	eax,[r15+H_ACT]			; response rewrite: Location, Set-Cookie
+	test	eax,eax
+	jz	.as_is
+	dec	eax
+	imul	rax,rax,RA_SIZE
+	cmp	dword [g_acts+rax+RA_WRN],0
+	je	.as_is
+	mov	rcx,[rsp+24]			; (the session: pushed rbx)
+	call	resp_rewrite_field		; rdi past the line it wrote, or CF
+	jnc	.skip
+.as_is:
 	mov	eax,[r14+HF_NLEN]
 	add	eax,[r14+HF_VLEN]
 	add	eax,4
