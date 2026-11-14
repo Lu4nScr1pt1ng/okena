@@ -491,6 +491,10 @@ udp_listener_read:
 	jmp	.dgram
 .sent:
 	call	udp_flush
+	cmp	dword [g_engine],ENGINE_EPOLL
+	je	@f
+	call	ring_flush			; (the SENDs read these buffers: before the next batch)
+@@:
 	mov	eax,ebp
 	pop	r14
 	pop	rbp
@@ -569,6 +573,8 @@ udp_in:
 	mov	edx,[g_ud_rm+rax+MM_LEN]
 	add	[g_st_l_in+r13*8],rdx
 	inc	qword [g_st_l_dgin+r13*8]
+	cmp	dword [g_engine],ENGINE_EPOLL
+	jne	udp_send_ring
 	mov	eax,[rdi+FL_FD]
 	cmp	dword [g_ud_tn],0
 	je	.run
@@ -623,6 +629,67 @@ udp_in:
 	test	rdi,rdi
 	jnz	.send
 	inc	qword [g_st_ud_drops]
+	ret
+
+; io_uring: a datagram to its backend is a SEND on the ring, not a sendmmsg
+; of its own (one flow's socket after another, a run was one datagram: a
+; system call each, plus the msghdr and iovec copied in). The batch goes in
+; one io_uring_enter (udp_listener_read submits it before its buffers are
+; read into again); MSG_DONTWAIT: a full socket drops it at once, as before,
+; and no completion comes unless it fails (on_ud_send).
+; rdi = flow, ebx = slot, edx = length.
+udp_send_ring:
+	push	rdi
+	push	rdx
+	call	ring_get_sqe
+	pop	rdx
+	pop	rdi
+	mov	byte [rax+SQE_OPCODE],IORING_OP_SEND
+	mov	byte [rax+SQE_FLAGS],IOSQE_CQE_SKIP_SUCCESS
+	mov	ecx,[rdi+FL_FD]
+	mov	[rax+SQE_FD],ecx
+	mov	rcx,rbx
+	shl	rcx,4
+	mov	rcx,[g_ud_rio+rcx]
+	mov	[rax+SQE_ADDR],rcx
+	mov	[rax+SQE_LEN],edx
+	mov	dword [rax+SQE_OP_FLAGS],MSG_DONTWAIT
+	mov	r8,rax
+	mov	rax,rdi				; the flow's index
+	sub	rax,[g_ud_tab]
+	xor	edx,edx
+	mov	ecx,FL_SIZE
+	div	rcx
+	mov	ecx,[rdi+FL_GEN]
+	and	ecx,0xFFFFFF
+	shl	rcx,32
+	or	rax,rcx
+	mov	rcx,OP_UD_SEND shl 56
+	or	rax,rcx
+	mov	[r8+SQE_USER_DATA],rax
+	ret
+
+; io_uring: a datagram to a backend failed (ebx = flow, r12d = generation,
+; r14 = -errno): dropped, and a refused one says what udp_flush hears.
+on_ud_send:
+	mov	rdi,rbx
+	imul	rdi,rdi,FL_SIZE
+	add	rdi,[g_ud_tab]
+	mov	eax,[rdi+FL_GEN]
+	and	eax,0xFFFFFF
+	cmp	eax,r12d
+	jne	.out				; that flow is gone
+	inc	qword [g_st_ud_drops]
+	cmp	r14,-ECONNREFUSED
+	jne	.out
+	push	rdi
+	mov	rsi,r14
+	mov	edi,[rdi+FL_SERVER]
+	call	server_failed
+	pop	rdi
+	cmp	dword [rdi+FL_OWN],0
+	jne	udp_close
+.out:
 	ret
 
 ; ebx, r13d as for udp_in; r8, r9, r10 its key, r11d its chain. rdi = a new
