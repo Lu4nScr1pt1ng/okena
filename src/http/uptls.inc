@@ -162,12 +162,11 @@ http_uptls_flight_in:
 	imul	rax,rax,PL_SIZE
 	lea	rcx,[g_pools]
 	add	rcx,rax
-	cmp	dword [rcx+PL_TLS_HASANCHOR],0
-	je	.badcert
-	lea	rdi,[rcx+PL_TLS_ANCHOR]
+	cmp	dword [rcx+PL_TLS_NOVERIFY],0
+	jne	.verified			; `verify off`: encrypted, nothing checked
 	mov	rsi,[r14+HB_UTC+TC_CLIST]
 	mov	edx,[r14+HB_UTC+TC_CLISTLEN]
-	call	cert_chain_verify
+	call	up_chain_verify
 	test	eax,eax
 	jz	.badcert
 	lea	rdi,[r14+HB_UWORK]		; the validity window
@@ -259,8 +258,8 @@ http_uptls_flight_in:
 	imul	rax,rax,PL_SIZE
 	lea	rcx,[g_pools]
 	add	rcx,rax
-	cmp	dword [rcx+PL_TLS_HASANCHOR],0
-	je	.badcert
+	cmp	dword [rcx+PL_TLS_NOVERIFY],0
+	jne	.send12				; `verify off`
 	mov	r14,[r15+H_BUF]
 	push	rcx
 	lea	rdi,[r14+HB_UDEC+4096]
@@ -268,11 +267,10 @@ http_uptls_flight_in:
 	mov	edx,[r14+HB_UTC+TC_CLISTLEN]
 	call	tlsc12_reframe_chain
 	pop	rcx
-	lea	rdi,[rcx+PL_TLS_ANCHOR]
 	lea	rsi,[r14+HB_UDEC+4096]
 	mov	edx,eax
 	mov	[r14+HB_UWORK+64],eax
-	call	cert_chain_verify
+	call	up_chain_verify
 	test	eax,eax
 	jz	.badcert
 	lea	rdi,[r14+HB_UWORK]		; the validity window (HB_UWORK is free here)

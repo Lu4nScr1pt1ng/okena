@@ -1388,11 +1388,14 @@ A pool's `tls` is for `http` listeners: a `tcp` or `udp` listener can't
 re-encrypt to a pool, and `okena check` refuses one that points at a pool
 with `tls`.
 
-`tls` verifies the backend's chain up to the first certificate in `trust`
-(required) and its name against `sni`. Give it the one root or private CA
-the backend's chain ends at: a bundle doesn't work, since only its first
-certificate counts. Unlike ACME, alerts and JWKS, pools never use the
-system's roots.
+`tls` verifies the backend's chain and its name (`sni`, else the pool's
+`host`). The chain must go up to one of the certificates in `trust FILE`: a
+single private CA or a whole bundle (1024 anchors over all pools; the one
+that applies is found by name, so a bundle costs what one root does).
+`trust system` takes the system's roots (`$SSL_CERT_FILE`, else the
+distribution's bundle), for public origins and APIs. `verify off` encrypts
+without checking who answers: only for a backend on a network you trust,
+such as a container's self-signed certificate.
 
 ### Discovery
 

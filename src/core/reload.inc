@@ -144,6 +144,11 @@ macro plan_regions action
 	action g_jwk, JK_SIZE * MAX_JWK, g_plan_jwk, JK_SIZE
 	action g_plan_jwk, 4
 	action g_jsrc, JS_SIZE * MAX_JWKS, g_plan_jsrc, JS_SIZE
+	action g_plan_upa, 4
+	action g_upa_sys, 4
+	action g_upa_sysn, 4
+	action g_upa, PK_SIZE * UPA_MAX, g_plan_upa, PK_SIZE
+	action g_upa_nh, 8 * UPA_MAX, g_plan_upa, 8
 	action g_cca, PK_SIZE * CCA_MAX
 	action g_cca_nh, 8 * CCA_MAX
 	action g_cca_next, 8 * CCA_MAX

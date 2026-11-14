@@ -206,7 +206,7 @@ keysdef k_mode, 'encap', T_ANY, 'port', T_UINT
 keysdef k_synrate, 'burst', T_COUNT
 keysdef k_health, 'every', T_DURATION, 'timeout', T_DURATION, 'rise', T_COUNT, 'fall', T_COUNT, \
 	'expect', T_STATUSES, 'host', T_HOSTNAME
-keysdef k_uptls, 'trust', T_ANY, 'sni', T_HOSTNAME, 'cert', T_ANY, 'key', T_ANY
+keysdef k_uptls, 'trust', T_ANY, 'sni', T_HOSTNAME, 'cert', T_ANY, 'key', T_ANY, 'verify', e_onoff
 keysdef k_breaker, 'errors', T_COUNT, 'open', T_DURATION
 enumdef e_ad_phases, 'request_headers', 'request_body', 'response_headers', 'response_body', 'log'
 enumdef e_ad_onerr, 'deny', 'allow'

@@ -208,8 +208,11 @@ PL_SLOW		:= 104		; d: slow start window in seconds, 0 = none
 PL_TLS		:= 108		; d: 1 when this pool's upstreams speak TLS
 PL_TLS_SNI	:= 112		; q: SNI / hostname to verify, 0 = the server as written
 PL_TLS_SNILEN	:= 120		; d
-PL_TLS_HASANCHOR := 124		; d: 1 when an anchor key was loaded
-PL_TLS_ANCHOR	:= 128		; the trust anchor's public key, a PK blob (EC or RSA)
+PL_TLS_HASANCHOR := 124		; d: (unused)
+PL_TLS_AFIRST	:= 128		; d: its first anchor in g_upa (tls/upanchors.inc)
+PL_TLS_ACOUNT	:= 132		; d: and how many
+PL_TLS_NOVERIFY	:= 136		; d: `verify off`: the backend's certificate is not checked
+PL_TLS_ANCHOR	:= 140		; (room once held an anchor's key; free)
 PL_H2		:= 672		; d: 1 when this pool's backends speak HTTP/2 (`protocol h2`)
 PL_HKEY		:= 676		; d: maglev, ring-hash: HK_*
 PL_HNLEN	:= 680		; d: the header's or cookie's name
@@ -246,7 +249,7 @@ PL_CCMAX	:= PL_CWARM + 20	; d: and at most
 PL_HOSTL	:= PL_CWARM + 24	; d: `host`: the Host its backends get, 0 = the client's
 PL_HOSTN	:= PL_CWARM + 28	; q: and the name
 PL_SIZE		:= PL_CWARM + 36		; room for PL_TLS_ANCHOR + a PK blob (16 + 528), then PL_H2
-assert PL_TLS_ANCHOR + PK_SIZE <= PL_H2
+assert PL_TLS_ANCHOR <= PL_H2
 
 ; Server
 SV_SA		:= 0		; sockaddr (sockaddr_un is 110 bytes)
@@ -4090,38 +4093,47 @@ compile_pool:
 	mov	edx,[rax+A_VLEN]
 	mov	[r13+PL_TLS_SNILEN],edx
 @@:
-	mov	rdi,rbx				; trust = a PEM file of trust anchors
+	mov	rdi,rbx				; verify off
+	cstring str_key_verify, 'verify',0
+	lea	rsi,[str_key_verify]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	mov	rax,[rax+A_VAL]
+	cmp	word [rax],'of'
+	jne	@f
+	mov	dword [r13+PL_TLS_NOVERIFY],1
+@@:
+	mov	rdi,rbx				; trust = FILE (every certificate) or system
 	lea	rsi,[str_key_trust]
 	call	node_option
 	test	rax,rax
-	jz	.advance			; (check requires it; absence is handled there)
+	jz	.advance			; (check requires it unless verify off)
 	mov	ecx,[rax+A_VLEN]
+	mov	rsi,[rax+A_VAL]
+	cmp	ecx,6
+	jne	.trust_file
+	cmp	dword [rsi],'syst'
+	jne	.trust_file
+	cmp	word [rsi+4],'em'
+	jne	.trust_file
+	call	upa_system
+	jc	.advance
+	jmp	.trust_set
+.trust_file:
 	cmp	ecx,4095
 	ja	.advance
-	mov	rsi,[rax+A_VAL]			; copy the path, NUL-terminated
-	lea	rdi,[g_trust_path]
+	lea	rdi,[g_trust_path]		; the path, NUL-terminated
 	push	rcx
 	rep	movsb
 	pop	rcx
 	mov	byte [g_trust_path+rcx],0
 	lea	rdi,[g_trust_path]
-	lea	rsi,[g_ar_text]			; read_file allocates from this arena
-	call	read_file			; rax = contents, rdx = length, or rax < 0
-	test	rax,rax
-	js	.advance
-	mov	rsi,rax				; the first CERTIFICATE -> DER
-	mov	edx,edx
-	lea	rdi,[g_trust_der]
-	call	pem_first_cert
-	test	eax,eax
-	jz	.advance
-	lea	rsi,[g_trust_der]		; -> the anchor's public key (EC or RSA)
-	mov	edx,eax
-	lea	rdi,[r13+PL_TLS_ANCHOR]
-	call	cert_pubkey
-	test	eax,eax
-	jz	.advance
-	mov	dword [r13+PL_TLS_HASANCHOR],1
+	call	upa_file
+	jc	.advance
+.trust_set:
+	mov	[r13+PL_TLS_AFIRST],eax
+	mov	[r13+PL_TLS_ACOUNT],edx
 .advance:
 	mov	rbx,[rbx+N_NEXT]
 	jmp	.next

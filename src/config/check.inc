@@ -2849,58 +2849,83 @@ check_pool:
 ; file must hold a certificate okena can take an anchor key from.
 check_uptls:
 	push	rbx
+	push	r12
 	mov	rbx,rdi
 	lea	rsi,[str_key_trust]
 	call	node_option
 	test	rax,rax
 	jz	.notrust
+	mov	r12d,[g_plan_upa]		; (loaded to be checked, then let go)
 	mov	ecx,[rax+A_VLEN]
+	mov	rsi,[rax+A_VAL]
+	cmp	ecx,6
+	jne	.file
+	cmp	dword [rsi],'syst'
+	jne	.file
+	cmp	word [rsi+4],'em'
+	jne	.file
+	push	qword [g_upa_sys]		; (both dwords)
+	call	upa_system
+	pop	qword [g_upa_sys]
+	mov	[g_plan_upa],r12d
+	jc	.nosystem
+	jmp	.out
+.file:
 	cmp	ecx,4095
 	ja	.cannot
-	mov	rsi,[rax+A_VAL]
 	lea	rdi,[g_trust_path]
 	push	rcx
 	rep	movsb
 	pop	rcx
 	mov	byte [g_trust_path+rcx],0
 	lea	rdi,[g_trust_path]
-	lea	rsi,[g_ar_text]
-	call	read_file
-	test	rax,rax
-	js	.cannot
-	mov	rsi,rax
-	lea	rdi,[g_trust_der]
-	call	pem_first_cert
-	test	eax,eax
-	jz	.cannot
-	lea	rsi,[g_trust_der]
-	mov	edx,eax
-	lea	rdi,[g_trust_pub]
-	call	cert_pubkey
-	test	eax,eax
-	jz	.cannot
+	call	upa_file
+	mov	[g_plan_upa],r12d
+	jc	.cannot
+.out:
+	pop	r12
 	pop	rbx
 	ret
 .notrust:
+	mov	rdi,rbx				; none needed with verify off
+	cstring .k_verify, 'verify',0
+	lea	rsi,[.k_verify]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	mov	rax,[rax+A_VAL]
+	cmp	word [rax],'of'
+	je	.out
+@@:
 	mov	rdi,[rbx+N_NAME]
 	mov	esi,[rbx+N_NLEN]
 	mov	edx,[rbx+N_LINE]
 	call	cfg_error
-	out_lit 'upstream `tls` needs `trust <file>` naming the trust anchors'
+	out_lit 'upstream `tls` needs `trust FILE` (its CA certificates, a bundle is fine) or `trust system`'
+	call	cfg_diag_end
+	call	cfg_note
+	out_lit 'help: `verify off` skips the check (the backend is not authenticated: a private network only)'
+	call	cfg_note_end
+	call	cfg_error_limit
+	jmp	.out
+.nosystem:
+	mov	rdi,[rbx+N_NAME]
+	mov	esi,[rbx+N_NLEN]
+	mov	edx,[rbx+N_LINE]
+	call	cfg_error
+	out_lit 'trust system: no CA bundle found ($SSL_CERT_FILE, /etc/ssl/certs/ca-certificates.crt, /etc/pki/tls/certs/ca-bundle.crt, /etc/ssl/ca-bundle.pem)'
 	call	cfg_diag_end
 	call	cfg_error_limit
-	pop	rbx
-	ret
+	jmp	.out
 .cannot:
 	mov	rdi,[rbx+N_NAME]
 	mov	esi,[rbx+N_NLEN]
 	mov	edx,[rbx+N_LINE]
 	call	cfg_error
-	out_lit 'cannot load a trust anchor from the `trust` file'
+	out_lit 'cannot load the `trust` file: PEM certificates, each one valid (at most 1024 anchors over all pools)'
 	call	cfg_diag_end
 	call	cfg_error_limit
-	pop	rbx
-	ret
+	jmp	.out
 
 ; rdi = health node. `health tcp` takes nothing more; `health http`
 ; takes a path, after GET or HEAD if a method is given.

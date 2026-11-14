@@ -941,7 +941,9 @@ use it unchanged.
    without it pay one compare per request.
 3. Upstream TLS: `trust` takes a bundle (every anchor), `trust system`
    for the system's roots, `verify off` for a private backend; TLS
-   origination from `tcp` listeners.
+   origination from `tcp` listeners. Trust: **done 2026-11-14**
+   (src/tls/upanchors.inc, tests/tls/uptrust.py): anchors in the plan,
+   picked by the issuer's name hash as client_ca does.
 4. `allow`/`deny` and `access_log` on `tcp` and `udp` listeners (one
    line per connection or flow: bytes both ways, duration, upstream).
 5. Sub-second timeouts everywhere (`timeout try=200ms total=1500ms`).
