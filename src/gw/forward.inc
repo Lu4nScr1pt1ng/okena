@@ -26,6 +26,7 @@ FR_OK		:= 1
 FR_DENY		:= 2
 FR_FAIL		:= 3
 FA_HELD		:= 4				; g_fa_mode: no answer yet
+FA_FORBID	:= 5				; jwt: a valid token without what `require` asks
 
 FC_N		:= 1024
 FC_KEY		:= 0				; 32

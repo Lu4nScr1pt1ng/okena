@@ -955,8 +955,10 @@ use it unchanged.
    clock that is not whole seconds bounds the engine's wait; whole seconds
    stay on the tick. Found on the way: a tcp listener's PROXY header was
    never timed without tls (ph_expire skipped it).
-6. JWT authorization: `require CLAIM=VALUE[,VALUE]` (scope lists,
-   arrays, roles); RS384, RS512, ES384, PS384, PS512.
+6. JWT authorization: `require CLAIM VALUE[,VALUE]` (scope lists,
+   arrays, roles); RS384, RS512, ES384, PS384, PS512. require: **done
+   2026-11-14** (tests/gateway/jwtreq.py): 403, decided once and kept with
+   the verified token; dotted paths, arrays, scope words.
 7. Health checks: `http` with `body=` and headers; `tcp send=/expect=`
    (Redis `role:master`, a PostgreSQL primary, MySQL); `udp` (a DNS
    query); an agent check.

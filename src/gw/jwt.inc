@@ -58,6 +58,26 @@ JC_HDR		:= 72				; what the backend is told
 JC_GEN		:= JC_HDR + 256			; d: the generation it was kept in
 JC_SIZE		:= 512
 JWT_HDR_MAX	:= 256
+JC_DENY		:= JC_GEN + 4			; d: `require` did not hold (403), kept with it
+
+; `require CLAIM VALUE[,VALUE]...`: the claim (a dotted path into objects
+; when the whole name is not there) holds one of the values: a string as
+; its space-separated words (OAuth's scope), an array as its elements,
+; anything else as written. Every line must hold.
+RQ_CLAIM	:= 0				; q
+RQ_CLEN		:= 8				; d
+RQ_VFIRST	:= 12				; d: in g_jreqv
+RQ_VN		:= 16				; d
+RQ_SIZE		:= 24
+MAX_JREQ	:= 4096
+MAX_JREQV	:= 16384
+bss
+	align 8
+	g_jreq:		rb RQ_SIZE * MAX_JREQ
+	g_jreqv:	rq 2 * MAX_JREQV	; each value: where, how long
+	g_plan_jreq	dd ?
+	g_plan_jreqv	dd ?
+end bss
 JWT_MAX		:= 12288
 
 bss
@@ -579,6 +599,8 @@ jwt_claims:
 	jmp	.claim
 .claimed:
 	pop	rbp
+	call	jwt_require			; (r13/r14: the claims)
+	mov	[rbx+JC_DENY],eax
 	clc
 	jmp	.out
 .bad_rbp:
@@ -613,6 +635,220 @@ jwt_claims:
 .n_nbf	db 'nbf'
 .n_iss	db 'iss'
 .n_aud	db 'aud'
+
+; r12 = the auth, r13/r14 = the claims (a valid object): eax = 0 when every
+; `require` line holds, 1 when one does not. Keeps rbx, r12-r15.
+jwt_require:
+	push	rbx
+	push	rbp
+	push	r15
+	mov	ebp,[r12+AU_QN]
+	mov	eax,[r12+AU_QFIRST]
+	imul	rax,rax,RQ_SIZE
+	lea	r15,[g_jreq+rax]
+.line:
+	test	ebp,ebp
+	jz	.allowed
+	dec	ebp
+	call	.find				; rax = its value, r8 = its end, 0 none
+	test	rax,rax
+	jz	.denied
+	mov	rsi,rax
+	cmp	byte [rsi],'"'
+	je	.words
+	cmp	byte [rsi],'['
+	je	.array
+	mov	rdi,rsi				; a number, true, false: as written
+	mov	rcx,r8
+	sub	rcx,rsi
+	call	.is_value
+	jnc	.next_line
+	jmp	.denied
+.words:
+	lea	rdi,[g_jt_a]
+	mov	ecx,512
+	call	json_string
+	jc	.denied
+	lea	rbx,[g_jt_a]			; its words, one by one
+	lea	r9,[g_jt_a+rax]
+.word:
+	cmp	rbx,r9
+	jae	.denied
+	cmp	byte [rbx],' '
+	jne	@f
+	inc	rbx
+	jmp	.word
+@@:
+	mov	rdi,rbx
+@@:
+	cmp	rbx,r9
+	jae	@f
+	cmp	byte [rbx],' '
+	je	@f
+	inc	rbx
+	jmp	@b
+@@:
+	mov	rcx,rbx
+	sub	rcx,rdi
+	push	r9
+	call	.is_value
+	pop	r9
+	jnc	.next_line
+	jmp	.word
+.array:
+	mov	rdx,r8				; its end
+	inc	rsi
+.element:
+	call	json_ws
+	cmp	rsi,rdx
+	jae	.denied
+	cmp	byte [rsi],']'
+	je	.denied
+	mov	rbx,rsi				; its start
+	push	rdx
+	call	json_skip_value
+	pop	rdx
+	jc	.denied
+	mov	r8,rsi				; its end
+	push	rsi
+	push	rdx
+	mov	rsi,rbx
+	cmp	byte [rsi],'"'
+	jne	.raw
+	lea	rdi,[g_jt_a]
+	mov	ecx,512
+	call	json_string
+	jc	.el_no
+	lea	rdi,[g_jt_a]
+	mov	ecx,eax
+	call	.is_value
+	jmp	.el_done
+.raw:
+	mov	rdi,rsi
+	mov	rcx,r8
+	sub	rcx,rsi
+	call	.is_value
+	jmp	.el_done
+.el_no:
+	stc
+.el_done:
+	pop	rdx
+	pop	rsi
+	jnc	.next_line
+	call	json_ws
+	cmp	rsi,rdx
+	jae	.denied
+	cmp	byte [rsi],','
+	jne	.denied
+	inc	rsi
+	jmp	.element
+.next_line:
+	add	r15,RQ_SIZE
+	jmp	.line
+.allowed:
+	xor	eax,eax
+	jmp	.out
+.denied:
+	mov	eax,1
+.out:
+	pop	r15
+	pop	rbp
+	pop	rbx
+	ret
+; r15 = the line: rax = its claim's value in r13/r14 (r8 its end), 0 none. The
+; whole name first (`https://example.com/roles` has dots), then a path.
+.find:
+	mov	rsi,r13
+	mov	rdx,r14
+	mov	rdi,[r15+RQ_CLAIM]
+	mov	ecx,[r15+RQ_CLEN]
+	call	json_get
+	jc	.find_none
+	test	rax,rax
+	jnz	.find_out
+	mov	rdi,[r15+RQ_CLAIM]		; a.b.c: one object into the next
+	mov	r9d,[r15+RQ_CLEN]
+	lea	r10,[rdi+r9]			; the name's end
+	mov	rsi,r13
+	mov	rdx,r14
+.part:
+	mov	rcx,rdi
+@@:
+	cmp	rcx,r10
+	jae	@f
+	cmp	byte [rcx],'.'
+	je	@f
+	inc	rcx
+	jmp	@b
+@@:
+	cmp	rcx,r10
+	je	.find_none			; (no dot left: the whole was tried, or the last part)
+	push	rcx
+	push	r10
+	sub	rcx,rdi
+	call	json_get
+	pop	r10
+	pop	rdi
+	jc	.find_none
+	test	rax,rax
+	jz	.find_none
+	cmp	byte [rax],'{'
+	jne	.find_none
+	mov	rsi,rax
+	mov	rdx,r8
+	inc	rdi				; past the dot
+	mov	rcx,rdi
+@@:
+	cmp	rcx,r10
+	jae	.last
+	cmp	byte [rcx],'.'
+	je	.part
+	inc	rcx
+	jmp	@b
+.last:
+	mov	rcx,r10
+	sub	rcx,rdi
+	call	json_get
+	jc	.find_none
+.find_out:
+	ret
+.find_none:
+	xor	eax,eax
+	ret
+; rdi/rcx = a candidate, r15 = the line: CF unless it is one of its values.
+; Keeps rbx, rsi, rdx, r8.
+.is_value:
+	push	rsi
+	push	rbx
+	mov	eax,[r15+RQ_VFIRST]
+	mov	r11d,[r15+RQ_VN]
+	lea	r10,[g_jreqv+rax*8]
+	lea	r10,[r10+rax*8]
+.v:
+	test	r11d,r11d
+	jz	.v_no
+	dec	r11d
+	cmp	[r10+8],rcx
+	jne	.v_next
+	push	rdi
+	push	rcx
+	mov	rsi,[r10]
+	repe	cmpsb
+	pop	rcx
+	pop	rdi
+	je	.v_yes
+.v_next:
+	add	r10,16
+	jmp	.v
+.v_yes:
+	clc
+	jmp	.v_out
+.v_no:
+	stc
+.v_out:
+	pop	rbx
+	pop	rsi
+	ret
 
 ; r12 = the auth, rsi = the field's value, ecx = its length, r15 = record: CF
 ; when refused. Keeps r12-r15.
@@ -677,6 +913,8 @@ jwt_check:
 	mov	rax,[rbx+JC_EXP]
 	cmp	rax,[g_jwt_now]
 	jbe	.expired
+	cmp	dword [rbx+JC_DENY],0
+	jne	.forbid				; signed, current, but not allowed this
 	jmp	.good
 .expired:
 	mov	qword [rbx+JC_EXP],0
@@ -770,6 +1008,8 @@ jwt_check:
 	mov	[rbx+JC_AU],eax
 	mov	eax,[g_jc_gen]
 	mov	[rbx+JC_GEN],eax
+	cmp	dword [rbx+JC_DENY],0
+	jne	.forbid
 .good:
 	; what the head to the backend needs
 	mov	rdx,[r15+H_BUF]
@@ -784,6 +1024,10 @@ jwt_check:
 	lea	rsi,[rbx+JC_HDR]
 	rep	movsb
 	clc
+	jmp	.out
+.forbid:
+	mov	dword [g_fa_mode],FA_FORBID
+	stc
 	jmp	.out
 .bad_entry:
 	mov	qword [rbx+JC_EXP],0
@@ -853,7 +1097,7 @@ compile_jwt:
 	mov	ecx,DIR_CLAIMS
 	call	find_child
 	test	rax,rax
-	jz	.keys
+	jz	.require
 	mov	r13,[rax+N_ARGS]
 	mov	r14d,[rax+N_ARGC]
 .claim:
@@ -891,6 +1135,70 @@ compile_jwt:
 .claims_end:
 	test	r14d,r14d
 	jnz	plan_bad_jwt
+	; require CLAIM VALUE[,VALUE]...
+.require:
+	mov	eax,[g_plan_jreq]
+	mov	[r12+AU_QFIRST],eax
+	mov	r15,[rbx+N_CHILD]
+.req:
+	test	r15,r15
+	jz	.keys
+	lea	rax,[dir_table + D_SIZE*DIR_JREQ]
+	cmp	[r15+N_DEF],rax
+	jne	.req_next
+	mov	eax,[g_plan_jreq]
+	cmp	eax,MAX_JREQ
+	jae	plan_bad_jwt
+	inc	dword [g_plan_jreq]
+	inc	dword [r12+AU_QN]
+	imul	rax,rax,RQ_SIZE
+	lea	r8,[g_jreq+rax]
+	mov	r13,[r15+N_ARGS]
+	mov	rcx,[r13+A_VAL]
+	mov	[r8+RQ_CLAIM],rcx
+	mov	ecx,[r13+A_VLEN]
+	mov	[r8+RQ_CLEN],ecx
+	mov	eax,[g_plan_jreqv]
+	mov	[r8+RQ_VFIRST],eax
+	mov	r14d,1				; its values: each argument, split at commas
+.req_arg:
+	cmp	r14d,[r15+N_ARGC]
+	jae	.req_next
+	imul	rax,r14,A_SIZE
+	add	rax,[r15+N_ARGS]
+	inc	r14d
+	mov	rsi,[rax+A_VAL]
+	mov	ecx,[rax+A_VLEN]
+	lea	r9,[rsi+rcx]			; its end
+.req_val:
+	mov	rdi,rsi
+@@:
+	cmp	rsi,r9
+	jae	@f
+	cmp	byte [rsi],','
+	je	@f
+	inc	rsi
+	jmp	@b
+@@:
+	mov	rcx,rsi
+	sub	rcx,rdi
+	jz	.req_skip			; (an empty one: `a,,b`, a trailing comma)
+	mov	eax,[g_plan_jreqv]
+	cmp	eax,MAX_JREQV
+	jae	plan_bad_jwt
+	inc	dword [g_plan_jreqv]
+	inc	dword [r8+RQ_VN]
+	shl	rax,4
+	mov	[g_jreqv+rax],rdi
+	mov	[g_jreqv+rax+8],rcx
+.req_skip:
+	cmp	rsi,r9
+	jae	.req_arg
+	inc	rsi				; past the comma
+	jmp	.req_val
+.req_next:
+	mov	r15,[r15+N_NEXT]
+	jmp	.req
 .keys:
 	mov	rdi,rbx
 	mov	ecx,DIR_JWKS

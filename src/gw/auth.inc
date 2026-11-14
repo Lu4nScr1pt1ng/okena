@@ -40,7 +40,9 @@ AU_TTL		:= 100				; d: seconds a yes is kept, 0 not at all
 AU_TIMEOUT	:= 104				; q: µs it is given
 AU_PATH		:= 112				; q
 AU_PLEN		:= 120				; d
-AU_SIZE		:= 128
+AU_QFIRST	:= 124				; d: jwt `require` lines (g_jreq)
+AU_QN		:= 128				; d
+AU_SIZE		:= 136
 MAX_AUTHS	:= 16384
 AK_APIKEY	:= 1
 AK_BASIC	:= 2
@@ -471,6 +473,11 @@ auth_refuse:
 	cmp	dword [g_fa_mode],FR_FAIL
 	jne	@f
 	mov	edi,503				; who decides cannot be asked: nobody gets in
+	jmp	http_error
+@@:
+	cmp	dword [g_fa_mode],FA_FORBID
+	jne	@f
+	mov	edi,403				; who it is is known: not allowed this
 	jmp	http_error
 @@:
 	test	dword [r15+H_FLAGS],HX_GRPC

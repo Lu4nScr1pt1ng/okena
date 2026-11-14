@@ -1003,6 +1003,25 @@ names an unknown `kid`; keys stay valid for `stale` (24h) after the last good
 fetch. Verified tokens are cached per worker until they expire or the keys
 change. A refetch for an unknown `kid` happens at most every 10 s.
 
+**Authorization.** `require CLAIM VALUE[,VALUE]` lets through only tokens whose
+claim holds one of the values; with several `require` lines, every one must
+hold. A token that is valid but fails one gets **403** (401 stays for a
+missing or bad token), and the backend never hears of it:
+
+```nginx
+auth jwt {
+    jwks https://auth.example.com/.well-known/jwks.json trust=/etc/okena/idp-ca.pem
+    require scope orders:write              # OAuth scopes: space-separated words
+    require realm_access.roles admin,ops    # a dotted path into objects; arrays: any element
+    require https://example.com/tier gold   # a name with dots of its own is tried whole first
+    require email_verified true             # numbers and booleans as written
+}
+```
+
+A string claim is matched by its words (OAuth's `scope`), an array by its
+elements. The decision is kept with the verified token, so it costs nothing
+after the first request.
+
 Each claim named in `claims` goes to the backend in its header, and whatever
 the client sent under those names is dropped. The first claim listed is the
 user's identity, what `key=jwt.sub` and `key=auth.user` count by. Without a
