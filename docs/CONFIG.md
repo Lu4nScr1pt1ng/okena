@@ -1674,6 +1674,22 @@ expiry alerts:
 (okena_tls_certificate_not_after_seconds - time()) / 86400 < 14
 ```
 
+Per server, `okena_backend_responses_total{pool,server,class}` counts its
+answers by status class and `okena_backend_response_seconds` (`_sum`,
+`_count`) their time, so error rates and latency are seen per server, not
+only per listener. `okena_http_refused_total{listener,reason}` counts what was
+answered before any backend: `auth` (401), `forbidden` (`jwt require`), `acl`,
+`limit` (429), `overload`, `body_size` (413), `signed`.
+
+A route that says `metrics NAME` gets `okena_route_requests_total{route,class}`
+and a histogram, `okena_route_request_duration_seconds`; routes that share a
+name share the counts. It is asked for, route by route, to keep the number of
+series what you choose:
+
+```nginx
+route /v1/orders/* { metrics orders; to pool orders }
+```
+
 `okena top` shows the same as a table in the terminal, refreshed every
 second.
 

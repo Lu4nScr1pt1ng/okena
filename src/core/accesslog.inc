@@ -517,6 +517,7 @@ alog_exchange:
 	push	rsi
 	call	lat_record
 	pop	rsi
+	call	obs_count			; per server, per `metrics` route
 	call	session_ptr
 	mov	ecx,[rax+S_LST]
 	imul	rcx,rcx,LS_SIZE
@@ -739,6 +740,74 @@ alog_exchange:
 	rep	movsb
 	ret
 
+bss
+	align 8
+	g_lat_us	dq ?			; the exchange lat_record timed, µs, -1 none
+end bss
+
+; ebx = session, esi = 0 when the backend answered: the exchange that ends,
+; counted for its server (backend answers) and its route (`metrics NAME`).
+; Keeps rbx, rsi.
+obs_count:
+	push	rsi
+	push	r15
+	h_rec
+	mov	eax,[r15+H_STATUS]		; its class, 1..5: status / 100 as a
+	imul	eax,eax,1311			; multiply (exact up to 999), no divide
+	shr	eax,17
+	dec	eax
+	cmp	eax,4
+	jbe	@f
+	mov	eax,4
+@@:
+	mov	r8d,eax
+	test	esi,esi
+	jnz	.route				; okena's own answer: no server's
+	call	session_ptr
+	mov	ecx,[rax+S_SERVER]
+	cmp	ecx,NIL
+	je	.route
+	lea	eax,[rcx*4+rcx]
+	add	eax,r8d
+	inc	qword [g_st_s_resp+rax*8]
+	mov	rax,[g_lat_us]
+	test	rax,rax
+	js	.route
+	add	[g_st_s_tsum+rcx*8],rax
+.route:
+	mov	eax,[r15+H_ACT]
+	test	eax,eax
+	jz	.out
+	dec	eax
+	imul	rax,rax,RA_SIZE
+	mov	ecx,[g_acts+rax+RA_MIDX]
+	test	ecx,ecx
+	jz	.out
+	dec	ecx
+	lea	eax,[rcx*4+rcx]
+	add	eax,r8d
+	inc	qword [g_st_r_resp+rax*8]
+	mov	rax,[g_lat_us]
+	test	rax,rax
+	js	.out
+	add	[g_st_r_tsum+rcx*8],rax
+	xor	edx,edx				; its exported bucket: the first that holds it
+.bucket:
+	cmp	edx,LAT_EXPORT - 1
+	jae	.counted
+	cmp	rax,[lat_export+rdx*8]
+	jbe	.counted
+	inc	edx
+	jmp	.bucket
+.counted:
+	imul	ecx,ecx,LAT_EXPORT
+	add	ecx,edx
+	inc	qword [g_st_r_lat+rcx*8]
+.out:
+	pop	r15
+	pop	rsi
+	ret
+
 ; Request durations, from the head to the end of the answer, in µs, into a
 ; log-linear histogram (HdrHistogram's idea): below 16 µs one bucket a µs,
 ; then each power of two cut in 8, so a bucket is at most 1/8 of its value
@@ -749,6 +818,7 @@ LAT_B		:= 16 + 22 * 8
 ; ebx = session: the exchange that ends, into its listener's histogram
 ; (once: its clock is stopped). Keeps rbx.
 lat_record:
+	mov	qword [g_lat_us],-1		; (none, unless timed below)
 	h_rec
 	mov	rcx,[r15+H_LT0]
 	test	rcx,rcx
@@ -762,6 +832,7 @@ lat_record:
 	jb	.none
 	xor	edx,edx
 	div	qword [g_tsc_per_us]		; µs
+	mov	[g_lat_us],rax			; (obs_count: the same duration)
 	push	rax
 	call	session_ptr
 	mov	ecx,[rax+S_LST]

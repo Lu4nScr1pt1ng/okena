@@ -146,6 +146,7 @@ RA_TOTAL	:= 220		; d: `timeout total=`: ms after which no retry starts, 0 none
 RA_BODYMAX	:= 224		; d: `body_size` of the route or its host: bytes; 0 the listener's; -1 no limit
 RA_WRFIRST	:= 228		; d: `response rewrite` lines (g_lrw), the route's first
 RA_WRN		:= 232		; d
+RA_MIDX		:= 236		; d: `metrics NAME`: its index (g_rmet) + 1, 0 none
 RA_SIZE		:= 240
 MAX_TRYC	:= 32		; distinct try= values
 RESPOND_BODY_MAX := 1 shl 20	; `respond CODE BODY`
@@ -1588,6 +1589,9 @@ compile_route_action:
 	lea	rcx,[dir_table + D_SIZE*DIR_RBODY]
 	cmp	rax,rcx
 	je	@f
+	lea	rcx,[dir_table + D_SIZE*DIR_RMETRICS]
+	cmp	rax,rcx
+	je	@f
 	mov	rbx,[rbx+N_NEXT]
 	jmp	@b
 .listener_compress:
@@ -1629,6 +1633,44 @@ compile_route_action:
 	push	rcx
 	imul	r13,rcx,RA_SIZE
 	lea	r13,[g_acts+r13]
+	; metrics NAME: the route's counters, by name (two routes may share one)
+	mov	rdi,r12
+	mov	ecx,DIR_RMETRICS
+	call	find_child
+	test	rax,rax
+	jz	.rmet_done
+	mov	rax,[rax+N_ARGS]
+	mov	rsi,[rax+A_VAL]
+	mov	edx,[rax+A_VLEN]
+	xor	ecx,ecx
+.rmet_find:
+	cmp	ecx,[g_plan_rmet]
+	jae	.rmet_new
+	imul	r8,rcx,OM_SIZE
+	cmp	[g_rmet+r8+OM_NLEN],edx
+	jne	.rmet_next
+	push	rcx
+	push	rsi
+	mov	rdi,[g_rmet+r8+OM_NAME]
+	mov	ecx,edx
+	repe	cmpsb
+	pop	rsi
+	pop	rcx
+	je	.rmet_set
+.rmet_next:
+	inc	ecx
+	jmp	.rmet_find
+.rmet_new:
+	cmp	ecx,MAX_RMET
+	jae	.rmet_done			; (checked: more names than this is refused)
+	inc	dword [g_plan_rmet]
+	imul	r8,rcx,OM_SIZE
+	mov	[g_rmet+r8+OM_NAME],rsi
+	mov	[g_rmet+r8+OM_NLEN],edx
+.rmet_set:
+	inc	ecx
+	mov	[r13+RA_MIDX],ecx
+.rmet_done:
 	; body_size: the route's, else its host block's (else, at run time, the listener's)
 	mov	rdi,r12
 	mov	ecx,DIR_RBODY

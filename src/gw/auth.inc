@@ -477,9 +477,11 @@ auth_refuse:
 @@:
 	cmp	dword [g_fa_mode],FA_FORBID
 	jne	@f
+	refused REF_FORBID
 	mov	edi,403				; who it is is known: not allowed this
 	jmp	http_error
 @@:
+	refused REF_AUTH
 	test	dword [r15+H_FLAGS],HX_GRPC
 	jz	@f
 	mov	edi,401

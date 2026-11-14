@@ -496,6 +496,13 @@ limit_request:
 limit_over:
 	mov	dword [g_lim_status],429
 limit_refuse:
+	cmp	dword [g_lim_status],429
+	jne	@f
+	refused REF_LIMIT
+	jmp	.counted
+@@:
+	refused REF_OVERLOAD
+.counted:
 	test	dword [r15+H_FLAGS],HX_GRPC
 	jz	@f
 	mov	edi,[g_lim_status]		; (gRPC: its status in trailers)

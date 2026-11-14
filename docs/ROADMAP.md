@@ -981,7 +981,10 @@ use it unchanged.
 10. Observability: metrics per route/host and per server (latency,
     status classes), counters of 401/403/429 by cause; access log fields
     (user agent, referer, TLS version, upstream time, bytes in), a
-    chosen field list, per-route off and sampling.
+    chosen field list, per-route off and sampling. Metrics: **done 2026-11-14**
+    (tests/admin/obs.py): per server by class and time, per `metrics NAME`
+    route with a histogram, refusals by reason; counted where the exchange
+    ends (a multiply and a few increments).
 11. Kubernetes `Ingress` (networking.k8s.io/v1) beside the Gateway API,
     and a Helm chart.
 12. Rate limits shared across a fleet; `RateLimit-*` response headers.

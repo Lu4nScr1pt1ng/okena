@@ -1,3 +1,27 @@
+; Requests refused before a backend, by why (okena_http_refused_total)
+REF_AUTH	:= 0		; no credential, or a wrong one: 401
+REF_FORBID	:= 1		; jwt require: 403
+REF_ACL		:= 2		; allow/deny: 403
+REF_LIMIT	:= 3		; a rate limit: 429
+REF_OVERLOAD	:= 4		; shed under overload: 503
+REF_BODY	:= 5		; body_size: 413
+REF_SIGNED	:= 6		; signed_urls: 403
+REF_N		:= 7
+MAX_RMET	:= 1024		; `metrics NAME` routes (distinct names)
+OM_NAME		:= 0		; q: g_rmet: a `metrics` name
+OM_NLEN		:= 8		; d
+OM_SIZE		:= 16
+
+; ebx = session: one refusal of that kind on its listener. Keeps all.
+macro refused why
+	push	rax
+	call	session_ptr
+	mov	eax,[rax+S_LST]
+	imul	eax,eax,REF_N
+	inc	qword [g_st_l_refused+rax*8+why*8]
+	pop	rax
+end macro
+
 ; Statistics. Workers count in their own private memory, on the hot path,
 ; with plain increments; once a second (their tick) they copy the whole
 ; block to their page of a shared table. No shared cache line is written
@@ -12,6 +36,12 @@ bss
 	g_st_l_source	rq MAX_LISTENERS	; refused: per_source
 	g_st_l_denied	rq MAX_LISTENERS	; refused: allow/deny (tcp, udp)
 	g_st_l_ppbad	rq MAX_LISTENERS	; refused: not a PROXY header (proxy_protocol accept)
+	g_st_l_refused	rq MAX_LISTENERS * REF_N	; http: refused before the backend, by REF_*
+	g_st_s_resp	rq MAX_SERVERS * 5	; a server's answers by class: 1xx..5xx
+	g_st_s_tsum	rq MAX_SERVERS		; and their durations' sum, µs
+	g_st_r_resp	rq MAX_RMET * 5		; `metrics NAME` routes: answers by class
+	g_st_r_lat	rq MAX_RMET * LAT_EXPORT	; their durations, by exported bucket
+	g_st_r_tsum	rq MAX_RMET		; and their sum, µs
 	g_st_l_in	rq MAX_LISTENERS	; bytes from clients
 	g_st_l_out	rq MAX_LISTENERS	; bytes to clients
 	g_st_s_connects	rq MAX_SERVERS
@@ -42,11 +72,13 @@ bss
 	g_st_cd_full	dq ?			; not written: no room (the oldest still read)
 	g_st_end:
 	g_stats_tbl	dq ?			; shared: one page set per worker
+	g_rmet:		rb OM_SIZE * MAX_RMET	; (the plan's: `metrics NAME`)
+	g_plan_rmet	dd ?
 end bss
 
 ST_BLOCK	:= g_st_end - g_st_begin
 ; every table stats_publish copies, and nothing else before the scalars
-assert g_st_ud_drops - g_st_begin = 8 * (MAX_LISTENERS * (36 + LAT_B) + MAX_SERVERS * 2)
+assert g_st_ud_drops - g_st_begin = 8 * (MAX_LISTENERS * (36 + LAT_B + REF_N) + MAX_SERVERS * 8 + MAX_RMET * (6 + LAT_EXPORT))
 ; a worker's page: counters, then active connections per listener and
 ; per server, then its engine
 STP_LACTIVE	:= ST_BLOCK
@@ -127,7 +159,10 @@ stats_publish:
 	; the largest configuration, and a second's copy stays what is used
 	irp <sym,per,cnt>, g_st_l_accepted,1,g_plan_listeners, g_st_l_full,1,g_plan_listeners, \
 		g_st_l_source,1,g_plan_listeners, g_st_l_denied,1,g_plan_listeners, \
-		g_st_l_ppbad,1,g_plan_listeners, g_st_l_in,1,g_plan_listeners, \
+		g_st_l_ppbad,1,g_plan_listeners, g_st_l_refused,REF_N,g_plan_listeners, \
+		g_st_s_resp,5,g_plan_servers, g_st_s_tsum,1,g_plan_servers, \
+		g_st_r_resp,5,g_plan_rmet, g_st_r_lat,LAT_EXPORT,g_plan_rmet, g_st_r_tsum,1,g_plan_rmet, \
+		g_st_l_in,1,g_plan_listeners, \
 		g_st_l_out,1,g_plan_listeners, g_st_s_connects,1,g_plan_servers, \
 		g_st_s_fails,1,g_plan_servers, g_st_l_evicted,1,g_plan_listeners, \
 		g_st_l_http,10,g_plan_listeners, g_st_l_retries,1,g_plan_listeners, \

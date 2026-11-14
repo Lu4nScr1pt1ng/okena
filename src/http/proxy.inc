@@ -920,6 +920,7 @@ http_request:
 	jc	.too_large
 	jmp	.chosen_none
 .too_large:
+	refused REF_BODY
 	mov	edi,413				; more than it takes: said before a byte
 	jmp	http_error			; goes on (Expect: 100-continue too)
 .maintenance:
@@ -943,6 +944,7 @@ http_request:
 	jz	.no_acl
 	call	acl_check
 	jnc	.no_acl
+	refused REF_ACL
 	mov	edi,403
 	jmp	http_error
 .no_acl:
@@ -967,6 +969,7 @@ http_request:
 	jz	.no_signed
 	call	signed_check
 	jnc	.no_signed
+	refused REF_SIGNED
 	mov	edi,403
 	jmp	http_error
 .no_signed:

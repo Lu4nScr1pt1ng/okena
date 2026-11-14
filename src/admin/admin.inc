@@ -1077,6 +1077,7 @@ metrics_render:
 	jmp	.l7
 .l7_done:
 	call	metrics_more
+	call	metrics_obs			; refusals by why, servers' answers, routes'
 	call	addon_metrics
 	; backends
 	memit '# TYPE okena_backend_connects_total counter',10
@@ -1889,3 +1890,250 @@ adm_expire:
 .out:
 	pop	r12
 	ret
+
+OFF_L_REFUSED	:= g_st_l_refused - g_st_begin
+OFF_S_RESP	:= g_st_s_resp - g_st_begin
+OFF_S_TSUM	:= g_st_s_tsum - g_st_begin
+OFF_R_RESP	:= g_st_r_resp - g_st_begin
+OFF_R_LAT	:= g_st_r_lat - g_st_begin
+OFF_R_TSUM	:= g_st_r_tsum - g_st_begin
+
+rodata
+	mt_reasons	db 'auth',0,'forbidden',0,'acl',0,'limit',0,'overload',0,'body_size',0,'signed',0,0
+	mt_classes	db '1xx',0,'2xx',0,'3xx',0,'4xx',0,'5xx',0,0
+end rodata
+
+; rdi = output: refusals by why (http listeners), each server's answers by
+; class with their time, and each `metrics NAME` route's. Lines with nothing
+; to say are left out (a server with thousands of siblings costs a line or
+; three), and it all stops short of the buffer's end.
+metrics_obs:
+	push	rbx
+	push	r12
+	push	r13
+	memit '# HELP okena_http_refused_total Requests answered before any backend was asked, by why.',10
+	memit '# TYPE okena_http_refused_total counter',10
+	xor	ebx,ebx
+.l:
+	cmp	ebx,[g_plan_listeners]
+	jae	.l_done
+	imul	rax,rbx,LS_SIZE
+	cmp	dword [g_listeners+rax+LS_KIND],LK_HTTP
+	jne	.l_next
+	xor	r12d,r12d
+.l_one:
+	memit 'okena_http_refused_total'
+	call	listener_label
+	memit ',reason="'
+	lea	rsi,[mt_reasons]
+	mov	eax,r12d
+	call	st_word
+	call	fmt_cstr
+	memit '"} '
+	imul	ecx,ebx,REF_N
+	add	ecx,r12d
+	lea	rcx,[OFF_L_REFUSED+rcx*8]
+	call	stats_sum_q
+	call	fmt_u64
+	memit 10
+	inc	r12d
+	cmp	r12d,REF_N
+	jb	.l_one
+.l_next:
+	inc	ebx
+	jmp	.l
+.l_done:
+	; servers: their answers by class, then (a family of its own) their time
+	memit '# HELP okena_backend_responses_total Answers from each server, by status class.',10
+	memit '# TYPE okena_backend_responses_total counter',10
+	xor	ebx,ebx
+.s:
+	cmp	ebx,[g_plan_servers]
+	jae	.s_done
+	call	.room
+	jc	.s_done
+	xor	r12d,r12d
+.s_class:
+	lea	ecx,[rbx*4+rbx]
+	add	ecx,r12d
+	lea	rcx,[OFF_S_RESP+rcx*8]
+	call	stats_sum_q
+	test	rax,rax
+	jz	.s_class_next
+	push	rax
+	memit 'okena_backend_responses_total'
+	call	server_labels
+	memit ',class="'
+	lea	rsi,[mt_classes]
+	mov	eax,r12d
+	call	st_word
+	call	fmt_cstr
+	memit '"} '
+	pop	rax
+	call	fmt_u64
+	memit 10
+.s_class_next:
+	inc	r12d
+	cmp	r12d,5
+	jb	.s_class
+	inc	ebx
+	jmp	.s
+.s_done:
+	memit '# HELP okena_backend_response_seconds From a request head to the end of the server',39,'s answer.',10
+	memit '# TYPE okena_backend_response_seconds summary',10
+	xor	ebx,ebx
+.t:
+	cmp	ebx,[g_plan_servers]
+	jae	.t_done
+	call	.room
+	jc	.t_done
+	xor	r13d,r13d			; its answers in all
+	xor	r12d,r12d
+@@:
+	lea	ecx,[rbx*4+rbx]
+	add	ecx,r12d
+	lea	rcx,[OFF_S_RESP+rcx*8]
+	call	stats_sum_q
+	add	r13,rax
+	inc	r12d
+	cmp	r12d,5
+	jb	@b
+	test	r13,r13
+	jz	.t_next
+	memit 'okena_backend_response_seconds_sum'
+	call	server_labels
+	memit '} '
+	lea	rcx,[OFF_S_TSUM+rbx*8]
+	call	stats_sum_q
+	call	.seconds
+	memit 10,'okena_backend_response_seconds_count'
+	call	server_labels
+	memit '} '
+	mov	rax,r13
+	call	fmt_u64
+	memit 10
+.t_next:
+	inc	ebx
+	jmp	.t
+.t_done:
+	; routes that asked for it
+	cmp	dword [g_plan_rmet],0
+	je	.out
+	memit '# HELP okena_route_requests_total Answers of the routes named by `metrics`, by status class.',10
+	memit '# TYPE okena_route_requests_total counter',10
+	xor	ebx,ebx
+.r:
+	cmp	ebx,[g_plan_rmet]
+	jae	.r_done
+	xor	r12d,r12d
+.r_class:
+	lea	ecx,[rbx*4+rbx]
+	add	ecx,r12d
+	lea	rcx,[OFF_R_RESP+rcx*8]
+	call	stats_sum_q
+	test	rax,rax
+	jz	.r_class_next
+	push	rax
+	memit 'okena_route_requests_total'
+	call	.route_label
+	memit ',class="'
+	lea	rsi,[mt_classes]
+	mov	eax,r12d
+	call	st_word
+	call	fmt_cstr
+	memit '"} '
+	pop	rax
+	call	fmt_u64
+	memit 10
+.r_class_next:
+	inc	r12d
+	cmp	r12d,5
+	jb	.r_class
+	inc	ebx
+	jmp	.r
+.r_done:
+	memit '# HELP okena_route_request_duration_seconds From a request head to the end of its answer, for the routes named by `metrics`.',10
+	memit '# TYPE okena_route_request_duration_seconds histogram',10
+	xor	ebx,ebx
+.h:
+	cmp	ebx,[g_plan_rmet]
+	jae	.out
+	xor	r12d,r12d			; bucket
+	xor	r13d,r13d			; cumulative
+.h_one:
+	imul	ecx,ebx,LAT_EXPORT
+	add	ecx,r12d
+	lea	rcx,[OFF_R_LAT+rcx*8]
+	call	stats_sum_q
+	add	r13,rax
+	memit 'okena_route_request_duration_seconds_bucket'
+	call	.route_label
+	memit ',le="'
+	cmp	r12d,LAT_EXPORT - 1
+	jne	@f
+	memit '+Inf'
+	jmp	.h_le
+@@:
+	mov	rax,[lat_export+r12*8]
+	call	.seconds
+.h_le:
+	memit '"} '
+	mov	rax,r13
+	call	fmt_u64
+	memit 10
+	inc	r12d
+	cmp	r12d,LAT_EXPORT
+	jb	.h_one
+	memit 'okena_route_request_duration_seconds_sum'
+	call	.route_label
+	memit '} '
+	lea	rcx,[OFF_R_TSUM+rbx*8]
+	call	stats_sum_q
+	call	.seconds
+	memit 10,'okena_route_request_duration_seconds_count'
+	call	.route_label
+	memit '} '
+	mov	rax,r13
+	call	fmt_u64
+	memit 10
+	inc	ebx
+	jmp	.h
+.out:
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+; ebx = a `metrics` route: {route="NAME"
+.route_label:
+	memit '{route="'
+	imul	rax,rbx,OM_SIZE
+	mov	rsi,[g_rmet+rax+OM_NAME]
+	mov	ecx,[g_rmet+rax+OM_NLEN]
+	rep	movsb
+	mov	byte [rdi],'"'
+	inc	rdi
+	ret
+; rax = µs: as seconds with six decimals
+.seconds:
+	xor	edx,edx
+	mov	ecx,1000000
+	div	rcx
+	push	rdx
+	call	fmt_u64
+	mov	byte [rdi],'.'
+	inc	rdi
+	pop	rax
+	mov	ecx,6
+	jmp	fmt_pad
+; CF when less than 64 KiB of the buffer is left (the rest is not said)
+.room:
+	mov	rax,[g_admin_buf]
+	add	rax,ADMIN_BUF - 65536
+	cmp	rdi,rax
+	jae	@f
+	clc
+	ret
+@@:
+	stc
+	ret
+

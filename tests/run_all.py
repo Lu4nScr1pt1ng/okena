@@ -109,6 +109,8 @@ SUITES = [
     ("lb", ["tests/lb/run.py"]),
     ("admin io_uring", ["tests/admin/run.py", "io_uring"]),
     ("admin epoll", ["tests/admin/run.py", "epoll"]),
+    ("observability io_uring", ["tests/admin/obs.py", "io_uring"]),
+    ("observability epoll", ["tests/admin/obs.py", "epoll"]),
     ("http parser", ["tests/http/run.py", "5000"]),
     ("crypto kat", ["tests/kat/run.py"]),
     ("wycheproof", ["tests/wycheproof/run.py"]),
