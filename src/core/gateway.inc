@@ -33,6 +33,12 @@ GWP_CALEN	:= 52			; d
 GWP_CA		:= 56			; q: ca=
 GWP_NAME	:= 64			; q: name=
 GWP_NAMELEN	:= 72			; d
+GWP_ING		:= 76			; d: ingress=: Ingresses of a class too
+GWP_INGCLASS	:= 80			; q: that class
+GWP_INGLEN	:= 88			; d
+GWP_P80		:= 92			; d: http=: their HTTP port
+GWP_P443	:= 96			; d: https=: their HTTPS port
+GWP_INGDEF	:= 100			; d: ingress_default=on: Ingresses of no class too
 GWP_KB		:= 128			; the API server, as a KB block (kube.inc)
 GWP_SIZE	:= GWP_KB + KB_SIZE
 
@@ -100,6 +106,55 @@ compile_gateway:
 	mov	[g_plan_gw+GWP_CLASS],rcx
 	mov	[g_plan_gw+GWP_CLASSLEN],edx
 @@:
+	; ingress=CLASS [http=PORT] [https=PORT]
+	mov	dword [g_plan_gw+GWP_P80],80
+	mov	dword [g_plan_gw+GWP_P443],443
+	mov	rdi,r13
+	cstring str_key_ingress, 'ingress',0
+	lea	rsi,[str_key_ingress]
+	call	node_option
+	test	rax,rax
+	jz	.ing_done
+	mov	rcx,[rax+A_VAL]
+	mov	edx,[rax+A_VLEN]
+	call	gw_label_ok
+	jc	plan_bad_gateway
+	mov	dword [g_plan_gw+GWP_ING],1
+	mov	[g_plan_gw+GWP_INGCLASS],rcx
+	mov	[g_plan_gw+GWP_INGLEN],edx
+	irp k, http,https
+		mov	rdi,r13
+		cstring str_key_ing_#k, `k,0
+		lea	rsi,[str_key_ing_#k]
+		call	node_option
+		test	rax,rax
+		jz	@f
+		mov	rdi,[rax+A_VAL]
+		mov	esi,[rax+A_VLEN]
+		call	parse_decimal
+		jc	plan_bad_gateway
+		test	eax,eax
+		jz	plan_bad_gateway
+		cmp	eax,65535
+		ja	plan_bad_gateway
+		match =http, k
+			mov	[g_plan_gw+GWP_P80],eax
+		else
+			mov	[g_plan_gw+GWP_P443],eax
+		end match
+	@@:
+	end irp
+	mov	rdi,r13
+	cstring str_key_ingdef, 'ingress_default',0
+	lea	rsi,[str_key_ingdef]
+	call	node_option
+	test	rax,rax
+	jz	.ing_done
+	mov	rax,[rax+A_VAL]
+	cmp	word [rax],'on'
+	jne	.ing_done
+	mov	dword [g_plan_gw+GWP_INGDEF],1
+.ing_done:
 	; dir=: a whole path
 	mov	rdi,r13
 	lea	rsi,[str_key_dir]
@@ -192,7 +247,7 @@ compile_gateway:
 
 plan_bad_gateway:
 	call	log_begin
-	out_lit 'gateway takes kubernetes, dir=/PATH (where it writes; `include "DIR/*.conf"` takes it in), and may take class=NAME (okena when not said), api=HOST:PORT, token=/PATH, ca=PATH and name=HOST, as discover kubernetes does'
+	out_lit 'gateway takes kubernetes, dir=/PATH (where it writes; `include "DIR/*.conf"` takes it in), and may take class=NAME (okena when not said), ingress=CLASS with http=PORT and https=PORT (80, 443), api=HOST:PORT, token=/PATH, ca=PATH and name=HOST, as discover kubernetes does'
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process

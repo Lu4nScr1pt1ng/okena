@@ -128,7 +128,7 @@ gw_status:
 .gateways:
 	xor	ebx,ebx
 .gateway:
-	cmp	ebx,[g_gw_ng]
+	cmp	ebx,[g_gw_ng_real]		; (not the ones Ingresses made)
 	jae	.routes
 	mov	edx,1
 	call	gs_put
@@ -138,7 +138,7 @@ gw_status:
 .routes:
 	xor	ebx,ebx
 .route:
-	cmp	ebx,[g_gw_nr]
+	cmp	ebx,[g_gw_nr_real]
 	jae	.saved
 	call	gs_route_ours			; CF: none of its parents are ours
 	jc	@f

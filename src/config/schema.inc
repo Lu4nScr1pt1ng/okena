@@ -159,7 +159,7 @@ keysdef k_maint, 'file', T_ANY, 'retry', T_DURATION, 'allow', T_ANY, 'except', T
 keysdef k_metrics, 'token', T_ANY
 keysdef k_cdnloop, 'max', T_ANY
 keysdef k_bird, 'protocol', T_ANY, 'pool', T_ANY
-keysdef k_gateway, 'class', T_ANY, 'dir', T_ANY, 'api', T_ANY, 'token', T_ANY, 'ca', T_ANY, 'name', T_ANY
+keysdef k_gateway, 'class', T_ANY, 'dir', T_ANY, 'api', T_ANY, 'token', T_ANY, 'ca', T_ANY, 'name', T_ANY, 'ingress', T_ANY, 'http', T_UINT, 'https', T_UINT, 'ingress_default', e_onoff
 enumdef e_gateway, 'kubernetes'
 keysdef k_acme, 'ca', T_ANY, 'email', T_ANY, 'trust', T_ANY, 'challenge', T_ANY, 'dns', T_ANY, 'dns_token', T_ANY, 'dns_api', T_ANY, 'dns_wait', T_DURATION, 'dns_trust', T_ANY, 'dns_server', T_ANY, 'dns_key', T_ANY, 'fallback', T_ANY, 'fallback_trust', T_ANY, 'eab', T_ANY, 'fallback_eab', T_ANY, 'shared', T_ANY, 'staging', T_ANY
 keysdef k_vrrp, 'vrid', T_ANY, 'priority', T_ANY, 'address', T_ANY, 'advert', T_DURATION, 'preempt', T_ANY, 'track', T_ANY

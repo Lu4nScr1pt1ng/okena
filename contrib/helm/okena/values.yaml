@@ -1,0 +1,58 @@
+# okena as an Ingress controller (and, when the Gateway API's CRDs are in the
+# cluster, as the implementation of a GatewayClass).
+
+image:
+  repository: ghcr.io/lu4nscr1pt1ng/okena
+  tag: ""            # the chart's appVersion when empty
+  pullPolicy: IfNotPresent
+
+# Deployment (replicas below) or DaemonSet (one a node)
+kind: Deployment
+replicas: 2
+
+ingressClass:
+  name: okena
+  create: true
+  default: false     # also take Ingresses that name no class (the cluster's default)
+
+gatewayClass:
+  name: okena
+  create: false      # needs the Gateway API's CRDs
+
+# the ports okena listens on inside the pod (it runs as a user without
+# privileges: no ports below 1024), and the Service's
+ports:
+  http: 8080
+  https: 8443
+  metrics: 9464
+service:
+  type: LoadBalancer
+  http: 80
+  https: 443
+  externalTrafficPolicy: Local   # the client's address reaches okena
+  annotations: {}
+
+# okena's own settings, as its configuration language takes them, inside its
+# `okena { }` block (workers, profile, cache_memory...)
+okena: |
+  workers auto
+
+# more configuration after the generated part (pools, listeners of your own)
+extraConfig: ""
+
+# io_uring needs a seccomp profile that allows it; RuntimeDefault blocks it and
+# okena runs on its epoll engine (and says so). Localhost profile: the
+# docker/okena.seccomp.json of the repository, installed on the nodes.
+seccompProfile:
+  type: RuntimeDefault
+
+resources:
+  requests: {cpu: 100m, memory: 64Mi}
+  limits: {memory: 512Mi}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "9464"

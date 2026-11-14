@@ -795,12 +795,20 @@ gw_render:
 	cstring .gws, '/apis/gateway.networking.k8s.io/v1/gateways?resourceVersion=0',0
 	lea	rsi,[.gws]
 	mov	edx,1
+	cmp	dword [g_plan_gw+GWP_ING],0	; (Ingresses alone: no Gateway API needed)
+	je	@f
+	xor	edx,edx
+@@:
 	call	gw_list
 	jc	.out_cf
 	mov	r12,rax
 	cstring .hrs, '/apis/gateway.networking.k8s.io/v1/httproutes?resourceVersion=0',0
 	lea	rsi,[.hrs]
 	mov	edx,1
+	cmp	dword [g_plan_gw+GWP_ING],0
+	je	@f
+	xor	edx,edx
+@@:
 	call	gw_list
 	jc	.out_cf
 	mov	r14,rax
@@ -834,15 +842,23 @@ gw_render:
 	call	gw_list
 	jc	.out_cf
 	mov	[g_gw_rgl],rax
+	call	ing_lists			; Ingresses, as Gateways and HTTPRoutes
+	jc	.out_cf
 	mov	r13,[g_gl_cur]			; (the end, for the parser)
 	mov	[g_gw_lend],r13
+	test	r12,r12
+	jz	@f				; (no Gateway API in the cluster)
 	mov	rsi,r12
 	call	gw_listeners
 	jc	.unreadable
+@@:
 	mov	dword [g_gr_kind],0		; HTTPRoutes
 	mov	rsi,r14
+	test	rsi,rsi
+	jz	@f
 	call	gw_routes
 	jc	.unreadable
+@@:
 	mov	rsi,[g_gw_grpcl]
 	test	rsi,rsi
 	jz	@f
@@ -871,6 +887,25 @@ gw_render:
 	call	gw_routes
 	jc	.unreadable
 @@:
+	; the made-up ones last: the cluster's own are the ones with a status
+	mov	eax,[g_gw_ng]
+	mov	[g_gw_ng_real],eax
+	mov	eax,[g_gw_nr]
+	mov	[g_gw_nr_real],eax
+	mov	rsi,[g_ing_gws]
+	test	rsi,rsi
+	jz	.no_ingress
+	push	qword [g_gw_classok]		; (Ingresses have their class: theirs)
+	mov	dword [g_gw_classok],1
+	call	gw_listeners
+	pop	rax
+	mov	[g_gw_classok],eax
+	jc	.unreadable
+	mov	dword [g_gr_kind],0
+	mov	rsi,[g_ing_hrs]
+	call	gw_routes
+	jc	.unreadable
+.no_ingress:
 	mov	r15,[g_gw_base]
 	add	r15,GW_OUT
 	call	gw_emit

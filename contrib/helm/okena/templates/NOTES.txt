@@ -1,0 +1,7 @@
+okena is serving the Ingresses of class "{{ .Values.ingressClass.name }}"{{ if .Values.gatewayClass.create }} and the Gateways of class "{{ .Values.gatewayClass.name }}"{{ end }}.
+
+  kubectl -n {{ .Release.Namespace }} get service {{ include "okena.name" . }}
+  kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "okena.name" . }}
+
+What it made of them: /var/lib/okena/gateway/gateway.conf in the pod; its
+metrics on :{{ .Values.ports.metrics }}/metrics.

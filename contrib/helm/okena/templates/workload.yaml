@@ -1,0 +1,72 @@
+apiVersion: apps/v1
+kind: {{ .Values.kind }}
+metadata:
+  name: {{ include "okena.name" . }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "okena.labels" . | nindent 4 }}
+spec:
+  {{- if eq .Values.kind "Deployment" }}
+  replicas: {{ .Values.replicas }}
+  {{- end }}
+  selector:
+    matchLabels: {{- include "okena.selector" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "okena.selector" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "okena.name" . }}
+      terminationGracePeriodSeconds: 45
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: {{- toYaml .Values.seccompProfile | nindent 10 }}
+      containers:
+        - name: okena
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["-c", "/etc/okena/okena.conf"]
+          ports:
+            - {name: http, containerPort: {{ .Values.ports.http }}}
+            - {name: https, containerPort: {{ .Values.ports.https }}}
+            - {name: metrics, containerPort: {{ .Values.ports.metrics }}}
+          readinessProbe:
+            httpGet: {path: /ready, port: metrics}
+            periodSeconds: 2
+          livenessProbe:
+            httpGet: {path: /live, port: metrics}
+            periodSeconds: 10
+          lifecycle:
+            preStop:
+              # out of rotation first, then the connections finish (drain delay)
+              exec: {command: ["/okena", "drain", "-c", "/etc/okena/okena.conf"]}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - {name: config, mountPath: /etc/okena, readOnly: true}
+            - {name: gateway, mountPath: /var/lib/okena/gateway}
+            - {name: run, mountPath: /run/okena}
+      volumes:
+        - name: config
+          configMap: {name: {{ include "okena.name" . }}}
+        - name: gateway
+          emptyDir: {}
+        - name: run
+          emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}

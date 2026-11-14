@@ -1844,6 +1844,34 @@ back. Inside a pod nothing else is needed; elsewhere give `api=`, `token=`,
 GatewayClass name. A generated config that doesn't check is refused whole, and the running
 one stays.
 
+**Ingress.** `ingress=CLASS` serves the cluster's `Ingress` resources of that
+class too (`spec.ingressClassName`, or the older `kubernetes.io/ingress.class`
+annotation; `ingress_default=on` adds those that name no class), with or
+without the Gateway API installed:
+
+```nginx
+okena { gateway kubernetes dir=/var/lib/okena/gateway ingress=okena http=8080 https=8443 }
+include "/var/lib/okena/gateway/*.conf"
+```
+
+Rules' hosts and paths (`Prefix` and `ImplementationSpecific` match by path
+element, `Exact` the path itself), Services by port number or name (their
+EndpointSlices followed), `spec.tls` Secrets as HTTPS on `https=`, and the
+default backend for what no rule takes. Each Ingress goes through the same
+translation and checks as the Gateway API's resources (it is turned into a
+Gateway and HTTPRoutes of its own namespace), so what an Ingress's author
+writes cannot reach okena's configuration as anything but a value. The service
+account needs `list` on `ingresses` (networking.k8s.io).
+
+**Helm.** `contrib/helm/okena` installs okena as the cluster's Ingress controller
+(and GatewayClass, with `gatewayClass.create=true`): RBAC, the IngressClass, a
+Deployment or a DaemonSet running as a user without privileges, readiness on
+`/ready`, a drain before the pod stops, and a LoadBalancer Service.
+
+```sh
+helm install edge contrib/helm/okena --namespace ingress --create-namespace
+```
+
 ---
 
 ## Running okena

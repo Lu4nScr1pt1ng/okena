@@ -1,0 +1,42 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "okena.name" . }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "okena.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "okena.name" . }}
+  labels: {{- include "okena.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["networking.k8s.io"]
+    resources: [ingresses, ingressclasses]
+    verbs: [get, list]
+  - apiGroups: [""]
+    resources: [services, secrets]
+    verbs: [get]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: [endpointslices]
+    verbs: [get, list]
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources: [gatewayclasses, gateways, httproutes, grpcroutes, tlsroutes, tcproutes, udproutes, referencegrants]
+    verbs: [get, list]
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources: [gatewayclasses/status, gateways/status, httproutes/status, grpcroutes/status, tlsroutes/status, tcproutes/status, udproutes/status]
+    verbs: [patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "okena.name" . }}
+  labels: {{- include "okena.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "okena.name" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "okena.name" . }}
+    namespace: {{ .Release.Namespace }}

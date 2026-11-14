@@ -989,7 +989,11 @@ use it unchanged.
     tests/gateway/alogx.py), a side table only when an http listener logs.
     Left out: a chosen field list (the lines are JSON: consumers pick).
 11. Kubernetes `Ingress` (networking.k8s.io/v1) beside the Gateway API,
-    and a Helm chart.
+    and a Helm chart. **Done 2026-11-14** (src/core/ingress.inc,
+    tests/gateway/ingress.py; contrib/helm/okena, tests/config/helm.py runs
+    when helm is at build/helm/helm): Ingresses become made-up Gateways and
+    HTTPRoutes read by gwgen.inc's own code. Not here: Ingress status
+    (loadBalancer.ingress), nginx's annotations.
 12. Rate limits shared across a fleet; `RateLimit-*` response headers.
 13. Bandwidth limits per connection (`limit_rate`) on http and tcp.
 14. zstd compression on the fly.
