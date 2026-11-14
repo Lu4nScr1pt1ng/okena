@@ -83,6 +83,29 @@ QSK_UNI		:= 2				; a client's unidirectional stream: read, ignored
 QSK_UT		:= 3				; one whose type has not come yet
 QSK_ENC		:= 4				; its QPACK encoder stream
 QC_QST		:= QC_STREAMS
+assert QST_N = 128				; (QC_QSTM, QC_QREQ: two qwords each)
+
+; Which entries are in use, and which hold a request, as bits (QC_QSTM,
+; QC_QREQ), kept with every QST_KIND change: a lookup or a send looks at the
+; streams there are, not at the table's 128 entries (12 KiB a look, several
+; times a packet, was a quarter of a worker's own time under HTTP/3).
+; reg = an entry of r15's table; mask = QC_QSTM or QC_QREQ. Keeps all but flags.
+macro qst_bit op*, reg*, mask*
+	push	rax
+	push	rdx
+	mov	rax,reg
+	sub	rax,r15
+	sub	rax,QC_QST
+	shr	eax,5
+	imul	eax,eax,43691			; / 3: the entry's index (96 bytes each)
+	shr	eax,17
+	mov	edx,eax
+	shr	edx,6
+	and	eax,63
+	op	[r15+mask+rdx*8],rax
+	pop	rdx
+	pop	rax
+end macro
 QC_H3HB		:= QC_QST + QST_N * QST_SIZE	; a HEADERS frame split across packets
 ; request stream data that came ahead of what is missing, held (and so
 ; acknowledged) until the gap is filled
@@ -177,6 +200,11 @@ qc_established:
 	mov	qword [r15+QC_PMAX],65527
 	mov	dword [r15+QC_CTL_SENT],0
 	mov	dword [r15+QC_CTL_ACKED],0
+	xor	eax,eax
+	mov	[r15+QC_QSTM],rax
+	mov	[r15+QC_QSTM+8],rax
+	mov	[r15+QC_QREQ],rax
+	mov	[r15+QC_QREQ+8],rax
 	lea	rdi,[r15+QC_QST]		; no streams yet
 	mov	ecx,QST_N * QST_SIZE / 8
 	xor	eax,eax
@@ -302,6 +330,8 @@ qc_streams_close:
 	cmp	dword [r12+QST_KIND],QSK_REQ
 	jne	.skip
 	mov	dword [r12+QST_KIND],QSK_FREE
+	qst_bit	btr, r12, QC_QSTM
+	qst_bit	btr, r12, QC_QREQ
 	mov	edi,[r12+QST_SESS]
 	cmp	edi,NIL
 	je	.skip				; (opened, no request on it yet)
@@ -326,32 +356,75 @@ qc_streams_close:
 
 ; rax = stream id (r15 = connection): r8 = its entry, or 0
 qst_find:
-	lea	r8,[r15+QC_QST]
-	mov	ecx,QST_N
-.next:
-	cmp	dword [r8+QST_KIND],QSK_FREE
-	je	.skip
+	push	r9
+	push	r10
+	xor	r10d,r10d			; the qword
+.word:
+	mov	r9,[r15+QC_QSTM+r10*8]
+.bit:
+	tzcnt	rcx,r9
+	jc	.next_word
+	btr	r9,rcx
+	mov	r8,r10
+	shl	r8,6
+	add	r8,rcx
+	imul	r8,r8,QST_SIZE
+	lea	r8,[r15+QC_QST+r8]
 	cmp	[r8+QST_ID],rax
-	je	.found
-.skip:
-	add	r8,QST_SIZE
-	dec	ecx
-	jnz	.next
+	jne	.bit
+	pop	r10
+	pop	r9
+	ret
+.next_word:
+	inc	r10d
+	cmp	r10d,2
+	jb	.word
 	xor	r8d,r8d
-.found:
+	pop	r10
+	pop	r9
+	ret
+
+; ecx = an entry's index: ecx = the next request stream's after it, round
+; the table (one there must be: QC_QREQ not empty). Clobbers rax, rdx, r10, r11.
+qst_req_after:
+	inc	ecx
+	and	ecx,QST_N - 1
+	mov	edx,ecx
+	shr	edx,6				; its qword
+	and	ecx,63
+	mov	r10,[r15+QC_QREQ+rdx*8]
+	mov	r11,-1
+	shl	r11,cl
+	and	r10,r11				; from it on
+	tzcnt	rax,r10
+	jnc	.at
+	xor	edx,1				; the other qword, whole
+	tzcnt	rax,[r15+QC_QREQ+rdx*8]
+	jnc	.at
+	xor	edx,1				; this one's bits before it
+	tzcnt	rax,[r15+QC_QREQ+rdx*8]
+.at:
+	shl	edx,6
+	lea	ecx,[rdx+rax]
 	ret
 
 ; rax = stream id: r8 = a free entry for it (zeroed but the id), or 0
 qst_new:
 	push	rax
-	lea	r8,[r15+QC_QST]
-	mov	ecx,QST_N
-.next:
-	cmp	dword [r8+QST_KIND],QSK_FREE
-	je	.take
-	add	r8,QST_SIZE
-	dec	ecx
-	jnz	.next
+	mov	r8,[r15+QC_QSTM]
+	not	r8
+	tzcnt	rcx,r8
+	jnc	.slot
+	mov	r8,[r15+QC_QSTM+8]
+	not	r8
+	tzcnt	rcx,r8
+	jc	.none
+	add	ecx,64
+.slot:
+	imul	r8,rcx,QST_SIZE
+	lea	r8,[r15+QC_QST+r8]
+	jmp	.take
+.none:
 	pop	rax
 	xor	r8d,r8d
 	ret
@@ -624,6 +697,8 @@ qc_app_frame:
 	cmp	dword [r8+QST_KIND],QSK_REQ
 	jne	@f
 	mov	dword [r8+QST_KIND],QSK_FREE
+	qst_bit	btr, r8, QC_QSTM
+	qst_bit	btr, r8, QC_QREQ
 	mov	edi,[r8+QST_SESS]
 	cmp	edi,NIL
 	je	@f				; (opened, no request on it yet)
@@ -842,6 +917,8 @@ qc_stream_one:
 	test	r8,r8
 	jz	.rejected
 	mov	dword [r8+QST_KIND],QSK_REQ
+	qst_bit	bts, r8, QC_QSTM
+	qst_bit	bts, r8, QC_QREQ
 	mov	ecx,[g_tick]
 	mov	[r8+QST_OPENED],ecx
 	mov	dword [r8+QST_SESS],NIL
@@ -876,6 +953,7 @@ qc_stream_one:
 	test	r8,r8
 	jz	.ok				; (no room: its bytes are not needed)
 	mov	dword [r8+QST_KIND],QSK_UT
+	qst_bit	bts, r8, QC_QSTM
 	mov	qword [r8+QST_MSD],65536	; (initial_max_stream_data_uni)
 .have:
 	mov	r12,r8
@@ -1331,6 +1409,7 @@ hq_req_bytes:
 qst_refuse:
 	mov	rdx,[rdi+QST_ID]
 	mov	dword [rdi+QST_KIND],QSK_UNI
+	qst_bit	btr, rdi, QC_QREQ
 	mov	ecx,[r15+QC_RSTN]
 	cmp	ecx,8
 	jae	@f
@@ -3358,6 +3437,8 @@ h3s_closing:
 	call	h3s_conn
 	jc	.out
 	mov	dword [r8+QST_KIND],QSK_FREE
+	qst_bit	btr, r8, QC_QSTM
+	qst_bit	btr, r8, QC_QREQ
 	inc	qword [r15+QC_SDONE]
 	mov	rax,[r15+QC_MAXS_OURS]		; (MAX_STREAMS: when half are used: a
 	sub	rax,[r15+QC_SDONE]		; packet each answer otherwise)
@@ -3465,22 +3546,29 @@ qc_app_pending:
 .no_decoder:
 	cmp	dword [r15+QC_RSTN],0
 	jne	.yes
-	lea	r8,[r15+QC_QST]
-	mov	ecx,QST_N
-.next:
-	cmp	dword [r8+QST_KIND],QSK_REQ
-	jne	.skip
+	xor	ecx,ecx			; the request streams' bits, a qword at a time
+.word:
+	mov	rax,[r15+QC_QREQ+rcx*8]
+.bit:
+	tzcnt	rdx,rax
+	jc	.next_word
+	btr	rax,rdx
 	push	rcx
-	push	r8
+	push	rax
+	shl	ecx,6
+	add	ecx,edx
+	imul	r8,rcx,QST_SIZE
+	lea	r8,[r15+QC_QST+r8]
 	call	qst_sendable			; eax = bytes it may send, edx = FIN to send
-	pop	r8
-	pop	rcx
 	or	eax,edx
+	pop	rax
+	pop	rcx
 	jnz	.yes
-.skip:
-	add	r8,QST_SIZE
-	dec	ecx
-	jnz	.next
+	jmp	.bit
+.next_word:
+	inc	ecx
+	cmp	ecx,2
+	jb	.word
 .none:
 	xor	eax,eax
 	ret
@@ -3751,18 +3839,16 @@ qc_app_write:
 	mov	r12d,1
 .qd_done:
 	; one request stream's data, the next with something after the last
-	mov	r13d,QST_N
+	; (the request streams there are, each once, from the one after QC_RR)
+	popcnt	r13,[r15+QC_QREQ]
+	popcnt	rax,[r15+QC_QREQ+8]
+	add	r13d,eax
+	jz	.done
 	mov	ecx,[r15+QC_RR]
 .pick:
-	inc	ecx
-	cmp	ecx,QST_N
-	jb	@f
-	xor	ecx,ecx
-@@:
+	call	qst_req_after			; ecx = the next one's index
 	imul	eax,ecx,QST_SIZE
 	lea	r8,[r15+QC_QST+rax]
-	cmp	dword [r8+QST_KIND],QSK_REQ
-	jne	.pick_next
 	push	rcx
 	call	qst_sendable
 	pop	rcx

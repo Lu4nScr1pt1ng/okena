@@ -159,7 +159,11 @@ QC_ALT_MAX	:= 1032				; d: at most this answers it (3x, RFC 9000 8.2.1)
 QC_ALT_CNT	:= 1036				; d: answered in this second,
 QC_ALT_WIN	:= 1040				; q: which began then
 QC_HDR_TICK	:= 1048				; d: g_tick at the last look for late heads
-QC_FIELDS_END	:= 1088
+QC_QSTM		:= 1088				; 16: stream entries in use, a bit each (http3.inc)
+QC_QREQ		:= 1104				; 16: and those of requests
+QC_SPLOW	:= 1120				; 3 q: a level's lowest packet number maybe still
+						; out (qc_detect_lost looks from there)
+QC_FIELDS_END	:= 1152
 ; BBR (qc_bbr_acked), in CUBIC's fields where it can: a connection has one
 QB_BW		:= QC_WMAX			; q: bytes/s, the best sample of these rounds
 QB_BW2		:= QC_EPOCH			; q: and of the rounds before
@@ -1849,6 +1853,10 @@ qc_new:
 	mov	ecx,28
 	rep	movsb
 	mov	dword [rax+P_SLOT],-1
+	xor	eax,eax
+	mov	[r15+QC_SPLOW],rax
+	mov	[r15+QC_SPLOW+8],rax
+	mov	[r15+QC_SPLOW+16],rax
 	mov	rax,-1
 	mov	[r15+QC_PS+0*PS_SIZE+PS_LARGEST],rax
 	mov	[r15+QC_PS+1*PS_SIZE+PS_LARGEST],rax
@@ -5168,18 +5176,38 @@ qc_detect_lost:
 	sub	r14,rax				; sent before this: lost
 	xor	ebx,ebx				; the latest lost packet's send time
 	mov	qword [r15+QC_LOSS_AT],-1	; the earliest a packet still out passes it
+	; The packets that can be lost are the ones out (sent, ack-eliciting, not
+	; acknowledged) numbered below the largest acknowledged; a slot holds
+	; number & (SP_N - 1). From the lowest maybe still out (QC_SPLOW, moved
+	; past the ones that are not) to the largest: a handful, where all 128
+	; slots (8 KiB) were read for every ACK.
 	mov	eax,r12d
-	imul	eax,eax,SP_N * SP_SIZE
-	lea	r8,[r15+QC_SP+rax]
-	mov	ecx,SP_N
-.slot:
-	mov	eax,[r8+SP_FL]
-	and	eax,SPF_SENT or SPF_ACKEL or SPF_ACKED
-	cmp	eax,SPF_SENT or SPF_ACKEL
-	jne	.next
-	mov	rax,[r8+SP_PN]
-	cmp	rax,r13
-	jae	.next				; not before the largest
+	shl	eax,8				; PS_SIZE
+	mov	rdx,[r15+QC_PS+rax+PS_NEXT]	; the next to send
+	mov	rcx,[r15+QC_SPLOW+r12*8]
+	mov	rax,rdx
+	sub	rax,SP_N
+	jb	.low
+	cmp	rcx,rax
+	jae	.low
+	mov	rcx,rax				; (older ones' slots are reused)
+.low:
+	cmp	rcx,rdx
+	jae	.lowest
+	call	.slot_of
+	jnz	.lowest				; out: from here
+	inc	rcx
+	jmp	.low
+.lowest:
+	mov	[r15+QC_SPLOW+r12*8],rcx
+	dec	rcx
+.next:
+	inc	rcx
+	cmp	rcx,r13
+	jae	.slots_done			; not before the largest
+	call	.slot_of
+	jz	.next
+	mov	rax,rcx
 	lea	rdx,[rax+3]
 	cmp	rdx,r13
 	jbe	.lost				; three numbers older
@@ -5225,10 +5253,29 @@ qc_detect_lost:
 	cmp	rax,[r15+QC_LOSS_AT]
 	jae	.next
 	mov	[r15+QC_LOSS_AT],rax
-.next:
-	add	r8,SP_SIZE
-	dec	ecx
-	jnz	.slot
+	jmp	.next
+; rcx = a packet number: r8 = its slot; ZF unless it is out there (sent,
+; ack-eliciting, not acknowledged). Keeps all but rax, r8.
+.slot_of:
+	mov	eax,r12d
+	imul	eax,eax,SP_N * SP_SIZE
+	lea	r8,[r15+QC_SP+rax]
+	mov	eax,ecx
+	and	eax,SP_N - 1
+	shl	eax,6				; SP_SIZE
+	add	r8,rax
+	cmp	[r8+SP_PN],rcx
+	jne	.not_out
+	mov	eax,[r8+SP_FL]
+	and	eax,SPF_SENT or SPF_ACKEL or SPF_ACKED
+	cmp	eax,SPF_SENT or SPF_ACKEL
+	jne	.not_out
+	or	eax,1				; (NZ)
+	ret
+.not_out:
+	xor	eax,eax				; (ZF)
+	ret
+.slots_done:
 	cmp	qword [r15+QC_LOSS_AT],-1
 	jne	@f
 	mov	qword [r15+QC_LOSS_AT],0
