@@ -541,6 +541,11 @@ bulk_pump_#sfx:
 	jle	.no_data
 	mov	ecx,[r13+S_LST]
 	add	[stat+rcx*8],rax
+	if dir
+		l4log_add rcx, rax, L4L_OUT
+	else
+		l4log_add rcx, rax, L4L_IN
+	end if
 	mov	[r13+lenf],eax
 	mov	dword [r13+offf],0
 	push	rax

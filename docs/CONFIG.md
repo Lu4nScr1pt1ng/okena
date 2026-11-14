@@ -1618,7 +1618,7 @@ second.
 
 ### Access logs
 
-On an `http` listener:
+On an `http` listener (and on `tcp` and `udp` ones, below):
 
 ```nginx
 access_log /var/log/okena/access.log         # or stdout, stderr, off (default)
@@ -1635,6 +1635,12 @@ One JSON line per request: `time`, `listener`, `client`, `peer`, `method`,
 to a logger process and drop them (counted in
 `okena_access_log_dropped_total`) rather than slow down a request.
 `SIGUSR1` or a reload reopens files, which is all logrotate needs.
+
+On a `tcp` or `udp` listener, `access_log` (the same destinations) writes
+one line per connection when it closes, or per flow when it ends: `time`,
+`listener`, `proto`, `client`, `client_port`, `upstream` (`null` when it
+never reached one: refused, or no server up), `bytes_in`, `bytes_out`,
+`duration_ms`.
 
 ### Tracing
 

@@ -144,6 +144,8 @@ macro plan_regions action
 	action g_jwk, JK_SIZE * MAX_JWK, g_plan_jwk, JK_SIZE
 	action g_plan_jwk, 4
 	action g_jsrc, JS_SIZE * MAX_JWKS, g_plan_jsrc, JS_SIZE
+	action g_plan_l4log, 4
+	action g_ls_l4log, MAX_LISTENERS
 	action g_plan_upa, 4
 	action g_upa_sys, 4
 	action g_upa_sysn, 4

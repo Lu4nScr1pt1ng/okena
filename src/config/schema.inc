@@ -349,7 +349,7 @@ dirdef DIR_CLIENT_CA, 'client_ca', M_TLS,   0,           F_UNIQUE, 1, 2, T_ANY, 
 dirdef DIR_VERSIONS, 'versions', M_TLS,     0,           F_UNIQUE, 1, 2, e_tlsver, e_tlsver, 0
 dirdef DIR_ALPN, 'alpn',        M_TLS,     0,           F_UNIQUE, 1, 2, e_alpn, e_alpn, 0
 dirdef DIR_KTLS, 'ktls',        M_TLS,     0,           F_UNIQUE, 1, 1, e_onoff, T_NONE, 0
-dirdef DIR_ACCESS_LOG, 'access_log', M_HTTP,   0,           F_UNIQUE, 1, 1, T_LOGDEST, T_NONE, k_alog
+dirdef DIR_ACCESS_LOG, 'access_log', M_HTTP or M_TCP or M_UDP,   0,           F_UNIQUE, 1, 1, T_LOGDEST, T_NONE, k_alog
 dirdef DIR_TRACING, 'tracing',   M_HTTP,   0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, k_tracing
 dirdef DIR_HEADER, 'header',      M_TIMEOUT, 0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
 dirdef DIR_RESPONSE, 'response',  M_TIMEOUT, 0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0

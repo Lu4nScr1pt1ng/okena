@@ -183,6 +183,7 @@ LSF_NO13	:= 8192		; `tls { versions 1.2 }`: TLS 1.3 is not taken
 LSF_H1FIRST	:= 16384	; `tls { alpn http/1.1 h2 }`: http/1.1 when offered
 LSF_NOH1	:= 32768	; `tls { alpn h2 }`: a client asking http/1.1 only is refused
 LSF_PP_IN	:= 65536	; `proxy_protocol accept`: a PROXY header comes first (l4/ppin.inc)
+LSF_L4LOG	:= 131072	; tcp, udp: `access_log`: a line per connection or flow (l4log.inc)
 
 ; Pool
 PL_FIRST	:= 0		; d: first server
@@ -4544,6 +4545,24 @@ compile_listener:
 	jz	@f
 	or	dword [g_cmp_flags],LSF_PEER	; (its address, kept)
 @@:
+	lea	rax,[dir_table + D_SIZE*DIR_HTTP]
+	cmp	[r12+N_DEF],rax
+	je	.l4log_done			; (http logs exchanges: below)
+	mov	dword [g_cmp_alog],0
+	mov	rdi,r12
+	mov	ecx,DIR_ACCESS_LOG
+	call	find_child
+	test	rax,rax
+	jz	.l4log_done
+	mov	rdi,rax
+	call	alog_dest_node
+	call	alog_dest_id
+	mov	[g_cmp_alog],eax
+	test	eax,eax
+	jz	.l4log_done
+	or	dword [g_cmp_flags],LSF_L4LOG or LSF_PEER
+	mov	dword [g_plan_l4log],1
+.l4log_done:
 	mov	rdi,r12
 	mov	esi,1
 	call	pp_directive			; `proxy_protocol accept [FROM...]`
@@ -4860,6 +4879,11 @@ compile_listener:
 	mov	[rcx+LS_PCOUNT],eax
 	mov	eax,[g_cmp_lacl]
 	mov	[rcx+LS_ACL],eax
+	mov	eax,[g_plan_listeners]		; (this one's index + 1)
+	test	dword [g_cmp_flags],LSF_L4LOG
+	jz	@f
+	mov	byte [g_ls_l4log+rax-1],1
+@@:
 	push	rcx
 	lea	rdi,[rcx+LS_PA4]
 	lea	rsi,[g_cmp_pa4]

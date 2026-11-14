@@ -947,7 +947,9 @@ use it unchanged.
 4. `allow`/`deny` and `access_log` on `tcp` and `udp` listeners (one
    line per connection or flow: bytes both ways, duration, upstream). allow/deny: **done 2026-11-14** (tests/l4/acl.py): checked in
    peer_admit (after a PROXY header) and once per UDP flow; refusals by
-   reason in okena_listener_refused_total (denied, proxy_protocol).
+   reason in okena_listener_refused_total (denied, proxy_protocol). Access logs: **done 2026-11-14** (src/l4/l4log.inc, tests/l4/alog.py):
+   a side table of clock and counts only when a listener logs, one byte
+   compared per relay read otherwise.
 5. Sub-second timeouts everywhere (`timeout try=200ms total=1500ms`).
 6. JWT authorization: `require CLAIM=VALUE[,VALUE]` (scope lists,
    arrays, roles); RS384, RS512, ES384, PS384, PS512.

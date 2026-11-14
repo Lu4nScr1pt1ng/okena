@@ -66,6 +66,21 @@ SF_PREFIX	:= 2048		; tls passthrough: the ClientHello read goes upstream first
 
 ; Jump to target when session ebx belongs to an http listener.
 ; Clobbers rax.
+; tcp access_log (l4log.inc): bytes of session ebx, when its listener
+; logs; one byte compared otherwise. lst = the listener (a register).
+macro l4log_add lst, bytes, field
+	local skip
+	cmp	byte [g_ls_l4log+lst],0
+	je	skip
+	push	rdx
+	mov	edx,ebx
+	shl	rdx,L4L_SHIFT
+	add	rdx,[g_l4l_base]
+	add	[rdx+field],bytes
+	pop	rdx
+skip:
+end macro
+
 macro if_http target
 	call	session_ptr
 	mov	eax,[rax+S_LST]
@@ -394,6 +409,9 @@ sessions_init:
 	imul	rax,rdx
 	mov	[g_rid_next],rax
 	call	peer_worker_init
+	test	eax,eax
+	js	.done
+	call	l4log_worker_init
 	test	eax,eax
 	js	.done
 	call	http_worker_init
@@ -1292,6 +1310,7 @@ on_accept_a:
 	mov	[r15+S_POOL],ecx
 	mov	edi,ebx
 	call	idle_append
+	call	l4log_open			; (tcp access_log: its clock and counts)
 	call	peer_ptr
 	mov	rdi,rax
 	lea	rsi,[g_acc_addr]
@@ -3080,6 +3099,7 @@ on_s_recv_c:
 	jle	.end_or_error
 	mov	eax,[r13+S_LST]
 	add	[g_st_l_in+rax*8],r14
+	l4log_add rax, r14, L4L_IN
 	mov	eax,r15d
 	shr	eax,IORING_CQE_BUFFER_SHIFT
 	mov	[r13+S_CU_BID],eax
@@ -3161,6 +3181,7 @@ on_s_recv_u:
 	jle	.end_or_error
 	mov	eax,[r13+S_LST]
 	add	[g_st_l_out+rax*8],r14
+	l4log_add rax, r14, L4L_OUT
 	cmp	qword [g_cnt+rbx*8],0
 	je	@f
 	sub	[g_cnt+rbx*8],r14		; an HTTP body: less of it to come, and
@@ -3391,6 +3412,7 @@ session_close:
 	cmp	dword [r12+S_STATE],ST_FREE
 	je	.done
 	mov	dword [r12+S_STATE],ST_CLOSING
+	call	l4log_session			; (tcp access_log: its line)
 	call	cache_gone
 	mov	edi,ebx
 	call	idle_remove

@@ -483,6 +483,7 @@ ep_accept:
 	mov	[rax+S_POOL],ecx
 	mov	edi,ebx
 	call	idle_append
+	call	l4log_open			; (tcp access_log: its clock and counts)
 	mov	edi,r14d
 	mov	esi,EPOLLIN or EPOLLOUT or EPOLLRDHUP or EPOLLET
 	mov	edx,EK_CLIENT
@@ -1184,6 +1185,18 @@ ep_pump:
 	lea	rdx,[g_st_l_out+rcx*8]
 @@:
 	add	[rdx],rax
+	cmp	byte [g_ls_l4log+rcx],0
+	je	.l4_counted
+	mov	rdx,rbx				; (tcp access_log: this session's)
+	shl	rdx,L4L_SHIFT
+	add	rdx,[g_l4l_base]
+	add	rdx,L4L_IN
+	cmp	dword [rsp],EK_CLIENT
+	je	@f
+	add	rdx,L4L_OUT - L4L_IN
+@@:
+	add	[rdx],rax
+.l4_counted:
 	mov	[r12+r15+4],eax			; LEN
 	mov	dword [r12+r15+8],0		; OFF
 	mov	edi,ebx
@@ -1375,6 +1388,7 @@ ep_close:
 	cmp	eax,ST_CLOSING
 	je	.done
 	mov	dword [r12+S_STATE],ST_CLOSING
+	call	l4log_session			; (tcp access_log: its line)
 	call	hep_counted_release		; a body's pipe (counted.inc)
 	call	cache_gone
 	mov	edi,ebx

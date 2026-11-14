@@ -85,7 +85,10 @@ FL_HASH		:= 108			; d
 FL_CTLLEN	:= 112			; d: what the answer says of the source address
 FL_WAITS	:= 116			; d: counted in g_active
 FL_CTL		:= 120			; 40
-FL_SIZE		:= 160
+FL_T0		:= 160			; q: TSC it began (access_log)
+FL_BIN		:= 168			; q: bytes from the client
+FL_BOUT		:= 176			; q: and to it
+FL_SIZE		:= 192
 assert FL_CTL + 40 <= FL_SIZE
 
 bss
@@ -596,6 +599,7 @@ udp_in:
 	imul	rax,rcx,MM_SIZE
 	mov	edx,[g_ud_rm+rax+MM_LEN]
 	add	[g_st_l_in+r13*8],rdx
+	add	[rdi+FL_BIN],rdx
 	inc	qword [g_st_l_dgin+r13*8]
 	cmp	dword [g_engine],ENGINE_EPOLL
 	jne	udp_send_ring
@@ -822,6 +826,7 @@ on_ud_recv:
 	mov	r14,[rsp+16]			; the length
 	mov	r8d,[r12+FL_LST]
 	add	[g_st_l_out+r8*8],r14
+	add	[r12+FL_BOUT],r14
 	inc	qword [g_st_l_dgout+r8*8]
 	mov	ecx,[g_ud_tn]
 	inc	dword [g_ud_tn]
@@ -975,6 +980,13 @@ udp_new:
 	mov	[r15+FL_SERVER],ebp
 	mov	[r15+FL_LFD],r12d
 	mov	[r15+FL_LST],r13d
+	rdtsc					; (access_log: when, and how much)
+	shl	rdx,32
+	or	rax,rdx
+	mov	[r15+FL_T0],rax
+	xor	eax,eax
+	mov	[r15+FL_BIN],rax
+	mov	[r15+FL_BOUT],rax
 	mov	eax,[g_tick]
 	mov	[r15+FL_LAST],eax
 	mov	[r15+FL_QUEUED],eax
@@ -1285,6 +1297,7 @@ udp_flow_read:
 	imul	rax,rdx,MM_SIZE
 	mov	r9d,[g_ud_rm+rax+MM_LEN]
 	add	[g_st_l_out+r8*8],r9
+	add	[r12+FL_BOUT],r9
 	inc	qword [g_st_l_dgout+r8*8]
 	lea	r10,[r12+FL_SA]
 	mov	[g_ud_tm+rax+MM_NAME],r10
@@ -1326,6 +1339,7 @@ udp_flow_read:
 udp_close:
 	push	rbx
 	mov	rbx,rdi
+	call	l4log_flow			; (udp access_log: its line)
 	; out of its chain
 	mov	eax,[rbx+FL_HASH]
 	mov	rcx,[g_ud_heads]
