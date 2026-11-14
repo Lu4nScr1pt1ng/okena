@@ -918,3 +918,54 @@ or hanging addon never affects routes that do not use it. Measured
 +3.1 us at 5,000/s and +1.0 us at 20,000/s, the call's round trip p99 at
 most 2 us; tests/gateway/addon.py has a hanging and a crashing addon beside
 routes that never wait for them.
+
+## Phase 14 — Essentials
+
+What proxies of this kind are commonly expected to do and okena did not
+(an audit on 2026-11-14). Each item ships with tests on both engines and,
+where it touches the request path, a benchmark showing routes that do not
+use it unchanged.
+
+1. PROXY protocol v1/v2 accepted on `tcp` and `http` listeners
+   (`proxy_protocol accept [FROM...]`); the client becomes the PROXY
+   header's source for logs, limits, `allow`/`deny`, `per_source` and
+   `X-Forwarded-For`. **Done 2026-11-14** (src/l4/ppin.inc,
+   tests/peer/accept.py): a peek and an exact take right after accept (two
+   system calls, no ring wait, TCP_DEFER_ACCEPT on tcp listeners where every
+   peer sends one), the ring or epoll only for a header in pieces. Left:
+   TLVs exposed (authority, unique ID, AWS VPC endpoint) to routes and logs.
+2. The `Host` (and `:authority`) sent to a pool: `host NAME` in a pool,
+   `host_rewrite` per route (the pool's `sni` by default when written).
+3. Upstream TLS: `trust` takes a bundle (every anchor), `trust system`
+   for the system's roots, `verify off` for a private backend; TLS
+   origination from `tcp` listeners.
+4. `allow`/`deny` and `access_log` on `tcp` and `udp` listeners (one
+   line per connection or flow: bytes both ways, duration, upstream).
+5. Sub-second timeouts everywhere (`timeout try=200ms total=1500ms`).
+6. JWT authorization: `require CLAIM=VALUE[,VALUE]` (scope lists,
+   arrays, roles); RS384, RS512, ES384, PS384, PS512.
+7. Health checks: `http` with `body=` and headers; `tcp send=/expect=`
+   (Redis `role:master`, a PostgreSQL primary, MySQL); `udp` (a DNS
+   query); an agent check.
+8. `limits { body_size }` per route and host.
+9. `Location`, `Content-Location` and `Set-Cookie` (domain, path)
+   rewritten back from the backend (`response rewrite location`).
+10. Observability: metrics per route/host and per server (latency,
+    status classes), counters of 401/403/429 by cause; access log fields
+    (user agent, referer, TLS version, upstream time, bytes in), a
+    chosen field list, per-route off and sampling.
+11. Kubernetes `Ingress` (networking.k8s.io/v1) beside the Gateway API,
+    and a Helm chart.
+12. Rate limits shared across a fleet; `RateLimit-*` response headers.
+13. Bandwidth limits per connection (`limit_rate`) on http and tcp.
+14. zstd compression on the fly.
+15. Admin API to add and change routes at runtime.
+16. Environment variables in the configuration (`${env:NAME}`).
+17. Built-in OIDC login (or the docs say it is an addon); gRPC-JSON
+    transcoding as an addon; htpasswd bcrypt files accepted (verified off
+    the worker).
+18. Chunked request bodies to FastCGI.
+19. GeoIP ASN (`client.asn`).
+20. Docs: EDGE_CASES (PROXY accept), ARCHITECTURE (OIDC, per-route size
+    limits, client.asn, zstd), CONFIG (`match` blocks: 32 or 1024) made
+    true.
