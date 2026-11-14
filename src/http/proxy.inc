@@ -816,12 +816,9 @@ http_request:
 	xor	eax,eax
 	mov	ecx,CK_SIZE
 	rep	stosb
-	; chunked: H_REMAIN is what the body may still bring (body_size)
-	call	http_body_max
-	test	rax,rax
-	jnz	@f
+	; chunked: H_REMAIN is what the body may still bring (body_size, set
+	; once the route is known)
 	mov	rax,0x7FFFFFFFFFFFFFFF
-@@:
 	mov	[r15+H_REMAIN],rax
 	jmp	.route
 .length:
@@ -831,14 +828,7 @@ http_request:
 	test	rax,rax
 	jz	.route
 	mov	dword [r15+H_BODY],BK_LENGTH
-	mov	[r15+H_REMAIN],rax
-	call	http_body_max
-	test	rax,rax
-	jz	.route
-	cmp	[r15+H_REMAIN],rax
-	jbe	.route
-	mov	edi,413				; more than the listener takes: said before
-	jmp	http_error			; a byte goes on (Expect: 100-continue too)
+	mov	[r15+H_REMAIN],rax		; (body_size: once the route is known)
 .route:
 	cmp	dword [r15+H_BODY],BK_NONE
 	jne	@f
@@ -925,7 +915,13 @@ http_request:
 	mov	rcx,r9
 	jc	.shed
 .no_action:
+	xor	eax,eax				; (the listener's body_size)
+	call	http_body_limit
+	jc	.too_large
 	jmp	.chosen_none
+.too_large:
+	mov	edi,413				; more than it takes: said before a byte
+	jmp	http_error			; goes on (Expect: 100-continue too)
 .maintenance:
 	mov	edi,503
 	jmp	http_error
@@ -939,6 +935,9 @@ http_request:
 .has_action:
 	dec	edx
 	imul	rdx,rdx,RA_SIZE
+	mov	eax,[g_acts+rdx+RA_BODYMAX]	; body_size: the route's, its host's,
+	call	http_body_limit			; or the listener's
+	jc	.too_large
 	mov	eax,[g_acts+rdx+RA_ACL]		; who may ask at all
 	test	eax,eax
 	jz	.no_acl
@@ -5845,6 +5844,46 @@ http_linger_read:
 	lea	rdi,[rdi+HB_IN]
 	mov	esi,H_IN_CAP
 	jmp	h_recv
+
+; ebx = session, r15 = record, eax = the route's RA_BODYMAX (0: the
+; listener's, -1: none): a body with a length past it is CF (413 before a byte
+; of it is read), a chunked one may bring that much and no more. Keeps all
+; but rax.
+http_body_limit:
+	test	eax,eax
+	jnz	@f
+	call	http_body_max			; (rax, 0 = no limit)
+	test	eax,eax
+	jz	.none
+	jmp	.max
+@@:
+	cmp	eax,-1
+	je	.none
+	mov	eax,eax
+.max:
+	cmp	dword [r15+H_BODY],BK_CHUNKED
+	je	.chunked
+	cmp	dword [r15+H_BODY],BK_LENGTH
+	jne	.fits
+	cmp	[r15+H_REMAIN],rax
+	ja	.over
+.fits:
+	clc
+	ret
+.chunked:
+	mov	[r15+H_REMAIN],rax
+	clc
+	ret
+.none:
+	cmp	dword [r15+H_BODY],BK_CHUNKED
+	jne	.fits
+	mov	rax,0x7FFFFFFFFFFFFFFF
+	mov	[r15+H_REMAIN],rax
+	clc
+	ret
+.over:
+	stc
+	ret
 
 ; ebx = session: its listener's body_size in rax, 0 = no limit. Keeps the others
 ; but rax.

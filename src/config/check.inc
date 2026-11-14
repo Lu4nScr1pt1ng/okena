@@ -2039,6 +2039,26 @@ check_http:
 	pop	rbx
 	ret
 
+; rdi = a route or a host block: its `body_size`, a size or off.
+check_body_size:
+	mov	ecx,DIR_RBODY
+	call	find_child
+	test	rax,rax
+	jz	.out
+	mov	rdi,[rax+N_ARGS]
+	cmp	dword [rdi+A_VLEN],3
+	jne	.size
+	mov	rax,[rdi+A_VAL]
+	cmp	word [rax],'of'
+	jne	.size
+	cmp	byte [rax+2],'f'
+	je	.out
+.size:
+	mov	esi,T_SIZE
+	jmp	check_value
+.out:
+	ret
+
 ; rdi = listener or host block: check the routes directly in it.
 ; eax = how many.
 check_route_set:
@@ -2046,6 +2066,7 @@ check_route_set:
 	push	r12
 	push	r13
 	mov	r12,rdi
+	call	check_body_size			; (a host block's)
 	xor	r13d,r13d
 	mov	rbx,[r12+N_CHILD]
 .route:
@@ -2138,6 +2159,8 @@ check_route_set:
 @@:
 	mov	rdi,rbx
 	call	check_header_ops
+	mov	rdi,rbx
+	call	check_body_size
 	mov	rdi,r12
 	mov	rsi,rbx
 	call	check_route_unique

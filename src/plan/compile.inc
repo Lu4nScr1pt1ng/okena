@@ -142,8 +142,9 @@ RA_RBLEN	:= 200		; d
 RA_RTLEN	:= 204		; d: `type=`'s length, 0 text/plain
 RA_RTYPE	:= 208		; q
 RA_TRYC		:= 216		; d: `timeout try=`: its class (g_try_ms) + 1, 0 = the listener's response
-RA_TOTAL	:= 220		; d: `timeout total=`: seconds after which no retry starts, 0 none
-RA_SIZE		:= 224
+RA_TOTAL	:= 220		; d: `timeout total=`: ms after which no retry starts, 0 none
+RA_BODYMAX	:= 224		; d: `body_size` of the route or its host: bytes; 0 the listener's; -1 no limit
+RA_SIZE		:= 232
 MAX_TRYC	:= 32		; distinct try= values
 RESPOND_BODY_MAX := 1 shl 20	; `respond CODE BODY`
 RESPOND_INLINE	:= 4096		; up to this, in the head's write
@@ -1582,6 +1583,9 @@ compile_route_action:
 	lea	rcx,[dir_table + D_SIZE*DIR_RADDON]
 	cmp	rax,rcx
 	je	@f
+	lea	rcx,[dir_table + D_SIZE*DIR_RBODY]
+	cmp	rax,rcx
+	je	@f
 	mov	rbx,[rbx+N_NEXT]
 	jmp	@b
 .listener_compress:
@@ -1609,6 +1613,11 @@ compile_route_action:
 	call	find_child
 	test	rax,rax
 	jnz	@f
+	mov	rdi,rbx				; (a host's body_size)
+	mov	ecx,DIR_RBODY
+	call	find_child
+	test	rax,rax
+	jnz	@f
 	mov	rbx,[rbx+N_PARENT]
 	jmp	.up
 @@:
@@ -1618,6 +1627,45 @@ compile_route_action:
 	push	rcx
 	imul	r13,rcx,RA_SIZE
 	lea	r13,[g_acts+r13]
+	; body_size: the route's, else its host block's (else, at run time, the listener's)
+	mov	rdi,r12
+	mov	ecx,DIR_RBODY
+	call	find_child
+	test	rax,rax
+	jnz	.rbody
+	mov	rdi,[r12+N_PARENT]
+	test	rdi,rdi
+	jz	.rbody_done
+	lea	rax,[dir_table + D_SIZE*DIR_HOST]
+	cmp	[rdi+N_DEF],rax
+	jne	.rbody_done
+	mov	ecx,DIR_RBODY
+	call	find_child
+	test	rax,rax
+	jz	.rbody_done
+.rbody:
+	mov	rax,[rax+N_ARGS]
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	mov	dword [r13+RA_BODYMAX],-1	; off: no limit here
+	cmp	esi,3
+	jne	@f
+	cmp	word [rdi],'of'
+	jne	@f
+	cmp	byte [rdi+2],'f'
+	je	.rbody_done
+@@:
+	call	parse_size
+	jc	.rbody_done			; (checked already)
+	mov	ecx,-2				; (up to 4 GiB; -1 says no limit)
+	cmp	rax,rcx
+	cmova	rax,rcx
+	test	eax,eax
+	jnz	@f
+	inc	eax				; (0 B: 1 byte, not "the listener's")
+@@:
+	mov	[r13+RA_BODYMAX],eax
+.rbody_done:
 	mov	rdi,r12
 	mov	ecx,DIR_RESPOND
 	call	find_child

@@ -273,7 +273,10 @@ never early; one with a fraction wakes the worker at its millisecond. On a
 `tcp` listener, `header` bounds its TLS handshake and its PROXY header.
 
 `limits { body_size SIZE }` caps request bodies (no cap by default; larger
-values are cut to 4 GiB): a `Content-Length` over it is a 413 before anything reaches a
+values are cut to 4 GiB). A route or a host block can say its own with
+`body_size SIZE` (or `body_size off`), the route's over the host's over the
+listener's, so uploads get room without the rest of the API getting it:
+`route /upload/* { body_size 2GiB; to pool files }`. A `Content-Length` over it is a 413 before anything reaches a
 backend, and a chunked body gets the 413 once it grows past it. A request
 head is at most 16 KiB (431 past that, 414 when the request line alone is too
 long).
@@ -2055,7 +2058,7 @@ it leaves the pool just as fast.
 | paths and methods per route | 256 |
 | `match` blocks per route | 1024 |
 | request head | 16 KiB |
-| request body | unlimited by default, `limits { body_size }` up to 4 GiB |
+| request body | unlimited by default, `limits { body_size }` up to 4 GiB; per route or host with `body_size` |
 | HTTP/2 streams per connection | 100 |
 | `split` pools | 2 to 256 per split (65536 in all), shares to 0.01% |
 | `retry` | 0 to 5 |

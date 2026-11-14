@@ -969,7 +969,9 @@ use it unchanged.
    answer (an HTTP body, a TCP stream, a datagram), `send=` for tcp and udp,
    matches across reads with a carry of 255 bytes a server; config strings
    gained \r and \xHH.
-8. `limits { body_size }` per route and host.
+8. `limits { body_size }` per route and host. **Done 2026-11-14** (tests/gateway/bodysize.py):
+   `body_size SIZE|off` on a route or host block, judged once the route is
+   known and still before a byte of the body (100 Continue included).
 9. `Location`, `Content-Location` and `Set-Cookie` (domain, path)
    rewritten back from the backend (`response rewrite location`).
 10. Observability: metrics per route/host and per server (latency,

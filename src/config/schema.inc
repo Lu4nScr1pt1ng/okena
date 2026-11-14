@@ -306,6 +306,7 @@ dirdef DIR_AUDIENCE, 'audience', M_AUTH,   0,           F_UNIQUE, 1, 1, T_ANY, T
 dirdef DIR_LEEWAY, 'leeway',    M_AUTH,    0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
 dirdef DIR_JREQ, 'require',   M_AUTH,    0,           0, 2, 64, T_ANY, T_ANY, 0
 dirdef DIR_CLAIMS, 'claims',    M_AUTH,    0,           F_UNIQUE, 3, 64, T_ANY, T_ANY, 0
+dirdef DIR_RBODY, 'body_size', M_HOST or M_ROUTE, 0, F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
 dirdef DIR_COMPRESS, 'compress', M_HTTP or M_HOST or M_ROUTE, 0, F_UNIQUE, 1, 2, T_ANY, T_ANY, k_compress
 dirdef DIR_HEADERS, 'headers',  M_HTTP or M_HOST or M_ROUTE, 0, F_UNIQUE, 0, 0, T_NONE, T_NONE, k_headers
 dirdef DIR_EARLY_HINTS, 'early_hints', M_ROUTE, 0,    F_UNIQUE, 1, 32, T_ANY, T_ANY, 0
