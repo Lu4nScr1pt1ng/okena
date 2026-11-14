@@ -1065,6 +1065,7 @@ limit 100/s burst=200 key=client.ip
 limit 10000/m key=header:x-api-key
 limit 10000/d burst=10000 key=auth.user      # up to 10000 a day, refilled gradually
 limit 3000/s key=client.ip instances=4       # a quarter each, for a fleet of 4
+limit 3000/s key=client.ip fleet=on          # 3000/s for the fleet, told between its instances
 ```
 
 A refused request gets 429 with `Retry-After` on a connection that stays
@@ -1080,6 +1081,28 @@ a `10000/d` limit allows one request every 8.6 seconds. A route may have several
 pass. The table holds 1M keys by default (`okena { rate_limit_keys N }`, up
 to 256M, 64 bytes each, memory used as keys come) and survives reloads; it
 is sized at start.
+
+**A fleet's limits.** `instances=N` splits a limit evenly, which is exact only
+when the balancer in front spreads each client evenly too. With `fleet=on`,
+the instances tell each other what their clients took, so one key's limit
+holds across the fleet whichever instance its requests reach:
+
+```nginx
+okena {
+    fleet_limits bind=10.0.0.1:9465 peers=10.0.0.2:9465,10.0.0.3:9465 key=/etc/okena/fleet.key interval=50ms
+}
+route /api/* { limit 100/s key=jwt.sub fleet=on; to pool api }
+```
+
+Each instance keeps its own buckets and answers without waiting on the
+network; a process of its own, okena-fleet, sends what was taken every
+`interval` in UDP datagrams sealed with HMAC-SHA256 under the first line of
+`key=` (16 to 64 bytes, the same on every instance; datagrams that are not
+sealed with it, are older than 30 s or were seen before are dropped), and takes
+from its own buckets what the others report. A key may get, over the fleet,
+one `interval` of the others' share past its limit before they hear of it.
+The instances need the same `limit` lines on the same routes and hosts (a limit
+is known by them; the listener's addresses may differ).
 
 ### CORS
 

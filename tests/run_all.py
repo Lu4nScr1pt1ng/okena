@@ -194,6 +194,8 @@ SUITES = [
     ("limit epoll", ["tests/gateway/limit.py", "epoll"]),
     ("ratelimit headers io_uring", ["tests/gateway/ratehdr.py", "io_uring"]),
     ("ratelimit headers epoll", ["tests/gateway/ratehdr.py", "epoll"]),
+    ("fleet limits io_uring", ["tests/gateway/fleetlim.py", "io_uring"]),
+    ("fleet limits epoll", ["tests/gateway/fleetlim.py", "epoll"]),
     ("cors io_uring", ["tests/gateway/cors.py", "io_uring"]),
     ("cors epoll", ["tests/gateway/cors.py", "epoll"]),
     ("split io_uring", ["tests/gateway/split.py", "io_uring"]),

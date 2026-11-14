@@ -28,7 +28,9 @@ LM_KIND		:= 28				; d: LK_*
 LM_ID		:= 32				; d: its index, and its bucket past the table
 LM_CAP		:= 36				; d: a batch, at most
 LM_HDR		:= 40				; d: `headers=on`: RateLimit-* in the answers
-LM_SIZE		:= 48
+LM_FLEET	:= 44				; d: `fleet=on`: told to the fleet (fleetlim.inc)
+LM_FID		:= 48				; q: its id across the fleet
+LM_SIZE		:= 56
 
 LK_ROUTE	:= 0				; no key: one bucket
 LK_IP		:= 1
@@ -53,7 +55,8 @@ LR_T		:= 8				; q
 LR_LEFT		:= 16				; d: tokens
 LR_EXP		:= 20				; d: g_tick
 LR_B		:= 24				; q: its bucket
-LR_SIZE		:= 32
+LR_FID		:= 32				; q: its limit's fleet id, 0 not the fleet's
+LR_SIZE		:= 64
 
 MAX_LIMITS	:= 65536
 LEASE_SECS	:= 2
@@ -376,7 +379,7 @@ limit_one:
 	mov	r13,rax
 	mov	r9,rax
 	and	r9d,LR_N - 1
-	shl	r9,5				; LR_SIZE
+	shl	r9,6				; LR_SIZE
 	lea	r9,[g_lr+r9]
 	mov	eax,[r9+LR_LEFT]
 	cmp	[r9+LR_KEY],r13
@@ -394,6 +397,22 @@ limit_one:
 	test	eax,eax
 	jz	.take
 	mov	dword [r9+LR_LEFT],0
+	cmp	qword [r9+LR_FID],0		; (the fleet's: told it came back)
+	je	@f
+	push	rax
+	push	rdi
+	push	rsi
+	push	rdx
+	mov	rdi,[r9+LR_KEY]
+	mov	rsi,[r9+LR_FID]
+	mov	edx,eax
+	neg	edx
+	call	fleet_note_fid
+	pop	rdx
+	pop	rsi
+	pop	rdi
+	pop	rax
+@@:
 	imul	rax,[r9+LR_T]
 	mov	rcx,[r9+LR_B]
 	mov	rdx,[r9+LR_KEY]
@@ -441,6 +460,17 @@ limit_one:
 	pop	rax
 	lock cmpxchg [r8+LB_TAT],rcx
 	jne	.again
+	push	rdi
+	mov	rdi,r13				; the fleet's: these tokens told
+	mov	edx,r11d
+	call	fleet_note
+	pop	rdi
+	xor	eax,eax
+	cmp	dword [r12+LM_FLEET],0
+	je	@f
+	mov	rax,[r12+LM_FID]
+@@:
+	mov	[r9+LR_FID],rax
 	dec	r11d
 	mov	[r9+LR_LEFT],r11d
 	mov	[r9+LR_KEY],r13
@@ -657,7 +687,7 @@ rlh_note:
 .counted:
 	mov	r9,r13				; and this worker's batch of it, unused
 	and	r9d,LR_N - 1
-	shl	r9,5
+	shl	r9,6
 	cmp	[g_lr+r9+LR_KEY],r13
 	jne	@f
 	mov	edx,[g_lr+r9+LR_LEFT]

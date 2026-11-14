@@ -148,6 +148,14 @@ macro plan_regions action
 	action g_plan_l4log, 4
 	action g_plan_alx, 4
 	action g_plan_rlh, 4
+	action g_plan_fl, 4
+	action g_fl_ivms, 4
+	action g_fl_bindlen, 4
+	action g_fl_np, 4
+	action g_fl_keylen, 4
+	action g_fl_bind, 32
+	action g_fl_peer, 32 * FL_PEERS
+	action g_fl_key, 64
 	action g_ls_l4log, MAX_LISTENERS
 	action g_plan_jreq, 4
 	action g_plan_jreqv, 4
@@ -587,6 +595,17 @@ supervisor_reload:
 	call	api_table_init
 	call	sv_live_init
 	call	spawn_health
+	mov	edi,[g_fl_pid]			; okena-fleet: again, with the new plan
+	test	edi,edi
+	jz	@f
+	mov	dword [g_fl_pid],0
+	mov	esi,SIGKILL
+	mov	eax,SYS_kill
+	syscall
+@@:
+	call	fleet_seed
+	call	fleet_rings_init
+	call	spawn_fleet
 	mov	edi,[g_xdp_pid]			; okena-xdp: again, with the new plan
 	test	edi,edi
 	jz	@f

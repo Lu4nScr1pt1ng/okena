@@ -463,6 +463,16 @@ rodata
 	sc_allow filter_health, SYS_clock_gettime
 	sc_end filter_health
 
+	; okena-fleet: its socket made before; datagrams out and in (fleetlim.inc)
+	sc_begin filter_fleet
+	sc_common filter_fleet
+	sc_allow filter_fleet, SYS_sendto
+	sc_allow filter_fleet, SYS_recvfrom
+	sc_allow filter_fleet, SYS_poll
+	sc_allow filter_fleet, SYS_clock_gettime
+	sc_allow filter_fleet, SYS_nanosleep
+	sc_end filter_fleet
+
 	; okena-xdp: the XDP balancer's maps, each tick (xdpctl.inc)
 	sc_begin filter_xdpctl
 	sc_common filter_xdpctl

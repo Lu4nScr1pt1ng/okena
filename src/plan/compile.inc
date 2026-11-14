@@ -751,6 +751,9 @@ compile_settings:
 	lea	rcx,[dir_table + D_SIZE*DIR_FLEET]
 	cmp	rax,rcx
 	je	.fleet
+	lea	rcx,[dir_table + D_SIZE*DIR_FLEETLIM]
+	cmp	rax,rcx
+	je	.fleet_limits
 	lea	rcx,[dir_table + D_SIZE*DIR_CDNLOOP]
 	cmp	rax,rcx
 	je	.cdnloop
@@ -994,6 +997,9 @@ compile_settings:
 	jmp	.advance
 .fleet:
 	call	compile_fleet
+	jmp	.advance
+.fleet_limits:
+	call	compile_fleet_limits
 	jmp	.advance
 .cdnloop:
 	call	compile_cdnloop
@@ -3102,6 +3108,20 @@ compile_limit:
 	jne	@f
 	mov	dword [r12+LM_HDR],1
 	mov	dword [g_plan_rlh],1
+@@:
+	mov	rdi,rbx				; fleet=on: told to the other instances
+	cstring str_key_lfleet, 'fleet',0
+	lea	rsi,[str_key_lfleet]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	mov	rax,[rax+A_VAL]
+	cmp	word [rax],'on'
+	jne	@f
+	cmp	dword [g_plan_fl],0
+	je	plan_bad_fleet			; (no fleet_limits to tell it)
+	mov	dword [r12+LM_FLEET],1
+	call	fleet_limit_id
 @@:
 	; key=
 	mov	rdi,rbx

@@ -994,7 +994,12 @@ use it unchanged.
     when helm is at build/helm/helm): Ingresses become made-up Gateways and
     HTTPRoutes read by gwgen.inc's own code. Not here: Ingress status
     (loadBalancer.ingress), nginx's annotations.
-12. Rate limits shared across a fleet; `RateLimit-*` response headers.
+12. Rate limits shared across a fleet; `RateLimit-*` response headers. **Done
+    2026-11-14** (src/gw/fleetlim.inc, tests/gateway/fleetlim.py,
+    tests/gateway/ratehdr.py): `limit ... headers=on`; `fleet_limits` and
+    `limit ... fleet=on`, a ring a worker written once a batch, okena-fleet
+    sending sealed sums every interval and taking the others' from its
+    buckets.
 13. Bandwidth limits per connection (`limit_rate`) on http and tcp.
 14. zstd compression on the fly.
 15. Admin API to add and change routes at runtime.

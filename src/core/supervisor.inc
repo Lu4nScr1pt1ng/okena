@@ -89,6 +89,8 @@ supervisor_main:
 	call	sv_live_init
 	call	peer_global_init		; per_source table: lives across reloads
 	call	limit_global_init		; and rate limits'
+	call	fleet_seed			; (fleet_limits: the keys' seed from its key)
+	call	fleet_rings_init
 	call	stats_table_init
 	call	ll_init				; Landlock's version, said once when none
 	call	upgrade_receive
@@ -176,6 +178,7 @@ supervisor_main:
 
 	call	spawn_control
 	call	spawn_health
+	call	spawn_fleet
 	call	spawn_xdpctl
 	call	spawn_admin
 	call	spawn_logger
@@ -1151,6 +1154,21 @@ reap_workers:
 	call	spawn_health
 	jmp	.next
 .not_health:
+	cmp	r12d,[g_fl_pid]
+	jne	.not_fleet
+	mov	dword [g_fl_pid],0
+	cmp	dword [g_shutdown],0
+	jne	.next
+	call	log_begin
+	out_lit 'okena-fleet exited, restarting it (limits are this instance',39,'s meanwhile)'
+	call	log_end
+	lea	rdi,[ts_respawn_delay]
+	xor	esi,esi
+	mov	eax,SYS_nanosleep
+	syscall
+	call	spawn_fleet
+	jmp	.next
+.not_fleet:
 	cmp	r12d,[g_xdp_pid]
 	jne	.not_xdpctl
 	mov	dword [g_xdp_pid],0
@@ -1317,6 +1335,13 @@ reap_workers:
 	syscall
 @@:
 	mov	edi,[g_health_pid]
+	test	edi,edi
+	jz	@f
+	mov	esi,SIGKILL
+	mov	eax,SYS_kill
+	syscall
+@@:
+	mov	edi,[g_fl_pid]
 	test	edi,edi
 	jz	@f
 	mov	esi,SIGKILL

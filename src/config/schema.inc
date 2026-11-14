@@ -180,7 +180,7 @@ keysdef k_compress, 'min', T_SIZE
 keysdef k_headers, 'preset', T_ANY
 keysdef k_rmap, 'code', T_ANY
 keysdef k_idem, 'header', T_ANY, 'ttl', T_DURATION, 'lock', T_DURATION
-keysdef k_limit, 'burst', T_COUNT, 'key', T_ANY, 'instances', T_COUNT, 'headers', e_onoff
+keysdef k_limit, 'burst', T_COUNT, 'key', T_ANY, 'instances', T_COUNT, 'headers', e_onoff, 'fleet', e_onoff
 keysdef k_fault, 'abort', T_COUNT, 'percent', T_COUNT, 'delay', T_DURATION
 keysdef k_quic_sid, 'key', T_ANY, 'rotation', T_ANY
 keysdef k_server, 'weight', T_WEIGHT, 'max', T_COUNT
@@ -190,6 +190,7 @@ keysdef k_rtimeout, 'total', T_DURATION, 'try', T_DURATION
 keysdef k_outlier, 'errors', T_UINT, 'eject', T_DURATION, 'max_ejected', T_PERCENT
 keysdef k_rbudget, 'min', T_RATE
 keysdef k_rlog, 'sample', T_PERCENT
+keysdef k_fleetlim, 'bind', T_ANY, 'peers', T_ANY, 'key', T_ANY, 'interval', T_DURATION
 keysdef k_concurrency, 'min', T_COUNT, 'max', T_COUNT
 keysdef k_alert, 'trust', T_ANY
 keysdef k_telegram, 'token', T_ANY, 'chat', T_ANY, 'api', T_ANY, 'trust', T_ANY
@@ -237,6 +238,7 @@ dirdef DIR_USER, 'user',        M_OKENA,   0,           F_UNIQUE, 1, 1, T_ANY, T
 dirdef DIR_GEOIP, 'geoip',      M_OKENA,   0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
 dirdef DIR_CACHE_MEM, 'cache_memory', M_OKENA, 0,       F_UNIQUE, 1, 1, T_SIZE, T_NONE, 0
 dirdef DIR_CACHE_DISK, 'cache_disk', M_OKENA, 0,       F_UNIQUE, 1, 1, T_ANY, T_NONE, k_cdisk
+dirdef DIR_FLEETLIM, 'fleet_limits', M_OKENA, 0,      F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_fleetlim
 dirdef DIR_FLEET, 'fleet',      M_OKENA,   0,           F_UNIQUE, 1, 16, T_LISTEN, T_LISTEN, 0
 dirdef DIR_CDNLOOP, 'cdn_loop',  M_OKENA,   0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, k_cdnloop
 dirdef DIR_BIRD, 'bird',        M_OKENA,   0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, k_bird
