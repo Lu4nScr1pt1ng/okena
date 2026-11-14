@@ -960,6 +960,7 @@ acc_again:
 	ret
 .rest:
 	mov	dword [g_acc_resting],1		; (acc_resume arms it again)
+	call	rest_publish
 	jmp	.out
 
 ; The accepts' balance (io_uring). A worker busy serving takes a burst of new
@@ -973,7 +974,7 @@ acc_again:
 ; others' (an accept waits exclusively, one arrival waking one). The least
 ; loaded never rests, so some accept always waits. acc_resume, from the loop,
 ; arms them again once the others have caught up.
-ACC_SLACK	:= 16
+ACC_SLACK	:= 2
 ACC_RECHECK_US	:= 100
 
 bss
@@ -981,6 +982,18 @@ bss
 	align 8
 	g_acc_rchk	dq ?		; TSC of acc_resume's next look
 end bss
+
+; g_acc_resting into this worker's heartbeat line. Clobbers rax, rcx.
+rest_publish:
+	mov	rax,[g_hb]
+	test	rax,rax
+	jz	.out
+	mov	ecx,[g_hb_slot]
+	add	rax,rcx
+	mov	ecx,[g_acc_resting]
+	mov	[rax+HB_REST_OFF],ecx
+.out:
+	ret
 
 ; This worker's sessions into its heartbeat line. Clobbers rax, rcx.
 load_publish:
@@ -1023,6 +1036,8 @@ acc_rest:
 	shl	eax,6
 	cmp	dword [rsi+rax+HB_READY_OFF],0
 	je	.next
+	cmp	dword [rsi+rax+HB_REST_OFF],0	; resting too: it may not be taking
+	jne	.next				; any (two resting at once took none)
 	cmp	[rsi+rax+HB_LOAD_OFF],r8d
 	jb	.yes
 .next:
@@ -1057,6 +1072,7 @@ acc_resume:
 	jc	.out
 .stop:
 	mov	dword [g_acc_resting],0
+	call	rest_publish
 	cmp	dword [g_draining],0
 	jne	.out
 	lea	rsi,[.socket]

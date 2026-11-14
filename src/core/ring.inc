@@ -350,6 +350,12 @@ ring_enter_tick:
 	mov	rcx,[g_tick_due]
 	test	rcx,rcx
 	jz	ring_enter
+	cmp	dword [g_acc_resting],0		; accepts resting: awake again at their
+	je	@f				; next look (acc_resume), not asleep
+	cmp	rcx,[g_acc_rchk]		; while the others may not take any
+	jbe	@f
+	mov	rcx,[g_acc_rchk]
+@@:
 	rdtsc
 	shl	rdx,32
 	or	rax,rdx
