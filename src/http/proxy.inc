@@ -1884,6 +1884,8 @@ http_write_request_head:
 	; X-Forwarded-For is merged below)
 	test	dword [r15+H_FLAGS],HX_TRUSTED
 	jz	.untrusted
+	cmp	byte [r14+HF_ID],HID_NONE	; (all the names below are in hnames)
+	je	.copy
 	push	rdi
 	mov	rdi,r14
 	lea	rsi,[hn_x_forwarded_proto]
@@ -1930,6 +1932,8 @@ http_write_request_head:
 .untrusted:
 	; from anyone else, nothing that claims to say who the client is (a backend
 	; that reads X-Real-IP would take the client's word for its own address)
+	cmp	byte [r14+HF_ID],HID_NONE	; (all the names below are in hnames)
+	je	.copy
 	push	rdi
 	; nor what makes a server serve another path than the target (X-Original-URL,
 	; X-Rewrite-URL: a cache keyed on the target would keep that answer for it)

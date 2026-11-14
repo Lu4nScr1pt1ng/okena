@@ -408,6 +408,11 @@ hm_fields:
 	push	r14
 	push	r15
 	mov	ecx,edi
+	; for the values, 32 bytes at a time (r12d = the head's length: whole
+	; blocks inside it only): a control byte but HTAB, or DEL, stops it
+	vpbroadcastb ymm5,byte [.c20]
+	vpbroadcastb ymm6,byte [.c7f]
+	vpxor	ymm7,ymm7,ymm7
 .line:
 	; the last line is the empty one
 	cmp	word [rbx+rcx],0x0A0D
@@ -457,6 +462,24 @@ hm_fields:
 	lea	rax,[rbx+rcx]
 	mov	[r14+HF_VALUE],rax
 	mov	r15d,ecx			; value start
+.vblock:
+	lea	eax,[rcx+32]
+	cmp	eax,r12d
+	ja	.vchar
+	vmovdqu	ymm0,[rbx+rcx]
+	vpcmpgtb ymm1,ymm5,ymm0			; below 0x20, or (signed) 0x80 and up
+	vpcmpgtb ymm2,ymm7,ymm0			; 0x80 and up (obs-text, allowed)
+	vpandn	ymm1,ymm2,ymm1
+	vpcmpeqb ymm2,ymm0,ymm6			; DEL
+	vpor	ymm1,ymm1,ymm2
+	vpmovmskb eax,ymm1
+	test	eax,eax
+	jnz	.vstop
+	add	ecx,32
+	jmp	.vblock
+.vstop:
+	tzcnt	eax,eax				; the byte the rules below look at
+	add	ecx,eax
 .vchar:
 	movzx	eax,byte [rbx+rcx]
 	cmp	al,13
@@ -469,7 +492,7 @@ hm_fields:
 	je	.bad
 .vok:
 	inc	ecx
-	jmp	.vchar
+	jmp	.vblock
 .value_end:
 	cmp	byte [rbx+rcx+1],10
 	jne	.bad
@@ -500,9 +523,12 @@ hm_fields:
 .bad:
 	mov	eax,HE_BAD
 .out:
+	vzeroupper
 	pop	r15
 	pop	r14
 	ret
+.c20 db 0x20
+.c7f db 0x7F
 
 ; ------------------------------------------------------- field meaning
 
@@ -760,6 +786,8 @@ hm_common_rules:
 	jae	.connection
 	imul	r14,r12,HF_SIZE
 	lea	r14,[r13+HM_HDRS+r14]
+	cmp	byte [r14+HF_ID],HID_NONE	; none of the names below (all in
+	je	.next				; hnames): most of a browser's fields
 	mov	rdi,r14
 	lea	rsi,[hn_content_length]
 	call	hf_is
