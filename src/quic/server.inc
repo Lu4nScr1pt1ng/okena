@@ -2277,14 +2277,39 @@ qc_peer_moved:
 	mov	ecx,[g_qd_salen]
 	cmp	ecx,[r15+QC_PEERLEN]
 	jne	.out
+	mov	rsi,[g_qd_sa]
+	lea	rdi,[r15+QC_PEER]
+	; every datagram asks: an IPv4 or IPv6 address in qwords (repe cmpsb was
+	; microcode); another length the slow way
+	cmp	ecx,16
+	je	.v4
 	cmp	ecx,28
+	je	.v6
 	jbe	@f
 	mov	ecx,28
 @@:
-	mov	rsi,[g_qd_sa]
-	lea	rdi,[r15+QC_PEER]
 	repe	cmpsb
 .out:
+	ret
+.v4:
+	mov	rax,[rsi]
+	cmp	rax,[rdi]
+	jne	.out
+	mov	rax,[rsi+8]
+	cmp	rax,[rdi+8]
+	ret
+.v6:
+	mov	rax,[rsi]
+	cmp	rax,[rdi]
+	jne	.out
+	mov	rax,[rsi+8]
+	cmp	rax,[rdi+8]
+	jne	.out
+	mov	rax,[rsi+16]
+	cmp	rax,[rdi+16]
+	jne	.out
+	mov	eax,[rsi+24]
+	cmp	eax,[rdi+24]
 	ret
 
 ; r15 = connection, ebx = its session, edi = the datagram's length: the

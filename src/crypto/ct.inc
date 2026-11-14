@@ -3,6 +3,8 @@
 ; rdi = a, rsi = b, edx = length. eax = 1 when equal. The running time
 ; depends only on the length, never on where the first difference is.
 ct_equal:
+	cmp	edx,16
+	je	.sixteen
 	xor	eax,eax
 	xor	ecx,ecx
 	test	edx,edx
@@ -19,6 +21,17 @@ ct_equal:
 	movzx	eax,al
 	sub	eax,1
 	shr	eax,31
+	ret
+.sixteen:
+	; an AEAD tag (every QUIC packet, every TLS record opened): two qwords,
+	; the differences ORed, no branch on them
+	mov	rax,[rdi]
+	xor	rax,[rsi]
+	mov	rcx,[rdi+8]
+	xor	rcx,[rsi+8]
+	or	rax,rcx
+	sete	al
+	movzx	eax,al
 	ret
 
 ; rdi = buffer, ecx = length. Wipes secrets from memory; in assembly there
