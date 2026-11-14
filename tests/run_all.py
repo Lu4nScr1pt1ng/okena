@@ -170,6 +170,8 @@ SUITES = [
     ("h3 bbr epoll", ["tests/h3/bbr.py", "epoll"]),
     ("h3 bench io_uring", ["tests/h3/bench.py", "io_uring"]),
     ("h3 bench epoll", ["tests/h3/bench.py", "epoll"]),
+    ("subsecond io_uring", ["tests/gateway/subsec.py", "io_uring"]),
+    ("subsecond epoll", ["tests/gateway/subsec.py", "epoll"]),
     ("host rewrite io_uring", ["tests/gateway/hostrw.py", "io_uring"]),
     ("host rewrite epoll", ["tests/gateway/hostrw.py", "epoll"]),
     ("fault io_uring", ["tests/gateway/fault.py", "io_uring"]),

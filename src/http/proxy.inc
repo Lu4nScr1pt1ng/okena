@@ -76,7 +76,7 @@ H_UPKTLS	:= 456		; d: 1 when the upstream is a kTLS TLS socket
 H_URBUF		:= 460		; q: last upstream recv buffer (to retry after a drain)
 H_URROOM	:= 468		; d: its room
 H_RETRIES	:= 364		; d: times this request was sent again (after H_RID)
-H_TSENT		:= 164		; d: the tick it was first sent (`timeout total=`)
+H_TSENT		:= 164		; d: g_now_ms when it was first sent (`timeout total=`)
 ; H_HEADN	:= 380		  d: the head being parsed's length (quarantine.inc)
 assert H_ULPERR + 4 <= 1 shl H_SHIFT
 assert H_BUF + 8 <= 1 shl H_SHIFT
@@ -3805,7 +3805,7 @@ http_may_retry:
 	test	eax,eax
 	jz	@f
 	push	rcx
-	mov	ecx,[g_tick]
+	mov	ecx,dword [g_now_ms]
 	sub	ecx,[r15+H_TSENT]
 	cmp	ecx,eax
 	pop	rcx
@@ -4802,7 +4802,7 @@ ph_arm:
 	add	rax,[g_http_base]
 	cmp	dword [rax+H_RETRIES],0
 	jne	@f
-	mov	ecx,[g_tick]			; (first sent: `timeout total=` counts from here)
+	mov	ecx,dword [g_now_ms]		; (first sent: `timeout total=` counts from here)
 	mov	[rax+H_TSENT],ecx
 @@:
 	mov	ecx,[rax+H_ACT]
@@ -4818,7 +4818,7 @@ ph_arm:
 	shl	rax,S_SHIFT
 	add	rax,[g_sess_base]
 	mov	[rax+S_PH_KIND],esi
-	mov	ecx,[g_tick]
+	mov	ecx,dword [g_now_ms]
 	mov	[rax+S_PH_AT],ecx
 	call	ph_list
 	mov	edx,[g_ph_tail+rcx*4]
@@ -4832,7 +4832,83 @@ ph_arm:
 	mov	[rdx+S_PH_NEXT],edi
 	ret
 .first:
+	; the list was empty: this one is its oldest. A clock that is not whole
+	; seconds wakes the loop when it runs out (the others wait for a tick).
 	mov	[g_ph_head+rcx*4],edi
+	push	rax				; (the session, as ph_arm leaves it)
+	call	ph_list_ms
+	push	rax				; (whole seconds? a divide: an empty list
+	xor	edx,edx				; is a quiet one, this is cheap there)
+	push	rcx
+	mov	ecx,1000
+	div	ecx
+	pop	rcx
+	pop	rax
+	test	edx,edx
+	jz	.whole
+	mov	rdx,[g_now_ms]
+	add	rdx,rax
+	inc	rdx				; (never early)
+	mov	rax,[g_ph_due]
+	test	rax,rax
+	jz	@f
+	cmp	rdx,rax
+	jae	.whole
+@@:
+	mov	[g_ph_due],rdx
+.whole:
+	pop	rax
+	ret
+
+; ecx = a phase list: eax = its clock, ms. Keeps all but rax.
+ph_list_ms:
+	cmp	ecx,PH_CLASSES
+	jb	@f
+	mov	eax,[g_try_ms+rcx*4-PH_CLASSES*4]
+	ret
+@@:
+	push	rcx
+	push	rdx
+	mov	eax,ecx
+	shr	eax,2				; the listener
+	and	ecx,3				; PH_* - 1
+	imul	rax,rax,LS_SIZE
+	cmp	ecx,PH_HEAD - 1
+	jne	@f
+	mov	eax,[g_listeners+rax+LS_TMS_HEADER]
+	jmp	.got
+@@:
+	cmp	ecx,PH_RESPONSE - 1
+	jne	@f
+	mov	eax,[g_listeners+rax+LS_TMS_RESPONSE]
+	jmp	.got
+@@:
+	cmp	ecx,PH_BODY - 1
+	jne	@f
+	mov	eax,[g_listeners+rax+LS_TMS_BODY]
+	jmp	.got
+@@:
+	mov	eax,TRIM_SECS * 1000
+.got:
+	pop	rdx
+	pop	rcx
+	ret
+
+bss
+	align 8
+	g_ph_due	dq ?			; g_now_ms a clock that is not whole seconds runs out, 0 none
+end bss
+
+; Every turn of the loop (both engines): clocks of a fraction of a second
+; that ran out. Keeps rbx, r12-r15.
+ph_fine:
+	mov	rax,[g_ph_due]
+	test	rax,rax
+	jz	.none
+	cmp	rax,[g_now_ms]
+	ja	.none
+	jmp	ph_expire
+.none:
 	ret
 
 ; edi = session: stop its clock, if one runs.
@@ -4869,12 +4945,13 @@ ph_disarm:
 .none:
 	ret
 
-; Tick: answer the sessions whose clock ran out.
+; Tick (and ph_fine): answer the sessions whose clock ran out.
 ph_expire:
 	push	rbx
 	push	r12
 	push	r13
 	push	r14
+	mov	qword [g_ph_due],0		; (the lists say it again: .fine_due)
 	xor	r12d,r12d
 .listener:
 	cmp	r12d,[g_plan_listeners]
@@ -4882,32 +4959,26 @@ ph_expire:
 	imul	rax,r12,LS_SIZE
 	cmp	dword [g_listeners+rax+LS_KIND],LK_HTTP
 	je	@f
+	test	dword [g_listeners+rax+LS_FLAGS],LSF_PP_IN
+	jnz	@f				; a tcp listener: its PROXY headers,
 	cmp	dword [g_listeners+rax+LS_TLS],0
-	je	.next				; a tcp listener: only its handshakes
+	je	.next				; and its handshakes
 @@:
 	mov	r14d,PH_HEAD
 .kind:
-	imul	rax,r12,LS_SIZE
-	mov	r13d,[g_listeners+rax+LS_T_HEADER]
-	cmp	r14d,PH_HEAD
-	je	.oldest
-	mov	r13d,[g_listeners+rax+LS_T_RESPONSE]
-	cmp	r14d,PH_RESPONSE
-	je	.oldest
-	mov	r13d,[g_listeners+rax+LS_T_BODY]
-	cmp	r14d,PH_BODY
-	je	.oldest
-	mov	r13d,TRIM_SECS
+	lea	ecx,[r12*4+r14-1]
+	call	ph_list_ms
+	mov	r13d,eax
 .oldest:
 	lea	ecx,[r12*4+r14-1]
 	mov	ebx,[g_ph_head+rcx*4]
 	cmp	ebx,NIL
 	je	.next_kind
 	call	session_ptr
-	mov	ecx,[g_tick]
+	mov	ecx,dword [g_now_ms]
 	sub	ecx,[rax+S_PH_AT]
 	cmp	ecx,r13d
-	jbe	.next_kind			; never early
+	jbe	.not_yet			; never early
 	mov	edi,ebx
 	call	ph_disarm
 	push	r12
@@ -4921,6 +4992,8 @@ ph_expire:
 	pop	r13
 	pop	r12
 	jmp	.oldest
+.not_yet:
+	call	.fine_due			; (its turn, if a fraction of a second)
 .next_kind:
 	inc	r14d
 	cmp	r14d,PH_KINDS
@@ -4934,17 +5007,17 @@ ph_expire:
 .class:
 	cmp	r12d,[g_plan_tryc]
 	jae	.classes_done
-	mov	r13d,[g_try_secs+r12*4]
+	mov	r13d,[g_try_ms+r12*4]
 .class_oldest:
 	lea	ecx,[r12+PH_CLASSES]
 	mov	ebx,[g_ph_head+rcx*4]
 	cmp	ebx,NIL
 	je	.class_next
 	call	session_ptr
-	mov	ecx,[g_tick]
+	mov	ecx,dword [g_now_ms]
 	sub	ecx,[rax+S_PH_AT]
 	cmp	ecx,r13d
-	jbe	.class_next			; never early
+	jbe	.class_not_yet			; never early
 	mov	edi,ebx
 	call	ph_disarm
 	push	r12
@@ -4958,6 +5031,8 @@ ph_expire:
 	pop	r13
 	pop	r12
 	jmp	.class_oldest
+.class_not_yet:
+	call	.fine_due
 .class_next:
 	inc	r12d
 	jmp	.class
@@ -4966,6 +5041,33 @@ ph_expire:
 	pop	r13
 	pop	r12
 	pop	rbx
+	ret
+; rax = a list's oldest session, r13d = its clock (ms), not run out: when it
+; does, if that is not on a whole second (g_ph_due, the earliest)
+.fine_due:
+	push	rax
+	mov	eax,r13d
+	xor	edx,edx
+	mov	ecx,1000
+	div	ecx
+	pop	rax
+	test	edx,edx
+	jz	.fine_out
+	mov	ecx,[rax+S_PH_AT]		; its start, as a 64-bit time
+	mov	edx,dword [g_now_ms]
+	sub	edx,ecx				; how long ago
+	mov	rcx,[g_now_ms]
+	sub	rcx,rdx
+	add	rcx,r13
+	inc	rcx
+	mov	rax,[g_ph_due]
+	test	rax,rax
+	jz	@f
+	cmp	rcx,rax
+	jae	.fine_out
+@@:
+	mov	[g_ph_due],rcx
+.fine_out:
 	ret
 
 ; ebx = session, esi = the PH_* that ran out.

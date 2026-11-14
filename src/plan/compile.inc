@@ -58,7 +58,10 @@ LS_CANON	:= 208		; q: and it
 LS_PFIRST	:= 216		; d: `proxy_protocol accept`: its senders' first range (g_trust)
 LS_PCOUNT	:= 220		; d: and how many, 0 = every peer sends a header
 LS_ACL		:= 224		; d: tcp, udp: `allow`/`deny` (g_acls) + 1, 0 none
-LS_SIZE		:= 232
+LS_TMS_HEADER	:= 228		; d: http: `header`, ms (the phase clocks; LS_T_*: seconds, rounded up)
+LS_TMS_RESPONSE	:= 232		; d: `response`, ms
+LS_TMS_BODY	:= 236		; d: `body_idle`, ms
+LS_SIZE		:= 240
 assert LS_PA6 + 28 <= LS_RESP
 
 ; Host block name (http): routes for requests to that host
@@ -138,7 +141,7 @@ RA_RBODY	:= 192		; q: `respond CODE BODY`: the body, 0 none
 RA_RBLEN	:= 200		; d
 RA_RTLEN	:= 204		; d: `type=`'s length, 0 text/plain
 RA_RTYPE	:= 208		; q
-RA_TRYC		:= 216		; d: `timeout try=`: its class (g_try_secs) + 1, 0 = the listener's response
+RA_TRYC		:= 216		; d: `timeout try=`: its class (g_try_ms) + 1, 0 = the listener's response
 RA_TOTAL	:= 220		; d: `timeout total=`: seconds after which no retry starts, 0 none
 RA_SIZE		:= 224
 MAX_TRYC	:= 32		; distinct try= values
@@ -349,6 +352,10 @@ bss
 	g_cmp_pai	dd ?
 	g_cmp_tlsi	dd ?
 	g_cmp_tfirst	dd ?
+	g_tmo_ms	dd ?
+	g_cmp_tms_header dd ?
+	g_cmp_tms_response dd ?
+	g_cmp_tms_body	dd ?
 	g_cmp_pfirst	dd ?
 	g_cmp_lacl	dd ?
 	g_cmp_lacl_ra:	rb RA_SIZE		; (compile_acl writes an action's RA_ACL)
@@ -2223,13 +2230,19 @@ timeout_secs:
 	jz	.absent
 	mov	rdi,rax
 	call	node_duration
+	add	rax,999				; µs to ms, rounded up, at least 1
 	xor	edx,edx
-	mov	ecx,1000000
+	mov	ecx,1000
 	div	rcx
 	test	eax,eax
 	jnz	@f
 	inc	eax
 @@:
+	mov	[g_tmo_ms],eax			; (the phase clocks keep milliseconds)
+	add	eax,999				; and seconds, rounded up
+	xor	edx,edx
+	mov	ecx,1000
+	div	ecx
 	clc
 	ret
 .absent:
@@ -3125,20 +3138,29 @@ compile_rtimeout:
 	call	node_option
 	test	rax,rax
 	jz	.total
-	call	.secs
-	; its class: the same seconds share one
+	call	.ms
+	; its class: the same milliseconds share one
 	xor	ecx,ecx
 @@:
 	cmp	ecx,[g_plan_tryc]
 	jae	.new
-	cmp	[g_try_secs+rcx*4],eax
+	cmp	[g_try_ms+rcx*4],eax
 	je	.class
 	inc	ecx
 	jmp	@b
 .new:
 	cmp	ecx,MAX_TRYC
 	jae	plan_bad_rtimeout
+	mov	[g_try_ms+rcx*4],eax
+	push	rax				; (seconds, rounded up: what explain shows)
+	add	eax,999
+	xor	edx,edx
+	push	rcx
+	mov	ecx,1000
+	div	ecx
+	pop	rcx
 	mov	[g_try_secs+rcx*4],eax
+	pop	rax
 	inc	dword [g_plan_tryc]
 .class:
 	inc	ecx
@@ -3149,29 +3171,29 @@ compile_rtimeout:
 	call	node_option
 	test	rax,rax
 	jz	.none
-	call	.secs
+	call	.ms
 	mov	[r13+RA_TOTAL],eax
 .none:
 	pop	rbx
 	ret
-; rax = an option: eax = its seconds, rounded up, 1 to 3600
-.secs:
+; rax = an option: eax = its milliseconds, rounded up, 1 ms to 1 h
+.ms:
 	mov	rdi,[rax+A_VAL]
 	mov	esi,[rax+A_VLEN]
 	call	parse_duration
-	add	rax,999999
+	add	rax,999
 	xor	edx,edx
-	mov	ecx,1000000
+	mov	ecx,1000
 	div	rcx
 	test	rax,rax
 	jz	plan_bad_rtimeout
-	cmp	rax,3600
+	cmp	rax,3600000
 	ja	plan_bad_rtimeout
 	ret
 
 plan_bad_rtimeout:
 	call	log_begin
-	out_lit 'a route',27h,'s timeout takes try= (the backend',27h,'s time for its answer head, each try) and total= (no retry starts after it), each 1s to 1h in whole seconds; at most 32 different try= values'
+	out_lit 'a route',27h,'s timeout takes try= (the backend',27h,'s time for its answer head, each try) and total= (no retry starts after it), each 1ms to 1h; at most 32 different try= values'
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process
@@ -3181,6 +3203,7 @@ cstring str_key_total, 'total',0
 
 bss
 	g_try_secs	rd MAX_TRYC
+	g_try_ms	rd MAX_TRYC		; (the clocks: milliseconds)
 	g_plan_tryc	dd ?
 end bss
 
@@ -4799,6 +4822,9 @@ compile_listener:
 	pop	r13
 	pop	rbx
 .trust_done:
+	mov	dword [g_cmp_tms_header],DEFAULT_HEADER_SECS * 1000
+	mov	dword [g_cmp_tms_response],DEFAULT_RESPONSE_SECS * 1000
+	mov	dword [g_cmp_tms_body],DEFAULT_BODY_SECS * 1000
 	mov	dword [g_cmp_t_header],DEFAULT_HEADER_SECS
 	mov	dword [g_cmp_t_response],DEFAULT_RESPONSE_SECS
 	mov	dword [g_cmp_t_body],DEFAULT_BODY_SECS
@@ -4813,18 +4839,24 @@ compile_listener:
 	call	timeout_secs
 	jc	@f
 	mov	[g_cmp_t_header],eax
+	mov	ecx,[g_tmo_ms]
+	mov	[g_cmp_tms_header],ecx
 @@:
 	mov	rdi,[rsp]
 	mov	ecx,DIR_RESPONSE
 	call	timeout_secs
 	jc	@f
 	mov	[g_cmp_t_response],eax
+	mov	ecx,[g_tmo_ms]
+	mov	[g_cmp_tms_response],ecx
 @@:
 	mov	rdi,[rsp]
 	mov	ecx,DIR_BODY_IDLE
 	call	timeout_secs
 	jc	@f
 	mov	[g_cmp_t_body],eax
+	mov	ecx,[g_tmo_ms]
+	mov	[g_cmp_tms_body],ecx
 @@:
 	pop	rdi
 	mov	ecx,DIR_IDLE
@@ -4849,6 +4881,12 @@ compile_listener:
 	mov	[rcx+LS_T_RESPONSE],eax
 	mov	eax,[g_cmp_t_body]
 	mov	[rcx+LS_T_BODY],eax
+	mov	eax,[g_cmp_tms_header]
+	mov	[rcx+LS_TMS_HEADER],eax
+	mov	eax,[g_cmp_tms_response]
+	mov	[rcx+LS_TMS_RESPONSE],eax
+	mov	eax,[g_cmp_tms_body]
+	mov	[rcx+LS_TMS_BODY],eax
 	mov	eax,[g_cmp_body_max]
 	mov	[rcx+LS_BODYMAX],eax
 	mov	eax,[g_cmp_alog]

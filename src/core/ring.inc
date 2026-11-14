@@ -365,6 +365,21 @@ ring_enter_tick:
 	xor	edx,edx
 	div	qword [g_tsc_per_us]		; µs to the tick
 	inc	rax				; (never early)
+	cmp	qword [g_ph_due],0		; a phase clock of a fraction of a second
+	je	.wait
+	push	rax
+	call	ep_clock
+	pop	rax
+	mov	rcx,[g_ph_due]
+	sub	rcx,[g_now_ms]
+	jg	@f
+	mov	eax,1				; due: a turn at once
+	jmp	.wait
+@@:
+	imul	rcx,rcx,1000
+	cmp	rcx,rax
+	cmovb	rax,rcx
+.wait:
 	imul	rax,rax,1000
 	xor	edx,edx
 	mov	ecx,1000000000

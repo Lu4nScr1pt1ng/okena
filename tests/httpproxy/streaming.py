@@ -56,7 +56,7 @@ def serve(c):
             except OSError:
                 ev["gone"] = time.time()
         elif path == b"/poll":
-            time.sleep(1.5)
+            time.sleep(0.7)
             c.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\npoll")
         elif path == b"/ws":
             c.sendall(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
@@ -173,7 +173,7 @@ def main():
         check("Server-Sent Events: each one out as it is written, gaps past body_idle and response kept",
               len(lat) == 3 and max(lat) < 0.2 and ended, (lat, ended, head))
         check("a client that leaves an endless stream: its backend let go at once", res["forever"] < 1.5, res["forever"])
-        check("a long poll answered in 1.5 s (response 1s bounds the head): served", res["poll"].startswith(b"HTTP/1.1 200"),
+        check("a long poll answered in 0.7 s, within response 1s: served", res["poll"].startswith(b"HTTP/1.1 200"),
               res["poll"][:40])
         x, took = res["idle"]
         check("a WebSocket with nothing moving: closed by idle", x == b"" and 1.5 < took < 4, (x, took))

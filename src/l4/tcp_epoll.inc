@@ -134,6 +134,9 @@ ep_main:
 	mov	r12,rax
 	pin_wait_end
 	call	ep_clock
+	push	r12
+	call	ph_fine				; (clocks of a fraction of a second)
+	pop	r12
 	test	r12,r12
 	jle	.timers
 	xor	ebx,ebx
@@ -245,6 +248,12 @@ end bss
 ; edx = milliseconds until the next tick or connect deadline.
 ep_wait_timeout:
 	mov	r8,[g_next_tick_ms]
+	mov	rax,[g_ph_due]			; (a phase clock of a fraction of a second)
+	test	rax,rax
+	jz	@f
+	cmp	rax,r8
+	cmovb	r8,rax
+@@:
 	xor	ecx,ecx
 .pool:
 	cmp	ecx,[g_plan_pools]

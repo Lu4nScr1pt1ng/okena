@@ -74,6 +74,7 @@ macro plan_regions action
 	action g_plan_profile, 4
 	action g_plan_tryc, 4
 	action g_try_secs, 4 * MAX_TRYC
+	action g_try_ms, 4 * MAX_TRYC
 	action g_plan_busy_poll, 8
 	action g_plan_qcc, 4
 	action g_plan_qlb_len, 4

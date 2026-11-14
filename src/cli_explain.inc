@@ -335,15 +335,14 @@ explain_print:
 	cmp	dword [r12+LS_KIND],LK_HTTP
 	jne	@f
 	out_lit '; header '
-	mov	eax,[r12+LS_T_HEADER]
-	call	out_u64
-	out_lit 's; body_idle '
-	mov	eax,[r12+LS_T_BODY]
-	call	out_u64
-	out_lit 's; response '
-	mov	eax,[r12+LS_T_RESPONSE]
-	call	out_u64
-	out_lit 's'
+	mov	eax,[r12+LS_TMS_HEADER]
+	call	explain_ms
+	out_lit '; body_idle '
+	mov	eax,[r12+LS_TMS_BODY]
+	call	explain_ms
+	out_lit '; response '
+	mov	eax,[r12+LS_TMS_RESPONSE]
+	call	explain_ms
 @@:
 	out_lit ' }'
 	cmp	dword [r12+LS_MSS],0
@@ -586,9 +585,8 @@ explain_print:
 	out_lit ' try='
 	mov	rcx,[rsp]
 	mov	eax,[rcx+RA_TRYC]
-	mov	eax,[g_try_secs+rax*4-4]
-	call	out_u64
-	out_lit 's'
+	mov	eax,[g_try_ms+rax*4-4]
+	call	explain_ms
 @@:
 	pop	rcx
 	cmp	dword [rcx+RA_TOTAL],0
@@ -597,8 +595,7 @@ explain_print:
 	out_lit ' total='
 	pop	rcx
 	mov	eax,[rcx+RA_TOTAL]
-	call	out_u64
-	out_lit 's'
+	call	explain_ms
 	jmp	.route_end
 .target:
 	call	.to
@@ -1194,3 +1191,21 @@ diff_texts:
 .p_plus		db '+ ',0
 .p_minus	db '- ',0
 .p_change	db '~ ',0
+
+; eax = milliseconds: "3s" when whole seconds, else "250ms"
+explain_ms:
+	xor	edx,edx
+	mov	ecx,1000
+	push	rax
+	div	ecx
+	test	edx,edx
+	jnz	.frac
+	add	rsp,8
+	call	out_u64
+	out_lit 's'
+	ret
+.frac:
+	pop	rax
+	call	out_u64
+	out_lit 'ms'
+	ret

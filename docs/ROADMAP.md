@@ -950,7 +950,11 @@ use it unchanged.
    reason in okena_listener_refused_total (denied, proxy_protocol). Access logs: **done 2026-11-14** (src/l4/l4log.inc, tests/l4/alog.py):
    a side table of clock and counts only when a listener logs, one byte
    compared per relay read otherwise.
-5. Sub-second timeouts everywhere (`timeout try=200ms total=1500ms`).
+5. Sub-second timeouts everywhere (`timeout try=200ms total=1500ms`). **Done 2026-11-14** (tests/gateway/subsec.py): phase clocks in
+   milliseconds (g_now_ms, read once a loop turn on both engines), a
+   clock that is not whole seconds bounds the engine's wait; whole seconds
+   stay on the tick. Found on the way: a tcp listener's PROXY header was
+   never timed without tls (ph_expire skipped it).
 6. JWT authorization: `require CLAIM=VALUE[,VALUE]` (scope lists,
    arrays, roles); RS384, RS512, ES384, PS384, PS512.
 7. Health checks: `http` with `body=` and headers; `tcp send=/expect=`

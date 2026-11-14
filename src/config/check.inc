@@ -1797,6 +1797,8 @@ check_tls:
 ; rdi = tcp listener: `header` and `response` are http timeouts.
 check_tcp_timeouts:
 	push	rbx
+	push	r12
+	mov	r12,rdi
 	mov	ecx,DIR_TIMEOUT
 	call	find_child
 	test	rax,rax
@@ -1807,7 +1809,12 @@ check_tcp_timeouts:
 	jz	.done
 	lea	rax,[dir_table + D_SIZE*DIR_HEADER]
 	cmp	[rbx+N_DEF],rax
-	je	.http_only
+	jne	@f
+	lea	rax,[dir_table + D_SIZE*DIR_TCP]
+	cmp	[r12+N_DEF],rax
+	je	.advance			; tcp: its TLS handshake, its PROXY header
+	jmp	.http_only
+@@:
 	lea	rax,[dir_table + D_SIZE*DIR_BODY_IDLE]
 	cmp	[rbx+N_DEF],rax
 	je	.http_only
@@ -1822,13 +1829,14 @@ check_tcp_timeouts:
 	out_lit 'a tcp listener has no requests to time: this is an `http` timeout'
 	call	cfg_diag_end
 	call	cfg_note
-	out_lit 'help: a tcp connection has `idle`; `header`, `body_idle` and `response` time HTTP exchanges'
+	out_lit 'help: a tcp connection has `idle`, and `header` for its TLS handshake or PROXY header; `body_idle` and `response` time HTTP exchanges'
 	call	cfg_note_end
 	call	cfg_error_limit
 .advance:
 	mov	rbx,[rbx+N_NEXT]
 	jmp	.next
 .done:
+	pop	r12
 	pop	rbx
 	ret
 

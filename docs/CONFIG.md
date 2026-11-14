@@ -266,6 +266,12 @@ http :443 {
 | `response` | 30s | the backend sent no response head: 504, or another try if the route's `retry` allows |
 | `idle` | 60s | a keep-alive connection waited this long for its next request |
 
+`header`, `body_idle` and `response` take fractions of a second
+(`response 400ms`) and are kept to the millisecond. A timeout in whole
+seconds is checked once a second, so it runs out up to a second late,
+never early; one with a fraction wakes the worker at its millisecond. On a
+`tcp` listener, `header` bounds its TLS handshake and its PROXY header.
+
 `limits { body_size SIZE }` caps request bodies (no cap by default; larger
 values are cut to 4 GiB): a `Content-Length` over it is a 413 before anything reaches a
 backend, and a chunked body gets the 413 once it grows past it. A request
@@ -908,7 +914,7 @@ priority critical
 | Directive | Meaning |
 |---|---|
 | `retry N on=LIST` | up to N more tries (0 to 5) on another server, on `reset`, `timeout`, `5xx`, `500`, `502`, `503`, `504`. Default: `retry 1 on=reset,502,503,504`. Only GET, HEAD, PUT, DELETE and OPTIONS without a body are retried; `retry 0` never sends a request twice |
-| `timeout try=T total=T` | `try` replaces the listener's `response` timeout for each try; `total` is how late a retry may still start. Whole seconds, 1s to 1h (`500ms` becomes 1s) |
+| `timeout try=T total=T` | `try` replaces the listener's `response` timeout for each try; `total` is how late a retry may still start. 1ms to 1h (`try=250ms`) |
 | `hedge after=50ms` | if an idempotent request without a body has no answer by then, send a copy to another server and take the first good answer. Needs a pool of two or more servers. `after=p95` uses that percentile of the pool's recent answers, once the worker has seen 64 |
 | `hold 10s` | when no server accepts connections (a pool restarting), wait up to 10 s instead of a 502. Safe for POSTs: nothing was sent yet |
 | `priority critical\|normal\|bulk` | under overload, `bulk` routes are refused first (503), then `normal`, and `critical` goes on |
