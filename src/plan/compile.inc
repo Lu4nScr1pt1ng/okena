@@ -3091,6 +3091,18 @@ compile_limit:
 	mov	eax,64
 @@:
 	mov	[r12+LM_CAP],eax
+	mov	rdi,rbx				; headers=on: RateLimit-* in its answers
+	cstring str_key_lhdr, 'headers',0
+	lea	rsi,[str_key_lhdr]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	mov	rax,[rax+A_VAL]
+	cmp	word [rax],'on'
+	jne	@f
+	mov	dword [r12+LM_HDR],1
+	mov	dword [g_plan_rlh],1
+@@:
 	; key=
 	mov	rdi,rbx
 	lea	rsi,[str_key_lkey]

@@ -417,6 +417,9 @@ sessions_init:
 	call	alx_worker_init
 	test	eax,eax
 	js	.done
+	call	rlh_worker_init
+	test	eax,eax
+	js	.done
 	call	http_worker_init
 	test	eax,eax
 	js	.done

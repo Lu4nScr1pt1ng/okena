@@ -27,7 +27,8 @@ LM_NLEN		:= 24				; d
 LM_KIND		:= 28				; d: LK_*
 LM_ID		:= 32				; d: its index, and its bucket past the table
 LM_CAP		:= 36				; d: a batch, at most
-LM_SIZE		:= 40
+LM_HDR		:= 40				; d: `headers=on`: RateLimit-* in the answers
+LM_SIZE		:= 48
 
 LK_ROUTE	:= 0				; no key: one bucket
 LK_IP		:= 1
@@ -475,14 +476,26 @@ limit_request:
 	imul	r12,r12,LM_SIZE
 	lea	r12,[g_limits+r12]
 	mov	r13d,esi
+	call	rlh_clear			; (RateLimit-*: this request's, none yet)
 .next:
 	test	r13d,r13d
 	jz	.fits
 	call	limit_one
-	jc	.out
+	jc	.refused
+	cmp	dword [r12+LM_HDR],0
+	je	@f
+	call	rlh_note			; what is left of it, for the answer
+@@:
 	add	r12,LM_SIZE
 	dec	r13d
 	jmp	.next
+.refused:
+	cmp	dword [r12+LM_HDR],0
+	je	@f
+	call	rlh_over			; none left, and when there will be
+@@:
+	stc
+	jmp	.out
 .fits:
 	clc
 .out:
@@ -535,6 +548,7 @@ limit_refuse:
 	mov	rax,[g_lim_retry]
 	call	fmt_u64
 	memit_x 13,10
+	call	rlh_emit			; RateLimit-*, when the limit says headers=on
 	call	cors_emit
 	memit_x 'Content-Length: 0',13,10,'X-Request-Id: '
 	lea	rsi,[r15+H_RID]
@@ -553,3 +567,175 @@ limit_refuse:
 	mov	ecx,SIDE_CLIENT
 	xchg	rsi,rdi				; rdi = OUT, esi = its length
 	jmp	h_send
+
+; ------------------------------------------------------------ RateLimit-*
+;
+; `limit ... headers=on`: the answers of its route say how much is left, as
+; the IETF draft (RateLimit-Limit, -Remaining, -Reset) and as Envoy and GitHub
+; do (X-RateLimit-*): the limit's burst, the requests that would fit now, and
+; the seconds until it is full again; with several such limits, the one with
+; the least left. Kept a session in a side table, mapped only when some limit
+; says so; other limits keep their batches and never look.
+
+RH_SET		:= 0				; d
+RH_LIMIT	:= 4				; d
+RH_LEFT		:= 8				; d
+RH_RESET	:= 12				; d: seconds
+RH_SHIFT	:= 4
+
+bss
+	align 8
+	g_rlh_base	dq ?
+	g_plan_rlh	dd ?
+end bss
+
+; Worker: the table, when it is needed. eax = 0 or -errno.
+rlh_worker_init:
+	xor	eax,eax
+	cmp	dword [g_plan_rlh],0
+	je	.done
+	xor	edi,edi
+	mov	esi,[g_sessions]
+	shl	rsi,RH_SHIFT
+	mov	edx,PROT_READ or PROT_WRITE
+	mov	r10d,MAP_PRIVATE or MAP_ANONYMOUS or MAP_NORESERVE
+	mov	r8,-1
+	xor	r9d,r9d
+	mov	eax,SYS_mmap
+	syscall
+	cmp	rax,-4096
+	ja	.done
+	mov	[g_rlh_base],rax
+	xor	eax,eax
+.done:
+	ret
+
+; ebx = session: rax = its record (ZF: none). Keeps all but rax.
+rlh_rec:
+	mov	rax,[g_rlh_base]
+	test	rax,rax
+	jz	.out
+	push	rcx
+	mov	ecx,ebx
+	shl	rcx,RH_SHIFT
+	add	rax,rcx
+	pop	rcx
+.out:
+	ret
+
+rlh_clear:
+	call	rlh_rec
+	jz	@f
+	mov	dword [rax+RH_SET],0
+@@:
+	ret
+
+; r12 = a limit that let the request through, ebx = session, r15 = record:
+; its numbers, kept when less is left of it than of one before. Keeps r12, r13.
+rlh_note:
+	push	r13
+	push	r14
+	push	rbx
+	call	limit_key
+	mov	r13,rax
+	call	qs_clock
+	imul	r14,[g_qnow],1000
+	call	limit_bucket			; r8
+	mov	rcx,[r8+LB_TAT]
+	cmp	rcx,r14
+	cmovb	rcx,r14
+	mov	rax,r14
+	add	rax,[r12+LM_TOL]
+	sub	rax,rcx				; room ahead of the bucket
+	jb	.none
+	xor	edx,edx
+	div	qword [r12+LM_T]		; requests that fit: those, and the one
+	inc	rax				; that fits exactly (as limit_one counts)
+	jmp	.counted
+.none:
+	xor	eax,eax
+.counted:
+	mov	r9,r13				; and this worker's batch of it, unused
+	and	r9d,LR_N - 1
+	shl	r9,5
+	cmp	[g_lr+r9+LR_KEY],r13
+	jne	@f
+	mov	edx,[g_lr+r9+LR_LEFT]
+	add	rax,rdx
+@@:
+	mov	r9,rax				; left
+	mov	rax,rcx				; seconds until full, rounded up
+	sub	rax,r14
+	add	rax,999999999
+	xor	edx,edx
+	mov	ecx,1000000000
+	div	rcx
+	mov	r10,rax				; reset
+	pop	rbx
+	call	rlh_keep
+	pop	r14
+	pop	r13
+	ret
+
+; r12 = a limit that refused it: nothing left, full again in g_lim_retry.
+rlh_over:
+	xor	r9d,r9d
+	mov	r10,[g_lim_retry]
+	jmp	rlh_keep
+
+; r9 = left, r10 = seconds to full, r12 = the limit: into the session's record
+; when it is the first, or has less left.
+rlh_keep:
+	call	rlh_rec
+	jz	.out
+	cmp	dword [rax+RH_SET],0
+	je	@f
+	cmp	[rax+RH_LEFT],r9d
+	jbe	.out
+@@:
+	mov	dword [rax+RH_SET],1
+	mov	[rax+RH_LEFT],r9d
+	mov	[rax+RH_RESET],r10d
+	push	rax
+	mov	rax,[r12+LM_TOL]		; the burst: TOL / T + 1
+	xor	edx,edx
+	div	qword [r12+LM_T]
+	inc	eax
+	mov	ecx,eax
+	pop	rax
+	mov	[rax+RH_LIMIT],ecx
+.out:
+	ret
+
+; rdi = a head being written, ebx = session: its RateLimit lines, if any.
+; Keeps all but rax, rcx, rdx, rsi; rdi past them.
+rlh_emit:
+	call	rlh_rec
+	jz	.out
+	cmp	dword [rax+RH_SET],0
+	je	.out
+	push	r8
+	mov	r8,rax
+	memit_x 'RateLimit-Limit: '
+	mov	eax,[r8+RH_LIMIT]
+	call	fmt_u64
+	memit_x 13,10,'RateLimit-Remaining: '
+	mov	eax,[r8+RH_LEFT]
+	call	fmt_u64
+	memit_x 13,10,'RateLimit-Reset: '
+	mov	eax,[r8+RH_RESET]
+	call	fmt_u64
+	memit_x 13,10,'X-RateLimit-Limit: '
+	mov	eax,[r8+RH_LIMIT]
+	call	fmt_u64
+	memit_x 13,10,'X-RateLimit-Remaining: '
+	mov	eax,[r8+RH_LEFT]
+	call	fmt_u64
+	memit_x 13,10,'X-RateLimit-Reset: '
+	mov	eax,[r8+RH_RESET]
+	call	fmt_u64
+	memit_x 13,10
+	pop	r8
+.out:
+	ret
+

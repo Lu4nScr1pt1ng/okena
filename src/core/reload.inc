@@ -147,6 +147,7 @@ macro plan_regions action
 	action g_jsrc, JS_SIZE * MAX_JWKS, g_plan_jsrc, JS_SIZE
 	action g_plan_l4log, 4
 	action g_plan_alx, 4
+	action g_plan_rlh, 4
 	action g_ls_l4log, MAX_LISTENERS
 	action g_plan_jreq, 4
 	action g_plan_jreqv, 4

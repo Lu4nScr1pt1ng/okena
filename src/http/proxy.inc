@@ -3307,6 +3307,10 @@ http_write_response_head:
 @@:
 	test	dword [r15+H_FLAGS],HX_INTERIM
 	jnz	@f
+	push	rbx
+	mov	ebx,[rsp+32]			; (the session: pushed rbx, then this)
+	call	rlh_emit			; RateLimit-*
+	pop	rbx
 	call	cors_emit
 	call	split_emit
 	call	cache_status_emit

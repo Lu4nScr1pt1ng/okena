@@ -180,7 +180,7 @@ keysdef k_compress, 'min', T_SIZE
 keysdef k_headers, 'preset', T_ANY
 keysdef k_rmap, 'code', T_ANY
 keysdef k_idem, 'header', T_ANY, 'ttl', T_DURATION, 'lock', T_DURATION
-keysdef k_limit, 'burst', T_COUNT, 'key', T_ANY, 'instances', T_COUNT
+keysdef k_limit, 'burst', T_COUNT, 'key', T_ANY, 'instances', T_COUNT, 'headers', e_onoff
 keysdef k_fault, 'abort', T_COUNT, 'percent', T_COUNT, 'delay', T_DURATION
 keysdef k_quic_sid, 'key', T_ANY, 'rotation', T_ANY
 keysdef k_server, 'weight', T_WEIGHT, 'max', T_COUNT

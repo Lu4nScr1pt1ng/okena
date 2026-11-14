@@ -1068,7 +1068,11 @@ limit 3000/s key=client.ip instances=4       # a quarter each, for a fleet of 4
 ```
 
 A refused request gets 429 with `Retry-After` on a connection that stays
-open. Without `key=`, all clients share one bucket. `key=` is `client.ip`, `method`, `header:NAME`, `query:NAME`,
+open. With `headers=on`, the route's answers (the 429 too) say how much is
+left: `RateLimit-Limit` (the burst), `RateLimit-Remaining` and
+`RateLimit-Reset` (seconds until the bucket is full again), as the IETF draft
+has them, and the same as `X-RateLimit-*`; with several such limits, the one
+with least left. Without `key=`, all clients share one bucket. `key=` is `client.ip`, `method`, `header:NAME`, `query:NAME`,
 `cookie:NAME`, `auth.user` or `jwt.sub`. Requests without that field share
 one key, so dropping a header doesn't escape the limit. `burst` defaults to
 one second of the rate (at least 1): set it for hourly and daily quotas, or
