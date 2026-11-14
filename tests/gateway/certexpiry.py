@@ -24,7 +24,7 @@ from cryptography.x509.oid import NameOID
 HERE = pathlib.Path(__file__).resolve().parent
 BIN = HERE.parent.parent / "build" / "okena"
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
-BASE = 51400 + os.getpid() % 90 * 20 + (10 if ENGINE == "epoll" else 0)
+BASE = 25400 + os.getpid() % 90 * 20 + (10 if ENGINE == "epoll" else 0)
 TLS, MET, HOOK = BASE, BASE + 1, BASE + 2
 fails = 0
 got = {}

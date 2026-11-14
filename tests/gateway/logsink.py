@@ -22,7 +22,7 @@ import time
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BIN = ROOT / "build" / "okena"
-BASE = 31000 + os.getpid() % 90 * 20 + (10 if ENGINE == "epoll" else 0)
+BASE = 5000 + os.getpid() % 90 * 20 + (10 if ENGINE == "epoll" else 0)
 L_UDP, L_TCP, L_TLS, L_OTLP, L_OTLPS, L_FORGED = (BASE + i for i in range(6))
 S_UDP, S_TCP, S_TLS, S_OTLP, S_OTLPS = (BASE + 6 + i for i in range(5))
 fails = 0

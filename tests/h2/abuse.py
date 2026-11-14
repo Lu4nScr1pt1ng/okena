@@ -30,7 +30,7 @@ except ImportError:
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BIN = ROOT / "build" / "okena"
-BASE = 31500 + os.getpid() % 90 * 10 + (5 if ENGINE == "epoll" else 0)
+BASE = 5500 + os.getpid() % 90 * 10 + (5 if ENGINE == "epoll" else 0)
 L, B = BASE, BASE + 1
 PRE = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
 fails = 0

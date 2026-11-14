@@ -21,7 +21,7 @@ import time
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BIN = ROOT / "build" / "okena"
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
-BASE = 33000 + os.getpid() % 40 * 20 + (10 if ENGINE == "epoll" else 0)
+BASE = 7000 + os.getpid() % 40 * 20 + (10 if ENGINE == "epoll" else 0)
 BACK, LST, SNIL, RLST, DLST, ULST = BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4, BASE + 5
 tmp = pathlib.Path(tempfile.mkdtemp())
 atexit.register(shutil.rmtree, tmp, True)

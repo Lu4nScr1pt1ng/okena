@@ -19,7 +19,7 @@ import time
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BIN = ROOT / "build" / "okena"
-BASE = 53000 + os.getpid() % 90 * 20 + (10 if ENGINE == "epoll" else 0)
+BASE = 27000 + os.getpid() % 90 * 20 + (10 if ENGINE == "epoll" else 0)
 BACK, TRUST, GATE, FILE_L = BASE, BASE + 1, BASE + 2, BASE + 3
 CF = "173.245.48.1"                             # one of Cloudflare's
 MINE = "10.9.9.9"                               # in a file

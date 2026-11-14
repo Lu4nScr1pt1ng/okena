@@ -37,7 +37,7 @@ from cryptography.x509.oid import NameOID
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BIN = ROOT / "build" / "okena"
-BASE = 56000 + os.getpid() % 90 * 20 + (10 if ENGINE == "epoll" else 0)
+BASE = 30000 + os.getpid() % 90 * 20 + (10 if ENGINE == "epoll" else 0)
 BACK, PLAIN, TLS, CA, TLS2, CF, TLS3, DNS, TLS4, R53_PORT, TLS5 = (BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4, BASE + 5,
                                                              BASE + 6, BASE + 7, BASE + 8, BASE + 9, BASE + 10)
 CF_TOKEN = "cf-test-token_0123"

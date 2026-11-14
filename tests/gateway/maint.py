@@ -20,7 +20,7 @@ import time
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BIN = ROOT / "build" / "okena"
-BASE = 38000 + os.getpid() % 90 * 20 + (10 if ENGINE == "epoll" else 0)
+BASE = 12000 + os.getpid() % 90 * 20 + (10 if ENGINE == "epoll" else 0)
 LST, PLAIN, METRICS, BACK = BASE, BASE + 1, BASE + 2, BASE + 3
 fails = 0
 

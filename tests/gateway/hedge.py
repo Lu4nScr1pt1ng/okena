@@ -18,7 +18,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 BIN = ROOT / "build" / "okena"
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
-BASE = 30000 + os.getpid() % 90 * 10 + (5 if ENGINE == "epoll" else 0)
+BASE = 4000 + os.getpid() % 90 * 10 + (5 if ENGINE == "epoll" else 0)
 FAST, SLOW, BAD, LST, TLS = BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4
 failures = 0
 hits = {}

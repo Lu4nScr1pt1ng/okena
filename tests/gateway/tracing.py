@@ -21,7 +21,7 @@ import time
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BIN = ROOT / "build" / "okena"
-BASE = 33000 + os.getpid() % 90 * 20 + (10 if ENGINE == "epoll" else 0)
+BASE = 7000 + os.getpid() % 90 * 20 + (10 if ENGINE == "epoll" else 0)
 L_ALL, L_NONE, L_OFF, L_HALF, L_TLS, BACK, SHADOW, COLL = (BASE + i for i in range(8))
 fails = 0
 TP = re.compile(r"^00-([0-9a-f]{32})-([0-9a-f]{16})-(0[01])$")

@@ -36,7 +36,7 @@ except ImportError:
         os.execv(str(VENV), [str(VENV), "-I", __file__] + sys.argv[1:])
     print("skip h3 edges: no aioquic")
     sys.exit(0)
-BASE = 34500 + os.getpid() % 90 * 10 + (5 if ENGINE == "epoll" else 0)
+BASE = 8500 + os.getpid() % 90 * 10 + (5 if ENGINE == "epoll" else 0)
 L, B = BASE, BASE + 1
 fails = 0
 

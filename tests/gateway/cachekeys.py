@@ -19,7 +19,7 @@ import time
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BIN = ROOT / "build" / "okena"
-BASE = 48000 + os.getpid() % 90 * 20 + (10 if ENGINE == "epoll" else 0)
+BASE = 22000 + os.getpid() % 90 * 20 + (10 if ENGINE == "epoll" else 0)
 BACK, LST, DOWN = BASE, BASE + 1, BASE + 2
 fails = 0
 BIG = bytes(range(256)) * 400                  # 102400 bytes

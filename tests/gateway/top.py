@@ -22,7 +22,7 @@ import time
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BIN = ROOT / "build" / "okena"
-BASE = 35000 + os.getpid() % 90 * 20 + (10 if ENGINE == "epoll" else 0)
+BASE = 9000 + os.getpid() % 90 * 20 + (10 if ENGINE == "epoll" else 0)
 LST, TCPL, METRICS, BACK, TLSL, UDPL, ECHO, SLOWL = BASE, BASE + 1, BASE + 2, BASE + 3, BASE + 4, BASE + 5, BASE + 6, BASE + 7
 TOKEN = "s3cret-token-of-32-bytes-ok-1234"
 fails = 0

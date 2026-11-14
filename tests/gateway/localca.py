@@ -27,7 +27,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
 BIN = ROOT / "build" / "okena"
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
-BASE = 47400 + os.getpid() % 90 * 20 + (10 if ENGINE == "epoll" else 0)
+BASE = 21400 + os.getpid() % 90 * 20 + (10 if ENGINE == "epoll" else 0)
 BACK, TLS = BASE, BASE + 1
 fails = 0
 STORES = [("/usr/local/share/ca-certificates", "okena-local-ca.crt", "update-ca-certificates", []),

@@ -22,7 +22,7 @@ import urllib.parse
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BIN = ROOT / "build" / "okena"
-BASE = 52000 + os.getpid() % 90 * 20 + (10 if ENGINE == "epoll" else 0)
+BASE = 26000 + os.getpid() % 90 * 20 + (10 if ENGINE == "epoll" else 0)
 BACK, LST = BASE, BASE + 1
 KEY = b"the-origin-signs-with-this-key-0123"
 OLD = b"an-older-key-still-good-for-a-while"

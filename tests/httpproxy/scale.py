@@ -24,7 +24,7 @@ import time
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BIN = ROOT / "build" / "okena"
-BASE = 30000 + (500 if ENGINE == "epoll" else 0)
+BASE = 4000 + (500 if ENGINE == "epoll" else 0)
 NL, NP, PER, NR, NH = 300, 2000, 5, 20000, 20000
 NG = 1000          # each gateway feature, past its old table (256 or 64)
 GW = BASE + NL     # their listener
