@@ -29,7 +29,7 @@ the connection closed when its framing can no longer be trusted.
 | Upstream port exhaustion | connections to backends kept alive and pooled, the kernel choosing source ports at connect (shared across destinations); `source` on a pool adds addresses, each with its own ports per destination (IP_BIND_ADDRESS_NO_PORT); running out is a failed connect, retried elsewhere |
 | Backend black-holed (no RST, no answer) | connect deadline, `TCP_USER_TIMEOUT`, keepalive, response deadline |
 | Backend IP changes (container recreated, DNS failover) | re-resolve on TTL and immediately on connect failure |
-| Conntrack table full on the host | `okena check --host` warns past three quarters full, or when the table is smaller than the connections the configuration may hold, and prints the `notrack` rules for okena's ports |
+| Conntrack table full on the host | `okena check --host` warns past three quarters full, or when the table is smaller than the connections the configuration may hold, and prints the `notrack` rules for okena's ports; with any entry tracked in its namespace it warns that a stateful firewall runs on every packet (a third of the rate here) |
 
 ## TLS
 

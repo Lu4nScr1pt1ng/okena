@@ -46,7 +46,10 @@ host networking, pinned to the same two cores (1 and 2; their SMT siblings 9
 and 10 stay idle). Each gets as many workers or threads as cores: two
 (`GOMAXPROCS=2` for Caddy and Traefik). The backend runs on cores 4-5 and
 12-13, and the load generators on the remaining eight. Nothing shares a
-physical core with the proxy.
+physical core with the proxy. The host runs firewalld, whose rules and
+conntrack every proxy's packets go through alike; without them every number
+here would be higher (okena's HTTP/1.1 on loopback: 160k → 232k requests a
+second, measured outside the containers).
 
 **Each proxy tuned by its own documentation.** Keep-alive to the backend
 everywhere (nginx `keepalive`, HAProxy `http-reuse always`, Caddy's and

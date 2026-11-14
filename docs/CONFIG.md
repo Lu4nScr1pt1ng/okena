@@ -1703,7 +1703,7 @@ one stays.
 | `okena [run] [-c FILE]` | serve (default `/etc/okena/okena.conf`) |
 | `okena check [FILE]` | validate; exit 0 when valid |
 | `okena check --diff [FILE]` | what a reload with FILE would change in the running instance |
-| `okena check --host [FILE]` | host settings that would hold okena back (conntrack, somaxconn, ports, file limits, kTLS, io_uring) |
+| `okena check --host [FILE]` | host settings that would hold okena back (a stateful firewall on its traffic, conntrack, somaxconn, ports, file limits, kTLS, io_uring) |
 | `okena explain [FILE]` | the effective config, defaults written out |
 | `okena fmt [-w] FILE` | canonical layout |
 | `okena route 'METHOD URL [name:value...]'` | which route and pool a request would take |
@@ -1783,6 +1783,16 @@ Without the seccomp profile okena runs on epoll and says so. Without host
 networking, disable the daemon's userland proxy and raise
 `net.core.somaxconn` and `net.ipv4.ip_local_port_range` with `sysctls:`.
 `okena check --host` lists what to change.
+
+**The host's firewall costs more than okena does.** Every packet okena sends
+and receives runs the host's netfilter rules. With firewalld (its zones'
+nftables chains, interface name matches and conntrack), HTTP/1.1 through
+okena on two workers did 160k requests a second on loopback, and 232k in a
+network namespace without rules: the firewall took about a quarter of the
+workers' CPU, more than okena's own code (7%). On a host that only balances,
+keep the rules on okena's ports few and stateless (`notrack` in a raw chain)
+or filter in front of it. `okena check --host` warns when connections in its
+namespace are tracked.
 
 ---
 

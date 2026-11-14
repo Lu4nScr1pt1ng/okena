@@ -207,6 +207,8 @@ hc_conntrack:
 	add	rdx,rdx
 	cmp	rdx,rcx
 	ja	.warn
+	test	r8,r8
+	jnz	.tracked
 	push	rcx
 	push	r8
 	call	hc_ok
@@ -217,6 +219,26 @@ hc_conntrack:
 	pop	rax
 	call	out_u64
 	out_lit ' entries in use'
+	jmp	hc_end
+.tracked:
+	; entries in this namespace: a stateful firewall (firewalld, iptables or
+	; nft rules with `ct`, Docker's NAT) runs on every packet okena sends and
+	; receives. Measured on loopback, HTTP/1.1 through okena on two workers,
+	; this host's firewalld: 160k requests a second, 232k in a namespace
+	; without rules (nft chains, interface name matches, conntrack: a quarter
+	; of the workers' CPU). Room in the table is not the cost; the rules are.
+	push	rcx
+	push	r8
+	call	hc_warn
+	out_lit 'packet filter: conntrack holds '
+	pop	rax
+	call	out_u64
+	out_lit ' of '
+	pop	rax
+	call	out_u64
+	out_lit ' entries, so a stateful firewall runs on every packet of okena',27h,'s traffic (measured with firewalld on loopback: a third fewer requests a second than without rules). On a host that only balances, keep the rules for its ports few and stateless (`notrack` in a raw chain for tcp dport { '
+	call	hc_ports_list
+	out_lit ' } and the same for output, tcp sport), or filter in front of it'
 	jmp	hc_end
 .warn:
 	push	rcx
