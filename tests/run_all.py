@@ -181,6 +181,8 @@ SUITES = [
     ("body_size epoll", ["tests/gateway/bodysize.py", "epoll"]),
     ("response rewrite io_uring", ["tests/gateway/resprw.py", "io_uring"]),
     ("response rewrite epoll", ["tests/gateway/resprw.py", "epoll"]),
+    ("alog fields io_uring", ["tests/gateway/alogx.py", "io_uring"]),
+    ("alog fields epoll", ["tests/gateway/alogx.py", "epoll"]),
     ("host rewrite io_uring", ["tests/gateway/hostrw.py", "io_uring"]),
     ("host rewrite epoll", ["tests/gateway/hostrw.py", "epoll"]),
     ("fault io_uring", ["tests/gateway/fault.py", "io_uring"]),

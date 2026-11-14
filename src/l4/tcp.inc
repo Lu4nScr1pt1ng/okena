@@ -414,6 +414,9 @@ sessions_init:
 	call	l4log_worker_init
 	test	eax,eax
 	js	.done
+	call	alx_worker_init
+	test	eax,eax
+	js	.done
 	call	http_worker_init
 	test	eax,eax
 	js	.done

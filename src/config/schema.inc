@@ -189,6 +189,7 @@ keysdef k_retry, 'on', T_ANY
 keysdef k_rtimeout, 'total', T_DURATION, 'try', T_DURATION
 keysdef k_outlier, 'errors', T_UINT, 'eject', T_DURATION, 'max_ejected', T_PERCENT
 keysdef k_rbudget, 'min', T_RATE
+keysdef k_rlog, 'sample', T_PERCENT
 keysdef k_concurrency, 'min', T_COUNT, 'max', T_COUNT
 keysdef k_alert, 'trust', T_ANY
 keysdef k_telegram, 'token', T_ANY, 'chat', T_ANY, 'api', T_ANY, 'trust', T_ANY
@@ -307,6 +308,7 @@ dirdef DIR_LEEWAY, 'leeway',    M_AUTH,    0,           F_UNIQUE, 1, 1, T_DURATI
 dirdef DIR_JREQ, 'require',   M_AUTH,    0,           0, 2, 64, T_ANY, T_ANY, 0
 dirdef DIR_CLAIMS, 'claims',    M_AUTH,    0,           F_UNIQUE, 3, 64, T_ANY, T_ANY, 0
 dirdef DIR_RMETRICS, 'metrics',  M_ROUTE,   0,           F_UNIQUE, 1, 1, T_NAME, T_NONE, 0
+dirdef DIR_RLOG, 'log',        M_ROUTE,   0,           F_UNIQUE, 0, 1, e_onoff, T_NONE, k_rlog
 dirdef DIR_RBODY, 'body_size', M_HOST or M_ROUTE, 0, F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
 dirdef DIR_COMPRESS, 'compress', M_HTTP or M_HOST or M_ROUTE, 0, F_UNIQUE, 1, 2, T_ANY, T_ANY, k_compress
 dirdef DIR_HEADERS, 'headers',  M_HTTP or M_HOST or M_ROUTE, 0, F_UNIQUE, 0, 0, T_NONE, T_NONE, k_headers

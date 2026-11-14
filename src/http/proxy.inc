@@ -333,6 +333,7 @@ end macro
 
 ; A new client connection: wait for its first request.
 http_start:
+	call	alx_conn_start			; (access log: no TLS seen yet)
 	call	session_ptr
 	mov	dword [rax+S_STATE],ST_OPEN	; no upstream yet: reading the request
 	h_rec
@@ -755,6 +756,7 @@ http_request:
 	test	dword [r15+H_FLAGS],HX_FAULTED	; (its clock started before it waited)
 	jnz	@f
 	call	alog_request
+	call	alx_request			; (access log: user agent, referer)
 	call	addon_fresh			; (through no addon yet)
 @@:
 	h_rec
@@ -3041,6 +3043,7 @@ http_resp_head:
 	call	http_count
 	and	dword [r15+H_FLAGS],not HX_UPGRADE	; the backend did not switch
 	mov	[r15+H_STATUS],eax
+	call	alx_resp_head			; (access log: upstream_ms)
 	; an error of the backend's, with a page of one's own for it (`errors
 	; ... backend`): its status stays, its body goes
 	cmp	eax,400
@@ -5883,19 +5886,18 @@ http_body_limit:
 	cmp	[r15+H_REMAIN],rax
 	ja	.over
 .fits:
+	call	alx_body			; (access log: bytes_in)
 	clc
 	ret
 .chunked:
 	mov	[r15+H_REMAIN],rax
-	clc
-	ret
+	jmp	.fits
 .none:
 	cmp	dword [r15+H_BODY],BK_CHUNKED
 	jne	.fits
 	mov	rax,0x7FFFFFFFFFFFFFFF
 	mov	[r15+H_REMAIN],rax
-	clc
-	ret
+	jmp	.fits
 .over:
 	stc
 	ret

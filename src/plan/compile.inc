@@ -147,7 +147,8 @@ RA_BODYMAX	:= 224		; d: `body_size` of the route or its host: bytes; 0 the liste
 RA_WRFIRST	:= 228		; d: `response rewrite` lines (g_lrw), the route's first
 RA_WRN		:= 232		; d
 RA_MIDX		:= 236		; d: `metrics NAME`: its index (g_rmet) + 1, 0 none
-RA_SIZE		:= 240
+RA_LOG		:= 240		; d: `log`: 0 every exchange, -1 off, else the ten-thousandths logged
+RA_SIZE		:= 248
 MAX_TRYC	:= 32		; distinct try= values
 RESPOND_BODY_MAX := 1 shl 20	; `respond CODE BODY`
 RESPOND_INLINE	:= 4096		; up to this, in the head's write
@@ -1592,6 +1593,9 @@ compile_route_action:
 	lea	rcx,[dir_table + D_SIZE*DIR_RMETRICS]
 	cmp	rax,rcx
 	je	@f
+	lea	rcx,[dir_table + D_SIZE*DIR_RLOG]
+	cmp	rax,rcx
+	je	@f
 	mov	rbx,[rbx+N_NEXT]
 	jmp	@b
 .listener_compress:
@@ -1633,6 +1637,46 @@ compile_route_action:
 	push	rcx
 	imul	r13,rcx,RA_SIZE
 	lea	r13,[g_acts+r13]
+	; log off | log sample=N%: the route's share of access log lines
+	mov	rdi,r12
+	mov	ecx,DIR_RLOG
+	call	find_child
+	test	rax,rax
+	jz	.rlog_done
+	push	rax
+	mov	rdi,rax
+	cstring str_key_lsample, 'sample',0
+	lea	rsi,[str_key_lsample]
+	call	node_option
+	test	rax,rax
+	jz	.rlog_word
+	add	rsp,8
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	push	rdi
+	call	parse_percent			; hundredths of a percent: of 10000
+	pop	rdi
+	cmp	eax,10000
+	jb	@f
+	xor	eax,eax				; (100%: every one)
+	jmp	.rlog_set
+@@:
+	test	eax,eax
+	jnz	.rlog_set
+	mov	eax,-1				; (0%: none)
+.rlog_set:
+	mov	[r13+RA_LOG],eax
+	jmp	.rlog_done
+.rlog_word:
+	pop	rax
+	cmp	dword [rax+N_ARGC],0
+	je	.rlog_done
+	mov	rax,[rax+N_ARGS]
+	mov	rax,[rax+A_VAL]
+	cmp	word [rax],'of'			; log off
+	jne	.rlog_done
+	mov	dword [r13+RA_LOG],-1
+.rlog_done:
 	; metrics NAME: the route's counters, by name (two routes may share one)
 	mov	rdi,r12
 	mov	ecx,DIR_RMETRICS
@@ -4916,6 +4960,7 @@ compile_listener:
 	call	alog_dest_node
 	call	alog_dest_id
 	mov	[g_cmp_alog],eax
+	mov	dword [g_plan_alx],1		; (the lines' extra fields: alx.inc)
 @@:
 	mov	rdi,r12				; the listener's error pages
 	call	compile_errors

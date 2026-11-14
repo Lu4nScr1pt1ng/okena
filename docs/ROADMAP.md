@@ -984,7 +984,10 @@ use it unchanged.
     chosen field list, per-route off and sampling. Metrics: **done 2026-11-14**
     (tests/admin/obs.py): per server by class and time, per `metrics NAME`
     route with a histogram, refusals by reason; counted where the exchange
-    ends (a multiply and a few increments).
+    ends (a multiply and a few increments). Log fields and per-route
+    `log off` / `log sample=`: **done 2026-11-14** (src/core/alx.inc,
+    tests/gateway/alogx.py), a side table only when an http listener logs.
+    Left out: a chosen field list (the lines are JSON: consumers pick).
 11. Kubernetes `Ingress` (networking.k8s.io/v1) beside the Gateway API,
     and a Helm chart.
 12. Rate limits shared across a fleet; `RateLimit-*` response headers.

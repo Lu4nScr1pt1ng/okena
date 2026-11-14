@@ -220,6 +220,10 @@ http_tls_close:
 tls_count:
 	push	rdx
 	mov	edx,eax
+	cmp	edx,1
+	ja	@f
+	call	alx_tls				; (access log: its version)
+@@:
 	call	session_ptr
 	mov	ecx,[rax+S_LST]
 	lea	ecx,[rcx*4]

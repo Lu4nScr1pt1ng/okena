@@ -2624,6 +2624,8 @@ h3_request_new:
 	mov	rsi,rax
 	mov	ecx,P_SIZE
 	rep	movsb
+	mov	edi,[rsp+8+H3N_SESS]		; (access log: TLS 1.3)
+	call	alx_h3
 	pop	rbx
 	; its record
 	mov	edi,[rsp+H3N_SESS]

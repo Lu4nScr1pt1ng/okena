@@ -1707,8 +1707,14 @@ access_log otlp://collector:4318             # OpenTelemetry logs over OTLP/HTTP
 
 One JSON line per request: `time`, `listener`, `client`, `peer`, `method`,
 `host`, `target`, `status`, `bytes`, `duration_ms`, `upstream`, `source`
-(`backend` or `okena`), `retried`, and with tracing, `trace_id` and
-`span_id`. Workers never write files or wait for the network: they pass lines
+(`backend` or `okena`), `user_agent`, `referer`, `tls` (`"1.3"`, `"1.2"` or
+`null`), `upstream_ms` (from the request to the backend's answer head;
+`null` when okena answered), `bytes_in` (the request's head and body),
+`retried`, and with tracing, `trace_id` and `span_id`.
+
+A route chooses its share: `log off` writes no line for it (a health check
+polled every second), `log sample=5%` one in twenty. Metrics count every
+request either way. Workers never write files or wait for the network: they pass lines
 to a logger process and drop them (counted in
 `okena_access_log_dropped_total`) rather than slow down a request.
 `SIGUSR1` or a reload reopens files, which is all logrotate needs.

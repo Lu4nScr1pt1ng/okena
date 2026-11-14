@@ -2326,6 +2326,9 @@ h2_stream_new:
 	mov	rsi,rax
 	mov	ecx,P_SIZE
 	call	copy_small
+	mov	edi,[rsp+16+H2N_SESS]		; (access log: the TLS it came over)
+	mov	esi,[rsp]
+	call	alx_inherit
 	pop	rbx				; the connection
 	pop	r9
 	; the stream's record

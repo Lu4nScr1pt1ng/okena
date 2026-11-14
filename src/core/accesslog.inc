@@ -536,6 +536,9 @@ alog_exchange:
 	mov	edx,[r14+LS_ALOG]
 	test	edx,edx
 	jz	.span
+	call	alog_route_says			; `log off`, `log sample=`: CF not this one
+	jc	.span
+	mov	edx,[r14+LS_ALOG]
 	lea	rdi,[g_alog_line]
 	mov	[rdi],dl
 	inc	rdi
@@ -707,9 +710,11 @@ alog_exchange:
 	test	r12d,r12d
 	jnz	@f
 	memit ',"source":"backend"'
-	jmp	.retried
+	jmp	.extra
 @@:
 	memit ',"source":"okena"'
+.extra:
+	call	alx_fields			; user_agent, referer, tls, upstream_ms, bytes_in
 .retried:
 	test	dword [r15+H_FLAGS],HX_RETRIED
 	jz	@f
@@ -744,6 +749,36 @@ bss
 	align 8
 	g_lat_us	dq ?			; the exchange lat_record timed, µs, -1 none
 end bss
+
+; r15 = record: CF when its route says this exchange gets no line (`log off`,
+; or not drawn by `log sample=`). Keeps all but rax, rcx, rdx.
+alog_route_says:
+	mov	eax,[r15+H_ACT]
+	test	eax,eax
+	jz	.yes
+	dec	eax
+	imul	rax,rax,RA_SIZE
+	mov	ecx,[g_acts+rax+RA_LOG]
+	test	ecx,ecx
+	jz	.yes
+	cmp	ecx,-1
+	je	.no
+	push	rcx
+	call	trace_rand
+	pop	rcx
+	xor	edx,edx
+	push	rcx
+	mov	ecx,10000
+	div	rcx
+	pop	rcx
+	cmp	edx,ecx
+	jb	.yes
+.no:
+	stc
+	ret
+.yes:
+	clc
+	ret
 
 ; ebx = session, esi = 0 when the backend answered: the exchange that ends,
 ; counted for its server (backend answers) and its route (`metrics NAME`).
