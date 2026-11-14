@@ -55,7 +55,9 @@ LS_BODYMAX	:= 196		; d: http: `limits { body_size }`, bytes, 0 = no limit
 LS_MSS		:= 200		; d: `mss`: TCP_MAXSEG for its connections, 0 = the kernel's
 LS_CANONLEN	:= 204		; d: `canonical NAME`: its length, 0 none
 LS_CANON	:= 208		; q: and it
-LS_SIZE		:= 216
+LS_PFIRST	:= 216		; d: `proxy_protocol accept`: its senders' first range (g_trust)
+LS_PCOUNT	:= 220		; d: and how many, 0 = every peer sends a header
+LS_SIZE		:= 224
 assert LS_PA6 + 28 <= LS_RESP
 
 ; Host block name (http): routes for requests to that host
@@ -179,6 +181,7 @@ LSF_NO12	:= 4096		; `tls { versions 1.3 }`: a TLS 1.2 client is refused
 LSF_NO13	:= 8192		; `tls { versions 1.2 }`: TLS 1.3 is not taken
 LSF_H1FIRST	:= 16384	; `tls { alpn http/1.1 h2 }`: http/1.1 when offered
 LSF_NOH1	:= 32768	; `tls { alpn h2 }`: a client asking http/1.1 only is refused
+LSF_PP_IN	:= 65536	; `proxy_protocol accept`: a PROXY header comes first (l4/ppin.inc)
 
 ; Pool
 PL_FIRST	:= 0		; d: first server
@@ -339,6 +342,8 @@ bss
 	g_cmp_pai	dd ?
 	g_cmp_tlsi	dd ?
 	g_cmp_tfirst	dd ?
+	g_cmp_pfirst	dd ?
+	g_cmp_pcount	dd ?
 	g_cmp_tcount	dd ?
 	g_cmp_t_response dd ?
 	g_cmp_t_body	dd ?
@@ -4466,9 +4471,42 @@ compile_listener:
 .body_max:
 	mov	[g_cmp_body_max],eax
 @@:
+	mov	dword [g_cmp_pfirst],0
+	mov	dword [g_cmp_pcount],0
 	mov	rdi,r12
-	mov	ecx,DIR_PROXY_PROTOCOL
-	call	find_child
+	mov	esi,1
+	call	pp_directive			; `proxy_protocol accept [FROM...]`
+	test	rax,rax
+	jz	.pp_send
+	or	dword [g_cmp_flags],LSF_PEER or LSF_PP_IN
+	push	rbx
+	push	r13
+	mov	rbx,rax
+	mov	eax,[g_plan_trust]
+	mov	[g_cmp_pfirst],eax
+	mov	dword [g_cmp_tcount],0		; (trust_add counts there)
+	mov	r13d,1
+.pp_from:
+	cmp	r13d,[rbx+N_ARGC]
+	jae	.pp_from_end
+	imul	rax,r13,A_SIZE
+	add	rax,[rbx+N_ARGS]
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	inc	r13d
+	call	trust_list
+	jnc	.pp_from
+	call	trust_add
+	jmp	.pp_from
+.pp_from_end:
+	mov	eax,[g_cmp_tcount]
+	mov	[g_cmp_pcount],eax
+	pop	r13
+	pop	rbx
+.pp_send:
+	mov	rdi,r12
+	xor	esi,esi
+	call	pp_directive			; `proxy_protocol send v1|v2`
 	test	rax,rax
 	jz	@f
 	mov	rax,[rax+N_ARGS]
@@ -4745,6 +4783,10 @@ compile_listener:
 	mov	[rcx+LS_CCA],eax
 	mov	eax,[g_cmp_tcount]
 	mov	[rcx+LS_TCOUNT],eax
+	mov	eax,[g_cmp_pfirst]
+	mov	[rcx+LS_PFIRST],eax
+	mov	eax,[g_cmp_pcount]
+	mov	[rcx+LS_PCOUNT],eax
 	push	rcx
 	lea	rdi,[rcx+LS_PA4]
 	lea	rsi,[g_cmp_pa4]

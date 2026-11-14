@@ -1297,6 +1297,8 @@ on_accept_a:
 	lea	rsi,[g_acc_addr]
 	mov	ecx,28
 	rep	movsb
+	call	pp_in_wanted			; a PROXY header first: then admitted
+	jc	pp_in_start
 	call	peer_admit			; per_source, PROXY header
 	jc	.over
 	if_http http_start
@@ -1325,6 +1327,10 @@ on_accept_a:
 ; in S_CLIENT), r13d = listener. Applies per_source and builds the PROXY
 ; header. CF when the client is over its per-source limit.
 peer_admit:
+	mov	byte [g_pp_local],0		; (the local address: the socket's)
+; the same, after a PROXY header received (ppin.inc): g_pp_local says
+; whether it gave the local address too
+peer_admit_pp:
 	call	peer_ptr
 	mov	dword [rax+P_SLOT],-1		; (its PROXY header record: written by
 						; pp_build, read only where the listener sends one)
@@ -1337,9 +1343,12 @@ peer_admit:
 	imul	rcx,r13,LS_SIZE
 	test	dword [g_listeners+rcx+LS_FLAGS],LSF_PP_V1 or LSF_PP_V2
 	jz	.ok
+	cmp	byte [g_pp_local],0
+	jne	.build
 	call	session_ptr
 	mov	edi,[rax+S_CLIENT]
 	call	peer_local
+.build:
 	call	pp_build
 .ok:
 	clc

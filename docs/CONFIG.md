@@ -312,7 +312,36 @@ tcp :5432 {
 ```
 
 Bytes are relayed in both directions with backpressure, half-close and
-graceful drain. A `tcp` listener can also end TLS or route it by name without
+graceful drain.
+
+**Behind another balancer.** `proxy_protocol accept` reads the PROXY header
+(v1 or v2) that a balancer in front writes before the connection's first byte
+(AWS NLB, HAProxy, Cloudflare Spectrum, another okena), on `tcp` and `http`
+listeners. The client it names is the client everywhere: logs,
+`X-Forwarded-For`, `allow`/`deny`, limits, `per_source`, `source-hash`, and the
+header okena sends on with `proxy_protocol send`.
+
+```nginx
+tcp :5432 {
+    proxy_protocol accept 10.0.0.0/8          # only these peers send one
+    proxy_protocol send v2                    # and the backend learns it too
+    to pool db
+}
+http :80 {
+    proxy_protocol accept                     # every peer must send one
+    route /* { to pool web }
+}
+```
+
+With addresses (the same forms as `trusted_proxies`: ranges, `cloudflare`,
+`file:PATH`), only those peers may send a header and anyone else is served as
+a direct client; without them every connection must start with one. A
+connection whose first bytes are not a valid header, or that does not finish
+it within the header timeout, is closed. `LOCAL` (v2) and `UNKNOWN` (v1), what
+balancers send for their own health checks, keep the connection's addresses.
+TLVs are accepted and skipped. Only what the header covers is taken from the
+socket, so a request, a TLS handshake or an L4 stream sent with it goes on
+untouched. HTTP/3 has no PROXY protocol (it is UDP). A `tcp` listener can also end TLS or route it by name without
 decrypting it, see [TLS on a `tcp` listener](#tls-on-a-tcp-listener). With
 `mode xdp` it runs in the kernel, see [XDP](#xdp-load-balancing-in-the-kernel).
 

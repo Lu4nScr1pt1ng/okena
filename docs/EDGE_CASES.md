@@ -25,7 +25,7 @@ the connection closed when its framing can no longer be trusted.
 | Client IP behind NAT (thousands of users, one address) | per-source connection limits configurable, and keyable by other attributes |
 | IPv6, dual stack, IPv4-mapped addresses | normalised to one form for limits, logs and ACLs (RFC 5952 text); a backend's name gives every A and AAAA address as a server of the pool, one that fails ejected (instead of happy eyeballs per connection) |
 | MTU/PMTU black holes | QUIC starts at 1200 bytes and probes 1350 and 1452 (RFC 9000 14.3), a lost probe costing nothing; TCP is the kernel's, clamped by `mss N` on a listener when tunnels on the path drop ICMP |
-| Clients behind proxies that send PROXY protocol | accepted only from `proxy_protocol accept from=`; v1 and v2 with TLVs (TLS info, unique ID) |
+| Clients behind proxies that send PROXY protocol | `proxy_protocol accept [FROM...]` on tcp and http listeners: v1 and v2 (TLVs skipped), a header only from the listed peers (from every peer without a list), taken to its last byte with a peek so what follows is untouched; a broken or unfinished header closes the connection (tests/peer/accept.py) |
 | Upstream port exhaustion | connections to backends kept alive and pooled, the kernel choosing source ports at connect (shared across destinations); `source` on a pool adds addresses, each with its own ports per destination (IP_BIND_ADDRESS_NO_PORT); running out is a failed connect, retried elsewhere |
 | Backend black-holed (no RST, no answer) | connect deadline, `TCP_USER_TIMEOUT`, keepalive, response deadline |
 | Backend IP changes (container recreated, DNS failover) | re-resolve on TTL and immediately on connect failure |

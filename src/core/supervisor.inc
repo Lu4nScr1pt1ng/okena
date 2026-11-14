@@ -600,7 +600,13 @@ listener_open:
 	; http: a connection reaches a worker with its first bytes, not before
 	; (one wake-up per request instead of two; silent ones cost nothing)
 	cmp	dword [rbx+LS_KIND],LK_HTTP
+	je	.defer
+	; tcp: when every peer starts with a PROXY header, the same holds
+	test	dword [rbx+LS_FLAGS],LSF_PP_IN
+	jz	@f
+	cmp	dword [rbx+LS_PCOUNT],0
 	jne	@f
+.defer:
 	mov	esi,IPPROTO_TCP
 	mov	edx,TCP_DEFER_ACCEPT
 	lea	r10,[rbx+LS_T_HEADER]		; seconds, as the header clock

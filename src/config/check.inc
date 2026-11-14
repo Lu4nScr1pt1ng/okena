@@ -1307,6 +1307,124 @@ type_help:
 .none:
 	ret
 
+; rdi = listener node, esi = 0 send, 1 accept: rax = its `proxy_protocol`
+; line of that kind, or 0. Keeps rbx, r12-r15.
+pp_directive:
+	push	rbx
+	push	r12
+	mov	r12d,esi
+	mov	rbx,[rdi+N_CHILD]
+.kid:
+	test	rbx,rbx
+	jz	.none
+	lea	rax,[dir_table + D_SIZE*DIR_PROXY_PROTOCOL]
+	cmp	[rbx+N_DEF],rax
+	jne	.next
+	cmp	dword [rbx+N_ARGC],0
+	je	.next
+	mov	rax,[rbx+N_ARGS]
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	lea	rdx,[e_pp_mode]
+	call	list_index
+	cmp	eax,r12d
+	je	.found
+.next:
+	mov	rbx,[rbx+N_NEXT]
+	jmp	.kid
+.found:
+	mov	rax,rbx
+	pop	r12
+	pop	rbx
+	ret
+.none:
+	xor	eax,eax
+	pop	r12
+	pop	rbx
+	ret
+
+; rdi = tcp or http listener: its `proxy_protocol` lines. `send v1|v2` (tcp
+; only: an http listener's backends get X-Forwarded-For) and `accept
+; [FROM...]`, each at most once.
+check_proxy_protocol:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	mov	r12,rdi
+	xor	r13d,r13d			; kinds seen: 1 send, 2 accept
+	mov	rbx,[r12+N_CHILD]
+.kid:
+	test	rbx,rbx
+	jz	.out
+	lea	rax,[dir_table + D_SIZE*DIR_PROXY_PROTOCOL]
+	cmp	[rbx+N_DEF],rax
+	jne	.next
+	mov	rax,[rbx+N_ARGS]
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	lea	rdx,[e_pp_mode]
+	call	list_index
+	cmp	eax,1
+	je	.accept
+	test	eax,eax
+	jnz	.next				; (reported as a bad value already)
+	test	r13d,1
+	jnz	.twice
+	or	r13d,1
+	lea	rax,[dir_table + D_SIZE*DIR_HTTP]
+	cmp	[r12+N_DEF],rax
+	je	.send_http
+	cmp	dword [rbx+N_ARGC],2
+	jne	.send_args
+	mov	rdi,[rbx+N_ARGS]
+	add	rdi,A_SIZE
+	lea	rsi,[e_pp_version]
+	call	check_value
+	jmp	.next
+.accept:
+	test	r13d,2
+	jnz	.twice
+	or	r13d,2
+	mov	r14d,1
+.from:
+	cmp	r14d,[rbx+N_ARGC]
+	jae	.next
+	imul	rdi,r14,A_SIZE
+	add	rdi,[rbx+N_ARGS]
+	mov	esi,T_CIDR
+	call	check_value
+	inc	r14d
+	jmp	.from
+.send_http:
+	call	.where
+	out_lit 'proxy_protocol send is for tcp listeners: an http listener tells its backends who the client is in X-Forwarded-For'
+	call	cfg_diag_end
+	jmp	.next
+.send_args:
+	call	.where
+	out_lit 'proxy_protocol send takes a version: `proxy_protocol send v1` or `proxy_protocol send v2`'
+	call	cfg_diag_end
+	jmp	.next
+.twice:
+	call	.where
+	out_lit 'a second proxy_protocol line of this kind: one `send` and one `accept` at most'
+	call	cfg_diag_end
+.next:
+	mov	rbx,[rbx+N_NEXT]
+	jmp	.kid
+.out:
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+.where:
+	mov	rdi,[rbx+N_NAME]
+	mov	esi,[rbx+N_NLEN]
+	mov	edx,[rbx+N_LINE]
+	jmp	cfg_error
+
 ; rdi = a tcp or udp listener: `limits { body_size }` is for http's requests
 check_no_body_size:
 	mov	ecx,DIR_LIMITS
@@ -1366,6 +1484,8 @@ check_semantics:
 	mov	rdi,rbx
 	call	check_http
 	mov	rdi,rbx
+	call	check_proxy_protocol
+	mov	rdi,rbx
 	call	check_tls
 	jmp	.advance
 .udp:
@@ -1397,6 +1517,8 @@ check_semantics:
 	inc	dword [g_chk_listeners]
 	mov	rdi,rbx
 	call	check_listener
+	mov	rdi,rbx
+	call	check_proxy_protocol
 	mov	rdi,rbx
 	call	check_tcp_timeouts
 	mov	rdi,rbx

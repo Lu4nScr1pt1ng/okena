@@ -498,6 +498,8 @@ ep_accept:
 	lea	rsi,[g_ep_sa]
 	mov	ecx,28
 	rep	movsb
+	call	pp_in_wanted			; a PROXY header first: then admitted
+	jc	.pp_in
 	call	peer_admit			; per_source, PROXY header
 	jc	.over
 	imul	rax,r13,LS_SIZE
@@ -508,6 +510,17 @@ ep_accept:
 	push	r14
 	push	r15
 	call	http_start
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	jmp	.next
+.pp_in:
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	call	pp_in_start
 	pop	r15
 	pop	r14
 	pop	r13

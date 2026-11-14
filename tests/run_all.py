@@ -137,6 +137,8 @@ SUITES = [
     ("budget epoll", ["tests/tls/budget.py", "epoll"]),
     ("peer io_uring", ["tests/peer/run.py", "io_uring"]),
     ("peer epoll", ["tests/peer/run.py", "epoll"]),
+    ("peer accept io_uring", ["tests/peer/accept.py", "io_uring"]),
+    ("peer accept epoll", ["tests/peer/accept.py", "epoll"]),
     ("config fuzz", ["tests/config/fuzz.py", "2000"]),
     ("config", ["tests/config/run.py"]),
     ("host check", ["tests/config/host.py"]),

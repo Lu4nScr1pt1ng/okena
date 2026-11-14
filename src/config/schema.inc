@@ -128,7 +128,7 @@ enumdef e_samesite, 'lax', 'strict', 'none'
 enumdef e_balance, 'round-robin', 'least-conn', 'random', 'least-request', 'peak-ewma', 'maglev', 'ring-hash', 'source-hash', 'first'
 enumdef e_server_flags, 'backup'
 enumdef e_health, 'tcp', 'http', 'grpc'
-enumdef e_pp_mode, 'send'
+enumdef e_pp_mode, 'send', 'accept'
 enumdef e_listen_mode, 'xdp'
 enumdef e_redirect_codes, '301', '302', '303', '307', '308'
 keysdef k_respond, 'type', T_ANY
@@ -285,7 +285,7 @@ dirdef DIR_ADBREAKER, 'breaker', M_ADDON,  0,           F_UNIQUE or F_KEYS_BLOCK
 dirdef DIR_RADDON, 'addon',     M_ROUTE,   0,           0, 1, 1, T_NAME, T_NONE, 0
 dirdef DIR_POOL, 'pool',        M_TOP,     CTX_POOL,    F_BLOCK_REQ, 1, 1, T_NAME, T_NONE, 0
 dirdef DIR_TO, 'to',          M_TCP or M_UDP or M_ROUTE, 0,           F_UNIQUE, 1, 64, T_TARGET, T_TARGET, 0
-dirdef DIR_PROXY_PROTOCOL, 'proxy_protocol', M_TCP, 0,      F_UNIQUE, 2, 2, e_pp_mode, e_pp_version, 0
+dirdef DIR_PROXY_PROTOCOL, 'proxy_protocol', M_TCP or M_HTTP, 0, 0, 1, 64, e_pp_mode, T_ANY, 0
 dirdef DIR_LIMITS, 'limits',      M_TCP or M_UDP or M_HTTP,     CTX_LIMITS,  F_BLOCK_REQ or F_UNIQUE, 0, 0, T_NONE, T_NONE, 0
 dirdef DIR_CONNECTIONS, 'connections', M_LIMITS,  0,           F_UNIQUE, 1, 1, T_COUNTAUTO, T_NONE, 0
 dirdef DIR_PER_SOURCE, 'per_source', M_LIMITS,  0,           F_UNIQUE, 1, 1, T_COUNT, T_NONE, 0

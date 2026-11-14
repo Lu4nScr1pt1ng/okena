@@ -2295,6 +2295,8 @@ http_recv_plain:
 	je	http_tls_fin_in
 	cmp	edx,HS_PT_HELLO
 	je	http_pt_in
+	cmp	edx,HS_PP_IN
+	je	pp_in_recv			; a PROXY header (l4/ppin.inc)
 	jmp	.past_pt
 .dropped:
 	ret
@@ -3880,6 +3882,8 @@ trust_match:
 	mov	r8d,[r14+LS_TFIRST]
 	mov	r9d,r8d
 	add	r9d,[r14+LS_TCOUNT]
+; the same over ranges [r8d, r9d) of g_trust
+trust_match_range:
 .range:
 	cmp	r8d,r9d
 	jae	.no
@@ -4908,6 +4912,8 @@ http_phase_expired:
 	cmp	eax,HS_TLS_LAST
 	jbe	.silent				; the handshake never finished
 @@:
+	cmp	eax,HS_PP_IN
+	je	.silent				; its PROXY header never came whole
 	cmp	eax,HS_LINGER
 	je	.silent				; its error long sent
 	cmp	eax,HS_HEAD
