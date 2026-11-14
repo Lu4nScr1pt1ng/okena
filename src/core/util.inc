@@ -249,6 +249,64 @@ mem_eq_cstr:
 	xor	eax,eax
 	ret
 
+; rep movsb for the short copies of a request's head (a method, a header's
+; name or value: a few to a few dozen bytes), where its start-up is most of
+; the work: rdi, rsi = after, rcx = 0, exactly rcx bytes written (overlapping
+; loads and stores, never a byte past either end); rax clobbered. Past 256
+; bytes, rep movsb itself.
+copy_small:
+	cmp	rcx,16
+	ja	.long
+	cmp	ecx,8
+	jb	.lt8
+	mov	rax,[rsi]
+	mov	[rdi],rax
+	mov	rax,[rsi+rcx-8]
+	mov	[rdi+rcx-8],rax
+	jmp	.done
+.lt8:
+	cmp	ecx,4
+	jb	.lt4
+	mov	eax,[rsi]
+	mov	[rdi],eax
+	mov	eax,[rsi+rcx-4]
+	mov	[rdi+rcx-4],eax
+	jmp	.done
+.lt4:
+	test	ecx,ecx
+	jz	.out
+	mov	al,[rsi]
+	mov	[rdi],al
+	cmp	ecx,1
+	je	.done
+	mov	ax,[rsi+rcx-2]
+	mov	[rdi+rcx-2],ax
+.done:
+	add	rsi,rcx
+	add	rdi,rcx
+	xor	ecx,ecx
+.out:
+	ret
+.long:
+	cmp	rcx,256
+	ja	.rep
+.qword:
+	mov	rax,[rsi]
+	mov	[rdi],rax
+	add	rsi,8
+	add	rdi,8
+	sub	rcx,8
+	cmp	rcx,8
+	jae	.qword
+	test	rcx,rcx
+	jz	.out
+	mov	rax,[rsi+rcx-8]			; (the last, over what came before)
+	mov	[rdi+rcx-8],rax
+	jmp	.done
+.rep:
+	rep	movsb
+	ret
+
 ; rdi, rsi = buffers, edx = length. eax = 1 when equal.
 mem_eq:
 	; eight bytes at a time, then the rest (repe cmpsb is microcode: a few

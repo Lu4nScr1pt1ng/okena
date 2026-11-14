@@ -1797,7 +1797,7 @@ http_write_request_head:
 	lea	r13,[r13+HB_OUT+H_OUT_CAP-256]
 	mov	rsi,[r12+HM_METHOD]
 	mov	ecx,[r12+HM_MLEN]
-	rep	movsb
+	call	copy_small
 	mov	byte [rdi],' '
 	inc	rdi
 	; origin form towards the backend
@@ -1824,7 +1824,7 @@ http_write_request_head:
 .target:
 	call	http_rewrite_target		; the route's rewrite, if it applies
 	jnc	.version
-	rep	movsb
+	call	copy_small
 .version:
 	mov	rax,' HTTP/1.'
 	mov	[rdi],rax
@@ -1956,12 +1956,12 @@ http_write_request_head:
 	ja	.full
 	mov	rsi,[r14+HF_NAME]
 	mov	ecx,[r14+HF_NLEN]
-	rep	movsb
+	call	copy_small
 	mov	word [rdi],': '
 	add	rdi,2
 	mov	rsi,[r14+HF_VALUE]
 	mov	ecx,[r14+HF_VLEN]
-	rep	movsb
+	call	copy_small
 	mov	word [rdi],0x0A0D
 	add	rdi,2
 	jmp	.skip
@@ -1992,7 +1992,7 @@ http_write_request_head:
 	jne	.host_copy
 	memit_hot 'localhost'
 .host_copy:
-	rep	movsb
+	call	copy_small
 	jmp	.host_done
 .host_local:
 	memit_hot 'localhost'
@@ -2011,7 +2011,7 @@ http_write_request_head:
 	memit_hot 'X-Request-Id: '
 	lea	rsi,[r15+H_RID]
 	mov	ecx,[r15+H_RIDLEN]
-	rep	movsb
+	call	copy_small
 	memit_hot 13,10
 @@:
 	mov	eax,[r15+H_ACT]			; the route's set and add
@@ -2048,7 +2048,7 @@ http_write_request_head:
 	cmp	rax,r13
 	ja	.full
 	mov	rsi,[r14+HF_VALUE]
-	rep	movsb
+	call	copy_small
 	mov	word [rdi],', '
 	add	rdi,2
 .xff_next:
@@ -2079,7 +2079,7 @@ http_write_request_head:
 	memit_hot 13,10
 @@:
 	mov	rax,[r15+H_BUF]			; gRPC-Web text: its length changes (decoded)
-	cmp	byte [rax+HB_GWEB],4
+	cmp	byte [r15+H_GWEB],4
 	je	.conn
 	mov	eax,[r15+H_BODY]
 	cmp	eax,BK_LENGTH
@@ -2694,7 +2694,7 @@ http_duplex_pump:
 	mov	r9d,ecx
 .data:
 	mov	rax,[r15+H_BUF]			; gRPC-Web text: decoded first
-	cmp	byte [rax+HB_GWEB],4
+	cmp	byte [r15+H_GWEB],4
 	jne	@f
 	call	gweb_decode
 	jnc	@f
@@ -3015,7 +3015,7 @@ http_resp_head:
 	cmp	dword [r15+H_RBODY],BK_LENGTH
 	jne	.send_head
 	mov	rax,[r15+H_BUF]			; (gRPC-Web text: the pump encodes it)
-	cmp	byte [rax+HB_GWEB],4
+	cmp	byte [r15+H_GWEB],4
 	je	.send_head
 	call	session_ptr
 	test	dword [rax+S_FLAGS],SF_ZIP
@@ -3236,7 +3236,7 @@ http_write_response_head:
 	jmp	.conn
 @@:
 	mov	rcx,[r15+H_BUF]			; gRPC-Web text: its DATA say how long
-	cmp	byte [rcx+HB_GWEB],4
+	cmp	byte [r15+H_GWEB],4
 	je	.conn
 	cmp	eax,BK_LENGTH
 	je	.length
@@ -3297,7 +3297,7 @@ http_resp_pump:
 	sub	ecx,[r15+H_UPOFF]
 	jnz	@f
 	mov	rax,[r15+H_BUF]
-	cmp	byte [rax+HB_GWEB],4
+	cmp	byte [r15+H_GWEB],4
 	je	.read				; (gRPC-Web text: through the encoder)
 	call	zc_ok				; from a file or the disk cache: without copies?
 	jnc	zc_send
@@ -3317,7 +3317,7 @@ http_resp_pump:
 	mov	rdi,rsi
 	mov	esi,ecx
 	mov	rax,[r15+H_BUF]
-	cmp	byte [rax+HB_GWEB],4
+	cmp	byte [r15+H_GWEB],4
 	jne	@f
 	mov	r8,rdi
 	mov	r9d,esi
@@ -3336,7 +3336,7 @@ http_resp_pump:
 .length_done:
 	mov	dword [r15+H_RBODY],BK_NONE
 	mov	rax,[r15+H_BUF]
-	cmp	byte [rax+HB_GWEB],4
+	cmp	byte [r15+H_GWEB],4
 	je	http_last_chunk			; (gRPC-Web text: its padding, its end)
 	call	session_ptr
 	test	dword [rax+S_FLAGS],SF_ZIP
@@ -3400,7 +3400,7 @@ http_resp_pump:
 	call	cache_tee
 	pop	rcx
 	mov	rax,[r15+H_BUF]			; gRPC-Web text: in base64
-	cmp	byte [rax+HB_GWEB],4
+	cmp	byte [r15+H_GWEB],4
 	jne	@f
 .gweb_text:
 	call	gweb_text_feed
@@ -3453,9 +3453,9 @@ http_last_chunk:
 .not_zip:
 	h_rec
 	mov	rax,[r15+H_BUF]			; gRPC-Web: its trailers as its last message
-	cmp	byte [rax+HB_GWEB],4
+	cmp	byte [r15+H_GWEB],4
 	je	gweb_text_end			; (text: base64, and padded)
-	cmp	byte [rax+HB_GWEB],2
+	cmp	byte [r15+H_GWEB],2
 	jne	@f
 	cmp	dword [r15+H_RCK+CK_TLEN],0
 	jne	gweb_trailers
@@ -5255,7 +5255,7 @@ http_grpc_mark:
 	push	rbx
 	push	r12
 	mov	rax,[r15+H_BUF]			; (grpcweb.inc: none, until said)
-	mov	byte [rax+HB_GWEB],0
+	mov	byte [r15+H_GWEB],0
 	lea	r12,[g_hm]
 	xor	ebx,ebx
 .field:
@@ -5419,7 +5419,7 @@ http_error_grpc:
 	lea	rdi,[rdi+HB_OUT]
 	memit_x 'HTTP/1.1 200 OK',13,10,'content-type: application/grpc'
 	mov	rax,[r15+H_BUF]			; gRPC-Web: what its client asked in
-	movzx	eax,byte [rax+HB_GWEB]
+	movzx	eax,byte [r15+H_GWEB]
 	test	eax,eax
 	jz	.ct_end
 	push	rax

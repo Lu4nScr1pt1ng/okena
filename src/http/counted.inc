@@ -40,7 +40,7 @@ http_counted_try:
 		or HX_HWON or HX_HEAD or HX_H2TUN or HX_DUPLEX
 	jnz	.no
 	mov	rax,[r15+H_BUF]
-	cmp	byte [rax+HB_GWEB],0
+	cmp	byte [r15+H_GWEB],0
 	jne	.no
 	call	session_ptr
 	test	dword [rax+S_FLAGS],SF_H2S or SF_H3S or SF_MIR or SF_UPH2 or SF_ZIP or SF_CFILL \

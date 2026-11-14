@@ -119,8 +119,7 @@ h_send_up:
 	add	rax,[g_http_base]
 	cmp	dword [rax+H_STATE],HS_SEND_HEAD
 	je	h2u_send
-	mov	rax,[rax+H_BUF]
-	cmp	byte [rax+HB_GWEB],4
+	cmp	byte [rax+H_GWEB],4
 	je	gweb_send_up
 	jmp	h2u_send
 @@:

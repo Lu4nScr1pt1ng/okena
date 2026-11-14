@@ -93,6 +93,29 @@ end rodata
 http_head_end:
 	xor	ecx,ecx				; position
 	xor	edx,edx				; start of the current line
+	vpbroadcastb ymm1,byte [.cr_byte]
+	vpbroadcastb ymm2,byte [.lf_byte]
+.vec:
+	; 32 bytes at a time to the next CR or LF (the rest between them needs no
+	; look here); whole blocks inside the data only, the tail a byte at a time
+	lea	eax,[rcx+32]
+	cmp	eax,esi
+	ja	.next
+	vmovdqu	ymm0,[rdi+rcx]
+	vpcmpeqb ymm3,ymm0,ymm1
+	vpcmpeqb ymm4,ymm0,ymm2
+	vpor	ymm3,ymm3,ymm4
+	vpmovmskb eax,ymm3
+	test	eax,eax
+	jnz	.found
+	add	ecx,32
+	jmp	.vec
+.found:
+	tzcnt	eax,eax
+	add	ecx,eax
+	cmp	byte [rdi+rcx],10
+	je	.bad				; LF not after CR
+	jmp	.cr
 .next:
 	cmp	ecx,esi
 	jae	.incomplete
@@ -113,17 +136,22 @@ http_head_end:
 	je	.empty
 	lea	edx,[rcx+2]			; next line
 	mov	ecx,edx
-	jmp	.next
+	jmp	.vec
+.cr_byte db 13
+.lf_byte db 10
 .empty:
 	test	ecx,ecx
 	jz	.bad				; nothing before it
 	lea	eax,[rcx+2]
+	vzeroupper
 	ret
 .incomplete:
 	xor	eax,eax
+	vzeroupper
 	ret
 .bad:
 	mov	eax,-1
+	vzeroupper
 	ret
 
 ; Parse a request head. rdi = data, esi = head length (from

@@ -12,15 +12,17 @@
 ; the text mode (application/grpc-web-text, base64), nothing is changed. CORS is
 ; the route's `cors`, as for any other request from a page.
 
-HB_GWEB		:= HB_LTEXT_H + H_LTEXT_H_CAP	; b: 0 none, 1 gRPC-Web passed on as it is,
+H_GWEB		:= 492			; b, in the session's state (between H_H2F and
+						; H_H2PP): 0 none, 1 gRPC-Web passed on as it is,
 						; 2 turned into gRPC, 3 gRPC-Web (binary), the pool not yet known
-						; (the byte past the host's text, which never reaches it)
+						; (it was in the buffers, a page every request
+						; wrote and every response read for nothing)
 
-; In http_grpc_mark, rdi = the content-type field (application/grpc...): HB_GWEB.
+; In http_grpc_mark, rdi = the content-type field (application/grpc...): H_GWEB.
 ; Keeps rbx, r12-r15.
 gweb_mark:
 	mov	rax,[r15+H_BUF]
-	mov	byte [rax+HB_GWEB],0
+	mov	byte [r15+H_GWEB],0
 	mov	ecx,[rdi+HF_VLEN]
 	cmp	ecx,20
 	jb	.out
@@ -29,7 +31,7 @@ gweb_mark:
 	or	edx,0x20202000
 	cmp	edx,'-web'
 	jne	.out
-	mov	byte [rax+HB_GWEB],1		; what follows not +x or -text: as it is
+	mov	byte [r15+H_GWEB],1		; what follows not +x or -text: as it is
 	cmp	ecx,20
 	je	.binary
 	cmp	byte [rsi+20],'+'
@@ -49,20 +51,20 @@ gweb_mark:
 	cmp	byte [rsi+25],'+'
 	jne	.out
 .text:
-	mov	byte [rax+HB_GWEB],5
+	mov	byte [r15+H_GWEB],5
 	ret
 .binary:
-	mov	byte [rax+HB_GWEB],3
+	mov	byte [r15+H_GWEB],3
 .out:
 	ret
 
-; In http_write_request_head: HB_GWEB 3 becomes 2 when the pool speaks HTTP/2,
+; In http_write_request_head: H_GWEB 3 becomes 2 when the pool speaks HTTP/2,
 ; else 1. Keeps all but rax, rcx.
 gweb_pool:
 	mov	rax,[r15+H_BUF]
-	cmp	byte [rax+HB_GWEB],3
+	cmp	byte [r15+H_GWEB],3
 	je	@f
-	cmp	byte [rax+HB_GWEB],5
+	cmp	byte [r15+H_GWEB],5
 	jne	.out
 @@:
 	push	rax
@@ -73,12 +75,12 @@ gweb_pool:
 	pop	rax
 	test	ecx,ecx
 	jz	.passed
-	dec	byte [rax+HB_GWEB]		; 3: 2, 5: 4
+	dec	byte [r15+H_GWEB]		; 3: 2, 5: 4
 	mov	dword [rax+HB_GWT+GWT_RCN],0	; (nothing kept yet, either way)
 	mov	dword [rax+HB_GWT+GWT_SCN],0
 	ret
 .passed:
-	mov	byte [rax+HB_GWEB],1
+	mov	byte [r15+H_GWEB],1
 .out:
 	ret
 
@@ -87,7 +89,7 @@ gweb_pool:
 ; its content-type as gRPC (request) or gRPC-Web (answer); rdi past it.
 gweb_field:
 	mov	rax,[r15+H_BUF]
-	movzx	r11d,byte [rax+HB_GWEB]
+	movzx	r11d,byte [r15+H_GWEB]
 	cmp	r11d,2
 	je	@f
 	cmp	r11d,4
@@ -160,7 +162,7 @@ gweb_field:
 .ct	db 'content-type: application/grpc'
 .ct_len := $ - .ct
 
-; In http_last_chunk, HB_GWEB 2 and trailers (CK_TLEN): the trailer frame, then
+; In http_last_chunk, H_GWEB 2 and trailers (CK_TLEN): the trailer frame, then
 ; the end. HTTP/1.1: a chunk of it and the last one, together; a stream (HTTP/2,
 ; 3): its data, then END_STREAM with no trailers. Does not return.
 gweb_trailers:
@@ -323,7 +325,7 @@ gweb_fail:
 	pop	rax
 	ret
 
-; HB_GWEB 4, a request body piece (r8, r9d, from IN): r8/r9d = its bytes, what
+; H_GWEB 4, a request body piece (r8, r9d, from IN): r8/r9d = its bytes, what
 ; was kept before it decoded with it (none: r9d 0). CF: not base64.
 gweb_decode:
 	mov	r10,[r15+H_BUF]
@@ -385,7 +387,7 @@ gweb_decode:
 	stc
 	ret
 
-; In h_send_up, HB_GWEB 4 and a body piece (rdi, esi): decoded, then on to the
+; In h_send_up, H_GWEB 4 and a body piece (rdi, esi): decoded, then on to the
 ; HTTP/2 stream (nothing yet: done at once, as h2u_send does); not base64: the
 ; stream fails.
 gweb_send_up:
@@ -400,7 +402,7 @@ gweb_send_up:
 	mov	esi,r9d
 	jmp	h2u_send
 
-; In http_resp_pump, HB_GWEB 4: r8/r9d = body bytes: their base64 (what was kept
+; In http_resp_pump, H_GWEB 4: r8/r9d = body bytes: their base64 (what was kept
 ; first; the bytes past the last whole three kept), rdi/esi = what to send (a chunk
 ; of it to HTTP/1.1). CF: nothing yet.
 gweb_text_feed:
@@ -479,12 +481,12 @@ gweb_text_out:
 	stc
 	ret
 
-; Before the answer's head, HB_GWEB 4 and a body of a known length: it goes
+; Before the answer's head, H_GWEB 4 and a body of a known length: it goes
 ; out encoded, so of another length: chunked to HTTP/1.1 (a stream's DATA say
 ; it), its end in http_last_chunk. ZF: not that case.
 gweb_text_head:
 	mov	rax,[r15+H_BUF]
-	cmp	byte [rax+HB_GWEB],4
+	cmp	byte [r15+H_GWEB],4
 	jne	.out
 	cmp	dword [r15+H_RBODY],BK_LENGTH
 	jne	.out
@@ -495,7 +497,7 @@ gweb_text_head:
 	xor	eax,eax
 	ret
 
-; In http_last_chunk, HB_GWEB 4: what was kept and the trailer frame, encoded and
+; In http_last_chunk, H_GWEB 4: what was kept and the trailer frame, encoded and
 ; padded, then the end. Does not return.
 gweb_text_end:
 	h_rec
