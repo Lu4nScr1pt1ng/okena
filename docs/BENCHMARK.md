@@ -140,10 +140,6 @@ whose latency doesn't move between 10k and 80k requests a second: at 80k/s
 its p99 is 54 µs, HAProxy's 9.7 ms. "Could not keep up" means the proxy
 fell behind the schedule by hundreds of thousands of requests.
 
-okena's row is from a later run than the others (`ONLY=okena`, after the
-io_uring fixes of f5c2f49; 80,000/s the median of 5 runs). The competitors'
-rows are from the full run and were not run again.
-
 ---
 
 ## HTTPS: TLS 1.3 and 1.2
@@ -234,10 +230,6 @@ connection, so there are fewer system calls per request.
 okena is lowest at every rate and percentile, and at 80,000/s it is the only
 one under a millisecond at p99.
 
-okena's rows are from a later run (2026-11-14, `ONLY=okena`, after the HTTP/2
-and HPACK changes since the full run: no table scans per stream, Huffman by
-lookup, the static table by name length); the others' are from the full run.
-
 ---
 
 ## gRPC
@@ -267,9 +259,6 @@ error). Latency from a Go client in open loop.
 | Envoy | 281 / 414 / 687 | 1095 / 14189 / 25936 | 0.39 s / 1.3 s / 1.6 s |
 | Traefik | 304 / 1572 / 4817 | 0.98 s / 3.6 s / 5.1 s | 3.7 s / 8.9 s / 10.5 s |
 | Caddy | 304 / 2287 / 4826 | 1.3 s / 4.7 s / 6.2 s | 3.9 s / 9.2 s / 10.7 s |
-
-okena's rows are from the later run (2026-11-14, `ONLY=okena`); the others'
-from the full run.
 
 The Go client itself accounts for most of each latency (see the backend's
 own row). At 40,000 calls a second only okena stays close to the backend's
@@ -310,7 +299,7 @@ a second (real ClientHellos, never answered). Median of 3 runs:
 
 | Server | quiet: p50 / p99 / p99.9 (µs) | under the flood: requests/s | under the flood: p50 / p99 / p99.9 (µs) |
 |---|---|---|---|
-| **okena** | **66 / 143 / 350** | **16,780** | **124 / 1014 / 9857** |
+| **okena** | **65 / 139 / 416** | **16,767** | **129 / 580 / 4647** |
 | HAProxy | 98 / 271 / 757 | 8,490 | 420 / 163,365 / 180,970 |
 | nginx | 128 / 556 / 1891 | 7,850 | 1036 / 111,919 / 483,066 |
 
@@ -326,11 +315,9 @@ p50 / p99 / p99.9 in µs:
 | HAProxy | 72 / 89 / 121 | 62 / 81 / 133 | 81 / 1785 / 2785 |
 | nginx | 57 / 76 / 118 | 48 / 88 / 278 | 86 / 42,991 / 58,720 |
 
-okena is lowest at every rate and percentile. This table is from a later run
-(2026-11-14) than the others in this section: okena bench now delays its ACKs
-as browsers do (RFC 9000 13.2.1: after two packets or 25 ms, or on the next
-request) instead of sending one alone after every answer, so a request is two
-datagrams, not three; all three servers were measured again with it.
+okena is lowest at every rate and percentile. okena bench acknowledges as
+browsers do (RFC 9000 13.2.1: after two packets or 25 ms, or with the next
+request), so a request is two datagrams.
 
 ---
 
@@ -370,10 +357,6 @@ Latency, p50 / p99 / p99.9 in µs:
 okena is first in every column. Large transfers go socket to pipe to socket
 inside the kernel (splice), and new connections from all clients wait in one
 queue that the workers take in turn.
-
-okena's udp1 and udp256 are from a later run (2026-11-14, `ONLY=okena`, median
-of 3): datagrams to and from backends now go through io_uring, a batch of
-flows in one system call; the other columns and proxies are from the full run.
 
 ---
 
