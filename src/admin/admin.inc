@@ -728,6 +728,44 @@ fmt_u64:
 	add	rsp,24
 	ret
 
+; Append literal text at rdi (rdi = after it; rsi = its end, rax clobbered,
+; as fmt_cstr did). Its length is known here, so the bytes are copied inline,
+; qwords, the last one overlapping: exactly the text, no byte past it. (A
+; call to fmt_cstr, a byte at a time to the NUL, was a few percent of a
+; request head's writing: a dozen literals.)
+macro memcopy_const s*, n*
+	if n > 32				; (long ones: rare paths, not worth the code)
+		lea	rsi,[s]
+		call	fmt_cstr
+	else if n >= 8
+		repeat n / 8, k:0
+			mov	rax,[s+k*8]
+			mov	[rdi+k*8],rax
+		end repeat
+		if n mod 8
+			mov	rax,[s+n-8]
+			mov	[rdi+n-8],rax
+		end if
+	else if n >= 4
+		mov	eax,[s]
+		mov	[rdi],eax
+		mov	eax,[s+n-4]
+		mov	[rdi+n-4],eax
+	else if n >= 2
+		mov	ax,[s]
+		mov	[rdi],ax
+		mov	ax,[s+n-2]
+		mov	[rdi+n-2],ax
+	else if n = 1
+		mov	al,[s]
+		mov	[rdi],al
+	end if
+	if n <= 32
+		lea	rsi,[s+n]
+		add	rdi,n
+	end if
+end macro
+
 macro memit text&
 	local s
 	cstring s, text,0

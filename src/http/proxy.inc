@@ -317,6 +317,13 @@ macro memit_x text&
 	call	fmt_cstr
 end macro
 
+; memit_x for the heads every request writes: copied inline (memcopy_const)
+macro memit_hot text&
+	local s
+	cstring s, text,0
+	memcopy_const s, s.len - 1
+end macro
+
 ; ebx = session. r15 = its record. Keeps everything else.
 macro h_rec
 	mov	r15d,ebx
@@ -1968,7 +1975,7 @@ http_write_request_head:
 	jne	.has_host
 	; HTTP/1.0 without Host goes on as HTTP/1.1, which needs one: the address
 	; the client reached (as nginx sends the upstream's own name)
-	memit_x 'Host: '
+	memit_hot 'Host: '
 	call	session_ptr
 	mov	eax,[rax+S_LST]
 	imul	rax,rax,LS_SIZE
@@ -1983,14 +1990,14 @@ http_write_request_head:
 	jz	.host_local
 	cmp	byte [rsi],':'			; ":8080": every address
 	jne	.host_copy
-	memit_x 'localhost'
+	memit_hot 'localhost'
 .host_copy:
 	rep	movsb
 	jmp	.host_done
 .host_local:
-	memit_x 'localhost'
+	memit_hot 'localhost'
 .host_done:
-	memit_x 13,10
+	memit_hot 13,10
 .has_host:
 	call	auth_emit
 	call	slice_range_emit
@@ -2001,11 +2008,11 @@ http_write_request_head:
 	push	rdi
 	call	rid_new
 	pop	rdi
-	memit_x 'X-Request-Id: '
+	memit_hot 'X-Request-Id: '
 	lea	rsi,[r15+H_RID]
 	mov	ecx,[r15+H_RIDLEN]
 	rep	movsb
-	memit_x 13,10
+	memit_hot 13,10
 @@:
 	mov	eax,[r15+H_ACT]			; the route's set and add
 	test	eax,eax
@@ -2019,7 +2026,7 @@ http_write_request_head:
 @@:
 	; X-Forwarded-For: what trusted proxies said, then the peer; from
 	; anyone else, only the peer, never what the client claims
-	memit_x 'X-Forwarded-For: '
+	memit_hot 'X-Forwarded-For: '
 	test	dword [r15+H_FLAGS],HX_TRUSTED
 	jz	.xff_peer
 	xor	ebx,ebx
@@ -2058,18 +2065,18 @@ http_write_request_head:
 	lea	rsi,[g_ip_a]
 	mov	edx,eax
 	call	fmt_ip
-	memit_x 13,10
+	memit_hot 13,10
 	h_rec
 	test	dword [r15+H_FLAGS],HX_XFPROTO
 	jnz	@f
-	memit_x 'X-Forwarded-Proto: http'
+	memit_hot 'X-Forwarded-Proto: http'
 	call	http_tls_cred
 	test	rax,rax
 	jz	.xfp_end
 	mov	byte [rdi],'s'
 	inc	rdi
 .xfp_end:
-	memit_x 13,10
+	memit_hot 13,10
 @@:
 	mov	rax,[r15+H_BUF]			; gRPC-Web text: its length changes (decoded)
 	cmp	byte [rax+HB_GWEB],4
@@ -2077,21 +2084,21 @@ http_write_request_head:
 	mov	eax,[r15+H_BODY]
 	cmp	eax,BK_LENGTH
 	jne	@f
-	memit_x 'Content-Length: '
+	memit_hot 'Content-Length: '
 	mov	rax,[r15+H_REMAIN]
 	call	fmt_u64
-	memit_x 13,10
+	memit_hot 13,10
 	jmp	.conn
 @@:
 	cmp	eax,BK_CHUNKED
 	jne	.conn
-	memit_x 'Transfer-Encoding: chunked',13,10
+	memit_hot 'Transfer-Encoding: chunked',13,10
 .conn:
 	test	dword [r15+H_FLAGS],HX_UPGRADE
 	jz	@f
-	memit_x 'Connection: upgrade',13,10
+	memit_hot 'Connection: upgrade',13,10
 @@:
-	memit_x 13,10				; HTTP/1.1 keep-alive towards the backend
+	memit_hot 13,10				; HTTP/1.1 keep-alive towards the backend
 	mov	rax,[r15+H_BUF]
 	lea	rax,[rax+HB_OUT]
 	sub	rdi,rax
@@ -3062,7 +3069,7 @@ http_write_response_head:
 	lea	rdi,[rdi+HB_OUT]
 	mov	r13,[r15+H_BUF]
 	lea	r13,[r13+HB_OUT+H_OUT_CAP-256]
-	memit_x 'HTTP/1.1 '
+	memit_hot 'HTTP/1.1 '
 	mov	eax,[r12+HM_STATUS]
 	status3
 	mov	byte [rdi],' '
@@ -3170,21 +3177,21 @@ http_write_response_head:
 	je	.own_plain
 	cmp	dword [g_zh],2
 	je	.own_br
-	memit_x 'Content-Encoding: gzip',13,10,'Vary: Accept-Encoding',13,10
+	memit_hot 'Content-Encoding: gzip',13,10,'Vary: Accept-Encoding',13,10
 	jmp	.own_plain
 .own_br:
-	memit_x 'Content-Encoding: br',13,10,'Vary: Accept-Encoding',13,10
+	memit_hot 'Content-Encoding: br',13,10,'Vary: Accept-Encoding',13,10
 .own_plain:
 	test	dword [r15+H_FLAGS],HX_INTERIM
 	jz	@f
-	memit_x 13,10				; an interim head: no framing of its own
+	memit_hot 13,10				; an interim head: no framing of its own
 	jmp	.done
 @@:
 	test	dword [r15+H_FLAGS],HX_UPGRADE
 	jz	@f
 	mov	eax,[rsp+24]			; a WebSocket that only upgrades is kept too
 	call	sticky_emit_for
-	memit_x 'Connection: upgrade',13,10,13,10
+	memit_hot 'Connection: upgrade',13,10,13,10
 	jmp	.done
 @@:
 	mov	eax,[r15+H_ACT]			; the route's response set and add
@@ -3216,16 +3223,16 @@ http_write_response_head:
 	test	dword [g_listeners+rcx+LS_FLAGS],LSF_H3
 	jz	@f
 	push	rcx
-	memit_x 'Alt-Svc: h3=":'
+	memit_hot 'Alt-Svc: h3=":'
 	pop	rcx
 	mov	eax,[g_listeners+rcx+LS_PORT]
 	call	fmt_u64
-	memit_x '"; ma=86400',13,10
+	memit_hot '"; ma=86400',13,10
 @@:
 	mov	eax,[r15+H_RBODY]
 	test	dword [r15+H_FLAGS],HX_CHUNKOUT
 	jz	@f
-	memit_x 'Transfer-Encoding: chunked',13,10
+	memit_hot 'Transfer-Encoding: chunked',13,10
 	jmp	.conn
 @@:
 	mov	rcx,[r15+H_BUF]			; gRPC-Web text: its DATA say how long
@@ -3239,20 +3246,20 @@ http_write_response_head:
 	mov	rax,[r12+HM_LENGTH]
 	cmp	rax,-1
 	je	.conn
-	memit_x 'Content-Length: '
+	memit_hot 'Content-Length: '
 	mov	rax,[r12+HM_LENGTH]
 	call	fmt_u64
-	memit_x 13,10
+	memit_hot 13,10
 	jmp	.conn
 .length:
-	memit_x 'Content-Length: '
+	memit_hot 'Content-Length: '
 	mov	rax,[r15+H_RREMAIN]
 	call	fmt_u64
-	memit_x 13,10
+	memit_hot 13,10
 .conn:
 	test	dword [r15+H_FLAGS],HX_CLOSE
 	jz	@f
-	memit_x 'Connection: close',13,10
+	memit_hot 'Connection: close',13,10
 @@:
 	mov	word [rdi],0x0A0D
 	add	rdi,2

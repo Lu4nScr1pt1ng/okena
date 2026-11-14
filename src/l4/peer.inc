@@ -433,6 +433,21 @@ fmt_u:
 ; rdi = output, rsi = 16 address bytes, edx = 4 or 6. rdi = after it.
 ; IPv6 in RFC 5952's form: lower-case groups without leading zeros, the
 ; longest run of two or more zero groups (the first of equals) as "::".
+; (IPv4: each octet's digits from ip_octets, no division: an X-Forwarded-For
+; on every request)
+rodata
+	align 4
+	ip_octets:				; v: its digits, then their count in the 4th byte
+	repeat 256, v:0
+		if v < 10
+			db '0' + v, 0, 0, 1
+		else if v < 100
+			db '0' + v / 10, '0' + v mod 10, 0, 2
+		else
+			db '0' + v / 100, '0' + (v / 10) mod 10, '0' + v mod 10, 3
+		end if
+	end repeat
+end rodata
 fmt_ip:
 	push	rbx
 	push	r12
@@ -442,7 +457,18 @@ fmt_ip:
 	jne	.v6
 .octet:
 	movzx	eax,byte [rbx+r12]
-	call	fmt_u
+	mov	ecx,[ip_octets+rax*4]
+	mov	[rdi],cl			; exactly its digits, nothing past them
+	cmp	ecx,2 shl 24
+	jb	.one
+	mov	[rdi+1],ch
+	cmp	ecx,3 shl 24
+	jb	.one
+	shr	ecx,16
+	mov	[rdi+2],cl
+.one:
+	movzx	eax,byte [ip_octets+rax*4+3]
+	add	rdi,rax
 	inc	r12d
 	cmp	r12d,4
 	je	.done
