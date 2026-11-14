@@ -958,7 +958,10 @@ use it unchanged.
 6. JWT authorization: `require CLAIM VALUE[,VALUE]` (scope lists,
    arrays, roles); RS384, RS512, ES384, PS384, PS512. require: **done
    2026-11-14** (tests/gateway/jwtreq.py): 403, decided once and kept with
-   the verified token; dotted paths, arrays, scope words.
+   the verified token; dotted paths, arrays, scope words. RS384/512, PS384/512:
+   **done 2026-11-14**: rsa.inc's PKCS #1 and PSS verification take the hash
+   (g_rsa_hlen, SHA-256 by default for TLS), checked against Wycheproof's
+   SHA-384 and SHA-512 vectors (2048 to 4096 bits). Left: ES384 (P-384).
 7. Health checks: `http` with `body=` and headers; `tcp send=/expect=`
    (Redis `role:master`, a PostgreSQL primary, MySQL); `udp` (a DNS
    query); an agent check.

@@ -14,7 +14,7 @@
 ; escaped \r\n is a line break once decoded, and that would be a header forged by
 ; whoever can get a claim of their choosing signed.
 ;
-; ES256, RS256, PS256, EdDSA, HS256. Keys come from a JWK set; a key with `use`
+; ES256, RS256/384/512, PS256/384/512, EdDSA, HS256. Keys come from a JWK set; a key with `use`
 ; other than sig, or of a kind not known here, is left out.
 
 ; a key
@@ -33,6 +33,10 @@ JA_RS256	:= 2
 JA_PS256	:= 3
 JA_EDDSA	:= 4
 JA_HS256	:= 5
+JA_RS384	:= 6
+JA_RS512	:= 7
+JA_PS384	:= 8
+JA_PS512	:= 9
 
 ; a claim told to the backend
 CM_CLAIM	:= 0				; q
@@ -83,7 +87,7 @@ JWT_MAX		:= 12288
 bss
 	g_jwt_now	dq ?			; seconds, wall clock, by the tick
 	g_jt_dig:	rb 32
-	g_jt_dig2:	rb 32
+	g_jt_dig2:	rb 64
 	g_jt_buf:	rb 512
 	g_jt_h:		rb 2048
 	g_jt_p:		rb 12288
@@ -213,6 +217,18 @@ jwt_key:
 	je	.ps
 	cmp	eax,'HS25'
 	je	.hs
+	mov	r10d,JA_RS384
+	cmp	eax,'RS38'
+	je	.four
+	mov	r10d,JA_PS384
+	cmp	eax,'PS38'
+	je	.four
+	mov	r10d,JA_RS512
+	cmp	eax,'RS51'
+	je	.two
+	mov	r10d,JA_PS512
+	cmp	eax,'PS51'
+	je	.two
 	cmp	eax,'EdDS'
 	jne	.none
 	cmp	byte [r15+4],'A'
@@ -232,6 +248,14 @@ jwt_key:
 	mov	r10d,JA_HS256
 .six:
 	cmp	byte [r15+4],'6'
+	jne	.none
+	jmp	.alg_done
+.four:
+	cmp	byte [r15+4],'4'
+	jne	.none
+	jmp	.alg_done
+.two:
+	cmp	byte [r15+4],'2'
 	jne	.none
 	jmp	.alg_done
 .named:
@@ -281,10 +305,14 @@ jwt_key:
 	mov	eax,[r9+JK_KIND]
 	cmp	eax,r10d
 	je	.fits
-	cmp	eax,JA_RS256
+	cmp	eax,JA_RS256			; an RSA key: any of RSA's algorithms
 	jne	.next
 	cmp	r10d,JA_PS256
-	jne	.next
+	je	.fits
+	cmp	r10d,JA_RS384
+	jb	.next
+	cmp	r10d,JA_PS512
+	ja	.next
 .fits:
 	mov	eax,[r9+JK_ALG]
 	test	eax,eax
@@ -337,23 +365,56 @@ jwt_signature:
 	cmp	r10d,JA_HS256
 	je	.hs
 	lea	rdi,[g_jt_dig2]
+	mov	dword [g_rsa_hlen],32
+	cmp	r10d,JA_RS384
+	je	.h384
+	cmp	r10d,JA_PS384
+	je	.h384
+	cmp	r10d,JA_RS512
+	je	.h512
+	cmp	r10d,JA_PS512
+	je	.h512
 	call	sha256
+	jmp	.hashed
+.h384:
+	mov	dword [g_rsa_hlen],48
+	call	sha384
+	jmp	.hashed
+.h512:
+	mov	dword [g_rsa_hlen],64
+	call	sha512
+.hashed:
 	pop	r10
 	pop	r9
 	cmp	r10d,JA_ES256
 	je	.es
-	; RSA
+	; RSA, with the hash g_rsa_hlen says (put back for TLS after)
 	cmp	ebx,[r9+JK_LEN]
-	jne	.no
+	jne	.no_rsa
 	lea	rdi,[r9+JK_KEY]
 	mov	esi,[r9+JK_LEN]
 	lea	rdx,[g_jt_s]
 	mov	ecx,[r9+JK_E]
 	lea	r8,[g_jt_dig2]
 	cmp	r10d,JA_PS256
-	je	rsa_pss_verify
-	jmp	rsa_pkcs1_verify
+	je	.pss
+	cmp	r10d,JA_PS384
+	je	.pss
+	cmp	r10d,JA_PS512
+	je	.pss
+	call	rsa_pkcs1_verify
+	mov	dword [g_rsa_hlen],0
+	ret
+.pss:
+	call	rsa_pss_verify
+	mov	dword [g_rsa_hlen],0
+	ret
+.no_rsa:
+	mov	dword [g_rsa_hlen],0
+	xor	eax,eax
+	ret
 .es:
+	mov	dword [g_rsa_hlen],0
 	cmp	ebx,64
 	jne	.no
 	lea	rdi,[r9+JK_KEY]
@@ -1456,25 +1517,55 @@ jwk_load:
 	call	.text
 	jc	plan_bad_jwt
 	xor	edx,edx
+	test	eax,eax
+	jz	.alg_set			; none said: any of its kind's
 	cmp	eax,5
-	jne	.alg_set
+	jne	.alg_unknown			; (RSA-OAEP, ES384...: not for us)
 	mov	eax,[g_jw_t]
+	movzx	ecx,byte [g_jw_t+4]
 	mov	edx,JA_ES256
 	cmp	eax,'ES25'
-	je	.alg_set
+	je	.alg_6
 	mov	edx,JA_RS256
 	cmp	eax,'RS25'
-	je	.alg_set
+	je	.alg_6
 	mov	edx,JA_PS256
 	cmp	eax,'PS25'
-	je	.alg_set
+	je	.alg_6
 	mov	edx,JA_HS256
 	cmp	eax,'HS25'
-	je	.alg_set
+	je	.alg_6
+	mov	edx,JA_RS384
+	cmp	eax,'RS38'
+	je	.alg_4
+	mov	edx,JA_PS384
+	cmp	eax,'PS38'
+	je	.alg_4
+	mov	edx,JA_RS512
+	cmp	eax,'RS51'
+	je	.alg_2
+	mov	edx,JA_PS512
+	cmp	eax,'PS51'
+	je	.alg_2
 	mov	edx,JA_EDDSA
 	cmp	eax,'EdDS'
+	jne	.alg_unknown
+	cmp	cl,'A'
 	je	.alg_set
-	xor	edx,edx
+.alg_unknown:
+	mov	edx,-1				; named, not known here: the key is never used
+	jmp	.alg_set
+.alg_6:
+	cmp	cl,'6'
+	jne	.alg_unknown
+	jmp	.alg_set
+.alg_4:
+	cmp	cl,'4'
+	jne	.alg_unknown
+	jmp	.alg_set
+.alg_2:
+	cmp	cl,'2'
+	jne	.alg_unknown
 .alg_set:
 	mov	[rbx+JK_ALG],edx
 	cmp	dword [rbx+JK_KIND],JA_HS256	; a secret says what it is for

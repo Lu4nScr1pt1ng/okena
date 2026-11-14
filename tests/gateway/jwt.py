@@ -65,6 +65,8 @@ def jwks():
     return {"keys": [
         {"kty": "EC", "crv": "P-256", "kid": "ec1", "use": "sig", "x": b64(be(e.x, 32)), "y": b64(be(e.y, 32))},
         {"kty": "RSA", "kid": "rs1", "n": b64(be(r.n)), "e": b64(be(r.e))},
+        {"kty": "RSA", "kid": "rs384", "alg": "RS384", "n": b64(be(r.n)), "e": b64(be(r.e))},
+        {"kty": "RSA", "kid": "oaep", "alg": "RSA-OAEP", "n": b64(be(r.n)), "e": b64(be(r.e))},
         {"kty": "OKP", "crv": "Ed25519", "kid": "ed1", "x": b64(ed_pub)},
         {"kty": "oct", "kid": "hs1", "alg": "HS256", "k": b64(SECRET)},
         {"kty": "EC", "crv": "P-384", "kid": "unknown-curve", "x": "AA", "y": "AA"},
@@ -76,10 +78,12 @@ def sign(alg, msg, key=None):
     if alg == "ES256":
         r, s = utils.decode_dss_signature((key or EC).sign(msg, ec.ECDSA(hashes.SHA256())))
         return be(r, 32) + be(s, 32)
-    if alg == "RS256":
-        return (key or RS).sign(msg, padding.PKCS1v15(), hashes.SHA256())
-    if alg == "PS256":
-        return (key or RS).sign(msg, padding.PSS(padding.MGF1(hashes.SHA256()), 32), hashes.SHA256())
+    hs = {"256": hashes.SHA256, "384": hashes.SHA384, "512": hashes.SHA512}
+    if alg[:2] == "RS" and alg[2:] in hs:
+        return (key or RS).sign(msg, padding.PKCS1v15(), hs[alg[2:]]())
+    if alg[:2] == "PS" and alg[2:] in hs:
+        h = hs[alg[2:]]
+        return (key or RS).sign(msg, padding.PSS(padding.MGF1(h()), h.digest_size), h())
     if alg == "EdDSA":
         return (key or ED).sign(msg)
     if alg == "HS256":
@@ -188,7 +192,8 @@ def main():
                 break
             except OSError:
                 time.sleep(0.05)
-        for alg, kid in (("ES256", "ec1"), ("RS256", "rs1"), ("PS256", "rs1"), ("EdDSA", "ed1"), ("HS256", "hs1")):
+        for alg, kid in (("ES256", "ec1"), ("RS256", "rs1"), ("PS256", "rs1"), ("RS384", "rs1"), ("RS512", "rs1"),
+                         ("PS384", "rs1"), ("PS512", "rs1"), ("RS384", "rs384"), ("EdDSA", "ed1"), ("HS256", "hs1")):
             r, b = get("/api", token(alg, kid))
             check(f"{alg}: through", r.status == 200 and json.loads(b).get("x-user-id") == "alice", f"{r.status} {b[:90]}")
         r, b = get("/api", token())
@@ -228,6 +233,12 @@ def main():
             "HS256 with the EC key's name": token("HS256", "ec1"),
             "ES256 by the wrong key": token(key=OTHER),
             "RS256 by a key named ES": token("RS256", "ec1"),
+            "RS256 by a key that says RS384": token("RS256", "rs384"),
+            "RS512 named, PS512 signed": (lambda m: m + "." + b64(sign("PS512", m.encode())))(
+                b64(json.dumps({"alg": "RS512", "kid": "rs1"}).encode()) + "." + b64(json.dumps(GOOD).encode())),
+            "PS384 by a key for encryption (alg RSA-OAEP)": token("PS384", "oaep"),
+            "RS384 named, RS256 signed": (lambda m: m + "." + b64(sign("RS256", m.encode())))(
+                b64(json.dumps({"alg": "RS384", "kid": "rs1"}).encode()) + "." + b64(json.dumps(GOOD).encode())),
             "another key id": token(kid="nope"),
             "an algorithm not here": token("ES256", head={"alg": "ES512"}),
             "a claim changed": head + "." + b64(json.dumps(dict(GOOD, sub="root")).encode()) + "." + sig,

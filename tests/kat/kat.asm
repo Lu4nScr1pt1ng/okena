@@ -1104,7 +1104,7 @@ start:
 	lea	rdi,[g_out]
 	lea	esi,[r13*8]
 	jmp	.print
-.rsa_verify:				; nbytes(u16 le) n_be sig_be e(u32 le) hash(32)
+.rsa_verify:				; nbytes(u16 le) n_be sig_be e(u32 le) hash(32, 48 or 64)
 	movzx	r13d,word [rsi]			; nbytes
 	lea	r14,[rsi+2]			; n (be)
 	lea	r15,[r14+r13]			; sig (be)
@@ -1113,12 +1113,17 @@ start:
 	mov	rdx,r15
 	mov	ecx,[r15+r13]			; e
 	lea	r8,[r15+r13+4]			; hash
+	lea	eax,[r13*2+7]			; its length (32, 48, 64): what is left
+	neg	eax				; (after the mode byte and the rest)
+	add	eax,dword [g_in_len]
+	mov	[g_rsa_hlen],eax
 	call	rsa_pkcs1_verify
+	mov	dword [g_rsa_hlen],0
 	mov	[g_out],al
 	lea	rdi,[g_out]
 	mov	esi,1
 	jmp	.print
-.rsa_pss:				; nbytes(u16 le) n_be sig_be e(u32 le) hash(32)
+.rsa_pss:				; nbytes(u16 le) n_be sig_be e(u32 le) hash(32, 48 or 64; sLen = hLen)
 	movzx	r13d,word [rsi]
 	lea	r14,[rsi+2]			; n
 	lea	r15,[r14+r13]			; sig
@@ -1127,7 +1132,12 @@ start:
 	mov	rdx,r15
 	mov	ecx,[r15+r13]			; e
 	lea	r8,[r15+r13+4]			; hash
+	lea	eax,[r13*2+7]			; its length (32, 48, 64): what is left
+	neg	eax				; (after the mode byte and the rest)
+	add	eax,dword [g_in_len]
+	mov	[g_rsa_hlen],eax
 	call	rsa_pss_verify
+	mov	dword [g_rsa_hlen],0
 	mov	[g_out],al
 	lea	rdi,[g_out]
 	mov	esi,1

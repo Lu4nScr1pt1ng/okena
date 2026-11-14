@@ -68,7 +68,7 @@ header, query, cookie, client address or country. Header and path rewrites,
 redirects, static files with zero-copy sendfile, PHP-FPM, WebSocket, gRPC and
 gRPC-Web, compression (gzip, Brotli).
 
-**API gateway.** JWT (ES256, RS256, PS256, EdDSA, HS256, keys from JWKS
+**API gateway.** JWT (ES256, RS256/384/512, PS256/384/512, EdDSA, HS256, keys from JWKS
 URLs), API keys, Basic, mTLS and forward auth; rate limits and quotas per
 client, key, user or token claim; CORS; idempotency keys; signed URLs;
 traffic splitting, mirroring, hedged requests and fault injection.

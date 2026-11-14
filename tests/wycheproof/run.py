@@ -11,7 +11,7 @@ counted, not failed, except where okena's choice is checked by name.
 Families: AES-128-GCM (96-bit IV, 128-bit tag), ChaCha20-Poly1305, X25519,
 ECDSA P-256/SHA-256 (IEEE P1363 signatures: the arithmetic; DER parsing
 lives in the TLS and X.509 code), ECDH P-256 (uncompressed points), Ed25519,
-RSA PKCS #1 v1.5 and PSS (2048, SHA-256), HMAC-SHA-256, HKDF-SHA-256, and
+RSA PKCS #1 v1.5 and PSS (2048 to 4096 bits, SHA-256, SHA-384, SHA-512), HMAC-SHA-256, HKDF-SHA-256, and
 ML-KEM-768 (encapsulation with the modulus check; key generation from the
 seed, then decapsulation with implicit rejection)."""
 import concurrent.futures
@@ -163,17 +163,22 @@ def main():
     family("ed25519", "ed25519_test", ((t["tcId"], t["result"], (lambda p=bytes.fromhex(g["publicKey"]["pk"]), t=t: ed(p, t)))
                                        for g in d["testGroups"] for t in g["tests"]))
 
-    for name, file, mode in (("rsa-pkcs1-2048-sha256", "rsa_signature_2048_sha256_test", b"Y"),
-                             ("rsa-pss-2048-sha256", "rsa_pss_2048_sha256_mgf1_32_test", b"W")):
+    for name, file, mode, hf in (("rsa-pkcs1-2048-sha256", "rsa_signature_2048_sha256_test", b"Y", hashlib.sha256),
+                                 ("rsa-pkcs1-2048-sha384", "rsa_signature_2048_sha384_test", b"Y", hashlib.sha384),
+                                 ("rsa-pkcs1-3072-sha512", "rsa_signature_3072_sha512_test", b"Y", hashlib.sha512),
+                                 ("rsa-pkcs1-4096-sha512", "rsa_signature_4096_sha512_test", b"Y", hashlib.sha512),
+                                 ("rsa-pss-2048-sha256", "rsa_pss_2048_sha256_mgf1_32_test", b"W", hashlib.sha256),
+                                 ("rsa-pss-2048-sha384", "rsa_pss_2048_sha384_mgf1_48_test", b"W", hashlib.sha384),
+                                 ("rsa-pss-4096-sha512", "rsa_pss_4096_sha512_mgf1_64_test", b"W", hashlib.sha512)):
         d = load(vec, file)
 
-        def rsa(g, t, mode=mode):
+        def rsa(g, t, mode=mode, hf=hf):
             n, e = int(g["publicKey"]["modulus"], 16), int(g["publicKey"]["publicExponent"], 16)
             nb = (n.bit_length() + 7) // 8
             sig = bytes.fromhex(t["sig"])
             if len(sig) != nb:                  # the signature is the modulus' length, or wrong
                 return t["result"] != "valid", "length"
-            h = hashlib.sha256(bytes.fromhex(t["msg"])).digest()
+            h = hf(bytes.fromhex(t["msg"])).digest()
             got = run(mode, struct.pack("<H", nb) + n.to_bytes(nb, "big") + sig + struct.pack("<I", e) + h)
             return got == ("01" if t["result"] == "valid" else "00"), got
         family(name, file, ((t["tcId"], t["result"], (lambda g=g, t=t: rsa(g, t)))

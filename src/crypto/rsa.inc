@@ -351,6 +351,8 @@ rodata
 	; the SHA-256 DigestInfo prefix for PKCS#1 v1.5 (RFC 8017 9.2)
 	rsa_sha256_di	db 0x30,0x31,0x30,0x0d,0x06,0x09,0x60,0x86,0x48,0x01,0x65,0x03,0x04,0x02,0x01,0x05,0x00,0x04,0x20
 	RSA_DI_LEN	:= $ - rsa_sha256_di
+	rsa_sha384_di	db 0x30,0x41,0x30,0x0d,0x06,0x09,0x60,0x86,0x48,0x01,0x65,0x03,0x04,0x02,0x02,0x05,0x00,0x04,0x30
+	rsa_sha512_di	db 0x30,0x51,0x30,0x0d,0x06,0x09,0x60,0x86,0x48,0x01,0x65,0x03,0x04,0x02,0x03,0x05,0x00,0x04,0x40
 end rodata
 
 ; big-endian bytes -> little-endian limbs. rdi = limbs out, rsi = bytes,
@@ -490,9 +492,11 @@ rsa_pkcs1_verify_in_range:
 	jne	.no
 	cmp	byte [rbx+1],0x01
 	jne	.no
-	; DigestInfo starts at nbytes - (RSA_DI_LEN + 32)
+	; DigestInfo starts at nbytes - (RSA_DI_LEN + hLen)
+	call	rsa_hlen
 	mov	ecx,r13d
-	sub	ecx,RSA_DI_LEN + 32		; offset of DigestInfo
+	sub	ecx,RSA_DI_LEN
+	sub	ecx,eax				; offset of DigestInfo
 	; the separator byte just before it must be 0x00
 	cmp	byte [rbx+rcx-1],0x00
 	jne	.no
@@ -517,13 +521,22 @@ rsa_pkcs1_verify_in_range:
 	lea	rbp,[rbx+rcx+RSA_DI_LEN]		; the hash
 	mov	rdi,r12
 	lea	rsi,[rsa_sha256_di]
+	cmp	dword [g_rsa_hlen],48
+	jne	@f
+	lea	rsi,[rsa_sha384_di]
+@@:
+	cmp	dword [g_rsa_hlen],64
+	jne	@f
+	lea	rsi,[rsa_sha512_di]
+@@:
 	mov	edx,RSA_DI_LEN
 	call	ct_equal
 	test	eax,eax
 	jz	.no
 	mov	rdi,rbp
 	mov	rsi,r15
-	mov	edx,32
+	call	rsa_hlen
+	mov	edx,eax
 	call	ct_equal
 	test	eax,eax
 	jz	.no
@@ -547,6 +560,32 @@ rsa_pkcs1_verify_in_range:
 	pop	rbx
 	ret
 
+; The hash RSA verification works with: g_rsa_hlen = 32 (SHA-256, what TLS and
+; certificates use, the default), 48 (SHA-384) or 64 (SHA-512), set by a caller
+; that wants another (JWT's RS384...) and put back. The DigestInfo of PKCS #1
+; v1.5, and PSS's hash, MGF1 and salt length (hLen) follow it.
+bss
+	align 4
+	g_rsa_hlen	dd ?			; 0 = 32
+end bss
+
+; eax = the hash's length (32, 48, 64)
+rsa_hlen:
+	mov	eax,[g_rsa_hlen]
+	test	eax,eax
+	jnz	@f
+	mov	eax,32
+@@:
+	ret
+
+; rdi = digest, rsi = data, rdx = length: the hash g_rsa_hlen names
+rsa_hash:
+	cmp	dword [g_rsa_hlen],48
+	je	sha384
+	cmp	dword [g_rsa_hlen],64
+	je	sha512
+	jmp	sha256
+
 ; MGF1 with SHA-256 (RFC 8017 B.2.1). rdi = out, esi = output length,
 ; rdx = seed (32 bytes, a SHA-256 digest). out = T(0) | T(1) | ... where
 ; T(i) = SHA256(seed | i as a 4-byte big-endian counter), truncated.
@@ -559,24 +598,26 @@ mgf1_sha256:
 	mov	r12,rdi				; out
 	mov	r13d,esi			; remaining
 	mov	r14,rdx				; seed
-	sub	rsp,80				; [rsp] seed(32)|counter(4), [rsp+40] block(32)
+	call	rsa_hlen
+	mov	ebx,eax				; hLen
+	sub	rsp,144				; [rsp] seed(hLen)|counter(4), [rsp+72] block(hLen)
 	mov	rsi,r14
 	lea	rdi,[rsp]
-	mov	ecx,32
+	mov	ecx,ebx
 	rep	movsb
 	xor	r15d,r15d			; counter
 .blk:
 	mov	eax,r15d
 	bswap	eax
-	mov	[rsp+32],eax			; counter, big-endian
-	lea	rdi,[rsp+40]
+	mov	[rsp+rbx],eax			; counter, big-endian
+	lea	rdi,[rsp+72]
 	lea	rsi,[rsp]
-	mov	edx,36
-	call	sha256
-	mov	eax,32
-	cmp	r13d,32
+	lea	edx,[rbx+4]
+	call	rsa_hash
+	mov	eax,ebx
+	cmp	r13d,ebx
 	cmovb	eax,r13d
-	lea	rsi,[rsp+40]
+	lea	rsi,[rsp+72]
 	mov	rdi,r12
 	mov	ecx,eax
 	rep	movsb
@@ -586,7 +627,7 @@ mgf1_sha256:
 	inc	r15d
 	jmp	.blk
 .done:
-	add	rsp,80
+	add	rsp,144
 	pop	r15
 	pop	r14
 	pop	r13
@@ -618,7 +659,7 @@ rsa_pss_verify_in_range:
 	; frame: n_le | sig_le | m_le | em | dbmask (nbytes each) | mp(72) | hp(32) | exp(8)
 	mov	eax,r13d
 	imul	eax,5
-	add	eax,128
+	add	eax,256
 	and	eax,-16
 	sub	rsp,rax
 	mov	rdi,rsp				; n_le
@@ -671,7 +712,9 @@ rsa_pss_verify_in_range:
 	lea	rsi,[rsp+r13*2]			; m_le
 	mov	edx,r13d
 	call	bn_to_be
-	; --- EMSA-PSS-VERIFY (hLen=sLen=32, emBits=8*nbytes-1) ---
+	; --- EMSA-PSS-VERIFY (hLen = sLen = 32, 48 or 64, emBits=8*nbytes-1) ---
+	call	rsa_hlen
+	mov	r12d,eax			; hLen (n's bytes are not read again)
 	lea	rbx,[r13*2]
 	add	rbx,r13
 	add	rbx,rsp				; rbx = EM
@@ -679,19 +722,24 @@ rsa_pss_verify_in_range:
 	jne	.no
 	test	byte [rbx],0x80			; the leftmost bit must be clear
 	jnz	.no
-	; H = EM[nbytes-33 .. nbytes-1); maskedDB = EM[0 .. nbytes-33)
-	; dbMask = MGF1(H, nbytes-33) at [rsp+4*nbytes]
+	; H = EM[nbytes-hLen-1 .. nbytes-1); maskedDB = EM[0 .. nbytes-hLen-1)
+	; dbMask = MGF1(H, nbytes-hLen-1) at [rsp+4*nbytes]
+	mov	eax,r13d
+	sub	eax,r12d
+	dec	eax
+	cmp	eax,r12d			; (a modulus too short for this hash)
+	jbe	.no
 	lea	rdi,[r13*4]
 	add	rdi,rsp				; dbmask
-	lea	eax,[r13-33]
 	mov	esi,eax
-	lea	rdx,[rbx+r13-33]		; H
+	lea	rdx,[rbx+rax]			; H
 	call	mgf1_sha256
 	; DB = maskedDB XOR dbMask, in place over maskedDB (EM[0..nbytes-33))
 	lea	rdi,[r13*4]
 	add	rdi,rsp				; dbmask
 	mov	ecx,r13d
-	sub	ecx,33				; DB length
+	sub	ecx,r12d
+	dec	ecx				; DB length
 	xor	esi,esi
 .xor:
 	mov	al,[rbx+rsi]
@@ -701,9 +749,12 @@ rsa_pss_verify_in_range:
 	cmp	esi,ecx
 	jb	.xor
 	and	byte [rbx],0x7F			; clear the leftmost bit of DB
-	; DB must be 0x00 * (nbytes-66) | 0x01 | salt(32)
+	; DB must be 0x00 * (nbytes-2*hLen-2) | 0x01 | salt(hLen)
 	mov	ecx,r13d
-	sub	ecx,66				; PS length
+	sub	ecx,r12d
+	sub	ecx,r12d
+	sub	ecx,2				; PS length
+	js	.no
 	xor	esi,esi
 .ps:
 	cmp	esi,ecx
@@ -729,12 +780,16 @@ rsa_pss_verify_in_range:
 	lea	rsi,[r15]			; mHash
 	lea	rdi,[rdi+8]
 	push	rdi
-	mov	ecx,32
+	mov	ecx,r12d
 	rep	movsb
-	lea	rsi,[rbx+r13-65]		; salt (32)
-	mov	ecx,32
+	mov	eax,r13d			; salt: DB's last hLen bytes
+	sub	eax,r12d
+	sub	eax,r12d
+	dec	eax
+	lea	rsi,[rbx+rax]
+	mov	ecx,r12d
 	rep	movsb
-	pop	rsi				; mp+8 start? we need H' = SHA256(M'), M' at mp
+	pop	rsi				; H' = Hash(M'), M' at mp
 	; recompute mp and hash it
 	lea	rsi,[r13*4]
 	add	rsi,r13
@@ -743,16 +798,19 @@ rsa_pss_verify_in_range:
 	lea	rdi,[r13*4]
 	add	rdi,r13
 	add	rdi,rsp
-	add	rdi,16+72			; hp (after M' which is 72 bytes)
-	mov	edx,72
-	call	sha256
-	; compare H' (hp) with H (EM[nbytes-33 .. ])
+	add	rdi,16+136			; hp (after M': 8 + 2*hLen, 136 at most)
+	lea	edx,[r12*2+8]
+	call	rsa_hash
+	; compare H' (hp) with H (EM[nbytes-hLen-1 .. ])
 	lea	rdi,[r13*4]
 	add	rdi,r13
 	add	rdi,rsp
-	add	rdi,16+72			; hp
-	lea	rsi,[rbx+r13-33]		; H
-	mov	edx,32
+	add	rdi,16+136			; hp
+	mov	eax,r13d
+	sub	eax,r12d
+	dec	eax
+	lea	rsi,[rbx+rax]			; H
+	mov	edx,r12d
 	call	ct_equal
 	mov	r9d,eax
 	jmp	.out
@@ -761,7 +819,7 @@ rsa_pss_verify_in_range:
 .out:
 	mov	eax,r13d			; restore rsp
 	imul	eax,5
-	add	eax,128
+	add	eax,256
 	and	eax,-16
 	add	rsp,rax
 	mov	eax,r9d

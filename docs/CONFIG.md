@@ -991,9 +991,9 @@ auth jwt {
 }
 ```
 
-ES256, RS256, PS256, EdDSA and HS256 (HS256 keys only from a `jwks` file: a
+ES256, RS256, RS384, RS512, PS256, PS384, PS512, EdDSA and HS256 (HS256 keys only from a `jwks` file: a
 set fetched by URL never contributes a shared secret). Tokens must have `exp`; `issuer` and
-`audience` are checked when given. `alg: none`, a `crit` header and malformed
+`audience` are checked when given. A key whose JWK names an `alg` verifies only that one (one named for encryption, `RSA-OAEP`, none). `alg: none`, a `crit` header and malformed
 JSON are refused.
 
 `jwks` takes a file or an HTTPS URL. An HTTPS URL needs `trust=FILE`, the
