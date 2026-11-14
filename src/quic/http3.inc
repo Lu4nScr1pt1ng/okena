@@ -117,6 +117,19 @@ RA_LEN		:= 16				; d
 RA_FIN		:= 20				; d
 RA_USED		:= 24				; d
 RA_ESIZE	:= 32
+assert RA_N = 64 & RA_ESIZE = 32		; (QC_RAM, ra_bit)
+; reg = an entry of QC_RA: its bit in QC_RAM (op bts or btr), kept with every
+; RA_USED change, so that a stream frame with nothing held anywhere (nearly
+; every one) does not read all 64 entries to find that out. Keeps all but flags.
+macro ra_bit op*, reg*
+	push	rax
+	mov	rax,reg
+	sub	rax,r15
+	sub	rax,QC_RA
+	shr	eax,5
+	op	[r15+QC_RAM],rax
+	pop	rax
+end macro
 RA_DCAP		:= 1400				; its bytes, at QC_RAD + slot * RA_DCAP
 QC_RAD		:= QC_RA + RA_N * RA_ESIZE
 assert QC_RAD + RA_N * RA_DCAP <= 1 shl HB_SHIFT
@@ -212,6 +225,7 @@ qc_established:
 	lea	rdi,[r15+QC_RA]			; nothing held
 	mov	ecx,RA_N * RA_ESIZE / 8
 	rep	stosq
+	mov	[r15+QC_RAM],rax
 	mov	[r15+QC_HBOWN],rax
 	mov	eax,[r15+QC_QT+QT_HQ]		; the protocol ALPN chose
 	mov	[r15+QC_HQ],eax
@@ -787,6 +801,8 @@ qc_stream_in:
 	jmp	.fine
 .draining:
 	; what was held and is now next goes in, one piece at a time
+	cmp	qword [r15+QC_RAM],0
+	je	.kick				; nothing held at all
 	mov	rax,rbp
 	call	qst_find
 	test	r8,r8
@@ -804,6 +820,7 @@ qc_stream_in:
 	cmp	dword [r8+QST_KIND],QSK_UNI
 	je	.gone				; (refused meanwhile, or not read)
 	mov	dword [rdi+RA_USED],0
+	ra_bit	btr, rdi
 	mov	eax,[rdi+RA_FIN]
 	imul	esi,ecx,RA_DCAP
 	lea	rsi,[r15+QC_RAD+rsi]
@@ -826,6 +843,7 @@ qc_stream_in:
 	cmp	[rdi+RA_ID],rbp
 	jne	@f
 	mov	dword [rdi+RA_USED],0
+	ra_bit	btr, rdi
 @@:
 	add	rdi,RA_ESIZE
 	dec	ecx
@@ -847,6 +865,8 @@ qc_stream_in:
 	cmp	rdx,[r15+QC_HBOWNID]
 	je	.fine				; still in use
 .kick_scan:
+	cmp	qword [r15+QC_RAM],0
+	je	.unpark				; nothing held: none waits there
 	lea	rdi,[r15+QC_RA]
 	mov	r9d,RA_N
 .kick_next:
@@ -867,6 +887,7 @@ qc_stream_in:
 	add	rdi,RA_ESIZE
 	dec	r9d
 	jnz	.kick_next
+.unpark:
 	and	dword [r15+QC_FLAGS],not QF_PARKED
 .fine:
 	clc
@@ -1042,6 +1063,7 @@ qc_stream_one:
 	cmp	rax,[rsp+QI_LEN]
 	jae	.ok				; held already
 	mov	dword [rdi+RA_USED],0		; (a shorter copy: replaced)
+	ra_bit	btr, rdi
 .ra_free:
 	test	edx,edx
 	jnz	.ra_next
@@ -1066,6 +1088,7 @@ qc_stream_one:
 	mov	eax,[rsp+QI_FIN]
 	mov	[rdi+RA_FIN],eax
 	mov	dword [rdi+RA_USED],1
+	ra_bit	bts, rdi
 	imul	edi,edx,RA_DCAP
 	lea	rdi,[r15+QC_RAD+rdi]
 	mov	rsi,[rsp+QI_DATA]
@@ -1498,6 +1521,7 @@ h3_park:
 	mov	eax,[r12+QST_FINHERE]
 	mov	[rdi+RA_FIN],eax
 	mov	dword [rdi+RA_USED],1
+	ra_bit	bts, rdi
 	sub	[r15+QC_DRECV],rcx		; (counted when they come back)
 	imul	edi,edx,RA_DCAP
 	lea	rdi,[r15+QC_RAD+rdi]

@@ -163,6 +163,7 @@ QC_QSTM		:= 1088				; 16: stream entries in use, a bit each (http3.inc)
 QC_QREQ		:= 1104				; 16: and those of requests
 QC_SPLOW	:= 1120				; 3 q: a level's lowest packet number maybe still
 						; out (qc_detect_lost looks from there)
+QC_RAM		:= 1144				; q: QC_RA's entries in use, a bit each (http3.inc)
 QC_FIELDS_END	:= 1152
 ; BBR (qc_bbr_acked), in CUBIC's fields where it can: a connection has one
 QB_BW		:= QC_WMAX			; q: bytes/s, the best sample of these rounds
