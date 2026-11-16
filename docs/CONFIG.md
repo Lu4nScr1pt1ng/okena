@@ -721,8 +721,8 @@ a worker backtrack. Quote a pattern that has braces, spaces or `;`:
 ### `match` blocks
 
 Inside a route, `match` picks a variant by method, header, query, cookie,
-client address or country. The first block that fits wins; a route has at
-most 32.
+client address, country or autonomous system. The first block that fits
+wins; a route has at most 1024.
 
 ```nginx
 route /api/* {

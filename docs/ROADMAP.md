@@ -926,6 +926,10 @@ What proxies of this kind are commonly expected to do and okena did not
 where it touches the request path, a benchmark showing routes that do not
 use it unchanged.
 
+Status 2026-11-16: all twenty items in. Still open from them: TLS
+origination from `tcp` listeners (item 3), ES384 for JWT (item 6, needs
+P-384), and the smaller "Left:" notes under the items.
+
 1. PROXY protocol v1/v2 accepted on `tcp` and `http` listeners
    (`proxy_protocol accept [FROM...]`); the client becomes the PROXY
    header's source for logs, limits, `allow`/`deny`, `per_source` and
@@ -1055,4 +1059,7 @@ use it unchanged.
     `allow`/`deny asn:` on routes and tcp/udp listeners.
 20. Docs: EDGE_CASES (PROXY accept), ARCHITECTURE (OIDC, per-route size
     limits, client.asn, zstd), CONFIG (`match` blocks: 32 or 1024) made
-    true.
+    true. **Done 2026-11-16**: ARCHITECTURE says OIDC is the oidc addon,
+    request body limits per route and host (there is no response size
+    limit), client.asn and zstd as they now are; CONFIG's `match` limit is
+    1024, as the code has it.

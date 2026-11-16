@@ -817,9 +817,11 @@ Built in, in assembly, compiled into the route only where configured:
   application does.
 * **Shaping requests and responses:** header and path rewrites, redirect
   maps loaded from files (thousands of 301s in a hash, not a list of
-  rules), trailing-slash and `www` canonicalisation, request and response
-  size limits per route, CORS, security header presets (HSTS, nosniff,
-  frame options, referrer policy).
+  rules), trailing-slash and `www` canonicalisation, request body size
+  limits per route and host (`body_size`), a backend's Location and
+  Set-Cookie rewritten to the client's view (`response rewrite`), CORS,
+  security header presets (HSTS, nosniff, frame options, referrer
+  policy).
 * **Compression:** precompressed variants (`.br`, `.zst`, `.gz`) picked by
   `Accept-Encoding`, and on-the-fly zstd, brotli and gzip for text
   responses (JSON, HTML) above a size threshold, at a fast level, each piece
