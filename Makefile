@@ -110,12 +110,17 @@ build/ext-okena: $(wildcard addons/envoyext/*.go addons/envoyext/go.mod addons/e
 	@mkdir -p build
 	-command -v go >/dev/null && cd addons/envoyext && GOFLAGS=-mod=mod GOPROXY=off go build -o ../../$@ .
 
+# OpenID Connect login (addons/oidc)
+build/oidc-okena: $(wildcard addons/oidc/*.go addons/oidc/go.mod sdk/go/*.go)
+	@mkdir -p build
+	-command -v go >/dev/null && cd addons/oidc && GOFLAGS=-mod=mod GOPROXY=off go build -o ../../$@ .
+
 build/envoyext-test-server: $(wildcard tests/envoyext/*.go tests/envoyext/go.mod tests/envoyext/go.sum)
 	@mkdir -p build
 	-command -v go >/dev/null && cd tests/envoyext && GOFLAGS=-mod=mod GOPROXY=off go build -o ../../$@ .
 
 test: $(BIN) $(HTTPH) $(KAT) $(TLSH) $(TLSC) $(TLS12S) $(TLSC12) $(ADDON_EX) build/coraza-okena $(WASM_T) build/wasm-cache/.made \
-	build/ext-okena build/envoyext-test-server
+	build/ext-okena build/envoyext-test-server build/oidc-okena
 	python3 -I tests/run_all.py
 
 # one after the other, all output shown (slower; for reading a suite's log)

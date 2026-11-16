@@ -799,10 +799,12 @@ ECN. 0-RTT off by default and, when on, only for routes marked idempotent.
 Built in, in assembly, compiled into the route only where configured:
 
 * **Identity:** JWT with JWKS (HS/RS/PS/ES/EdDSA, leeway for clock skew),
-  API keys hashed in the plan, Basic, mTLS identity, forward-auth, and a
-  full OIDC login (authorization code + PKCE, encrypted session cookie)
-  so internal tools (Grafana, admin panels, a PaaS dashboard) sit behind
-  "sign in with Google" plus an e-mail or domain allowlist.
+  API keys hashed in the plan, Basic (bcrypt htpasswd files checked by a
+  process of their own), mTLS identity, forward-auth; OIDC login
+  (authorization code + PKCE, sealed session cookie) is the `oidc` addon
+  (addons/oidc), so internal tools (Grafana, admin panels, a PaaS
+  dashboard) sit behind "sign in with Google" plus an e-mail or domain
+  allowlist.
 * **Traffic control:** rate limits (GCRA per instance through leases,
   keyed by any request attribute), quotas, concurrency limits, priorities,
   IP allow/deny with an LPM trie, GeoIP (MaxMind `.mmdb` reader:

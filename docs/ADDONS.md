@@ -144,6 +144,7 @@ always sees an HTTP/1.1 head.
 | `addons/coraza` | a WAF: Coraza with the OWASP Core Rule Set ([README](../addons/coraza/README.md)) |
 | `addons/wasm` | proxy-wasm plugins, the ABI Envoy, nginx and Traefik run, on wazero ([README](../addons/wasm/README.md)) |
 | `addons/envoyext` | Envoy's `ext_authz` and `ext_proc` gRPC services ([README](../addons/envoyext/README.md)) |
+| `addons/oidc` | OpenID Connect login (code flow with PKCE, sealed session cookie, allow lists) ([README](../addons/oidc/README.md)) |
 
 Each SDK has a `hello` example that `tests/gateway/addon.py` runs against
 okena; `tests/gateway/waf.py` runs the WAF, `tests/gateway/wasm.py` proxy-wasm

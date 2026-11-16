@@ -1001,6 +1001,7 @@ loads a MaxMind country database for `country:`.
 | JWT | `auth jwt { jwks ...; issuer ...; audience ... }` |
 | Client certificates | `auth mtls` (with the listener's `client_ca`) |
 | An external service | `auth forward pool=sso path=/verify copy=x-user-id` |
+| OpenID Connect login | the `oidc` addon ([addons/oidc](../addons/oidc/README.md)) |
 
 On success the backend gets the identity in `x-user-id` (or `identity=NAME`;
 for JWT, in the headers `claims` names),

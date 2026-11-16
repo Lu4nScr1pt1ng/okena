@@ -1034,7 +1034,10 @@ use it unchanged.
     the worker). bcrypt: **done 2026-11-16** (src/gw/bcrypt.inc,
     tests/gateway/htpasswd.py): Blowfish/eksblowfish in okena-bcrypt, a ring
     and a shared table of answers (yes 5 min, no 10 s), the request held
-    2 ms at a time (fault_hold), 503 past 8 s or 256 waiting.
+    2 ms at a time (fault_hold), 503 past 8 s or 256 waiting. OIDC: **done
+    2026-11-16** as an addon (addons/oidc, tests/gateway/oidc.py): code
+    flow with PKCE, ID token checked against the provider's JWKS, sealed
+    session cookie, allow lists; the standard library only.
 18. Chunked request bodies to FastCGI.
 19. GeoIP ASN (`client.asn`).
 20. Docs: EDGE_CASES (PROXY accept), ARCHITECTURE (OIDC, per-route size
