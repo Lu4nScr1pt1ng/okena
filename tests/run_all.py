@@ -206,6 +206,8 @@ SUITES = [
     ("bcrypt epoll", ["tests/gateway/htpasswd.py", "epoll"]),
     ("oidc io_uring", ["tests/gateway/oidc.py", "io_uring"]),
     ("oidc epoll", ["tests/gateway/oidc.py", "epoll"]),
+    ("grpcjson io_uring", ["tests/gateway/grpcjson.py", "io_uring"]),
+    ("grpcjson epoll", ["tests/gateway/grpcjson.py", "epoll"]),
     ("tcp limit_rate io_uring", ["tests/l4/rate.py", "io_uring"]),
     ("tcp limit_rate epoll", ["tests/l4/rate.py", "epoll"]),
     ("cors io_uring", ["tests/gateway/cors.py", "io_uring"]),

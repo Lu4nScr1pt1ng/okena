@@ -1690,7 +1690,9 @@ Trailers carry `grpc-status` through. When okena itself can't serve a gRPC
 call (no server, timeout), it answers as gRPC: 14 UNAVAILABLE, 4
 DEADLINE_EXCEEDED and so on. gRPC-Web (binary and text) from browsers is
 translated to gRPC for a `protocol h2` pool with no configuration; add the
-route's `cors` for pages on other origins.
+route's `cors` for pages on other origins. JSON clients of a gRPC service
+(gRPC-JSON transcoding, by its `google.api.http` rules) go through the
+`grpcjson` addon ([addons/grpcjson](../addons/grpcjson/README.md)).
 
 ### WebSocket and other upgrades
 

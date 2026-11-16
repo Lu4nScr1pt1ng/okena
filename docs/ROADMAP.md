@@ -1037,7 +1037,11 @@ use it unchanged.
     2 ms at a time (fault_hold), 503 past 8 s or 256 waiting. OIDC: **done
     2026-11-16** as an addon (addons/oidc, tests/gateway/oidc.py): code
     flow with PKCE, ID token checked against the provider's JWKS, sealed
-    session cookie, allow lists; the standard library only.
+    session cookie, allow lists; the standard library only. gRPC-JSON
+    transcoding: **done 2026-11-16** as an addon (addons/grpcjson,
+    tests/gateway/grpcjson.py): google.api.http rules and
+    POST /package.Service/Method, dynamic messages from a descriptor set,
+    gRPC errors as HTTP statuses; unary methods.
 18. Chunked request bodies to FastCGI.
 19. GeoIP ASN (`client.asn`).
 20. Docs: EDGE_CASES (PROXY accept), ARCHITECTURE (OIDC, per-route size

@@ -110,6 +110,15 @@ build/ext-okena: $(wildcard addons/envoyext/*.go addons/envoyext/go.mod addons/e
 	@mkdir -p build
 	-command -v go >/dev/null && cd addons/envoyext && GOFLAGS=-mod=mod GOPROXY=off go build -o ../../$@ .
 
+# gRPC-JSON transcoding (addons/grpcjson), and the service its tests call
+build/grpcjson-okena: $(wildcard addons/grpcjson/*.go addons/grpcjson/go.mod addons/grpcjson/go.sum sdk/go/*.go)
+	@mkdir -p build
+	-command -v go >/dev/null && cd addons/grpcjson && GOFLAGS=-mod=mod GOPROXY=off go build -o ../../$@ .
+
+build/grpcjson-test-server: $(wildcard tests/grpcjson/*.go tests/grpcjson/go.mod tests/grpcjson/go.sum)
+	@mkdir -p build
+	-command -v go >/dev/null && cd tests/grpcjson && GOFLAGS=-mod=mod GOPROXY=off go build -o ../../$@ .
+
 # OpenID Connect login (addons/oidc)
 build/oidc-okena: $(wildcard addons/oidc/*.go addons/oidc/go.mod sdk/go/*.go)
 	@mkdir -p build
@@ -120,7 +129,7 @@ build/envoyext-test-server: $(wildcard tests/envoyext/*.go tests/envoyext/go.mod
 	-command -v go >/dev/null && cd tests/envoyext && GOFLAGS=-mod=mod GOPROXY=off go build -o ../../$@ .
 
 test: $(BIN) $(HTTPH) $(KAT) $(TLSH) $(TLSC) $(TLS12S) $(TLSC12) $(ADDON_EX) build/coraza-okena $(WASM_T) build/wasm-cache/.made \
-	build/ext-okena build/envoyext-test-server build/oidc-okena
+	build/ext-okena build/envoyext-test-server build/oidc-okena build/grpcjson-okena build/grpcjson-test-server
 	python3 -I tests/run_all.py
 
 # one after the other, all output shown (slower; for reading a suite's log)
