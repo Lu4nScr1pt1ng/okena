@@ -365,12 +365,24 @@ ring_enter_tick:
 	xor	edx,edx
 	div	qword [g_tsc_per_us]		; µs to the tick
 	inc	rax				; (never early)
-	cmp	qword [g_ph_due],0		; a phase clock of a fraction of a second
+	mov	rcx,[g_ph_due]			; a phase clock of a fraction of a second,
+	mov	rdx,[g_pc_due]			; or limit_rate's wheel: the earlier
+	test	rcx,rcx
+	jz	@f
+	test	rdx,rdx
+	jz	.one
+	cmp	rdx,rcx
+	jae	.one
+@@:
+	mov	rcx,rdx
+.one:
+	test	rcx,rcx
 	je	.wait
+	push	rcx
 	push	rax
 	call	ep_clock
 	pop	rax
-	mov	rcx,[g_ph_due]
+	pop	rcx
 	sub	rcx,[g_now_ms]
 	jg	@f
 	mov	eax,1				; due: a turn at once

@@ -136,6 +136,7 @@ ep_main:
 	call	ep_clock
 	push	r12
 	call	ph_fine				; (clocks of a fraction of a second)
+	call	pace_run			; (limit_rate)
 	pop	r12
 	test	r12,r12
 	jle	.timers
@@ -249,6 +250,12 @@ end bss
 ep_wait_timeout:
 	mov	r8,[g_next_tick_ms]
 	mov	rax,[g_ph_due]			; (a phase clock of a fraction of a second)
+	test	rax,rax
+	jz	@f
+	cmp	rax,r8
+	cmovb	r8,rax
+@@:
+	mov	rax,[g_pc_due]			; (limit_rate's wheel)
 	test	rax,rax
 	jz	@f
 	cmp	rax,r8
@@ -1098,6 +1105,24 @@ macro ep_direction
 @@:
 end macro
 
+; limit_rate on a tcp listener: reg at most a read's most for the direction
+; ep_pump moves (its source side in [rsp]). Uses rcx.
+macro ep_cap reg
+	local up, no
+	mov	ecx,[r12+S_LST]
+	add	ecx,ecx
+	cmp	dword [rsp],EK_CLIENT
+	je	up
+	inc	ecx
+up:
+	mov	ecx,[g_ls_rcap+rcx*4]
+	test	ecx,ecx
+	jz	no
+	cmp	reg,ecx
+	cmova	reg,ecx
+no:
+end macro
+
 ; edi = session, esi = source side: read from it and write to the other
 ; side until the source has nothing more, or the destination is full.
 ep_pump:
@@ -1117,6 +1142,14 @@ ep_pump:
 	jne	.out				; a buffer is still being written
 	test	[r12+S_FLAGS],ebp
 	jnz	.out				; source already ended
+	cmp	qword [g_pc_base],0
+	je	.unpaced
+	xor	esi,esi				; limit_rate: its time first
+	cmp	dword [rsp],EK_CLIENT
+	setne	sil
+	call	pace_l4_wait
+	jc	.out				; (pace_l4_wake pumps it then)
+.unpaced:
 	movzx	edi,byte [g_sbig+rbx]
 	and	edi,ebp				; this direction on large buffers
 	jz	.copy
@@ -1138,6 +1171,7 @@ ep_pump:
 	mov	edx,[g_bkp_fd+rcx*8+4]		; the pipe's write end
 	xor	r10d,r10d
 	mov	r8d,BK_PSZ
+	ep_cap	r8d
 	mov	r9d,SPLICE_F_MOVE or SPLICE_F_NONBLOCK
 	mov	eax,SYS_splice
 	syscall
@@ -1168,6 +1202,7 @@ ep_pump:
 	mov	edx,BUFL_SIZE
 @@:
 	buf_ptr rsi, esi
+	ep_cap	edx
 	xor	eax,eax				; SYS_read
 	syscall
 	test	rax,rax
@@ -1206,6 +1241,16 @@ ep_pump:
 @@:
 	add	[rdx],rax
 .l4_counted:
+	cmp	qword [g_pc_base],0
+	je	@f
+	push	rax				; limit_rate: its clock on
+	mov	ecx,[r12+S_LST]
+	xor	esi,esi
+	cmp	dword [rsp+8],EK_CLIENT
+	setne	sil
+	call	pace_l4_note
+	pop	rax
+@@:
 	mov	[r12+r15+4],eax			; LEN
 	mov	dword [r12+r15+8],0		; OFF
 	mov	edi,ebx

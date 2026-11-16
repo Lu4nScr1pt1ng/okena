@@ -148,6 +148,7 @@ macro plan_regions action
 	action g_plan_l4log, 4
 	action g_plan_alx, 4
 	action g_plan_rlh, 4
+	action g_plan_pace, 4
 	action g_plan_fl, 4
 	action g_fl_ivms, 4
 	action g_fl_bindlen, 4
@@ -157,6 +158,9 @@ macro plan_regions action
 	action g_fl_peer, 32 * FL_PEERS
 	action g_fl_key, 64
 	action g_ls_l4log, MAX_LISTENERS
+	action g_ls_rate, MAX_LISTENERS * 8
+	action g_ls_rafter, MAX_LISTENERS * 4
+	action g_ls_rcap, MAX_LISTENERS * 8
 	action g_plan_jreq, 4
 	action g_plan_jreqv, 4
 	action g_jreq, RQ_SIZE * MAX_JREQ, g_plan_jreq, RQ_SIZE

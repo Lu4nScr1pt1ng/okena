@@ -1000,7 +1000,12 @@ use it unchanged.
     `limit ... fleet=on`, a ring a worker written once a batch, okena-fleet
     sending sealed sums every interval and taking the others' from its
     buckets.
-13. Bandwidth limits per connection (`limit_rate`) on http and tcp.
+13. Bandwidth limits per connection (`limit_rate`) on http and tcp. **Done
+    2026-11-16** (src/http/pace.inc, tests/gateway/pace.py,
+    tests/l4/rate.py): `limit_rate RATE [after=SIZE]` on a route (proxied,
+    files, cache, HTTP/2 streams) and `limit_rate RATE [upload=RATE]
+    [after=SIZE]` on a tcp listener, on a 1 ms timing wheel; paced tcp
+    directions read at most 1/16 s of bytes and skip bulk.inc's loop.
 14. zstd compression on the fly.
 15. Admin API to add and change routes at runtime.
 16. Environment variables in the configuration (`${env:NAME}`).

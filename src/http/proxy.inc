@@ -3404,6 +3404,8 @@ http_resp_pump:
 	mov	rax,[r15+H_BUF]
 	cmp	byte [r15+H_GWEB],4
 	je	.read				; (gRPC-Web text: through the encoder)
+	call	pace_route			; (paced: through here, not without copies)
+	jc	.read
 	call	zc_ok				; from a file or the disk cache: without copies?
 	jnc	zc_send
 	jmp	.read
@@ -3435,9 +3437,13 @@ http_resp_pump:
 	mov	r9d,esi
 	jmp	.squeeze
 .send:
+	call	pace_check			; limit_rate: CF, it waits on the wheel
+	jc	.paced
 	mov	dword [r15+H_STATE],HS_RESP_SEND
 	mov	ecx,SIDE_CLIENT
 	jmp	h_send
+.paced:
+	ret
 .length_done:
 	mov	dword [r15+H_RBODY],BK_NONE
 	mov	rax,[r15+H_BUF]
@@ -3450,8 +3456,11 @@ http_resp_pump:
 .read:
 	mov	dword [r15+H_UPLEN],0
 	mov	dword [r15+H_UPOFF],0
+	call	pace_route
+	jc	@f				; (paced: not by the relay either)
 	call	http_counted_try		; a large plain body: by the L4 relay
 	jnc	.counted
+@@:
 	mov	dword [r15+H_STATE],HS_RESP_READ
 	mov	ecx,SIDE_UP
 	mov	rdi,[r15+H_BUF]
@@ -5115,6 +5124,8 @@ http_phase_expired:
 @@:
 	cmp	eax,HS_PP_IN
 	je	.silent				; its PROXY header never came whole
+	cmp	eax,HS_PACED
+	je	.out				; (limit_rate: waiting on its own clock)
 	cmp	eax,HS_LINGER
 	je	.silent				; its error long sent
 	cmp	eax,HS_HEAD

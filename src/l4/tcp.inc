@@ -81,6 +81,27 @@ macro l4log_add lst, bytes, field
 skip:
 end macro
 
+; limit_rate on a tcp listener: bytes read by direction dir of session ebx
+; (r14), lst = its listener (a register other than rcx, rdx, rsi)
+macro pace_l4_add lst, dir
+	local skip
+	cmp	dword [g_ls_rate+lst*8+dir*4],0
+	je	skip
+	push	rax
+	push	rcx
+	push	rdx
+	push	rsi
+	mov	rcx,lst
+	mov	esi,dir
+	mov	rax,r14
+	call	pace_l4_note
+	pop	rsi
+	pop	rdx
+	pop	rcx
+	pop	rax
+skip:
+end macro
+
 macro if_http target
 	call	session_ptr
 	mov	eax,[rax+S_LST]
@@ -418,6 +439,9 @@ sessions_init:
 	test	eax,eax
 	js	.done
 	call	rlh_worker_init
+	test	eax,eax
+	js	.done
+	call	pace_worker_init
 	test	eax,eax
 	js	.done
 	call	http_worker_init
@@ -2968,6 +2992,9 @@ post_recv_c:
 	movzx	ecx,byte [g_sbig+rsi]
 	and	ecx,1				; group 1: the large buffers
 	mov	[rax+SQE_BUF_GROUP],cx
+	mov	ecx,[rdx+S_LST]			; limit_rate: a read's most
+	mov	ecx,[g_ls_rcap+rcx*8]
+	mov	[rax+SQE_LEN],ecx
 	client_sqe rdx
 	ret
 
@@ -2986,6 +3013,9 @@ post_recv_u:
 	shr	ecx,1
 	and	ecx,1				; group 1: the large buffers
 	mov	[rax+SQE_BUF_GROUP],cx
+	mov	r8d,[rdx+S_LST]			; limit_rate: a read's most
+	mov	r8d,[g_ls_rcap+r8*8+4]
+	mov	[rax+SQE_LEN],r8d
 	mov	r8,[g_cnt+rsi*8]		; an HTTP body by the relay: no more than
 	test	r8,r8				; what is left of it (counted.inc: + 1)
 	jz	.out
@@ -3106,6 +3136,7 @@ on_s_recv_c:
 	mov	eax,[r13+S_LST]
 	add	[g_st_l_in+rax*8],r14
 	l4log_add rax, r14, L4L_IN
+	pace_l4_add rax, 0
 	mov	eax,r15d
 	shr	eax,IORING_CQE_BUFFER_SHIFT
 	mov	[r13+S_CU_BID],eax
@@ -3188,6 +3219,7 @@ on_s_recv_u:
 	mov	eax,[r13+S_LST]
 	add	[g_st_l_out+rax*8],r14
 	l4log_add rax, r14, L4L_OUT
+	pace_l4_add rax, 1
 	cmp	qword [g_cnt+rbx*8],0
 	je	@f
 	sub	[g_cnt+rbx*8],r14		; an HTTP body: less of it to come, and
@@ -3311,6 +3343,9 @@ on_s_send_u:
 	mov	r13,rax
 	jmp	bulk_arm_rd_c
 @@:
+	xor	esi,esi				; limit_rate: its time first
+	call	pace_l4_wait
+	jc	.out
 	mov	edi,ebx
 	jmp	post_recv_c
 .partial:
@@ -3378,6 +3413,9 @@ on_s_send_c:
 	mov	r13,rax
 	jmp	bulk_arm_rd_u
 @@:
+	mov	esi,1				; limit_rate: its time first
+	call	pace_l4_wait
+	jc	.out
 	mov	edi,ebx
 	jmp	post_recv_u
 .partial:

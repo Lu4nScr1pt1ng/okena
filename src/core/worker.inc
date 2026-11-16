@@ -202,6 +202,7 @@ worker_main:
 	call	ring_enter
 	call	ep_clock			; (g_now_ms: the phase clocks)
 	call	ph_fine
+	call	pace_run			; (limit_rate)
 	call	ring_reap
 	call	ep_http_ready			; user-space TLS deliveries
 	call	addon_flush			; addons' answers
@@ -261,6 +262,7 @@ worker_main:
 	pin_wait_end
 	call	ep_clock			; (g_now_ms: the phase clocks)
 	call	ph_fine
+	call	pace_run			; (limit_rate)
 	call	bp_seen
 	call	ring_reap
 	call	ep_http_ready			; user-space TLS deliveries

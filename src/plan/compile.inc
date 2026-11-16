@@ -148,7 +148,9 @@ RA_WRFIRST	:= 228		; d: `response rewrite` lines (g_lrw), the route's first
 RA_WRN		:= 232		; d
 RA_MIDX		:= 236		; d: `metrics NAME`: its index (g_rmet) + 1, 0 none
 RA_LOG		:= 240		; d: `log`: 0 every exchange, -1 off, else the ten-thousandths logged
-RA_SIZE		:= 248
+RA_RATE		:= 244		; d: `limit_rate`: bytes a second, 0 none (pace.inc)
+RA_RATEAFTER	:= 248		; d: and its after=
+RA_SIZE		:= 256
 MAX_TRYC	:= 32		; distinct try= values
 RESPOND_BODY_MAX := 1 shl 20	; `respond CODE BODY`
 RESPOND_INLINE	:= 4096		; up to this, in the head's write
@@ -367,6 +369,9 @@ bss
 	g_cmp_tms_body	dd ?
 	g_cmp_pfirst	dd ?
 	g_cmp_lacl	dd ?
+	g_cmp_rup	dd ?			; tcp limit_rate: upload=, the rate, after=
+	g_cmp_rdn	dd ?
+	g_cmp_rafter	dd ?
 	g_cmp_lacl_ra:	rb RA_SIZE		; (compile_acl writes an action's RA_ACL)
 	g_cmp_pcount	dd ?
 	g_cmp_tcount	dd ?
@@ -1602,6 +1607,9 @@ compile_route_action:
 	lea	rcx,[dir_table + D_SIZE*DIR_RLOG]
 	cmp	rax,rcx
 	je	@f
+	lea	rcx,[dir_table + D_SIZE*DIR_RATE]
+	cmp	rax,rcx
+	je	@f
 	mov	rbx,[rbx+N_NEXT]
 	jmp	@b
 .listener_compress:
@@ -1643,6 +1651,47 @@ compile_route_action:
 	push	rcx
 	imul	r13,rcx,RA_SIZE
 	lea	r13,[g_acts+r13]
+	; limit_rate RATE [after=SIZE]: its answers paced
+	mov	rdi,r12
+	mov	ecx,DIR_RATE
+	call	find_child
+	test	rax,rax
+	jz	.rate_done
+	push	rax
+	mov	rax,[rax+N_ARGS]
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_size			; bytes a second
+	jc	plan_bad_rate
+	test	rax,rax
+	jz	plan_bad_rate
+	mov	ecx,-1
+	cmp	rax,rcx
+	cmova	rax,rcx
+	mov	[r13+RA_RATE],eax
+	mov	dword [g_plan_pace],1
+	mov	rdi,[rsp]
+	cstring str_key_rafter, 'after',0
+	lea	rsi,[str_key_rafter]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_size
+	mov	ecx,-1
+	cmp	rax,rcx
+	cmova	rax,rcx
+	mov	[r13+RA_RATEAFTER],eax
+@@:
+	mov	rdi,[rsp]
+	cstring str_key_rupload, 'upload',0
+	lea	rsi,[str_key_rupload]
+	call	node_option
+	test	rax,rax
+	jnz	plan_bad_rate_up		; (a tcp listener's)
+	add	rsp,8
+.rate_done:
 	; log off | log sample=N%: the route's share of access log lines
 	mov	rdi,r12
 	mov	ecx,DIR_RLOG
@@ -3377,6 +3426,90 @@ compile_rtimeout:
 	ja	plan_bad_rtimeout
 	ret
 
+plan_bad_rate_up:
+	call	log_begin
+	out_lit 'limit_rate',27h,'s upload= is for tcp listeners (the client',27h,'s bytes); a route paces its answers'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
+
+; ecx = a tcp direction's rate (0 none): ecx = its reads' most, a sixteenth
+; of a second's worth, 1 KiB at least, 0 when that is no less than a large
+; buffer. Keeps all else.
+pace_cap_of:
+	test	ecx,ecx
+	jz	.out
+	shr	ecx,4
+	cmp	ecx,1024
+	jae	@f
+	mov	ecx,1024
+@@:
+	cmp	ecx,BUFL_SIZE
+	jb	.out
+	xor	ecx,ecx
+.out:
+	ret
+
+; r12 = a listener's node: g_cmp_rup, g_cmp_rdn, g_cmp_rafter from its
+; `limit_rate RATE [upload=RATE] [after=SIZE]` (tcp; zeros without one).
+compile_tcp_rate:
+	mov	dword [g_cmp_rup],0
+	mov	dword [g_cmp_rdn],0
+	mov	dword [g_cmp_rafter],0
+	mov	rdi,r12
+	mov	ecx,DIR_RATE
+	call	find_child
+	test	rax,rax
+	jz	.out
+	push	rbx
+	mov	rbx,rax
+	mov	rax,[rbx+N_ARGS]
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	.size
+	jz	plan_bad_rate
+	mov	[g_cmp_rdn],eax
+	mov	rdi,rbx
+	lea	rsi,[str_key_rupload]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	.size
+	jz	plan_bad_rate
+	mov	[g_cmp_rup],eax
+@@:
+	mov	rdi,rbx
+	lea	rsi,[str_key_rafter]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	.size
+	mov	[g_cmp_rafter],eax
+@@:
+	mov	dword [g_plan_pace],1
+	pop	rbx
+.out:
+	ret
+.size:						; eax = a size, 4 GiB - 1 at most; ZF when 0
+	call	parse_size
+	jc	plan_bad_rate
+	mov	ecx,-1
+	cmp	rax,rcx
+	cmova	rax,rcx
+	test	eax,eax
+	ret
+
+plan_bad_rate:
+	call	log_begin
+	out_lit 'limit_rate takes a size a second (512KiB: half a mebibyte a second) and may take after=SIZE, sent at once first'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
+
 plan_bad_rtimeout:
 	call	log_begin
 	out_lit 'a route',27h,'s timeout takes try= (the backend',27h,'s time for its answer head, each try) and total= (no retry starts after it), each 1ms to 1h; at most 32 different try= values'
@@ -4804,6 +4937,7 @@ compile_listener:
 	or	dword [g_cmp_flags],LSF_L4LOG or LSF_PEER
 	mov	dword [g_plan_l4log],1
 .l4log_done:
+	call	compile_tcp_rate		; limit_rate on a tcp listener
 	mov	rdi,r12
 	mov	esi,1
 	call	pp_directive			; `proxy_protocol accept [FROM...]`
@@ -5141,6 +5275,18 @@ compile_listener:
 	jz	@f
 	mov	byte [g_ls_l4log+rax-1],1
 @@:
+	push	rcx
+	mov	ecx,[g_cmp_rup]
+	mov	[g_ls_rate+rax*8-8],ecx
+	call	pace_cap_of
+	mov	[g_ls_rcap+rax*8-8],ecx
+	mov	ecx,[g_cmp_rdn]
+	mov	[g_ls_rate+rax*8-4],ecx
+	call	pace_cap_of
+	mov	[g_ls_rcap+rax*8-4],ecx
+	mov	ecx,[g_cmp_rafter]
+	mov	[g_ls_rafter+rax*4-4],ecx
+	pop	rcx
 	push	rcx
 	lea	rdi,[rcx+LS_PA4]
 	lea	rsi,[g_cmp_pa4]

@@ -1104,6 +1104,28 @@ one `interval` of the others' share past its limit before they hear of it.
 The instances need the same `limit` lines on the same routes and hosts (a limit
 is known by them; the listener's addresses may differ).
 
+### Bandwidth: limit_rate
+
+```nginx
+route /downloads/* { limit_rate 512KiB after=4MiB; files /srv/dl }
+tcp :9000 { limit_rate 1MiB upload=256KiB; to pool media }
+```
+
+On a route, `limit_rate RATE` sends each answer at RATE bytes a second,
+the first `after=` bytes at once (nginx's `limit_rate` and
+`limit_rate_after`). The rate is a connection's (an HTTP/2 stream's), not the
+route's: twenty downloads at once each get it. Proxied answers, files and
+cached ones are all paced; they go through okena's buffers rather than
+sendfile or splice. On a `tcp` listener, `limit_rate RATE` paces the
+upstream's bytes to the client and `upload=RATE` the client's to the upstream
+(each direction is free without its rate); `after=` lets each direction's
+first bytes through at once. A connection that sat idle does not save up time
+to burst later.
+
+Waiting answers sit on a timing wheel of 1 ms slots, so parking and waking
+one costs the same however many are paced. A worker with no `limit_rate`
+anywhere pays nothing, and a route without it pays one compare per piece.
+
 ### CORS
 
 ```nginx

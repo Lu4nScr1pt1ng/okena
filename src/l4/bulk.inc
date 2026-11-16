@@ -151,6 +151,8 @@ bulk_want:
 	test	dword [r13+S_FLAGS],SF_UP_OPEN
 	jz	.out
 	mov	eax,[r13+S_LST]
+	cmp	qword [g_ls_rate+rax*8],0	; (limit_rate: read by read, paced)
+	jne	.out
 	imul	rax,rax,LS_SIZE
 	cmp	dword [g_listeners+rax+LS_KIND],LK_TCP
 	je	.wanted
