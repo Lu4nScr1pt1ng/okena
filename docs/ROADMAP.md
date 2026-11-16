@@ -1049,7 +1049,10 @@ use it unchanged.
     Content-Length, and the request run again (HX_FAULTED: its limits
     counted once) with its body replayed from the spool. Left: 100
     Continue for such a body.
-19. GeoIP ASN (`client.asn`).
+19. GeoIP ASN (`client.asn`). **Done 2026-11-16** (src/gw/geoip.inc,
+    tests/gateway/geoip.py): `geoip_asn FILE` beside `geoip FILE` (each
+    file's state a slot, the reader shared), `match client.asn=` and
+    `allow`/`deny asn:` on routes and tcp/udp listeners.
 20. Docs: EDGE_CASES (PROXY accept), ARCHITECTURE (OIDC, per-route size
     limits, client.asn, zstd), CONFIG (`match` blocks: 32 or 1024) made
     true.

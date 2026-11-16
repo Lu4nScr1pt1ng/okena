@@ -14,7 +14,12 @@ ACL_CN		:= 40				; d: countries allowed
 ACL_DN		:= 44				; d: denied
 ACL_C		:= 48				; w each
 ACL_D		:= ACL_C + 2 * ACL_CMAX
-ACL_SIZE	:= ACL_D + 2 * ACL_CMAX
+ACL_AN		:= ACL_D + 2 * ACL_CMAX		; d: autonomous systems allowed
+ACL_XN		:= ACL_AN + 4			; d: denied
+ACL_AMAX	:= 64
+ACL_A		:= ACL_XN + 4			; d each
+ACL_X		:= ACL_A + 4 * ACL_AMAX
+ACL_SIZE	:= ACL_X + 4 * ACL_AMAX
 TRN_ZERO		:= 0				; q: child, 0 none
 TRN_ONE		:= 8				; q
 TRN_END		:= 16				; d: a prefix ends here
@@ -23,6 +28,7 @@ TRN_SIZE		:= 24
 bss
 	align 8
 	g_acls:		rb ACL_SIZE * MAX_ACLS
+	g_acl_asn	dd ?
 	g_plan_acls	dd ?
 	g_tr_tmp:	rb TR_SIZE
 	g_acl_sink	dq ?		; not 0: acl_add hands each range to it instead
@@ -92,7 +98,7 @@ acl_check:
 	xor	r13d,r13d
 	mov	eax,[r12+ACL_CN]
 	or	eax,[r12+ACL_DN]
-	jz	.ranges
+	jz	.asn
 	push	rcx
 	push	rsi
 	push	r11
@@ -103,20 +109,61 @@ acl_check:
 	pop	rcx
 	mov	r13d,eax
 	test	eax,eax
-	jz	.ranges
+	jz	.asn
 	lea	r8,[r12+ACL_D]
 	mov	r9d,[r12+ACL_DN]
 .deny:
 	test	r9d,r9d
-	jz	.ranges
+	jz	.asn
 	cmp	ax,[r8]
 	je	.refused
 	add	r8,2
 	dec	r9d
 	jmp	.deny
+.asn:						; by autonomous system, the same
+	xor	eax,eax
+	mov	edx,[r12+ACL_AN]
+	or	edx,[r12+ACL_XN]
+	jz	.asn_known
+	push	rcx
+	push	rsi
+	push	r11
+	mov	edx,r11d
+	call	geo_asn
+	pop	r11
+	pop	rsi
+	pop	rcx
+	test	eax,eax
+	jz	.asn_known
+	lea	r8,[r12+ACL_X]
+	mov	r9d,[r12+ACL_XN]
+.xdeny:
+	test	r9d,r9d
+	jz	.asn_known
+	cmp	eax,[r8]
+	je	.refused
+	add	r8,4
+	dec	r9d
+	jmp	.xdeny
+.asn_known:
+	mov	[g_acl_asn],eax
 .ranges:
 	cmp	dword [r12+ACL_ALLOWS],0
 	je	.fine
+	mov	eax,[g_acl_asn]
+	test	eax,eax
+	jz	.countries
+	lea	r8,[r12+ACL_A]
+	mov	r9d,[r12+ACL_AN]
+.aallow:
+	test	r9d,r9d
+	jz	.countries
+	cmp	eax,[r8]
+	je	.fine
+	add	r8,4
+	dec	r9d
+	jmp	.aallow
+.countries:
 	test	r13d,r13d
 	jz	.by_range
 	lea	r8,[r12+ACL_C]
@@ -258,6 +305,15 @@ acl_args:
 	jmp	.done_arg
 @@:
 	mov	rsi,rdi
+	cmp	ecx,5				; asn:N,ASN
+	jb	.range
+	cmp	dword [rsi],'asn:'
+	jne	@f
+	add	rsi,4
+	sub	ecx,4
+	call	acl_asns
+	jmp	.done_arg
+@@:
 	cmp	ecx,10
 	jb	.range
 	mov	rax,[rsi]
@@ -277,6 +333,65 @@ acl_args:
 	pop	r8
 	add	r9,A_SIZE
 	jmp	.arg
+.out:
+	ret
+
+; rsi = 13335,AS15169, ecx = its length, r14 = the acl, r15d = deny
+acl_asns:
+	cmp	qword [g_geo_a],0
+	je	plan_bad_acl
+.one:
+	test	ecx,ecx
+	jz	plan_bad_acl
+	cmp	ecx,2
+	jb	@f
+	movzx	edx,word [rsi]
+	or	edx,0x2020
+	cmp	edx,'as'
+	jne	@f
+	add	rsi,2
+	sub	ecx,2
+@@:
+	xor	edx,edx
+	xor	r10d,r10d			; digits
+.digit:
+	test	ecx,ecx
+	jz	.end
+	movzx	eax,byte [rsi]
+	cmp	al,','
+	je	.end
+	sub	eax,'0'
+	cmp	eax,9
+	ja	plan_bad_acl
+	imul	rdx,rdx,10
+	add	rdx,rax
+	mov	rax,0xFFFFFFFF
+	cmp	rdx,rax
+	ja	plan_bad_acl
+	inc	r10d
+	inc	rsi
+	dec	ecx
+	jmp	.digit
+.end:
+	test	r10d,r10d
+	jz	plan_bad_acl
+	lea	r8,[r14+ACL_A]
+	lea	r9,[r14+ACL_AN]
+	test	r15d,r15d
+	jz	@f
+	lea	r8,[r14+ACL_X]
+	lea	r9,[r14+ACL_XN]
+@@:
+	mov	eax,[r9]
+	cmp	eax,ACL_AMAX
+	jae	plan_bad_acl
+	mov	[r8+rax*4],edx
+	inc	dword [r9]
+	test	ecx,ecx
+	jz	.out
+	inc	rsi
+	dec	ecx
+	jmp	.one
 .out:
 	ret
 
@@ -432,7 +547,7 @@ acl_add:
 
 plan_bad_acl:
 	call	log_begin
-	out_lit 'allow and deny take addresses, ranges, file:PATH with one a line, or country:BR,PT with a `geoip` file'
+	out_lit 'allow and deny take addresses, ranges, file:PATH with one a line, country:BR,PT with a `geoip` file, or asn:13335,AS15169 (64 at most) with a `geoip_asn` file'
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process

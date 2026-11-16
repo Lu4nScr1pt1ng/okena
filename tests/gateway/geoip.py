@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """`geoip`, on one engine (argument). .mmdb files are written here, as MaxMind's format
 says: each record size, IPv4 and IPv6 trees, pointers. Then broken ones: a file that
-lies must give no country, and must not stop a worker."""
+lies must give no country, and must not stop a worker. geoip_asn beside it:
+allow, deny and match by client.asn."""
 import http.client
 import http.server
 import ipaddress
@@ -152,10 +153,10 @@ class H(http.server.BaseHTTPRequestHandler):
 NETS = [("127.0.0.0/8", "BR"), ("10.0.0.0/8", "PT"), ("192.0.2.0/24", "RU"), ("2001:db8::/32", "AR")]
 
 
-def run(tmp, name, db, routes, fn):
+def run(tmp, name, db, routes, fn, extra=""):
     (tmp / "db.mmdb").write_bytes(db)
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ drain delay=0s timeout=1s; workers 2; io_engine {ENGINE}; geoip {tmp}/db.mmdb }}
+    conf.write_text(f"""okena {{ drain delay=0s timeout=1s; workers 2; io_engine {ENGINE}; geoip {tmp}/db.mmdb{extra} }}
 pool b {{ server 127.0.0.1:{BACK} }}
 pool c {{ server 127.0.0.1:{BACK} }}
 http 127.0.0.1:{LST} {{
@@ -255,6 +256,39 @@ def main():
     run(tmp, "a tree that points outside", bytes(db), ROUTES, nothing)
     check("  no country", 200 not in check_bad and check_ok == [200], (check_bad, check_ok))
 
+    # autonomous systems: geoip_asn beside geoip
+    ASNETS = [("127.0.0.0/8", "64500"), ("10.0.0.0/8", "13335"), ("2001:db8::/32", "15169")]
+    ASROUTES = ROUTES + """    route /asallow { allow asn:64500; to pool b }
+    route /asno { allow asn:13335,AS15169; to pool b }
+    route /asdeny { deny asn:AS64500; to pool b }
+    route /both { allow country:PT; allow asn:64500; to pool b }
+    route /asm { match client.asn=13335,AS64500 { redirect 302 /hit }; to pool b }
+    route /asn15169 { match client.asn=15169 { redirect 302 /hit }; to pool b }
+"""
+    for rec in (24, 32):
+        def t():
+            check(f"asn ({rec}-bit): allow by it", st("/asallow")[0] == 200, st("/asallow"))
+            check("  not in the list", st("/asno")[0] == 403)
+            check("  deny (AS before the number)", st("/asdeny")[0] == 403)
+            check("  of 10.0.0.0/8 (13335) by x-forwarded-for", st("/asno", x_forwarded_for="10.1.1.1")[0] == 200
+                  and st("/asdeny", x_forwarded_for="10.1.1.1")[0] == 200)
+            check("  with countries: one of them lets in", st("/both")[0] == 200)
+            check("  match, in a list", st("/asm") == (302, "/hit") and st("/asm", x_forwarded_for="10.9.9.9") == (302, "/hit"))
+            check("  match, not; IPv6", st("/asn15169")[0] == 200 and st("/asn15169", x_forwarded_for="2001:db8::5") == (302, "/hit"))
+            check("  an address in no network: no ASN", st("/asallow", x_forwarded_for="8.8.8.8")[0] == 403
+                  and st("/asdeny", x_forwarded_for="8.8.8.8")[0] == 200)
+            check("  the country file still answers", st("/yes")[0] == 200 and st("/m") == (302, "/hit"))
+        (tmp / "asn.mmdb").write_bytes(build(ASNETS, rec, 6, data_of=lambda a: {"autonomous_system_number": int(a),
+                                                                            "autonomous_system_organization": "Org " + a}))
+        run(tmp, f"asn {rec}", build(NETS, 24, 6), ASROUTES, t, extra=f"; geoip_asn {tmp}/asn.mmdb")
+    def wrong():
+        check_bad.append(st("/asallow")[0])
+        check_ok.append(st("/p")[0])
+    check_bad, check_ok = [], []
+    (tmp / "asn.mmdb").write_bytes(build(ASNETS, 24, 6, data_of=lambda a: {"autonomous_system_number": a}))
+    run(tmp, "asn as a string", build(NETS, 24, 6), ASROUTES, wrong, extra=f"; geoip_asn {tmp}/asn.mmdb")
+    check("  an ASN that is not a number: none, others served", check_bad == [403] and check_ok == [200], (check_bad, check_ok))
+
     c = tmp / "bad.conf"
     def refused(what, text):
         c.write_text(text)
@@ -271,6 +305,9 @@ def main():
     refused("client.country with no geoip", f"pool b {{ server 127.0.0.1:1 }}\nhttp 127.0.0.1:{LST} {{ route /* {{ match client.country=BR {{ to pool b }}; to pool b }} }}\n")
     refused("country: with no geoip", f"pool b {{ server 127.0.0.1:1 }}\nhttp 127.0.0.1:{LST} {{ route /* {{ allow country:BR; to pool b }} }}\n")
     refused("a bad list", f"okena {{ drain delay=0s timeout=1s; geoip {tmp}/db.mmdb }}\npool b {{ server 127.0.0.1:1 }}\nhttp 127.0.0.1:{LST} {{ route /* {{ allow country:BRA; to pool b }} }}\n")
+    refused("client.asn with no geoip_asn", f"okena {{ drain delay=0s timeout=1s; geoip {tmp}/db.mmdb }}\npool b {{ server 127.0.0.1:1 }}\nhttp 127.0.0.1:{LST} {{ route /* {{ match client.asn=1 {{ to pool b }}; to pool b }} }}\n")
+    refused("asn: with no geoip_asn", f"pool b {{ server 127.0.0.1:1 }}\nhttp 127.0.0.1:{LST} {{ route /* {{ allow asn:1; to pool b }} }}\n")
+    refused("a bad asn list", f"okena {{ drain delay=0s timeout=1s; geoip_asn {tmp}/asn.mmdb }}\npool b {{ server 127.0.0.1:1 }}\nhttp 127.0.0.1:{LST} {{ route /* {{ allow asn:13335,x; to pool b }} }}\n")
     print(f"geoip {ENGINE}: " + ("all passed" if not fails else f"{fails} failed"))
     sys.exit(1 if fails else 0)
 

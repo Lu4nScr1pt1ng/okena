@@ -25,6 +25,7 @@ MM_PREFIX	:= 1
 MM_THERE	:= 2
 MM_REGEX	:= 3				; ~REGEX: its regex in MC_VLEN (regex.inc)
 LK_MPATH	:= 8				; `path`: the normalized path
+LK_ASN		:= 9				; `client.asn`
 
 MB_RT		:= 0				; d: its variant, in g_mroutes
 MB_CFIRST	:= 4				; d
@@ -118,6 +119,8 @@ mc_holds:
 	jmp	.no
 @@:
 	call	http_client_resolve
+	cmp	dword [r12+MC_KIND],LK_ASN
+	je	.asn
 	cmp	dword [r12+MC_KIND],LK_COUNTRY
 	jne	.by_range
 	lea	rsi,[r15+H_CLIENT]
@@ -167,6 +170,17 @@ mc_holds:
 .yes:
 	mov	ecx,1
 	jmp	.out
+.asn:						; 13335 or 13335,AS15169
+	lea	rsi,[r15+H_CLIENT]
+	mov	edx,[r15+H_CKIND]
+	call	geo_asn
+	test	eax,eax
+	jz	.no
+	mov	rsi,[r12+MC_VAL]
+	mov	ecx,[r12+MC_VLEN]
+	call	asn_in_list
+	jc	.yes
+	jmp	.no
 .method:
 	mov	rsi,[g_hm+HM_METHOD]
 	mov	ecx,[g_hm+HM_MLEN]
@@ -455,6 +469,37 @@ match_conditions:
 	mov	dword [rbx+MC_KIND],LK_COUNTRY
 	jmp	.taken
 .not_country:
+	cmp	ecx,10				; client.asn
+	jne	.not_asn
+	cmp	dword [rsi],'clie'
+	jne	.named
+	cmp	dword [rsi+4],'nt.a'
+	jne	.named
+	cmp	word [rsi+8],'sn'
+	jne	.named
+	cmp	dword [rbx+MC_MODE],MM_EQ
+	jne	plan_bad_match
+	cmp	qword [g_geo_a],0
+	je	plan_bad_match
+	push	rsi
+	push	rcx
+	push	r8
+	push	r9
+	push	r10
+	push	r11
+	mov	rsi,[rbx+MC_VAL]
+	mov	ecx,[rbx+MC_VLEN]
+	xor	eax,eax
+	call	asn_in_list			; (its list well made: plan_bad_match if not)
+	pop	r11
+	pop	r10
+	pop	r9
+	pop	r8
+	pop	rcx
+	pop	rsi
+	mov	dword [rbx+MC_KIND],LK_ASN
+	jmp	.taken
+.not_asn:
 	cmp	ecx,9
 	jne	.named
 	cmp	dword [rsi],'clie'
@@ -707,7 +752,64 @@ match_entries:
 
 plan_bad_match:
 	call	log_begin
-	out_lit 'match needs conditions: method=, header:NAME[=VALUE], query:NAME[=VALUE], cookie:NAME[=VALUE], client.ip=CIDR, client.country=CC, path=~REGEX (and NAME=~REGEX); pools that exist; no `match` or `use` inside; at most 1024 in a route'
+	out_lit 'match needs conditions: method=, header:NAME[=VALUE], query:NAME[=VALUE], cookie:NAME[=VALUE], client.ip=CIDR, client.country=CC (with geoip), client.asn=N,N (with geoip_asn), path=~REGEX (and NAME=~REGEX); pools that exist; no `match` or `use` inside; at most 1024 in a route'
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process
+
+; eax = an ASN (0: none, the list only checked), rsi/ecx = numbers, comma
+; separated, each perhaps AS before it: CF when eax is one of them. A list
+; that is not one: plan_bad_match. Keeps rbx, r12-r15.
+asn_in_list:
+	mov	r10d,eax
+	xor	r11d,r11d			; found
+.one:
+	test	ecx,ecx
+	jz	plan_bad_match
+	cmp	ecx,2
+	jb	@f
+	movzx	edx,word [rsi]
+	or	edx,0x2020
+	cmp	edx,'as'
+	jne	@f
+	add	rsi,2
+	sub	ecx,2
+@@:
+	xor	edx,edx				; the number
+	xor	r9d,r9d				; digits
+.digit:
+	test	ecx,ecx
+	jz	.end
+	movzx	eax,byte [rsi]
+	cmp	al,','
+	je	.end
+	sub	eax,'0'
+	cmp	eax,9
+	ja	plan_bad_match
+	imul	rdx,rdx,10
+	add	rdx,rax
+	mov	r8,0xFFFFFFFF
+	cmp	rdx,r8
+	ja	plan_bad_match
+	inc	r9d
+	inc	rsi
+	dec	ecx
+	jmp	.digit
+.end:
+	test	r9d,r9d
+	jz	plan_bad_match
+	test	r10d,r10d
+	jz	@f
+	cmp	edx,r10d
+	jne	@f
+	mov	r11d,1
+@@:
+	test	ecx,ecx
+	jz	.done
+	inc	rsi				; (the comma)
+	dec	ecx
+	jmp	.one
+.done:
+	cmp	r11d,1
+	cmc					; CF: found
+	ret

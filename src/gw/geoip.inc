@@ -1,5 +1,8 @@
 ; `geoip FILE` in the `okena` block: a MaxMind .mmdb country database, for
-; `match client.country=BR,PT` and `allow country:BR` / `deny country:RU`.
+; `match client.country=BR,PT` and `allow country:BR` / `deny country:RU`;
+; `geoip_asn FILE` an ASN one (GeoLite2-ASN: autonomous_system_number), for
+; `match client.asn=13335,15169` and `allow asn:...` / `deny asn:AS64496`.
+; Each file's state is a slot (g_geo_c, g_geo_a) put in g_geo_* to be read.
 ;
 ; The file is a binary tree over the address bits, then a data section of typed values.
 ; It is read at load into memory that workers share by forking, and it is walked for
@@ -7,6 +10,7 @@
 ; than GEO_DEPTH, so that a corrupt file gives no country, and nothing worse.
 
 GEO_DEPTH	:= 8
+GEO_SLOT	:= 56			; g_geo_base .. g_geo_v4
 GT_POINTER	:= 1
 GT_STRING	:= 2
 GT_MAP		:= 7
@@ -24,6 +28,8 @@ bss
 	g_geo_rec	dd ?			; bits in a record
 	g_geo_ver	dd ?			; 4 or 6
 	g_geo_v4	dd ?			; the node where IPv4 starts in an IPv6 tree
+	g_geo_c		rb GEO_SLOT		; the country file's (g_geo_base .. g_geo_v4)
+	g_geo_a		rb GEO_SLOT		; the ASN file's
 end bss
 
 ; rsi = a value: eax = its type, rcx = its size (a pointer: where it points), rsi = its
@@ -291,11 +297,98 @@ geo_record:
 	stc
 	ret
 
+; rsi = a slot: it, as the file read. Keeps all but rcx, rsi, rdi.
+geo_select:
+	lea	rdi,[g_geo_base]
+	mov	ecx,GEO_SLOT
+	rep	movsb
+	ret
+
+; rsi = the address, edx = 4 or 6: eax = its autonomous system's number, 0
+; none. Keeps rbx, r12-r15.
+geo_asn:
+	cmp	qword [g_geo_a],0
+	je	.none
+	push	rsi
+	lea	rsi,[g_geo_a]
+	call	geo_select
+	pop	rsi
+	call	geo_find
+	jc	.not
+	lea	r8,[.n_asn]
+	mov	r9d,24
+	call	geo_get
+	jc	.not
+	call	geo_value
+	jc	.not
+	cmp	eax,5				; uint16, uint32
+	je	@f
+	cmp	eax,6
+	jne	.not
+@@:
+	cmp	ecx,4
+	ja	.not
+	lea	rax,[rsi+rcx]
+	cmp	rax,[g_geo_end]
+	ja	.not
+	xor	eax,eax
+.byte:
+	test	ecx,ecx
+	jz	.out
+	shl	eax,8
+	mov	al,[rsi]
+	inc	rsi
+	dec	ecx
+	jmp	.byte
+.not:
+	xor	eax,eax
+.out:
+	ret
+.none:
+	xor	eax,eax
+	ret
+.n_asn	db 'autonomous_system_number'
+
 ; rsi = the address, edx = 4 or 6: eax = its country as two bytes, 0 none.
 ; Keeps rbx, r12-r15.
 geo_country:
-	cmp	qword [g_geo_base],0
+	cmp	qword [g_geo_c],0
 	je	.none
+	push	rsi
+	lea	rsi,[g_geo_c]
+	call	geo_select
+	pop	rsi
+	call	geo_find
+	jc	.not
+	lea	r8,[.n_country]
+	mov	r9d,7
+	call	geo_get
+	jc	.not
+	lea	r8,[.n_iso]
+	mov	r9d,8
+	call	geo_get
+	jc	.not
+	call	geo_value
+	jc	.not
+	cmp	eax,GT_STRING
+	jne	.not
+	cmp	ecx,2
+	jne	.not
+	lea	rax,[rsi+2]
+	cmp	rax,[g_geo_end]
+	ja	.not
+	movzx	eax,word [rsi]
+	ret
+.not:
+.none:
+	xor	eax,eax
+	ret
+.n_country db 'country'
+.n_iso	db 'iso_code'
+
+; rsi = the address, edx = 4 or 6, the file in g_geo_*: rsi = its record in
+; the data section (g_geo_dbase set). CF: none. Keeps rbx, r12-r15.
+geo_find:
 	push	r12
 	push	r13
 	push	r14
@@ -340,40 +433,38 @@ geo_country:
 	mov	rcx,rsi
 	mov	[g_geo_dbase],rcx
 	add	rsi,rax
-	lea	r8,[.n_country]
-	mov	r9d,7
-	call	geo_get
-	jc	.not
-	lea	r8,[.n_iso]
-	mov	r9d,8
-	call	geo_get
-	jc	.not
-	call	geo_value
-	jc	.not
-	cmp	eax,GT_STRING
-	jne	.not
-	cmp	ecx,2
-	jne	.not
-	lea	rax,[rsi+2]
-	cmp	rax,[g_geo_end]
-	ja	.not
-	movzx	eax,word [rsi]
+	clc
 	jmp	.out
 .not:
-	xor	eax,eax
+	stc
 .out:
 	pop	r14
 	pop	r13
 	pop	r12
 	ret
-.none:
-	xor	eax,eax
-	ret
-.n_country db 'country'
-.n_iso	db 'iso_code'
 
-; rdi = `geoip`'s node: the file, read and looked over
+; rdi = `geoip`'s node: the country file, read and looked over, in its slot
 compile_geoip:
+	call	geo_load
+	lea	rsi,[g_geo_base]
+	lea	rdi,[g_geo_c]
+	mov	ecx,GEO_SLOT
+	rep	movsb
+	ret
+
+; rdi = `geoip_asn`'s node: the ASN file, in its slot (g_geo_* the country
+; file's again after)
+compile_geoip_asn:
+	call	geo_load
+	lea	rsi,[g_geo_base]
+	lea	rdi,[g_geo_a]
+	mov	ecx,GEO_SLOT
+	rep	movsb
+	lea	rsi,[g_geo_c]
+	jmp	geo_select
+
+; rdi = a geoip line's node: its file into g_geo_*
+geo_load:
 	push	rbx
 	push	r12
 	push	r13

@@ -237,6 +237,7 @@ dirdef DIR_UPGRADE, 'upgrade',  M_OKENA,   0,           F_UNIQUE, 1, 1, T_ANY, T
 dirdef DIR_ADMIN, 'admin',      M_OKENA,   0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
 dirdef DIR_USER, 'user',        M_OKENA,   0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
 dirdef DIR_GEOIP, 'geoip',      M_OKENA,   0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
+dirdef DIR_GEOIP_ASN, 'geoip_asn', M_OKENA, 0,          F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
 dirdef DIR_CACHE_MEM, 'cache_memory', M_OKENA, 0,       F_UNIQUE, 1, 1, T_SIZE, T_NONE, 0
 dirdef DIR_CACHE_DISK, 'cache_disk', M_OKENA, 0,       F_UNIQUE, 1, 1, T_ANY, T_NONE, k_cdisk
 dirdef DIR_FLEETLIM, 'fleet_limits', M_OKENA, 0,      F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_fleetlim

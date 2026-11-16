@@ -199,6 +199,8 @@ macro plan_regions action
 	action g_geo_rec, 4
 	action g_geo_ver, 4
 	action g_geo_v4, 4
+	action g_geo_c, GEO_SLOT
+	action g_geo_a, GEO_SLOT
 	action g_acls, ACL_SIZE * MAX_ACLS, g_plan_acls, ACL_SIZE
 	action g_plan_acls, 4
 	action g_plan_xvips, XV_SIZE * XVIP_MAX, g_plan_nxvip, XV_SIZE	; (xdpvip.inc)

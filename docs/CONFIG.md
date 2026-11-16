@@ -746,6 +746,7 @@ route /api/* {
 | `method=GET,HEAD` | one of the methods |
 | `client.ip=10.0.0.0/8` | the client (after `trusted_proxies`) in a range |
 | `client.country=BR,PT` | with `okena { geoip FILE }` |
+| `client.asn=13335,AS15169` | the client's autonomous system, with `okena { geoip_asn FILE }` |
 | `path=~REGEX` | the normalized path |
 
 NAME is `header:X`, `query:X` or `cookie:X`. Conditions in one block are ANDed.
@@ -988,12 +989,16 @@ allow 10.0.0.0/8 2001:db8::/32 file:/etc/okena/partners.txt
 deny  203.0.113.0/24
 allow cloudflare                       # only Cloudflare may reach this origin
 allow country:BR,PT                    # with okena { geoip FILE }
+deny  asn:AS64496,14061                # with okena { geoip_asn FILE }
 ```
 
 `allow` and `deny` look at the client after `trusted_proxies` and answer 403.
 A deny wins; with any `allow`, everything not allowed is refused. The same lines work on `tcp` and `udp` listeners. Lists of
 thousands of entries cost one lookup. `okena { geoip /path/GeoLite2-Country.mmdb }`
-loads a MaxMind country database for `country:`.
+loads a MaxMind country database for `country:`, and `okena { geoip_asn
+/path/GeoLite2-ASN.mmdb }` an ASN one for `asn:` (numbers, `AS` before them
+or not, 64 a line): hosting providers and VPN networks are often easier to
+name by their autonomous system than by their ranges.
 
 ### Authentication
 
@@ -1741,6 +1746,7 @@ okena {
 | `cache_memory SIZE` | 64MiB | the response cache in memory, per worker |
 | `cache_disk DIR size=SIZE` | | a shared disk tier |
 | `geoip FILE` | | a MaxMind country database, for `country:` and `client.country` |
+| `geoip_asn FILE` | | a MaxMind ASN database (GeoLite2-ASN), for `asn:` and `client.asn` |
 | `acme DIR ca=URL ...` | | the ACME CA, see [TLS](#automatic-https) |
 | `local_ca DIR` | /var/lib/okena/ca | the development CA |
 | `ech NAME KEYFILE...` | | Encrypted Client Hello |

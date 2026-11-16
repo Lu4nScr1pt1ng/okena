@@ -782,6 +782,9 @@ compile_settings:
 	lea	rcx,[dir_table + D_SIZE*DIR_GEOIP]
 	cmp	rax,rcx
 	je	.geoip
+	lea	rcx,[dir_table + D_SIZE*DIR_GEOIP_ASN]
+	cmp	rax,rcx
+	je	.geoip_asn
 	lea	rcx,[dir_table + D_SIZE*DIR_UPGRADE]
 	cmp	rax,rcx
 	je	.upgrade
@@ -959,6 +962,10 @@ compile_settings:
 	lea	rdx,[e_io_engine]
 	call	list_index
 	mov	[g_plan_engine],eax
+	jmp	.advance
+.geoip_asn:
+	mov	rdi,rbx
+	call	compile_geoip_asn
 	jmp	.advance
 .geoip:
 	mov	rdi,rbx

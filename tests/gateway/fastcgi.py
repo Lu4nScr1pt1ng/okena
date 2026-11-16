@@ -112,11 +112,13 @@ class FPMHandler(socketserver.BaseRequestHandler):
 
 
 class TCPServer(socketserver.ThreadingTCPServer):
+    request_queue_size = 128           # (twenty at once: not refused by the backlog)
     daemon_threads = True
     allow_reuse_address = True
 
 
 class UnixServer(socketserver.ThreadingUnixStreamServer):
+    request_queue_size = 128
     daemon_threads = True
 
 
