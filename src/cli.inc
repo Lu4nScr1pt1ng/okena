@@ -573,7 +573,10 @@ cfg_parse_checked:
 	call	cfg_parse
 	cmp	dword [g_cfg_errors],0
 	jne	.failed
+	cmp	dword [g_env_keep],0		; (`okena fmt`: the syntax only)
+	jne	@f
 	call	cfg_check
+@@:
 	cmp	dword [g_cfg_errors],0
 	jne	.failed
 	pop	rbx

@@ -1023,7 +1023,12 @@ use it unchanged.
     the admin process: what reaches the metrics address cannot change
     routes. Not here: an HTTP API for it (the admin process would need the
     right to rewrite the configuration).
-16. Environment variables in the configuration (`${env:NAME}`).
+16. Environment variables in the configuration (`${env:NAME}`). **Done
+    2026-11-16** (parse.inc: cfg_env_expand, tests/config/env.py):
+    `${env:NAME}` and `${env:NAME:-DEFAULT}` in any value, expanded as the
+    argument is made (the source, `okena fmt` and last_good's copy keep what
+    was written); okena's own environment on reloads; unset without a
+    default is an error at its place.
 17. Built-in OIDC login (or the docs say it is an addon); gRPC-JSON
     transcoding as an addon; htpasswd bcrypt files accepted (verified off
     the worker).

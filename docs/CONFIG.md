@@ -165,6 +165,20 @@ directive argument argument key=value {
   there. It goes at the top level only; the path is relative to the file that
   includes it; `*` and `?` work in the last part of the path, and a pattern that
   matches nothing is fine. Includes can nest up to 16 deep.
+* `${env:NAME}` in any value (a word, a quoted string, `key=value`) is the
+  environment variable NAME; `${env:NAME:-DEFAULT}` gives DEFAULT when NAME
+  isn't set, and a name that isn't set without one is an error at its place.
+  Values come from okena's own environment as it started: a reload compiles
+  with it, not with the shell that runs `okena reload`, while `okena check`
+  and `okena explain` use their own. `okena fmt` and `last_good`'s copy keep
+  `${env:...}` as written, so a secret passed this way doesn't land in a file.
+  Other `$` text is left alone; `include` paths don't expand.
+
+  ```nginx
+  http :${env:PORT:-8080} {
+      route /api/* { header set x-api-key ${env:API_KEY}; to pool api }
+  }
+  ```
 
 ### Units
 

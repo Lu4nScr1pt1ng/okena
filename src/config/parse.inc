@@ -560,6 +560,33 @@ lex_next:
 	jne	.not_star
 	cmp	rsi,rdi
 	je	.not_star
+	cmp	byte [rsi-1],'$'		; ${env:NAME[:-default]}: to its '}'
+	jne	.not_env
+	lea	rcx,[rsi+1]
+.env_char:
+	cmp	rcx,[g_cfg_end]
+	jae	.not_star
+	movzx	eax,byte [rcx]
+	cmp	al,'}'
+	je	.env_end
+	cmp	al,' '
+	jbe	.not_star
+	cmp	al,'{'
+	je	.not_star
+	cmp	al,'"'
+	je	.not_star
+	cmp	al,';'
+	je	.not_star
+	inc	rcx
+	lea	rax,[rsi+1024]
+	cmp	rcx,rax
+	jb	.env_char
+	jmp	.not_star
+.env_end:
+	lea	rsi,[rcx+1]
+	xor	r8d,r8d
+	jmp	.word_loop
+.not_env:
 	lea	rax,[rsi+3]
 	cmp	rax,[g_cfg_end]
 	ja	.not_star
@@ -640,7 +667,35 @@ lex_next:
 	cmp	al,' '
 	jbe	.kv_end
 	cmp	al,'{'
+	jne	.kv_brace
+	cmp	rsi,r9				; ${env:...}: to its '}'
 	je	.kv_end
+	cmp	byte [rsi-1],'$'
+	jne	.kv_end
+	lea	rcx,[rsi+1]
+.kv_env:
+	cmp	rcx,[g_cfg_end]
+	jae	.kv_end
+	movzx	eax,byte [rcx]
+	cmp	al,'}'
+	je	.kv_env_end
+	cmp	al,' '
+	jbe	.kv_end
+	cmp	al,'{'
+	je	.kv_end
+	cmp	al,'"'
+	je	.kv_end
+	cmp	al,';'
+	je	.kv_end
+	inc	rcx
+	lea	rax,[rsi+1024]
+	cmp	rcx,rax
+	jb	.kv_env
+	jmp	.kv_end
+.kv_env_end:
+	lea	rsi,[rcx+1]
+	jmp	.kv_loop
+.kv_brace:
 	cmp	al,'}'
 	je	.kv_end
 	cmp	al,';'
@@ -1164,6 +1219,7 @@ parse_block:
 	xor	ecx,ecx
 @@:
 	mov	[rax+A_QUOTED],ecx
+	call	cfg_env_expand			; ${env:NAME} in its value
 	inc	dword [r14+N_ARGC]
 	jmp	.arg
 .too_many_args:
@@ -1233,6 +1289,224 @@ parse_block:
 	pop	r13
 	pop	r12
 	pop	rbx
+	ret
+
+bss
+	g_env_name	rb 256
+	g_env_keep	dd ?			; 1: ${env:...} left as written
+end bss
+
+; rax = an argument: ${env:NAME} in its value replaced by the environment's
+; NAME, ${env:NAME:-DEFAULT} by DEFAULT when NAME is not set (an error when
+; there is neither). The source keeps what was written (messages, fmt,
+; last_good's copy). Keeps all but rcx, rdx, rsi, rdi, r8-r11.
+cfg_env_expand:
+	cmp	dword [g_env_keep],0		; (`okena fmt`: as written)
+	jne	.none
+	mov	rsi,[rax+A_VAL]
+	mov	ecx,[rax+A_VLEN]
+	cmp	ecx,6
+	jb	.none
+	; any there?
+	xor	edx,edx
+.find:
+	lea	r8d,[rdx+6]
+	cmp	r8d,ecx
+	ja	.none
+	cmp	dword [rsi+rdx],'${en'
+	jne	@f
+	cmp	word [rsi+rdx+4],'v:'
+	je	.some
+@@:
+	inc	edx
+	jmp	.find
+.none:
+	ret
+.some:
+	push	rax
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	mov	rbx,rax				; the argument
+	mov	r12,[rbx+A_VAL]			; where in it
+	mov	r13d,[rbx+A_VLEN]
+	add	r13,r12				; its end
+	; room: the value with each variable's own at most 4 KiB longer
+	lea	rdi,[g_ar_text]
+	mov	esi,[rbx+A_VLEN]
+	add	esi,4096 * 8 + 1
+	call	arena_alloc
+	mov	r14,rax				; out
+	mov	r15,rax
+	xor	r11d,r11d			; variables done
+.copy:
+	cmp	r12,r13
+	jae	.done
+	lea	rax,[r12+6]
+	cmp	rax,r13
+	ja	.byte
+	cmp	dword [r12],'${en'
+	jne	.byte
+	cmp	word [r12+4],'v:'
+	jne	.byte
+	cmp	r11d,8
+	jae	.byte				; (8 at most in one value)
+	; NAME, up to '}' or ':-'
+	lea	rsi,[r12+6]
+	mov	rdi,rsi
+.name:
+	cmp	rdi,r13
+	jae	.unclosed
+	cmp	byte [rdi],'}'
+	je	.named
+	cmp	byte [rdi],':'
+	je	.named
+	inc	rdi
+	jmp	.name
+.named:
+	mov	r8,rdi				; the name's end
+	cmp	r8,rsi
+	je	.unclosed			; (no name)
+	; its default, when ':-'
+	xor	r9d,r9d				; default: 0 none
+	xor	r10d,r10d
+	cmp	byte [rdi],':'
+	jne	.closed
+	lea	rax,[rdi+1]
+	cmp	rax,r13
+	jae	.unclosed
+	cmp	byte [rdi+1],'-'
+	jne	.unclosed
+	lea	r9,[rdi+2]
+	mov	rdi,r9
+@@:
+	cmp	rdi,r13
+	jae	.unclosed
+	cmp	byte [rdi],'}'
+	je	@f
+	inc	rdi
+	jmp	@b
+@@:
+	mov	r10,rdi
+	sub	r10,r9				; its length
+	inc	r10				; (+1: there is one, even empty)
+.closed:
+	lea	rax,[rdi+1]
+	push	rax				; after the '}'
+	push	r9
+	push	r10
+	mov	rdi,rsi
+	mov	rsi,r8
+	sub	rsi,rdi
+	push	rdi
+	push	rsi
+	cmp	rsi,250
+	jae	.unset_name			; (no such name)
+	mov	rcx,rsi				; NAME= (getenv takes the '=')
+	mov	rsi,rdi
+	lea	rdi,[g_env_name]
+	rep	movsb
+	mov	byte [rdi],'='
+	lea	rdi,[g_env_name]
+	mov	rsi,[rsp]
+	inc	esi
+	call	getenv
+	jmp	@f
+.unset_name:
+	xor	eax,eax
+@@:
+	pop	rsi
+	pop	rdi
+	pop	r10
+	pop	r9
+	test	rax,rax
+	jz	.unset
+	; its value, to its NUL (4 KiB at most)
+	mov	rsi,rax
+	xor	ecx,ecx
+@@:
+	cmp	byte [rsi+rcx],0
+	je	@f
+	inc	ecx
+	cmp	ecx,4096
+	jb	@b
+	jmp	.too_long
+@@:
+	mov	rdi,r14
+	rep	movsb
+	mov	r14,rdi
+	jmp	.next_var
+.unset:
+	test	r10,r10
+	jz	.no_value
+	mov	rsi,r9
+	lea	rcx,[r10-1]
+	mov	rdi,r14
+	rep	movsb
+	mov	r14,rdi
+.next_var:
+	pop	r12				; after the '}'
+	inc	r11d
+	jmp	.copy
+.byte:
+	mov	al,[r12]
+	mov	[r14],al
+	inc	r12
+	inc	r14
+	jmp	.copy
+.done:
+	mov	[rbx+A_VAL],r15
+	sub	r14,r15
+	mov	[rbx+A_VLEN],r14d
+	jmp	.out
+.no_value:
+	pop	rax
+	push	rdi
+	push	rsi
+	mov	rdi,[rbx+A_RAW]
+	mov	esi,[rbx+A_RAWLEN]
+	mov	edx,[rbx+A_LINE]
+	call	cfg_error
+	out_lit 'the environment has no '
+	pop	rdx
+	pop	rsi
+	call	out_str
+	call	cfg_diag_end
+	call	cfg_note
+	out_lit 'help: set it, or give a default: ${env:NAME:-DEFAULT}'
+	call	cfg_note_end
+	call	cfg_error_limit
+	jmp	.out
+.too_long:
+	pop	rax
+	mov	rdi,[rbx+A_RAW]
+	mov	esi,[rbx+A_RAWLEN]
+	mov	edx,[rbx+A_LINE]
+	call	cfg_error
+	out_lit 'an environment variable here is longer than 4 KiB'
+	call	cfg_diag_end
+	call	cfg_error_limit
+	jmp	.out
+.unclosed:
+	mov	rdi,[rbx+A_RAW]
+	mov	esi,[rbx+A_RAWLEN]
+	mov	edx,[rbx+A_LINE]
+	call	cfg_error
+	out_lit '`${env:` here is not closed, or names nothing'
+	call	cfg_diag_end
+	call	cfg_note
+	out_lit 'help: ${env:NAME}, or ${env:NAME:-DEFAULT}'
+	call	cfg_note_end
+	call	cfg_error_limit
+.out:
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	pop	rax
 	ret
 
 ; `include "PATH"` (the name read): rdi = the parent (the top), rsi = its last

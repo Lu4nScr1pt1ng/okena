@@ -18,6 +18,7 @@ bss
 end bss
 
 cli_fmt:
+	mov	dword [g_env_keep],1		; (its layout, not the environment's values)
 	mov	rcx,[g_argc]
 	cmp	rcx,3
 	jb	cli_usage
