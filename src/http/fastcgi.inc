@@ -12,8 +12,12 @@
 ; FCGI_END_REQUEST its last chunk. This sits under h_send and h_recv on the
 ; upstream side, as user-space TLS does on the client's. The connection is kept
 ; (FCGI_KEEP_CONN) and goes back to the pool as any other. FCGI_STDERR is said
-; in the log. A request body must have a length (chunked: 411, as PHP wants
-; CONTENT_LENGTH).
+; in the log. PHP wants CONTENT_LENGTH: a chunked request body is read whole
+; first into a spool of the worker's (8 MiB at most; 413 past it, 503 when
+; none is free), its chunks undone there, and the request goes on as one of
+; that length (its head says Content-Length in the place of
+; Transfer-Encoding), the body given from the spool (fcgi_replay), as nginx
+; does with fastcgi_request_buffering.
 ;
 ; `php ROOT` picks the script, as try_files would, beneath ROOT (opened as
 ; `files` opens, RESOLVE_BENEATH, Landlock): a path with a segment ending in .php
@@ -47,6 +51,13 @@ FC_TL		:= 88				; d: (and its length)
 FC_PORT		:= 92				; d: (the listener's port)
 FC_TAG		:= 96				; q: FastCGI for this request: 'FCGI' << 32 | the session's generation + 1
 HB_FCGI		:= HB_FC + FC_TAG
+FC_QSP		:= 104				; d: a chunked body's spool + 1
+FC_QLEN		:= 108				; d: its bytes
+FC_QPOS		:= 112				; d: given on so far
+FCS_N		:= 32				; a worker's spools
+FCS_CAP		:= 8 shl 20			; each
+HS_FCBODY	:= 55				; H_STATE: a chunked body read for FastCGI
+ADREP_F		:= 4				; g_ad_rep: the client's next bytes come from its spool
 FC_SCRIPT	:= 128				; SCRIPT_NAME, with its leading /
 FC_SCRIPTMAX	:= 1024
 FC_PINFO	:= FC_SCRIPT + FC_SCRIPTMAX	; PATH_INFO
@@ -123,6 +134,11 @@ fcgi_worker_init:
 	jmp	.pool
 .pools:
 	mov	[g_fcgi_any],eax
+	test	eax,eax				; the spools of chunked bodies
+	jz	@f
+	call	fcgi_spools
+	xor	eax,eax
+@@:
 	xor	eax,eax				; early hints
 	xor	r8d,r8d				; compression
 	xor	ecx,ecx
@@ -166,9 +182,8 @@ fcgi_mark:
 	mov	[rax+HB_FCGI],rcx
 	cmp	dword [r15+H_BODY],BK_CHUNKED
 	jne	.out
-	add	rsp,8				; (not back: answered)
-	mov	edi,411
-	jmp	http_error
+	add	rsp,8				; (not back: read first, then again)
+	jmp	fcgi_spool_start
 .off:
 	cmp	dword [g_fcgi_any],0
 	je	.out				; (never set: zero already)
@@ -1488,3 +1503,447 @@ compile_php:
 @@:
 	ret
 .index_php	db 'index.php'
+
+; ------------------------------------------------------------ chunked bodies
+
+bss
+	align 8
+	g_fcs_base	dq ?
+	g_fcs_top	dd ?			; free ones, on g_fcs_free
+	g_fcs_free	rd FCS_N
+	g_fcs_sess	rd FCS_N		; whose
+	g_fcs_gen	rd FCS_N
+end bss
+
+; fcgi_mark, a chunked body: its spool, what came with the head in it, and
+; the rest read (HS_FCBODY) until its last chunk. ebx, r15, g_hm.
+fcgi_spool_start:
+	; Transfer-Encoding: chunked alone, once (anything else: 411)
+	xor	r8d,r8d				; how many
+	xor	r9d,r9d
+.te:
+	cmp	r9d,[g_hm+HM_NHDR]
+	jae	.te_done
+	imul	rdi,r9,HF_SIZE
+	lea	rdi,[g_hm+HM_HDRS+rdi]
+	inc	r9d
+	cmp	dword [rdi+HF_NLEN],17
+	jne	.te
+	push	rdi
+	push	r8
+	push	r9
+	mov	rdi,[rdi+HF_NAME]
+	lea	rsi,[.n_te]
+	mov	edx,17
+	call	mem_eq_nocase
+	pop	r9
+	pop	r8
+	pop	rdi
+	test	eax,eax
+	jz	.te
+	inc	r8d
+	cmp	dword [rdi+HF_VLEN],7
+	jne	.not_alone
+	push	r8
+	push	r9
+	mov	rdi,[rdi+HF_VALUE]
+	lea	rsi,[.v_chunked]
+	mov	edx,7
+	call	mem_eq_nocase
+	pop	r9
+	pop	r8
+	test	eax,eax
+	jz	.not_alone
+	jmp	.te
+.te_done:
+	cmp	r8d,1
+	jne	.not_alone
+	; a spool
+	cmp	qword [g_fcs_base],0		; (made at the worker's start: fcgi_spools)
+	je	.busy
+	call	fcgi_spool_take			; eax = it
+	jc	.busy
+	mov	rdx,[r15+H_BUF]
+	lea	rcx,[rax+1]
+	mov	[rdx+HB_FC+FC_QSP],ecx
+	mov	dword [rdx+HB_FC+FC_QPOS],0
+	; what came after the head: in it
+	imul	rdi,rax,FCS_CAP
+	add	rdi,[g_fcs_base]
+	mov	esi,[r15+H_INOFF]
+	mov	ecx,[r15+H_INLEN]
+	sub	ecx,esi
+	mov	[rdx+HB_FC+FC_QLEN],ecx
+	lea	rsi,[rdx+HB_IN+rsi]
+	rep	movsb
+	mov	eax,[r15+H_INOFF]
+	mov	[r15+H_INLEN],eax
+	jmp	fcgi_spool_more
+.not_alone:
+	mov	edi,411
+	jmp	http_error
+.busy:
+	mov	edi,503
+	jmp	http_error
+.n_te	db 'transfer-encoding'
+.v_chunked db 'chunked'
+
+; the worker's spools, at its start (address space only until used: its filter
+; then refuses mmap). CF: none.
+fcgi_spools:
+	xor	edi,edi
+	mov	rsi,FCS_N * FCS_CAP
+	mov	edx,PROT_READ or PROT_WRITE
+	mov	r10d,MAP_PRIVATE or MAP_ANONYMOUS or MAP_NORESERVE
+	mov	r8,-1
+	xor	r9d,r9d
+	mov	eax,SYS_mmap
+	syscall
+	cmp	rax,-4096
+	ja	.no
+	mov	[g_fcs_base],rax
+	mov	ecx,FCS_N
+	mov	[g_fcs_top],ecx
+@@:
+	dec	ecx
+	js	@f
+	mov	[g_fcs_free+rcx*4],ecx
+	mov	dword [g_fcs_sess+rcx*4],-1
+	jmp	@b
+@@:
+	clc
+	ret
+.no:
+	stc
+	ret
+
+; ebx: eax = a spool for it, CF none (those of sessions gone are taken back
+; first). Keeps rbx, r12-r15.
+fcgi_spool_take:
+	cmp	dword [g_fcs_top],0
+	jne	.take
+	; any whose session went?
+	push	rbx
+	mov	r8d,ebx
+	xor	r9d,r9d
+.each:
+	cmp	r9d,FCS_N
+	jae	.swept
+	mov	ebx,[g_fcs_sess+r9*4]
+	cmp	ebx,-1
+	je	.next
+	call	session_ptr
+	mov	ecx,[rax+S_GEN]
+	cmp	ecx,[g_fcs_gen+r9*4]
+	jne	.gone
+	cmp	dword [rax+S_STATE],ST_OPEN
+	je	.next
+.gone:
+	mov	eax,r9d
+	call	fcgi_spool_put
+.next:
+	inc	r9d
+	jmp	.each
+.swept:
+	pop	rbx
+	cmp	dword [g_fcs_top],0
+	jne	.take
+	stc
+	ret
+.take:
+	dec	dword [g_fcs_top]
+	mov	eax,[g_fcs_top]
+	mov	eax,[g_fcs_free+rax*4]
+	mov	[g_fcs_sess+rax*4],ebx
+	push	rax
+	call	session_ptr
+	mov	ecx,[rax+S_GEN]
+	pop	rax
+	mov	[g_fcs_gen+rax*4],ecx
+	clc
+	ret
+
+; eax = a spool: free again. Keeps all but rax, rcx.
+fcgi_spool_put:
+	cmp	dword [g_fcs_sess+rax*4],-1
+	je	.out
+	mov	dword [g_fcs_sess+rax*4],-1
+	mov	ecx,[g_fcs_top]
+	mov	[g_fcs_free+rcx*4],eax
+	inc	dword [g_fcs_top]
+.out:
+	ret
+
+; ebx, r15: the spool has its last chunk, or more is read into it
+fcgi_spool_more:
+	mov	rdx,[r15+H_BUF]
+	mov	eax,[rdx+HB_FC+FC_QSP]
+	dec	eax
+	imul	rsi,rax,FCS_CAP
+	add	rsi,[g_fcs_base]
+	mov	ecx,[rdx+HB_FC+FC_QLEN]
+	lea	rdi,[rsi+rcx]
+	push	rsi
+	push	rdi
+	call	ad_chunked_end
+	pop	rdi
+	pop	rsi
+	jnc	fcgi_spool_whole
+	mov	rdx,[r15+H_BUF]
+	mov	esi,FCS_CAP
+	sub	esi,[rdx+HB_FC+FC_QLEN]
+	jz	.too_large
+	mov	dword [r15+H_STATE],HS_FCBODY
+	push	rdi
+	push	rsi
+	mov	edi,ebx
+	mov	esi,PH_BODY
+	call	ph_arm
+	pop	rsi
+	pop	rdi
+	h_rec
+	mov	ecx,SIDE_CLIENT
+	jmp	h_recv
+.too_large:
+	call	fcgi_spool_drop
+	or	dword [r15+H_FLAGS],HX_CLOSE
+	mov	edi,413
+	jmp	http_error
+
+; http_recv_plain, HS_FCBODY: rax more bytes of the body in the spool
+fcgi_body_in:
+	test	rax,rax
+	jle	.gone
+	mov	rdx,[r15+H_BUF]
+	add	[rdx+HB_FC+FC_QLEN],eax
+	mov	edi,ebx
+	call	idle_touch
+	h_rec
+	jmp	fcgi_spool_more
+.gone:
+	call	fcgi_spool_drop
+	mov	edi,ebx				; the client went in the middle of its body
+	jmp	session_close
+
+; r15: its spool given back, if it has one
+fcgi_spool_drop:
+	mov	rdx,[r15+H_BUF]
+	mov	eax,[rdx+HB_FC+FC_QSP]
+	test	eax,eax
+	jz	.out
+	mov	dword [rdx+HB_FC+FC_QSP],0
+	dec	eax
+	call	fcgi_spool_put
+.out:
+	and	byte [g_ad_rep+rbx],not ADREP_F
+	ret
+
+; the whole body in the spool: its chunks undone in place, its head's
+; Transfer-Encoding line made Content-Length, and the request again, the
+; body to come from the spool
+fcgi_spool_whole:
+	push	r12
+	push	r13
+	mov	r12,rsi				; out
+	mov	r13,rsi				; in
+.chunk:
+	; a size in hex, maybe extensions, CRLF
+	xor	ecx,ecx
+	xor	r8d,r8d				; digits
+.hex:
+	cmp	r13,rdi
+	jae	.bad
+	movzx	eax,byte [r13]
+	sub	eax,'0'
+	cmp	eax,9
+	jbe	.digit
+	movzx	eax,byte [r13]
+	or	eax,0x20
+	sub	eax,'a'
+	cmp	eax,5
+	ja	.size_end
+	add	eax,10
+.digit:
+	cmp	r8d,8
+	jae	.bad
+	shl	ecx,4
+	or	ecx,eax
+	inc	r8d
+	inc	r13
+	jmp	.hex
+.size_end:
+	test	r8d,r8d
+	jz	.bad
+@@:
+	cmp	r13,rdi				; to the line's end
+	jae	.bad
+	cmp	byte [r13],10
+	je	@f
+	inc	r13
+	jmp	@b
+@@:
+	inc	r13
+	test	ecx,ecx
+	jz	.last
+	mov	rax,rdi
+	sub	rax,r13
+	lea	rdx,[rcx+2]
+	cmp	rax,rdx
+	jb	.bad
+	cmp	word [r13+rcx],0x0A0D
+	jne	.bad
+	push	rdi
+	mov	rsi,r13
+	mov	rdi,r12
+	add	r13,rcx
+	add	r12,rcx
+	rep	movsb				; (out is never ahead of in)
+	pop	rdi
+	add	r13,2
+	jmp	.chunk
+.last:
+	; what comes after the last chunk's CRLF: another request, pipelined
+	; (it is not kept: the connection closes after this answer)
+	lea	rax,[r13+2]
+	cmp	rax,rdi
+	jae	@f
+	or	dword [r15+H_FLAGS],HX_CLOSE
+@@:
+	mov	rdx,[r15+H_BUF]
+	mov	eax,[rdx+HB_FC+FC_QSP]
+	dec	eax
+	imul	rax,rax,FCS_CAP
+	add	rax,[g_fcs_base]
+	sub	r12,rax
+	mov	[rdx+HB_FC+FC_QLEN],r12d	; the body's length
+	mov	dword [rdx+HB_FC+FC_QPOS],0
+	; its head: Transfer-Encoding: chunked -> Content-Length: N, padded
+	lea	rsi,[rdx+HB_IN]
+	mov	ecx,[r15+H_INOFF]
+	call	fcgi_te_line			; rdi = its start, ecx = its length
+	jc	.bad
+	cmp	ecx,26
+	jb	.bad
+	push	rdi
+	mov	al,' '
+	rep	stosb
+	pop	rdi
+	mov	rax,'Content-'
+	mov	[rdi],rax
+	mov	rax,'Length: '
+	mov	[rdi+8],rax
+	add	rdi,16
+	mov	eax,r12d
+	call	fmt_u64
+	pop	r13
+	pop	r12
+	or	byte [g_ad_rep+rbx],ADREP_F
+	or	dword [r15+H_FLAGS],HX_FAULTED	; (a request back: its limits counted)
+	mov	eax,[r15+H_INOFF]
+	jmp	http_request
+.bad:
+	pop	r13
+	pop	r12
+	call	fcgi_spool_drop
+	or	dword [r15+H_FLAGS],HX_CLOSE
+	mov	edi,400
+	jmp	http_error
+
+; rsi/ecx = a request head: rdi = its Transfer-Encoding line, ecx = its
+; length (to its CR or LF). CF: none.
+fcgi_te_line:
+	lea	r8,[rsi+rcx]			; the end
+	mov	rdi,rsi
+.line:
+	lea	rax,[rdi+18]
+	cmp	rax,r8
+	ja	.no
+	push	rdi
+	push	r8
+	lea	rsi,[fcgi_spool_start.n_te]
+	mov	edx,17
+	call	mem_eq_nocase
+	pop	r8
+	pop	rdi
+	test	eax,eax
+	jz	.next
+	cmp	byte [rdi+17],':'
+	jne	.next
+	cmp	rdi,[r15+H_BUF]			; (at a line's start)
+	je	.found
+	cmp	byte [rdi-1],10
+	je	.found
+.next:
+	inc	rdi
+	jmp	.line
+.found:
+	mov	rcx,rdi
+@@:
+	cmp	rcx,r8
+	jae	.no
+	cmp	byte [rcx],13
+	je	@f
+	cmp	byte [rcx],10
+	je	@f
+	inc	rcx
+	jmp	@b
+@@:
+	sub	rcx,rdi
+	clc
+	ret
+.no:
+	stc
+	ret
+
+; h_recv on the client's side of a request whose body is in its spool: the
+; spool's bytes as if the socket gave them, then (all given) the socket again.
+; ebx, ecx = 0, rdi = where, esi = room.
+fcgi_replay:
+	push	rdi
+	h_rec
+	pop	rdi
+	mov	rdx,[r15+H_BUF]
+	mov	eax,[rdx+HB_FC+FC_QSP]
+	test	eax,eax
+	jz	.off
+	mov	r10d,[rdx+HB_FC+FC_QLEN]
+	sub	r10d,[rdx+HB_FC+FC_QPOS]
+	jbe	.empty
+	cmp	r10d,esi
+	jbe	@f
+	mov	r10d,esi
+@@:
+	dec	eax
+	imul	rax,rax,FCS_CAP
+	add	rax,[g_fcs_base]
+	mov	r8d,[rdx+HB_FC+FC_QPOS]
+	lea	rsi,[rax+r8]
+	add	[rdx+HB_FC+FC_QPOS],r10d
+	push	rcx
+	mov	ecx,r10d
+	rep	movsb
+	pop	rcx
+	mov	eax,[rdx+HB_FC+FC_QLEN]
+	cmp	eax,[rdx+HB_FC+FC_QPOS]
+	ja	.deliver
+	push	rcx
+	push	rdi
+	call	fcgi_spool_drop			; (all of it given)
+	pop	rdi
+	pop	rcx
+.deliver:
+	mov	eax,r10d
+	mov	edx,1
+	h_rec
+	jmp	hep_queue
+.empty:
+	push	rdi
+	push	rsi
+	push	rcx
+	call	fcgi_spool_drop
+	pop	rcx
+	pop	rsi
+	pop	rdi
+.off:
+	and	byte [g_ad_rep+rbx],not ADREP_F
+	jmp	h_recv

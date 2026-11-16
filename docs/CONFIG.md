@@ -884,8 +884,11 @@ A path with a segment ending in `.php` runs that script, with the rest as
 `PATH_INFO`. A directory runs its `index.php` (`index=` to change it). A file
 that exists and isn't PHP is served as a static file and never given to PHP,
 so `/uploads/x.php.jpg` stays an image. Anything else goes to the front
-controller, which is what Laravel, Symfony and WordPress expect. A request
-body needs a length (a chunked one gets 411). Without
+controller, which is what Laravel, Symfony and WordPress expect. PHP needs
+a body's length (`CONTENT_LENGTH`), so a chunked request body is read whole
+first, up to 8 MiB (and the route's `body_size`; past it 413), and goes on
+with its length, as nginx does; a client that sends `Expect: 100-continue`
+with one waits for its own timeout before sending it. Without
 `php`, a `protocol fastcgi` pool works with any FastCGI responder.
 
 ### Change requests and responses

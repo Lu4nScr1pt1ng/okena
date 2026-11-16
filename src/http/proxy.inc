@@ -2364,6 +2364,8 @@ http_recv_plain:
 	je	.body
 	cmp	edx,HS_ADBODY
 	je	addon_body_in			; (a body an addon waits for)
+	cmp	edx,HS_FCBODY
+	je	fcgi_body_in			; (a chunked body FastCGI waits for)
 	cmp	edx,HS_ADRBODY
 	je	addon_rbody_in			; (a response's body, the same)
 	cmp	edx,HS_RESP_HEAD
@@ -5150,6 +5152,8 @@ http_phase_expired:
 	cmp	eax,HS_REQ_READ
 	je	.body_408
 	cmp	eax,HS_ADBODY
+	je	.body_408
+	cmp	eax,HS_FCBODY
 	je	.body_408
 	; or taking ours: no byte of the answer taken for body_idle (a slow
 	; read). Waiting for the backend instead (a stream with long gaps) is not

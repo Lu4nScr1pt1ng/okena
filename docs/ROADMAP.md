@@ -1042,7 +1042,13 @@ use it unchanged.
     tests/gateway/grpcjson.py): google.api.http rules and
     POST /package.Service/Method, dynamic messages from a descriptor set,
     gRPC errors as HTTP statuses; unary methods.
-18. Chunked request bodies to FastCGI.
+18. Chunked request bodies to FastCGI. **Done 2026-11-16**
+    (src/http/fastcgi.inc, tests/gateway/fastcgi.py): read whole into one
+    of a worker's spools (32 of 8 MiB, address space until used), its
+    chunks undone in place, the head's Transfer-Encoding line made
+    Content-Length, and the request run again (HX_FAULTED: its limits
+    counted once) with its body replayed from the spool. Left: 100
+    Continue for such a body.
 19. GeoIP ASN (`client.asn`).
 20. Docs: EDGE_CASES (PROXY accept), ARCHITECTURE (OIDC, per-route size
     limits, client.asn, zstd), CONFIG (`match` blocks: 32 or 1024) made

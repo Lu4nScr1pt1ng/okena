@@ -12,6 +12,8 @@ h_recv:
 	jnz	h_recv_up
 	test	byte [g_ad_rep+rbx],ADREP_Q
 	jnz	addon_replay			; (a body an addon held: from its buffer first)
+	test	byte [g_ad_rep+rbx],ADREP_F
+	jnz	fcgi_replay			; (a chunked body for FastCGI: from its spool)
 	call	session_ptr
 	test	dword [rax+S_FLAGS],SF_H2S
 	jnz	h2s_recv			; an HTTP/2 stream: its connection serves it

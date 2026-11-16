@@ -5,7 +5,8 @@ STDERR, END_REQUEST; the connection kept): the params a script gets (its name an
 file beneath the root, PATH_INFO, the query, the client, the fields as HTTP_*,
 never HTTP_PROXY), a directory's index and its 301, a file that is there served
 as files serves it (the responder not asked), anything else to the front
-controller; a body, as STDIN (chunked: 411); the CGI head turned into a status
+controller; a body, as STDIN (a chunked one read whole first: CONTENT_LENGTH,
+its chunks undone; too large 413, malformed 400); the CGI head turned into a status
 line (Status:, a Location: alone, \\n alone), a long answer and its STDERR, HEAD;
 one connection kept for many requests; a unix socket."""
 import hashlib
@@ -134,7 +135,10 @@ def main():
     conf.write_text(f"""okena {{ workers 1; io_engine {ENGINE}; drain delay=0s timeout=1s }}
 pool fpm {{ server 127.0.0.1:{FPM}; protocol fastcgi }}
 pool ufpm {{ server unix:{sock}; protocol fastcgi }}
-http 127.0.0.1:{LST} {{ route /* {{ php {www}; to pool fpm }} }}
+http 127.0.0.1:{LST} {{
+    route /small/* {{ body_size 50KiB; php {www}; to pool fpm }}
+    route /* {{ php {www}; to pool fpm }}
+}}
 http 127.0.0.1:{ULST} {{ route /* {{ php {www}; to pool ufpm }} }}
 """)
     log = tmp / "log"
@@ -201,16 +205,61 @@ http 127.0.0.1:{ULST} {{ route /* {{ php {www}; to pool ufpm }} }}
               j.get("stdin") == len(body) and j.get("sha") == hashlib.sha256(body).hexdigest()
               and j["params"].get("CONTENT_LENGTH") == str(len(body)) and j["params"].get("CONTENT_TYPE") == "application/x-test",
               (r.status, d[:200]))
-        c = http.client.HTTPConnection("127.0.0.1", LST, timeout=5)
-        c.putrequest("POST", "/app.php", skip_host=True)
-        c.putheader("Host", "site.test")
-        c.putheader("Transfer-Encoding", "chunked")
-        c.endheaders()
-        c.send(b"5\r\nhello\r\n0\r\n\r\n")
-        r = c.getresponse()
-        r.read()
+        def chunked(path, raw, pieces=1, te="chunked", conn=None):
+            c = conn or http.client.HTTPConnection("127.0.0.1", LST, timeout=10)
+            c.putrequest("POST", path, skip_host=True, skip_accept_encoding=True)
+            c.putheader("Host", "site.test")
+            c.putheader("Transfer-Encoding", te)
+            c.endheaders()
+            step = max(1, len(raw) // pieces)
+            for i in range(0, len(raw), step):
+                c.send(raw[i:i + step])
+                if pieces > 1:
+                    time.sleep(0.001)
+            r = c.getresponse()
+            d = r.read()
+            if not conn:
+                c.close()
+            try:
+                return r.status, json.loads(d)
+            except ValueError:
+                return r.status, d
+
+        def frame(data, sizes):
+            out, i, k = b"", 0, 0
+            while i < len(data):
+                n = sizes[k % len(sizes)]
+                k += 1
+                out += b"%x;ext=%d\r\n" % (len(data[i:i + n]), k) + data[i:i + n] + b"\r\n"
+                i += n
+            return out + b"0\r\n\r\n"
+
+        st, j = chunked("/app.php", b"5\r\nhello\r\n0\r\n\r\n")
+        check("  chunked: read whole, CONTENT_LENGTH, its chunks undone", st == 200 and j.get("stdin") == 5
+              and j["params"].get("CONTENT_LENGTH") == "5" and j.get("sha") == hashlib.sha256(b"hello").hexdigest(), (st, j))
+        big = os.urandom(300000)
+        st, j = chunked("/app.php", frame(big, [1, 7, 4096, 65536, 333]), pieces=40)
+        check("  300 KB in chunks of all sizes (extensions too), in pieces", st == 200 and j.get("stdin") == len(big)
+              and j.get("sha") == hashlib.sha256(big).hexdigest(), (st, str(j)[:200]))
+        st, j = chunked("/app.php", b"0\r\n\r\n")
+        check("  an empty one: no body", st == 200 and j.get("stdin") == 0 and j["params"].get("CONTENT_LENGTH") in ("0", None), (st, j))
+        st, j = chunked("/small/app.php", frame(os.urandom(100000), [8192]))
+        check("  past the route's body_size: 413", st == 413, st)
+        st, j = chunked("/app.php", b"5\r\nhelloXX\r\n0\r\n\r\n")
+        check("  malformed (a chunk longer than it says): 400", st == 400, st)
+        st, j = chunked("/app.php", b"5\r\nhello\r\n0\r\n\r\n", te="gzip, chunked")
+        check("  coded otherwise too: refused (411 or 501)", st in (411, 501), st)
+        c = http.client.HTTPConnection("127.0.0.1", LST, timeout=10)
+        st1, j1 = chunked("/app.php", frame(b"abc" * 1000, [100]), conn=c)
+        r, d = req("GET", "/app.php?after=1", conn=c)
         c.close()
-        check("  chunked: 411", r.status == 411, r.status)
+        check("  the connection goes on after it", st1 == 200 and j1.get("stdin") == 3000 and r.status == 200, (st1, r.status))
+        from concurrent.futures import ThreadPoolExecutor
+        bodies = [os.urandom(20000 + i) for i in range(20)]
+        with ThreadPoolExecutor(20) as ex:
+            res = list(ex.map(lambda b: chunked("/app.php", frame(b, [4000]), pieces=4), bodies))
+        check("  twenty at once", all(st == 200 and j.get("sha") == hashlib.sha256(b).hexdigest() for (st, j), b in zip(res, bodies)),
+              [r[0] for r in res])
         r, d = req("GET", "/status.php")
         check("Status: 404: the status line, its fields, its body", r.status == 404 and r.getheader("X-A") == "1"
               and d == b"nope", (r.status, d, r.getheaders()))
