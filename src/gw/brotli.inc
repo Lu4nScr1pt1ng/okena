@@ -13,7 +13,7 @@
 ; block switches, no context modeling; NPOSTFIX and NDIRECT 0, every distance
 ; given (no use of the last ones).
 
-Z_KIND		:= 44				; d: 0 gzip, 1 br (compress.inc's context)
+Z_KIND		:= 44				; d: 0 gzip, 1 br, 2 zstd (compress.inc's context)
 BR_CMDS		:= H_UP_CAP / 3 + 16		; commands a piece (each copy covers 3 bytes)
 assert H_UP_CAP < 65536				; (an insert, a meta-block's MLEN: 16 bits)
 assert H_UP_CAP * 10 / 8 + 4096 <= Z_OUTCAP - Z_FRAME - 64

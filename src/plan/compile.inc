@@ -134,7 +134,7 @@ RA_ACL		:= 160		; d: its `allow`, `deny` + 1
 RA_EFIRST	:= 164		; d: its error pages (g_eps), first
 RA_ECOUNT	:= 168		; d: and how many
 RA_WRX		:= 176		; d: rewrite ~REGEX: its regex + 1 (RA_WFROM then the source)
-RA_ZENC		:= 180		; d: `compress`: 1 gzip, 2 br, 4 br before gzip
+RA_ZENC		:= 180		; d: `compress`: its codings in order, 4 bits each from the low ones (FE_*), 0 ends
 RA_RTRY		:= 184		; d: `retry N`: N + 1, 0 = the default (1)
 RA_RON		:= 188		; d: `on=`: RON_* bits, 0 = the default
 RA_RBODY	:= 192		; q: `respond CODE BODY`: the body, 0 none

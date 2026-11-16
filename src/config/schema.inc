@@ -314,7 +314,7 @@ dirdef DIR_RMETRICS, 'metrics',  M_ROUTE,   0,           F_UNIQUE, 1, 1, T_NAME,
 dirdef DIR_RATE, 'limit_rate', M_ROUTE or M_TCP, 0,           F_UNIQUE, 1, 1, T_SIZE, T_NONE, k_rate
 dirdef DIR_RLOG, 'log',        M_ROUTE,   0,           F_UNIQUE, 0, 1, e_onoff, T_NONE, k_rlog
 dirdef DIR_RBODY, 'body_size', M_HOST or M_ROUTE, 0, F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
-dirdef DIR_COMPRESS, 'compress', M_HTTP or M_HOST or M_ROUTE, 0, F_UNIQUE, 1, 2, T_ANY, T_ANY, k_compress
+dirdef DIR_COMPRESS, 'compress', M_HTTP or M_HOST or M_ROUTE, 0, F_UNIQUE, 1, 3, T_ANY, T_ANY, k_compress
 dirdef DIR_HEADERS, 'headers',  M_HTTP or M_HOST or M_ROUTE, 0, F_UNIQUE, 0, 0, T_NONE, T_NONE, k_headers
 dirdef DIR_EARLY_HINTS, 'early_hints', M_ROUTE, 0,    F_UNIQUE, 1, 32, T_ANY, T_ANY, 0
 dirdef DIR_IDEMPOTENCY, 'idempotency', M_ROUTE, 0,     F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_idem

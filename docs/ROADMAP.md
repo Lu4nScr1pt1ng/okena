@@ -1006,7 +1006,13 @@ use it unchanged.
     files, cache, HTTP/2 streams) and `limit_rate RATE [upload=RATE]
     [after=SIZE]` on a tcp listener, on a 1 ms timing wheel; paced tcp
     directions read at most 1/16 s of bytes and skip bulk.inc's loop.
-14. zstd compression on the fly.
+14. zstd compression on the fly. **Done 2026-11-16** (src/gw/zstd.inc,
+    tests/gateway/zstd.py): `compress zstd br gzip`, in the order preferred.
+    A block a piece: Huffman literals in four streams (weights direct or
+    FSE-compressed), sequences with repeat offsets and FSE tables of their
+    own (predefined under 64 sequences, RLE for one code); beats okena's br
+    and gzip in ratio and speed. Also fixed on the way: compressed answers
+    over HTTP/2 and 3 kept the backend's Content-Length.
 15. Admin API to add and change routes at runtime.
 16. Environment variables in the configuration (`${env:NAME}`).
 17. Built-in OIDC login (or the docs say it is an addon); gRPC-JSON

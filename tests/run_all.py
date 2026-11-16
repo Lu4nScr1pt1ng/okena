@@ -331,6 +331,8 @@ SUITES = [
     ("grpcweb epoll", ["tests/gateway/grpcweb.py", "epoll"]),
     ("brotli io_uring", ["tests/gateway/brotli.py", "io_uring"]),
     ("brotli epoll", ["tests/gateway/brotli.py", "epoll"]),
+    ("zstd io_uring", ["tests/gateway/zstd.py", "io_uring"]),
+    ("zstd epoll", ["tests/gateway/zstd.py", "epoll"]),
     ("consul io_uring", ["tests/gateway/consul.py", "io_uring"]),
     ("consul epoll", ["tests/gateway/consul.py", "epoll"]),
     ("gwapi io_uring", ["tests/gateway/gwapi.py", "io_uring"]),

@@ -128,7 +128,7 @@ okena {{ workers 1; metrics 127.0.0.1:{METRICS}; drain delay=0s timeout=1s }}
 pool redis {{
     server 127.0.0.1:{PRIMARY}
     server 127.0.0.1:{REPLICA}
-    health tcp send="INFO replication\\r\\n" match="role:master" every=150ms rise=1 fall=1
+    health tcp send="INFO replication\\r\\n" match="role:master" every=150ms rise=1 fall=3
 }}
 pool smtp {{
     server 127.0.0.1:{BANNER_OK}

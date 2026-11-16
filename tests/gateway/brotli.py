@@ -249,7 +249,7 @@ http 127.0.0.1:{TLS} {{
             ok = brotli.decompress((tmp / "h2").read_bytes()) == BODIES["words"]
         except Exception:
             ok = False
-        check("over HTTP/2", ok and "content-encoding: br" in q.stdout.lower(), q.stdout[:200])
+        check("over HTTP/2", ok and q.returncode == 0 and "content-length" not in q.stdout.lower() and "content-encoding: br" in q.stdout.lower(), q.stdout[:200])
     finally:
         p.terminate()
         try:
@@ -262,7 +262,7 @@ http 127.0.0.1:{TLS} {{
         c = tmp / "bad.conf"
         c.write_text(f"pool b {{ server 127.0.0.1:1 }}\nhttp 127.0.0.1:{LST} {{ {line}; route /* {{ to pool b }} }}\n")
         q = subprocess.run(["timeout", "5", str(BIN), "check", "-c", str(c)], capture_output=True, text=True, timeout=8)
-        check(f"{what}: refused", q.returncode not in (0, 124) and "gzip, br or both" in q.stderr, f"{q.returncode} {q.stderr[-140:]}")
+        check(f"{what}: refused", q.returncode not in (0, 124) and "zstd, br, gzip or several" in q.stderr, f"{q.returncode} {q.stderr[-140:]}")
     print(f"brotli {ENGINE}: " + ("all passed" if not fails else f"{fails} failed"))
     sys.exit(1 if fails else 0)
 

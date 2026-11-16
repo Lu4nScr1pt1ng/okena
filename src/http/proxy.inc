@@ -3278,7 +3278,12 @@ http_write_response_head:
 	je	.own_plain
 	cmp	dword [g_zh],2
 	je	.own_br
+	cmp	dword [g_zh],3
+	je	.own_zstd
 	memit_hot 'Content-Encoding: gzip',13,10,'Vary: Accept-Encoding',13,10
+	jmp	.own_plain
+.own_zstd:
+	memit_hot 'Content-Encoding: zstd',13,10,'Vary: Accept-Encoding',13,10
 	jmp	.own_plain
 .own_br:
 	memit_hot 'Content-Encoding: br',13,10,'Vary: Accept-Encoding',13,10
@@ -3343,6 +3348,8 @@ http_write_response_head:
 	mov	rcx,[r15+H_BUF]			; gRPC-Web text: its DATA say how long
 	cmp	byte [r15+H_GWEB],4
 	je	.conn
+	cmp	dword [g_zh],0			; compressed (HTTP/2, 3: not chunked): its
+	jne	.conn			; length is not known
 	cmp	eax,BK_LENGTH
 	je	.length
 	; no body: a HEAD response keeps the length it announces

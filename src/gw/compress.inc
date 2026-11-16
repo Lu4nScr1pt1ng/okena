@@ -102,6 +102,7 @@ zip_init:
 	mov	dword [rdi+Z_NEXT],NIL
 	mov	dword [g_z_free],0
 	call	zip_tables
+	call	zs_tables
 .out:
 	pop	r12
 	pop	rbx
@@ -223,35 +224,27 @@ zip_request:
 	test	dword [r15+H_FLAGS],HX_HTTP10 or HX_HEAD or HX_UPGRADE
 	jnz	.none
 	mov	r8d,[g_acts+rax+RA_ZENC]
-	; the first the client takes, in the order written (br: bit 31 of HB_ZOK)
-	mov	r9d,FE_GZ
-	test	r8d,4
-	jz	@f
-	mov	r9d,FE_BR
-@@:
-	call	.takes
-	jnz	.this
-	xor	r9d,FE_GZ xor FE_BR		; the other one
-	call	.takes
+	; the first the client takes, in the order written (its kind: HB_ZOK's top 2 bits)
+.next:
+	mov	r9d,r8d
+	and	r9d,15
 	jz	.none
-.this:
-	cmp	r9d,FE_BR
-	jne	@f
-	or	edx,1 shl 31
+	shr	r8d,4
+	call	.takes
+	jz	.next
+	xor	eax,eax				; FE_GZ: 0 gzip
+	cmp	r9d,FE_GZ
+	je	@f
+	mov	eax,r9d				; FE_BR 1 br, FE_ZST 2 zstd
 @@:
+	shl	eax,30
+	or	edx,eax
 	mov	rax,[r15+H_BUF]
 	mov	[rax+HB_ZOK],edx
 .none:
 	ret
-; r9d = FE_GZ or FE_BR, r8d = what is on: NZ when on and the client takes it
+; r9d = FE_GZ, FE_BR or FE_ZST: NZ when the client takes it
 .takes:
-	mov	eax,1				; (its bit in RA_ZENC)
-	cmp	r9d,FE_GZ
-	je	@f
-	mov	eax,2
-@@:
-	test	r8d,eax
-	jz	.no
 	push	rdx
 	push	r8
 	push	r9
@@ -285,10 +278,10 @@ zip_head:
 	test	edx,edx
 	jz	.none
 	mov	dword [rax+HB_ZOK],0
-	mov	ecx,edx				; gzip or br
-	shr	ecx,31
+	mov	ecx,edx				; gzip, br or zstd
+	shr	ecx,30
 	mov	[g_z_kind],ecx
-	and	edx,0x7FFFFFFF
+	and	edx,0x3FFFFFFF
 	test	dword [r15+H_FLAGS],HX_MIRROR
 	jnz	.none
 	cmp	dword [g_hm+HM_STATUS],200
@@ -409,7 +402,7 @@ zip_head:
 	or	dword [rax+S_FLAGS],SF_ZIP
 	mov	eax,[g_z_kind]
 	inc	eax
-	mov	[g_zh],eax			; 1 gzip, 2 br
+	mov	[g_zh],eax			; 1 gzip, 2 br, 3 zstd
 	call	h_chunkout
 .none:
 	ret
@@ -441,8 +434,10 @@ zip_feed:
 	add	rax,[g_z_base]
 	mov	r12,rax				; the context
 	lea	rbp,[r12+Z_OUT+Z_FRAME]		; the cursor out
-	cmp	dword [r12+Z_KIND],0
-	jne	br_feed				; (brotli.inc)
+	cmp	dword [r12+Z_KIND],1
+	je	br_feed				; (brotli.inc)
+	cmp	dword [r12+Z_KIND],2
+	je	zs_feed				; (zstd.inc)
 	call	zip_gz_head
 	test	r9d,r9d
 	jz	.frame
@@ -829,7 +824,12 @@ zip_finish:
 	lea	rbp,[r12+Z_OUT+Z_FRAME]
 	cmp	dword [r12+Z_KIND],0
 	je	@f
+	cmp	dword [r12+Z_KIND],2
+	je	.zstd
 	call	br_finish			; (brotli.inc: no trailer of its own)
+	jmp	.framed
+.zstd:
+	call	zs_finish			; (zstd.inc: its last block)
 	jmp	.framed
 @@:
 	call	zip_gz_head
@@ -896,38 +896,43 @@ compile_compress:
 	cmp	word [rcx],'of'
 	je	.out
 .gzip:
-	; gzip, br, or both: the order is the one preferred
-	xor	edx,edx
+	; zstd, br, gzip: one or more, the order is the one preferred
+	xor	edx,edx				; the list
+	xor	r9d,r9d				; its shift
+	xor	r10d,r10d			; those seen (1 shl FE_*)
 	mov	r8d,[r14+N_ARGC]
 	mov	rax,[r14+N_ARGS]
 .word:
 	cmp	dword [rax+A_KIND],ARG_KV
 	je	.word_next			; (min=)
 	mov	rcx,[rax+A_VAL]
+	mov	r11d,FE_GZ
 	cmp	dword [rax+A_VLEN],4
 	jne	@f
 	cmp	dword [rcx],'gzip'
-	jne	plan_bad_compress
-	test	edx,1
-	jnz	plan_bad_compress
-	or	edx,1
-	jmp	.word_next
+	je	.coding
+	mov	r11d,FE_ZST
+	cmp	dword [rcx],'zstd'
+	je	.coding
+	jmp	plan_bad_compress
 @@:
 	cmp	dword [rax+A_VLEN],2
 	jne	plan_bad_compress
 	cmp	word [rcx],'br'
 	jne	plan_bad_compress
-	test	edx,2
-	jnz	plan_bad_compress
-	or	edx,2
-	test	edx,1
-	jnz	.word_next
-	or	edx,4				; before gzip
+	mov	r11d,FE_BR
+.coding:
+	bts	r10d,r11d
+	jc	plan_bad_compress		; (twice)
+	mov	ecx,r9d
+	shl	r11d,cl
+	or	edx,r11d
+	add	r9d,4
 .word_next:
 	add	rax,A_SIZE
 	dec	r8d
 	jnz	.word
-	test	edx,3
+	test	edx,edx
 	jz	plan_bad_compress
 	mov	[r13+RA_ZENC],edx
 .size:
@@ -944,6 +949,9 @@ compile_compress:
 	jnz	@f
 	mov	eax,1				; (0: all of them)
 @@:
+	mov	ecx,0x3FFFFFFF			; (HB_ZOK keeps 30 bits)
+	cmp	rax,rcx
+	cmova	rax,rcx
 	mov	[r13+RA_ZMIN],eax
 .on:
 	inc	dword [g_plan_zip]
@@ -954,7 +962,7 @@ cstring .k_min, 'min',0
 
 plan_bad_compress:
 	call	log_begin
-	out_lit 'compress takes gzip, br or both (the first the client takes, in that order), or off, and min=SIZE: zstd is not here yet'
+	out_lit 'compress takes zstd, br, gzip or several (the first the client takes, in that order), or off, and min=SIZE'
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process

@@ -56,6 +56,7 @@ def read_message(f, head_only=False):
 
 
 BACKEND_CONNS = []
+DROPS = []                       # /drop-after connections the backend has closed
 
 
 def backend():
@@ -67,6 +68,7 @@ def backend():
     def handle(c):
         f = c.makefile("rb")
         BACKEND_CONNS.append(1)
+        dropped = False
         try:
             while True:
                 m = read_message(f)
@@ -111,6 +113,7 @@ def backend():
                     # next request on it must be sent again on a new one
                     c.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n" % len(echo) + echo)
                     time.sleep(0.05)
+                    dropped = True
                     return
                 elif target.startswith("/close"):
                     c.sendall(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n" + echo)
@@ -131,7 +134,10 @@ def backend():
         except Exception:
             pass
         finally:
+            f.close()
             c.close()
+            if dropped:
+                DROPS.append(1)
 
     def loop():
         while True:
@@ -376,12 +382,16 @@ try:
     check("a pooled connection the backend closed: request resent, no error", ok)
     # watched while idle: once the backend closes it, it leaves the pool, so
     # even a request with a body (never sent twice) does not meet it
+    drops = len(DROPS)
     for i in range(4):
         c2 = Client()
         c2.send(req(b"GET", b"/drop-after"))
         c2.response()
         c2.s.close()
-    time.sleep(0.3)
+    end = time.time() + 3                # the backend has closed all four (its FINs out)
+    while len(DROPS) < drops + 4 and time.time() < end:
+        time.sleep(0.01)
+    time.sleep(0.05)                     # (okena's loop takes them in)
     bodies_ok = 0
     for i in range(8):
         c2 = Client()

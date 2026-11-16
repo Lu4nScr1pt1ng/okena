@@ -288,7 +288,7 @@ http 127.0.0.1:{BASE + 2} {{
         p.terminate()
         p.wait(10)
     check("no worker died", "killed" not in log.read_text() and "restarting" not in log.read_text(), log.read_text()[-300:])
-    for what, line in (("zstd", "compress zstd"), ("something else", "compress lz4"), ("gzip and a word", "compress gzip now")):
+    for what, line in (("zstd twice", "compress zstd gzip zstd"), ("something else", "compress lz4"), ("gzip and a word", "compress gzip now")):
         c = tmp / "bad.conf"
         c.write_text(f"pool b {{ server 127.0.0.1:1 }}\nhttp 127.0.0.1:{LST} {{ {line}; route /* {{ to pool b }} }}\n")
         q = subprocess.run(["timeout", "5", str(BIN), "-c", str(c)], capture_output=True, text=True, timeout=8)

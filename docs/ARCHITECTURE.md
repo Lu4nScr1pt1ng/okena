@@ -819,9 +819,9 @@ Built in, in assembly, compiled into the route only where configured:
   size limits per route, CORS, security header presets (HSTS, nosniff,
   frame options, referrer policy).
 * **Compression:** precompressed variants (`.br`, `.zst`, `.gz`) picked by
-  `Accept-Encoding`, and on-the-fly gzip and zstd for text responses
-  (JSON, HTML) above a size threshold, at a fast level, with a CPU budget
-  under the overload manager; brotli on the fly later. On a slow mobile
+  `Accept-Encoding`, and on-the-fly zstd, brotli and gzip for text
+  responses (JSON, HTML) above a size threshold, at a fast level, each piece
+  decodable as it goes (src/gw/compress.inc, brotli.inc, zstd.inc). On a slow mobile
   network, a 60 KiB JSON going out as 9 KiB is worth more than any
   microsecond saved in the proxy.
 * **Fast first paint:** 103 Early Hints with `Link: preload` (configured,
