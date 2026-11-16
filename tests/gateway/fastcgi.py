@@ -256,6 +256,21 @@ http 127.0.0.1:{ULST} {{ route /* {{ php {www}; to pool ufpm }} }}
         r, d = req("GET", "/app.php?after=1", conn=c)
         c.close()
         check("  the connection goes on after it", st1 == 200 and j1.get("stdin") == 3000 and r.status == 200, (st1, r.status))
+        c = socket.create_connection(("127.0.0.1", LST), timeout=5)
+        c.sendall(b"POST /app.php HTTP/1.1\r\nHost: site.test\r\nTransfer-Encoding: chunked\r\nExpect: 100-continue\r\n\r\n")
+        t0 = time.time()
+        first = c.recv(100)
+        waited = time.time() - t0
+        c.sendall(b"5\r\nhello\r\n0\r\n\r\n")
+        rest = b""
+        while not (b'"stdin"' in rest and rest.endswith(b"0\r\n\r\n")):
+            d = c.recv(65536)
+            if not d:
+                break
+            rest += d
+        c.close()
+        check("  Expect: 100-continue: told at once, then the body taken",
+              first.startswith(b"HTTP/1.1 100 Continue") and waited < 0.5 and b'"stdin": 5' in rest, (first, waited, rest[-200:]))
         from concurrent.futures import ThreadPoolExecutor
         bodies = [os.urandom(20000 + i) for i in range(20)]
         with ThreadPoolExecutor(20) as ex:

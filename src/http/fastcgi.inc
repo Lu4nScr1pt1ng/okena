@@ -1518,6 +1518,14 @@ end bss
 ; fcgi_mark, a chunked body: its spool, what came with the head in it, and
 ; the rest read (HS_FCBODY) until its last chunk. ebx, r15, g_hm.
 fcgi_spool_start:
+	; a client that waits for 100 Continue: told first (HTTP/1.1), its Expect
+	; then taken from the head and the request run again (addon_cont_sent)
+	test	dword [g_hm+HM_FLAGS],HMF_CONTINUE
+	jz	@f
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_H2S or SF_H3S
+	jz	ad_continue_send
+@@:
 	; Transfer-Encoding: chunked alone, once (anything else: 411)
 	xor	r8d,r8d				; how many
 	xor	r9d,r9d

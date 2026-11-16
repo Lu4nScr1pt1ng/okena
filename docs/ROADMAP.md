@@ -1051,8 +1051,8 @@ P-384), and the smaller "Left:" notes under the items.
     of a worker's spools (32 of 8 MiB, address space until used), its
     chunks undone in place, the head's Transfer-Encoding line made
     Content-Length, and the request run again (HX_FAULTED: its limits
-    counted once) with its body replayed from the spool. Left: 100
-    Continue for such a body.
+    counted once) with its body replayed from the spool; a client that
+    expects 100 Continue gets it first.
 19. GeoIP ASN (`client.asn`). **Done 2026-11-16** (src/gw/geoip.inc,
     tests/gateway/geoip.py): `geoip_asn FILE` beside `geoip FILE` (each
     file's state a slot, the reader shared), `match client.asn=` and
