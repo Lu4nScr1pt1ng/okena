@@ -512,6 +512,8 @@ plan_compile:
 .listener:
 	mov	rdi,rbx
 	call	compile_listener
+	mov	rdi,rbx
+	call	compile_routes_files		; (api.inc)
 @@:
 	mov	rbx,[rbx+N_NEXT]
 	jmp	.listeners

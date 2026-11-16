@@ -24,6 +24,7 @@ cstring str_cmd_help, 'help',0
 cstring str_cmd_health, 'health',0
 cstring str_cmd_reload, 'reload',0
 cstring str_cmd_backend, 'backend',0
+cstring str_cmd_routes, 'routes',0
 cstring str_cmd_drain, 'drain',0
 cstring str_cmd_resume, 'resume',0
 cstring str_cmd_bench, 'bench',0
@@ -125,6 +126,12 @@ cli_main:
 	call	cstr_eq
 	test	eax,eax
 	jnz	cli_backend
+	mov	rax,[g_argv]
+	mov	rdi,[rax+8]
+	lea	rsi,[str_cmd_routes]
+	call	cstr_eq
+	test	eax,eax
+	jnz	cli_routes
 	mov	rax,[g_argv]
 	mov	rdi,[rax+8]
 	lea	rsi,[str_cmd_drain]
@@ -485,6 +492,7 @@ cli_help:
 	out_lit '  okena reload                       reload, and say how it went', 10
 	out_lit '  okena drain [wait] | resume        out of rotation (/ready 503) and back', 10
 	out_lit '  okena backend list|drain|up|weight [POOL SERVER [N]]', 10
+	out_lit '  okena routes [NAME [put ROUTE | delete HEAD]]', 10
 	out_lit '  okena maintenance [on|off [ROUTE]] 503 and the maintenance page', 10
 	out_lit '  okena top [once]                   listeners, pools and servers, with their rates', 10
 	out_lit '  okena purge url|prefix|tag VALUE   cached answers out, here and on the fleet', 10

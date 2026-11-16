@@ -1122,6 +1122,24 @@ cli_reload:
 	mov	edi,2
 	call	cli_source_from_args
 	call	api_cli_open
+	call	cli_reload_wait
+	jc	.failed
+	mov	edi,1
+	call	out_select
+	out_lit 'reloaded',10
+	xor	edi,edi
+	jmp	exit_process
+.failed:
+	call	log_begin
+	out_lit 'the reload did not take: what runs goes on, and its log says why'
+	call	log_end
+	mov	edi,1
+	jmp	exit_process
+
+; g_admin_buf there: a reload asked for, and waited for (30 s at most). CF
+; when it did not take. Keeps rbx, r13-r15.
+cli_reload_wait:
+	push	r12
 	cstring str_api_state_l, 'state',10
 	lea	rsi,[str_api_state_l]
 	mov	edx,str_api_state_l.len
@@ -1150,20 +1168,16 @@ cli_reload:
 	je	.again
 	cmp	edx,[g_cli_d0]
 	je	.failed
-	mov	edi,1
-	call	out_select
-	out_lit 'reloaded',10
-	xor	edi,edi
-	jmp	exit_process
+	pop	r12
+	clc
+	ret
 .again:
 	dec	r12d
 	jnz	.wait
 .failed:
-	call	log_begin
-	out_lit 'the reload did not take: what runs goes on, and its log says why'
-	call	log_end
-	mov	edi,1
-	jmp	exit_process
+	pop	r12
+	stc
+	ret
 
 ; the answer to `state`: eax = tried, edx = done
 api_cli_state:

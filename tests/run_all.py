@@ -198,6 +198,8 @@ SUITES = [
     ("fleet limits epoll", ["tests/gateway/fleetlim.py", "epoll"]),
     ("limit_rate io_uring", ["tests/gateway/pace.py", "io_uring"]),
     ("limit_rate epoll", ["tests/gateway/pace.py", "epoll"]),
+    ("routes io_uring", ["tests/admin/routes.py", "io_uring"]),
+    ("routes epoll", ["tests/admin/routes.py", "epoll"]),
     ("tcp limit_rate io_uring", ["tests/l4/rate.py", "io_uring"]),
     ("tcp limit_rate epoll", ["tests/l4/rate.py", "epoll"]),
     ("cors io_uring", ["tests/gateway/cors.py", "io_uring"]),

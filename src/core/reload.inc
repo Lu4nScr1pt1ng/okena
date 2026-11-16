@@ -168,6 +168,8 @@ macro plan_regions action
 	action g_plan_rmet, 4
 	action g_rmet, OM_SIZE * MAX_RMET, g_plan_rmet, OM_SIZE
 	action g_plan_lrw, 4
+	action g_plan_rf, 4
+	action g_rfiles, RF_SIZE * MAX_RF, g_plan_rf, RF_SIZE
 	action g_lrw, LW_SIZE * MAX_LRW, g_plan_lrw, LW_SIZE
 	action g_plan_upa, 4
 	action g_upa_sys, 4

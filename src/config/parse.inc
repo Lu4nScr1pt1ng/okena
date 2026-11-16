@@ -912,6 +912,89 @@ cfg_parse:
 	call	parse_block
 	mov	rdi,[g_cfg_end]
 	call	cfg_flat_to
+	call	cfg_routes_files
+	pop	rbx
+	ret
+
+; After the parse: each `routes FILE` in a block brings FILE's directives in
+; right after it, as an include would, when FILE is there (absolute paths;
+; the checker says where the directive may be). They stay out of last_good's
+; copy, where the line is: FILE is okena's to keep (api.inc), read again.
+cfg_routes_files:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	mov	rdi,[g_cfg_root]
+	call	.block
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+; rdi = a block: its children, and theirs
+.block:
+	push	rbx
+	push	r12
+	mov	rbx,rdi
+	mov	r12,[rbx+N_CHILD]
+.child:
+	test	r12,r12
+	jz	.done
+	cmp	dword [r12+N_BLOCK],0
+	je	@f
+	mov	rdi,r12
+	call	.block
+@@:
+	cmp	rbx,[g_cfg_root]
+	je	.sibling			; (not at the top)
+	cmp	dword [r12+N_NLEN],6
+	jne	.sibling
+	mov	rax,[r12+N_NAME]
+	cmp	dword [rax],'rout'
+	jne	.sibling
+	cmp	word [rax+4],'es'
+	jne	.sibling
+	cmp	dword [r12+N_ARGC],1
+	jne	.sibling
+	mov	rax,[r12+N_ARGS]
+	mov	rsi,[rax+A_VAL]
+	mov	ecx,[rax+A_VLEN]
+	cmp	ecx,3000
+	ja	.sibling
+	cmp	byte [rsi],'/'
+	jne	.sibling			; (the checker says why)
+	lea	rdi,[g_inc_dir]
+	rep	movsb
+	mov	byte [rdi],0
+	mov	eax,SYS_openat			; there?
+	mov	edi,AT_FDCWD
+	lea	rsi,[g_inc_dir]
+	mov	edx,O_RDONLY or O_CLOEXEC
+	syscall
+	test	eax,eax
+	js	.sibling
+	mov	edi,eax
+	mov	eax,SYS_close
+	syscall
+	push	qword [r12+N_NEXT]
+	mov	r14,[r12+N_NAME]		; (for its messages)
+	mov	r15d,[r12+N_LINE]
+	mov	dword [g_flat_off],1
+	lea	rdi,[g_inc_dir]
+	call	parse_include_file		; rbx, r12: after it (r12 its last now)
+	mov	dword [g_flat_off],0
+	pop	rax
+	mov	[r12+N_NEXT],rax
+	mov	r12,rax
+	jmp	.child
+.sibling:
+	mov	r12,[r12+N_NEXT]
+	jmp	.child
+.done:
+	pop	r12
 	pop	rbx
 	ret
 

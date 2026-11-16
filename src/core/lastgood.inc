@@ -15,6 +15,7 @@ bss
 	g_flat_len	dq ?
 	g_flat_from	dq ?		; the current file's text not yet copied
 	g_flat_bad	dd ?		; it did not fit: nothing saved
+	g_flat_off	dd ?		; a file read but not copied (`routes FILE`)
 	g_plan_last_good dd ?
 	g_lg_orig	dq ?		; the file given, when started from its copy
 	g_lg_path	rb 4096 + 8
@@ -51,6 +52,8 @@ cfg_flat_begin:
 cfg_flat_to:
 	mov	rsi,[g_flat_from]
 	mov	[g_flat_from],rdi
+	cmp	dword [g_flat_off],0
+	jne	.out
 	mov	rcx,rdi
 	sub	rcx,rsi
 	jbe	.out
@@ -72,6 +75,8 @@ cfg_flat_to:
 
 ; a line's end, after an included file
 cfg_flat_nl:
+	cmp	dword [g_flat_off],0
+	jne	.out
 	cmp	qword [g_flat],0
 	je	.out
 	mov	rax,[g_flat_len]

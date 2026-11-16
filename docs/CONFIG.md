@@ -1578,6 +1578,43 @@ okena backend weight api 10.0.1.11:8080 3
 
 Drains and weights survive reloads.
 
+### Changing routes at runtime
+
+A `routes FILE` line in an `http` listener or a `host` keeps routes in FILE,
+which `okena routes` changes while okena runs, without editing the
+configuration:
+
+```nginx
+http :443 {
+    routes /var/lib/okena/api.conf          # need not exist yet
+    route /static/* { files /srv/site }
+}
+```
+
+```sh
+okena routes                                            # names and files: api /var/lib/okena/api.conf
+okena routes api put 'route /v2/* { to pool v2 }'       # added, or replaces the route of that head
+okena routes api                                        # what it holds
+okena routes api delete '/v2/*'                         # out
+```
+
+FILE's routes are read right after the `routes` line, at the start and on
+every reload. A route's head is what comes before its `{`: putting a route
+whose head is there replaces it. Each change is checked before anything
+runs it: the command writes FILE anew (to a temporary file, renamed over
+it), compiles the whole configuration and prints its errors as `okena
+check` does, then reloads the running okena through the admin socket, as
+`okena reload` does. When the configuration or the reload does not take
+it, FILE is put back as it was and the command fails. The command runs as
+the user who calls it, who needs to be able to write FILE; okena's admin
+process has no part in it beyond the reload, so nothing that reaches the
+metrics address can change what okena serves.
+
+The name is the file's last part, less `.conf`, and must be unique. okena
+writes FILE a route a line; one edited by hand is read the same, but routes
+split over lines are not changed by these commands. `last_good` keeps the
+`routes` line in its copy, not the routes: FILE stays the one read.
+
 ---
 
 ## Protocols
@@ -1945,6 +1982,7 @@ helm install edge contrib/helm/okena --namespace ingress --create-namespace
 | `okena upgrade -c FILE` | replace the binary without refusing a connection |
 | `okena drain [wait]` / `okena resume` | take the instance out of rotation (`/ready` 503) and back |
 | `okena backend list\|drain\|up\|weight` | change servers at runtime |
+| `okena routes [NAME [put ROUTE \| delete HEAD]]` | change the routes of a `routes FILE` at runtime |
 | `okena maintenance [on\|off [ROUTE]]` | maintenance mode |
 | `okena top [once]` | live view of listeners, pools and servers |
 | `okena purge url\|prefix\|tag VALUE` | purge the cache (and the fleet's) |

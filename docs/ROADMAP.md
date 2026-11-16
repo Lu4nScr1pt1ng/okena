@@ -1013,7 +1013,16 @@ use it unchanged.
     own (predefined under 64 sequences, RLE for one code); beats okena's br
     and gzip in ratio and speed. Also fixed on the way: compressed answers
     over HTTP/2 and 3 kept the backend's Content-Length.
-15. Admin API to add and change routes at runtime.
+15. Admin API to add and change routes at runtime. **Done 2026-11-16**
+    (src/admin/routes.inc, tests/admin/routes.py): `routes FILE` in an
+    http listener or a host, read after the line (an include that may be
+    missing, kept out of last_good's copy); `okena routes NAME put|delete`
+    writes FILE atomically under a lock, compiles the whole configuration
+    in a child (its errors printed), reloads through the admin socket, and
+    puts FILE back when either fails. Done in the CLI, as its user, not in
+    the admin process: what reaches the metrics address cannot change
+    routes. Not here: an HTTP API for it (the admin process would need the
+    right to rewrite the configuration).
 16. Environment variables in the configuration (`${env:NAME}`).
 17. Built-in OIDC login (or the docs say it is an addon); gRPC-JSON
     transcoding as an addon; htpasswd bcrypt files accepted (verified off
