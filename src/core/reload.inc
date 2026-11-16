@@ -169,6 +169,7 @@ macro plan_regions action
 	action g_rmet, OM_SIZE * MAX_RMET, g_plan_rmet, OM_SIZE
 	action g_plan_lrw, 4
 	action g_plan_rf, 4
+	action g_plan_bcrypt, 4
 	action g_rfiles, RF_SIZE * MAX_RF, g_plan_rf, RF_SIZE
 	action g_lrw, LW_SIZE * MAX_LRW, g_plan_lrw, LW_SIZE
 	action g_plan_upa, 4
@@ -612,6 +613,7 @@ supervisor_reload:
 	call	fleet_seed
 	call	fleet_rings_init
 	call	spawn_fleet
+	call	bc_reload			; okena-bcrypt: again, with the new plan
 	mov	edi,[g_xdp_pid]			; okena-xdp: again, with the new plan
 	test	edi,edi
 	jz	@f

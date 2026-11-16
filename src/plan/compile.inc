@@ -2695,6 +2695,10 @@ auth_line:
 	rep	movsb
 	cmp	dword [r12+AU_KIND],AK_BASIC
 	jne	.out
+	mov	rsi,rbx				; a bcrypt hash? (bcrypt.inc)
+	mov	rdx,r14
+	call	bc_line
+	jnc	.out
 	; SALT:HEX, of 64 digits
 	mov	rax,rbx
 .salt_end:

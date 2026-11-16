@@ -481,6 +481,13 @@ rodata
 	sc_allow filter_xdpctl, SYS_clock_gettime
 	sc_end filter_xdpctl
 
+	; okena-bcrypt: the shared table and ring, and the CPU (bcrypt.inc)
+	sc_begin filter_bcrypt
+	sc_common filter_bcrypt
+	sc_allow filter_bcrypt, SYS_futex
+	sc_allow filter_bcrypt, SYS_clock_gettime
+	sc_end filter_bcrypt
+
 	; admin process: one connection at a time on the metrics socket
 	sc_begin filter_admin
 	sc_common filter_admin

@@ -1016,8 +1016,15 @@ failure, `api_key`, `basic`, `jwt` and `mtls` answer 401 with
 salt=$(openssl rand -hex 8); printf '%s:%s:%s\n' alice "$salt" "$(printf '%s%s' "$salt" "$password" | sha256sum | cut -d' ' -f1)"
 ```
 
-Basic uses salted SHA-256 instead of bcrypt, which would stall a worker for
-milliseconds per attempt. Use long random passwords.
+A users file may also have htpasswd's bcrypt lines (`htpasswd -B`:
+`name:$2y$10$...`, `$2a$` and `$2b$` too, costs 04 to 16), so an existing
+htpasswd file works as it is. A worker never runs bcrypt, which takes tens
+of milliseconds a check: a process of its own, okena-bcrypt, does, while the
+request waits without holding up anything else. Answers are kept in a table
+the workers share, a yes for 5 minutes and a no for 10 seconds, so a user's
+next requests cost a lookup. A flood of guesses keeps okena-bcrypt busy, not
+the workers: past 256 waiting checks, or 8 seconds, the answer is 503.
+Unknown names get 401 at once.
 
 **JWT.**
 

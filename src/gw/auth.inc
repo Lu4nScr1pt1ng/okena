@@ -4,13 +4,14 @@
 ;   auth basic users=FILE realm=NAME [identity=x-user-id] [forward=on]
 ;
 ; A keys file has a line `name:key`, a users file `name:SALT:SHA256HEX`, where
-; the hash is of SALT and the password together. Lines starting with # are
-; skipped. The plan keeps hashes only: a dump of a process gives no key.
+; the hash is of SALT and the password together, or htpasswd's bcrypt
+; `name:$2y$10$...`. Lines starting with # are skipped. The plan keeps hashes
+; only: a dump of a process gives no key.
 ;
 ; Comparing goes by hash, in constant time, and an unknown name costs what a
-; wrong password does. Bcrypt and the like are not used for Basic on purpose:
-; they would stop the worker for tens of ms a try, and nothing stops the loop.
-; So those passwords must be long and random; people belong behind OIDC.
+; wrong password does. A worker never runs bcrypt (tens of ms a try, and
+; nothing would stop the loop): okena-bcrypt does, the request held
+; meanwhile (bcrypt.inc).
 ;
 ; The client's own `identity` field is never passed on: anyone could say who
 ; they are otherwise. The name that was proved goes in its place. The credential
@@ -201,6 +202,8 @@ auth_check:
 	jnz	@f
 	lea	r9,[g_au_dummy]
 @@:
+	cmp	dword [r9+AT_SLEN],AT_BCRYPT
+	jae	.bcrypt
 	; SHA-256 of the salt and the password
 	push	r9
 	mov	ecx,[r9+AT_SLEN]
@@ -237,6 +240,12 @@ auth_check:
 	lea	rcx,[g_au_dummy]
 	cmp	rax,rcx
 	je	.refused
+	jmp	.who
+.bcrypt:					; checked by okena-bcrypt (bcrypt.inc)
+	call	bc_check
+	cmp	eax,YS_OK
+	jne	.refused
+	mov	rax,r9
 	jmp	.who
 .too_long:
 	pop	r9

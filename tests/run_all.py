@@ -202,6 +202,8 @@ SUITES = [
     ("routes epoll", ["tests/admin/routes.py", "epoll"]),
     ("env io_uring", ["tests/config/env.py", "io_uring"]),
     ("env epoll", ["tests/config/env.py", "epoll"]),
+    ("bcrypt io_uring", ["tests/gateway/htpasswd.py", "io_uring"]),
+    ("bcrypt epoll", ["tests/gateway/htpasswd.py", "epoll"]),
     ("tcp limit_rate io_uring", ["tests/l4/rate.py", "io_uring"]),
     ("tcp limit_rate epoll", ["tests/l4/rate.py", "epoll"]),
     ("cors io_uring", ["tests/gateway/cors.py", "io_uring"]),

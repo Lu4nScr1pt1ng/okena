@@ -108,12 +108,13 @@ http 127.0.0.1:{LT} {{
     log = tmp / "log"
     p = subprocess.Popen([str(BIN), "-c", str(conf)], stderr=open(log, "w"))
     try:
-        for _ in range(100):
-            try:
-                socket.create_connection(("127.0.0.1", LT), 1).close()
-                break
-            except OSError:
-                time.sleep(0.05)
+        for port in (B, LT, LU):         # the backend and both listeners up
+            for _ in range(100):
+                try:
+                    socket.create_connection(("127.0.0.1", port), 1).close()
+                    break
+                except OSError:
+                    time.sleep(0.05)
         st, f = go(LU, CLAIMS)
         check("untrusted peer: what it claims is dropped, okena's own written",
               st == 200 and f.get("x-forwarded-for") == ["127.0.0.1"] and f.get("x-forwarded-proto") == ["http"]

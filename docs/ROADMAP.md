@@ -1031,7 +1031,10 @@ use it unchanged.
     default is an error at its place.
 17. Built-in OIDC login (or the docs say it is an addon); gRPC-JSON
     transcoding as an addon; htpasswd bcrypt files accepted (verified off
-    the worker).
+    the worker). bcrypt: **done 2026-11-16** (src/gw/bcrypt.inc,
+    tests/gateway/htpasswd.py): Blowfish/eksblowfish in okena-bcrypt, a ring
+    and a shared table of answers (yes 5 min, no 10 s), the request held
+    2 ms at a time (fault_hold), 503 past 8 s or 256 waiting.
 18. Chunked request bodies to FastCGI.
 19. GeoIP ASN (`client.asn`).
 20. Docs: EDGE_CASES (PROXY accept), ARCHITECTURE (OIDC, per-route size
