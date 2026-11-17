@@ -96,13 +96,19 @@ SG_RELOAD_FAILS	:= 16
 SG_DRAINING	:= 24
 SG_STARTED	:= 32			; wall clock seconds when okena started
 SG_SERVING	:= 40			; 1 once the first workers serve (workers_wait_ready)
+SG_STOPPED	:= 48			; this generation's workers that stopped accepting (a reload waits on it)
 SG_OFF		:= 0
 STP_BASE	:= 4096
+
+bss
+	g_stats_prev	dq ?		; the table of the generation before
+end bss
 
 ; Before forking a generation: a fresh table (old workers keep theirs).
 stats_table_init:
 	push	rbx
 	mov	rbx,[g_stats_tbl]
+	mov	[g_stats_prev],rbx		; (the generation that goes: a reload reads its SG_STOPPED)
 	xor	edi,edi
 	mov	rsi,STP_BASE + STP_SIZE * MAX_WORKERS
 	mov	edx,PROT_READ or PROT_WRITE

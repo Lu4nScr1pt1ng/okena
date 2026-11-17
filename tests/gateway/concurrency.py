@@ -118,17 +118,25 @@ http 127.0.0.1:{LA} {{ route /* {{ to pool a }} }}
         # host loaded by the other suites (a slow Python answer is ~50 ms then),
         # so the gradient is at its floor and the limit halves each second
         a.delay = 0.25
-        slowed = time.time()
-        a.most = 0
-        time.sleep(4.5)
-        a.most = 0
-        time.sleep(1.5)
-        late = [s for (t, s) in res if t > slowed + 4.5]
+        # each second the limit is limit * gradient + sqrt(limit): the gradient
+        # is at its floor (0.5) when the backend is four times slower than its
+        # usual, nearer 0.6 on a host whose quick answers are already slow, so
+        # how many seconds it takes varies: looked at a second at a time, 12 s
+        # at most
+        most, late = 99, []
+        for _ in range(12):
+            a.most = 0
+            t1 = time.time()
+            time.sleep(1)
+            most = a.most
+            late = [s for (t, s) in res if t > t1]
+            if most < 16 and 503 in late and 200 in late:
+                break
         stop[0] = True
         for t in ts:
             t.join(15)
         check("  slowed down: within seconds, 503s at the edge", 503 in late and 200 in late, (late.count(200), late.count(503)))
-        check("  and fewer at the backend at once than the 20 asking", a.most < 16, a.most)
+        check("  and fewer at the backend at once than the 20 asking", most < 16, most)
     finally:
         p.terminate()
         p.wait(10)

@@ -644,7 +644,6 @@ supervisor_reload:
 	call	ocsp_reload
 	mov	edi,SG_RELOADS
 	call	stats_global_inc
-	call	api_reloaded
 	call	addon_wait_ready		; (the new ones: addon_sync above)
 	inc	dword [g_gen]
 	xor	ebx,ebx
@@ -657,7 +656,11 @@ supervisor_reload:
 	jmp	.spawn
 .spawned:
 	call	workers_wait_ready		; the new generation serves:
+	push	qword [g_nretiring]
 	call	retire_signal			; the old one stops accepting
+	pop	rax
+	call	retired_wait			; ... and has (then the reload is done)
+	call	api_reloaded
 	push	rdi
 	mov	edi,1
 	call	gw_reload_result
@@ -981,6 +984,31 @@ retire_take:
 	inc	ebx
 	jmp	.next
 .done:
+	pop	rbx
+	ret
+
+; eax = old workers told to stop accepting: until each says it did (their
+; generation's table, SG_STOPPED), RETIRED_WAIT_MS at most (one that died
+; says nothing)
+RETIRED_WAIT_MS	:= 1000
+retired_wait:
+	push	rbx
+	push	r12
+	mov	ebx,eax
+	mov	r12d,RETIRED_WAIT_MS
+.look:
+	mov	rax,[g_stats_prev]
+	test	rax,rax
+	jz	.out
+	cmp	[rax+SG_OFF+SG_STOPPED],rbx
+	jae	.out
+	dec	r12d
+	jz	.out
+	mov	eax,1
+	call	sleep_ms
+	jmp	.look
+.out:
+	pop	r12
 	pop	rbx
 	ret
 

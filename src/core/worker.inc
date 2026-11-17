@@ -613,9 +613,19 @@ stop_accepting:
 	mov	rax,[g_plan_drain_timeout]
 	call	us_after
 	cmp	dword [g_engine],ENGINE_EPOLL
-	je	ep_stop_accepting
+	jne	.ring
+	call	ep_stop_accepting
+	jmp	.said
+.ring:
 	lea	rsi,[cancel_accept]
-	jmp	for_each_socket
+	call	for_each_socket
+	call	ring_flush			; (the cancels in the kernel's hands now, not at the turn's end)
+.said:
+	; said to the supervisor: a reload is done once the old workers take no
+	; new connection (what `okena reload` and `okena routes` wait for)
+	mov	rax,[g_stats_tbl]
+	lock inc qword [rax+SG_OFF+SG_STOPPED]
+	ret
 
 ; edi = socket id: cancel its multishot accept.
 cancel_accept:
