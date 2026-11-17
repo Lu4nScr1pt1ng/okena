@@ -1058,7 +1058,12 @@ the items.
     2 ms at a time (fault_hold), 503 past 8 s or 256 waiting. OIDC: **done
     2026-11-16** as an addon (addons/oidc, tests/gateway/oidc.py): code
     flow with PKCE, ID token checked against the provider's JWKS, sealed
-    session cookie, allow lists; the standard library only. gRPC-JSON
+    session cookie, allow lists; the standard library only. Later the same
+    day: refresh tokens (-refresh-every: the session checked again with the
+    provider, one refresh for requests at once, a refused one ends it, the
+    renewed cookie on the response or a page load sent to itself), the
+    access token to the backend, RP-initiated logout (end_session_endpoint,
+    id_token_hint) and the refresh token revoked (RFC 7009). gRPC-JSON
     transcoding: **done 2026-11-16** as an addon (addons/grpcjson,
     tests/gateway/grpcjson.py): google.api.http rules and
     POST /package.Service/Method, dynamic messages from a descriptor set,

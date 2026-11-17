@@ -11,6 +11,16 @@
 // are not a page load (not GET/HEAD, or not asking for HTML) get 401 instead
 // of a redirect.
 //
+// With -refresh-every, a session whose provider gave a refresh token is
+// checked with the provider again that often (the refresh grant): a refused
+// refresh ends it, so a user disabled at the provider is out within that
+// time, and the session's tokens are renewed. The new cookie goes out on the
+// response when the addon has the response_headers phase; without it a page
+// load is sent to itself with it, and other requests use the renewed session
+// kept here until then. Logout revokes the refresh token (RFC 7009) and, when
+// the provider has an end_session_endpoint, ends the session there too
+// (OpenID Connect RP-Initiated Logout).
+//
 //	addon oidc {
 //	    run /usr/local/bin/oidc-okena -issuer https://accounts.google.com -client-id ID \
 //	        -client-secret-file /etc/okena/oidc-secret -cookie-key-file /etc/okena/oidc-key \
@@ -58,14 +68,16 @@ import (
 
 type config struct {
 	issuer, clientID, clientSecret string
-	redirectURL, callback, logout   string
-	scopes                          string
-	cookie                          string
-	ttl                             time.Duration
-	allowEmails, allowDomains       map[string]bool
-	header, subHeader, nameHeader   string
-	secure                          bool
-	aead                            cipher.AEAD
+	redirectURL, callback, logout  string
+	postLogout                     string
+	scopes                         string
+	cookie                         string
+	ttl, refreshEvery              time.Duration
+	allowEmails, allowDomains      map[string]bool
+	header, subHeader, nameHeader  string
+	atHeader                       string
+	secure                         bool
+	aead                           cipher.AEAD
 }
 
 type provider struct {
@@ -74,6 +86,7 @@ type provider struct {
 	JWKSURI       string `json:"jwks_uri"`
 	Issuer        string `json:"issuer"`
 	EndSession    string `json:"end_session_endpoint"`
+	Revocation    string `json:"revocation_endpoint"`
 }
 
 var (
@@ -94,6 +107,9 @@ func main() {
 	flag.StringVar(&cfg.redirectURL, "redirect-url", "", "the callback's full URL (default: https://HOST + -callback)")
 	flag.StringVar(&cfg.callback, "callback", "/oauth2/callback", "the callback's path")
 	flag.StringVar(&cfg.logout, "logout", "/oauth2/logout", "the path that ends a session")
+	flag.StringVar(&cfg.postLogout, "post-logout-url", "", "where the provider sends the browser after its logout (default: https://HOST/)")
+	flag.DurationVar(&cfg.refreshEvery, "refresh-every", 0, "check a session with the provider this often, by its refresh token (0: never)")
+	flag.StringVar(&cfg.atHeader, "access-token-header", "", "a field that carries the access token to the backend (none: it is not kept)")
 	flag.StringVar(&cfg.scopes, "scopes", "openid email profile", "the scopes asked for")
 	flag.StringVar(&cfg.cookie, "cookie", "okena_session", "the session cookie's name")
 	flag.DurationVar(&cfg.ttl, "session", 12*time.Hour, "how long a session lasts")
@@ -143,6 +159,7 @@ func main() {
 	if err := discover(); err != nil {
 		log.Fatal("oidc-okena: ", err)
 	}
+	go sweep()
 	log.Fatal(addon.Run(handle, addon.Options{Workers: 16}))
 }
 
@@ -181,6 +198,15 @@ func getJSON(u string, v any) error {
 // ---------------------------------------------------------------- requests
 
 func handle(r *addon.Request, a *addon.Answer) {
+	if r.IsResponse() {
+		// a renewed session's cookies, on its response
+		if v, ok := pending.LoadAndDelete(r.Stream); ok {
+			for _, c := range v.(*waiting).cookies {
+				a.Add("set-cookie", c)
+			}
+		}
+		return
+	}
 	path := r.Path()
 	if i := strings.IndexByte(path, '?'); i >= 0 {
 		path = path[:i]
@@ -190,13 +216,38 @@ func handle(r *addon.Request, a *addon.Answer) {
 		callback(r, a)
 		return
 	case cfg.logout:
-		a.Respond(302)
-		a.Add("location", "/")
-		a.Add("set-cookie", clearCookie(cfg.cookie))
-		a.Add("cache-control", "no-store")
+		logout(r, a)
 		return
 	}
-	if s, ok := session(r); ok {
+	s, raw, ok := session(r)
+	if ok && cfg.refreshEvery > 0 && s.RT != "" && time.Now().UnixMilli() >= s.Chk {
+		ns, err := renew(raw, s)
+		switch {
+		case err == errRefused:
+			ok = false // the provider says no more: signed out
+			for _, c := range clearSession(r) {
+				a.Add("set-cookie", c)
+			}
+		case err != nil:
+			log.Print("oidc-okena: a session's refresh: ", err, " (it goes on as it was)")
+		default:
+			cs := setSession(r, ns)
+			switch {
+			case !r.Last:
+				pending.Store(r.Stream, &waiting{cookies: cs, at: time.Now()})
+			case pageLoad(r):
+				a.Respond(302) // to itself, with the renewed cookie
+				a.Add("location", r.Target)
+				for _, c := range cs {
+					a.Add("set-cookie", c)
+				}
+				a.Add("cache-control", "no-store")
+				return
+			}
+			s = ns
+		}
+	}
+	if ok {
 		// whatever the client says of itself goes: ours in its place
 		a.Set(cfg.header, s.Email)
 		a.Set(cfg.subHeader, s.Sub)
@@ -205,6 +256,13 @@ func handle(r *addon.Request, a *addon.Answer) {
 		} else {
 			a.Remove(cfg.nameHeader)
 		}
+		if cfg.atHeader != "" {
+			if s.AT != "" {
+				a.Set(cfg.atHeader, s.AT)
+			} else {
+				a.Remove(cfg.atHeader)
+			}
+		}
 		if c := cookiesWithout(r, cfg.cookie); c == "" {
 			a.Remove("cookie")
 		} else {
@@ -212,8 +270,7 @@ func handle(r *addon.Request, a *addon.Answer) {
 		}
 		return
 	}
-	accept, _ := r.Header("accept")
-	if (r.Method != "GET" && r.Method != "HEAD") || !strings.Contains(accept, "text/html") {
+	if !pageLoad(r) {
 		a.Respond(401)
 		a.Add("content-type", "text/plain")
 		a.Add("www-authenticate", `Bearer realm="oidc"`)
@@ -223,6 +280,192 @@ func handle(r *addon.Request, a *addon.Answer) {
 	login(r, a)
 }
 
+func pageLoad(r *addon.Request) bool {
+	accept, _ := r.Header("accept")
+	return (r.Method == "GET" || r.Method == "HEAD") && strings.Contains(accept, "text/html")
+}
+
+// ---------------------------------------------------------------- sessions renewed
+
+var (
+	errRefused = errors.New("the provider refused the refresh")
+	// cookies for a request's response (its response_headers call)
+	pending sync.Map // addon.StreamID -> *waiting
+	// sessions renewed, by their old cookie: requests that still carry it
+	// (before the new one reached the browser, or many at once) use the
+	// renewal, and one refresh is asked for at a time: a provider that
+	// rotates refresh tokens takes an old one as a theft
+	renewMu sync.Mutex
+	renewed = map[[32]byte]*flight{}
+)
+
+type waiting struct {
+	cookies []string
+	at      time.Time
+}
+
+type flight struct {
+	done chan struct{}
+	s    sess
+	err  error
+	at   time.Time
+}
+
+func renew(raw string, s sess) (sess, error) {
+	k := sha256.Sum256([]byte(raw))
+	renewMu.Lock()
+	f := renewed[k]
+	if f != nil {
+		select {
+		case <-f.done:
+			if f.err == nil && time.Now().UnixMilli() >= f.s.Chk {
+				s, f = f.s, nil // (that renewal is due again: from it)
+			}
+		default:
+		}
+	}
+	if f == nil {
+		f = &flight{done: make(chan struct{}), at: time.Now()}
+		renewed[k] = f
+		renewMu.Unlock()
+		f.s, f.err = refresh(s)
+		if f.err != nil && f.err != errRefused {
+			renewMu.Lock()
+			delete(renewed, k) // (the provider unreachable: asked again by the next one)
+			renewMu.Unlock()
+		}
+		close(f.done)
+	} else {
+		renewMu.Unlock()
+		<-f.done
+	}
+	return f.s, f.err
+}
+
+// sweep: what was kept for requests that are long gone
+func sweep() {
+	for range time.Tick(30 * time.Second) {
+		now := time.Now()
+		pending.Range(func(k, v any) bool {
+			if now.Sub(v.(*waiting).at) > time.Minute {
+				pending.Delete(k)
+			}
+			return true
+		})
+		renewMu.Lock()
+		for k, f := range renewed {
+			if now.Sub(f.at) > cfg.refreshEvery+time.Minute {
+				delete(renewed, k)
+			}
+		}
+		renewMu.Unlock()
+	}
+}
+
+// refresh: the refresh grant, its ID token checked as at sign-in (but its
+// nonce: none comes), the same subject, the e-mail still let in
+func refresh(s sess) (sess, error) {
+	form := url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {s.RT},
+		"client_id":     {cfg.clientID},
+		"client_secret": {cfg.clientSecret},
+	}
+	t, status, err := tokenCall(form)
+	if err != nil {
+		return s, err
+	}
+	if status == 400 || status == 401 {
+		return s, errRefused
+	}
+	if status != 200 {
+		return s, fmt.Errorf("the token endpoint: %d %s", status, t.Error)
+	}
+	ns := s
+	if t.IDToken != "" {
+		claims, err := verify(t.IDToken, "")
+		if err != nil {
+			log.Print("oidc-okena: a refreshed ID token: ", err)
+			return s, errRefused
+		}
+		if sub, _ := claims["sub"].(string); sub != s.Sub {
+			return s, errRefused
+		}
+		email, _ := claims["email"].(string)
+		if v, ok := claims["email_verified"].(bool); ok && !v {
+			email = ""
+		}
+		if email != "" {
+			ns.Email = email
+		}
+		if name, _ := claims["name"].(string); name != "" {
+			ns.Name = strings.Map(printable, name)
+		}
+		ns.IDT = t.IDToken
+	}
+	if !allowed(ns.Email) {
+		return s, errRefused
+	}
+	if t.RefreshToken != "" {
+		ns.RT = t.RefreshToken
+	}
+	if cfg.atHeader != "" {
+		ns.AT = t.AccessToken
+	}
+	ns.Chk = time.Now().Add(cfg.refreshEvery).UnixMilli()
+	return ns, nil
+}
+
+// logout: the session's refresh token revoked, its cookies cleared, and the
+// browser to the provider's end_session_endpoint (else to /)
+func logout(r *addon.Request, a *addon.Answer) {
+	s, _, ok := session(r)
+	if ok && s.RT != "" && prov.Revocation != "" {
+		go revoke(s.RT)
+	}
+	loc := "/"
+	if prov.EndSession != "" {
+		q := url.Values{"client_id": {cfg.clientID}, "post_logout_redirect_uri": {postLogoutURL(r)}}
+		if ok && s.IDT != "" {
+			q.Set("id_token_hint", s.IDT)
+		}
+		sep := "?"
+		if strings.Contains(prov.EndSession, "?") {
+			sep = "&"
+		}
+		loc = prov.EndSession + sep + q.Encode()
+	}
+	a.Respond(302)
+	a.Add("location", loc)
+	for _, c := range clearSession(r) {
+		a.Add("set-cookie", c)
+	}
+	a.Add("cache-control", "no-store")
+}
+
+func postLogoutURL(r *addon.Request) string {
+	if cfg.postLogout != "" {
+		return cfg.postLogout
+	}
+	if cfg.redirectURL != "" {
+		if u, err := url.Parse(cfg.redirectURL); err == nil {
+			return u.Scheme + "://" + u.Host + "/"
+		}
+	}
+	host, _ := r.Header("host")
+	return "https://" + host + "/"
+}
+
+func revoke(rt string) {
+	r, err := client.PostForm(prov.Revocation, url.Values{"token": {rt}, "token_type_hint": {"refresh_token"},
+		"client_id": {cfg.clientID}, "client_secret": {cfg.clientSecret}})
+	if err != nil {
+		log.Print("oidc-okena: revoking a refresh token: ", err)
+		return
+	}
+	r.Body.Close()
+}
+
 type state struct {
 	State, Verifier, Nonce, Return string
 	Exp                            int64
@@ -230,7 +473,11 @@ type state struct {
 
 type sess struct {
 	Sub, Email, Name string
-	Exp              int64
+	Exp              int64  // the session's end (unix seconds)
+	Chk              int64  `json:",omitempty"` // when to ask the provider again (unix ms)
+	RT               string `json:",omitempty"` // its refresh token
+	AT               string `json:",omitempty"` // its access token (-access-token-header)
+	IDT              string `json:",omitempty"` // its ID token (logout's id_token_hint)
 }
 
 func redirectURL(r *addon.Request) string {
@@ -291,12 +538,13 @@ func callback(r *addon.Request, a *addon.Answer) {
 		fail(403, "the provider said: "+e)
 		return
 	}
-	idt, err := exchange(q.Get("code"), st.Verifier, redirectURL(r))
+	tok, err := exchange(q.Get("code"), st.Verifier, redirectURL(r))
 	if err != nil {
 		log.Print("oidc-okena: the code's exchange: ", err)
 		fail(502, "the provider did not give a token")
 		return
 	}
+	idt := tok.IDToken
 	claims, err := verify(idt, st.Nonce)
 	if err != nil {
 		log.Print("oidc-okena: the ID token: ", err)
@@ -313,14 +561,25 @@ func callback(r *addon.Request, a *addon.Answer) {
 	}
 	sub, _ := claims["sub"].(string)
 	name, _ := claims["name"].(string)
-	s := sess{Sub: sub, Email: email, Name: strings.Map(printable, name), Exp: time.Now().Add(cfg.ttl).Unix()}
+	s := sess{Sub: sub, Email: email, Name: strings.Map(printable, name), Exp: time.Now().Add(cfg.ttl).Unix(), IDT: idt}
+	if cfg.refreshEvery > 0 && tok.RefreshToken != "" {
+		s.RT = tok.RefreshToken
+		s.Chk = time.Now().Add(cfg.refreshEvery).UnixMilli()
+	} else if prov.Revocation != "" && tok.RefreshToken != "" {
+		s.RT = tok.RefreshToken // (only for logout to revoke it)
+	}
+	if cfg.atHeader != "" {
+		s.AT = tok.AccessToken
+	}
 	ret := st.Return
 	if !strings.HasPrefix(ret, "/") || strings.HasPrefix(ret, "//") || strings.HasPrefix(ret, cfg.callback) {
 		ret = "/"
 	}
 	a.Respond(302)
 	a.Add("location", ret)
-	a.Add("set-cookie", cookie(cfg.cookie, seal(s), int(cfg.ttl.Seconds())))
+	for _, c := range setSession(r, s) {
+		a.Add("set-cookie", c)
+	}
 	a.Add("set-cookie", clearCookie(cfg.cookie+"_state"))
 	a.Add("cache-control", "no-store")
 }
@@ -349,42 +608,129 @@ func allowed(email string) bool {
 	return false
 }
 
-func session(r *addon.Request) (sess, bool) {
+// session: the request's session (its cookies, joined), and that text
+func session(r *addon.Request) (sess, string, bool) {
 	var s sess
 	c, ok := cookieValue(r, cfg.cookie)
-	if !ok || !open(c, &s) || s.Exp < time.Now().Unix() || !allowed(s.Email) {
-		return s, false
+	if !ok {
+		return s, "", false
 	}
-	return s, true
+	for i := 1; i < chunks; i++ {
+		more, ok := cookieValue(r, fmt.Sprintf("%s_%d", cfg.cookie, i))
+		if !ok {
+			break
+		}
+		c += more
+	}
+	// renewed already, its new cookie not there yet: the renewal
+	renewMu.Lock()
+	f := renewed[sha256.Sum256([]byte(c))]
+	renewMu.Unlock()
+	if f != nil {
+		select {
+		case <-f.done:
+			if f.err == nil {
+				return f.s, c, f.s.Exp >= time.Now().Unix() && allowed(f.s.Email)
+			}
+			if f.err == errRefused {
+				return s, c, false
+			}
+		default:
+		}
+	}
+	if !open(c, &s) || s.Exp < time.Now().Unix() || !allowed(s.Email) {
+		return s, c, false
+	}
+	return s, c, true
+}
+
+// a sealed session is cut into cookies of this size, at most this many (a
+// request head is 16 KiB at most in okena, and browsers take 4 KiB a cookie)
+const chunk, chunks = 3800, 3
+
+// setSession: the session's cookies (and those of a longer one before it
+// cleared). What makes it too long goes first: the ID token (logout then
+// names the client alone), then the access token.
+func setSession(r *addon.Request, s sess) []string {
+	v := seal(s)
+	if len(v) > chunk*chunks {
+		s.IDT = ""
+		v = seal(s)
+	}
+	if len(v) > chunk*chunks {
+		log.Print("oidc-okena: the access token makes the session too long for its cookies: not kept")
+		s.AT = ""
+		v = seal(s)
+	}
+	age := int(s.Exp - time.Now().Unix())
+	var out []string
+	for i := 0; i < chunks; i++ {
+		name := cfg.cookie
+		if i > 0 {
+			name = fmt.Sprintf("%s_%d", cfg.cookie, i)
+		}
+		switch {
+		case len(v) > 0:
+			n := min(len(v), chunk)
+			out = append(out, cookie(name, v[:n], age))
+			v = v[n:]
+		case i > 0:
+			if _, had := cookieValue(r, name); had {
+				out = append(out, clearCookie(name))
+			}
+		}
+	}
+	return out
+}
+
+func clearSession(r *addon.Request) []string {
+	out := []string{clearCookie(cfg.cookie)}
+	for i := 1; i < chunks; i++ {
+		if _, had := cookieValue(r, fmt.Sprintf("%s_%d", cfg.cookie, i)); had {
+			out = append(out, clearCookie(fmt.Sprintf("%s_%d", cfg.cookie, i)))
+		}
+	}
+	return out
 }
 
 // ---------------------------------------------------------------- the provider
 
-func exchange(code, verifier, redirect string) (string, error) {
-	form := url.Values{
+type tokens struct {
+	IDToken      string `json:"id_token"`
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	Error        string `json:"error"`
+}
+
+func tokenCall(form url.Values) (tokens, int, error) {
+	var t tokens
+	r, err := client.PostForm(prov.TokenEndpoint, form)
+	if err != nil {
+		return t, 0, err
+	}
+	defer r.Body.Close()
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&t); err != nil && r.StatusCode == 200 {
+		return t, 0, err
+	}
+	return t, r.StatusCode, nil
+}
+
+func exchange(code, verifier, redirect string) (tokens, error) {
+	t, status, err := tokenCall(url.Values{
 		"grant_type":    {"authorization_code"},
 		"code":          {code},
 		"redirect_uri":  {redirect},
 		"client_id":     {cfg.clientID},
 		"client_secret": {cfg.clientSecret},
 		"code_verifier": {verifier},
-	}
-	r, err := client.PostForm(prov.TokenEndpoint, form)
+	})
 	if err != nil {
-		return "", err
+		return t, err
 	}
-	defer r.Body.Close()
-	var t struct {
-		IDToken string `json:"id_token"`
-		Error   string `json:"error"`
+	if status != 200 || t.IDToken == "" {
+		return t, fmt.Errorf("%d %s", status, t.Error)
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&t); err != nil {
-		return "", err
-	}
-	if r.StatusCode != 200 || t.IDToken == "" {
-		return "", fmt.Errorf("%s %s", r.Status, t.Error)
-	}
-	return t.IDToken, nil
+	return t, nil
 }
 
 func verify(tok, nonce string) (map[string]any, error) {
@@ -424,8 +770,8 @@ func verify(tok, nonce string) (map[string]any, error) {
 	if exp, err := num(c["exp"]); err != nil || exp+60 < now {
 		return nil, errors.New("expired")
 	}
-	if n, _ := c["nonce"].(string); !hmac.Equal([]byte(n), []byte(nonce)) {
-		return nil, errors.New("another nonce")
+	if n, _ := c["nonce"].(string); nonce != "" && !hmac.Equal([]byte(n), []byte(nonce)) {
+		return nil, errors.New("another nonce") // ("": a refresh's token, which has none to match)
 	}
 	return c, nil
 }
@@ -660,9 +1006,11 @@ func cookieValue(r *addon.Request, name string) (string, bool) {
 func cookiesWithout(r *addon.Request, name string) string {
 	var keep []string
 	for _, c := range cookies(r) {
-		if !strings.HasPrefix(c, name+"=") && !strings.HasPrefix(c, name+"_state=") {
-			keep = append(keep, c)
+		n, _, _ := strings.Cut(c, "=")
+		if n == name || n == name+"_state" || (strings.HasPrefix(n, name+"_") && len(n) == len(name)+2 && n[len(name)+1] >= '1' && n[len(name)+1] <= '9') {
+			continue
 		}
+		keep = append(keep, c)
 	}
 	return strings.Join(keep, "; ")
 }
