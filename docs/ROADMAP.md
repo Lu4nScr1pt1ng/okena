@@ -1013,8 +1013,8 @@ the items.
     nginx's rewrite-target (with groups), use-regex, ssl-redirect (on by
     default, as nginx), force-ssl-redirect, backend-protocol, permanent and
     temporal redirects, app-root, allow/deny lists, proxy-body-size, CORS,
-    timeouts, limit-rps/rpm, cookie affinity. Not taken: snippets, canary
-    annotations, auth-url.
+    timeouts, limit-rps/rpm, cookie affinity. Not taken: snippets (canary
+    annotations and auth-url: taken since, phase 15).
 12. Rate limits shared across a fleet; `RateLimit-*` response headers. **Done
     2026-11-14** (src/gw/fleetlim.inc, tests/gateway/fleetlim.py,
     tests/gateway/ratehdr.py): `limit ... headers=on`; `fleet_limits` and
@@ -1108,7 +1108,16 @@ both engines, routes that do not use an item unchanged.
 2. Kubernetes Ingress: the `canary-*` annotations (weight, by header, by
    header value, by cookie) and `auth-url` (with `auth-signin` and
    `auth-response-headers`), the two most used by an ingress-nginx
-   migration.
+   migration. **Done 2026-11-17** (src/core/ingann.inc, gwgen.inc;
+   tests/gateway/ingress.py): canary Ingresses are not served, their paths
+   joining the same host, path and type of their namespace as rules matched
+   first (header, header value or pattern, then cookie, as nginx) and the
+   rule itself a weighted split; auth-url as `auth forward` to a Service's
+   pool (NAME, NAME.NS.svc...) or one by name (`$host` the rule's), a URL or
+   Service that cannot be had answering 500; auth-signin as the new
+   `signin=` of `auth forward` (3f650b2: a 401 made a 302, nginx's
+   variables as okena's), auth-response-headers as copy=, auth-cache-key
+   and -duration as cache=.
 3. TLS client fingerprints, JA4 (FoxIO's, the one browsers' randomised
    extension order does not change): `${tls.ja4}`, `match tls.ja4=`, a
    `limit` key and a field of the access log.

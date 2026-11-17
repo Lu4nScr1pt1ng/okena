@@ -55,6 +55,23 @@ class Tls(Back):
     pass
 
 
+class Sso(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def do_GET(self):
+        ok = self.headers.get("Cookie") == "s=ok"
+        self.send_response(200 if ok else 401)
+        if ok:
+            self.send_header("X-User", "alice")
+        else:
+            self.send_header("Set-Cookie", "state=1")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def log_message(self, *a):
+        pass
+
+
 class S(http.server.ThreadingHTTPServer):
     daemon_threads = True
 
@@ -212,6 +229,10 @@ def main():
     sec.socket = sctx.wrap_socket(sec.socket, server_side=True)
     threading.Thread(target=sec.serve_forever, daemon=True).start()
     service("shop", "secure", [{"name": "https", "port": 443, "targetPort": 8443}])
+    sso = S(("127.0.0.8", 8080), Sso)
+    threading.Thread(target=sso.serve_forever, daemon=True).start()
+    service("auth", "sso", [{"name": "http", "port": 80, "targetPort": 8080}])
+    slice_("auth", "sso", ["127.0.0.8"], H)
     slice_("shop", "secure", ["127.0.0.7"], [{"name": "https", "port": 8443, "protocol": "TCP"}])
     state["services"][("ingress", "edge")] = {"kind": "Service", "metadata": {"namespace": "ingress", "name": "edge"},
                                               "spec": {"ports": []},
@@ -253,6 +274,30 @@ def main():
             "affinity": "cookie", "session-cookie-name": "SRV", "session-cookie-max-age": "3600",
             "configuration-snippet": "return 200 pwned;", "denylist-source-range": "10.9.9.9/32"}),
         one("walled", "walled.test", [path("/", web)], ann={"whitelist-source-range": "10.0.0.0/8, 192.0.2.0/24"}),
+        # canaries: by header, then cookie, then weight
+        one("cmain", "canary.test", [path("/", web)]),
+        one("ccan", "canary.test", [path("/", svc_backend("api", port=80))],
+            ann={"canary": "true", "canary-by-header": "X-Canary", "canary-by-cookie": "beta", "canary-weight": "0"}),
+        one("hmain", "hv.test", [path("/", web)]),
+        one("hcan", "hv.test", [path("/", svc_backend("api", port=80))],
+            ann={"canary": "true", "canary-by-header": "X-Env", "canary-by-header-value": "beta"}),
+        one("pmain", "pat.test", [path("/", web)]),
+        one("pcan", "pat.test", [path("/", svc_backend("api", port=80))],
+            ann={"canary": "true", "canary-by-header": "X-Env", "canary-by-header-pattern": "^stag"}),
+        one("wmain", "weight.test", [path("/", web)]),
+        one("wcan", "weight.test", [path("/", svc_backend("api", port=80))],
+            ann={"canary": "true", "canary-weight": "5", "canary-weight-total": "10"}),
+        one("amain", "all.test", [path("/", web)]),
+        one("acan", "all.test", [path("/", svc_backend("api", port=80))], ann={"canary": "true", "canary-weight": "100"}),
+        one("lonely", "lonely.test", [path("/", svc_backend("api", port=80))], ann={"canary": "true"}),
+        # auth-url
+        one("authd", "auth.test", [path("/", web)], ann={
+            "auth-url": "http://sso.auth.svc.cluster.local/verify", "auth-response-headers": "X-User, b@d",
+            "auth-signin": "https://login.test/start?rd=$scheme://$host$escaped_request_uri"}),
+        one("authx", "authx.test", [path("/", web)], ann={"auth-url": "http://127.0.0.8:8080/verify?x=1",
+                                                          "auth-cache-key": "$cookie_s", "auth-cache-duration": "200 30s"}),
+        one("authns", "authns.test", [path("/", web)], ann={"auth-url": "http://nosuch.auth.svc/verify"}),
+        one("authbad", "authbad.test", [path("/", web)], ann={"auth-url": "ftp://sso/verify"}),
         one("bogus", "bogus.test", [path("/", web)], ann={"whitelist-source-range": "bogus, 1.2.3.4/99\"; respond 200",
                                                           "proxy-body-size": "1x"}),
     ]
@@ -328,6 +373,35 @@ include "{gwdir}/*.conf"
         check("what does not pass left out: a snippet, a bad origin, a bad range, a bad size",
               "pwned" not in gen and "https://evil" not in gen and "bogus" not in gen.replace("bogus.test", "") and "1.2.3.4/99" not in gen
               and "body_size 1x" not in gen and "allow 255.255.255.255/32" in gen, gen[-1500:])
+        # canaries
+        c = lambda host, **h: get(HTTP, "/x", host, headers=h)[1].split(" ")[0]
+        check("canary: not without a reason", c("canary.test") == "web", get(HTTP, "/x", "canary.test"))
+        check("  by header: always to it, never not, even with its cookie",
+              c("canary.test", **{"X-Canary": "always"}) == "api" and c("canary.test", **{"X-Canary": "never", "Cookie": "beta=always"}) == "web",
+              (c("canary.test", **{"X-Canary": "always"}), c("canary.test", **{"X-Canary": "never", "Cookie": "beta=always"})))
+        check("  by cookie", c("canary.test", Cookie="beta=always") == "api" and c("canary.test", Cookie="beta=never") == "web",
+              c("canary.test", Cookie="beta=always"))
+        check("  by a header's value", c("hv.test", **{"X-Env": "beta"}) == "api" and c("hv.test", **{"X-Env": "prod"}) == "web")
+        check("  by a pattern", c("pat.test", **{"X-Env": "staging"}) == "api" and c("pat.test", **{"X-Env": "prod"}) == "web")
+        seen = [c("weight.test") for i in range(60)]
+        check("  by weight (of a total)", 10 < seen.count("api") < 50 and seen.count("web") + seen.count("api") == 60,
+              (seen.count("api"), seen.count("web")))
+        check("  all of the weight: all to it", all(c("all.test") == "api" for i in range(10)))
+        check("  a canary alone is not served", c("lonely.test") != "api", c("lonely.test"))
+        # auth-url
+        r = get(HTTP, "/a?b=1", "auth.test", full=True)
+        check("auth-url: refused, to auth-signin with nginx's variables as okena's", r[0] == 302 and r[2].get("location")
+              == "https://login.test/start?rd=http://auth.test/a%3Fb%3D1" and r[2].get("set-cookie") == "state=1", r)
+        r = get(HTTP, "/a", "auth.test", headers={"Cookie": "s=ok"})
+        check("  let in by the Service it names", r[0] == 200 and r[1].startswith("web "), r)
+        check("  a URL by name, its own pool", get(HTTP, "/a", "authx.test")[0] == 401
+              and get(HTTP, "/a", "authx.test", headers={"Cookie": "s=ok"})[0] == 200)
+        gen = (gwdir / "gateway.conf").read_text()
+        check("  copy= the names that pass, cache= from the duration", "copy=X-User signin=" in gen and "cache=30s" in gen
+              and "b@d" not in gen, [x for x in gen.splitlines() if "auth forward" in x])
+        check("  a Service that is not there, a URL okena cannot ask: 500, never let in",
+              get(HTTP, "/a", "authns.test")[0] == 500 and get(HTTP, "/a", "authbad.test")[0] == 500,
+              (get(HTTP, "/a", "authns.test"), get(HTTP, "/a", "authbad.test")))
         # status, once there is an address
         conf.write_text(conf.read_text().replace("ingress=okena", "ingress=okena address=203.0.113.7,lb.okena.test"))
         p.send_signal(1)

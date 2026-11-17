@@ -40,6 +40,7 @@ end bss
 ing_lists:
 	mov	qword [g_ing_gws],0
 	mov	qword [g_ing_hrs],0
+	mov	qword [g_ing_list],0
 	cmp	dword [g_plan_gw+GWP_ING],0
 	je	.none
 	push	r13
@@ -87,6 +88,7 @@ ing_lists:
 	ret
 ; rsi = the IngressList: one made-up list (g_ing_pass) at r15
 .list:
+	mov	[g_ing_list],rsi
 	go_lit '{"items":['
 	mov	dword [g_ing_first],1
 	gk	'items'
@@ -132,33 +134,12 @@ ing_one:
 	mov	[g_ing_nmlen],ecx
 	call	ing_label
 	jc	.out
-	; the class: spec.ingressClassName, else the annotation
-	mov	rsi,rbx
-	gk	'spec'
-	call	gj_get
+	call	ing_class_ok
 	jc	.out
-	push	rsi
-	gk	'ingressClassName'
-	call	gj_str
-	pop	rsi
-	jnc	.class
+	; a canary is not served itself: its paths join those it shadows
 	mov	rsi,r12
-	gk	'annotations'
-	call	gj_get
-	jc	.classless
-	gk	'kubernetes.io/ingress.class'
-	call	gj_str
-	jnc	.class
-.classless:
-	cmp	dword [g_plan_gw+GWP_INGDEF],0	; no class: ours when we are the default
+	call	ing_is_canary			; (ingann.inc)
 	je	.out
-	jmp	.of_class
-.class:
-	mov	rsi,[g_plan_gw+GWP_INGCLASS]
-	mov	edx,[g_plan_gw+GWP_INGLEN]
-	call	gw_same
-	jne	.out
-.of_class:
 	mov	rsi,rbx
 	gk	'spec'
 	call	gj_get
@@ -174,6 +155,42 @@ ing_one:
 .out:
 	pop	r12
 	pop	rbx
+	ret
+
+; rbx = an Ingress, r12 = its metadata: CF unless of the class (its
+; spec.ingressClassName, else the older annotation; none: ours when we are the
+; default). Keeps rbx, r12-r15.
+ing_class_ok:
+	mov	rsi,rbx
+	gk	'spec'
+	call	gj_get
+	jc	.no
+	push	rsi
+	gk	'ingressClassName'
+	call	gj_str
+	pop	rsi
+	jnc	.class
+	mov	rsi,r12
+	gk	'annotations'
+	call	gj_get
+	jc	.classless
+	gk	'kubernetes.io/ingress.class'
+	call	gj_str
+	jnc	.class
+.classless:
+	cmp	dword [g_plan_gw+GWP_INGDEF],0
+	je	.no
+	clc
+	ret
+.class:
+	mov	rsi,[g_plan_gw+GWP_INGCLASS]
+	mov	edx,[g_plan_gw+GWP_INGLEN]
+	call	gw_same
+	jne	.no
+	clc
+	ret
+.no:
+	stc
 	ret
 
 ; rdi/ecx = a name: CF unless a DNS label (and so safe in JSON). Keeps all

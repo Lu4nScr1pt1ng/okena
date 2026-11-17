@@ -2104,9 +2104,15 @@ nginx's annotations (`nginx.ingress.kubernetes.io/...`) that okena takes:
 | `proxy-read-timeout`, `proxy-send-timeout` | `timeout try=`, rounded up to 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800 or 3600 s |
 | `limit-rps`, `limit-rpm` | `limit N/s` per client, a burst of five times that |
 | `affinity: cookie`, `session-cookie-name`, `session-cookie-max-age` | the pool's `sticky cookie=` |
+| `auth-url` | `auth forward` to that URL: a Service's pool when its host is `NAME` (the Ingress's namespace) or `NAME.NAMESPACE.svc[.DOMAIN]` (`https`: TLS, not verified, as nginx), else a pool by that name (`https`: verified against the system's roots); `$host` in it is the rule's host. A URL okena can't ask, or a Service that isn't there, makes the rule answer 500: it never lets anyone in unasked |
+| `auth-signin` | `signin=`; nginx's `$host`, `$http_host`, `$best_http_host`, `$scheme`, `$pass_access_scheme`, `$request_uri` and `$escaped_request_uri` become okena's; one with another variable is left out (a 401 instead of the redirect) |
+| `auth-response-headers` | `copy=` |
+| `auth-cache-key` (with `auth-cache-duration`, `5m` by default) | `cache=`: okena's key is always the method, host, target, Cookie and Authorization |
+| `canary: "true"` | the Ingress isn't served on its own; each of its paths joins the rule of the same host, path and path type in another Ingress of its namespace (none: it isn't served at all). In nginx's order: `canary-by-header` (`always` to the canary, `never` not), or with `canary-by-header-value` that value, or `canary-by-header-pattern` a value it matches; then `canary-by-cookie` (`always`, `never`); then `canary-weight` out of `canary-weight-total` (100) as a `split` |
 
 Each value is checked before it is written, and one that doesn't pass is left
-out: an allowlist none of whose entries pass lets nobody in. Snippets
+out: an allowlist none of whose entries pass lets nobody in, and an `auth-url`
+that doesn't pass closes the rule. Snippets
 (`configuration-snippet`, `server-snippet`) are never taken.
 
 **Status.** With `address=IP,NAME,...` (what clients reach okena at) or

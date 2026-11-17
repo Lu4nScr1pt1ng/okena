@@ -65,7 +65,9 @@ GWE_NSLEN	:= 104			; d
 GWE_PROTO	:= 108			; d: its listener's
 GWE_ROUTE	:= 112			; d: its route (GW_T_R)
 GWE_GRPC	:= 116			; d: a GRPCRoute's (its backends speak HTTP/2)
-GWE_SIZE		:= 120
+GWE_COOK	:= 120			; q: cookies (JSON array; an Ingress's canary only)
+GWE_NC		:= 128			; d
+GWE_SIZE		:= 136
 GW_MAXE		:= 65536
 
 GWP2_NS		:= 0			; q
@@ -780,6 +782,7 @@ gw_render:
 	mov	dword [g_gw_nl],0
 	mov	dword [g_gw_ne],0
 	mov	dword [g_gw_np],0
+	mov	dword [g_gw_nx],0
 	mov	dword [g_gw_ng],0
 	mov	dword [g_gw_nrx],0
 	mov	dword [g_gw_nr],0
@@ -1777,6 +1780,7 @@ gw_l4_entry:
 	mov	dword [rcx+GWE_MLEN],0
 	mov	dword [rcx+GWE_NH],0
 	mov	dword [rcx+GWE_NQ],0
+	mov	dword [rcx+GWE_NC],0
 	mov	eax,[g_gr_li]
 	imul	rax,rax,GWL_SIZE
 	add	rax,[g_gw_base]
@@ -1810,7 +1814,7 @@ gw_match:
 	push	r12
 	push	r14
 	mov	r12,rsi
-	sub	rsp,64				; [rsp]: path, [+8] len, [+16] type: 0 Exact 1 Prefix
+	sub	rsp,80				; [rsp]: path, [+8] len, [+16] type: 0 Exact 1 Prefix
 	lea	rax,[str_gw_slash]
 	mov	[rsp],rax
 	mov	dword [rsp+8],1
@@ -1820,6 +1824,8 @@ gw_match:
 	mov	qword [rsp+40],0		; headers
 	mov	dword [rsp+48],0		; their number
 	mov	qword [rsp+56],0		; query
+	mov	qword [rsp+64],0		; cookies (made up from an Ingress's canary)
+	mov	dword [rsp+72],0
 	xor	r14d,r14d			; its number
 	test	r12,r12
 	jz	.add
@@ -1898,6 +1904,22 @@ gw_match:
 	call	gj_next
 	jnc	.header
 .query:
+	; cookies: only in a route made up from an Ingress (its canary), checked there
+	mov	eax,[g_gw_rti]
+	cmp	eax,[g_gw_nr_real]
+	jb	.query_params
+	mov	rsi,r12
+	gk	'x-okena-cookies'
+	call	gj_get
+	jc	.query_params
+	call	gj_first
+	jc	.query_params
+	mov	[rsp+64],rsi
+.cookie:
+	inc	dword [rsp+72]
+	call	gj_next
+	jnc	.cookie
+.query_params:
 	mov	rsi,r12
 	gk	'queryParams'
 	call	gj_get
@@ -1990,7 +2012,7 @@ gw_match:
 	xor	r10d,r10d
 	call	.entry
 .no:
-	add	rsp,64
+	add	rsp,80
 	pop	r14
 	pop	r12
 	pop	rbx
@@ -2032,7 +2054,11 @@ gw_match:
 	mov	rax,[rsp+8+56]
 	mov	[rcx+GWE_QUERY],rax
 	mov	[rcx+GWE_NQ],r14d
-	mov	eax,[rsp+8+48]
+	mov	rax,[rsp+8+64]
+	mov	[rcx+GWE_COOK],rax
+	mov	eax,[rsp+8+72]
+	mov	[rcx+GWE_NC],eax
+	add	eax,[rsp+8+48]
 	add	eax,r14d
 	cmp	dword [rsp+8+32],0
 	je	@f
@@ -2310,6 +2336,7 @@ gw_emit:
 	jmp	.port
 .pools:
 	call	gw_emit_pools
+	call	gw_emit_xpools
 	pop	r12
 	pop	rbx
 	ret
@@ -2931,6 +2958,32 @@ gw_conds:
 	call	gj_next
 	jmp	.header
 .query:
+	cmp	dword [rbx+GWE_NC],0
+	je	.query_params
+	mov	rsi,[rbx+GWE_COOK]
+	mov	r12d,[rbx+GWE_NC]
+.cookie:
+	push	rsi
+	go_lit	' cookie:'
+	gk	'name'
+	call	gj_str
+	jc	.cookie_bad
+	mov	rsi,rdi
+	call	go_bytes
+	go_lit	'='
+	mov	rsi,[rsp]
+	gk	'value'
+	call	gj_str
+	jc	.cookie_bad
+	mov	rsi,rdi
+	call	go_q
+.cookie_bad:
+	pop	rsi
+	dec	r12d
+	jz	.query_params
+	call	gj_next
+	jmp	.cookie
+.query_params:
 	cmp	dword [rbx+GWE_NQ],0
 	je	.out
 	mov	rsi,[rbx+GWE_QUERY]
@@ -3036,6 +3089,17 @@ gw_actions:
 	call	gj_next
 	jnc	.line
 .no_lines:
+	; an Ingress's auth-url: `auth forward` to a pool of its own
+	mov	eax,[rbx+GWE_ROUTE]
+	cmp	eax,[g_gw_nr_real]
+	jb	.no_auth
+	mov	rsi,[rbx+GWE_RULE]
+	gk	'x-okena-auth'
+	call	gj_get
+	jc	.no_auth
+	call	gw_auth_line
+	jc	.unsupported
+.no_auth:
 	; the filters: one okena cannot do and the rule answers 500
 	mov	rsi,[rbx+GWE_RULE]
 	gk	'filters'
@@ -4348,6 +4412,205 @@ gw_emit_pools:
 	pop	r12
 	pop	rbx
 	ret
+
+; rsi = an Ingress's x-okena-auth (ingann.inc wrote it from auth-url and the
+; rest, checked), rbx = the entry, r14d = indent: its `auth forward` line, the
+; pool made: a Service's, or one by name for a URL outside the cluster. CF when
+; it cannot be served (then the rule answers 500: never let in unasked).
+gw_auth_line:
+	push	r12
+	mov	r12,rsi
+	gk	'bad'
+	call	gj_num
+	jnc	.bad
+	mov	rsi,r12
+	gk	'port'
+	call	gj_num
+	jc	.bad
+	test	eax,eax
+	jz	.bad
+	cmp	eax,65535
+	ja	.bad
+	mov	[g_gx_port],eax
+	mov	rsi,r12
+	gk	'tls'
+	call	gj_num
+	jnc	@f
+	xor	eax,eax
+@@:
+	and	eax,1
+	shl	eax,1				; (GWP2_H2's bit for TLS)
+	mov	[g_gp_h2],eax
+	mov	rsi,r12
+	gk	'svc'
+	call	gj_str
+	jc	.by_name
+	; a Service of the cluster
+	push	rdi
+	push	rcx
+	mov	rsi,r12
+	gk	'ns'
+	call	gj_str
+	pop	rdx
+	pop	r8
+	jc	.bad
+	mov	[g_gp_ns],rdi
+	mov	[g_gp_nslen],ecx
+	mov	qword [g_gp_stk],0
+	mov	dword [g_gp_stklen],0
+	mov	dword [g_gp_ttl],0
+	mov	rdi,r8
+	mov	ecx,edx
+	mov	r8d,[g_gx_port]
+	call	gw_pool
+	cmp	eax,-1
+	je	.bad
+	push	rax
+	mov	ecx,r14d
+	call	go_ind
+	go_lit	'auth forward pool='
+	pop	rax
+	call	gw_pool_name
+	jmp	.rest
+.by_name:
+	mov	rsi,r12
+	gk	'host'
+	call	gj_str
+	jc	.bad
+	xor	eax,eax
+.find:
+	cmp	eax,[g_gw_nx]
+	jae	.add
+	imul	rdx,rax,GWX_SIZE
+	lea	rdx,[g_gx+rdx]
+	mov	r8d,[g_gx_port]
+	cmp	[rdx+GWX_PORT],r8d
+	jne	.other
+	mov	r8d,[g_gp_h2]
+	cmp	[rdx+GWX_TLS],r8d
+	jne	.other
+	push	rax
+	mov	rsi,[rdx+GWX_HOST]
+	mov	edx,[rdx+GWX_HLEN]
+	call	gw_same
+	pop	rax
+	je	.named
+.other:
+	inc	eax
+	jmp	.find
+.add:
+	cmp	eax,GW_MAXX
+	jae	.bad
+	inc	dword [g_gw_nx]
+	imul	rdx,rax,GWX_SIZE
+	lea	rdx,[g_gx+rdx]
+	mov	[rdx+GWX_HOST],rdi
+	mov	[rdx+GWX_HLEN],ecx
+	mov	r8d,[g_gx_port]
+	mov	[rdx+GWX_PORT],r8d
+	mov	r8d,[g_gp_h2]
+	mov	[rdx+GWX_TLS],r8d
+.named:
+	push	rax
+	mov	ecx,r14d
+	call	go_ind
+	go_lit	'auth forward pool=gwx_'
+	pop	rax
+	call	go_u
+.rest:
+	mov	rsi,r12
+	gk	'path'
+	call	gj_str
+	jc	.bad_line
+	go_lit	' path='
+	mov	rsi,rdi
+	call	go_q
+	mov	rsi,r12
+	gk	'copy'
+	call	gj_str
+	jc	@f
+	go_lit	' copy='
+	mov	rsi,rdi
+	call	go_bytes
+@@:
+	mov	rsi,r12
+	gk	'signin'
+	call	gj_str
+	jc	@f
+	go_lit	' signin='
+	mov	rsi,rdi
+	call	go_q
+@@:
+	mov	rsi,r12
+	gk	'cache'
+	call	gj_num
+	jc	@f
+	test	eax,eax
+	jz	@f
+	go_lit	' cache='
+	call	go_u
+	go_lit	's'
+@@:
+	call	go_nl
+	clc
+	jmp	.out
+.bad_line:
+	call	go_nl				; (cannot happen: ingann always writes a path)
+.bad:
+	stc
+.out:
+	pop	r12
+	ret
+
+; the pools an Ingress's auth-url names outside the cluster, out
+gw_emit_xpools:
+	push	rbx
+	push	r12
+	xor	ebx,ebx
+.pool:
+	cmp	ebx,[g_gw_nx]
+	jae	.out
+	imul	r12,rbx,GWX_SIZE
+	lea	r12,[g_gx+r12]
+	go_lit	10,'pool gwx_'
+	mov	eax,ebx
+	call	go_u
+	go_lit	' {',10,'    server '
+	mov	rsi,[r12+GWX_HOST]
+	mov	ecx,[r12+GWX_HLEN]
+	call	go_bytes
+	go_lit	':'
+	mov	eax,[r12+GWX_PORT]
+	call	go_u
+	go_lit	10,'    host '
+	mov	rsi,[r12+GWX_HOST]
+	mov	ecx,[r12+GWX_HLEN]
+	call	go_bytes
+	call	go_nl
+	cmp	dword [r12+GWX_TLS],0
+	je	@f
+	go_lit	'    tls { trust system }',10
+@@:
+	go_lit	'}',10
+	inc	ebx
+	jmp	.pool
+.out:
+	pop	r12
+	pop	rbx
+	ret
+
+GWX_HOST	:= 0				; q
+GWX_HLEN	:= 8				; d
+GWX_PORT	:= 12				; d
+GWX_TLS		:= 16				; d: 2 over TLS
+GWX_SIZE	:= 24
+GW_MAXX		:= 64
+bss
+	align 8
+	g_gx		rb GWX_SIZE * GW_MAXX
+	g_gw_nx		dd ?
+	g_gx_port	dd ?
+end bss
 
 ; eax = a pool, edx = a share (0: none): its `discover kubernetes` line, out
 gw_discover_line:
