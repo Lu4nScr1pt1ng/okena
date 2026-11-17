@@ -1136,7 +1136,13 @@ both engines, routes that do not use an item unchanged.
    pod's topology label. Pools without zones, or an instance without one:
    one compare per pick.
 5. Forward proxy: CONNECT tunnels a route allows, to the destinations it
-   lists.
+   lists. **Done 2026-11-17** (src/gw/tunnel.inc, tests/gateway/tunnel.py):
+   `tunnel [ports=] [private=on]` on a route; a CONNECT routed as / on its
+   target's host (host blocks: the destinations), names looked up by
+   okena-resolve (a process of its own, a shared table as okena-bcrypt's,
+   the request held meanwhile), the address checked after the lookup, the
+   connect forced to a slot of a hidden pool, then the upgrade's tunnel;
+   Proxy-Authorization and 407 for `auth basic`. EDGE_CASES made true.
 6. Metrics pushed over OTLP (beside Prometheus' pull); B3 trace headers
    beside W3C Trace Context.
 7. Directory listings for `files`.

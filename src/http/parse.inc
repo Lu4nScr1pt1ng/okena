@@ -225,6 +225,15 @@ http_parse_request:
 	cmp	byte [rax],'*'
 	je	.form_ok
 @@:
+	; CONNECT: authority-form (host:port), judged by tunnel.inc
+	cmp	dword [r13+HM_MLEN],7
+	jne	@f
+	mov	r8,[r13+HM_METHOD]
+	cmp	dword [r8],'CONN'
+	jne	@f
+	cmp	dword [r8+3],'NECT'
+	je	.form_ok
+@@:
 	cmp	edx,8
 	jb	.bad
 	mov	r8,[rax]
@@ -1112,6 +1121,14 @@ hm_request_rules:
 	je	.star
 	cmp	byte [rsi],'*'
 	je	.star
+	cmp	dword [r13+HM_MLEN],7		; CONNECT's authority-form: tunnel.inc
+	jne	.absolute			; compares its Host
+	mov	rax,[r13+HM_METHOD]
+	cmp	dword [rax],'CONN'
+	jne	.absolute
+	cmp	dword [rax+3],'NECT'
+	je	.star
+.absolute:
 	mov	edx,[r13+HM_TLEN]
 	add	rsi,7				; "http://"
 	sub	edx,7

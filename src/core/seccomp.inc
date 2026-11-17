@@ -482,6 +482,21 @@ rodata
 	sc_end filter_xdpctl
 
 	; okena-bcrypt: the shared table and ring, and the CPU (bcrypt.inc)
+	sc_begin filter_resolve
+	sc_common filter_resolve
+	sc_check filter_resolve, SYS_openat, read_only	; /etc/hosts, /etc/resolv.conf
+	sc_allow filter_resolve, SYS_read
+	sc_allow filter_resolve, SYS_fstat
+	sc_allow filter_resolve, SYS_close
+	sc_check filter_resolve, SYS_socket, socket
+	sc_allow filter_resolve, SYS_connect
+	sc_allow filter_resolve, SYS_setsockopt
+	sc_allow filter_resolve, SYS_getrandom
+	sc_allow filter_resolve, SYS_nanosleep
+	sc_allow filter_resolve, SYS_clock_gettime
+	sc_allow filter_resolve, SYS_futex
+	sc_end filter_resolve
+
 	sc_begin filter_bcrypt
 	sc_common filter_bcrypt
 	sc_allow filter_bcrypt, SYS_futex

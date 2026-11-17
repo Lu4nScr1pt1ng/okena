@@ -98,6 +98,8 @@ SUITES = [
     ("l4 epoll core", ["tests/l4/run.py", "epoll", "core"]),
     ("l4 epoll faults", ["tests/l4/run.py", "epoll", "faults"]),
     ("dns", ["tests/dns/run.py"]),
+    ("tunnel io_uring", ["tests/gateway/tunnel.py", "io_uring"]),
+    ("tunnel epoll", ["tests/gateway/tunnel.py", "epoll"]),
     ("overload io_uring", ["tests/overload/run.py", "io_uring"]),
     ("overload epoll", ["tests/overload/run.py", "epoll"]),
     ("reload", ["tests/reload/run.py"]),
@@ -417,10 +419,10 @@ def main():
 
     def run(name, cmd):
         argv = [sys.executable, "-I", *cmd]
-        # the DNS suite makes its own namespace (with /etc mounts); Wycheproof
+        # the DNS and tunnel suites make their own namespace (with /etc mounts); Wycheproof
         # fetches its vectors once and touches no network after that
         # (privdrop makes one with uids to spare, unshare --map-auto)
-        if isolate and name not in ("dns", "wycheproof") and not name.startswith("privdrop"):
+        if isolate and name not in ("dns", "wycheproof") and not name.startswith(("privdrop", "tunnel")):
             argv = NETNS + argv
         # a session of its own: a suite that hangs is killed whole (its okena,
         # its backends), never left running

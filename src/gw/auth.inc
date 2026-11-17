@@ -137,6 +137,13 @@ auth_check:
 @@:
 	mov	rdi,[r12+AU_HDR]
 	mov	esi,[r12+AU_HLEN]
+	cmp	dword [g_hm_conn],0		; a CONNECT: Basic in Proxy-Authorization
+	je	@f
+	cmp	dword [r12+AU_KIND],AK_BASIC
+	jne	@f
+	lea	rdi,[str_proxy_authorization]
+	mov	esi,19
+@@:
 	call	limit_find
 	test	ecx,ecx
 	jz	.refused
@@ -512,6 +519,8 @@ auth_refuse:
 @@:
 	cmp	dword [g_fa_mode],FR_DENY
 	je	.denied
+	cmp	dword [g_hm_conn],0		; a CONNECT: the proxy's own challenge
+	jne	.proxy_auth
 	mov	dword [r15+H_STATUS],401
 	mov	edi,401
 	mov	esi,5
@@ -519,6 +528,16 @@ auth_refuse:
 	mov	rdi,[r15+H_BUF]
 	lea	rdi,[rdi+HB_OUT]
 	memit_x 'HTTP/1.1 401 Unauthorized',13,10,'WWW-Authenticate: '
+	jmp	.challenge
+.proxy_auth:
+	mov	dword [r15+H_STATUS],407
+	mov	edi,407
+	mov	esi,5
+	call	http_count
+	mov	rdi,[r15+H_BUF]
+	lea	rdi,[rdi+HB_OUT]
+	memit_x 'HTTP/1.1 407 Proxy Authentication Required',13,10,'Proxy-Authenticate: '
+.challenge:
 	mov	eax,[r15+H_ACT]
 	dec	eax
 	imul	rax,rax,RA_SIZE

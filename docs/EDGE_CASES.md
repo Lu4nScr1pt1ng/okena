@@ -69,7 +69,7 @@ the connection closed when its framing can no longer be trusted.
 | HTTP/1.0 without `Host`, with keep-alive | accepted, routed by the listener's default; forwarded as HTTP/1.1 with `Host` set to the listener's address; `Connection: keep-alive` honoured |
 | HTTP/0.9 | 400 as soon as its line ends (no head would ever follow) |
 | Absolute-form target (`GET http://host/ HTTP/1.1`) | its authority must be the `Host` (letters in any case), else 400: two hosts named is a request a server behind could read either way; sent on in origin form |
-| `CONNECT` | 405 unless a route allows tunnelling (forward proxy is opt-in) |
+| `CONNECT` | 405 unless its route has `tunnel` (forward proxy is opt-in); then only to the ports it lists, never to loopback, link-local or (without `private=on`) private addresses, checked after the name is looked up |
 | `*` target | only with `OPTIONS`; any other method 400 |
 | Empty lines before the request line | dropped (RFC 9112 2.2: a client may send a CRLF after a body); a bare LF is still 400 |
 | `TRACE` | 405 by default |

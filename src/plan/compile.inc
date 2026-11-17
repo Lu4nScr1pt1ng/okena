@@ -150,6 +150,7 @@ RA_MIDX		:= 236		; d: `metrics NAME`: its index (g_rmet) + 1, 0 none
 RA_LOG		:= 240		; d: `log`: 0 every exchange, -1 off, else the ten-thousandths logged
 RA_RATE		:= 244		; d: `limit_rate`: bytes a second, 0 none (pace.inc)
 RA_RATEAFTER	:= 248		; d: and its after=
+RA_TUN		:= 252		; d: `tunnel`: its entry (g_tuns) + 1, 0 none (tunnel.inc)
 RA_SIZE		:= 256
 MAX_TRYC	:= 32		; distinct try= values
 RESPOND_BODY_MAX := 1 shl 20	; `respond CODE BODY`
@@ -321,6 +322,9 @@ bss
 	g_plan_busy_poll	dq ?		; microseconds; 0 auto (not set), -1 off
 	g_plan_ja4	dd ?		; TLS fingerprints computed (ja4.inc)
 	g_plan_zone	dd ?		; `okena { zone NAME }`: its hash, 0 none
+	g_plan_tunpool	dd ?		; the hidden pool of `tunnel` routes + 1, 0 none
+	g_plan_tuns	dd ?
+	g_tuns:		rb TNL_SIZE * MAX_TUNS
 	g_plan_qcc		dd ?		; quic_cc: 0 cubic, 1 bbr
 	g_plan_qlb_len		dd ?		; quic_server_id: its bytes (0: none)
 	g_plan_qlb_sid		rb 4
@@ -1656,6 +1660,9 @@ compile_route_action:
 	lea	rcx,[dir_table + D_SIZE*DIR_RATE]
 	cmp	rax,rcx
 	je	@f
+	lea	rcx,[dir_table + D_SIZE*DIR_TUNNEL]
+	cmp	rax,rcx
+	je	@f
 	mov	rbx,[rbx+N_NEXT]
 	jmp	@b
 .listener_compress:
@@ -1697,6 +1704,7 @@ compile_route_action:
 	push	rcx
 	imul	r13,rcx,RA_SIZE
 	lea	r13,[g_acts+r13]
+	call	tun_compile			; `tunnel` (tunnel.inc)
 	; limit_rate RATE [after=SIZE]: its answers paced
 	mov	rdi,r12
 	mov	ecx,DIR_RATE
@@ -6733,6 +6741,17 @@ compile_routes:
 	call	find_child
 	test	rax,rax
 	jnz	@f				; (its first pool: below)
+	mov	rdi,rbx				; `tunnel` with no `to`: CONNECTs only
+	mov	ecx,DIR_TUNNEL
+	call	find_child
+	test	rax,rax
+	jz	.target
+	mov	rdi,rbx
+	mov	ecx,DIR_TO
+	call	find_child
+	test	rax,rax
+	jz	@f
+.target:
 	mov	rdi,rbx
 	call	compile_target
 	mov	r13d,eax			; pool

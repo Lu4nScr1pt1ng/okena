@@ -2121,6 +2121,17 @@ check_route_set:
 	call	find_child
 	test	rax,rax
 	jnz	.actions
+	mov	rdi,rbx				; and `tunnel` (CONNECT) with no `to`
+	mov	ecx,DIR_TUNNEL
+	call	find_child
+	test	rax,rax
+	jz	@f
+	mov	rdi,rbx
+	mov	ecx,DIR_TO
+	call	find_child
+	test	rax,rax
+	jz	.actions
+@@:
 	mov	rdi,rbx
 	mov	ecx,DIR_SPLIT
 	call	find_child

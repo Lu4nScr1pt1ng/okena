@@ -935,6 +935,49 @@ confined by Landlock to reading only the directories they serve. Bodies of
 64 KiB or more go from the page cache to the socket with sendfile, without a
 copy, over plain HTTP/1.1 or kTLS.
 
+### Forward proxy: CONNECT tunnels
+
+`tunnel` lets a route open TCP tunnels for HTTP/1.1 `CONNECT` requests, the
+way clients use an egress proxy (`curl -x`, `HTTPS_PROXY`, a JVM's
+`https.proxyHost`):
+
+```nginx
+http 10.0.0.1:3128 {
+    host api.github.com *.amazonaws.com {
+        route /* {
+            tunnel                            # port 443 only, by default
+            auth basic users=/etc/okena/proxy.users
+            allow 10.0.0.0/8
+        }
+    }
+    host db.internal {
+        route /* { tunnel ports=5432 private=on }
+    }
+}
+```
+
+A CONNECT is routed as a request for `/` on the host it names (its `Host`
+must be that host, with or without the port), so host blocks are the list of
+destinations, and the route's `allow`, `deny`, `auth`, `limit` and logs apply.
+A target no host block names goes to the listener's own routes: a
+`route /* { tunnel }` there lets clients reach any public name or address.
+`ports=` lists the ports allowed (443 by default). On a CONNECT, `auth basic`
+reads `Proxy-Authorization` and refuses with 407 and `Proxy-Authenticate`.
+
+Names are looked up by okena-resolve, a process of its own (`/etc/hosts`,
+then `/etc/resolv.conf`), and kept for their TTL. The address is checked
+after the lookup, so a name can't be pointed somewhere it shouldn't go:
+loopback, link-local (cloud metadata at 169.254.169.254), unspecified and
+multicast addresses are always refused, and private ones (10/8, 172.16/12,
+192.168/16, 100.64/10, fc00::/7) unless `private=on`. A name that doesn't
+exist is a 502, a lookup that doesn't finish in 5 seconds a 504.
+
+Once connected, the client gets `200 Connection established` and the bytes
+go both ways as in a `tcp` listener (TLS included: okena doesn't see inside).
+The access log has one line per tunnel: method `CONNECT`, the target, and the
+target as its `upstream`. Other methods on a route with `tunnel` go to its
+`to`, or get 405 when it has none; a CONNECT on any other route gets 405.
+
 ### PHP and FastCGI
 
 ```nginx

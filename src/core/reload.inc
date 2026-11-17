@@ -79,6 +79,8 @@ macro plan_regions action
 	action g_plan_busy_poll, 8
 	action g_plan_ja4, 4
 	action g_plan_zone, 4
+	action g_plan_tunpool, 4
+	action g_tuns, TNL_SIZE * MAX_TUNS, g_plan_tuns, TNL_SIZE
 	action g_plan_qcc, 4
 	action g_plan_qlb_len, 4
 	action g_plan_qlb_sid, 4
@@ -619,6 +621,7 @@ supervisor_reload:
 	call	fleet_rings_init
 	call	spawn_fleet
 	call	bc_reload			; okena-bcrypt: again, with the new plan
+	call	tr_reload			; okena-resolve too (tunnel.inc)
 	mov	edi,[g_xdp_pid]			; okena-xdp: again, with the new plan
 	test	edi,edi
 	jz	@f

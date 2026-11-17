@@ -759,6 +759,8 @@ http_request:
 	call	alx_request			; (access log: user agent, referer)
 	call	addon_fresh			; (through no addon yet)
 @@:
+	call	tun_parsed			; a CONNECT: its target kept, / routed (tunnel.inc)
+	jc	http_error
 	h_rec
 	lea	r14,[g_hm]
 	mov	eax,[r14+HM_FLAGS]
@@ -907,6 +909,18 @@ http_request:
 	jc	.loop
 	call	maint_check			; `okena maintenance on`: 503, unless let through
 	jc	.maintenance
+	cmp	dword [g_hm_conn],0		; a CONNECT: only to a route with `tunnel`
+	je	.not_connect
+	test	edx,edx
+	jz	.no_tunnel
+	lea	eax,[rdx-1]
+	imul	rax,rax,RA_SIZE
+	cmp	dword [g_acts+rax+RA_TUN],0
+	jne	.not_connect
+.no_tunnel:
+	mov	edi,405
+	jmp	http_error
+.not_connect:
 	test	edx,edx
 	jnz	.has_action
 	cmp	dword [g_overload],3		; no action: normal
@@ -1044,6 +1058,15 @@ http_request:
 @@:
 	cmp	dword [g_acts+rdx+RA_CODE],0
 	jne	http_redirect
+	cmp	dword [g_acts+rdx+RA_TUN],0	; `tunnel`: a CONNECT's (tunnel.inc)
+	je	@f
+	cmp	dword [g_hm_conn],0
+	jne	tun_request
+	cmp	dword [rcx+RT_POOL],-1		; anything else: its `to`, or 405
+	jne	@f
+	mov	edi,405
+	jmp	http_error
+@@:
 	cmp	dword [g_acts+rdx+RA_FPCT],0	; fault: this share of the requests
 	je	@f
 	mov	r8,rdx
@@ -2259,6 +2282,7 @@ http_connected:
 	call	session_ptr
 	test	dword [rax+S_FLAGS],SF_H2U
 	jnz	h2u_ready			; an upstream HTTP/2 connection is up
+	call	tun_connected			; a CONNECT's: 200, then the tunnel
 	h_rec
 	mov	dword [r15+H_STATE],HS_SEND_HEAD
 	mov	ecx,SIDE_UP
@@ -2299,6 +2323,7 @@ http_connect_failed:
 @@:
 	test	dword [rax+S_FLAGS],SF_H2U
 	jnz	h2u_failed			; an upstream HTTP/2 connection: its requests fail over
+	call	tun_release			; (a CONNECT's slot: free again)
 	call	hold_wait
 	jnc	@f
 	ret
