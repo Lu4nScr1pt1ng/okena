@@ -1586,9 +1586,10 @@ most 4 in each worker), with prior knowledge on plaintext or ALPN under `tls`. C
 speak any protocol; a backend's trailers reach HTTP/2 clients as trailers and
 HTTP/1.1 clients after the last chunk.
 
-A pool's `tls` is for `http` listeners: a `tcp` or `udp` listener can't
-re-encrypt to a pool, and `okena check` refuses one that points at a pool
-with `tls`.
+A pool's `tls` is spoken by `http` and `tcp` listeners (a `tcp` listener
+runs the handshake, then relays over kTLS; see [TLS on a `tcp`
+listener](#tls-on-a-tcp-listener)). A `udp` listener can't encrypt to a pool,
+and `okena check` refuses one that points at a pool with `tls`.
 
 `tls` verifies the backend's chain and its name (`sni`, else the pool's
 `host`). The chain must go up to one of the certificates in `trust FILE`: a

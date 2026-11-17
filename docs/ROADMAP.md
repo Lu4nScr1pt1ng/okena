@@ -1094,3 +1094,31 @@ the items.
     request body limits per route and host (there is no response size
     limit), client.asn and zstd as they now are; CONFIG's `match` limit is
     1024, as the code has it.
+
+## Phase 15 — Gaps
+
+What a second audit (2026-11-17), after phase 14, still found missing
+against HAProxy, nginx, Envoy, Traefik, Caddy and Kong. Same rules: tests on
+both engines, routes that do not use an item unchanged.
+
+1. Two documents made true: CONFIG said a `tcp` listener could not use a
+   pool's `tls` (it can, since phase 14 item 3); EDGE_CASES promised a
+   CONNECT tunnel a route could allow (item 5 below). **CONFIG done
+   2026-11-17.**
+2. Kubernetes Ingress: the `canary-*` annotations (weight, by header, by
+   header value, by cookie) and `auth-url` (with `auth-signin` and
+   `auth-response-headers`), the two most used by an ingress-nginx
+   migration.
+3. TLS client fingerprints, JA4 (FoxIO's, the one browsers' randomised
+   extension order does not change): `${tls.ja4}`, `match tls.ja4=`, a
+   `limit` key and a field of the access log.
+4. Zone-aware balancing: `okena { zone NAME }`, `server ... zone=NAME`;
+   servers in the local zone preferred while enough of them are up.
+5. Forward proxy: CONNECT tunnels a route allows, to the destinations it
+   lists.
+6. Metrics pushed over OTLP (beside Prometheus' pull); B3 trace headers
+   beside W3C Trace Context.
+7. Directory listings for `files`.
+
+Not in this phase: an AArch64 port (okena is x86-64 assembly: a port is a
+second implementation of every hot path, not a feature).
