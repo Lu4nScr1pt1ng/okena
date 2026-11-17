@@ -1062,7 +1062,11 @@ the items.
     transcoding: **done 2026-11-16** as an addon (addons/grpcjson,
     tests/gateway/grpcjson.py): google.api.http rules and
     POST /package.Service/Method, dynamic messages from a descriptor set,
-    gRPC errors as HTTP statuses; unary methods.
+    gRPC errors as HTTP statuses. Streaming methods (later the same day):
+    server streams gathered and answered as NDJSON {"result": ...} lines
+    (or an array), a mid-stream error as a last {"error": ...} line, capped
+    to what an answer ring holds; client and bidirectional streams from a
+    JSON array or JSON lines; custom verbs in request paths matched.
 18. Chunked request bodies to FastCGI. **Done 2026-11-16**
     (src/http/fastcgi.inc, tests/gateway/fastcgi.py): read whole into one
     of a worker's spools (32 of 8 MiB, address space until used), its

@@ -6,7 +6,11 @@ pattern {parent=shops/*}, GET with query parameters into fields, enums and
 repeated ones, an additional binding, DELETE), POST /package.Service/Method
 for any method, the client's Authorization as metadata, gRPC errors as HTTP
 statuses with a JSON body (404, 400), a bad body 400, a path no method
-answers goes on to the route's backend, HTTP/2."""
+answers goes on to the route's backend, HTTP/2. Streaming: a server stream
+as newline-delimited {"result": ...} lines, one that breaks after its first
+message ending with an {"error": ...} line, one that fails before any as an
+error answer, one longer than an answer holds cut with RESOURCE_EXHAUSTED;
+a client stream from a JSON array or JSON lines; a bidirectional one."""
 import http.client
 import http.server
 import json
@@ -55,6 +59,15 @@ class Back(http.server.BaseHTTPRequestHandler):
 
 srv = http.server.ThreadingHTTPServer(("127.0.0.1", BACK), Back)
 threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+
+def raw(method, path, body=None):
+    c = http.client.HTTPConnection("127.0.0.1", L, timeout=10)
+    c.request(method, path, body=body, headers={"Content-Type": "application/json"})
+    r = c.getresponse()
+    b = r.read()
+    c.close()
+    return r.status, r.getheader("content-type") or "", b
 
 
 def call(method, path, body=None, headers=None):
@@ -125,6 +138,31 @@ try:
     check("a field the message has not: 400", st == 400, (st, e))
     st, d = call("DELETE", "/v1/items/i3")
     check("DELETE", st == 200 and d.get("name") == "desk" and call("GET", "/v1/items/i3")[0] == 404, (st, d))
+    # streaming
+    st, ct, b = raw("GET", "/v1/shops/s1/items:watch")
+    lines = [json.loads(x) for x in b.splitlines()]
+    check("a server stream: a {\"result\": ...} line a message, as NDJSON", st == 200 and ct == "application/x-ndjson"
+          and [x["result"]["name"] for x in lines] == ["lamp", "mug"], (st, ct, b[:300]))
+    st, ct, b = raw("GET", "/v1/shops/fail/items:watch")
+    lines = [json.loads(x) for x in b.splitlines()]
+    check("  one that breaks after a message: its error as the last line", st == 200 and len(lines) == 2
+          and lines[0]["result"]["id"] == "f1" and lines[1]["error"]["code"] == 10 and "broke" in lines[1]["error"]["message"], (st, b[:300]))
+    st, e = call("GET", "/v1/shops/fail-first/items:watch")
+    check("  one that fails before any: an error answer", st == 400 and e.get("code") == 9, (st, e))
+    st, ct, b = raw("GET", "/v1/shops/big/items:watch")
+    lines = b.splitlines()
+    last = json.loads(lines[-1]) if lines else {}
+    check("  one longer than an answer holds: cut, RESOURCE_EXHAUSTED last", st == 200 and 100 < len(lines) < 5000
+          and len(b) <= 192 * 1024 and last.get("error", {}).get("code") == 8, (st, len(lines), len(b), lines[-1:]))
+    st, got = call("POST", "/v1/items:bulk", [{"parent": "shops/s3", "item": {"name": "a"}}, {"parent": "shops/s3", "item": {"name": "b"}}])
+    check("a client stream from a JSON array", st == 200 and [i["name"] for i in got.get("items", [])] == ["a", "b"], (st, got))
+    st, got = call("POST", "/v1/items:bulk", '{"parent":"shops/s3","item":{"name":"c"}}\n{"parent":"shops/s3","item":{"name":"d"}}\n')
+    check("  and from JSON lines", st == 200 and [i["name"] for i in got.get("items", [])] == ["c", "d"], (st, got))
+    st, e = call("POST", "/v1/items:bulk", [{"parent": "shops/s3", "item": {}}])
+    check("  the service's error for one of them", st == 400 and e.get("code") == 3, (st, e))
+    st, ct, b = raw("POST", "/shop.v1.Shop/Chat", b'{"id":"a"}\n{"id":"b"}\n{"id":"c"}')
+    check("a bidirectional stream", st == 200 and [json.loads(x)["result"]["id"] for x in b.splitlines()] == ["echo:a", "echo:b", "echo:c"],
+          (st, b[:200]))
     st, b = call("GET", "/static/app.js")
     check("a path no method answers: on to the route's backend", (st, b) == (200, "rest:/static/app.js"), (st, b))
     q = subprocess.run(["curl", "-sS", "--http2-prior-knowledge", "-H", "content-type: application/json", "-d", '{"id":"h2"}',

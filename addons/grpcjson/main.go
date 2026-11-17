@@ -14,15 +14,28 @@
 //	route /v1/* { addon grpcjson; to pool rest }
 //
 // The descriptors are a FileDescriptorSet with its imports
-// (protoc --include_imports --descriptor_set_out=api.pb ...). Unary methods.
+// (protoc --include_imports --descriptor_set_out=api.pb ...).
+//
+// Streaming methods too. A server stream is gathered (within the call's
+// time) and answered as newline-delimited JSON, a {"result": message} line
+// for each, as grpc-gateway writes them (-stream array: one JSON array
+// instead); a stream that fails after its first message ends with an
+// {"error": status} line, and one that fails before any is an error answer.
+// A client stream takes its messages from the body: a JSON array, or one
+// JSON object a line. An answer is at most -max-answer bytes (what an
+// addon's answer ring holds): a longer stream is cut there and ends with a
+// RESOURCE_EXHAUSTED error line.
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"flag"
+	"io"
 	"log"
 	"net/url"
 	"os"
@@ -56,6 +69,10 @@ type rule struct {
 	fullRPC string // /package.Service/Method
 }
 
+// the most an answer may be: an addon's answer ring is 256 KiB, shared by
+// the answers a worker has not taken yet
+const answerCap = 224 << 10
+
 type seg struct {
 	lit   string   // a literal, or ""
 	field string   // a variable's field path (a.b)
@@ -66,6 +83,8 @@ var (
 	rules   []rule
 	conn    *grpc.ClientConn
 	timeout time.Duration
+	asArray bool
+	maxAns  int
 	unmarsh = protojson.UnmarshalOptions{DiscardUnknown: false}
 	marsh   = protojson.MarshalOptions{}
 )
@@ -78,7 +97,19 @@ func main() {
 	flag.DurationVar(&timeout, "timeout", 4*time.Second, "a call's time")
 	protoNames := flag.Bool("proto-names", false, "JSON field names as in the .proto (default: lowerCamelCase)")
 	emit := flag.Bool("emit-defaults", false, "fields at their default value written too")
+	stream := flag.String("stream", "ndjson", "a server stream's answer: ndjson ({\"result\": ...} a line) or array")
+	flag.IntVar(&maxAns, "max-answer", 192<<10, "the most bytes of an answer (a stream is cut there)")
 	flag.Parse()
+	switch *stream {
+	case "ndjson":
+	case "array":
+		asArray = true
+	default:
+		log.Fatal("grpcjson-okena: -stream is ndjson or array")
+	}
+	if maxAns < 1024 || maxAns > answerCap {
+		log.Fatalf("grpcjson-okena: -max-answer is 1024 to %d", answerCap)
+	}
 	if *desc == "" || *backend == "" {
 		log.Fatal("grpcjson-okena: -descriptors and -backend are needed")
 	}
@@ -125,9 +156,6 @@ func load(path string) error {
 			ms := svcs.Get(i).Methods()
 			for j := 0; j < ms.Len(); j++ {
 				m := ms.Get(j)
-				if m.IsStreamingClient() || m.IsStreamingServer() {
-					continue
-				}
 				full := "/" + string(svcs.Get(i).FullName()) + "/" + string(m.Name())
 				rules = append(rules, rule{verb: "POST", segs: literal(full), body: "*", method: m, fullRPC: full})
 				opts, _ := m.Options().(*descriptorpb.MethodOptions)
@@ -147,7 +175,7 @@ func load(path string) error {
 		return true
 	})
 	if len(rules) == 0 {
-		return errors.New("no unary method in the descriptors")
+		return errors.New("no method in the descriptors")
 	}
 	return nil
 }
@@ -261,6 +289,23 @@ func handle(r *addon.Request, a *addon.Answer) {
 		}
 		parts = append(parts, u)
 	}
+	if tryRules(r, a, parts, rawQuery) {
+		return
+	}
+	// a custom verb (/v1/items:watch): its last segment of its own, as the
+	// templates have it
+	if n := len(parts); n > 0 {
+		if i := strings.LastIndexByte(parts[n-1], ':'); i > 0 {
+			split := append(append([]string{}, parts[:n-1]...), parts[n-1][:i], parts[n-1][i:])
+			if tryRules(r, a, split, rawQuery) {
+				return
+			}
+		}
+	}
+	// not a method's: on to the route, as it came
+}
+
+func tryRules(r *addon.Request, a *addon.Answer, parts []string, rawQuery string) bool {
 	for i := range rules {
 		ru := &rules[i]
 		if ru.verb != r.Method {
@@ -271,65 +316,118 @@ func handle(r *addon.Request, a *addon.Answer) {
 			continue
 		}
 		transcode(r, a, ru, vars, rawQuery)
-		return
+		return true
 	}
-	// not a method's: on to the route, as it came
+	return false
 }
 
-func transcode(r *addon.Request, a *addon.Answer, ru *rule, vars map[string]string, rawQuery string) {
+// message: one request message, from a body (its JSON) and the path's and
+// the query's fields
+func message(ru *rule, body []byte, vars map[string]string, rawQuery string) (*dynamicpb.Message, error) {
 	in := dynamicpb.NewMessage(ru.method.Input())
-	if r.BodyTruncated || r.BodyUnread {
-		fail(a, codes.InvalidArgument, "the body is larger than the addon takes (its `body`)")
-		return
-	}
 	switch {
 	case ru.body == "*":
-		if len(r.Body) > 0 {
-			if err := unmarsh.Unmarshal(r.Body, in); err != nil {
-				fail(a, codes.InvalidArgument, "the body: "+err.Error())
-				return
+		if len(body) > 0 {
+			if err := unmarsh.Unmarshal(body, in); err != nil {
+				return nil, errors.New("the body: " + err.Error())
 			}
 		}
 	case ru.body != "":
 		fd := ru.method.Input().Fields().ByName(protoreflect.Name(ru.body))
-		if len(r.Body) > 0 {
+		if len(body) > 0 {
 			if fd.Kind() == protoreflect.MessageKind && !fd.IsList() && !fd.IsMap() {
 				sub := in.Mutable(fd).Message().Interface()
-				if err := unmarsh.Unmarshal(r.Body, sub); err != nil {
-					fail(a, codes.InvalidArgument, "the body: "+err.Error())
-					return
+				if err := unmarsh.Unmarshal(body, sub); err != nil {
+					return nil, errors.New("the body: " + err.Error())
 				}
 			} else {
 				// a scalar or a list as the body: through a message that holds just it
-				wrap := []byte(`{"` + fd.JSONName() + `":` + string(r.Body) + `}`)
+				wrap := []byte(`{"` + fd.JSONName() + `":` + string(body) + `}`)
 				if err := unmarsh.Unmarshal(wrap, in); err != nil {
-					fail(a, codes.InvalidArgument, "the body: "+err.Error())
-					return
+					return nil, errors.New("the body: " + err.Error())
 				}
 			}
 		}
 	}
 	for k, v := range vars {
 		if err := setPath(in, k, []string{v}); err != nil {
-			fail(a, codes.InvalidArgument, "the path's "+k+": "+err.Error())
-			return
+			return nil, errors.New("the path's " + k + ": " + err.Error())
 		}
 	}
 	if ru.body != "*" {
 		q, err := url.ParseQuery(rawQuery)
 		if err != nil {
-			fail(a, codes.InvalidArgument, "the query: "+err.Error())
-			return
+			return nil, errors.New("the query: " + err.Error())
 		}
 		for k, vs := range q {
 			if _, isVar := vars[k]; isVar || k == ru.body {
 				continue
 			}
 			if err := setPath(in, k, vs); err != nil {
-				fail(a, codes.InvalidArgument, "the query's "+k+": "+err.Error())
-				return
+				return nil, errors.New("the query's " + k + ": " + err.Error())
 			}
 		}
+	}
+	return in, nil
+}
+
+// bodies: a client stream's messages, from a JSON array or one JSON value a
+// line (none: no message)
+func bodies(b []byte) ([][]byte, error) {
+	b = bytes.TrimSpace(b)
+	if len(b) == 0 {
+		return nil, nil
+	}
+	var out [][]byte
+	if b[0] == '[' {
+		var raw []json.RawMessage
+		if err := json.Unmarshal(b, &raw); err != nil {
+			return nil, errors.New("the body: " + err.Error())
+		}
+		for _, x := range raw {
+			out = append(out, x)
+		}
+		return out, nil
+	}
+	d := json.NewDecoder(bytes.NewReader(b))
+	for {
+		var x json.RawMessage
+		if err := d.Decode(&x); err == io.EOF {
+			return out, nil
+		} else if err != nil {
+			return nil, errors.New("the body: " + err.Error())
+		}
+		out = append(out, x)
+	}
+}
+
+func transcode(r *addon.Request, a *addon.Answer, ru *rule, vars map[string]string, rawQuery string) {
+	if r.BodyTruncated || r.BodyUnread {
+		fail(a, codes.InvalidArgument, "the body is larger than the addon takes (its `body`)")
+		return
+	}
+	var ins []*dynamicpb.Message
+	if ru.method.IsStreamingClient() {
+		bs, err := bodies(r.Body)
+		if err != nil {
+			fail(a, codes.InvalidArgument, err.Error())
+			return
+		}
+		for _, b := range bs {
+			in, err := message(ru, b, vars, rawQuery)
+			if err != nil {
+				fail(a, codes.InvalidArgument, err.Error())
+				return
+			}
+			ins = append(ins, in)
+		}
+	} else {
+		in, err := message(ru, r.Body, vars, rawQuery)
+		if err != nil {
+			fail(a, codes.InvalidArgument, err.Error())
+			return
+		}
+		ins = append(ins, in)
 	}
 	md := metadata.MD{}
 	for _, f := range r.Headers {
@@ -340,15 +438,120 @@ func transcode(r *addon.Request, a *addon.Answer, ru *rule, vars map[string]stri
 	}
 	ctx, cancel := context.WithTimeout(metadata.NewOutgoingContext(context.Background(), md), timeout)
 	defer cancel()
-	out := dynamicpb.NewMessage(ru.method.Output())
-	if err := conn.Invoke(ctx, ru.fullRPC, in, out); err != nil {
-		st, _ := status.FromError(err)
-		fail(a, st.Code(), st.Message())
+	if !ru.method.IsStreamingClient() && !ru.method.IsStreamingServer() {
+		out := dynamicpb.NewMessage(ru.method.Output())
+		if err := conn.Invoke(ctx, ru.fullRPC, ins[0], out); err != nil {
+			st, _ := status.FromError(err)
+			fail(a, st.Code(), st.Message())
+			return
+		}
+		one(a, out)
 		return
 	}
+	st, err := conn.NewStream(ctx, &grpc.StreamDesc{ServerStreams: ru.method.IsStreamingServer(),
+		ClientStreams: ru.method.IsStreamingClient()}, ru.fullRPC)
+	if err != nil {
+		s, _ := status.FromError(err)
+		fail(a, s.Code(), s.Message())
+		return
+	}
+	for _, in := range ins {
+		if err := st.SendMsg(in); err != nil {
+			break // (the service ended it: RecvMsg says why)
+		}
+	}
+	st.CloseSend()
+	if !ru.method.IsStreamingServer() {
+		out := dynamicpb.NewMessage(ru.method.Output())
+		if err := st.RecvMsg(out); err != nil {
+			s, _ := status.FromError(err)
+			fail(a, s.Code(), s.Message())
+			return
+		}
+		one(a, out)
+		return
+	}
+	// a server stream, gathered
+	var buf bytes.Buffer
+	n := 0
+	end := func(c codes.Code, msg string) {
+		e, _ := protojson.Marshal(status.New(c, msg).Proto())
+		if asArray {
+			// (an array can't carry an error after its elements: its last element is it)
+			if n > 0 {
+				buf.WriteByte(',')
+			}
+			buf.WriteString(`{"error":`)
+			buf.Write(e)
+			buf.WriteByte('}')
+			return
+		}
+		buf.WriteString(`{"error":`)
+		buf.Write(e)
+		buf.WriteString("}\n")
+	}
+	if asArray {
+		buf.WriteByte('[')
+	}
+	for {
+		out := dynamicpb.NewMessage(ru.method.Output())
+		err := st.RecvMsg(out)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			s, _ := status.FromError(err)
+			if n == 0 {
+				fail(a, s.Code(), s.Message())
+				return
+			}
+			end(s.Code(), s.Message())
+			break
+		}
+		b, err := marsh.Marshal(out)
+		if err != nil {
+			fail(a, codes.Internal, err.Error())
+			return
+		}
+		// room for this line, and for an error line after it
+		if buf.Len()+len(b)+16+256 > maxAns {
+			cancel()
+			end(codes.ResourceExhausted, "the stream is longer than an answer holds (-max-answer)")
+			break
+		}
+		if asArray {
+			if n > 0 {
+				buf.WriteByte(',')
+			}
+			buf.Write(b)
+		} else {
+			buf.WriteString(`{"result":`)
+			buf.Write(b)
+			buf.WriteString("}\n")
+		}
+		n++
+	}
+	if asArray {
+		buf.WriteByte(']')
+	}
+	a.Respond(200)
+	if asArray {
+		a.Add("content-type", "application/json")
+	} else {
+		a.Add("content-type", "application/x-ndjson")
+	}
+	a.Body(buf.Bytes())
+}
+
+// one: a message as the answer
+func one(a *addon.Answer, out proto.Message) {
 	b, err := marsh.Marshal(out)
 	if err != nil {
 		fail(a, codes.Internal, err.Error())
+		return
+	}
+	if len(b) > maxAns {
+		fail(a, codes.ResourceExhausted, "the answer is larger than an answer holds (-max-answer)")
 		return
 	}
 	a.Respond(200)

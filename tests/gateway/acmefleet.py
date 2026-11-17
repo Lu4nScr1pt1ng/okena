@@ -135,6 +135,11 @@ http 127.0.0.1:{tls} {{
               ok and orders(st, "g.example.test") == 1 and "its lock was stale" in t + logs[0].read_text() + logs[1].read_text(),
               [e for e in st.log if e[0] == "order"])
         check("a fresh lock (another instance ordering): not ordered", orders(st, "h.example.test") == 0, st.log[-3:])
+        # each has seen the lock before it goes (an instance slowed down may look
+        # at that name only later: then it would find the files, not the lock)
+        check("  each said it waits for it",
+              A.until(lambda: all("h.example.test: another instance is ordering it" in g.read_text() for g in logs), 15),
+              (logs[0].read_text()[-400:], logs[1].read_text()[-400:]))
         # the other instance's certificate: its key, then it (as acme writes them), then the lock gone
         hk = ec.generate_private_key(ec.SECP256R1())
         hc = A.issue(k, c, hk.public_key(), ["h.example.test"], now - datetime.timedelta(hours=1), now + datetime.timedelta(days=30))
@@ -147,12 +152,9 @@ http 127.0.0.1:{tls} {{
         check("  the certificate it left taken by both, not ordered", ok and orders(st, "h.example.test") == 0,
               (logs[0].read_text()[-400:], logs[1].read_text()[-400:], st.log[-6:],
                sorted(x.name for x in (d / "h.example.test").iterdir())))
-        check("  each said it waited, then took it",       # (or its acme process, started again by a
-              A.until(lambda: all("h.example.test: another instance is ordering it" in g.read_text()   # reload, found the files
-                                  and ("h.example.test: renewed by another instance" in g.read_text()   # newer than served)
-                                       or "h.example.test: its files are newer than the configuration served" in g.read_text())
-                                  for g in logs), 10),
-              (logs[0].read_text()[-400:], logs[1].read_text()[-400:]))
+        # (that each serves it is what shows it was taken: a reload for another
+        # name may load these files itself, and its acme process then has
+        # nothing to say of this one)
         # files changed under a running instance whose acme process starts again
         # (as a reload starts it): it sees they are not what is served, and reloads
         fk = ec.generate_private_key(ec.SECP256R1())

@@ -10,6 +10,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -57,6 +58,11 @@ func method(name, in, out string, rule *annotations.HttpRule) *descriptorpb.Meth
 	return &descriptorpb.MethodDescriptorProto{Name: proto.String(name), InputType: proto.String(in), OutputType: proto.String(out), Options: o}
 }
 
+func streaming(m *descriptorpb.MethodDescriptorProto, client, server bool) *descriptorpb.MethodDescriptorProto {
+	m.ClientStreaming, m.ServerStreaming = proto.Bool(client), proto.Bool(server)
+	return m
+}
+
 func fileProto() *descriptorpb.FileDescriptorProto {
 	S, I64, I32, B, E, M := descriptorpb.FieldDescriptorProto_TYPE_STRING, descriptorpb.FieldDescriptorProto_TYPE_INT64,
 		descriptorpb.FieldDescriptorProto_TYPE_INT32, descriptorpb.FieldDescriptorProto_TYPE_BOOL,
@@ -92,6 +98,11 @@ func fileProto() *descriptorpb.FileDescriptorProto {
 			method("DeleteItem", ".shop.v1.GetItemRequest", ".shop.v1.Item",
 				&annotations.HttpRule{Pattern: &annotations.HttpRule_Delete{Delete: "/v1/items/{id}"}}),
 			method("Ping", ".shop.v1.GetItemRequest", ".shop.v1.Item", nil),
+			streaming(method("WatchItems", ".shop.v1.ListItemsRequest", ".shop.v1.Item",
+				&annotations.HttpRule{Pattern: &annotations.HttpRule_Get{Get: "/v1/{parent=shops/*}/items:watch"}}), false, true),
+			streaming(method("BulkCreate", ".shop.v1.CreateItemRequest", ".shop.v1.ListItemsResponse",
+				&annotations.HttpRule{Pattern: &annotations.HttpRule_Post{Post: "/v1/items:bulk"}, Body: "*"}), true, false),
+			streaming(method("Chat", ".shop.v1.GetItemRequest", ".shop.v1.Item", nil), true, true),
 		}}},
 	}
 }
@@ -138,6 +149,9 @@ func main() {
 		if m == nil {
 			return status.Error(codes.Unimplemented, full)
 		}
+		if m.IsStreamingClient() || m.IsStreamingServer() {
+			return stream(m, st)
+		}
 		in := dynamicpb.NewMessage(m.Input())
 		if err := st.RecvMsg(in); err != nil {
 			return err
@@ -150,6 +164,94 @@ func main() {
 		return st.SendMsg(out)
 	}))
 	log.Fatal(s.Serve(l))
+}
+
+func set(m protoreflect.Message, name string, v protoreflect.Value) {
+	m.Set(m.Descriptor().Fields().ByName(protoreflect.Name(name)), v)
+}
+
+// the streaming methods: WatchItems (a parent's items, one a message;
+// shops/fail breaks after the first, shops/fail-first before any,
+// shops/big sends more than an answer holds), BulkCreate (every item sent,
+// then them all), Chat (each id back as "echo:ID")
+func stream(m protoreflect.MethodDescriptor, st grpc.ServerStream) error {
+	switch m.Name() {
+	case "WatchItems":
+		in := dynamicpb.NewMessage(m.Input())
+		if err := st.RecvMsg(in); err != nil {
+			return err
+		}
+		parent := get(in, "parent").String()
+		switch parent {
+		case "shops/fail-first":
+			return status.Error(codes.FailedPrecondition, "nothing to watch")
+		case "shops/big":
+			for i := 0; i < 5000; i++ {
+				it := dynamicpb.NewMessage(m.Output())
+				set(it, "id", protoreflect.ValueOfString(fmt.Sprintf("b%d", i)))
+				set(it, "name", protoreflect.ValueOfString(strings.Repeat("x", 100)))
+				if err := st.SendMsg(it); err != nil {
+					return nil // (the client went: fine)
+				}
+			}
+			return nil
+		}
+		mu.Lock()
+		var send []proto.Message
+		for _, id := range order {
+			if it, ok := items[id]; ok && owner[id] == parent {
+				send = append(send, proto.Clone(it))
+			}
+		}
+		mu.Unlock()
+		for i, it := range send {
+			if err := st.SendMsg(it); err != nil {
+				return err
+			}
+			if i == 0 && parent == "shops/fail" {
+				return status.Error(codes.Aborted, "the watch broke")
+			}
+		}
+		if parent == "shops/fail" {
+			it := dynamicpb.NewMessage(m.Output())
+			set(it, "id", protoreflect.ValueOfString("f1"))
+			st.SendMsg(it)
+			return status.Error(codes.Aborted, "the watch broke")
+		}
+		return nil
+	case "BulkCreate":
+		out := dynamicpb.NewMessage(m.Output())
+		l := out.Mutable(out.Descriptor().Fields().ByName("items")).List()
+		for {
+			in := dynamicpb.NewMessage(m.Input())
+			if err := st.RecvMsg(in); err == io.EOF {
+				break
+			} else if err != nil {
+				return err
+			}
+			got, err := serve(st.Context(), m.Parent().(protoreflect.ServiceDescriptor).Methods().ByName("CreateItem"), in, nil)
+			if err != nil {
+				return err
+			}
+			l.Append(protoreflect.ValueOfMessage(got.(*dynamicpb.Message)))
+		}
+		return st.SendMsg(out)
+	case "Chat":
+		for {
+			in := dynamicpb.NewMessage(m.Input())
+			if err := st.RecvMsg(in); err == io.EOF {
+				return nil
+			} else if err != nil {
+				return err
+			}
+			it := dynamicpb.NewMessage(m.Output())
+			set(it, "id", protoreflect.ValueOfString("echo:"+get(in, "id").String()))
+			if err := st.SendMsg(it); err != nil {
+				return err
+			}
+		}
+	}
+	return status.Error(codes.Unimplemented, string(m.Name()))
 }
 
 func get(m protoreflect.Message, name string) protoreflect.Value {
