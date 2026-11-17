@@ -1135,6 +1135,20 @@ default), is a 503:
 when the decision can't be made, nobody gets in. `cache=30s` keeps positive
 answers per worker, for requests that carry Cookie or Authorization.
 
+`signin=URL` turns the service's 401 into a 302 to a login page, as nginx's
+`auth-signin` does (oauth2-proxy's `/oauth2/start`, for one). The URL may use
+`${host}`, `${scheme}`, `${request.uri}` and `${request.uri.escaped}`; unless
+it has its own `rd=`, okena adds one: where the client was going, escaped.
+The service's `Set-Cookie` lines go with the redirect. A 3xx or 403 is still
+passed on as it came:
+
+```nginx
+route /* {
+    auth forward pool=oauth2 path=/oauth2/auth copy=x-auth-request-user signin=https://${host}/oauth2/start
+    to pool app
+}
+```
+
 ### Rate limits and quotas
 
 ```nginx

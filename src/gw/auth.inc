@@ -43,7 +43,10 @@ AU_PATH		:= 112				; q
 AU_PLEN		:= 120				; d
 AU_QFIRST	:= 124				; d: jwt `require` lines (g_jreq)
 AU_QN		:= 128				; d
-AU_SIZE		:= 136
+AU_SIGNIN	:= 136				; q: forward: where a 401 sends the client (`signin=`)
+AU_SLEN		:= 144				; d: 0 none
+AU_SRD		:= 148				; d: it names its own rd=
+AU_SIZE		:= 152
 MAX_AUTHS	:= 16384
 AK_APIKEY	:= 1
 AK_BASIC	:= 2
@@ -569,6 +572,59 @@ auth_refuse:
 ; what the service answered, and what it said for the client
 .denied:
 	mov	rax,[r15+H_BUF]
+	cmp	dword [rax+HB_FSTAT],401
+	jne	.denied_as_said
+	; a 401 with `signin=`: to the login page instead, with its cookies
+	mov	eax,[r15+H_ACT]
+	dec	eax
+	imul	rax,rax,RA_SIZE
+	mov	eax,[g_acts+rax+RA_AUTH]
+	dec	eax
+	imul	rax,rax,AU_SIZE
+	push	r12
+	lea	r12,[g_auths+rax]
+	cmp	dword [r12+AU_SLEN],0
+	je	.signin_none
+	mov	rdi,[r15+H_BUF]
+	lea	rdi,[rdi+HB_OUT]
+	memit_x 'HTTP/1.1 302 Found',13,10
+	call	fwd_signin
+	jc	.signin_none
+	pop	r12
+	mov	dword [r15+H_STATUS],302
+	push	rdi
+	mov	edi,302
+	mov	esi,5
+	call	http_count
+	pop	rdi
+	; the service's Set-Cookie lines (fwd_denied kept them, names in lower case)
+	mov	rax,[r15+H_BUF]
+	lea	rsi,[rax+HB_JHDR]
+	mov	edx,[rax+HB_JHLEN]
+	lea	rdx,[rsi+rdx]
+.cookie_line:
+	cmp	rsi,rdx
+	jae	.tail
+	mov	r8,rsi
+@@:
+	cmp	rsi,rdx
+	jae	.tail
+	lodsb
+	cmp	al,10
+	jne	@b
+	cmp	byte [r8],'s'
+	jne	.cookie_line
+	mov	rcx,rsi
+	sub	rcx,r8
+	push	rsi
+	mov	rsi,r8
+	rep	movsb
+	pop	rsi
+	jmp	.cookie_line
+.signin_none:
+	pop	r12
+	mov	rax,[r15+H_BUF]
+.denied_as_said:
 	mov	eax,[rax+HB_FSTAT]
 	mov	[r15+H_STATUS],eax
 	mov	edi,eax

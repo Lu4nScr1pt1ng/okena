@@ -169,7 +169,7 @@ keysdef k_drain, 'delay', T_DURATION, 'timeout', T_DURATION
 keysdef k_idemstore, 'keys', T_COUNT, 'size', T_SIZE
 keysdef k_signed, 'key', T_ANY, 'key2', T_ANY
 keysdef k_hs_budget, 'wait', T_DURATION
-keysdef k_auth, 'header', T_ANY, 'keys', T_ANY, 'users', T_ANY, 'realm', T_ANY, 'identity', T_ANY, 'forward', T_ANY, 'pool', T_ANY, 'path', T_ANY, 'copy', T_ANY, 'cache', T_DURATION, 'timeout', T_DURATION
+keysdef k_auth, 'header', T_ANY, 'keys', T_ANY, 'users', T_ANY, 'realm', T_ANY, 'identity', T_ANY, 'forward', T_ANY, 'pool', T_ANY, 'path', T_ANY, 'copy', T_ANY, 'cache', T_DURATION, 'timeout', T_DURATION, 'signin', T_ANY
 keysdef k_hedge, 'after', T_ANY, 'max', T_COUNT
 keysdef k_cors, 'origins', T_ANY, 'methods', T_ANY, 'headers', T_ANY, 'expose', T_ANY, 'max_age', T_DURATION
 keysdef k_jwks, 'trust', T_ANY, 'refresh', T_DURATION, 'stale', T_DURATION

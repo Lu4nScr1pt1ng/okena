@@ -61,6 +61,8 @@ class Sso(http.server.BaseHTTPRequestHandler):
             return
         elif c == "s=forbidden":
             st = 403
+        elif h.get("authorization") == "Bearer sc":
+            st, extra = 401, [("WWW-Authenticate", "Bearer"), ("Set-Cookie", "csrf=1; Path=/")]
         elif h.get("authorization"):
             st, extra = 401, [("WWW-Authenticate", 'Bearer realm="x"')]
         else:
@@ -132,12 +134,15 @@ http 127.0.0.1:{lst} {{
     route /lim {{ auth forward pool=sso path=/v copy=x-user-id; limit 2/s burst=1 key=auth.user; to pool b }}
     route /fault {{ auth forward pool=sso path=/v; fault abort=418 percent=100; to pool b }}
     route /open {{ to pool b }}
+    route /login/* {{ auth forward pool=sso path=/v signin="https://auth.test/start?h=${{host}}"; to pool b }}
+    route /own/* {{ auth forward pool=sso path=/v signin="/oauth2/start?rd=${{request.uri.escaped}}&s=${{scheme}}&u=${{request.uri}}"; to pool b }}
 }}
 http 127.0.0.1:{tls} {{
     tls {{ cert {tmp}/c.pem; key {tmp}/k.pem }}
     http2 on
     http3 on
     route /app/* {{ auth forward pool=sso path=/verify copy=x-user-id timeout=500ms; to pool b }}
+    route /login/* {{ auth forward pool=sso path=/v signin="https://auth.test/start"; to pool b }}
 }}
 """
 
@@ -176,6 +181,20 @@ def main():
         r = get("/app/x", Authorization="Bearer wrong")
         check("its 401 and challenge", r[0] == 401 and "Bearer" in r[2].get("www-authenticate", ""), r[:3])
         check("its 403", get("/app/x", Cookie="s=forbidden")[0] == 403)
+        r = get("/login/a?q=1 2".replace(" ", "%20"), Authorization="Bearer sc")
+        check("signin=: a 401 becomes a redirect, rd= added", r[0] == 302 and r[2].get("location") ==
+              f"https://auth.test/start?h=127.0.0.1:{LST}&rd=http%3A%2F%2F127.0.0.1:{LST}/login/a%3Fq%3D1%25202", r[:3])
+        check("  with the service's cookies, not its challenge", r[2].get("set-cookie") == "csrf=1; Path=/" and
+              "www-authenticate" not in r[2], r[2])
+        r = get("/own/a?b=1", Authorization="Bearer x")
+        check("  its own rd=, and every variable", r[0] == 302 and r[2].get("location") ==
+              "/oauth2/start?rd=/own/a%3Fb%3D1&s=http&u=/own/a?b=1", r[:3])
+        check("  a 302 or 403 as the service said", get("/login/a")[2].get("location", "").startswith("https://login.test/")
+              and get("/login/a", Cookie="s=forbidden")[0] == 403)
+        r = get("/login/a", **A)
+        check("  a yes goes on", r[0] == 200, r[:2])
+        r = get("/login/" + "!" * 6000, Authorization="Bearer sc")
+        check("  a target too long for its Location: the 401", r[0] == 401, r[:2])
         n = len(got)
         for what, c in (("a 500", "s=boom"), ("an answer cut short", "s=cut")):
             r = get("/app/x", Cookie=c)
@@ -251,6 +270,9 @@ def main():
         check("over HTTP/2: told who", curl("s=alice") == "alice 200 2", curl("s=alice"))
         check("  refused", " 302 2" in curl("s=none"), curl("s=none"))
         check("  503", " 503 2" in curl("s=boom"), curl("s=boom"))
+        q = subprocess.run(["timeout", "8", "curl", "-q", "-sk", "--http2", "-o", "/dev/null", "-w", "%{http_code} %{redirect_url}",
+                            "-H", "Authorization: Bearer sc", f"https://localhost:{TLS}/login/b"], capture_output=True, text=True)
+        check("  signin=: https in rd=", q.stdout == f"302 https://auth.test/start?rd=https%3A%2F%2Flocalhost:{TLS}/login/b", q.stdout)
         q = subprocess.run(["timeout", "8", str(BIN), "bench", f"https://127.0.0.1:{TLS}/app/x", "proto=h3", "conns=4", "workers=1",
                             "rate=200", "duration=1s", "warmup=0s", "format=kv", "header=cookie: s=alice"],
                            capture_output=True, text=True, stdin=subprocess.DEVNULL)
@@ -289,7 +311,8 @@ http 127.0.0.1:{FEW} {{
         fast.terminate()
     text = CONF.format(**args)
     for what, bad in (("no pool", "auth forward path=/v;"), ("no such pool", "auth forward pool=nosuch path=/v;"),
-                      ("no path", "auth forward pool=sso;"), ("a path with no slash", "auth forward pool=sso path=v;")):
+                      ("no path", "auth forward pool=sso;"), ("a path with no slash", "auth forward pool=sso path=v;"),
+                      ("signin= not a URL", "auth forward pool=sso path=/v signin=javascript:x;")):
         c = tmp / "bad.conf"
         c.write_text(text.replace("auth forward pool=sso path=/v timeout=100ms;", bad))
         q = subprocess.run(["timeout", "5", str(BIN), "-c", str(c)], capture_output=True, text=True, timeout=8)

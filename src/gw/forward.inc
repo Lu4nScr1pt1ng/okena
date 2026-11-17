@@ -728,6 +728,230 @@ fwd_gone:
 .none:
 	ret
 
+; r12 = the auth, r15 = record, ebx = session, rdi = where, g_hm = the request:
+; "Location: URL" and CRLF, URL being `signin=` with ${host}, ${scheme},
+; ${request.uri} and ${request.uri.escaped} filled in, and rd= (where the
+; client was going) added unless it names its own. rdi = its end; CF when it
+; would not fit in 16 KiB (rdi as it was). Keeps rbx, r12-r15.
+fwd_signin:
+	push	rbx
+	push	r13
+	push	r14
+	mov	[g_fs_start],rdi
+	lea	r13,[rdi+16384]
+	push	rdi
+	lea	rdi,[fwd_head_size.host]
+	mov	esi,4
+	call	limit_find
+	mov	[g_fs_host],rsi
+	mov	[g_fs_hlen],ecx
+	call	http_tls_cred
+	mov	[g_fs_tls],rax
+	pop	rdi
+	memit_x 'Location: '
+	mov	r14,[r12+AU_SIGNIN]
+	mov	ecx,[r12+AU_SLEN]
+	lea	rbx,[r14+rcx]
+.lit:
+	cmp	r14,rbx
+	jae	.rd
+	cmp	byte [r14],'$'
+	jne	.byte
+	lea	rsi,[fwd_tokens]
+.tok:
+	movzx	ecx,byte [rsi]
+	test	ecx,ecx
+	jz	.byte
+	mov	rax,rbx
+	sub	rax,r14
+	cmp	rax,rcx
+	jb	.tok_next
+	push	rsi
+	push	rdi
+	lea	rdi,[rsi+2]
+	mov	rsi,r14
+	repe	cmpsb
+	pop	rdi
+	pop	rsi
+	jne	.tok_next
+	movzx	ecx,byte [rsi]
+	add	r14,rcx
+	movzx	eax,byte [rsi+1]
+	call	.put
+	jc	.full
+	jmp	.lit
+.tok_next:
+	movzx	ecx,byte [rsi]
+	lea	rsi,[rsi+rcx+2]
+	jmp	.tok
+.byte:
+	cmp	rdi,r13
+	jae	.full
+	mov	al,[r14]
+	stosb
+	inc	r14
+	jmp	.lit
+.rd:
+	cmp	dword [r12+AU_SRD],0
+	jne	.end
+	; ?rd= or &rd=: scheme://host and the target, escaped
+	mov	al,'?'
+	mov	rsi,[r12+AU_SIGNIN]
+	mov	ecx,[r12+AU_SLEN]
+@@:
+	cmp	byte [rsi],'?'
+	je	.amp
+	inc	rsi
+	dec	ecx
+	jnz	@b
+	jmp	@f
+.amp:
+	mov	al,'&'
+@@:
+	lea	rcx,[rdi+16]
+	cmp	rcx,r13
+	jae	.full
+	stosb
+	mov	eax,'rd='
+	stosd
+	dec	rdi
+	mov	eax,1				; scheme
+	call	.put
+	jc	.full
+	lea	rcx,[rdi+9]
+	cmp	rcx,r13
+	jae	.full
+	mov	eax,'%3A%'			; "://", escaped: a value in a query
+	stosd
+	mov	eax,'2F%2'
+	stosd
+	mov	al,'F'
+	stosb
+	xor	eax,eax				; host
+	call	.put
+	jc	.full
+	mov	eax,3				; the target
+	call	.put
+	jc	.full
+.end:
+	lea	rcx,[rdi+2]
+	cmp	rcx,r13
+	jae	.full
+	mov	ax,0x0A0D
+	stosw
+	clc
+	jmp	.out
+.full:
+	mov	rdi,[g_fs_start]
+	stc
+.out:
+	pop	r14
+	pop	r13
+	pop	rbx
+	ret
+; eax = what: 0 host, 1 scheme, 2 target, 3 target escaped. CF: no room.
+.put:
+	cmp	eax,1
+	je	.scheme
+	ja	.target
+	mov	rsi,[g_fs_host]
+	mov	ecx,[g_fs_hlen]
+	jmp	.copy
+.scheme:
+	lea	rcx,[rdi+8]
+	cmp	rcx,r13
+	jae	.no_room
+	mov	eax,'http'
+	stosd
+	cmp	qword [g_fs_tls],0
+	je	.done
+	mov	al,'s'
+	stosb
+	jmp	.done
+.target:
+	mov	rsi,[g_hm+HM_TARGET]
+	mov	ecx,[g_hm+HM_TLEN]
+	cmp	eax,2
+	je	.copy
+.esc:
+	test	ecx,ecx
+	jz	.done
+	lea	rdx,[rdi+3]
+	cmp	rdx,r13
+	jae	.no_room
+	movzx	eax,byte [rsi]
+	inc	rsi
+	dec	ecx
+	cmp	al,'/'
+	je	.plain
+	cmp	al,'-'
+	je	.plain
+	cmp	al,'.'
+	je	.plain
+	cmp	al,'_'
+	je	.plain
+	cmp	al,'~'
+	je	.plain
+	lea	edx,[rax-'0']
+	cmp	edx,9
+	jbe	.plain
+	mov	edx,eax
+	or	edx,0x20
+	sub	edx,'a'
+	cmp	edx,25
+	jbe	.plain
+	mov	byte [rdi],'%'
+	mov	edx,eax
+	shr	edx,4
+	mov	dl,[hex_upper+rdx]
+	mov	[rdi+1],dl
+	and	eax,15
+	mov	al,[hex_upper+rax]
+	mov	[rdi+2],al
+	add	rdi,3
+	jmp	.esc
+.plain:
+	stosb
+	jmp	.esc
+.copy:
+	test	ecx,ecx
+	jz	.done
+	cmp	rdi,r13
+	jae	.no_room
+	mov	al,[rsi]
+	inc	rsi
+	dec	ecx
+	cmp	al,' '
+	jbe	.copy
+	cmp	al,0x7F
+	jae	.copy
+	cmp	al,'"'
+	je	.copy
+	stosb
+	jmp	.copy
+.done:
+	clc
+	ret
+.no_room:
+	stc
+	ret
+
+rodata
+fwd_tokens:
+	db 7,0,'${host}'
+	db 9,1,'${scheme}'
+	db 22,3,'${request.uri.escaped}'
+	db 14,2,'${request.uri}'
+	db 0
+end rodata
+bss
+	align 8
+	g_fs_start	dq ?
+	g_fs_host	dq ?
+	g_fs_tls	dq ?
+	g_fs_hlen	dd ?
+end bss
+
 ; r12 = the auth, rbx = its node: the rest of `auth forward`
 compile_forward:
 	push	r13
@@ -798,6 +1022,66 @@ compile_forward:
 	jz	plan_bad_forward
 	mov	[r12+AU_TTL],eax
 @@:
+	; signin=URL: a 401 becomes a redirect there (as nginx's auth-signin)
+	mov	dword [r12+AU_SLEN],0
+	mov	dword [r12+AU_SRD],0
+	mov	rdi,r15
+	lea	rsi,[str_key_signin]
+	call	node_option
+	test	rax,rax
+	jz	.no_signin
+	mov	rcx,[rax+A_VAL]
+	mov	edx,[rax+A_VLEN]
+	test	edx,edx
+	jz	plan_bad_signin
+	cmp	edx,2048
+	ja	plan_bad_signin
+	mov	[r12+AU_SIGNIN],rcx
+	mov	[r12+AU_SLEN],edx
+	cmp	byte [rcx],'/'			; a path of this host, or http(s)://
+	je	.signin_chars
+	cmp	edx,8
+	jb	plan_bad_signin
+	mov	rax,[rcx]
+	mov	r8,0x00FFFFFFFFFFFFFF
+	and	r8,rax
+	mov	r9,'http://'
+	cmp	r8,r9
+	je	.signin_chars
+	mov	r9,'https://'
+	cmp	rax,r9
+	jne	plan_bad_signin
+.signin_chars:
+	xor	eax,eax
+.signin_char:
+	movzx	r8d,byte [rcx+rax]
+	cmp	r8d,' '
+	jbe	plan_bad_signin
+	cmp	r8d,0x7F
+	jae	plan_bad_signin
+	cmp	r8d,'"'
+	je	plan_bad_signin
+	cmp	r8d,'r'				; rd= after ? or &: its own return address
+	jne	.signin_next
+	test	eax,eax
+	jz	.signin_next
+	lea	r9d,[rax+2]
+	cmp	r9d,edx
+	jae	.signin_next
+	cmp	word [rcx+rax+1],'d='
+	jne	.signin_next
+	movzx	r9d,byte [rcx+rax-1]
+	cmp	r9d,'?'
+	je	.signin_rd
+	cmp	r9d,'&'
+	jne	.signin_next
+.signin_rd:
+	mov	dword [r12+AU_SRD],1
+.signin_next:
+	inc	eax
+	cmp	eax,edx
+	jb	.signin_char
+.no_signin:
 	; copy=a,b: told to the backend, and whatever the client says of them dropped
 	mov	eax,[g_plan_claims]
 	mov	[r12+AU_CFIRST],eax
@@ -854,6 +1138,14 @@ plan_bad_forward:
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process
 
+plan_bad_signin:
+	call	log_begin
+	out_lit 'auth forward signin= takes a URL (http://, https:// or /PATH) of up to 2048 characters, no spaces or quotes'
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
+
+cstring str_key_signin, 'signin',0
 cstring str_key_pool, 'pool',0
 cstring str_key_path, 'path',0
 cstring str_key_timeout, 'timeout',0
