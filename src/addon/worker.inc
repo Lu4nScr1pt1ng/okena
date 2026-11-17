@@ -1622,8 +1622,7 @@ ad_post:
 @@:
 	mov	ecx,[g_ad_blen]
 	rep	movsb
-	pop	rcx
-	add	rcx,r10
+	pop	rcx				; (the head after it: ad_ring_room's)
 	mov	[r13+ADW_HEAD],rcx
 	mov	[r14+ADR_HEAD],rcx		; published (the stores before it are seen first)
 	clc

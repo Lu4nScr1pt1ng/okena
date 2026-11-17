@@ -189,6 +189,10 @@ addon strict {{
     run {run} strict
     timeout 150ms
 }}
+addon piler {{
+    run {run} piler
+    timeout 3s
+}}
 addon flaky {{
     run {run} flaky
     timeout 100ms
@@ -245,6 +249,7 @@ http 127.0.0.1:{L} {{
     http2 on
     route /a/* {{ addon tagger; to pool echo }}
     route /s/* {{ addon strict; to pool echo }}
+    route /p/* {{ addon piler; to pool echo }}
     route /f/* {{ addon flaky; to pool echo }}
     route /k/* {{ addon brk; to pool echo }}
     route /c/* {{ addon chello; to pool echo }}
@@ -514,6 +519,14 @@ http 127.0.0.1:{L} {{
         with concurrent.futures.ThreadPoolExecutor(16) as ex:
             r = list(ex.map(lambda i: get(f"/a/set?{i}")[0], range(100)))
         check("100 requests, 16 at a time: all through the addon", r.count(200) == 100, {x: r.count(x) for x in set(r)})
+        # calls that pile up while the addon is busy (several in its ring at
+        # once), on_error deny: none lost (each would be a 503 at its time)
+        with concurrent.futures.ThreadPoolExecutor(12) as ex:
+            t0 = time.time()
+            r = list(ex.map(lambda i: get(f"/p/busy?{i}", timeout=10)[0], range(36)))
+            dt = time.time() - t0
+        check("calls piled up behind a busy addon: every one answered, none waits for its time",
+              r.count(200) == 36 and dt < 2.5, ({x: r.count(x) for x in set(r)}, round(dt, 2)))
         # a hanging addon: routes without it never wait
         hang = threading.Thread(target=lambda: [get("/f/slow") for _ in range(3)])
         hang.start()

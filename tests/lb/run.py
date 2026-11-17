@@ -153,7 +153,7 @@ finally:
         print(text())
 # peak-ewma: a backend 20 ms slower gets little of a sequential load,
 # where least-request (nothing ever in flight to compare) splits it evenly
-H0, H1, EW, LR = BASE + 4, BASE + 5, BASE + 6, BASE + 7
+H0, H1, EW, LR, H2 = BASE + 4, BASE + 5, BASE + 6, BASE + 7, BASE + 8
 
 
 def http_backend(port, tag, delay):
@@ -187,13 +187,14 @@ def http_backend(port, tag, delay):
 
 http_backend(H0, b"h0", 0)
 http_backend(H1, b"h1", 0.02)
+http_backend(H2, b"h1", 0.1)          # (peak-ewma's slow one: far slower than a loaded machine's stalls)
 conf2 = tmp / "okena-ewma.conf"
 conf2.write_text(f"""
 okena {{ workers 1 }}
 pool ewma {{
     balance peak-ewma
     server 127.0.0.1:{H0}
-    server 127.0.0.1:{H1}
+    server 127.0.0.1:{H2}
 }}
 pool lr {{
     server 127.0.0.1:{H0}

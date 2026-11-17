@@ -67,6 +67,9 @@ def on_request(req):
     if last == "slow":
         time.sleep(0.4)
         return oa.Continue()
+    if last == "busy":
+        time.sleep(0.02)			# (calls pile up in the ring meanwhile)
+        return oa.Continue()
     if last == "crash":
         os._exit(3)
     if last == "bad":
