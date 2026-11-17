@@ -228,6 +228,10 @@ alog_l4:
 	pop	rax
 	mov	ecx,3
 	call	fmt_pad
+	cmp	dword [g_l4_udp],0
+	jne	@f
+	call	ppt_log				; "proxy": a PROXY header's TLVs
+@@:
 	memit '}',10
 	call	alog_exchange.append
 .out:

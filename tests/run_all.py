@@ -274,6 +274,8 @@ SUITES = [
     ("drain time epoll", ["tests/reload/draintime.py", "epoll"]),
     ("tcp uptls io_uring", ["tests/l4/uptls.py", "io_uring"]),
     ("tcp uptls epoll", ["tests/l4/uptls.py", "epoll"]),
+    ("proxy tlvs io_uring", ["tests/peer/tlv.py", "io_uring"]),
+    ("proxy tlvs epoll", ["tests/peer/tlv.py", "epoll"]),
     ("geoip io_uring", ["tests/gateway/geoip.py", "io_uring"]),
     ("geoip epoll", ["tests/gateway/geoip.py", "epoll"]),
     ("acl io_uring", ["tests/gateway/acl.py", "io_uring"]),

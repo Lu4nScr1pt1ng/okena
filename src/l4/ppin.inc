@@ -257,7 +257,7 @@ pp_apply:
 	call	.sockaddr
 	pop	rbx
 .out:
-	ret
+	jmp	ppt_take			; its TLVs (pptlv.inc)
 ; rdi = sockaddr (28 bytes), rsi = address, edx = port, ecx = 4 or 6
 .sockaddr:
 	xor	eax,eax
@@ -287,6 +287,7 @@ pp_apply:
 ;   eax = N   whole, N bytes long; g_pp_* say what it says
 ; Keeps rbx, r12-r15.
 pp_parse:
+	mov	dword [g_ppt_tmp+PV_HAS],0	; (TLVs: none, until a whole v2 header says)
 	xor	edx,edx
 	test	esi,esi
 	jz	.more
@@ -362,6 +363,18 @@ pp_parse:
 	mov	[g_pp_sport],eax
 	mov	[g_pp_dport],ecx
 	mov	[g_pp_kind],r8d
+	; its TLVs, after the addresses (pptlv.inc)
+	push	rdx
+	lea	rsi,[rdi+16+12]
+	mov	ecx,edx
+	sub	ecx,16+12
+	cmp	r8d,4
+	je	@f
+	lea	rsi,[rdi+16+36]
+	sub	ecx,24
+@@:
+	call	pp_tlvs
+	pop	rdx
 .whole:
 	mov	eax,edx
 	ret

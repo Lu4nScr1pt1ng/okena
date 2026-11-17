@@ -715,6 +715,7 @@ alog_exchange:
 	memit ',"source":"okena"'
 .extra:
 	call	alx_fields			; user_agent, referer, tls, upstream_ms, bytes_in
+	call	ppt_log				; "proxy": a PROXY header's TLVs
 .retried:
 	test	dword [r15+H_FLAGS],HX_RETRIED
 	jz	@f

@@ -936,8 +936,11 @@ the items.
    `X-Forwarded-For`. **Done 2026-11-14** (src/l4/ppin.inc,
    tests/peer/accept.py): a peek and an exact take right after accept (two
    system calls, no ring wait, TCP_DEFER_ACCEPT on tcp listeners where every
-   peer sends one), the ring or epoll only for a header in pieces. Left:
-   TLVs exposed (authority, unique ID, AWS VPC endpoint) to routes and logs.
+   peer sends one), the ring or epoll only for a header in pieces. TLVs:
+   **done 2026-11-16** (src/l4/pptlv.inc, tests/peer/tlv.py): authority,
+   unique ID, ALPN, SSL version, AWS VPC endpoint, Azure LinkID, GCP PSC as
+   ${proxy.NAME}, `match proxy.NAME`, and a "proxy" object in http and tcp
+   logs; inherited by HTTP/2 streams; non-printable text TLVs dropped.
 2. The `Host` (and `:authority`) sent to a pool: `host NAME` in a pool.
    **Done 2026-11-14** (tests/gateway/hostrw.py): the client's Host in
    X-Forwarded-Host, also the TLS name (SNI, verification) and the health

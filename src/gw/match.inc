@@ -112,6 +112,8 @@ mc_holds:
 	je	.query
 	cmp	eax,LK_MPATH
 	je	.path
+	cmp	eax,LK_PPT
+	je	.ppt
 	; client.ip
 	cmp	dword [g_cr_dry],0
 	je	@f
@@ -181,6 +183,16 @@ mc_holds:
 	call	asn_in_list
 	jc	.yes
 	jmp	.no
+.ppt:
+	mov	ecx,[r12+MC_NLEN]
+	lea	rdi,[g_ppt_val]
+	call	ppt_value
+	lea	rsi,[g_ppt_val]
+	mov	ecx,0
+	jc	.compare			; (not there: nothing)
+	mov	rcx,rax
+	sub	rcx,rsi
+	jmp	.compare
 .method:
 	mov	rsi,[g_hm+HM_METHOD]
 	mov	ecx,[g_hm+HM_MLEN]
@@ -518,6 +530,25 @@ match_conditions:
 	jc	plan_bad_match
 	jmp	.taken
 .named:
+	cmp	ecx,7				; proxy.NAME: a PROXY header's TLV (pptlv.inc)
+	jb	.not_ppt
+	cmp	dword [rsi],'prox'
+	jne	.not_ppt
+	cmp	word [rsi+4],'y.'
+	jne	.not_ppt
+	push	rsi
+	push	rcx
+	add	rsi,6
+	sub	ecx,6
+	call	ppt_kind
+	pop	rcx
+	pop	rsi
+	test	eax,eax
+	jz	plan_bad_match
+	mov	dword [rbx+MC_KIND],LK_PPT
+	mov	[rbx+MC_NLEN],eax
+	jmp	.taken
+.not_ppt:
 	cmp	ecx,7
 	jbe	.short
 	mov	rax,[rsi]
@@ -752,7 +783,7 @@ match_entries:
 
 plan_bad_match:
 	call	log_begin
-	out_lit 'match needs conditions: method=, header:NAME[=VALUE], query:NAME[=VALUE], cookie:NAME[=VALUE], client.ip=CIDR, client.country=CC (with geoip), client.asn=N,N (with geoip_asn), path=~REGEX (and NAME=~REGEX); pools that exist; no `match` or `use` inside; at most 1024 in a route'
+	out_lit 'match needs conditions: method=, header:NAME[=VALUE], query:NAME[=VALUE], cookie:NAME[=VALUE], client.ip=CIDR, client.country=CC (with geoip), client.asn=N,N (with geoip_asn), proxy.NAME[=VALUE] (a PROXY header: authority, unique_id, alpn, ssl_version, aws_vpce, azure_linkid, gcp_psc), path=~REGEX (and NAME=~REGEX); pools that exist; no `match` or `use` inside; at most 1024 in a route'
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process

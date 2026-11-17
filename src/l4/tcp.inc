@@ -443,6 +443,7 @@ sessions_init:
 	test	eax,eax
 	js	.done
 	call	pace_worker_init
+	call	ppt_worker_init			; (PROXY TLVs, pptlv.inc)
 	test	eax,eax
 	js	.done
 	call	http_worker_init

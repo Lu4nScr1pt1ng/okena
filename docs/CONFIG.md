@@ -377,7 +377,31 @@ a direct client; without them every connection must start with one. A
 connection whose first bytes are not a valid header, or that does not finish
 it within the header timeout, is closed. `LOCAL` (v2) and `UNKNOWN` (v1), what
 balancers send for their own health checks, keep the connection's addresses.
-TLVs are accepted and skipped. Only what the header covers is taken from the
+A v2 header's TLVs are kept for the connection (and its HTTP/2 streams) and
+given to routes and logs:
+
+| Name | TLV |
+|---|---|
+| `proxy.authority` | the host name the client asked for (its SNI) |
+| `proxy.unique_id` | the balancer's id of the connection, in hex |
+| `proxy.alpn` | the protocol the client chose |
+| `proxy.ssl_version` | the TLS the client spoke to the balancer |
+| `proxy.aws_vpce` | the AWS VPC endpoint (PrivateLink) it came by |
+| `proxy.azure_linkid` | Azure Private Link's LinkID |
+| `proxy.gcp_psc` | GCP Private Service Connect's connection ID |
+
+```nginx
+route /api/* {
+    match proxy.aws_vpce=vpce-0a1b2c3d { to pool partner-a }  # by the endpoint a customer uses
+    header set x-lb-conn "${proxy.unique_id}"
+    to pool api
+}
+```
+
+The access logs (http and tcp) carry them as a `"proxy"` object. A text TLV
+with a byte that is not printable ASCII is dropped, so a header never gets a
+line break from the network; v1 and `LOCAL` headers have none. Only what the
+header covers is taken from the
 socket, so a request, a TLS handshake or an L4 stream sent with it goes on
 untouched. HTTP/3 has no PROXY protocol (it is UDP). A `tcp` listener can also end TLS or route it by name without
 decrypting it, see [TLS on a `tcp` listener](#tls-on-a-tcp-listener). With
@@ -764,6 +788,7 @@ route /api/* {
 | `client.ip=10.0.0.0/8` | the client (after `trusted_proxies`) in a range |
 | `client.country=BR,PT` | with `okena { geoip FILE }` |
 | `client.asn=13335,AS15169` | the client's autonomous system, with `okena { geoip_asn FILE }` |
+| `proxy.aws_vpce=vpce-0a1b` | a TLV of the PROXY v2 header (`proxy.authority`, `proxy.unique_id`, ...; `=`, `*`, `~` as for headers) |
 | `path=~REGEX` | the normalized path |
 
 NAME is `header:X`, `query:X` or `cookie:X`. Conditions in one block are ANDed.
@@ -944,7 +969,8 @@ strips `/v1` becomes `/v1/login`). Cookie lines change the `Domain` and
 listener; a route's are tried first, and the first that applies is used.
 
 * Header values may use `${client.ip}`, `${request.id}`, `${time.us}` and
-  `${time.s}`: `header set x-request-start "t=${time.us}"`.
+  `${time.s}`: `header set x-request-start "t=${time.us}"`; behind a balancer
+  that sends PROXY v2, also `${proxy.NAME}` (its TLVs, below).
 * Names okena owns can't be changed: `host`, framing, hop-by-hop fields,
   `x-forwarded-*`, `forwarded`, `x-request-id`. Values can't contain CR, LF or
   NUL.
@@ -1851,7 +1877,8 @@ One JSON line per request: `time`, `listener`, `client`, `peer`, `method`,
 (`backend` or `okena`), `user_agent`, `referer`, `tls` (`"1.3"`, `"1.2"` or
 `null`), `upstream_ms` (from the request to the backend's answer head;
 `null` when okena answered), `bytes_in` (the request's head and body),
-`retried`, and with tracing, `trace_id` and `span_id`.
+`retried`, with tracing, `trace_id` and `span_id`, and behind a PROXY v2
+header with TLVs, `proxy` (an object of those it had).
 
 A route chooses its share: `log off` writes no line for it (a health check
 polled every second), `log sample=5%` one in twenty. Metrics count every

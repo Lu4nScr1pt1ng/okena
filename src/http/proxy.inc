@@ -4328,6 +4328,8 @@ hvar_expand:
 	je	.client
 	cmp	byte [rsi+2],'r'
 	je	.rid
+	cmp	byte [rsi+2],'p'
+	je	.proxy
 	push	rsi
 	push	rcx
 	mov	r8d,1000000000			; time.s
@@ -4362,6 +4364,31 @@ hvar_expand:
 	lea	rsi,[r15+H_RID]
 	mov	ecx,[r15+H_RIDLEN]
 	rep	movsb
+	pop	rcx
+	pop	rsi
+	jmp	.skip_var
+.proxy:						; ${proxy.NAME}: the PROXY header's TLV (none: empty)
+	push	rsi
+	push	rcx
+	lea	rsi,[rsi+8]			; (after "${proxy.")
+	xor	ecx,ecx
+@@:
+	cmp	byte [rsi+rcx],'}'
+	je	@f
+	inc	ecx
+	jmp	@b
+@@:
+	call	ppt_kind
+	mov	ecx,eax
+	push	rbx
+	mov	rbx,r15				; (the session: of the record, ebx is not it here)
+	sub	rbx,[g_http_base]
+	shr	rbx,H_SHIFT
+	call	ppt_value
+	pop	rbx
+	jc	@f
+	mov	rdi,rax
+@@:
 	pop	rcx
 	pop	rsi
 .skip_var:
