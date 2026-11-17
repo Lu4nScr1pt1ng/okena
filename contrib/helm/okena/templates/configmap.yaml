@@ -11,6 +11,11 @@ data:
         admin unix:/run/okena/admin.sock
         drain delay=5s timeout=30s
         gateway kubernetes dir=/var/lib/okena/gateway class={{ .Values.gatewayClass.name }} ingress={{ .Values.ingressClass.name }} http={{ .Values.ports.http }} https={{ .Values.ports.https }}{{ if .Values.ingressClass.default }} ingress_default=on{{ end }}{{ if .Values.statusAddress }} address={{ .Values.statusAddress }}{{ else }} publish_service={{ .Release.Namespace }}/{{ include "okena.name" . }}{{ end }}
+    {{- if eq .Values.zone "node" }}
+        zone ${env:OKENA_ZONE:-none}
+    {{- else if .Values.zone }}
+        zone {{ .Values.zone }}
+    {{- end }}
     {{- .Values.okena | nindent 8 }}
     }
     include "/var/lib/okena/gateway/*.conf"

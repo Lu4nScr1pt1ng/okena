@@ -34,7 +34,8 @@ DE_FAMILY	:= 16			; d: 4 or 6
 DE_PORT		:= 20			; d
 DE_WEIGHT	:= 24			; d
 DE_BACKUP	:= 28			; d: srv: a priority past the lowest
-DE_SIZE		:= 32
+DE_ZONE		:= 32			; d: its zone's hash (kubernetes), 0 none
+DE_SIZE		:= 40
 DX_SEQ		:= 0			; q
 DX_COUNT	:= 8			; d
 DX_WANT		:= 12			; d: what the source had, past the slots too
@@ -458,6 +459,7 @@ disc_parse:
 	mov	[rdi+DE_PORT],eax
 	mov	[rdi+DE_WEIGHT],r15d
 	mov	dword [rdi+DE_BACKUP],0
+	mov	dword [rdi+DE_ZONE],0
 .skip_line:
 	cmp	rbx,r13
 	jae	.done
@@ -781,6 +783,8 @@ disc_apply:
 	mov	[rbx+SV_WEIGHT],ecx
 	mov	ecx,[g_disc_copy+DX_E+rax+DE_BACKUP]
 	mov	[rbx+SV_BACKUP],ecx
+	mov	ecx,[g_disc_copy+DX_E+rax+DE_ZONE]
+	mov	[rbx+SV_ZONE],ecx
 	jmp	.keep_next
 .free:
 	mov	dword [rbx+SV_ACTIVE],0
@@ -825,6 +829,8 @@ disc_apply:
 	mov	[rbx+SV_WEIGHT],ecx
 	mov	ecx,[g_disc_copy+DX_E+rax+DE_BACKUP]
 	mov	[rbx+SV_BACKUP],ecx
+	mov	ecx,[g_disc_copy+DX_E+rax+DE_ZONE]
+	mov	[rbx+SV_ZONE],ecx
 	mov	dword [g_sv_fails+r14*4],0
 	mov	dword [g_sv_down+r14*4],0
 	inc	dword [g_sv_gen+r14*4]
@@ -1002,6 +1008,7 @@ disc_srv_poll:
 @@:
 	mov	[rdi+DE_WEIGHT],eax
 	mov	[rdi+DE_BACKUP],ebx
+	mov	dword [rdi+DE_ZONE],0
 	inc	ecx
 	jmp	.address
 .addressed:

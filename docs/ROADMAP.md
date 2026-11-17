@@ -1128,6 +1128,13 @@ both engines, routes that do not use an item unchanged.
    when used or with `okena { ja4 on }`: other handshakes pay a compare.
 4. Zone-aware balancing: `okena { zone NAME }`, `server ... zone=NAME`;
    servers in the local zone preferred while enough of them are up.
+   **Done 2026-11-17** (src/l4/tcp.inc: zone_tick, server_pick;
+   tests/lb/zone.py): pass 0 of the picker keeps to the local zone while
+   `zone prefer min=` (1) of its servers are up, counted once a tick per
+   pool; a pick that finds none there takes any zone. EndpointSlices' zones
+   come with `discover kubernetes`; the Helm chart's `zone: node` reads the
+   pod's topology label. Pools without zones, or an instance without one:
+   one compare per pick.
 5. Forward proxy: CONNECT tunnels a route allows, to the destinations it
    lists.
 6. Metrics pushed over OTLP (beside Prometheus' pull); B3 trace headers

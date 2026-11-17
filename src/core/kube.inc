@@ -519,6 +519,20 @@ kb_endpoint:
 	test	eax,eax
 	jz	.out
 .ready:
+	; its zone (topology-aware balancing: `okena { zone }`)
+	mov	dword [g_kb_zone],0
+	mov	rsi,rbx
+	js_key 'zone'
+	call	js_find
+	jc	@f
+	call	js_ws
+	call	js_str
+	jc	@f
+	cmp	ecx,63
+	ja	@f
+	call	zone_hash
+	mov	[g_kb_zone],eax
+@@:
 	mov	rsi,rbx
 	js_key 'addresses'
 	call	js_find
@@ -550,6 +564,10 @@ kb_endpoint:
 .out:
 	pop	rbx
 	ret
+
+bss
+	g_kb_zone	dd ?
+end bss
 
 ; rsi at a value: eax = 1 for true or null, 0 for false
 kb_bool:
@@ -628,5 +646,7 @@ kb_add:
 	mov	[rdi+DE_PORT],ebp
 	mov	dword [rdi+DE_WEIGHT],1
 	mov	dword [rdi+DE_BACKUP],0
+	mov	eax,[g_kb_zone]
+	mov	[rdi+DE_ZONE],eax
 .out:
 	ret

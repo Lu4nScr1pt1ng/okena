@@ -139,6 +139,7 @@ enumdef e_pp_version, 'v1', 'v2'
 enumdef e_tls_mode, 'passthrough'
 enumdef e_onoff, 'on', 'off'
 enumdef e_pin, 'on', 'off', 'auto'
+enumdef e_pzone, 'prefer', 'off'
 enumdef e_retry_mode, 'idempotent-only'
 enumdef e_cors_flags, 'credentials'
 enumdef e_auth, 'api_key', 'basic', 'jwt', 'mtls', 'forward'
@@ -183,7 +184,8 @@ keysdef k_idem, 'header', T_ANY, 'ttl', T_DURATION, 'lock', T_DURATION
 keysdef k_limit, 'burst', T_COUNT, 'key', T_ANY, 'instances', T_COUNT, 'headers', e_onoff, 'fleet', e_onoff
 keysdef k_fault, 'abort', T_COUNT, 'percent', T_COUNT, 'delay', T_DURATION
 keysdef k_quic_sid, 'key', T_ANY, 'rotation', T_ANY
-keysdef k_server, 'weight', T_WEIGHT, 'max', T_COUNT
+keysdef k_server, 'weight', T_WEIGHT, 'max', T_COUNT, 'zone', T_ANY
+keysdef k_pzone, 'min', T_COUNT
 keysdef k_queue, 'timeout', T_DURATION
 keysdef k_retry, 'on', T_ANY
 keysdef k_rtimeout, 'total', T_DURATION, 'try', T_DURATION
@@ -254,6 +256,7 @@ dirdef DIR_LAST_GOOD, 'last_good', M_OKENA,  0,           F_UNIQUE, 1, 1, e_onof
 dirdef DIR_OVERLOAD, 'overload',  M_OKENA,  0,           F_UNIQUE, 1, 1, e_onoff, T_NONE, 0
 dirdef DIR_PIN_WORKERS, 'pin_workers', M_OKENA, 0,        F_UNIQUE, 1, 1, e_pin, T_NONE, 0
 dirdef DIR_JA4, 'ja4',         M_OKENA,   0,           F_UNIQUE, 1, 1, e_onoff, T_NONE, 0
+dirdef DIR_ZONE, 'zone',        M_OKENA,   0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
 dirdef DIR_WATCHDOG, 'watchdog',    M_OKENA,   0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
 dirdef DIR_METRICS, 'metrics',     M_OKENA,   0,           F_UNIQUE, 1, 1, T_LISTEN, T_NONE, k_metrics
 dirdef DIR_BUSY_POLL, 'busy_poll',   M_OKENA,   0,           F_UNIQUE, 1, 1, T_DURAUTO, T_NONE, 0
@@ -381,6 +384,7 @@ dirdef DIR_CONNECT, 'connect',     M_POOL,    0,           F_UNIQUE or F_KEYS_BL
 dirdef DIR_HEALTH, 'health',      M_POOL,    0,           F_UNIQUE or F_KEYS_BLOCK, 1, 3, e_health, T_ANY, k_health
 dirdef DIR_UPTLS, 'tls',         M_POOL,    0,           F_UNIQUE or F_KEYS_BLOCK, 0, 0, T_NONE, T_NONE, k_uptls
 dirdef DIR_PHOST, 'host',       M_POOL,    0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
+dirdef DIR_PZONE, 'zone',       M_POOL,    0,           F_UNIQUE, 1, 1, e_pzone, T_NONE, k_pzone
 dirdef DIR_PROTOCOL, 'protocol', M_POOL,    0,           F_UNIQUE, 1, 1, e_proto, T_NONE, 0
 dirdef DIR_MODE, 'mode',         M_TCP or M_UDP, 0,      F_UNIQUE, 1, 1, e_listen_mode, T_NONE, k_mode
 dirdef DIR_XDP, 'xdp',           M_OKENA,   0,           F_UNIQUE, 1, 8, T_ANY, T_ANY, 0

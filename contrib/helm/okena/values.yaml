@@ -37,6 +37,12 @@ service:
 okena: |
   workers auto
 
+# This instance's zone, for zone-aware balancing (`okena { zone }`): a
+# Service's endpoints in that zone are preferred while one is up. "node": the
+# topology.kubernetes.io/zone label the pod gets from its node (Kubernetes
+# 1.33+, PodTopologyLabelsAdmission); a name: that zone; empty: none.
+zone: ""
+
 # more configuration after the generated part (pools, listeners of your own)
 extraConfig: ""
 

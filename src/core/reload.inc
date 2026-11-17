@@ -78,6 +78,7 @@ macro plan_regions action
 	action g_try_ms, 4 * MAX_TRYC
 	action g_plan_busy_poll, 8
 	action g_plan_ja4, 4
+	action g_plan_zone, 4
 	action g_plan_qcc, 4
 	action g_plan_qlb_len, 4
 	action g_plan_qlb_sid, 4

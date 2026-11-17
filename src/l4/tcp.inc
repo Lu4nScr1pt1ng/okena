@@ -451,6 +451,7 @@ sessions_init:
 	test	eax,eax
 	js	.done
 	mov	dword [g_force_server],NIL
+	call	zone_tick			; (zones: known before the first pick)
 	call	balance_stagger
 	xor	eax,eax
 .done:
@@ -1985,6 +1986,66 @@ sv_weight:
 	pop	rcx
 	ret
 
+bss
+	align 4
+	g_pick_pool	dd ?
+	g_pick_local	dd ?			; server_pick: pass 0 takes the local zone only
+	g_pl_zup	rd MAX_POOLS		; local-zone servers up, per pool (zone_tick)
+end bss
+
+; each tick, with `okena { zone }`: per pool, its servers of that zone that
+; are up (not drained, not failing checks, not ejected here, not backups):
+; server_pick keeps to them while there are `zone prefer min=` of them
+zone_tick:
+	cmp	dword [g_plan_zone],0
+	je	.none
+	push	rbx
+	push	r12
+	xor	ebx,ebx
+.pool:
+	cmp	ebx,[g_plan_pools]
+	jae	.done
+	imul	rax,rbx,PL_SIZE
+	xor	r12d,r12d
+	cmp	dword [g_pools+rax+PL_ZOFF],0
+	jne	.counted
+	mov	ecx,[g_pools+rax+PL_FIRST]
+	mov	r8d,ecx
+	add	r8d,[g_pools+rax+PL_COUNT]
+.server:
+	cmp	ecx,r8d
+	jae	.counted
+	imul	rdx,rcx,SV_SIZE
+	cmp	dword [g_servers+rdx+SV_ACTIVE],0
+	je	.next
+	cmp	dword [g_servers+rdx+SV_BACKUP],0
+	jne	.next
+	mov	eax,[g_servers+rdx+SV_ZONE]
+	cmp	eax,[g_plan_zone]
+	jne	.next
+	mov	rax,[g_api_tbl]
+	cmp	dword [rax+rcx*8],0
+	jne	.next				; drained
+	mov	rax,[g_health_tbl]
+	cmp	dword [rax+rcx*8],HC_UP
+	jne	.next
+	mov	eax,[g_sv_down+rcx*4]
+	cmp	eax,[g_tick]
+	ja	.next				; ejected here
+	inc	r12d
+.next:
+	inc	ecx
+	jmp	.server
+.counted:
+	mov	[g_pl_zup+rbx*4],r12d
+	inc	ebx
+	jmp	.pool
+.done:
+	pop	r12
+	pop	rbx
+.none:
+	ret
+
 ; edi = server index. CF when it may be chosen in pass esi
 ; (0 = healthy primaries, 1 = healthy backups, 2 = every primary).
 server_eligible:
@@ -2009,6 +2070,11 @@ server_eligible:
 	jnz	.no
 	cmp	esi,2
 	je	.yes
+	cmp	dword [g_pick_local],0		; the local zone's first (server_pick)
+	je	.health
+	mov	ecx,[g_servers+rax+SV_ZONE]
+	cmp	ecx,[g_plan_zone]
+	jne	.no
 	jmp	.health
 .backups:
 	test	ecx,ecx
@@ -2057,6 +2123,8 @@ server_pick:
 	push	rbp
 	imul	rbx,rdi,PL_SIZE
 	lea	rbx,[g_pools+rbx]
+	mov	[g_pick_pool],edi
+	mov	dword [g_pick_local],0
 	mov	ebp,esi
 	xor	r13d,r13d			; pass
 	mov	dword [g_pick_full],0
@@ -2086,6 +2154,19 @@ server_pick:
 	jmp	.pass
 .not_hashed:
 	mov	dword [g_pick_hashed],0		; (a key is for one pick only)
+	; zones: the servers of this instance's zone first, while enough are up
+	cmp	dword [g_plan_zone],0
+	je	@f
+	cmp	dword [rbx+PL_ZOFF],0
+	jne	@f
+	mov	eax,[rbx+PL_ZMIN]
+	cmp	eax,1
+	adc	eax,0				; (0: 1)
+	mov	ecx,[g_pick_pool]
+	cmp	[g_pl_zup+rcx*4],eax		; (zone_tick's count)
+	jb	@f
+	mov	dword [g_pick_local],1
+@@:
 	; least-request: two random servers, the one with fewer requests in
 	; flight per weight. O(1) whatever the pool size; the passes below
 	; (backups, panic, avoidance with one server left) only when the
@@ -2133,6 +2214,11 @@ server_pick:
 	call	.eligible
 	jnc	.balance
 .next_pass:
+	cmp	dword [g_pick_local],0		; none of the local zone: any zone
+	je	@f
+	mov	dword [g_pick_local],0
+	jmp	.pass
+@@:
 	inc	r13d
 	cmp	r13d,3
 	jb	.pass
@@ -2476,6 +2562,7 @@ server_pick:
 	ret
 .out:
 	mov	dword [g_pick_avoid2],0
+	mov	dword [g_pick_local],0
 	pop	rbp
 	pop	r15
 	pop	r14

@@ -229,6 +229,14 @@ def main():
     sec.socket = sctx.wrap_socket(sec.socket, server_side=True)
     threading.Thread(target=sec.serve_forever, daemon=True).start()
     service("shop", "secure", [{"name": "https", "port": 443, "targetPort": 8443}])
+    # a Service whose endpoints are in two zones (okena's is z1)
+    for name, ip in (("za", "127.0.0.9"), ("zb", "127.0.0.10")):
+        backend(name, ip, 8080)
+    service("shop", "zoned", [{"name": "http", "port": 80, "targetPort": 8080}])
+    state["slices"].append({"metadata": {"name": "zoned-1", "namespace": "shop", "labels": {"kubernetes.io/service-name": "zoned"}},
+                            "addressType": "IPv4", "ports": H,
+                            "endpoints": [{"addresses": ["127.0.0.9"], "conditions": {"ready": True}, "zone": "z1"},
+                                          {"addresses": ["127.0.0.10"], "conditions": {"ready": True}, "zone": "z2"}]})
     sso = S(("127.0.0.8", 8080), Sso)
     threading.Thread(target=sso.serve_forever, daemon=True).start()
     service("auth", "sso", [{"name": "http", "port": 80, "targetPort": 8080}])
@@ -298,6 +306,7 @@ def main():
                                                           "auth-cache-key": "$cookie_s", "auth-cache-duration": "200 30s"}),
         one("authns", "authns.test", [path("/", web)], ann={"auth-url": "http://nosuch.auth.svc/verify"}),
         one("authbad", "authbad.test", [path("/", web)], ann={"auth-url": "ftp://sso/verify"}),
+        one("zoned", "zoned.test", [path("/", svc_backend("zoned", port=80))]),
         one("bogus", "bogus.test", [path("/", web)], ann={"whitelist-source-range": "bogus, 1.2.3.4/99\"; respond 200",
                                                           "proxy-body-size": "1x"}),
     ]
@@ -309,7 +318,7 @@ def main():
     gwdir = tmp / "gw"
     conf = tmp / "okena.conf"
     conf.write_text(f"""okena {{
-    drain delay=0s timeout=1s; workers 2; io_engine {ENGINE}
+    drain delay=0s timeout=1s; workers 2; io_engine {ENGINE}; zone z1
     gateway kubernetes dir={gwdir} api=127.0.0.1:{API} ca={tmp}/ca.crt token={tok} ingress=okena http={HTTP} https={HTTPS}
 }}
 http 127.0.0.1:{LST} {{ route /* {{ respond 404 }} }}
@@ -388,6 +397,9 @@ include "{gwdir}/*.conf"
               (seen.count("api"), seen.count("web")))
         check("  all of the weight: all to it", all(c("all.test") == "api" for i in range(10)))
         check("  a canary alone is not served", c("lonely.test") != "api", c("lonely.test"))
+        # zones from EndpointSlices
+        z = [get(HTTP, "/", "zoned.test")[1].split(" ")[0] for i in range(20)]
+        check("an EndpointSlice's zones: okena's zone's endpoint first", set(z) == {"za"}, z)
         # auth-url
         r = get(HTTP, "/a?b=1", "auth.test", full=True)
         check("auth-url: refused, to auth-signin with nginx's variables as okena's", r[0] == 302 and r[2].get("location")

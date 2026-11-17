@@ -225,6 +225,8 @@ PL_TLS_AFIRST	:= 128		; d: its first anchor in g_upa (tls/upanchors.inc)
 PL_TLS_ACOUNT	:= 132		; d: and how many
 PL_TLS_NOVERIFY	:= 136		; d: `verify off`: the backend's certificate is not checked
 PL_TLS_ANCHOR	:= 140		; (room once held an anchor's key; free)
+PL_ZOFF		:= 144		; d: `zone off`: no zone preferred
+PL_ZMIN		:= 148		; d: `zone prefer min=`: local servers up for the zone to be kept to, 0 = 1
 PL_H2		:= 672		; d: 1 when this pool's backends speak HTTP/2 (`protocol h2`)
 PL_HKEY		:= 676		; d: maglev, ring-hash: HK_*
 PL_HNLEN	:= 680		; d: the header's or cookie's name
@@ -278,6 +280,7 @@ SV_TLEN		:= 136		; d
 SV_ACTIVE	:= 140		; d: holds an address (names: once resolved)
 SV_MAX		:= 148		; d: connections in use at most, 0 = no limit
 SV_GROUP	:= 144		; d: name group + 1, or 0 for an address
+SV_ZONE		:= 152		; d: its zone's hash (zone_hash), 0 none
 SV_SIZE		:= 160
 
 BAL_ROUND_ROBIN	:= 0
@@ -317,6 +320,7 @@ bss
 	g_plan_watchdog		dq ?
 	g_plan_busy_poll	dq ?		; microseconds; 0 auto (not set), -1 off
 	g_plan_ja4	dd ?		; TLS fingerprints computed (ja4.inc)
+	g_plan_zone	dd ?		; `okena { zone NAME }`: its hash, 0 none
 	g_plan_qcc		dd ?		; quic_cc: 0 cubic, 1 bbr
 	g_plan_qlb_len		dd ?		; quic_server_id: its bytes (0: none)
 	g_plan_qlb_sid		rb 4
@@ -754,6 +758,9 @@ compile_settings:
 	lea	rcx,[dir_table + D_SIZE*DIR_JA4]
 	cmp	rax,rcx
 	je	.ja4
+	lea	rcx,[dir_table + D_SIZE*DIR_ZONE]
+	cmp	rax,rcx
+	je	.zone
 	lea	rcx,[dir_table + D_SIZE*DIR_RELOAD]
 	cmp	rax,rcx
 	je	.reload_watch
@@ -1076,6 +1083,13 @@ compile_settings:
 	cmp	word [rax],'on'
 	sete	cl
 	mov	[g_plan_last_good],ecx
+	jmp	.advance
+.zone:
+	mov	rax,[rbx+N_ARGS]
+	mov	rdi,[rax+A_VAL]
+	mov	ecx,[rax+A_VLEN]
+	call	zone_hash
+	mov	[g_plan_zone],eax
 	jmp	.advance
 .ja4:
 	mov	rax,[rbx+N_ARGS]
@@ -3763,6 +3777,9 @@ compile_pool:
 	lea	rcx,[dir_table + D_SIZE*DIR_SLOW_START]
 	cmp	rax,rcx
 	je	.slow_start
+	lea	rcx,[dir_table + D_SIZE*DIR_PZONE]
+	cmp	rax,rcx
+	je	.pzone
 	lea	rcx,[dir_table + D_SIZE*DIR_STICKY]
 	cmp	rax,rcx
 	je	.sticky
@@ -4237,6 +4254,25 @@ compile_pool:
 	js	plan_bad_sticky
 	mov	[r13+PL_SSAME],eax
 	jmp	.advance
+.pzone:
+	; zone prefer [min=N] | zone off
+	mov	rax,[rbx+N_ARGS]
+	mov	rax,[rax+A_VAL]
+	cmp	byte [rax],'o'
+	jne	@f
+	mov	dword [r13+PL_ZOFF],1
+	jmp	.advance
+@@:
+	mov	rdi,rbx
+	lea	rsi,[str_key_min]
+	call	node_option
+	test	rax,rax
+	jz	.advance
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_decimal
+	mov	[r13+PL_ZMIN],eax
+	jmp	.advance
 .slow_start:
 	mov	rax,[rbx+N_ARGS]
 	mov	rdi,[rax+A_VAL]
@@ -4656,6 +4692,16 @@ compile_server:
 	mov	[rbx+SV_MAX],eax
 	mov	dword [r12+PL_HASMAX],1
 @@:
+	mov	rdi,r13
+	lea	rsi,[str_key_zone]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	mov	rdi,[rax+A_VAL]
+	mov	ecx,[rax+A_VLEN]
+	call	zone_hash
+	mov	[rbx+SV_ZONE],eax
+@@:
 	cmp	dword [rbx+SV_BACKUP],0
 	jne	@f
 	inc	dword [r12+PL_PRIMARY]
@@ -4666,11 +4712,13 @@ compile_server:
 	mov	eax,[rbx+SV_WEIGHT]
 	mov	ecx,[rbx+SV_BACKUP]
 	mov	r9d,[rbx+SV_MAX]
+	mov	r10d,[rbx+SV_ZONE]
 	mov	edx,DNS_MAX_ADDRS - 1
 	lea	r8,[rbx+SV_SIZE]
 @@:
 	mov	[r8+SV_WEIGHT],eax
 	mov	[r8+SV_BACKUP],ecx
+	mov	[r8+SV_ZONE],r10d
 	mov	[r8+SV_MAX],r9d			; (each address of a name its own max)
 	add	r8,SV_SIZE
 	dec	edx
@@ -4682,6 +4730,33 @@ compile_server:
 	ret
 
 cstring str_localhost, 'localhost',0
+cstring str_key_zone, 'zone',0
+
+; rdi/ecx = a zone's name: eax = its hash (FNV-1a), never 0. Keeps all but
+; rax, flags.
+zone_hash:
+	push	rcx
+	push	rdx
+	push	rdi
+	mov	eax,0x811C9DC5
+	test	ecx,ecx
+	jz	.done
+.c:
+	movzx	edx,byte [rdi]
+	xor	eax,edx
+	imul	eax,eax,0x01000193
+	inc	rdi
+	dec	ecx
+	jnz	.c
+.done:
+	test	eax,eax
+	jnz	@f
+	inc	eax
+@@:
+	pop	rdi
+	pop	rdx
+	pop	rcx
+	ret
 
 ; rdi = address arg, rsi = pool entry. rax = new server (weight 1).
 server_new:

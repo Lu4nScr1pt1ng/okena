@@ -1496,6 +1496,31 @@ reloads and on every instance with the same servers. With `maglev` and
 any server at that share of the average load: a hot key spills over to the
 next server its hash gives, and comes back when load drops.
 
+### Zones
+
+In a cloud, traffic between zones costs money and latency. Give okena its
+zone and the servers theirs, and each request goes to a server of okena's
+zone while one is up:
+
+```nginx
+okena { zone us-east-1a }                # or ${env:ZONE}
+pool api {
+    server 10.0.1.10:8080 zone=us-east-1a
+    server 10.0.1.11:8080 zone=us-east-1a
+    server 10.0.2.10:8080 zone=us-east-1b
+    zone prefer min=2                    # spread as soon as fewer than 2 here are up
+}
+```
+
+The balancing (least-request, round robin, ...) runs among the servers of
+that zone. When none is up (failing health checks, ejected, drained), or
+fewer than `min=` (1 by default), every zone's servers take the traffic, and
+it comes back as they recover. `zone off` in a pool spreads it always. A
+`discover kubernetes` pool takes each endpoint's zone from its EndpointSlice,
+so Services are topology-aware with no more configuration. The hashing
+balancers (`maglev`, `ring-hash`, `source-hash`) and backups ignore zones:
+a key stays on its server.
+
 ### Health
 
 ```nginx

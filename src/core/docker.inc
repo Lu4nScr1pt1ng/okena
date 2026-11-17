@@ -739,6 +739,7 @@ dk_container:
 	mov	[rdi+DE_PORT],r14d
 	mov	[rdi+DE_WEIGHT],r15d
 	mov	dword [rdi+DE_BACKUP],0
+	mov	dword [rdi+DE_ZONE],0
 .no:
 	ret
 

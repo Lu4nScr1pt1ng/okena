@@ -493,6 +493,7 @@ cs_entry:
 	pop	rax
 	mov	[rdi+DE_WEIGHT],eax
 	mov	dword [rdi+DE_BACKUP],0
+	mov	dword [rdi+DE_ZONE],0
 	ret
 .no_weight:
 	pop	rax

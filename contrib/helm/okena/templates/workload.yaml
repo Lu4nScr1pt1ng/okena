@@ -31,6 +31,11 @@ spec:
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args: ["-c", "/etc/okena/okena.conf"]
+          {{- if eq .Values.zone "node" }}
+          env:
+            - name: OKENA_ZONE
+              valueFrom: {fieldRef: {fieldPath: "metadata.labels['topology.kubernetes.io/zone']"}}
+          {{- end }}
           ports:
             - {name: http, containerPort: {{ .Values.ports.http }}}
             - {name: https, containerPort: {{ .Values.ports.https }}}

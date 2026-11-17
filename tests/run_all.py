@@ -107,6 +107,8 @@ SUITES = [
     ("health", ["tests/health/run.py"]),
     ("health match", ["tests/health/match.py"]),
     ("lb", ["tests/lb/run.py"]),
+    ("zone io_uring", ["tests/lb/zone.py", "io_uring"]),
+    ("zone epoll", ["tests/lb/zone.py", "epoll"]),
     ("admin io_uring", ["tests/admin/run.py", "io_uring"]),
     ("admin epoll", ["tests/admin/run.py", "epoll"]),
     ("observability io_uring", ["tests/admin/obs.py", "io_uring"]),

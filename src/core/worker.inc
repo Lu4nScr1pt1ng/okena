@@ -536,6 +536,7 @@ tick_work:
 	add	rax,[g_hb]
 	inc	qword [rax]
 	call	idle_expire
+	call	zone_tick			; (zones: local servers up, per pool)
 	call	ph_expire
 	call	hbuf_tick			; freed sessions' buffers back to the kernel
 	call	addon_bb_tick			; addons' body buffers of sessions gone
