@@ -2,8 +2,9 @@
 
 okena against the proxies people actually run: HAProxy, nginx, Envoy, Caddy
 and Traefik, plus Katran for XDP and OpenSSL for crypto. Every number on this
-page comes from a script in `tests/bench/`, run on one machine in November 2026,
-and can be reproduced with the command given in its section. Where okena is
+page comes from a script in `tests/bench/`, run on one machine in November 2026
+(the whole page again on 2026-11-17, but memory per idle connection and the
+crypto table), and can be reproduced with the command given in its section. Where okena is
 not first, the table says so; [the last section](#where-okena-is-not-first)
 collects those cases.
 
@@ -89,55 +90,56 @@ The most each proxy did on two cores, and okena's lead over the next best:
 
 | Scenario | okena | next best | lead |
 |---|---|---|---|
-| HTTP/1.1, requests/s | **150,665** | HAProxy 103,830 | 1.45× |
-| HTTPS (TLS 1.3), requests/s | **142,775** | HAProxy 77,865 | 1.83× |
-| HTTPS (TLS 1.3), handshakes per CPU-second | **6,548** | Envoy 5,108 | 1.28× |
-| HTTP/2, requests/s | **236,934** | HAProxy 97,235 | 2.44× |
-| gRPC unary calls/s | **154,397** | HAProxy 55,627 | 2.78× |
-| HTTP/3, requests/s | **191,921** | HAProxy 124,976 | 1.54× |
-| HTTP/3, new connections/s with none failing | **9,960** | HAProxy 1,258 | 7.9× |
-| TCP, 256 connections, messages/s | **154,835** | nginx 138,567 | 1.12× |
-| TCP bulk transfer | **95.2 Gbit/s** | Envoy 42.1 Gbit/s | 2.26× |
-| UDP, 256 flows, datagrams/s | **200,547** | nginx 145,363 | 1.38× |
-| 1 MB responses | **76.6 Gbit/s** | Envoy 33.3 Gbit/s | 2.30× |
-| JWT-checked requests/s | **98,258** | Envoy 24,608 | 4.0× |
-| Cache hits/s | **292,072** | HAProxy 183,777 | 1.59× |
+| HTTP/1.1, requests/s | **151,974** | HAProxy 100,434 | 1.51× |
+| HTTPS (TLS 1.3), requests/s | **152,437** | HAProxy 82,825 | 1.84× |
+| HTTPS (TLS 1.3), handshakes per CPU-second | **6,450** | Envoy 5,263 | 1.23× |
+| HTTP/2, requests/s | **241,365** | HAProxy 104,350 | 2.31× |
+| gRPC unary calls/s | **155,925** | HAProxy 55,450 | 2.81× |
+| HTTP/3, requests/s | **192,004** | HAProxy 132,061 | 1.45× |
+| HTTP/3, new connections/s with none failing | **9,980** | HAProxy 1,266 | 7.9× |
+| TCP, 256 connections, messages/s | **155,663** | nginx 141,854 | 1.10× |
+| TCP bulk transfer | **102.1 Gbit/s** | Envoy 39.1 Gbit/s | 2.61× |
+| UDP, 256 flows, datagrams/s | **200,781** | nginx 146,346 | 1.37× |
+| 1 MB responses | **78.9 Gbit/s** | Envoy 34.0 Gbit/s | 2.32× |
+| JWT-checked requests/s | **103,084** | Envoy 26,319 | 3.9× |
+| Cache hits/s | **300,816** | HAProxy 183,485 | 1.64× |
 | 100k idle connections, total memory | **73 MiB** | HAProxy 184 MiB | 2.5× less |
-| XDP, packets/s on one core (flows in table) | **2.26 M** | Katran 2.05 M | 1.10× |
+| XDP, packets/s on one core (flows in table) | **2.30 M** | Katran 2.13 M | 1.08× |
 
 ---
 
 ## HTTP/1.1
 
 `tests/bench/http.sh`. The backend is nginx answering "ok" from memory
-(326k requests/s straight to it). Keep-alive on both sides.
+(333k requests/s straight to it). Keep-alive on both sides.
 
 **Most requests a second** (wrk, 8 threads, 256 connections, 10 s):
 
 | Proxy (2 cores) | requests/s | per core |
 |---|---|---|
-| **okena** | **150,665** | 75,332 |
-| HAProxy | 103,830 | 51,915 |
-| nginx | 81,737 | 40,868 |
-| Envoy | 35,444 | 17,722 |
-| Traefik | 33,106 | 16,553 |
-| Caddy | 25,526 | 12,763 |
+| **okena** | **151,974** | 75,987 |
+| HAProxy | 100,434 | 50,217 |
+| nginx | 97,071 | 48,535 |
+| Traefik | 36,118 | 18,059 |
+| Envoy | 35,352 | 17,676 |
+| Caddy | 27,799 | 13,899 |
 
 **Latency at fixed rates** (`RATES="10000 30000 80000"`; okena bench, 64
 connections), p50 / p99 / p99.9 / max in µs:
 
 | Proxy | 10,000/s | 30,000/s | 80,000/s |
 |---|---|---|---|
-| **okena** | **44 / 56 / 80** / 563 | **40 / 52 / 79** / 731 | **35 / 54 / 74** / 444 |
-| HAProxy | 54 / 82 / 167 / 1901 | 51 / 115 / 1114 / 2611 | 135 / 9699 / 13500 / 15475 |
-| nginx | 58 / 100 / 145 / 908 | 62 / 376 / 1097 / 3851 | 356 / 1.6 s / 1.7 s / 1.7 s |
-| Caddy | 92 / 1441 / 4456 / 11582 | 0.31 s / 0.65 s / 0.70 s | could not keep up |
-| Traefik | 83 / 323 / 2949 / 6399 | 2949 / 20447 / 31457 / 38723 | could not keep up |
-| Envoy | 126 / 223 / 606 / 2258 | 778 / 1523 / 3997 / 6376 | could not keep up |
+| **okena** | **43 / 55** / 82 / 163 | **39 / 49 / 92** / 978 | **34 / 56 / 81** / 525 |
+| HAProxy | 50 / 62 / **80** / 174 | 48 / 73 / 94 / 595 | 131 / 17563 / 29360 / 32200 |
+| nginx | 56 / 74 / 113 / 211 | 57 / 100 / 303 / 1488 | 0.11 s / 1.9 s / 2.0 s / 2.0 s |
+| Traefik | 80 / 223 / 1998 / 4949 | 3473 / 21495 / 29884 / 49561 | could not keep up |
+| Caddy | 88 / 401 / 2260 / 5416 | 0.11 s / 0.31 s / 0.36 s | could not keep up |
+| Envoy | 114 / 172 / 208 / 1053 | 663 / 1032 / 1277 / 1860 | could not keep up |
 
-okena has the lowest p50, p99 and p99.9 at every rate, and is the only one
+okena has the lowest p50 and p99 at every rate and the lowest p99.9 but at
+10,000/s, where HAProxy's is 2 µs lower (80 against 82). It is the only one
 whose latency doesn't move between 10k and 80k requests a second: at 80k/s
-its p99 is 54 µs, HAProxy's 9.7 ms. "Could not keep up" means the proxy
+its p99 is 56 µs, HAProxy's 17.6 ms. "Could not keep up" means the proxy
 fell behind the schedule by hundreds of thousands of requests.
 
 ---
@@ -159,42 +161,42 @@ defaults otherwise (session tickets on). The backend stays plain HTTP.
 
 | Proxy (2 cores) | TLS | keep-alive requests/s | full handshakes/s | handshakes per CPU-second |
 |---|---|---|---|---|
-| **okena** | 1.3 | **142,775** | **9,474** | **6,548** |
-| HAProxy | 1.3 | 77,865 | 6,390 | 3,348 |
-| nginx | 1.3 | 73,544 | 5,386 | 2,913 |
-| Envoy | 1.3 | 30,826 | 8,492 | 5,108 |
-| Traefik | 1.3 | 30,386 | 3,947 | 2,079 |
-| Caddy | 1.3 | 23,848 | 5,612 | 3,061 |
-| **okena** | 1.2 | **142,124** | **13,014** | **8,138** |
-| HAProxy | 1.2 | 79,737 | 6,812 | 3,570 |
-| nginx | 1.2 | 72,102 | 6,228 | 3,408 |
-| Envoy | 1.2 | 31,066 | 10,865 | 6,564 |
-| Traefik | 1.2 | 29,319 | 8,304 | 4,428 |
-| Caddy | 1.2 | 23,692 | 8,044 | 4,419 |
+| **okena** | 1.3 | **152,437** | **9,547** | **6,450** |
+| HAProxy | 1.3 | 82,825 | 6,562 | 3,430 |
+| nginx | 1.3 | 73,579 | 5,411 | 2,979 |
+| Envoy | 1.3 | 33,380 | 8,566 | 5,263 |
+| Traefik | 1.3 | 32,673 | 4,073 | 2,148 |
+| Caddy | 1.3 | 24,442 | 5,799 | 3,151 |
+| **okena** | 1.2 | **150,052** | **13,429** | **8,090** |
+| HAProxy | 1.2 | 84,388 | 7,137 | 3,730 |
+| nginx | 1.2 | 79,011 | 6,353 | 3,507 |
+| Envoy | 1.2 | 32,876 | 11,342 | 6,804 |
+| Traefik | 1.2 | 32,554 | 8,534 | 4,536 |
+| Caddy | 1.2 | 24,780 | 8,330 | 4,583 |
 
-okena loses under 1% of its plaintext throughput to TLS (it seals records
-itself, without kTLS); HAProxy loses 25%, nginx, Envoy, Caddy and Traefik
-7-13%. In TLS 1.3 the client offers X25519MLKEM768 first (OpenSSL 3.5's
+okena loses nothing measurable of its plaintext throughput to TLS (it seals
+records itself, without kTLS); HAProxy loses 16-18%, nginx 19-24%, Envoy,
+Caddy and Traefik 6-12%. In TLS 1.3 the client offers X25519MLKEM768 first (OpenSSL 3.5's
 default), so every full handshake includes a post-quantum key exchange.
 
 Latency, p50 / p99 / p99.9 / max in µs. At the higher rates a few requests
-failed for everyone that kept up (at most 1 for okena, 3 for HAProxy, 40 for
+failed for everyone that kept up (at most 1 for okena, 12 for HAProxy, 30 for
 nginx in a run); the ones that could not keep up failed dozens.
 
 | Proxy | TLS | 10,000/s | 30,000/s | 60,000/s |
 |---|---|---|---|---|
-| **okena** | 1.3 | **134 / 284 / 879** / 11437 | **250 / 730 / 3199** / 18668 | **426 / 3126 / 13684** / 33546 |
-| HAProxy | 1.3 | 191 / 400 / 7696 / 22309 | 466 / 1684 / 10008 / 26883 | 882 / 13774 / 21122 / 31180 |
-| nginx | 1.3 | 203 / 525 / 4776 / 18237 | 431 / 1312 / 9904 / 21274 | 976 / 16117 / 24897 / 32379 |
-| Traefik | 1.3 | 333 / 1467 / 9152 / 19561 | 3282 / 20444 / 23099 / 26356 | could not keep up |
-| Caddy | 1.3 | 399 / 2776 / 11418 / 28973 | could not keep up | could not keep up |
-| Envoy | 1.3 | 456 / 1078 / 6755 / 17746 | could not keep up | could not keep up |
-| **okena** | 1.2 | **133 / 273 / 671** / 8425 | **253 / 605 / 3005** / 15893 | **481 / 2460 / 12279** / 32424 |
-| HAProxy | 1.2 | 193 / 407 / 3356 / 16728 | 419 / 1206 / 8315 / 25490 | 852 / 11926 / 21380 / 32843 |
-| nginx | 1.2 | 197 / 447 / 3406 / 16595 | 433 / 1099 / 9835 / 21707 | 938 / 17008 / 25965 / 32374 |
-| Traefik | 1.2 | 325 / 1543 / 9218 / 21411 | 3632 / 20624 / 25829 / 28831 | could not keep up |
-| Caddy | 1.2 | 393 / 2652 / 8039 / 15394 | could not keep up | could not keep up |
-| Envoy | 1.2 | 465 / 1192 / 13653 / 24818 | could not keep up | could not keep up |
+| **okena** | 1.3 | **128 / 240 / 481** / 13453 | **232 / 478 / 2548** / 15288 | **410 / 879 / 4200** / 14245 |
+| HAProxy | 1.3 | 186 / 371 / 5056 / 23332 | 407 / 757 / 7223 / 22238 | 792 / 3217 / 13167 / 23002 |
+| nginx | 1.3 | 195 / 423 / 6800 / 24714 | 426 / 934 / 13207 / 27161 | 940 / 3657 / 17605 / 23164 |
+| Traefik | 1.3 | 315 / 1156 / 9466 / 24338 | 3858 / 24193 / 28450 / 32041 | could not keep up |
+| Caddy | 1.3 | 370 / 2272 / 10522 / 26623 | could not keep up | could not keep up |
+| Envoy | 1.3 | 402 / 814 / 4917 / 14500 | 1239 / 22995 / 30581 / 32320 | could not keep up |
+| **okena** | 1.2 | **129 / 245 / 886** / 14044 | **242 / 486 / 2253** / 14161 | **445 / 957 / 4762** / 13896 |
+| HAProxy | 1.2 | 188 / 381 / 2563 / 15216 | 428 / 826 / 9790 / 28367 | 813 / 3227 / 15210 / 26056 |
+| nginx | 1.2 | 188 / 404 / 3765 / 13671 | 448 / 1037 / 8249 / 18383 | 964 / 6079 / 19922 / 22288 |
+| Traefik | 1.2 | 312 / 1224 / 7241 / 23897 | 4366 / 22944 / 26187 / 30139 | could not keep up |
+| Caddy | 1.2 | 384 / 2223 / 4363 / 19010 | could not keep up | could not keep up |
+| Envoy | 1.2 | 402 / 835 / 1866 / 18783 | 1243 / 9336 / 15345 / 18382 | could not keep up |
 
 ---
 
@@ -208,27 +210,27 @@ every answer came over h2c and 99% were 2xx. Latency from okena bench
 
 | Proxy (2 cores) | requests/s | per core |
 |---|---|---|
-| **okena** | **236,934** | 118,467 |
-| HAProxy | 97,235 | 48,617 |
-| nginx | 71,363 | 35,681 |
-| Envoy | 38,764 | 19,382 |
-| Traefik | 24,210 | 12,105 |
-| Caddy | 20,405 | 10,202 |
+| **okena** | **241,365** | 120,682 |
+| HAProxy | 104,350 | 52,175 |
+| nginx | 73,102 | 36,551 |
+| Envoy | 40,448 | 20,224 |
+| Traefik | 24,527 | 12,263 |
+| Caddy | 20,837 | 10,418 |
 
 okena does more over HTTP/2 than over HTTP/1.1: many streams share each
 connection, so there are fewer system calls per request.
 
 | Proxy | 10,000/s | 30,000/s | 80,000/s |
 |---|---|---|---|
-| **okena** | **46 / 56 / 80** / 256 | **40 / 50 / 82** / 851 | **44 / 67 / 215** / 1266 |
-| HAProxy | 56 / 84 / 190 / 1320 | 60 / 114 / 249 / 3374 | 133 / 1359 / 5046 / 8069 |
-| nginx | 72 / 121 / 180 / 779 | 95 / 2293 / 3538 / 4927 | 0.68 s / 2.4 s / 2.5 s |
-| Envoy | 161 / 237 / 495 / 2157 | 2195 / 8060 / 10747 / 12165 | could not keep up |
-| Traefik | 141 / 1622 / 5242 / 10874 | could not keep up | could not keep up |
-| Caddy | 145 / 2326 / 5242 / 10338 | could not keep up | could not keep up |
+| **okena** | **45 / 57 / 90** / 233 | **40 / 57 / 86** / 704 | **41 / 64 / 99** / 856 |
+| HAProxy | 55 / 68 / 97 / 192 | 63 / 78 / 108 / 426 | 145 / 319 / 9961 / 13618 |
+| nginx | 68 / 89 / 130 / 327 | 91 / 1687 / 2047 / 2813 | 0.52 s / 2.6 s / 2.6 s |
+| Envoy | 155 / 202 / 262 / 547 | 1114 / 5373 / 7536 / 8899 | could not keep up |
+| Traefik | 139 / 2326 / 6815 / 11122 | could not keep up | could not keep up |
+| Caddy | 139 / 1605 / 4095 / 7739 | could not keep up | could not keep up |
 
-okena is lowest at every rate and percentile, and at 80,000/s it is the only
-one under a millisecond at p99.
+okena is lowest at every rate and percentile; at 80,000/s its p99.9 is 99 µs,
+HAProxy's 10 ms.
 
 ---
 
@@ -238,31 +240,35 @@ one under a millisecond at p99.
 sides, in front of a Go echo backend (grpc-go). Unary calls of 64 bytes.
 Throughput from h2load posting gRPC frames (64 connections, 16 streams);
 each proxy is first checked to end 4000 calls with grpc-status 0 (none had an
-error). Latency from a Go client in open loop.
+error). Latency from a Go client in open loop. The backend is started anew
+for each path: one that has just taken a few million calls is slower for the
+next (until 2026-11-17 the script kept it, and whoever came after the direct
+run lost about 5%).
 
 | Path (2 cores) | unary calls/s | per core |
 |---|---|---|
-| straight to the backend | 223,252 | |
-| **okena** | **154,397** | 77,198 |
-| HAProxy | 55,627 | 27,813 |
-| Envoy | 49,540 | 24,770 |
-| nginx | 35,051 | 17,525 |
-| Traefik | 19,008 | 9,504 |
-| Caddy | 18,459 | 9,229 |
+| straight to the backend | 225,050 | |
+| **okena** | **155,925** | 77,962 |
+| HAProxy | 55,450 | 27,725 |
+| Envoy | 51,396 | 25,698 |
+| nginx | 34,959 | 17,479 |
+| Traefik | 19,728 | 9,864 |
+| Caddy | 19,438 | 9,719 |
 
 | Path | 5,000/s | 20,000/s | 40,000/s |
 |---|---|---|---|
-| straight to the backend | 148 / 199 / 477 | 145 / 612 / 1873 | 124 / 1110 / 2445 |
-| **okena** | **180 / 227 / 453** | **188 / 610 / 1720** | **196 / 1251 / 2555** |
-| HAProxy | 201 / 305 / 587 | 228 / 1980 / 4336 | 2107 / 41722 / 57128 |
-| nginx | 215 / 297 / 573 | 5922 / 69182 / 112174 | 2.5 s / 7.8 s / 9.7 s |
-| Envoy | 281 / 414 / 687 | 1095 / 14189 / 25936 | 0.39 s / 1.3 s / 1.6 s |
-| Traefik | 304 / 1572 / 4817 | 0.98 s / 3.6 s / 5.1 s | 3.7 s / 8.9 s / 10.5 s |
-| Caddy | 304 / 2287 / 4826 | 1.3 s / 4.7 s / 6.2 s | 3.9 s / 9.2 s / 10.7 s |
+| straight to the backend | 147 / 185 / 718 | 143 / 668 / 2137 | 122 / 1024 / 2370 |
+| **okena** | **182 / 244** / 461 | **180 / 604 / 1768** | **181 / 1066 / 2600** |
+| HAProxy | 196 / 257 / **452** | 220 / 775 / 2250 | 6295 / 76881 / 121529 |
+| nginx | 211 / 274 / 459 | 14 ms / 0.35 s / 0.44 s | 1.9 s / 7.8 s / 10.0 s |
+| Envoy | 268 / 327 / 466 | 942 / 17568 / 27131 | 0.14 s / 0.39 s / 0.45 s |
+| Traefik | 298 / 1121 / 4463 | 0.81 s / 3.3 s / 4.5 s | 3.8 s / 8.9 s / 10.3 s |
+| Caddy | 299 / 1709 / 4318 | 1.0 s / 4.1 s / 5.6 s | 3.9 s / 9.1 s / 10.6 s |
 
 The Go client itself accounts for most of each latency (see the backend's
 own row). At 40,000 calls a second only okena stays close to the backend's
-tail: p99 1.3 ms against HAProxy's 42 ms.
+tail: p99 1.1 ms against HAProxy's 77 ms. At 5,000/s HAProxy's and nginx's
+p99.9 are 2-9 µs under okena's.
 
 ---
 
@@ -277,18 +283,22 @@ with ngtcp2 and nghttp3, and from okena bench `proto=h3`.
 
 | Server (2 cores) | requests/s | p50 / p99 / p99.9 (µs) |
 |---|---|---|
-| **okena** | **191,921** | **3321 / 6265 / 9130** |
-| HAProxy | 124,976 | 4997 / 6710 / 10008 |
-| nginx | 95,290 | 6466 / 14960 / 46500 |
+| **okena** | **192,004** | **2949** / 6844 / 9565 |
+| HAProxy | 132,061 | 4756 / **5776 / 7332** |
+| nginx | 101,657 | 5204 / 25156 / 63645 |
+
+In closed loop a request waits behind the ones in flight, so these latencies
+follow throughput: HAProxy's tail is shorter at two thirds of okena's rate.
+Latency at the same rate for all three is the open loop table below.
 
 **A new connection for every request**, at fixed rates. Each request
 includes a full QUIC handshake:
 
 | Rate offered | okena | HAProxy | nginx |
 |---|---|---|---|
-| 2,000/s | **2,016/s**, none failed | 1,258/s | 1,117/s |
-| 5,000/s | **4,987/s**, none failed | 692/s, 50,836 failed | 1,115/s, 12,156 failed |
-| 10,000/s | **9,960/s**, none failed | 641/s, 137,144 failed | 727/s, 131,114 failed |
+| 2,000/s | **2,016/s**, none failed | 1,266/s | 1,124/s |
+| 5,000/s | **4,988/s**, none failed | 697/s, 50,296 failed | 1,131/s, 10,370 failed |
+| 10,000/s | **9,980/s**, none failed | 688/s, 139,182 failed | 921/s, 126,122 failed |
 
 okena keeps up with about 10,000 new QUIC connections a second on two cores;
 HAProxy and nginx top out near 1,000 and start failing connections past it.
@@ -299,21 +309,21 @@ a second (real ClientHellos, never answered). Median of 3 runs:
 
 | Server | quiet: p50 / p99 / p99.9 (µs) | under the flood: requests/s | under the flood: p50 / p99 / p99.9 (µs) |
 |---|---|---|---|
-| **okena** | **65 / 139 / 416** | **16,767** | **129 / 580 / 4647** |
-| HAProxy | 98 / 271 / 757 | 8,490 | 420 / 163,365 / 180,970 |
-| nginx | 128 / 556 / 1891 | 7,850 | 1036 / 111,919 / 483,066 |
+| **okena** | **62 / 134 / 801** | **16,778** | **118 / 1157 / 16178** |
+| HAProxy | 319 / 705 / 889 | 8,533 | 799 / 97,252 / 104,420 |
+| nginx | 112 / 498 / 1032 | 8,269 | 249 / 28,868 / 444,368 |
 
 Under the flood okena keeps the whole rate; HAProxy and nginx lose half of it
-and their p99 reaches 0.1-0.2 s.
+and their p99 reaches 0.03-0.1 s.
 
 **Open loop** (okena bench `proto=h3`, 60 connections), median of 3 runs,
 p50 / p99 / p99.9 in µs:
 
 | Server | 5,000/s | 18,000/s | 40,000/s |
 |---|---|---|---|
-| **okena** | **51 / 67 / 90** | **38 / 52 / 81** | **36 / 56 / 91** |
-| HAProxy | 72 / 89 / 121 | 62 / 81 / 133 | 81 / 1785 / 2785 |
-| nginx | 57 / 76 / 118 | 48 / 88 / 278 | 86 / 42,991 / 58,720 |
+| **okena** | **48 / 78 / 105** | **38 / 54 / 90** | **36 / 56 / 96** |
+| HAProxy | 67 / 94 / 122 | 61 / 77 / 117 | 108 / 438 / 1359 |
+| nginx | 58 / 671 / 7733 | 48 / 69 / 155 | 76 / 19,398 / 33,554 |
 
 okena is lowest at every rate and percentile. okena bench acknowledges as
 browsers do (RFC 9000 13.2.1: after two packets or 25 ms, or with the next
@@ -337,24 +347,25 @@ plugin. The backends are an echo, a sink and a UDP echo from
 
 | Path (2 cores) | ping1 | ping256 | bulk | connect | udp1 | udp256 |
 |---|---|---|---|---|---|---|
-| straight to the backend | 63,745/s | 458,723/s | 220.8 Gbit/s | 88,965/s | 72,547/s | 566,989/s |
-| **okena** | **36,948/s** | **154,835/s** | **95.2 Gbit/s** | **25,607/s** | **38,194/s** | **200,547/s** |
-| nginx | 29,064/s | 138,567/s | 22.7 Gbit/s | 14,057/s | 32,886/s | 145,363/s |
-| HAProxy | 27,619/s | 129,120/s | 20.7 Gbit/s | 20,874/s | | |
-| Traefik | 28,157/s | 119,495/s | 36.8 Gbit/s | 10,051/s | 18,820/s | 75,657/s, 881 lost |
-| Envoy | 24,017/s | 106,430/s | 42.1 Gbit/s | 12,421/s | 29,283/s | 130,623/s |
+| straight to the backend | 66,904/s | 462,777/s | 207.7 Gbit/s | 91,627/s | 73,825/s | 569,997/s |
+| **okena** | **37,378/s** | **155,663/s** | **102.1 Gbit/s** | **25,921/s** | **38,213/s** | **200,781/s** |
+| nginx | 30,837/s | 141,854/s | 22.9 Gbit/s | 14,156/s | 33,756/s | 146,346/s |
+| HAProxy | 29,019/s | 127,262/s | 20.7 Gbit/s | 21,429/s | | |
+| Traefik | 29,603/s | 120,262/s | 37.7 Gbit/s | 9,994/s | 19,515/s | 75,594/s, 988 lost |
+| Envoy | 25,320/s | 107,884/s | 39.1 Gbit/s | 12,618/s | 30,306/s | 131,190/s |
 
 Latency, p50 / p99 / p99.9 in µs:
 
 | Path | ping1 | ping256 | connect | udp1 | udp256 |
 |---|---|---|---|---|---|
-| **okena** | **26.5 / 35.2 / 61.7** | **1646 / 1803 / 2163** | **311 / 456 / 529** | **26.0 / 29.2 / 36.0** | **1316 / 1745 / 1949** |
-| nginx | 33.1 / 55.2 / 92.8 | 1865 / 2058 / 2393 | 452 / 3864 / 10280 | 29.6 / 45.0 / 76.5 | 1610 / 2088 / 2204 |
-| HAProxy | 34.8 / 60.9 / 95.1 | 1975 / 2545 / 3210 | 381 / 542 / 643 | | |
-| Traefik | 34.2 / 55.1 / 83.7 | 2121 / 3307 / 3790 | 723 / 2796 / 5236 | 41.4 / 251 / 354 | 2284 / 10458 / 13967 |
-| Envoy | 40.1 / 72.6 / 104.2 | 2415 / 3216 / 3350 | 651 / 1149 / 1502 | 32.8 / 56.9 / 95.9 | 1934 / 2120 / 2287 |
+| **okena** | **26.4 / 31.2 / 51.5** | **1632 / 1702 / 1785** | **308 / 437 / 494** | **25.9 / 30.6 / 44.5** | **1304 / 1700** / 1930 |
+| nginx | 31.9 / 38.9 / 66.4 | 1711 / 1995 / 2053 | 438 / 4556 / 11143 | 29.3 / 34.3 / 55.1 | 1656 / 1899 / **1925** |
+| HAProxy | 34.0 / 41.7 / 71.1 | 1998 / 2187 / 2790 | 373 / 495 / 543 | | |
+| Traefik | 33.1 / 40.4 / 71.0 | 2110 / 3308 / 3690 | 719 / 3393 / 5360 | 40.4 / 244 / 335 | 2225 / 8948 / 13230 |
+| Envoy | 38.8 / 49.4 / 80.3 | 2366 / 3147 / 3261 | 639 / 1132 / 1924 | 32.4 / 41.2 / 68.8 | 1955 / 1994 / 2092 |
 
-okena is first in every column. Large transfers go socket to pipe to socket
+okena is first in every column but udp256's p99.9, 5 µs over nginx's. Large
+transfers go socket to pipe to socket
 inside the kernel (splice), and new connections from all clients wait in one
 queue that the workers take in turn.
 
@@ -368,13 +379,13 @@ h2load `--h1`, 64 connections, closed loop, median of 3. nginx with
 
 | Path (2 cores) | 64 KB responses | 1 MB responses |
 |---|---|---|
-| straight to the backend | 67.3 Gbit/s | 131.8 Gbit/s |
-| **okena** | **33.0 Gbit/s** | **76.6 Gbit/s** |
-| HAProxy | 19.7 Gbit/s | 26.0 Gbit/s |
-| Envoy | 12.3 Gbit/s | 33.3 Gbit/s |
-| Traefik | 10.6 Gbit/s | 28.3 Gbit/s |
-| Caddy | 8.9 Gbit/s | 25.6 Gbit/s |
-| nginx | 6.2 Gbit/s | 7.6 Gbit/s |
+| straight to the backend | 66.8 Gbit/s | 127.8 Gbit/s |
+| **okena** | **33.8 Gbit/s** | **78.9 Gbit/s** |
+| HAProxy | 19.4 Gbit/s | 26.3 Gbit/s |
+| Envoy | 12.8 Gbit/s | 34.0 Gbit/s |
+| Traefik | 10.6 Gbit/s | 29.1 Gbit/s |
+| Caddy | 9.1 Gbit/s | 25.9 Gbit/s |
+| nginx | 6.3 Gbit/s | 7.7 Gbit/s |
 
 A body of 16 KiB or more with a `Content-Length`, that no route feature needs
 to look at, goes through the L4 relay path, counted to the byte, by splice
@@ -397,10 +408,10 @@ wrk, 256 connections, median of 3.
 
 | Proxy (2 cores) | none | jwt | limit | cache |
 |---|---|---|---|---|
-| **okena** | **111,736** | **98,258** | **109,746** | **292,072** |
-| HAProxy | 83,815 | 23,280 | 82,893 | 183,777 |
-| nginx | 75,543 | (NGINX Plus only) | 77,050 | 53,947 |
-| Envoy | 28,895 | 24,608 | 26,436 | 25,680 |
+| **okena** | **115,164** | **103,084** | **114,908** | **300,816** |
+| HAProxy | 84,714 | 23,498 | 86,274 | 183,485 |
+| nginx | 79,616 | (NGINX Plus only) | 72,978 | 54,463 |
+| Envoy | 31,270 | 26,319 | 29,861 | 28,933 |
 
 Requests a second. A bad token gets 401 from every proxy that verifies
 JWTs. Caddy and Traefik are not in this table: neither verifies JWTs or
@@ -421,7 +432,7 @@ round trip is okena's own histogram of the calls
 upper bounds of its buckets).
 
 With `poll 2ms` (the addon polls 2 ms after a call before it sleeps, so
-under this traffic it never sleeps):
+under this traffic it never sleeps; not rerun on 2026-11-17):
 
 | Rate | p50 without / with | p99 without / with | p99.9 without / with | the call's round trip p50 / p99 / p99.9 |
 |---|---|---|---|---|
@@ -434,8 +445,8 @@ idle state):
 
 | Rate | p50 without / with | p99 without / with | the call's round trip p50 / p99 / p99.9 |
 |---|---|---|---|
-| 5,000/s | 45.1 / 50.7 µs | 84.0 / 80.9 µs | ≤ 10 / ≤ 20 / ≤ 50 µs |
-| 20,000/s | 34.3 / 35.8 µs | 57.3 / 65.0 µs | ≤ 1 / ≤ 12.5 / ≤ 20 µs |
+| 5,000/s | 44.0 / 51.2 µs | 66.6 / 67.6 µs | ≤ 10 / ≤ 20 / ≤ 20 µs |
+| 20,000/s | 33.3 / 35.3 µs | 44.5 / 56.8 µs | ≤ 1 / ≤ 12.5 / ≤ 20 µs |
 
 At 50,000/s two workers on two cores are saturated (the route without the
 addon already has a p99 of 112-332 µs from run to run) and the difference
@@ -447,7 +458,7 @@ which is why the round trip is measured inside okena as well.
 
 ## Memory per idle connection
 
-`tests/bench/idlemem.sh`. 100,000 clients each make one request, read the
+`tests/bench/idlemem.sh` (not rerun on 2026-11-17). 100,000 clients each make one request, read the
 answer and stay connected, idle. The proxy's own memory (`anon` from its
 container's cgroup; kernel socket buffers left out, the same for everyone),
 before and 5 s after the last connection.
@@ -483,10 +494,10 @@ core busy all the time.
 
 | | est | new | time in the program (est / new) |
 |---|---|---|---|
-| base (the path alone) | 3.22 M | 3.21 M | 24 / 25 ns |
-| **okena** | **2.26 M** | **1.80 M** | **121 / 213 ns** |
-| Katran | 2.05 M | 1.56 M | 153 / 304 ns |
-| Katran, MAX_CONN_RATE out of reach | 2.15 M | 1.26 M | 155 / 450 ns |
+| base (the path alone) | 3.09 M | 3.25 M | 25 / 24 ns |
+| **okena** | **2.30 M** | **1.89 M** | **118 / 208 ns** |
+| Katran | 2.13 M | 1.68 M | 153 / 275 ns |
+| Katran, MAX_CONN_RATE out of reach | 2.15 M | 1.28 M | 151 / 435 ns |
 
 Time in the program is the kernel's own count (`kernel.bpf_stats_enabled`).
 
@@ -497,6 +508,9 @@ Time in the program is the kernel's own count (`kernel.bpf_stats_enabled`).
 One operation in a loop, one thread pinned to core 3. okena through
 `build/kat`'s benchmark mode (`tests/kat/bench.py` and the same with Ed25519,
 ML-KEM and ChaCha20); OpenSSL 3.5.3 through `openssl speed` on the same core.
+From the earlier run: on 2026-11-17 only X25519 (23.8 µs), P-256 signing
+(12.4 µs) and AES-128-GCM (6.48 GB/s) were measured again, within a few
+percent of these.
 
 | Operation | okena | OpenSSL | |
 |---|---|---|---|
@@ -526,3 +540,7 @@ place:
 | Scenario | okena | better | by |
 |---|---|---|---|
 | Memory per idle connection | 735 B | nginx 587 B | 148 B (nginx reserves 840 MiB up front) |
+| HTTP/1.1 at 10,000/s, p99.9 | 82 µs | HAProxy 80 µs | 2 µs |
+| gRPC at 5,000/s, p99.9 | 461 µs | HAProxy 452 µs, nginx 459 µs | 9 µs |
+| UDP, 256 flows, p99.9 | 1,930 µs | nginx 1,925 µs | 5 µs |
+| HTTP/3 in closed loop, p99 / p99.9 | 6,844 / 9,565 µs | HAProxy 5,776 / 7,332 µs | HAProxy at 132k requests/s, okena at 192k |

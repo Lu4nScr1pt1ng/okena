@@ -22,27 +22,27 @@ tuned by its own documentation. Requests per second, higher is better:
 
 | | okena | HAProxy 3.2 | nginx 1.27 | Envoy 1.40 | Traefik 3.5 | Caddy 2.10 |
 |---|---|---|---|---|---|---|
-| HTTP/1.1 | **150,665** | 103,830 | 81,737 | 35,444 | 33,106 | 25,526 |
-| HTTPS, TLS 1.3 | **142,775** | 77,865 | 73,544 | 30,826 | 30,386 | 23,848 |
-| HTTP/2 | **236,934** | 97,235 | 71,363 | 38,764 | 24,210 | 20,405 |
-| gRPC unary calls | **154,397** | 55,627 | 35,051 | 49,540 | 19,008 | 18,459 |
-| HTTP/3 | **191,921** | 124,976 | 95,290 | | | |
-| JWT-authenticated requests | **98,258** | 23,280 | | 24,608 | | |
+| HTTP/1.1 | **151,974** | 100,434 | 97,071 | 35,352 | 36,118 | 27,799 |
+| HTTPS, TLS 1.3 | **152,437** | 82,825 | 73,579 | 33,380 | 32,673 | 24,442 |
+| HTTP/2 | **241,365** | 104,350 | 73,102 | 40,448 | 24,527 | 20,837 |
+| gRPC unary calls | **155,925** | 55,450 | 34,959 | 51,396 | 19,728 | 19,438 |
+| HTTP/3 | **192,004** | 132,061 | 101,657 | | | |
+| JWT-authenticated requests | **103,084** | 23,498 | | 26,319 | | |
 
 And the latency that comes with it, HTTP/1.1 at 30,000 requests a second, p99:
 
 | okena | HAProxy | nginx | Envoy | Traefik | Caddy |
 |---|---|---|---|---|---|
-| **52 µs** | 115 µs | 376 µs | 1.5 ms | 20 ms | 654 ms |
+| **49 µs** | 73 µs | 100 µs | 1.0 ms | 21 ms | 310 ms |
 
 More of it, with the method and the cases where okena is *not* first:
 [docs/BENCHMARK.md](docs/BENCHMARK.md). In short:
 
-* **L4:** 95.2 Gbit/s of TCP bulk transfer on two cores, against Envoy's
-  42.1 and HAProxy's 20.7.
-* **Large responses:** 1 MB bodies at 76.6 Gbit/s, against Envoy's 33.3 and
-  HAProxy's 26.0.
-* **XDP:** 2.26 M packets a second on one core, against Katran's 2.05 M.
+* **L4:** 102.1 Gbit/s of TCP bulk transfer on two cores, against Envoy's
+  39.1 and HAProxy's 20.7.
+* **Large responses:** 1 MB bodies at 78.9 Gbit/s, against Envoy's 34.0 and
+  HAProxy's 26.3.
+* **XDP:** 2.30 M packets a second on one core, against Katran's 2.13 M.
 * **Memory:** 100,000 idle keep-alive connections in 73 MiB, against
   HAProxy's 184 MiB and nginx's 896 MiB.
 * **Crypto:** faster than OpenSSL 3.5 at every primitive measured: Ed25519,

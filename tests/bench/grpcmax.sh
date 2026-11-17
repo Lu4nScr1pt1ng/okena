@@ -43,7 +43,14 @@ trap 'docker rm -f okg-okena okg-envoy okg-haproxy okg-nginx okg-caddy okg-traef
 
 (cd "$ROOT/tests/bench/grpc" && go build -o "$GB" .)
 docker build -q -t "$OKENA_IMAGE" "$ROOT" >/dev/null
-GOMAXPROCS=4 taskset -c "$BACK_CPUS" "$GB" server -addr 127.0.0.1:$B & BPID=$!
+# the backend, started anew for each path: one that just took a few million
+# calls is slower for whoever comes next (its heap, its goroutines)
+backend() {
+	if [ -n "$BPID" ]; then kill $BPID 2>/dev/null; wait $BPID 2>/dev/null || true; fi
+	GOMAXPROCS=4 taskset -c "$BACK_CPUS" "$GB" server -addr 127.0.0.1:$B & BPID=$!
+	for _ in $(seq 100); do (exec 3<>/dev/tcp/127.0.0.1/$B) 2>/dev/null && return; sleep 0.05; done
+}
+backend
 
 # a unary call: the gRPC frame (no compression, length) and 64 bytes
 python3 -c 'import sys; sys.stdout.buffer.write(b"\0" + (64).to_bytes(4, "big") + b"x" * 64)' > "$W/call.bin"
@@ -214,6 +221,7 @@ if [ "$MOSTRUN" = 1 ]; then
 echo "| Proxy ($NPROXY cores) | gRPC unary calls/s | per core | errors (grpcbench, 4000 calls) |"
 echo "|---|---|---|---|"
 for p in $ONLY; do
+	backend
 	[ "$p" = direct ] || start "$p"
 	e=$(check "$(port "$p")")
 	m=$(most "$(port "$p")")
@@ -230,6 +238,7 @@ if [ -n "$RATES" ]; then
 	echo "| Path | rate | p50 / p99 / p99.9 / max (us) | errors |"
 	echo "|---|---|---|---|"
 	for p in $ONLY; do
+		backend
 		[ "$p" = direct ] || start "$p"
 		for r in $RATES; do
 			read -ra v < <(lat "$(port "$p")" "$r")
