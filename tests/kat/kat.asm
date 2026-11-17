@@ -64,6 +64,7 @@ include '../../src/crypto/ed25519.inc'
 include '../../src/crypto/aesgcm.inc'
 include '../../src/crypto/chacha.inc'
 include '../../src/crypto/p256.inc'
+include '../../src/crypto/p384.inc'
 include '../../src/crypto/rsa.inc'
 include '../../src/tls/x509.inc'
 include '../../src/tls/keyschedule.inc'
@@ -210,6 +211,8 @@ start:
 	je	.ecdh
 	cmp	al,'V'
 	je	.ecdsa_verify
+	cmp	al,'@'
+	je	.ecdsa384_verify
 	cmp	al,'w'
 	je	.ecdsa_verify_many
 	cmp	al,'C'
@@ -1217,6 +1220,19 @@ start:
 	jmp	.print
 .pem_fail:
 	mov	byte [g_out],0
+	lea	rdi,[g_out]
+	mov	esi,1
+	jmp	.print
+.ecdsa384_verify:			; pubkey(97) digest(48) r(48) s(48)
+	mov	rdi,rsi
+	lea	r8,[rsi+97]
+	lea	r9,[rsi+97+48]
+	lea	r10,[rsi+97+96]
+	mov	rsi,r8
+	mov	rdx,r9
+	mov	rcx,r10
+	call	p384_verify
+	mov	[g_out],al
 	lea	rdi,[g_out]
 	mov	esi,1
 	jmp	.print

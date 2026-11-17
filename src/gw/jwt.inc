@@ -14,7 +14,7 @@
 ; escaped \r\n is a line break once decoded, and that would be a header forged by
 ; whoever can get a claim of their choosing signed.
 ;
-; ES256, RS256/384/512, PS256/384/512, EdDSA, HS256. Keys come from a JWK set; a key with `use`
+; ES256, ES384, RS256/384/512, PS256/384/512, EdDSA, HS256. Keys come from a JWK set; a key with `use`
 ; other than sig, or of a kind not known here, is left out.
 
 ; a key
@@ -37,6 +37,7 @@ JA_RS384	:= 6
 JA_RS512	:= 7
 JA_PS384	:= 8
 JA_PS512	:= 9
+JA_ES384	:= 10
 
 ; a claim told to the backend
 CM_CLAIM	:= 0				; q
@@ -223,6 +224,9 @@ jwt_key:
 	mov	r10d,JA_PS384
 	cmp	eax,'PS38'
 	je	.four
+	mov	r10d,JA_ES384
+	cmp	eax,'ES38'
+	je	.four
 	mov	r10d,JA_RS512
 	cmp	eax,'RS51'
 	je	.two
@@ -370,6 +374,8 @@ jwt_signature:
 	je	.h384
 	cmp	r10d,JA_PS384
 	je	.h384
+	cmp	r10d,JA_ES384
+	je	.h384
 	cmp	r10d,JA_RS512
 	je	.h512
 	cmp	r10d,JA_PS512
@@ -388,6 +394,8 @@ jwt_signature:
 	pop	r9
 	cmp	r10d,JA_ES256
 	je	.es
+	cmp	r10d,JA_ES384
+	je	.es384
 	; RSA, with the hash g_rsa_hlen says (put back for TLS after)
 	cmp	ebx,[r9+JK_LEN]
 	jne	.no_rsa
@@ -422,6 +430,15 @@ jwt_signature:
 	lea	rdx,[g_jt_s]
 	lea	rcx,[g_jt_s+32]
 	jmp	p256_verify
+.es384:
+	mov	dword [g_rsa_hlen],0
+	cmp	ebx,96
+	jne	.no
+	lea	rdi,[r9+JK_KEY]
+	lea	rsi,[g_jt_dig2]
+	lea	rdx,[g_jt_s]
+	lea	rcx,[g_jt_s+48]
+	jmp	p384_verify
 .hs:
 	pop	r10
 	pop	r9
@@ -1414,6 +1431,11 @@ jwk_load:
 	jc	.skip
 	cmp	eax,5
 	jne	.skip
+	cmp	dword [g_jw_t],'P-38'
+	jne	@f
+	cmp	byte [g_jw_t+4],'4'
+	je	.ec384
+@@:
 	cmp	dword [g_jw_t],'P-25'
 	jne	.skip
 	cmp	byte [g_jw_t+4],'6'
@@ -1435,6 +1457,25 @@ jwk_load:
 	jne	plan_bad_jwt
 	mov	dword [rbx+JK_KIND],JA_ES256
 	mov	dword [rbx+JK_LEN],65
+	jmp	.common
+.ec384:						; P-384: 04|x|y of 48 bytes each
+	mov	byte [rbx+JK_KEY],4
+	lea	rsi,[.x]
+	lea	rdi,[rbx+JK_KEY+1]
+	mov	ecx,1
+	mov	edx,48
+	call	.bytes
+	cmp	rax,48
+	jne	plan_bad_jwt
+	lea	rsi,[.y]
+	lea	rdi,[rbx+JK_KEY+49]
+	mov	ecx,1
+	mov	edx,48
+	call	.bytes
+	cmp	rax,48
+	jne	plan_bad_jwt
+	mov	dword [rbx+JK_KIND],JA_ES384
+	mov	dword [rbx+JK_LEN],97
 	jmp	.common
 .okp:
 	lea	rsi,[.crv]
@@ -1520,7 +1561,7 @@ jwk_load:
 	test	eax,eax
 	jz	.alg_set			; none said: any of its kind's
 	cmp	eax,5
-	jne	.alg_unknown			; (RSA-OAEP, ES384...: not for us)
+	jne	.alg_unknown			; (RSA-OAEP, ES512...: not for us)
 	mov	eax,[g_jw_t]
 	movzx	ecx,byte [g_jw_t+4]
 	mov	edx,JA_ES256
@@ -1540,6 +1581,9 @@ jwk_load:
 	je	.alg_4
 	mov	edx,JA_PS384
 	cmp	eax,'PS38'
+	je	.alg_4
+	mov	edx,JA_ES384
+	cmp	eax,'ES38'
 	je	.alg_4
 	mov	edx,JA_RS512
 	cmp	eax,'RS51'

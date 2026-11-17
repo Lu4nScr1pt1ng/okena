@@ -927,8 +927,8 @@ where it touches the request path, a benchmark showing routes that do not
 use it unchanged.
 
 Status 2026-11-16: all twenty items in. Still open from them: TLS
-origination from `tcp` listeners (item 3), ES384 for JWT (item 6, needs
-P-384), and the smaller "Left:" notes under the items.
+origination from `tcp` listeners (item 3) and the smaller "Left:" notes
+under the items.
 
 1. PROXY protocol v1/v2 accepted on `tcp` and `http` listeners
    (`proxy_protocol accept [FROM...]`); the client becomes the PROXY
@@ -965,7 +965,11 @@ P-384), and the smaller "Left:" notes under the items.
    the verified token; dotted paths, arrays, scope words. RS384/512, PS384/512:
    **done 2026-11-14**: rsa.inc's PKCS #1 and PSS verification take the hash
    (g_rsa_hlen, SHA-256 by default for TLS), checked against Wycheproof's
-   SHA-384 and SHA-512 vectors (2048 to 4096 bits). Left: ES384 (P-384).
+   SHA-384 and SHA-512 vectors (2048 to 4096 bits). ES384: **done
+   2026-11-16** (src/crypto/p384.inc): verification only, six limbs, a
+   generic Montgomery multiply, Jacobian points, Shamir's trick (public
+   data: no need for constant time); KAT against the library (valid, the
+   other s, tampered, wrong key, out of range, off curve).
 7. Health checks: `http` with `body=` and headers; `tcp send=/expect=`
    (Redis `role:master`, a PostgreSQL primary, MySQL); `udp` (a DNS
    query); an agent check. **Done 2026-11-14** (tests/health/match.py), but

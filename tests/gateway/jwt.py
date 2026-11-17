@@ -55,11 +55,14 @@ EC = ec.generate_private_key(ec.SECP256R1())
 RS = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 ED = ed25519.Ed25519PrivateKey.generate()
 OTHER = ec.generate_private_key(ec.SECP256R1())
+EC384 = ec.generate_private_key(ec.SECP384R1())
+OTHER384 = ec.generate_private_key(ec.SECP384R1())
 SECRET = os.urandom(32)
 
 
 def jwks():
     e = EC.public_key().public_numbers()
+    e384 = EC384.public_key().public_numbers()
     r = RS.public_key().public_numbers()
     ed_pub = ED.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
     return {"keys": [
@@ -69,12 +72,16 @@ def jwks():
         {"kty": "RSA", "kid": "oaep", "alg": "RSA-OAEP", "n": b64(be(r.n)), "e": b64(be(r.e))},
         {"kty": "OKP", "crv": "Ed25519", "kid": "ed1", "x": b64(ed_pub)},
         {"kty": "oct", "kid": "hs1", "alg": "HS256", "k": b64(SECRET)},
-        {"kty": "EC", "crv": "P-384", "kid": "unknown-curve", "x": "AA", "y": "AA"},
+        {"kty": "EC", "crv": "P-384", "kid": "ec384", "alg": "ES384", "x": b64(be(e384.x, 48)), "y": b64(be(e384.y, 48))},
+        {"kty": "EC", "crv": "P-521", "kid": "unknown-curve", "x": "AA", "y": "AA"},
         {"kty": "RSA", "kid": "encryption", "use": "enc", "n": "AQAB", "e": "AQAB"},
     ]}
 
 
 def sign(alg, msg, key=None):
+    if alg == "ES384":
+        r, s = utils.decode_dss_signature((key or EC384).sign(msg, ec.ECDSA(hashes.SHA384())))
+        return be(r, 48) + be(s, 48)
     if alg == "ES256":
         r, s = utils.decode_dss_signature((key or EC).sign(msg, ec.ECDSA(hashes.SHA256())))
         return be(r, 32) + be(s, 32)
@@ -193,7 +200,8 @@ def main():
             except OSError:
                 time.sleep(0.05)
         for alg, kid in (("ES256", "ec1"), ("RS256", "rs1"), ("PS256", "rs1"), ("RS384", "rs1"), ("RS512", "rs1"),
-                         ("PS384", "rs1"), ("PS512", "rs1"), ("RS384", "rs384"), ("EdDSA", "ed1"), ("HS256", "hs1")):
+                         ("PS384", "rs1"), ("PS512", "rs1"), ("RS384", "rs384"), ("EdDSA", "ed1"), ("HS256", "hs1"),
+                         ("ES384", "ec384"), ("ES384", None)):
             r, b = get("/api", token(alg, kid))
             check(f"{alg}: through", r.status == 200 and json.loads(b).get("x-user-id") == "alice", f"{r.status} {b[:90]}")
         r, b = get("/api", token())
@@ -241,6 +249,12 @@ def main():
                 b64(json.dumps({"alg": "RS384", "kid": "rs1"}).encode()) + "." + b64(json.dumps(GOOD).encode())),
             "another key id": token(kid="nope"),
             "an algorithm not here": token("ES256", head={"alg": "ES512"}),
+            "ES384 by the wrong P-384 key": token("ES384", "ec384", key=OTHER384),
+            "ES384 named, ES256 signed": (lambda m: m + "." + b64(sign("ES256", m.encode())))(
+                b64(json.dumps({"alg": "ES384", "kid": "ec384"}).encode()) + "." + b64(json.dumps(GOOD).encode())),
+            "ES384 with the P-256 key's name": token("ES384", "ec1"),
+            "ES256 with the P-384 key's name": token("ES256", "ec384"),
+            "ES384 signature cut": (lambda t: t[:-20])(token("ES384", "ec384")),
             "a claim changed": head + "." + b64(json.dumps(dict(GOOD, sub="root")).encode()) + "." + sig,
             "a signature changed": head + "." + claims + "." + sig[:-3] + ("AAA" if sig[-3:] != "AAA" else "BBB"),
             "a signature cut": head + "." + claims + "." + sig[:40],

@@ -222,6 +222,52 @@ try:
     check("p256 verify: off-curve public key rejected",
           run(b"V", bytes(offp) + dg + rr.to_bytes(32, "big") + ss.to_bytes(32, "big")), "00")
 
+    # ECDSA P-384 (JWT's ES384): library signatures accepted, tampered,
+    # wrong-key, out-of-range and off-curve ones rejected
+    N384 = int("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFC7634D81F4372DDF581A0DB248B0A77AECEC196ACCC52973", 16)
+    def p384_sig(sk, msg):
+        rr, ss = decode_dss_signature(sk.sign(msg, _ec.ECDSA(_hashes.SHA384())))
+        return rr, ss
+    for i in range(200):
+        sk = _ec.generate_private_key(_ec.SECP384R1())
+        pub = sk.public_key().public_bytes(_Enc.X962, _PF.UncompressedPoint)
+        msg = rng.randbytes(1 + i % 90)
+        dg = _hl.sha384(msg).digest()
+        rr, ss = p384_sig(sk, msg)
+        sig = rr.to_bytes(48, "big") + ss.to_bytes(48, "big")
+        check("p384 verify: valid signature", run(b"@", pub + dg + sig), "01")
+        check("p384 verify: the other s (n - s) valid too", run(b"@", pub + dg + rr.to_bytes(48, "big") + (N384 - ss).to_bytes(48, "big")), "01")
+        bd = bytearray(dg)
+        bd[i % 48] ^= 1 << (i % 8)
+        check("p384 verify: tampered digest rejected", run(b"@", pub + bytes(bd) + sig), "00")
+        bs = bytearray(sig)
+        bs[i % 96] ^= 1
+        check("p384 verify: tampered signature rejected", run(b"@", pub + dg + bytes(bs)), "00")
+        if i % 4 == 0:
+            other = _ec.generate_private_key(_ec.SECP384R1()).public_key().public_bytes(_Enc.X962, _PF.UncompressedPoint)
+            check("p384 verify: wrong key rejected", run(b"@", other + dg + sig), "00")
+    sk = _ec.generate_private_key(_ec.SECP384R1())
+    pub = sk.public_key().public_bytes(_Enc.X962, _PF.UncompressedPoint)
+    dg = _hl.sha384(b"m").digest()
+    rr, ss = p384_sig(sk, b"m")
+    R, S = rr.to_bytes(48, "big"), ss.to_bytes(48, "big")
+    check("p384 verify: r = 0 rejected", run(b"@", pub + dg + bytes(48) + S), "00")
+    check("p384 verify: s = n rejected", run(b"@", pub + dg + R + N384.to_bytes(48, "big")), "00")
+    check("p384 verify: r + n rejected", run(b"@", pub + dg + (rr + N384).to_bytes(48, "big") if rr + N384 < 2**384 else pub + dg + bytes(48) + S), "00")
+    offp = bytearray(pub)
+    offp[60] ^= 1
+    check("p384 verify: off-curve public key rejected", run(b"@", bytes(offp) + dg + R + S), "00")
+    check("p384 verify: the point at infinity rejected", run(b"@", b"\x04" + bytes(96) + dg + R + S), "00")
+    P384 = 2**384 - 2**128 - 2**96 + 2**32 - 1
+    big = bytearray(pub)
+    big[1:49] = P384.to_bytes(48, "big")
+    check("p384 verify: x not below p rejected", run(b"@", bytes(big) + dg + R + S), "00")
+    check("p384 verify: a compressed key rejected", run(b"@", b"\x02" + pub[1:] + dg + R + S), "00")
+    import time as _t
+    t0 = _t.time()
+    run(b"@", pub + dg + R + S)
+    print(f"   p384 verify, one process: {(_t.time() - t0) * 1000:.1f} ms")
+
     # X.509: a certificate's ECDSA P-256/SHA-256 signature, verified under
     # its issuer's key (the basis of upstream TLS and mTLS chains)
     import struct as _struct
