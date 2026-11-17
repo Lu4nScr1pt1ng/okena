@@ -78,7 +78,10 @@ GWP2_PN		:= 32			; q: the Service port's name (0: none)
 GWP2_PNLEN	:= 40			; d
 GWP2_H2		:= 44			; d: gRPC: protocol h2
 GWP2_USED	:= 48			; d: named in what was written (so it is written)
-GWP2_SIZE		:= 56
+GWP2_STKLEN	:= 52			; d: an Ingress's affinity: its cookie's name (0: none)
+GWP2_STK		:= 56			; q
+GWP2_TTL		:= 64			; d: its max age, seconds (0: the session)
+GWP2_SIZE		:= 72
 GW_MAXP		:= 4096
 
 GW_MAXH		:= 65536			; hosts on a port
@@ -214,6 +217,9 @@ bss
 	g_gp_ns		dq ?		; the backend asked for: its namespace
 	g_gp_nslen	dd ?
 	g_gp_h2		dd ?		; and it speaks gRPC (HTTP/2)
+	g_gp_stklen	dd ?		; an Ingress's affinity cookie (0: none)
+	g_gp_ttl	dd ?
+	g_gp_stk	dq ?
 	g_gc_ns		dq ?		; the Secret asked for: its namespace
 	g_gc_nslen	dd ?
 	g_rg_from	dq ?		; a ReferenceGrant looked for: from what kind
@@ -3002,6 +3008,34 @@ gw_actions:
 	mov	qword [g_ga_redirect],0
 	mov	qword [g_ga_rewrite],0
 	mov	qword [g_ga_mirror],0
+	; made up from an Ingress: its annotations' lines, built by ingress.inc
+	; from values it checked (a cluster's own route never has them: its
+	; API server drops what its schema does not know)
+	mov	eax,[rbx+GWE_ROUTE]
+	cmp	eax,[g_gw_nr_real]
+	jb	.no_lines
+	mov	rsi,[rbx+GWE_RULE]
+	gk	'x-okena'
+	call	gj_get
+	jc	.no_lines
+	call	gj_first
+	jc	.no_lines
+.line:
+	mov	r12,rsi
+	call	ing_str_here
+	jc	.line_next
+	mov	rsi,rdi
+	push	rcx
+	mov	ecx,r14d
+	call	go_ind
+	pop	rcx
+	call	go_bytes
+	call	go_nl
+.line_next:
+	mov	rsi,r12
+	call	gj_next
+	jnc	.line
+.no_lines:
 	; the filters: one okena cannot do and the rule answers 500
 	mov	rsi,[rbx+GWE_RULE]
 	gk	'filters'
@@ -3549,6 +3583,44 @@ gw_path_out:
 ; g_ga_rewrite, rbx = the entry, r14d = indent: `rewrite path FROM -> "TO"`.
 ; CF when it cannot be told.
 gw_rewrite:
+	; an Ingress's rewrite-target with groups ($1): its path's own expression
+	mov	eax,[rbx+GWE_ROUTE]
+	cmp	eax,[g_gw_nr_real]
+	jb	.std
+	cmp	dword [rbx+GWE_ORIGIN],3
+	jne	.std
+	mov	rsi,[g_ga_rewrite]
+	gk	'path'
+	call	gj_get
+	jc	.std
+	push	rsi
+	gk	'type'
+	call	gj_str
+	pop	rsi
+	jc	.std
+	cmp	ecx,13
+	jne	.std
+	cmp	dword [rdi],'x-ok'
+	jne	.std
+	gk	'replaceFullPath'
+	call	gj_str
+	jc	.bad
+	push	rdi
+	push	rcx
+	mov	ecx,r14d
+	call	go_ind
+	go_lit	'rewrite path '
+	mov	rsi,[rbx+GWE_OPATH]
+	mov	ecx,[rbx+GWE_OPLEN]
+	call	go_q
+	go_lit	' -> "'
+	pop	rcx
+	pop	rsi
+	call	go_bytes			; (its $N as they are: ingress.inc checked them)
+	go_lit	'"',10
+	clc
+	ret
+.std:
 	mov	rsi,[g_ga_rewrite]
 	call	gw_path_mod
 	jc	.bad
@@ -3748,6 +3820,29 @@ gw_ref_pool:
 	cmp	dword [rbx+GWE_GRPC],1
 	sete	al
 	mov	[g_gp_h2],eax
+	; an Ingress's backend-protocol and affinity (ingress.inc)
+	mov	eax,[rbx+GWE_ROUTE]
+	cmp	eax,[g_gw_nr_real]
+	jb	.not_made
+	mov	rsi,r12
+	gk	'x-okena-proto'
+	call	gj_num
+	jc	@f
+	and	eax,3				; 1 HTTP/2, 2 TLS
+	or	[g_gp_h2],eax
+@@:
+	mov	rsi,r12
+	gk	'x-okena-sticky'
+	call	gj_str
+	jc	.not_made
+	mov	[g_gp_stk],rdi
+	mov	[g_gp_stklen],ecx
+	mov	rsi,r12
+	gk	'x-okena-ttl'
+	call	gj_num
+	jc	.not_made
+	mov	[g_gp_ttl],eax
+.not_made:
 	mov	rsi,r12
 	gk	'namespace'
 	call	gj_str
@@ -3819,6 +3914,8 @@ gw_ref_pool:
 	pop	rdi
 	jc	.no
 	call	gw_pool
+	mov	dword [g_gp_stklen],0		; (for the next: none)
+	mov	dword [g_gp_ttl],0
 	cmp	eax,-1
 	jne	.out
 .no:
@@ -3830,6 +3927,8 @@ gw_ref_pool:
 .not_permitted:
 	mov	edx,GRF_NOTPERMITTED
 .why:
+	mov	dword [g_gp_stklen],0		; (for the next: none)
+	mov	dword [g_gp_ttl],0
 	mov	eax,[rbx+GWE_ROUTE]		; the route says why (the first reason)
 	imul	rax,rax,GWR_SIZE
 	add	rax,[g_gw_base]
@@ -4011,9 +4110,18 @@ gw_pool_name:
 	go_lit	'_'
 	mov	eax,[rbx+GWP2_PORT]
 	call	go_u
-	cmp	dword [rbx+GWP2_H2],0
-	je	@f
+	test	dword [rbx+GWP2_H2],1
+	jz	@f
 	go_lit	'_h2'
+@@:
+	test	dword [rbx+GWP2_H2],2
+	jz	@f
+	go_lit	'_tls'
+@@:
+	cmp	dword [rbx+GWP2_STKLEN],0
+	je	@f
+	go_lit	'_s'				; (one per cookie and age: its place)
+	call	go_u
 @@:
 	pop	rbx
 	ret
@@ -4037,6 +4145,19 @@ gw_pool:
 	jne	.other
 	mov	edx,[g_gp_h2]
 	cmp	[rax+GWP2_H2],edx
+	jne	.other
+	mov	edx,[g_gp_ttl]
+	cmp	[rax+GWP2_TTL],edx
+	jne	.other
+	push	rdi
+	push	rcx
+	mov	rdi,[rax+GWP2_STK]
+	mov	ecx,[rax+GWP2_STKLEN]
+	mov	rsi,[g_gp_stk]
+	mov	edx,[g_gp_stklen]
+	call	gw_same
+	pop	rcx
+	pop	rdi
 	jne	.other
 	mov	rsi,[rax+GWP2_SVC]
 	mov	edx,[rax+GWP2_SVCLEN]
@@ -4073,6 +4194,12 @@ gw_pool:
 	mov	[r13+GWP2_NSLEN],eax
 	mov	eax,[g_gp_h2]
 	mov	[r13+GWP2_H2],eax
+	mov	rax,[g_gp_stk]
+	mov	[r13+GWP2_STK],rax
+	mov	eax,[g_gp_stklen]
+	mov	[r13+GWP2_STKLEN],eax
+	mov	eax,[g_gp_ttl]
+	mov	[r13+GWP2_TTL],eax
 	mov	[r13+GWP2_SVC],rdi
 	mov	[r13+GWP2_SVCLEN],ecx
 	mov	[r13+GWP2_PORT],r14d
@@ -4190,9 +4317,28 @@ gw_emit_pools:
 	mov	eax,ebx
 	xor	edx,edx
 	call	gw_discover_line
-	cmp	dword [r12+GWP2_H2],0
-	je	@f
+	test	dword [r12+GWP2_H2],1
+	jz	@f
 	go_lit	'    protocol h2',10		; (gRPC)
+@@:
+	test	dword [r12+GWP2_H2],2
+	jz	@f
+	go_lit	'    tls { verify off }',10	; (an Ingress's backend-protocol HTTPS, as nginx: not verified)
+@@:
+	cmp	dword [r12+GWP2_STKLEN],0
+	je	@f
+	go_lit	'    sticky cookie='
+	mov	rsi,[r12+GWP2_STK]
+	mov	ecx,[r12+GWP2_STKLEN]
+	call	go_bytes
+	mov	eax,[r12+GWP2_TTL]
+	test	eax,eax
+	jz	.ttl_none
+	go_lit	' ttl='
+	call	go_u
+	go_lit	's'
+.ttl_none:
+	call	go_nl
 @@:
 	go_lit	'}',10
 .next:

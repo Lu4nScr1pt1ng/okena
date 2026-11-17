@@ -5,7 +5,11 @@ Ingresses of the class served (Prefix, Exact, ImplementationSpecific, hosts,
 the default backend, a Service's port by number and by name, HTTPS from the
 Secret of spec.tls), the older annotation as the class, Ingresses of another
 class or none left out, a path that could only break the file left out, and
-changes followed."""
+changes followed. nginx's annotations (rewrite-target with groups, use-regex,
+ssl-redirect by default and forced, backend-protocol HTTPS, permanent-redirect,
+app-root, allowlists, proxy-body-size, CORS, affinity, timeouts and limits),
+values that do not pass left out; status written back (address=, then
+publish_service=)."""
 import base64
 import http.client
 import http.server
@@ -24,7 +28,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 BIN = ROOT / "build" / "okena"
 LST, HTTP, HTTPS, API = 19780, 19781, 19782, 19783
 fails = 0
-state = {"ingresses": [], "services": {}, "secrets": {}, "slices": [], "patches": 0}
+state = {"ingresses": [], "services": {}, "secrets": {}, "slices": [], "patches": 0, "ing_status": {}}
 
 
 def check(name, ok, detail=""):
@@ -45,6 +49,10 @@ class Back(http.server.BaseHTTPRequestHandler):
 
     def log_message(self, *a):
         pass
+
+
+class Tls(Back):
+    pass
 
 
 class S(http.server.ThreadingHTTPServer):
@@ -92,6 +100,12 @@ class Api(http.server.BaseHTTPRequestHandler):
 
     def do_PATCH(self):
         state["patches"] += 1
+        n = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(n)
+        parts = self.path.split("/")
+        if len(parts) == 9 and parts[1:4] == ["apis", "networking.k8s.io", "v1"] and parts[6] == "ingresses":
+            state["ing_status"][(parts[5], parts[7])] = json.loads(body)
+            return self.answer(200, {})
         self.answer(404, {"kind": "Status", "code": 404})
 
     def log_message(self, *a):
@@ -116,13 +130,15 @@ def svc_backend(name, port=None, port_name=None):
     return {"service": {"name": name, "port": p}}
 
 
-def ingress(ns, name, rules=None, tls=None, cls="okena", annotation=None, default=None):
+def ingress(ns, name, rules=None, tls=None, cls="okena", annotation=None, default=None, ann=None):
     meta = {"namespace": ns, "name": name}
     spec = {}
     if cls:
         spec["ingressClassName"] = cls
     if annotation:
         meta["annotations"] = {"kubernetes.io/ingress.class": annotation}
+    if ann:
+        meta.setdefault("annotations", {}).update({"nginx.ingress.kubernetes.io/" + k: v for k, v in ann.items()})
     if rules is not None:
         spec["rules"] = rules
     if tls:
@@ -136,7 +152,7 @@ def path(p, back, typ="Prefix"):
     return {"path": p, "pathType": typ, "backend": back}
 
 
-def get(port, p, host, tls=False):
+def get(port, p, host, tls=False, method="GET", headers=None, body=None, full=False):
     try:
         if tls:
             ctx = ssl.create_default_context()
@@ -145,11 +161,11 @@ def get(port, p, host, tls=False):
             c = http.client.HTTPSConnection("127.0.0.1", port, timeout=3, context=ctx)
         else:
             c = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
-        c.request("GET", p, headers={"Host": host})
+        c.request(method, p, body=body, headers={"Host": host, **(headers or {})})
         r = c.getresponse()
         b = r.read().decode()
         c.close()
-        return r.status, b
+        return (r.status, b, {k.lower(): v for k, v in r.getheaders()}) if full else (r.status, b)
     except OSError as e:
         return 0, repr(e)
 
@@ -188,6 +204,23 @@ def main():
         backend(name, ip, 8080)
         service("shop", name, [{"name": "http", "port": 80, "targetPort": 8080}])
         slice_("shop", name, [ip], H)
+    # a backend over TLS (backend-protocol HTTPS)
+    sec = S(("127.0.0.7", 8443), Back)
+    sec.name = "secure"
+    sctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    sctx.load_cert_chain(tmp / "site.crt", tmp / "site.key")
+    sec.socket = sctx.wrap_socket(sec.socket, server_side=True)
+    threading.Thread(target=sec.serve_forever, daemon=True).start()
+    service("shop", "secure", [{"name": "https", "port": 443, "targetPort": 8443}])
+    slice_("shop", "secure", ["127.0.0.7"], [{"name": "https", "port": 8443, "protocol": "TCP"}])
+    state["services"][("ingress", "edge")] = {"kind": "Service", "metadata": {"namespace": "ingress", "name": "edge"},
+                                              "spec": {"ports": []},
+                                              "status": {"loadBalancer": {"ingress": [{"ip": "198.51.100.9"},
+                                                                                      {"hostname": "edge.lb.test"}]}}}
+    web = svc_backend("web", port=80)
+
+    def one(name, host, paths, ann=None, tls=None):
+        return ingress("shop", name, rules=[{"host": host, "http": {"paths": paths}}], ann=ann, tls=tls)
     site = {"tls.crt": base64.b64encode((tmp / "site.crt").read_bytes()).decode(),
             "tls.key": base64.b64encode((tmp / "site.key").read_bytes()).decode()}
     state["secrets"][("shop", "shop-tls")] = {"kind": "Secret", "type": "kubernetes.io/tls", "data": site}
@@ -197,7 +230,7 @@ def main():
             path("/exact", svc_backend("web", port_name="http"), "Exact"),
             path("/", svc_backend("web", port_name="http"), "ImplementationSpecific")]}}],
             tls=[{"hosts": ["shop.test"], "secretName": "shop-tls"}],
-            default=svc_backend("fallback", port=80)),
+            default=svc_backend("fallback", port=80), ann={"ssl-redirect": "false"}),
         ingress("shop", "old", cls=None, annotation="okena",
                 rules=[{"host": "legacy.test", "http": {"paths": [path("/", svc_backend("legacy", port=80))]}}]),
         ingress("shop", "theirs", cls="nginx",
@@ -207,6 +240,21 @@ def main():
         ingress("shop", "evil", rules=[{"host": "evil.test", "http": {"paths": [
             path('/x"; } route /* { respond 200 "pwned', svc_backend("web", port=80)),
             path("/fine", svc_backend("web", port=80))]}}]),
+        one("anno", "anno.test", [path("/svc(/|$)(.*)", web)], ann={"rewrite-target": "/$2"},
+            tls=[{"hosts": ["anno.test"], "secretName": "shop-tls"}]),
+        one("rx", "rx.test", [path("/v[0-9]+/items", web)], ann={"use-regex": "true"}),
+        one("force", "force.test", [path("/", web)], ann={"force-ssl-redirect": "true"}),
+        one("tlsback", "tlsback.test", [path("/", svc_backend("secure", port=443))], ann={"backend-protocol": "HTTPS"}),
+        one("moved", "moved.test", [path("/", web)], ann={"permanent-redirect": "https://example.com/new",
+                                                           "permanent-redirect-code": "308"}),
+        one("misc", "misc.test", [path("/", web)], ann={
+            "app-root": "/app", "proxy-body-size": "1k", "enable-cors": "true",
+            "cors-allow-origin": 'https://a.test, https://evil"x', "proxy-read-timeout": "4", "limit-rps": "1000",
+            "affinity": "cookie", "session-cookie-name": "SRV", "session-cookie-max-age": "3600",
+            "configuration-snippet": "return 200 pwned;", "denylist-source-range": "10.9.9.9/32"}),
+        one("walled", "walled.test", [path("/", web)], ann={"whitelist-source-range": "10.0.0.0/8, 192.0.2.0/24"}),
+        one("bogus", "bogus.test", [path("/", web)], ann={"whitelist-source-range": "bogus, 1.2.3.4/99\"; respond 200",
+                                                          "proxy-body-size": "1x"}),
     ]
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.load_cert_chain(tmp / "api.crt", tmp / "api.key")
@@ -244,7 +292,56 @@ include "{gwdir}/*.conf"
         gen = (gwdir / "gateway.conf").read_text()
         check("a path that could break the file: left out, its sibling served",
               "pwned" not in gen and get(HTTP, "/fine", "evil.test")[1].startswith("web "), gen[-600:])
-        check("no status written for what Ingresses made", state["patches"] == 0, state["patches"])
+        check("no status written for what Ingresses made, without an address", state["patches"] == 0, state["patches"])
+        # annotations
+        r = get(HTTP, "/svc/a/b?q=1", "anno.test", full=True)
+        check("ssl-redirect, by default for a host spec.tls covers: 308 to https", r[0] == 308
+              and r[2].get("location") == "https://anno.test/svc/a/b?q=1", r)
+        r = get(HTTPS, "/svc/a/b", "anno.test", tls=True)
+        check("rewrite-target /$2 with the path's groups", r[0] == 200 and r[1] == "web /a/b", r)
+        r = get(HTTPS, "/SVC", "anno.test", tls=True)
+        check("  any case, as nginx; /svc alone to /", r[0] == 200 and r[1] == "web /", r)
+        check("use-regex: the path an expression, anchored at its start",
+              get(HTTP, "/v12/items/3", "rx.test")[1] == "web /v12/items/3" and not get(HTTP, "/vx/items", "rx.test")[1].startswith("web")
+              and not get(HTTP, "/a/v1/items", "rx.test")[1].startswith("web"), (get(HTTP, "/v12/items/3", "rx.test"), get(HTTP, "/vx/items", "rx.test")))
+        r = get(HTTP, "/x", "force.test", full=True)
+        check("force-ssl-redirect, with no TLS", r[0] == 308 and r[2].get("location") == "https://force.test/x", r)
+        r = get(HTTP, "/t", "tlsback.test")
+        check("backend-protocol HTTPS: to the Service over TLS", r == (200, "secure /t"), r)
+        r = get(HTTP, "/a", "moved.test", full=True)
+        check("permanent-redirect with its code", r[0] == 308 and r[2].get("location") == "https://example.com/new", r)
+        r = get(HTTP, "/", "misc.test", full=True)
+        check("app-root: / alone to it", r[0] == 302 and r[2].get("location", "").endswith("/app")
+              and get(HTTP, "/app", "misc.test")[1] == "web /app", r)
+        check("proxy-body-size 1k: 413 past it", get(HTTP, "/up", "misc.test", method="POST", body=b"x" * 2000)[0] == 413
+              and get(HTTP, "/up", "misc.test", method="POST", body=b"x" * 500)[0] in (200, 501), get(HTTP, "/up", "misc.test", method="POST", body=b"x" * 2000))
+        r = get(HTTP, "/c", "misc.test", method="OPTIONS", headers={"Origin": "https://a.test", "Access-Control-Request-Method": "PUT"}, full=True)
+        check("enable-cors: a preflight answered for an origin let in", r[0] == 204
+              and r[2].get("access-control-allow-origin") == "https://a.test" and "PUT" in r[2].get("access-control-allow-methods", ""), r)
+        r = get(HTTP, "/c", "misc.test", full=True)
+        check("affinity cookie: its cookie, its max age", "SRV=" in r[2].get("set-cookie", "") and r[1] == "web /c", r)
+        check("allowlist: a client not in it refused", get(HTTP, "/", "walled.test")[0] == 403, get(HTTP, "/", "walled.test"))
+        check("  one with no entry that passes: nobody", get(HTTP, "/", "bogus.test")[0] == 403, get(HTTP, "/", "bogus.test"))
+        gen = (gwdir / "gateway.conf").read_text()
+        check("timeouts rounded to a step, limits with nginx's burst, a deny list",
+              "timeout try=5s" in gen and "limit 1000/s burst=5000 key=client.ip" in gen and "deny 10.9.9.9/32" in gen, gen[-1500:])
+        check("what does not pass left out: a snippet, a bad origin, a bad range, a bad size",
+              "pwned" not in gen and "https://evil" not in gen and "bogus" not in gen.replace("bogus.test", "") and "1.2.3.4/99" not in gen
+              and "body_size 1x" not in gen and "allow 255.255.255.255/32" in gen, gen[-1500:])
+        # status, once there is an address
+        conf.write_text(conf.read_text().replace("ingress=okena", "ingress=okena address=203.0.113.7,lb.okena.test"))
+        p.send_signal(1)
+        want = {"status": {"loadBalancer": {"ingress": [{"ip": "203.0.113.7"}, {"hostname": "lb.okena.test"}]}}}
+        check("address=: each Ingress's status.loadBalancer written",
+              until(lambda: state["ing_status"].get(("shop", "main")) == want and state["ing_status"].get(("shop", "misc")) == want, 12),
+              state["ing_status"].get(("shop", "main")))
+        check("  not those of another class", ("shop", "theirs") not in state["ing_status"])
+        state["ing_status"].clear()
+        conf.write_text(conf.read_text().replace("address=203.0.113.7,lb.okena.test", "publish_service=ingress/edge"))
+        p.send_signal(1)
+        want = {"status": {"loadBalancer": {"ingress": [{"ip": "198.51.100.9"}, {"hostname": "edge.lb.test"}]}}}
+        check("publish_service=: its load balancer's addresses",
+              until(lambda: state["ing_status"].get(("shop", "main")) == want, 12), state["ing_status"].get(("shop", "main")))
         state["ingresses"][0]["spec"]["rules"][0]["http"]["paths"][0]["backend"] = svc_backend("legacy", port=80)
         check("a change followed", until(lambda: get(HTTP, "/api/x", "shop.test")[1].startswith("legacy ")),
               get(HTTP, "/api/x", "shop.test"))

@@ -39,6 +39,10 @@ GWP_INGLEN	:= 88			; d
 GWP_P80		:= 92			; d: http=: their HTTP port
 GWP_P443	:= 96			; d: https=: their HTTPS port
 GWP_INGDEF	:= 100			; d: ingress_default=on: Ingresses of no class too
+GWP_ADDRLEN	:= 104			; d: address=: what Ingresses and Gateways are reached at
+GWP_PUBLEN	:= 108			; d: publish_service=NS/NAME: its load balancer's, instead
+GWP_ADDR	:= 112			; q
+GWP_PUB		:= 120			; q
 GWP_KB		:= 128			; the API server, as a KB block (kube.inc)
 GWP_SIZE	:= GWP_KB + KB_SIZE
 
@@ -155,6 +159,81 @@ compile_gateway:
 	jne	.ing_done
 	mov	dword [g_plan_gw+GWP_INGDEF],1
 .ing_done:
+	; address=A,B (IPs, names), publish_service=NS/NAME
+	mov	rdi,r13
+	cstring str_key_gwaddr, 'address',0
+	lea	rsi,[str_key_gwaddr]
+	call	node_option
+	test	rax,rax
+	jz	.addr_done
+	mov	rcx,[rax+A_VAL]
+	mov	edx,[rax+A_VLEN]
+	test	edx,edx
+	jz	plan_bad_gateway
+	cmp	edx,1024
+	ja	plan_bad_gateway
+	xor	eax,eax
+@@:
+	movzx	r8d,byte [rcx+rax]
+	cmp	r8b,','
+	je	.addr_c
+	cmp	r8b,'.'
+	je	.addr_c
+	cmp	r8b,':'
+	je	.addr_c
+	cmp	r8b,'-'
+	je	.addr_c
+	lea	r9d,[r8-'0']
+	cmp	r9d,9
+	jbe	.addr_c
+	lea	r9d,[r8-'a']
+	cmp	r9d,25
+	ja	plan_bad_gateway
+.addr_c:
+	inc	eax
+	cmp	eax,edx
+	jb	@b
+	mov	[g_plan_gw+GWP_ADDR],rcx
+	mov	[g_plan_gw+GWP_ADDRLEN],edx
+.addr_done:
+	mov	rdi,r13
+	cstring str_key_gwpub, 'publish_service',0
+	lea	rsi,[str_key_gwpub]
+	call	node_option
+	test	rax,rax
+	jz	.pub_done
+	mov	rcx,[rax+A_VAL]
+	mov	edx,[rax+A_VLEN]
+	xor	eax,eax
+@@:
+	cmp	eax,edx
+	jae	plan_bad_gateway
+	cmp	byte [rcx+rax],'/'
+	je	@f
+	inc	eax
+	jmp	@b
+@@:
+	push	rcx
+	push	rdx
+	push	rax
+	mov	edx,eax				; the namespace
+	call	gw_label_ok
+	pop	rax
+	pop	rdx
+	pop	rcx
+	jc	plan_bad_gateway
+	push	rcx
+	push	rdx
+	lea	rcx,[rcx+rax+1]			; the name
+	sub	edx,eax
+	dec	edx
+	call	gw_label_ok
+	pop	rdx
+	pop	rcx
+	jc	plan_bad_gateway
+	mov	[g_plan_gw+GWP_PUB],rcx
+	mov	[g_plan_gw+GWP_PUBLEN],edx
+.pub_done:
 	; dir=: a whole path
 	mov	rdi,r13
 	lea	rsi,[str_key_dir]
@@ -247,7 +326,7 @@ compile_gateway:
 
 plan_bad_gateway:
 	call	log_begin
-	out_lit 'gateway takes kubernetes, dir=/PATH (where it writes; `include "DIR/*.conf"` takes it in), and may take class=NAME (okena when not said), ingress=CLASS with http=PORT and https=PORT (80, 443), api=HOST:PORT, token=/PATH, ca=PATH and name=HOST, as discover kubernetes does'
+	out_lit 'gateway takes kubernetes, dir=/PATH (where it writes; `include "DIR/*.conf"` takes it in), and may take class=NAME (okena when not said), ingress=CLASS with http=PORT and https=PORT (80, 443), address=IP,NAME or publish_service=NAMESPACE/SERVICE (where they are reached: their status), api=HOST:PORT, token=/PATH, ca=PATH and name=HOST, as discover kubernetes does'
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process

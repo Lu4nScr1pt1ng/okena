@@ -2031,6 +2031,34 @@ Gateway and HTTPRoutes of its own namespace), so what an Ingress's author
 writes cannot reach okena's configuration as anything but a value. The service
 account needs `list` on `ingresses` (networking.k8s.io).
 
+nginx's annotations (`nginx.ingress.kubernetes.io/...`) that okena takes:
+
+| Annotation | In okena |
+|---|---|
+| `rewrite-target` | paths become regular expressions (anchored at their start, any case, as nginx) and the path is rewritten; `$1`..`$9` are their groups (`/something(/\|$)(.*)` with `/$2`) |
+| `use-regex: "true"` | paths as regular expressions, no rewrite |
+| `ssl-redirect` | **on by default** for a rule whose host `spec.tls` covers: HTTP answers 308 to `https://`; `"false"` turns it off |
+| `force-ssl-redirect: "true"` | the same for every rule, TLS or not |
+| `backend-protocol` | `HTTPS` (TLS to the Service, not verified, as nginx), `GRPC` (HTTP/2), `GRPCS` |
+| `permanent-redirect`, `temporal-redirect` (and `-code`) | every path redirected to that URL |
+| `app-root` | `/` alone redirected (302) there |
+| `whitelist-source-range`, `allowlist-source-range`, `denylist-source-range` | `allow`, `deny` |
+| `proxy-body-size` | `body_size` (`8m`, `1g`; `0`: no cap) |
+| `enable-cors` and `cors-allow-origin`, `-methods`, `-headers`, `-credentials`, `cors-expose-headers`, `cors-max-age` | `cors`, with nginx's defaults (an origin of `*` goes without credentials) |
+| `proxy-read-timeout`, `proxy-send-timeout` | `timeout try=`, rounded up to 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800 or 3600 s |
+| `limit-rps`, `limit-rpm` | `limit N/s` per client, a burst of five times that |
+| `affinity: cookie`, `session-cookie-name`, `session-cookie-max-age` | the pool's `sticky cookie=` |
+
+Each value is checked before it is written, and one that doesn't pass is left
+out: an allowlist none of whose entries pass lets nobody in. Snippets
+(`configuration-snippet`, `server-snippet`) are never taken.
+
+**Status.** With `address=IP,NAME,...` (what clients reach okena at) or
+`publish_service=NAMESPACE/SERVICE` (that Service's load balancer, looked up
+each second), okena writes each Ingress's `status.loadBalancer.ingress` and
+each Gateway's `status.addresses`, so `kubectl get ingress` shows the address
+and external-dns can follow it. That needs `patch` on `ingresses/status`.
+
 **Helm.** `contrib/helm/okena` installs okena as the cluster's Ingress controller
 (and GatewayClass, with `gatewayClass.create=true`): RBAC, the IngressClass, a
 Deployment or a DaemonSet running as a user without privileges, readiness on

@@ -442,7 +442,7 @@ def main():
     conf = tmp / "okena.conf"
     conf.write_text(f"""okena {{
     drain delay=0s timeout=1s; workers 2; io_engine {ENGINE}
-    gateway kubernetes dir={gwdir} api=127.0.0.1:{API} ca={tmp}/ca.crt token={tok}
+    gateway kubernetes dir={gwdir} api=127.0.0.1:{API} ca={tmp}/ca.crt token={tok} address=203.0.113.7,2001:db8::7,lb.okena.test
 }}
 http 127.0.0.1:{LST} {{ route /* {{ respond 404 }} }}
 include "{gwdir}/*.conf"
@@ -560,6 +560,8 @@ include "{gwdir}/*.conf"
         check("a Gateway: Accepted, Programmed, of its generation", cond(g, "Accepted") == ("True", "Accepted")
               and cond(g, "Programmed") == ("True", "Programmed") and g["conditions"][0]["observedGeneration"] == 3
               and g["conditions"][0]["lastTransitionTime"].endswith("Z"), g)
+        check("  its addresses (address=)", g.get("addresses") == [{"type": "IPAddress", "value": "203.0.113.7"},
+              {"type": "IPAddress", "value": "2001:db8::7"}, {"type": "Hostname", "value": "lb.okena.test"}], g.get("addresses"))
         h = listener(gw("gw"), "http")
         check("  a listener: its routes counted (a GRPCRoute too), Accepted, ResolvedRefs, Programmed", h.get("attachedRoutes") == 3
               and cond(h, "Accepted")[0] == "True" and cond(h, "ResolvedRefs")[0] == "True" and cond(h, "Programmed")[0] == "True", h)

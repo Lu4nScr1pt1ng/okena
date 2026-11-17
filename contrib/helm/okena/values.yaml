@@ -56,3 +56,7 @@ affinity: {}
 podAnnotations:
   prometheus.io/scrape: "true"
   prometheus.io/port: "9464"
+
+# What Ingresses' and Gateways' status says they are reached at: IPs or names,
+# by commas. Empty: the load balancer this chart's Service gets.
+statusAddress: ""

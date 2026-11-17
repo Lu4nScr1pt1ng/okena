@@ -116,6 +116,7 @@ ing_one:
 	call	gj_get
 	jc	.out
 	mov	r12,rsi
+	mov	[g_ing_meta],rsi
 	gk	'namespace'
 	call	gj_str
 	jc	.out
@@ -167,6 +168,8 @@ ing_one:
 	call	ing_gateway
 	jmp	.out
 .routes:
+	mov	[g_ing_spec],r12
+	call	ing_annotations			; (ingann.inc)
 	call	ing_routes
 .out:
 	pop	r12
@@ -312,16 +315,44 @@ ing_routes:
 	mov	rbx,rsi
 	call	ing_backend_ref			; into the text: rdi/ecx, CF none
 	jc	.out
-	push	rdi
-	push	rcx
-	call	ing_route_head
-	go_lit '"rules":[{"matches":[{"path":{"type":"PathPrefix","value":"/"}}],"backendRefs":['
-	pop	rcx
-	pop	rsi
-	call	go_bytes
-	go_lit ']}]}}'
+	mov	r14,rdi
+	mov	ebx,ecx
+	mov	qword [g_ing_host],0
+	cmp	dword [g_ia_force],0		; (to HTTPS: only when forced, for no host)
+	je	.dmode0
+	mov	dword [g_ing_mode],1
+	call	.droute
+	mov	dword [g_ing_mode],2
+	call	.droute
+	jmp	.dend
+.dmode0:
+	mov	dword [g_ing_mode],0
+	call	.droute
+.dend:
+	mov	dword [g_ing_mode],0
 .out:
 	pop	r14
+	pop	rbx
+	ret
+; r14/ebx = the default backend's ref: its route
+.droute:
+	push	rbx
+	call	ing_route_head
+	go_lit '"rules":['
+	xor	ebx,ebx
+	call	ing_approot
+	test	ebx,ebx
+	jz	@f
+	go_lit ','
+@@:
+	lea	rsi,[ing_path.slash]
+	mov	ecx,1
+	xor	r8d,r8d
+	xor	r10d,r10d
+	mov	rdx,r14
+	mov	r9d,[rsp]
+	call	ing_rule
+	go_lit ']}}'
 	pop	rbx
 	ret
 
@@ -340,7 +371,18 @@ ing_route_head:
 	mov	rsi,[g_ing_nm]
 	mov	ecx,[g_ing_nmlen]
 	call	go_bytes
-	go_lit '"}],'
+	go_lit '"'
+	cmp	dword [g_ing_mode],1		; (an ssl-redirect: HTTP's listener, then HTTPS's)
+	jne	@f
+	go_lit ',"sectionName":"http"'
+@@:
+	cmp	dword [g_ing_mode],2
+	jne	@f
+	go_lit ',"port":'
+	mov	eax,[g_plan_gw+GWP_P443]
+	call	go_u
+@@:
+	go_lit '}],'
 	ret
 
 ; r14 = a rule: its HTTPRoute (its host, its paths). Keeps rbx, r12-r14.
@@ -357,20 +399,46 @@ ing_route_of_rule:
 	call	gj_first
 	jc	.out
 	mov	r12,rsi				; the first path
-	call	ing_route_head
+	mov	qword [g_ing_host],0
 	mov	rsi,r14
 	gk	'host'
 	call	gj_str
 	jc	.no_host
 	call	ing_clean
 	jc	.no_host			; (a host not to be written: the rule's paths for none)
+	mov	[g_ing_host],rdi
+	mov	[g_ing_hostlen],ecx
+.no_host:
+	call	ing_redirects			; HTTP to HTTPS: a route for each side
+	test	eax,eax
+	jz	.one
+	mov	dword [g_ing_mode],1
+	call	.route
+	mov	dword [g_ing_mode],2
+	call	.route
+	jmp	.done
+.one:
+	mov	dword [g_ing_mode],0
+	call	.route
+.done:
+	mov	dword [g_ing_mode],0
+.out:
+	pop	r12
+	pop	rbx
+	ret
+.route:
+	call	ing_route_head
+	cmp	qword [g_ing_host],0
+	je	@f
 	go_lit '"hostnames":["'
-	mov	rsi,rdi
+	mov	rsi,[g_ing_host]
+	mov	ecx,[g_ing_hostlen]
 	call	go_bytes
 	go_lit '"],'
-.no_host:
+@@:
 	go_lit '"rules":['
 	xor	ebx,ebx				; rules written
+	call	ing_approot
 	mov	rsi,r12
 .path:
 	push	rsi
@@ -379,9 +447,6 @@ ing_route_of_rule:
 	call	gj_next
 	jnc	.path
 	go_lit ']}}'
-.out:
-	pop	r12
-	pop	rbx
 	ret
 
 ; rsi = an Ingress path, ebx = rules written so far: one rule. Keeps r12-r14.
@@ -399,8 +464,7 @@ ing_path:
 	push	rdi
 	push	rcx
 	; its type and path
-	lea	r8,[.prefix]
-	mov	r9d,.prefix.len
+	xor	r8d,r8d				; 1: Exact
 	mov	rsi,r14
 	gk	'pathType'
 	call	gj_str
@@ -409,8 +473,7 @@ ing_path:
 	jne	@f
 	cmp	dword [rdi],'Exac'
 	jne	@f
-	lea	r8,[.exact]
-	mov	r9d,.exact.len
+	mov	r8d,1
 @@:
 	mov	rsi,r14
 	gk	'path'
@@ -426,28 +489,17 @@ ing_path:
 	go_lit ','
 @@:
 	inc	ebx
-	go_lit '{"matches":[{"path":{"type":"'
-	mov	rsi,r8
-	push	rcx
-	mov	ecx,r9d
-	call	go_bytes
-	pop	rcx
-	go_lit '","value":"'
 	mov	rsi,rdi
-	call	go_bytes
-	go_lit '"}}],"backendRefs":['
-	pop	rcx
-	pop	rsi
-	call	go_bytes
-	go_lit ']}'
+	pop	r9				; (its backendRef)
+	pop	rdx
+	mov	r10d,1
+	call	ing_rule			; (ingann.inc)
 	jmp	.out
 .skip:
 	add	rsp,16
 .out:
 	pop	r14
 	ret
-cstring .prefix, 'PathPrefix'
-cstring .exact, 'Exact'
 .slash	db '/'
 
 ; rbx = an Ingress backend: its backendRef as JSON, in GW_TEXT: rdi/ecx. CF
@@ -498,6 +550,22 @@ ing_backend_ref:
 	call	go_bytes
 	go_lit '","port":'
 	call	go_u
+	mov	eax,[g_ia_proto]		; (annotations: backend-protocol, affinity)
+	test	eax,eax
+	jz	@f
+	go_lit ',"x-okena-proto":'
+	call	go_u
+@@:
+	cmp	dword [g_ia_stklen],0
+	je	@f
+	go_lit ',"x-okena-sticky":"'
+	mov	rsi,[g_ia_stk]
+	mov	ecx,[g_ia_stklen]
+	call	go_bytes
+	go_lit '","x-okena-ttl":'
+	mov	eax,[g_ia_ttl]
+	call	go_u
+@@:
 	go_lit '}'
 	mov	rdi,r8
 	mov	rcx,r15

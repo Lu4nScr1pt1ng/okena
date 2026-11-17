@@ -31,6 +31,12 @@ bss
 	g_gs_time	rb 24
 	g_gs_key	dq ?
 	g_gs_count	dd ?
+	g_gs_naddr	dd ?			; addresses known now (0: none written)
+	g_gs_ialen	dd ?			; as an Ingress's loadBalancer says them
+	g_gs_galen	dd ?			; and a Gateway's status.addresses
+	g_gs_ia		dq ?
+	g_gs_ga		dq ?
+	g_gs_abuf	rb 16384
 end bss
 
 cstring str_gs_state, '/status.state',0
@@ -111,6 +117,7 @@ gw_status:
 	mov	ax,word [g_x5_time+10]
 	mov	[rdi+17],ax
 	mov	byte [rdi+19],'Z'
+	call	gs_addrs			; where they are reached
 	; what the supervisor said of the last reload
 	mov	dword [g_gs_prog],1
 	mov	rax,[g_gw_page]
@@ -139,7 +146,7 @@ gw_status:
 	xor	ebx,ebx
 .route:
 	cmp	ebx,[g_gw_nr_real]
-	jae	.saved
+	jae	.ingresses
 	call	gs_route_ours			; CF: none of its parents are ours
 	jc	@f
 	imul	rax,rbx,GWR_SIZE		; 2 an HTTPRoute, 3 a GRPCRoute
@@ -151,6 +158,18 @@ gw_status:
 @@:
 	inc	ebx
 	jmp	.route
+.ingresses:					; the Ingresses (their made-up Gateways): their address
+	cmp	dword [g_gs_naddr],0
+	je	.saved
+	mov	ebx,[g_gw_ng_real]
+.ingress:
+	cmp	ebx,[g_gw_ng]
+	jae	.saved
+	mov	edx,7
+	call	gs_put
+	jc	.out
+	inc	ebx
+	jmp	.ingress
 .saved:
 	cmp	dword [g_gs_dirty],0
 	je	.out
@@ -167,6 +186,242 @@ gw_status:
 	pop	r13
 	pop	r12
 	pop	rbx
+	ret
+
+; g_gs_ia/ga, g_gs_naddr: where Ingresses and Gateways are reached: address=,
+; else publish_service='s load balancer (its status, asked now: none when
+; it cannot be had)
+gs_addrs:
+	push	r13
+	push	r15
+	mov	dword [g_gs_naddr],0
+	lea	r15,[g_gs_abuf]
+	mov	rsi,[g_plan_gw+GWP_ADDR]
+	mov	ecx,[g_plan_gw+GWP_ADDRLEN]
+	test	ecx,ecx
+	jnz	.list
+	cmp	dword [g_plan_gw+GWP_PUBLEN],0
+	je	.out
+	; GET /api/v1/namespaces/NS/services/NAME
+	call	gw_req_begin
+	cstring .p1, '/api/v1/namespaces/',0
+	lea	rsi,[.p1]
+	call	gw_req_cstr
+	mov	rsi,[g_plan_gw+GWP_PUB]		; NS/NAME (checked: one slash)
+	xor	ecx,ecx
+@@:
+	cmp	byte [rsi+rcx],'/'
+	je	@f
+	inc	ecx
+	jmp	@b
+@@:
+	push	rcx
+	call	gw_req_add
+	cstring .p2, '/services/',0
+	lea	rsi,[.p2]
+	call	gw_req_cstr
+	pop	rcx
+	mov	rsi,[g_plan_gw+GWP_PUB]
+	lea	rsi,[rsi+rcx+1]
+	neg	ecx
+	add	ecx,[g_plan_gw+GWP_PUBLEN]
+	dec	ecx
+	call	gw_req_add
+	call	gw_get
+	jc	.out
+	cmp	eax,200
+	jne	.out
+	lea	r13,[rsi+rcx]
+	gk	'status'
+	call	gj_get
+	jc	.out
+	gk	'loadBalancer'
+	call	gj_get
+	jc	.out
+	gk	'ingress'
+	call	gj_get
+	jc	.out
+	call	gj_first
+	jc	.out
+	; two passes: the Ingress's form, then the Gateway's
+	push	rsi
+	mov	[g_gs_ia],r15
+	xor	edx,edx
+	call	.lb
+	mov	rax,r15
+	sub	rax,[g_gs_ia]
+	mov	[g_gs_ialen],eax
+	mov	rsi,[rsp]
+	mov	[g_gs_ga],r15
+	mov	edx,1
+	call	.lb
+	mov	rax,r15
+	sub	rax,[g_gs_ga]
+	mov	[g_gs_galen],eax
+	pop	rsi
+	jmp	.out
+; rsi = the first of status.loadBalancer.ingress, edx = the form
+.lb:
+	push	r12
+	push	rbx
+	mov	ebx,edx
+	mov	dword [g_gs_naddr],0
+.lb_item:
+	mov	r12,rsi
+	gk	'ip'
+	call	gj_str
+	jnc	@f
+	mov	rsi,r12
+	gk	'hostname'
+	call	gj_str
+	jc	.lb_next
+@@:
+	mov	rsi,rdi
+	mov	edx,ebx
+	call	gs_addr_one
+.lb_next:
+	mov	rsi,r12
+	call	gj_next
+	jnc	.lb_item
+	pop	rbx
+	pop	r12
+	ret
+.list:						; address=: by commas, twice
+	push	rsi
+	push	rcx
+	mov	[g_gs_ia],r15
+	xor	edx,edx
+	call	.split
+	mov	rax,r15
+	sub	rax,[g_gs_ia]
+	mov	[g_gs_ialen],eax
+	mov	rcx,[rsp]
+	mov	rsi,[rsp+8]
+	mov	[g_gs_ga],r15
+	mov	edx,1
+	mov	dword [g_gs_naddr],0
+	call	.split
+	mov	rax,r15
+	sub	rax,[g_gs_ga]
+	mov	[g_gs_galen],eax
+	add	rsp,16
+.out:
+	pop	r15
+	pop	r13
+	ret
+; rsi/ecx = the list, edx = the form
+.split:
+	push	rbx
+	push	r12
+	mov	ebx,edx
+	lea	r12,[rsi+rcx]
+.sp_item:
+	cmp	rsi,r12
+	jae	.sp_end
+	mov	rdi,rsi
+@@:
+	cmp	rdi,r12
+	jae	@f
+	cmp	byte [rdi],','
+	je	@f
+	inc	rdi
+	jmp	@b
+@@:
+	push	rdi
+	mov	rcx,rdi
+	sub	rcx,rsi
+	mov	edx,ebx
+	call	gs_addr_one
+	pop	rsi
+	inc	rsi
+	jmp	.sp_item
+.sp_end:
+	pop	r12
+	pop	rbx
+	ret
+
+; rsi/ecx = an address (an IP, or a name), edx = 0 the Ingress's form, 1 the
+; Gateway's: out (r15), a comma before all but the first. Left out when it is
+; neither (at most 16). Keeps rbx, r12-r15.
+gs_addr_one:
+	test	ecx,ecx
+	jz	.out
+	cmp	ecx,253
+	ja	.out
+	cmp	dword [g_gs_naddr],16
+	jae	.out
+	; an IP: digits, dots and colons (and a-f with a colon)
+	xor	eax,eax
+	xor	r8d,r8d				; 1 a name
+	xor	r9d,r9d				; a colon
+.c:
+	movzx	r10d,byte [rsi+rax]
+	cmp	r10b,':'
+	jne	@f
+	mov	r9d,1
+	jmp	.n
+@@:
+	cmp	r10b,'.'
+	je	.n
+	lea	r11d,[r10-'0']
+	cmp	r11d,9
+	jbe	.n
+	cmp	r10b,'-'
+	je	.name
+	lea	r11d,[r10-'a']
+	cmp	r11d,25
+	ja	.out
+	cmp	r11d,5
+	jbe	.n_hex
+.name:
+	mov	r8d,1
+	jmp	.n
+.n_hex:
+	or	r8d,2				; (a-f: an IPv6's, or a name's)
+.n:
+	inc	eax
+	cmp	eax,ecx
+	jb	.c
+	test	r9d,r9d
+	jz	.nocolon
+	test	r8d,1
+	jnz	.out				; (a colon in a name)
+	xor	r8d,r8d				; an IPv6 address
+	jmp	.kind
+.nocolon:
+	test	r8d,r8d
+	jz	.ip4
+	mov	r8d,1				; a letter: a name
+	jmp	.kind
+.ip4:
+	cmp	byte [rsi+rcx-1],'.'
+	je	.out
+.kind:
+	cmp	dword [g_gs_naddr],0
+	je	@f
+	gs_lit	','
+@@:
+	inc	dword [g_gs_naddr]
+	test	edx,edx
+	jnz	.gw
+	test	r8d,r8d
+	jnz	@f
+	gs_lit	'{"ip":"'
+	jmp	.v
+@@:
+	gs_lit	'{"hostname":"'
+	jmp	.v
+.gw:
+	test	r8d,r8d
+	jnz	@f
+	gs_lit	'{"type":"IPAddress","value":"'
+	jmp	.v
+@@:
+	gs_lit	'{"type":"Hostname","value":"'
+.v:
+	call	go_bytes
+	gs_lit	'"}'
+.out:
 	ret
 
 ; ebx = a route: CF when no parentRef of it names one of our Gateways
@@ -254,7 +509,7 @@ gs_put:
 	jne	.same				; (gone, or a conflict: the next second)
 	push	rax
 	mov	eax,7
-	cstring str_gs_403, ': the API server refused a status (403: may the service account patch gatewayclasses/status, gateways/status and httproutes/status?)'
+	cstring str_gs_403, ': the API server refused a status (403: may the service account patch gatewayclasses/status, gateways/status, httproutes/status and ingresses/status?)'
 	lea	rsi,[str_gs_403]
 	mov	edx,str_gs_403.len
 	call	gw_tell
@@ -291,6 +546,8 @@ gs_key:
 	xor	rax,rdx
 	mov	rdx,0x100000001B3
 	imul	rax,rdx
+	cmp	r12d,7				; (an Ingress: its made-up Gateway's names)
+	je	.gateway
 	cmp	r12d,1
 	je	.gateway
 	ja	.route
@@ -336,6 +593,25 @@ gs_fnv_slash:
 ; r12d = kind, ebx = which: g_gw_reqpath = its status subresource
 gs_path:
 	call	gw_req_begin
+	cmp	r12d,7
+	jne	.gw_api
+	imul	r8,rbx,GWG_SIZE
+	add	r8,[g_gw_base]
+	add	r8,GW_T_G
+	cstring .ing, '/apis/networking.k8s.io/v1/namespaces/',0
+	lea	rsi,[.ing]
+	call	gw_req_cstr
+	mov	rsi,[r8+GWG_NS]
+	mov	ecx,[r8+GWG_NSLEN]
+	call	gw_req_add
+	cstring .ings, '/ingresses/',0
+	lea	rsi,[.ings]
+	call	gw_req_cstr
+	mov	rsi,[r8+GWG_NAME]
+	mov	ecx,[r8+GWG_NLEN]
+	call	gw_req_add
+	jmp	.status
+.gw_api:
 	cstring .api, '/apis/gateway.networking.k8s.io/v1/',0
 	lea	rsi,[.api]
 	cmp	r12d,4
@@ -479,6 +755,15 @@ cstring gs_m_refused, 'okena refused the configuration written for it: see its l
 ; r12d = kind, ebx = which: {"status":{...}}, out
 gs_build:
 	gs_lit	'{"status":{'
+	cmp	r12d,7
+	jne	@f
+	gs_lit	'"loadBalancer":{"ingress":['
+	mov	rsi,[g_gs_ia]
+	mov	ecx,[g_gs_ialen]
+	call	go_bytes
+	gs_lit	']}'
+	jmp	.end
+@@:
 	test	r12d,r12d
 	jz	.class
 	cmp	r12d,1
@@ -508,6 +793,14 @@ gs_gateway:
 	imul	r14,rbx,GWG_SIZE
 	add	r14,[g_gw_base]
 	add	r14,GW_T_G
+	cmp	dword [g_gs_naddr],0
+	je	@f
+	gs_lit	'"addresses":['
+	mov	rsi,[g_gs_ga]
+	mov	ecx,[g_gs_galen]
+	call	go_bytes
+	gs_lit	'],'
+@@:
 	gs_lit	'"conditions":['
 	lea	r8,[gs_t_accepted]
 	mov	r9d,1

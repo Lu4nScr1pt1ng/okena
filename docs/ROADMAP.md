@@ -1007,8 +1007,14 @@ the items.
     and a Helm chart. **Done 2026-11-14** (src/core/ingress.inc,
     tests/gateway/ingress.py; contrib/helm/okena, tests/config/helm.py runs
     when helm is at build/helm/helm): Ingresses become made-up Gateways and
-    HTTPRoutes read by gwgen.inc's own code. Not here: Ingress status
-    (loadBalancer.ingress), nginx's annotations.
+    HTTPRoutes read by gwgen.inc's own code. Status and annotations: **done
+    2026-11-16** (src/core/ingann.inc, gwstatus.inc): loadBalancer.ingress
+    and Gateways' status.addresses from `address=` or `publish_service=`;
+    nginx's rewrite-target (with groups), use-regex, ssl-redirect (on by
+    default, as nginx), force-ssl-redirect, backend-protocol, permanent and
+    temporal redirects, app-root, allow/deny lists, proxy-body-size, CORS,
+    timeouts, limit-rps/rpm, cookie affinity. Not taken: snippets, canary
+    annotations, auth-url.
 12. Rate limits shared across a fleet; `RateLimit-*` response headers. **Done
     2026-11-14** (src/gw/fleetlim.inc, tests/gateway/fleetlim.py,
     tests/gateway/ratehdr.py): `limit ... headers=on`; `fleet_limits` and
