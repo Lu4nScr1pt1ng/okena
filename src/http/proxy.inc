@@ -2290,6 +2290,13 @@ http_retry_fresh:
 ; No server could be reached.
 http_connect_failed:
 	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_TLS_HS	; a tcp session's upstream TLS: no HTTP
+	jz	@f				; to answer with, the connection goes
+	mov	edi,ebx
+	cmp	dword [g_engine],ENGINE_EPOLL
+	je	ep_close
+	jmp	session_close
+@@:
 	test	dword [rax+S_FLAGS],SF_H2U
 	jnz	h2u_failed			; an upstream HTTP/2 connection: its requests fail over
 	call	hold_wait

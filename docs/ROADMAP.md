@@ -926,9 +926,9 @@ What proxies of this kind are commonly expected to do and okena did not
 where it touches the request path, a benchmark showing routes that do not
 use it unchanged.
 
-Status 2026-11-16: all twenty items in. Still open from them: TLS
-origination from `tcp` listeners (item 3) and the smaller "Left:" notes
-under the items.
+Status 2026-11-16: all twenty items in, TLS origination from `tcp`
+listeners and ES384 included. Still open: the smaller "Left:" notes under
+the items.
 
 1. PROXY protocol v1/v2 accepted on `tcp` and `http` listeners
    (`proxy_protocol accept [FROM...]`); the client becomes the PROXY
@@ -947,7 +947,11 @@ under the items.
    for the system's roots, `verify off` for a private backend; TLS
    origination from `tcp` listeners. Trust: **done 2026-11-14**
    (src/tls/upanchors.inc, tests/tls/uptrust.py): anchors in the plan,
-   picked by the issuer's name hash as client_ca does.
+   picked by the issuer's name hash as client_ca does. Origination:
+   **done 2026-11-16** (uptls.inc, tests/l4/uptls.py): a tcp session runs
+   the client handshake on the http machinery (SF_TLS_HS, as its own TLS
+   does), after a PROXY header, then the relay over kTLS; control records
+   (NewSessionTicket) on the kTLS upstream taken and dropped by the relay.
 4. `allow`/`deny` and `access_log` on `tcp` and `udp` listeners (one
    line per connection or flow: bytes both ways, duration, upstream). allow/deny: **done 2026-11-14** (tests/l4/acl.py): checked in
    peer_admit (after a PROXY header) and once per UDP flow; refusals by

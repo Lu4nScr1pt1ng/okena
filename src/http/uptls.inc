@@ -39,6 +39,45 @@ HB_UIOV		:= HB_UMSG + 56			; struct iovec (16)
 HB_UCTL		:= HB_UIOV + 16			; cmsg buffer (64)
 HB_UDISC	:= HB_UCTL + 64			; the discarded record payload (4096)
 
+; ebx = a session on a tcp listener, connected to a TLS pool: the client
+; handshake on the http machinery, as a tcp listener's own TLS runs
+; (SF_TLS_HS: epoll's events go to it), then the relay over kTLS
+; (uptls_connected). A failure closes the connection: no HTTP to answer with.
+tcp_uptls_start:
+	call	session_ptr
+	or	dword [rax+S_FLAGS],SF_TLS_HS
+	h_rec
+	mov	eax,ebx
+	shl	rax,HB_SHIFT
+	add	rax,[g_hbuf_base]
+	mov	[r15+H_BUF],rax
+	xor	eax,eax
+	mov	[r15+H_INLEN],eax
+	mov	[r15+H_INOFF],eax
+	mov	[r15+H_FLAGS],eax
+	mov	[r15+H_UTLS],eax
+	mov	[r15+H_UPKTLS],eax
+	mov	edi,ebx
+	mov	esi,PH_HEAD			; (the header time bounds the handshake)
+	call	ph_arm
+	jmp	http_uptls_start
+
+; the upstream is a kTLS socket now: an http exchange goes on, a tcp
+; session's bytes go both ways
+uptls_connected:
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_TLS_HS
+	jz	http_connected
+	and	dword [rax+S_FLAGS],not SF_TLS_HS
+	mov	byte [g_uptls_ok+rbx],1
+	h_rec
+	mov	dword [r15+H_STATE],0
+	mov	edi,ebx
+	call	ph_disarm
+	cmp	dword [g_engine],ENGINE_EPOLL
+	je	ep_l4_go
+	jmp	relay_after_pp
+
 ; reached from on_s_connect (http listeners): a plain pool goes straight on
 http_up_ready:
 	call	session_ptr
@@ -414,7 +453,7 @@ http_uptls_fin_sent:
 	jnz	.efail
 	mov	dword [r15+H_UPKTLS],1		; the upstream is a kTLS socket now
 	mov	dword [r15+H_UPLEN],0
-	jmp	http_connected
+	jmp	uptls_connected
 .efail:
 	mov	edi,ebx
 	call	uptls_log_fail
@@ -520,11 +559,38 @@ on_h_uktls:
 .ok:
 	mov	dword [r15+H_UPKTLS],1		; the upstream is a kTLS socket now
 	mov	dword [r15+H_UPLEN],0		; the response buffer starts empty
-	jmp	http_connected
+	jmp	uptls_connected
 .closing:
 	mov	edi,ebx
 	jmp	session_maybe_free
 .out:
+	ret
+
+; ebx = a tcp session whose kTLS upstream has a control record next (epoll):
+; taken with recvmsg and dropped. rax = its result (-EAGAIN: not all in yet).
+l4_ktls_drain:
+	call	session_ptr
+	mov	edi,[rax+S_UPFD]
+	mov	r8,rbx
+	shl	r8,H_SHIFT
+	add	r8,[g_http_base]
+	mov	r8,[r8+H_BUF]
+	lea	rax,[r8+HB_UDISC]
+	mov	[r8+HB_UIOV],rax
+	mov	qword [r8+HB_UIOV+8],4096
+	mov	qword [r8+HB_UMSG],0
+	mov	qword [r8+HB_UMSG+8],0
+	lea	rax,[r8+HB_UIOV]
+	mov	[r8+HB_UMSG+16],rax
+	mov	qword [r8+HB_UMSG+24],1
+	lea	rax,[r8+HB_UCTL]
+	mov	[r8+HB_UMSG+32],rax
+	mov	qword [r8+HB_UMSG+40],64
+	mov	dword [r8+HB_UMSG+48],0
+	lea	rsi,[r8+HB_UMSG]
+	mov	edx,MSG_DONTWAIT
+	mov	eax,SYS_recvmsg
+	syscall
 	ret
 
 ; edi = session: note an upstream TLS failure. Keeps rbx.
@@ -577,6 +643,16 @@ on_h_udrain:
 	cmp	dword [rax+S_STATE],ST_CLOSING
 	je	.closing
 	h_rec
+	cmp	byte [g_uptls_ok+rbx],0		; a tcp session's relay: its receive again
+	je	.http
+	test	r14,r14
+	js	.l4_err
+	mov	edi,ebx
+	jmp	post_recv_u
+.l4_err:
+	mov	edi,ebx
+	jmp	session_close
+.http:
 	test	r14,r14
 	js	.err
 	mov	rdi,[r15+H_URBUF]

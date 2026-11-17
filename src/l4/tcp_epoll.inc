@@ -867,6 +867,7 @@ ep_connected:
 	pop	rbx
 	ret
 @@:
+	mov	byte [g_uptls_ok+rbx],0
 	; a PROXY protocol header goes first; on a fresh connection it fits
 	; the send buffer, so one write sends it all or the session ends
 	call	session_ptr
@@ -889,6 +890,19 @@ ep_connected:
 	pop	rbx
 	ret
 .relay:
+	; a TLS pool: its handshake now (after the PROXY header, in the clear),
+	; then back here (ep_l4_go)
+	call	session_ptr
+	mov	ecx,[rax+S_POOL]
+	imul	rcx,rcx,PL_SIZE
+	cmp	dword [g_pools+rcx+PL_TLS],0
+	je	@f
+	cmp	byte [g_uptls_ok+rbx],0
+	jne	@f
+	call	tcp_uptls_start
+	pop	rbx
+	ret
+@@:
 	; tls passthrough: the ClientHello read before connecting goes first
 	; (a fresh connection's buffer takes it whole, as the PROXY header)
 	call	session_ptr
@@ -924,6 +938,11 @@ ep_connected:
 @@:
 	pop	rbx
 	ret
+
+; ebx = a tcp session through its upstream TLS: on as ep_connected goes
+ep_l4_go:
+	push	rbx
+	jmp	ep_connected.relay
 
 ; edi = session, rsi = -errno: try another server or give up.
 ep_connect_failed:
@@ -1270,6 +1289,18 @@ ep_pump:
 	je	.out
 	cmp	rax,-EINTR
 	je	.again
+	cmp	rax,-5				; -EIO on a kTLS upstream: a control record
+	jne	.broke				; (a NewSessionTicket): taken, then on
+	cmp	dword [rsp],EK_UPSTREAM
+	jne	.broke
+	cmp	byte [g_uptls_ok+rbx],0
+	je	.broke
+	call	l4_ktls_drain
+	cmp	rax,-EAGAIN
+	je	.out
+	test	rax,rax
+	jns	.again
+.broke:
 	mov	eax,SX_RST_U			; the source broke: reset the other side
 	cmp	ebp,SF_C_EOF
 	je	@f

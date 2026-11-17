@@ -664,6 +664,23 @@ tcp :443 {
 The ClientHello is read for its SNI and then forwarded untouched, after a
 PROXY header when `proxy_protocol send` is set.
 
+Or the other way: clients in plaintext, the backend over TLS (a managed
+database or cache that only takes TLS, a service in another network):
+
+```nginx
+pool redis-tls { server redis.internal:6380; tls { trust system; sni redis.internal } }
+tcp :6379 { to pool redis-tls }
+```
+
+okena runs the TLS client handshake with each connection's server (its
+certificate checked against the pool's `trust`, the name against `sni`, as
+for http listeners), then relays over the kernel's TLS: the bytes move as
+on a plain backend. A server that fails the check gets no byte of the
+client, and the connection closes. With `proxy_protocol send`, the header
+goes first, in the clear, then the handshake. A pool's `tls` and a tcp
+listener's own `tls` work together (TLS on both sides). Needs the kernel's
+`tls` module, as a tcp listener's own TLS does.
+
 ---
 
 ## Hosts and routes

@@ -1877,16 +1877,12 @@ check_listener:
 	call	pool_find
 	test	rax,rax
 	jz	.no_pool
-	; a pool's `tls` is spoken by http listeners only: from a tcp or udp
-	; listener the bytes would reach its servers in the clear (epoll) or
-	; not at all (io_uring). (A route's `to` comes here too: fine there.)
-	lea	rcx,[dir_table + D_SIZE*DIR_TCP]
-	cmp	[r12+N_DEF],rcx
-	je	@f
+	; a pool's `tls` is spoken by http and tcp listeners (a tcp session
+	; runs the client handshake, then relays over kTLS): from a udp
+	; listener the datagrams would reach its servers in the clear
 	lea	rcx,[dir_table + D_SIZE*DIR_UDP]
 	cmp	[r12+N_DEF],rcx
 	jne	.addresses
-@@:
 	mov	rdi,rax
 	mov	ecx,DIR_UPTLS
 	call	find_child
@@ -1900,7 +1896,7 @@ check_listener:
 	mov	rsi,[r13+A_VAL]
 	mov	edx,[r13+A_VLEN]
 	call	cfg_quote
-	out_lit ' has `tls`, which only http listeners speak to their backends: here the bytes would go unencrypted'
+	out_lit ' has `tls`, which a udp listener does not speak (DTLS is not here): its datagrams would go unencrypted'
 	call	cfg_diag_end
 	call	cfg_error_limit
 	jmp	.addresses

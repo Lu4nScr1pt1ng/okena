@@ -226,6 +226,7 @@ bss
 	g_pb_stack	rd BUF_MAX	; (the last given back on top)
 	g_pbl_stack	rd BUFL_MAX
 	g_sbig		rb 1 shl 20	; a session's extras (SX_*)
+	g_uptls_ok	rb 1 shl 20	; a tcp session's upstream TLS is up (set at connect: 0)
 	align 8
 	g_sops		rq 1 shl 20	; a session's ops in flight, a bit each (sess_sqe)
 	g_waitq_c_head	dd ?
@@ -2679,6 +2680,13 @@ start_relay:
 ; ClientHello next, then bytes both ways.
 relay_after_pp:
 	call	session_ptr
+	mov	ecx,[rax+S_POOL]		; a TLS pool: the handshake first, then
+	imul	rcx,rcx,PL_SIZE			; the relay over kTLS (uptls.inc)
+	cmp	dword [g_pools+rcx+PL_TLS],0
+	je	@f
+	cmp	byte [g_uptls_ok+rbx],0
+	je	tcp_uptls_start
+@@:
 	test	dword [rax+S_FLAGS],SF_PREFIX
 	jz	start_relay
 	mov	edi,ebx
@@ -2841,21 +2849,15 @@ on_s_connect:
 	call	server_ok
 	call	sv_connect_sample
 	if_http http_up_ready
-	; L4 (tcp) to a TLS pool is not supported: refuse rather than leak plaintext
-	mov	eax,[r13+S_POOL]
-	imul	rax,rax,PL_SIZE
-	cmp	dword [g_pools+rax+PL_TLS],0
-	jne	.tls_l4
-	; a PROXY protocol header goes before any byte of the client
+	mov	byte [g_uptls_ok+rbx],0		; (a TLS pool: its handshake, at relay_after_pp)
+	; a PROXY protocol header goes before any byte of the client (and
+	; before a TLS pool's handshake, in the clear, as HAProxy sends it)
 	mov	eax,[r13+S_LST]
 	imul	rax,rax,LS_SIZE
 	test	dword [g_listeners+rax+LS_FLAGS],LSF_PP_V1 or LSF_PP_V2
 	jz	relay_after_pp
 	mov	edi,ebx
 	jmp	post_send_pp
-.tls_l4:
-	mov	edi,ebx
-	jmp	session_close
 .failed:
 	mov	edi,[r13+S_SERVER]
 	mov	rsi,r14
@@ -3252,6 +3254,11 @@ on_s_recv_u:
 	jmp	post_send_c
 .end_or_error:
 	jz	.eof
+	cmp	r14,-5				; -EIO on a kTLS upstream: a control
+	jne	@f				; record (a NewSessionTicket) is next:
+	cmp	byte [g_uptls_ok+rbx],0		; taken and dropped, then on (uptls.inc)
+	jne	http_updrain
+@@:
 	cmp	r14,-ENOBUFS
 	je	.no_buffer
 	or	byte [g_sbig+rbx],SX_RST_C	; the upstream broke: reset the client
