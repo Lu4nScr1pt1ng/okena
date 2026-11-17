@@ -1042,8 +1042,13 @@ the items.
     in a child (its errors printed), reloads through the admin socket, and
     puts FILE back when either fails. Done in the CLI, as its user, not in
     the admin process: what reaches the metrics address cannot change
-    routes. Not here: an HTTP API for it (the admin process would need the
-    right to rewrite the configuration).
+    routes. HTTP API: **done 2026-11-16** (src/admin/rtapi.inc,
+    tests/admin/routesapi.py): `okena routes-api unix:/PATH|loopback:PORT
+    token=FILE`, a process of its own run as the files' user: Bearer token
+    (constant time), GET/PUT/DELETE /routes[/NAME], each change `okena
+    routes` itself as a child (argv, no shell), 200/422/404; one line of
+    16 KiB at most, 5 s to arrive; the admin process still has no right to
+    rewrite the configuration.
 16. Environment variables in the configuration (`${env:NAME}`). **Done
     2026-11-16** (parse.inc: cfg_env_expand, tests/config/env.py):
     `${env:NAME}` and `${env:NAME:-DEFAULT}` in any value, expanded as the

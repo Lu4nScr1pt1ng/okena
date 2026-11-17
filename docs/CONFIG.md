@@ -1688,6 +1688,47 @@ writes FILE a route a line; one edited by hand is read the same, but routes
 split over lines are not changed by these commands. `last_good` keeps the
 `routes` line in its copy, not the routes: FILE stays the one read.
 
+**Over HTTP.** `okena routes-api` serves the same commands as an HTTP API,
+as a process of its own, run as the user who may change the files (a
+systemd unit of its own, say). The admin process still gets no right to
+rewrite the configuration:
+
+```sh
+openssl rand -hex 32 > /etc/okena/routes-token
+okena routes-api unix:/run/okena/routes.sock token=/etc/okena/routes-token -c /etc/okena/okena.conf
+```
+
+| Request | Does |
+|---|---|
+| `GET /routes` | the names and their files |
+| `GET /routes/NAME` | what NAME holds |
+| `PUT /routes/NAME` | the body (one route, one line) put in, as `okena routes NAME put` |
+| `DELETE /routes/NAME` | the route whose head is the body taken out |
+
+Every request needs `Authorization: Bearer TOKEN` (32 to 512 printable
+characters from the file, compared in constant time). Each change runs
+`okena routes` itself, with no shell in between, so it's checked, written
+and reloaded or put back exactly as above. The answers: 200 with what it
+said, 422 with the configuration's errors when the change wasn't taken,
+404 for a name or a head that isn't there, 401 without the token. The
+address is a `unix:` path (made 0600) or a loopback `HOST:PORT`: a token
+sent over plain HTTP goes nowhere else. To reach it from other machines,
+put a route of okena itself in front, which brings TLS, allow lists and
+limits:
+
+```nginx
+route /api/routes/* {
+    allow 10.0.0.0/8
+    limit 10/s key=client.ip
+    rewrite path /api/routes/{*} -> /routes/{*}
+    to unix:/run/okena/routes.sock
+}
+```
+
+It answers one request at a time (changes go one at a time anyway), and
+each request has 5 s to arrive whole. A body is one line of at most 16 KiB.
+Each request is logged with its method, target and status.
+
 ---
 
 ## Protocols
@@ -2089,6 +2130,7 @@ helm install edge contrib/helm/okena --namespace ingress --create-namespace
 | `okena drain [wait]` / `okena resume` | take the instance out of rotation (`/ready` 503) and back |
 | `okena backend list\|drain\|up\|weight` | change servers at runtime |
 | `okena routes [NAME [put ROUTE \| delete HEAD]]` | change the routes of a `routes FILE` at runtime |
+| `okena routes-api ADDR token=FILE [-c CONF]` | the same over HTTP, token-authenticated, as a process of its own |
 | `okena maintenance [on\|off [ROUTE]]` | maintenance mode |
 | `okena top [once]` | live view of listeners, pools and servers |
 | `okena purge url\|prefix\|tag VALUE` | purge the cache (and the fleet's) |

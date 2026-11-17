@@ -276,6 +276,8 @@ SUITES = [
     ("tcp uptls epoll", ["tests/l4/uptls.py", "epoll"]),
     ("proxy tlvs io_uring", ["tests/peer/tlv.py", "io_uring"]),
     ("proxy tlvs epoll", ["tests/peer/tlv.py", "epoll"]),
+    ("routes-api io_uring", ["tests/admin/routesapi.py", "io_uring"]),
+    ("routes-api epoll", ["tests/admin/routesapi.py", "epoll"]),
     ("geoip io_uring", ["tests/gateway/geoip.py", "io_uring"]),
     ("geoip epoll", ["tests/gateway/geoip.py", "epoll"]),
     ("acl io_uring", ["tests/gateway/acl.py", "io_uring"]),
