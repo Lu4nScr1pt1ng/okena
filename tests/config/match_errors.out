@@ -1,4 +1,4 @@
 exit: 2
 --- stdout
 --- stderr
-okena: match needs conditions: method=, header:NAME[=VALUE], query:NAME[=VALUE], cookie:NAME[=VALUE], client.ip=CIDR, client.country=CC (with geoip), client.asn=N,N (with geoip_asn), proxy.NAME[=VALUE] (a PROXY header: authority, unique_id, alpn, ssl_version, aws_vpce, azure_linkid, gcp_psc), path=~REGEX (and NAME=~REGEX); pools that exist; no `match` or `use` inside; at most 1024 in a route
+okena: match needs conditions: method=, header:NAME[=VALUE], query:NAME[=VALUE], cookie:NAME[=VALUE], client.ip=CIDR, client.country=CC (with geoip), client.asn=N,N (with geoip_asn), tls.ja4=FINGERPRINT, proxy.NAME[=VALUE] (a PROXY header: authority, unique_id, alpn, ssl_version, aws_vpce, azure_linkid, gcp_psc), path=~REGEX (and NAME=~REGEX); pools that exist; no `match` or `use` inside; at most 1024 in a route

@@ -26,6 +26,7 @@ MM_THERE	:= 2
 MM_REGEX	:= 3				; ~REGEX: its regex in MC_VLEN (regex.inc)
 LK_MPATH	:= 8				; `path`: the normalized path
 LK_ASN		:= 9				; `client.asn`
+LK_JA4		:= 11				; `tls.ja4` (ja4.inc)
 
 MB_RT		:= 0				; d: its variant, in g_mroutes
 MB_CFIRST	:= 4				; d
@@ -114,6 +115,8 @@ mc_holds:
 	je	.path
 	cmp	eax,LK_PPT
 	je	.ppt
+	cmp	eax,LK_JA4
+	je	.ja4
 	; client.ip
 	cmp	dword [g_cr_dry],0
 	je	@f
@@ -183,6 +186,14 @@ mc_holds:
 	call	asn_in_list
 	jc	.yes
 	jmp	.no
+.ja4:
+	lea	rdi,[g_ppt_val]
+	call	ja4_value
+	lea	rsi,[g_ppt_val]
+	mov	ecx,0
+	jc	.compare			; (none: nothing)
+	mov	ecx,JA_LEN
+	jmp	.compare
 .ppt:
 	mov	ecx,[r12+MC_NLEN]
 	lea	rdi,[g_ppt_val]
@@ -530,6 +541,18 @@ match_conditions:
 	jc	plan_bad_match
 	jmp	.taken
 .named:
+	cmp	ecx,7				; tls.ja4: the client's TLS fingerprint (ja4.inc)
+	jne	.not_ja4
+	cmp	dword [rsi],'tls.'
+	jne	.not_ja4
+	cmp	word [rsi+4],'ja'
+	jne	.not_ja4
+	cmp	byte [rsi+6],'4'
+	jne	.not_ja4
+	mov	dword [rbx+MC_KIND],LK_JA4
+	mov	dword [g_plan_ja4],1
+	jmp	.taken
+.not_ja4:
 	cmp	ecx,7				; proxy.NAME: a PROXY header's TLV (pptlv.inc)
 	jb	.not_ppt
 	cmp	dword [rsi],'prox'
@@ -783,7 +806,7 @@ match_entries:
 
 plan_bad_match:
 	call	log_begin
-	out_lit 'match needs conditions: method=, header:NAME[=VALUE], query:NAME[=VALUE], cookie:NAME[=VALUE], client.ip=CIDR, client.country=CC (with geoip), client.asn=N,N (with geoip_asn), proxy.NAME[=VALUE] (a PROXY header: authority, unique_id, alpn, ssl_version, aws_vpce, azure_linkid, gcp_psc), path=~REGEX (and NAME=~REGEX); pools that exist; no `match` or `use` inside; at most 1024 in a route'
+	out_lit 'match needs conditions: method=, header:NAME[=VALUE], query:NAME[=VALUE], cookie:NAME[=VALUE], client.ip=CIDR, client.country=CC (with geoip), client.asn=N,N (with geoip_asn), tls.ja4=FINGERPRINT, proxy.NAME[=VALUE] (a PROXY header: authority, unique_id, alpn, ssl_version, aws_vpce, azure_linkid, gcp_psc), path=~REGEX (and NAME=~REGEX); pools that exist; no `match` or `use` inside; at most 1024 in a route'
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process

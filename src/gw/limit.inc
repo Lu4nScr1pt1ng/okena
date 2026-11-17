@@ -207,7 +207,17 @@ limit_key:
 	je	.query
 	cmp	eax,LK_AUTH
 	je	.authn
+	cmp	eax,LK_JA4
+	je	.ja4
 	jmp	.mixed
+.ja4:
+	lea	rdi,[g_ppt_val]
+	call	ja4_value
+	lea	rsi,[g_ppt_val]
+	mov	ecx,0
+	jc	.mix
+	mov	ecx,JA_LEN
+	jmp	.mix
 .authn:
 	mov	rax,[r15+H_BUF]
 	lea	rsi,[rax+HB_AUTHN]

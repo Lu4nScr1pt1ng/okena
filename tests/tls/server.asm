@@ -273,7 +273,11 @@ ech_hrr:
 	ret
 bss
 	g_eh_second	dd ?
+	g_ja4_ok	dd ?			; (no JA4 here)
+	g_plan_ja4	dd ?
 end bss
+ja4_hello:
+	ret
 
 ; edx = bytes from g_out: written, or CF.
 send_out:

@@ -3589,7 +3589,7 @@ check_header_ops:
 	call	arg_value_span
 	mov	edx,[r14+2*A_SIZE+A_LINE]
 	call	cfg_error
-	out_lit 'unknown variable: the ones a header value can use are ${client.ip} ${request.id} ${time.us} ${time.s}, and a PROXY header',27h,'s ${proxy.authority} ${proxy.unique_id} ${proxy.alpn} ${proxy.ssl_version} ${proxy.aws_vpce} ${proxy.azure_linkid} ${proxy.gcp_psc}'
+	out_lit 'unknown variable: the ones a header value can use are ${client.ip} ${request.id} ${time.us} ${time.s} ${tls.ja4}, and a PROXY header',27h,'s ${proxy.authority} ${proxy.unique_id} ${proxy.alpn} ${proxy.ssl_version} ${proxy.aws_vpce} ${proxy.azure_linkid} ${proxy.gcp_psc}'
 	call	cfg_diag_end
 	call	cfg_error_limit
 	jmp	.next
@@ -3657,7 +3657,7 @@ check_header_vars:
 	stc
 	ret
 
-enumdef e_header_vars, 'client.ip', 'request.id', 'time.us', 'time.s', 'proxy.authority', 'proxy.unique_id', 'proxy.alpn', 'proxy.ssl_version', 'proxy.aws_vpce', 'proxy.azure_linkid', 'proxy.gcp_psc'
+enumdef e_header_vars, 'client.ip', 'request.id', 'time.us', 'time.s', 'tls.ja4', 'proxy.authority', 'proxy.unique_id', 'proxy.alpn', 'proxy.ssl_version', 'proxy.aws_vpce', 'proxy.azure_linkid', 'proxy.gcp_psc'
 
 enumdef e_owned_headers, 'host', 'content-length', 'transfer-encoding', 'connection', 'keep-alive', \
 	'upgrade', 'te', 'trailer', 'proxy-connection', 'expect', 'x-forwarded-for', \

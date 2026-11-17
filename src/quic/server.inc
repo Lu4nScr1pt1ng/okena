@@ -3306,6 +3306,7 @@ qc_crypto_in:
 	lea	r8,[r15+QC_TLSOUT]
 	mov	r9d,QC_TLSROOM
 	call	tls_hello
+	call	ja4_take			; (its fingerprint, when computed)
 	cmp	eax,TH_MORE
 	je	.ok
 	cmp	eax,TH_SEND

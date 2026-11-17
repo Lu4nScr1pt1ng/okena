@@ -631,6 +631,30 @@ and verifies the response, refreshes it halfway to its `nextUpdate`, and never
 staples a stale one. A revoked ACME certificate is renewed at once. `ocsp off`
 in a `tls` block turns it off.
 
+### Client fingerprints (JA4)
+
+okena can fingerprint each TLS client by its first ClientHello, with
+[JA4](https://github.com/FoxIO-LLC/ja4): `t13d1516h2_8daaf6152771_e5627efa2ab1`
+is TCP, TLS 1.3, SNI sent, 15 cipher suites, 16 extensions, ALPN h2, then a
+hash of the cipher suites and one of the extensions and signature
+algorithms. The extensions' order isn't part of it, so a browser that
+shuffles them keeps one fingerprint. Over HTTP/3 it starts with `q`. Each
+HTTP/2 or HTTP/3 stream has its connection's.
+
+```nginx
+route /* {
+    match tls.ja4=t13d190900_9dc949149365_97f8aa674fd9 { respond 403 }   # a known scraper
+    limit 50/s key=tls.ja4                    # one bucket per client build
+    header set x-ja4 "${tls.ja4}"             # tell the backend
+    to pool app
+}
+```
+
+It's computed only when the configuration uses it (`match tls.ja4`,
+`key=tls.ja4`, `${tls.ja4}`), or with `okena { ja4 on }` for the access log
+alone; then each log line has `ja4`. A plain-HTTP request has none (an empty
+value).
+
 ### Client certificates (mTLS)
 
 ```nginx
@@ -788,6 +812,7 @@ route /api/* {
 | `client.ip=10.0.0.0/8` | the client (after `trusted_proxies`) in a range |
 | `client.country=BR,PT` | with `okena { geoip FILE }` |
 | `client.asn=13335,AS15169` | the client's autonomous system, with `okena { geoip_asn FILE }` |
+| `tls.ja4=t13d1516h2_8daaf6152771_e5627efa2ab1` | the client's [JA4](#client-fingerprints-ja4) (`~` for a pattern) |
 | `proxy.aws_vpce=vpce-0a1b` | a TLV of the PROXY v2 header (`proxy.authority`, `proxy.unique_id`, ...; `=`, `*`, `~` as for headers) |
 | `path=~REGEX` | the normalized path |
 
@@ -968,8 +993,9 @@ strips `/v1` becomes `/v1/login`). Cookie lines change the `Domain` and
 `Path` of `Set-Cookie`. The lines stand on a route, a host block or the
 listener; a route's are tried first, and the first that applies is used.
 
-* Header values may use `${client.ip}`, `${request.id}`, `${time.us}` and
-  `${time.s}`: `header set x-request-start "t=${time.us}"`; behind a balancer
+* Header values may use `${client.ip}`, `${request.id}`, `${time.us}`,
+  `${time.s}` and `${tls.ja4}` (the client's [TLS fingerprint](#client-fingerprints-ja4)):
+  `header set x-request-start "t=${time.us}"`; behind a balancer
   that sends PROXY v2, also `${proxy.NAME}` (its TLVs, below).
 * Names okena owns can't be changed: `host`, framing, hop-by-hop fields,
   `x-forwarded-*`, `forwarded`, `x-request-id`. Values can't contain CR, LF or
@@ -1165,7 +1191,7 @@ left: `RateLimit-Limit` (the burst), `RateLimit-Remaining` and
 `RateLimit-Reset` (seconds until the bucket is full again), as the IETF draft
 has them, and the same as `X-RateLimit-*`; with several such limits, the one
 with least left. Without `key=`, all clients share one bucket. `key=` is `client.ip`, `method`, `header:NAME`, `query:NAME`,
-`cookie:NAME`, `auth.user` or `jwt.sub`. Requests without that field share
+`cookie:NAME`, `auth.user`, `jwt.sub` or `tls.ja4`. Requests without that field share
 one key, so dropping a header doesn't escape the limit. `burst` defaults to
 one second of the rate (at least 1): set it for hourly and daily quotas, or
 a `10000/d` limit allows one request every 8.6 seconds. A route may have several limits, and each one must
@@ -1933,8 +1959,9 @@ One JSON line per request: `time`, `listener`, `client`, `peer`, `method`,
 (`backend` or `okena`), `user_agent`, `referer`, `tls` (`"1.3"`, `"1.2"` or
 `null`), `upstream_ms` (from the request to the backend's answer head;
 `null` when okena answered), `bytes_in` (the request's head and body),
-`retried`, with tracing, `trace_id` and `span_id`, and behind a PROXY v2
-header with TLVs, `proxy` (an object of those it had).
+`retried`, with tracing, `trace_id` and `span_id`, behind a PROXY v2
+header with TLVs, `proxy` (an object of those it had), and when JA4 is
+computed, `ja4`.
 
 A route chooses its share: `log off` writes no line for it (a health check
 polled every second), `log sample=5%` one in twenty. Metrics count every

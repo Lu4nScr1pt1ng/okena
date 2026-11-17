@@ -316,6 +316,7 @@ bss
 	g_plan_drain_timeout	dq ?
 	g_plan_watchdog		dq ?
 	g_plan_busy_poll	dq ?		; microseconds; 0 auto (not set), -1 off
+	g_plan_ja4	dd ?		; TLS fingerprints computed (ja4.inc)
 	g_plan_qcc		dd ?		; quic_cc: 0 cubic, 1 bbr
 	g_plan_qlb_len		dd ?		; quic_server_id: its bytes (0: none)
 	g_plan_qlb_sid		rb 4
@@ -750,6 +751,9 @@ compile_settings:
 	lea	rcx,[dir_table + D_SIZE*DIR_PIN_WORKERS]
 	cmp	rax,rcx
 	je	.pin_workers
+	lea	rcx,[dir_table + D_SIZE*DIR_JA4]
+	cmp	rax,rcx
+	je	.ja4
 	lea	rcx,[dir_table + D_SIZE*DIR_RELOAD]
 	cmp	rax,rcx
 	je	.reload_watch
@@ -1072,6 +1076,13 @@ compile_settings:
 	cmp	word [rax],'on'
 	sete	cl
 	mov	[g_plan_last_good],ecx
+	jmp	.advance
+.ja4:
+	mov	rax,[rbx+N_ARGS]
+	mov	rax,[rax+A_VAL]
+	cmp	word [rax],'on'
+	jne	.advance
+	mov	dword [g_plan_ja4],1
 	jmp	.advance
 .pin_workers:
 	mov	rax,[rbx+N_ARGS]
@@ -2306,6 +2317,9 @@ compile_route_action:
 	cmp	word [rax+rcx],'${'
 	jne	.no_var
 	inc	dword [r8+HD_VARS]
+	cmp	dword [rax+rcx+2],'tls.'	; ${tls.ja4}: fingerprints computed
+	jne	.no_var
+	mov	dword [g_plan_ja4],1
 .no_var:
 	inc	ecx
 	jmp	@b
@@ -3051,7 +3065,7 @@ compile_cors:
 
 plan_bad_limit:
 	call	log_begin
-	out_lit 'limit: RATE is N/s, N/m, N/h or N/d, of 1 to 1000000000; key= is client.ip, method, header:NAME, query:NAME, cookie:NAME, auth.user or jwt.sub; at most 256 limits'
+	out_lit 'limit: RATE is N/s, N/m, N/h or N/d, of 1 to 1000000000; key= is client.ip, method, header:NAME, query:NAME, cookie:NAME, auth.user, jwt.sub or tls.ja4; at most 256 limits'
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process
@@ -3233,6 +3247,16 @@ compile_limit:
 	mov	ecx,LK_AUTH
 	test	eax,eax
 	jnz	.kind
+	mov	rdi,r13
+	mov	esi,r14d
+	lea	rdx,[.tls_ja4]
+	call	mem_eq_cstr
+	mov	ecx,LK_JA4
+	test	eax,eax
+	jz	@f
+	mov	dword [g_plan_ja4],1
+	jmp	.kind
+@@:
 	; PREFIX:NAME
 	xor	edx,edx
 .colon:
@@ -3284,6 +3308,7 @@ compile_limit:
 .method		db 'method',0
 .auth_user	db 'auth.user',0
 .jwt_sub	db 'jwt.sub',0
+.tls_ja4	db 'tls.ja4',0
 
 plan_bad_fault:
 	call	log_begin

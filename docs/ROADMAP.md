@@ -1120,7 +1120,12 @@ both engines, routes that do not use an item unchanged.
    and -duration as cache=.
 3. TLS client fingerprints, JA4 (FoxIO's, the one browsers' randomised
    extension order does not change): `${tls.ja4}`, `match tls.ja4=`, a
-   `limit` key and a field of the access log.
+   `limit` key and a field of the access log. **Done 2026-11-17**
+   (src/tls/ja4.inc, tests/tls/ja4.py): the first ClientHello as it came
+   (ECH's outer one; TLS 1.2 handshakes too), `q` over QUIC, streams of
+   HTTP/2 and 3 taking their connection's; checked against a fingerprint
+   computed in Python from the very bytes the client sent. Computed only
+   when used or with `okena { ja4 on }`: other handshakes pay a compare.
 4. Zone-aware balancing: `okena { zone NAME }`, `server ... zone=NAME`;
    servers in the local zone preferred while enough of them are up.
 5. Forward proxy: CONNECT tunnels a route allows, to the destinations it

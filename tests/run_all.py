@@ -136,6 +136,8 @@ SUITES = [
     ("uptls epoll", ["tests/tls/uptls.py", "epoll"]),
     ("uptrust io_uring", ["tests/tls/uptrust.py", "io_uring"]),
     ("uptrust epoll", ["tests/tls/uptrust.py", "epoll"]),
+    ("ja4 io_uring", ["tests/tls/ja4.py", "io_uring"]),
+    ("ja4 epoll", ["tests/tls/ja4.py", "epoll"]),
     ("ed25519 io_uring", ["tests/tls/ed25519.py", "io_uring"]),
     ("ed25519 epoll", ["tests/tls/ed25519.py", "epoll"]),
     ("budget io_uring", ["tests/tls/budget.py", "io_uring"]),

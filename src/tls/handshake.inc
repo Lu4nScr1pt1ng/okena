@@ -330,6 +330,7 @@ end macro
 
 
 tls_hello:
+	mov	dword [g_ja4_ok],0
 	call	thx_sha256			; (until the suite says otherwise)
 	push	rbx
 	push	rbp
@@ -441,7 +442,7 @@ tls_hello:
 .parse:
 	; Encrypted Client Hello (ech.inc): the inner hello opened, in its place
 	test	dword [rbx+TS_FLAGS],TF_HRR
-	jz	.ech_first
+	jz	.first_hello
 	; the second hello: ECH as the first one had it
 	mov	dword [rbp+HL_ECH],2
 	test	dword [rbx+TS_FLAGS],TF_ECHREJ
@@ -456,6 +457,14 @@ tls_hello:
 	cmp	eax,1
 	jne	.decrypt_error			; (it must open)
 	jmp	.ech_done
+.first_hello:
+	cmp	dword [g_plan_ja4],0		; its fingerprint, as it came (ja4.inc)
+	je	.ech_first
+	mov	ecx,[rbp+HL_MLEN]
+	xor	edx,edx
+	test	dword [rbx+TS_FLAGS],TF_QUIC
+	setnz	dl
+	call	ja4_hello
 .ech_first:
 	call	ech_open
 	mov	[rbp+HL_ECH],eax

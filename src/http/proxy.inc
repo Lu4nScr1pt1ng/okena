@@ -4330,6 +4330,8 @@ hvar_expand:
 	je	.rid
 	cmp	byte [rsi+2],'p'
 	je	.proxy
+	cmp	byte [rsi+3],'l'
+	je	.ja4
 	push	rsi
 	push	rcx
 	mov	r8d,1000000000			; time.s
@@ -4364,6 +4366,21 @@ hvar_expand:
 	lea	rsi,[r15+H_RID]
 	mov	ecx,[r15+H_RIDLEN]
 	rep	movsb
+	pop	rcx
+	pop	rsi
+	jmp	.skip_var
+.ja4:						; ${tls.ja4}: the client's TLS fingerprint (none: empty)
+	push	rsi
+	push	rcx
+	push	rbx
+	mov	rbx,r15				; (the session: of the record)
+	sub	rbx,[g_http_base]
+	shr	rbx,H_SHIFT
+	call	ja4_value
+	pop	rbx
+	jc	@f
+	mov	rdi,rax
+@@:
 	pop	rcx
 	pop	rsi
 	jmp	.skip_var

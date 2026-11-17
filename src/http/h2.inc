@@ -2332,6 +2332,9 @@ h2_stream_new:
 	mov	edi,[rsp+16+H2N_SESS]		; (and its PROXY header's TLVs)
 	mov	esi,[rsp]
 	call	ppt_inherit
+	mov	edi,[rsp+16+H2N_SESS]		; (and its TLS fingerprint)
+	mov	esi,[rsp]
+	call	ja4_inherit
 	pop	rbx				; the connection
 	pop	r9
 	; the stream's record

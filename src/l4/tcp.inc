@@ -444,6 +444,7 @@ sessions_init:
 	js	.done
 	call	pace_worker_init
 	call	ppt_worker_init			; (PROXY TLVs, pptlv.inc)
+	call	ja4_worker_init			; (TLS fingerprints, ja4.inc)
 	test	eax,eax
 	js	.done
 	call	http_worker_init

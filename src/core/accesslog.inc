@@ -716,6 +716,7 @@ alog_exchange:
 .extra:
 	call	alx_fields			; user_agent, referer, tls, upstream_ms, bytes_in
 	call	ppt_log				; "proxy": a PROXY header's TLVs
+	call	ja4_log				; "ja4": the client's TLS fingerprint
 .retried:
 	test	dword [r15+H_FLAGS],HX_RETRIED
 	jz	@f

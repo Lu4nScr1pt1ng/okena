@@ -261,6 +261,7 @@ http_tls_hello_go:
 	mov	ecx,[r15+H_INLEN]
 	mov	r9d,H_TLS_ROOM
 	call	tls_hello
+	call	ja4_take			; (its fingerprint, when computed)
 	cmp	eax,TH_MORE
 	je	http_tls_read
 	cmp	eax,TH_WAIT

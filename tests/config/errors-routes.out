@@ -29,10 +29,10 @@ errors-routes.conf:10:20: error: a header name is a lower-case token (x-env); dr
 errors-routes.conf:11:25: error: a header operation is set, add or drop
     11 |         response header move x-c
        |                         ^^^^
-errors-routes.conf:14:32: error: unknown variable: the ones a header value can use are ${client.ip} ${request.id} ${time.us} ${time.s}, and a PROXY header's ${proxy.authority} ${proxy.unique_id} ${proxy.alpn} ${proxy.ssl_version} ${proxy.aws_vpce} ${proxy.azure_linkid} ${proxy.gcp_psc}
+errors-routes.conf:14:32: error: unknown variable: the ones a header value can use are ${client.ip} ${request.id} ${time.us} ${time.s} ${tls.ja4}, and a PROXY header's ${proxy.authority} ${proxy.unique_id} ${proxy.alpn} ${proxy.ssl_version} ${proxy.aws_vpce} ${proxy.azure_linkid} ${proxy.gcp_psc}
     14 |     route /h { header set x-a "${nope}"; header set x-b "${time.us"; to 1.1.1.1:1 }
        |                                ^^^^^^^
-errors-routes.conf:14:58: error: unknown variable: the ones a header value can use are ${client.ip} ${request.id} ${time.us} ${time.s}, and a PROXY header's ${proxy.authority} ${proxy.unique_id} ${proxy.alpn} ${proxy.ssl_version} ${proxy.aws_vpce} ${proxy.azure_linkid} ${proxy.gcp_psc}
+errors-routes.conf:14:58: error: unknown variable: the ones a header value can use are ${client.ip} ${request.id} ${time.us} ${time.s} ${tls.ja4}, and a PROXY header's ${proxy.authority} ${proxy.unique_id} ${proxy.alpn} ${proxy.ssl_version} ${proxy.aws_vpce} ${proxy.azure_linkid} ${proxy.gcp_psc}
     14 |     route /h { header set x-a "${nope}"; header set x-b "${time.us"; to 1.1.1.1:1 }
        |                                                          ^^^^^^^^^
 errors-routes.conf:15:24: error: a rewrite is `rewrite path /from/{*} -> /to/{*}` (paths, the source ending with {*}), or `rewrite path ~REGEX -> /to/$1`
