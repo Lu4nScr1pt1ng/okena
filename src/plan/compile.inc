@@ -437,6 +437,7 @@ plan_compile:
 	mov	dword [g_plan_idsize],ID_DEF_SIZE
 	mov	qword [g_plan_watchdog],2000000
 	mov	dword [g_plan_last_good],0
+	mov	dword [g_plan_ov_off],0
 	mov	dword [g_plan_pin],PIN_AUTO
 	mov	dword [g_plan_reload_watch],0
 	mov	dword [g_plan_tryc],0
@@ -743,6 +744,9 @@ compile_settings:
 	lea	rcx,[dir_table + D_SIZE*DIR_LAST_GOOD]
 	cmp	rax,rcx
 	je	.last_good
+	lea	rcx,[dir_table + D_SIZE*DIR_OVERLOAD]
+	cmp	rax,rcx
+	je	.overload
 	lea	rcx,[dir_table + D_SIZE*DIR_PIN_WORKERS]
 	cmp	rax,rcx
 	je	.pin_workers
@@ -1052,6 +1056,14 @@ compile_settings:
 	cmp	byte [rax],'o'
 	sete	cl
 	mov	[g_plan_reload_watch],ecx
+	jmp	.advance
+.overload:
+	mov	rax,[rbx+N_ARGS]
+	mov	rax,[rax+A_VAL]
+	xor	ecx,ecx
+	cmp	word [rax],'of'
+	sete	cl
+	mov	[g_plan_ov_off],ecx
 	jmp	.advance
 .last_good:
 	mov	rax,[rbx+N_ARGS]

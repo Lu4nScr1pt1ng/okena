@@ -4,7 +4,9 @@ bss
 	g_sigfd		dd ?
 	g_tick		dd ?
 	g_draining	dd ?		; 0 serving, 1 drain delay, 2 draining
-	g_drain_until	dd ?		; tick that ends the current phase
+	align 8
+	g_drain_until	dq ?		; ms (g_now_ms) that end the current phase: the
+				; whole time asked for, never less (a tick may be a second late)
 	g_sig_buf:	rb SIGINFO_SIZE
 	align 8
 	g_tsc_per_us	dq ?
@@ -547,8 +549,8 @@ tick_work:
 	call	h2_drain_tick			; GOAWAY to HTTP/2 clients when draining
 	cmp	dword [g_draining],0
 	je	.done
-	mov	eax,[g_tick]
-	cmp	eax,[g_drain_until]
+	mov	rax,[g_now_ms]
+	cmp	rax,[g_drain_until]
 	jb	.done
 	cmp	dword [g_draining],1
 	je	stop_accepting
@@ -588,29 +590,28 @@ drain_begin:
 	jne	.done
 	mov	dword [g_draining],1
 	mov	rax,[g_plan_drain_delay]
-	call	us_to_ticks
-	add	eax,[g_tick]
-	mov	[g_drain_until],eax
+	call	us_after
 	cmp	qword [g_plan_drain_delay],0
 	je	stop_accepting
 .done:
 	ret
 
-; rax = microseconds. eax = whole ticks, rounded up.
-us_to_ticks:
-	add	rax,999999
+; rax = microseconds: g_drain_until that long from now (ms, rounded up)
+us_after:
+	add	rax,999
 	xor	edx,edx
-	mov	ecx,1000000
+	mov	ecx,1000
 	div	rcx
+	add	rax,[g_now_ms]
+	mov	[g_drain_until],rax
 	ret
+
 
 stop_accepting:
 	call	udp_stop
 	mov	dword [g_draining],2
 	mov	rax,[g_plan_drain_timeout]
-	call	us_to_ticks
-	add	eax,[g_tick]
-	mov	[g_drain_until],eax
+	call	us_after
 	cmp	dword [g_engine],ENGINE_EPOLL
 	je	ep_stop_accepting
 	lea	rsi,[cancel_accept]

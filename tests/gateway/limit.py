@@ -59,7 +59,7 @@ def get(path, headers={}, conn=None):
     return r
 
 
-CONF = """okena {{ drain delay=0s timeout=1s; workers 4; io_engine {engine}; rate_limit_keys 16384 }}
+CONF = """okena {{ drain delay=0s timeout=1s; workers 4; io_engine {engine}; rate_limit_keys 16384; overload off }}  # (connections kept: none shed when the machine is busy)
 http 127.0.0.1:{tls} {{
     http2 on
     http3 on

@@ -101,7 +101,7 @@ def main():
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-jfz-"))
     (tmp / "jwks.json").write_text(json.dumps({"keys": [{"kty": "oct", "kid": "k1", "alg": "HS256", "k": b64(SECRET)}]}))
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ drain delay=0s timeout=1s; workers 1; io_engine {ENGINE}; watchdog 5s }}
+    conf.write_text(f"""okena {{ drain delay=0s timeout=1s; workers 1; io_engine {ENGINE}; watchdog 5s; overload off }}  # (one connection: no shedding of it when the machine is busy)
 http 127.0.0.1:{LST} {{
     route /t {{ redirect 302 /z; auth jwt {{ jwks {tmp}/jwks.json; claims sub -> x-user-id, scope -> x-s, nothing -> x-n }} }}
 }}
@@ -153,6 +153,8 @@ http 127.0.0.1:{LST} {{
         p.wait(10)
     t = log.read_text()
     died = "killed" in t or "restarting" in t
+    if hard and os.environ.get("JFZ_LOG"):
+        print(t[-800:])
     print(f"{sent} tokens, seed {SEED}: {ok} accepted, {sorted(tally.items())[:12]}")
     for e in examples:
         print("   took:", e)

@@ -148,9 +148,9 @@ def main():
         check("a kept connection goes on after a hedge won", r == [b"fast"] * 12, str(r))
         c.close()
         rs = [get(f"/h/big{i}")[1] for i in range(12)]
-        check("a body bigger than a buffer, whole", all(x == b"fast" * 50000 for x in rs), str([len(x) for x in rs]))
+        check("a body bigger than a buffer, whole", all(x in (b"fast" * 50000, b"slow" * 50000) for x in rs), str([len(x) for x in rs]))
         rs = [get(f"/h/chunked{i}")[1] for i in range(12)]
-        check("a chunked answer, whole", all(x == b"fast" * 3 for x in rs), str(rs[:2]))
+        check("a chunked answer, whole (whoever won: under load the slow one may)", all(x in (b"fast" * 3, b"slow" * 3) for x in rs), str(rs[:2]))
         rs = [get(f"/h/head{i}", "HEAD") for i in range(12)]
         check("HEAD", all(x[0].status == 200 and x[1] == b"" for x in rs), str([x[0].status for x in rs]))
         before = hits.get(("slow", "/h/post"), 0) + hits.get(("fast", "/h/post"), 0)

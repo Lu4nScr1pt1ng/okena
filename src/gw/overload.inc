@@ -9,7 +9,8 @@
 ; Two things press it: how full a listener's sessions are, and how late the tick
 ; comes, which is how far behind the loop is (it costs nothing per request). The
 ; level rises at once and falls one step at a time, after OV_HOLD quiet ticks and
-; a little below where it rose: no flapping at a threshold.
+; a little below where it rose: no flapping at a threshold. `okena { overload
+; off }` keeps it at 0 (a balancer in front that sheds load itself).
 
 OV_HOLD		:= 3
 
@@ -19,6 +20,7 @@ RP_BULK		:= 2
 
 bss
 	g_overload	dd ?			; the level
+	g_plan_ov_off	dd ?			; `overload off`
 	g_ov_calm	dd ?			; ticks below it
 	align 8
 	g_ov_last	dq ?			; µs of the last tick
@@ -33,6 +35,8 @@ overload_tick:
 	mov	rcx,rax
 	xchg	rax,[g_ov_last]
 	xor	ebx,ebx				; the level things ask for
+	cmp	dword [g_plan_ov_off],0
+	jne	.out
 	test	rax,rax
 	jz	.sessions
 	sub	rcx,rax				; a tick apart: its lateness
