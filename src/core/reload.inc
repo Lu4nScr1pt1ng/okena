@@ -989,9 +989,10 @@ retire_take:
 	ret
 
 ; eax = old workers told to stop accepting: until each says it did (their
-; generation's table, SG_STOPPED), RETIRED_WAIT_MS at most (one that died
+; generation's table, SG_STOPPED), RETIRED_WAIT_MS at most: a host under load may
+; take seconds to run a signalled worker (one that died
 ; says nothing)
-RETIRED_WAIT_MS	:= 1000
+RETIRED_WAIT_MS	:= 5000
 retired_wait:
 	push	rbx
 	push	r12
