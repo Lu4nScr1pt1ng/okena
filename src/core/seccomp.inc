@@ -366,6 +366,7 @@ rodata
 	sc_allow filter_worker_uring_f, SYS_openat2
 	sc_allow filter_worker_uring_f, SYS_fstat
 	sc_allow filter_worker_uring_f, SYS_lseek_
+	sc_allow filter_worker_uring_f, 217			; getdents64: `files browse=on`
 	sc_allow filter_worker_uring_f, SYS_close
 	sc_allow filter_worker_uring_f, SYS_poll		; (a listening socket nobody takes from: accept_watch)
 	sc_allow filter_worker_uring_f, SYS_recvfrom	; bulk: reads and writes in the loop (bulk.inc)
@@ -405,6 +406,7 @@ rodata
 	sc_allow filter_worker_epoll_f, SYS_openat2
 	sc_allow filter_worker_epoll_f, SYS_fstat
 	sc_allow filter_worker_epoll_f, SYS_lseek_
+	sc_allow filter_worker_epoll_f, 217			; getdents64: `files browse=on`
 	sc_allow filter_worker_epoll_f, SYS_sched_setaffinity	; (pin_workers auto: pinned under load)
 	sc_allow filter_worker_epoll_f, SYS_splice		; bulk: socket -> pipe -> socket (bulk.inc)
 	sc_end filter_worker_epoll_f

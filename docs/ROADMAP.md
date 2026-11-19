@@ -1151,7 +1151,10 @@ both engines, routes that do not use an item unchanged.
    Metrics push: **done 2026-11-19** (src/core/mpush.inc,
    tests/admin/mpush.py): `okena { metrics_push otlp://... every= }`, the
    logger rendering /metrics and posting it as OTLP JSON.
-7. Directory listings for `files`.
+7. Directory listings for `files`. **Done 2026-11-19** (src/gw/files.inc: fs_list,
+   tests/gateway/files.py): `files DIR browse=on`, getdents64 beneath the
+   root (the workers with `files` routes are allowed it), sorted, escaped,
+   16 KiB of a page at most with how many were left out.
 
 Not in this phase: an AArch64 port (okena is x86-64 assembly: a port is a
 second implementation of every hot path, not a feature).

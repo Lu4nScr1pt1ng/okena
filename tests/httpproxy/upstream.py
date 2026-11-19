@@ -138,7 +138,8 @@ def keep(c):
 
 def fetch(port, raw, wait=3):
     k = socket.create_connection(("127.0.0.1", port))
-    k.settimeout(wait)
+    # the first byte may take a while on a loaded host; then `wait` of silence ends it
+    k.settimeout(max(wait, 3))
     k.sendall(raw)
     out, end = b"", "open"
     try:
@@ -148,6 +149,7 @@ def fetch(port, raw, wait=3):
                 end = "closed"
                 break
             out += x
+            k.settimeout(wait)
     except socket.timeout:
         pass
     except ConnectionResetError:

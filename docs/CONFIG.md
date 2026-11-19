@@ -924,6 +924,7 @@ The request's whole path is looked up under the directory:
 | Option | Meaning |
 |---|---|
 | `index=NAME` | what a directory answers with (`index.html`); a directory without its slash is redirected |
+| `browse=on` | a directory without its index answers with a listing of its entries (dotfiles left out, directories first, 16 KiB of it at most) |
 | `fallback=/PATH` | served instead of a 404 |
 | `precompressed=br,zst,gz` | serve `file.br`, `.zst` or `.gz` next to the file when the client accepts it |
 | `cache=T` or `cache=immutable` | `Cache-Control: public, max-age=...` |

@@ -30,6 +30,7 @@ FI_PRE		:= 36				; d: F_BR, F_ZST, F_GZ, a byte each, in order
 FI_CC		:= 40				; q: Cache-Control's value, 0 none
 FI_CCLEN	:= 48				; d
 FI_PHP		:= 56				; d: `php`'s (fastcgi.inc)
+FI_BROWSE	:= 60				; d: `browse=on`: a directory without its index listed
 FI_SIZE		:= 64
 
 FE_BR		:= 1
@@ -263,6 +264,7 @@ files_answer:
 	je	.dir
 	jmp	fs_slash
 .dir:
+	mov	[g_fl_dlen],eax			; (the directory, for a listing)
 	mov	ecx,[r12+FI_ILEN]
 	lea	edx,[rax+rcx]
 	cmp	edx,8000
@@ -272,7 +274,13 @@ files_answer:
 	mov	rsi,[r12+FI_INDEX]
 	rep	movsb
 	call	fs_open
-	jc	.missing
+	jnc	@f
+	cmp	dword [r12+FI_BROWSE],0		; no index: its listing, with browse=on
+	je	.missing
+	mov	eax,[g_fl_dlen]
+	mov	[g_fs_plen],eax
+	jmp	fs_list
+@@:
 	mov	eax,dword [g_fs_stat+ST_MODE]
 	and	eax,S_IFMT_
 	cmp	eax,S_IFREG_
@@ -423,6 +431,300 @@ fs_slash:
 @@:
 	memit_x 13,10,'Content-Length: 0',13,10,13,10
 	jmp	fs_head_ready
+
+; r12 = the files entry, r13d = its root, g_fs_path/g_fs_plen = a directory
+; (its name ends in /, or the root): its entries but dotfiles, sorted, as an
+; HTML page (directories first with a /), in UP as the answer. What does not
+; fit in it (16 KiB) is said to be left out.
+FL_MAX		:= 1024
+FL_POOL		:= 65536
+FL_BODY		:= H_UP_CAP - 512
+fs_list:
+	lea	rdi,[g_fs_path]
+	mov	eax,[g_fs_plen]
+	mov	byte [rdi+rax],0
+	mov	qword [g_fs_how],O_DIRECTORY_ or O_CLOEXEC_
+	mov	qword [g_fs_how+8],0
+	mov	qword [g_fs_how+16],RESOLVE_BENEATH_ or RESOLVE_NO_MAGIC
+	mov	edi,[g_fi_fd+r13*4]
+	lea	rsi,[g_fs_path]
+	cmp	byte [rsi],0
+	jne	@f
+	lea	rsi,[fs_open.here]
+@@:
+	lea	rdx,[g_fs_how]
+	mov	r10d,24
+	mov	eax,SYS_openat2
+	syscall
+	test	eax,eax
+	js	.missing
+	push	rbx
+	push	r14
+	mov	r14d,eax			; the directory
+	xor	ebx,ebx				; entries
+	lea	r8,[g_fl_pool]			; where names go
+.read:
+	mov	edi,r14d
+	lea	rsi,[g_fl_dents]
+	mov	edx,32768
+	mov	eax,SYS_getdents64_
+	syscall
+	test	eax,eax
+	jle	.read_done
+	lea	rsi,[g_fl_dents]
+	lea	r9,[rsi+rax]
+.dent:
+	cmp	rsi,r9
+	jae	.read
+	movzx	ecx,word [rsi+16]		; d_reclen
+	lea	r10,[rsi+19]			; d_name
+	cmp	byte [r10],'.'
+	je	.dent_next			; (dotfiles, . and .. not listed)
+	cmp	ebx,FL_MAX
+	jae	.dent_next
+	; its name's length
+	xor	edx,edx
+@@:
+	cmp	byte [r10+rdx],0
+	je	@f
+	inc	edx
+	jmp	@b
+@@:
+	lea	rax,[r8+rdx+1]
+	lea	r11,[g_fl_pool+FL_POOL]
+	cmp	rax,r11
+	ja	.dent_next
+	mov	[g_fl_ent+rbx*8],r8
+	movzx	eax,byte [rsi+18]		; d_type: 4 a directory
+	mov	byte [r8],'f'
+	cmp	al,4
+	jne	@f
+	mov	byte [r8],'d'			; (directories sort first)
+@@:
+	inc	r8
+	push	rsi
+	push	rcx
+	mov	rsi,r10
+	mov	rdi,r8
+	mov	ecx,edx
+	inc	ecx
+	rep	movsb
+	mov	r8,rdi
+	pop	rcx
+	pop	rsi
+	inc	ebx
+.dent_next:
+	add	rsi,rcx
+	jmp	.dent
+.read_done:
+	mov	edi,r14d
+	mov	eax,SYS_close
+	syscall
+	; sorted (insertion, by kind then name)
+	mov	ecx,1
+.outer:
+	cmp	ecx,ebx
+	jae	.sorted
+	mov	r10,[g_fl_ent+rcx*8]
+	mov	edx,ecx
+.inner:
+	test	edx,edx
+	jz	.place
+	mov	r11,[g_fl_ent+rdx*8-8]
+	xor	eax,eax
+@@:
+	movzx	r8d,byte [r11+rax]
+	movzx	r9d,byte [r10+rax]
+	cmp	r8d,r9d
+	jne	@f
+	test	r8d,r8d
+	jz	.place
+	inc	eax
+	jmp	@b
+@@:
+	jb	.place
+	mov	[g_fl_ent+rdx*8],r11
+	dec	edx
+	jmp	.inner
+.place:
+	mov	[g_fl_ent+rdx*8],r10
+	inc	ecx
+	jmp	.outer
+.sorted:
+	; the page, in g_fl_body
+	lea	rdi,[g_fl_body]
+	lea	r11,[g_fl_body+FL_BODY-512]	; (room for its end)
+	memit_x '<!DOCTYPE html>',10,'<html><head><meta charset="utf-8"><title>Index of '
+	call	.path
+	memit_x '</title></head>',10,'<body><h1>Index of '
+	call	.path
+	memit_x '</h1>',10,'<ul>',10
+	cmp	dword [g_fl_dlen],0
+	je	@f
+	memit_x '<li><a href="../">../</a></li>',10
+@@:
+	xor	ecx,ecx
+.entry:
+	cmp	ecx,ebx
+	jae	.entries_done
+	cmp	rdi,r11
+	jae	.left_out
+	mov	r10,[g_fl_ent+rcx*8]
+	push	rcx
+	memit_x '<li><a href="'
+	lea	rsi,[r10+1]
+	call	.href
+	cmp	byte [r10],'d'
+	jne	@f
+	mov	byte [rdi],'/'
+	inc	rdi
+@@:
+	memit_x '">'
+	lea	rsi,[r10+1]
+	call	.html
+	cmp	byte [r10],'d'
+	jne	@f
+	mov	byte [rdi],'/'
+	inc	rdi
+@@:
+	memit_x '</a></li>',10
+	pop	rcx
+	inc	ecx
+	jmp	.entry
+.left_out:
+	memit_x '<li>... '
+	mov	eax,ebx
+	sub	eax,ecx
+	call	fmt_u64
+	memit_x ' more not listed</li>',10
+.entries_done:
+	memit_x '</ul></body></html>',10
+	lea	rax,[g_fl_body]
+	sub	rdi,rax
+	mov	r14d,edi			; its length
+	; the head, then the page, in UP
+	mov	rdi,[r15+H_BUF]
+	lea	rdi,[rdi+HB_UP]
+	memit_x 'HTTP/1.1 200 OK',13,10,'Content-Type: text/html; charset=utf-8',13,10,'Cache-Control: no-cache',13,10,'Content-Length: '
+	mov	eax,r14d
+	call	fmt_u64
+	memit_x 13,10,13,10
+	lea	rsi,[g_fl_body]
+	mov	ecx,r14d
+	rep	movsb
+	pop	r14
+	pop	rbx
+	jmp	fs_head_ready
+.missing:
+	mov	edi,404
+	jmp	http_error
+; the request's path, as HTML
+.path:
+	mov	rsi,[g_hm+HM_TARGET]
+	mov	ecx,[g_hm+HM_PLEN]
+	cmp	ecx,512
+	jbe	@f
+	mov	ecx,512
+@@:
+	test	ecx,ecx
+	jz	.path_done
+	push	rcx
+	push	rsi
+	movzx	eax,byte [rsi]
+	call	.html_char
+	pop	rsi
+	pop	rcx
+	inc	rsi
+	dec	ecx
+	jmp	@b
+.path_done:
+	ret
+; rsi = a NUL-ended name: HTML-escaped, out
+.html:
+	movzx	eax,byte [rsi]
+	test	eax,eax
+	jz	.html_done
+	push	rsi
+	call	.html_char
+	pop	rsi
+	inc	rsi
+	jmp	.html
+.html_done:
+	ret
+.html_char:
+	cmp	al,'&'
+	jne	@f
+	memit_x '&amp;'
+	ret
+@@:
+	cmp	al,'<'
+	jne	@f
+	memit_x '&lt;'
+	ret
+@@:
+	cmp	al,'>'
+	jne	@f
+	memit_x '&gt;'
+	ret
+@@:
+	cmp	al,'"'
+	jne	@f
+	memit_x '&quot;'
+	ret
+@@:
+	cmp	al,27h
+	jne	@f
+	memit_x '&#39;'
+	ret
+@@:
+	stosb
+	ret
+; rsi = a NUL-ended name: percent-encoded but for what a path segment may hold
+.href:
+	movzx	eax,byte [rsi]
+	test	eax,eax
+	jz	.href_done
+	inc	rsi
+	lea	edx,[rax-'0']
+	cmp	edx,9
+	jbe	.plain
+	mov	edx,eax
+	or	edx,0x20
+	sub	edx,'a'
+	cmp	edx,25
+	jbe	.plain
+	cmp	al,'-'
+	je	.plain
+	cmp	al,'.'
+	je	.plain
+	cmp	al,'_'
+	je	.plain
+	cmp	al,'~'
+	je	.plain
+	mov	byte [rdi],'%'
+	mov	edx,eax
+	shr	edx,4
+	mov	dl,[hex_upper+rdx]
+	mov	[rdi+1],dl
+	and	eax,15
+	mov	al,[hex_upper+rax]
+	mov	[rdi+2],al
+	add	rdi,3
+	jmp	.href
+.plain:
+	stosb
+	jmp	.href
+.href_done:
+	ret
+
+bss
+	align 8
+	g_fl_dlen	dd ?
+	g_fl_ent	rq FL_MAX
+	g_fl_pool	rb FL_POOL
+	g_fl_body	rb FL_BODY
+	g_fl_dents	rb 32768
+end bss
 
 ; rsi = a head, ecx = its length, no last line, no body
 fs_short:
@@ -1333,6 +1635,18 @@ compile_files:
 	mov	edi,eax
 	mov	eax,SYS_close
 	syscall
+	; browse=on
+	mov	rdi,rbx
+	cstring str_key_browse, 'browse',0
+	lea	rsi,[str_key_browse]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	mov	rax,[rax+A_VAL]
+	cmp	word [rax],'on'
+	jne	@f
+	mov	dword [r13+FI_BROWSE],1
+@@:
 	; index=
 	lea	rax,[.index_html]
 	mov	[r13+FI_INDEX],rax

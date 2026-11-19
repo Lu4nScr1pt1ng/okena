@@ -95,10 +95,21 @@ def main():
     (root / "nogz.js").write_text("only plain")
     (spa / "index.html").write_text("<app>")
     (spa / "app.js").write_text("js")
+    brw = tmp / "brw" / "browse"
+    (brw / "zdir").mkdir(parents=True)
+    (brw / "b <&> 'q'.txt").write_text("x")
+    (brw / "a.txt").write_text("a")
+    (brw / ".hidden").write_text("h")
+    (brw / "many").mkdir()
+    for i in range(400):
+        (brw / "many" / f"file-with-a-long-name-{i:04}.txt").write_text("m")
+    (brw / "withindex").mkdir()
+    (brw / "withindex" / "index.html").write_text("its index")
     conf = tmp / "okena.conf"
     conf.write_text(f"""okena {{ drain delay=0s timeout=1s; workers 2; io_engine {ENGINE} }}
 http 127.0.0.1:{LST} {{
     route /spa/* {{ files {tmp}/spa2 fallback=/index.html }}
+    route /browse/* {{ files {tmp}/brw browse=on }}
     route /pre/* {{ files {root} precompressed=br,zst,gz cache=immutable }}
     route /cached/* {{ files {root} cache=1h }}
     route /* {{ files {root} }}
@@ -226,6 +237,21 @@ http 127.0.0.1:{TLS} {{
         check("  no ranges of a variant", r[0] == 200 and r[1] == b"GZ!", r[:2])
         check("cache=immutable", "immutable" in get("/pre/n.js")[2]["cache-control"])
         check("cache=1h", get("/cached/x.txt")[2]["cache-control"] == "public, max-age=3600")
+
+        # browse=on
+        r = get("/browse/")
+        b = r[1].decode()
+        check("browse=on: a directory without index listed", r[0] == 200 and r[2].get("content-type", "").startswith("text/html")
+              and "Index of /browse/" in b, r[:3])
+        i_dir, i_a, i_b = b.find('href="zdir/"'), b.find('href="a.txt"'), b.find("b &lt;&amp;&gt; &#39;q&#39;.txt")
+        check("  directories first, then by name, names escaped and their links encoded", 0 < i_dir < i_a < i_b
+              and 'href="b%20%3C%26%3E%20%27q%27.txt"' in b and ".hidden" not in b and 'href="../"' in b, b[:600])
+        check("  a directory with its index: the index", get("/browse/withindex/")[:2] == (200, b"its index"))
+        r = get("/browse/many/")
+        check("  a long one: what fits, and how many are left out", r[0] == 200 and b"more not listed" in r[1]
+              and b"file-with-a-long-name-0000.txt" in r[1], (r[0], r[1][-200:]))
+        check("  HEAD: no body", get("/browse/", "HEAD")[:2] == (200, b""))
+        check("  without browse=on: 404", get("/noindex/")[0] == 404)
 
         # a single-page app
         check("fallback: a client route gets the app", get("/spa/users/7")[:2] == (200, b"<app>"))
