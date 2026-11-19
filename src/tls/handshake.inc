@@ -75,7 +75,15 @@ TS_TKAGE	:= TS_TKT + TK_SIZE		; d: age_add
 TS_RXSEC	:= TS_TKAGE + 4			; the client's application traffic secret (48)
 TS_TXSEC	:= TS_RXSEC + 48		; ours: KeyUpdate derives the next from each
 TS_CHTAIL	:= TS_TXSEC + 48		; d: bytes read after the ClientHello (the next step's)
-TS_SIZE		:= TS_CHTAIL + 4
+TS_EDREM	:= TS_CHTAIL + 4		; d: TF_HRRED, of a 0-RTT record being dropped: what is to come
+TS_EDTOT	:= TS_EDREM + 4			; d: and dropped in all (ED_SKIP_MAX)
+TS_FNOFF	:= TS_EDTOT + 4			; d: tls_finished, a Finished in pieces: where it goes on
+TS_FNSEQ	:= TS_FNOFF + 4			; d: (records opened in place there: not read again)
+TS_FNACCN	:= TS_FNSEQ + 4			; d
+TS_FNCCS	:= TS_FNACCN + 4		; d
+TS_FNSKIP	:= TS_FNCCS + 4			; d
+TS_FNACC	:= TS_FNSKIP + 4		; 64
+TS_SIZE		:= TS_FNACC + 64
 
 ; QUIC (RFC 9001): the handshake without records. The caller sets TF_QUIC
 ; and TS_QT; tls_hello then takes the ClientHello message itself (from
@@ -123,6 +131,7 @@ TF_ECHREJ	:= 32768			; ECH not opened before it (retry_configs in the flight)
 TF_NO13		:= 131072			; set by the caller: TLS 1.3 is not taken (`versions 1.2`)
 TF_H1FIRST	:= 262144			; set by the caller: http/1.1 before h2 (`alpn http/1.1 h2`)
 TF_EDSKIP	:= 1048576			; TCP: early data offered (never taken): skipped
+TF_HRRED	:= 2097152			; TCP: early data offered before a retry: skipped
 TF_KUSEND	:= 524288			; the client asked for our KeyUpdate: sent before the next data
 TF_NST		:= 16384			; TS_TKT: a ticket to send once the client's flight is good				; acme-tls/1 chosen: the challenge's certificate
 
@@ -609,16 +618,20 @@ tls_hello:
 	jmp	.ext
 
 .early_ext:					; early_data: empty
+	test	dword [rbx+TS_FLAGS],TF_HRR	; never in the second hello (4.2.10)
+	jnz	.illegal
 	or	dword [rbp+HL_GOT],G_EARLY
 	jmp	.ext_next
 
-.compress_cert:					; compress_certificate: u8 length, u16s
-	test	ecx,ecx
-	jz	.ext_next
+.compress_cert:					; compress_certificate: u8 length, u16s (RFC 8879 §3)
+	cmp	ecx,3				; one algorithm at least
+	jb	.decode
 	movzx	edx,byte [rsi]
 	lea	rax,[rsi+rdx+1]
-	cmp	rax,r14
-	ja	.ext_next
+	cmp	rax,r14				; the list fills the extension exactly
+	jne	.decode
+	test	edx,1
+	jnz	.decode
 	lea	rax,[rsi+1]
 .cc_alg:
 	cmp	edx,2
@@ -2151,6 +2164,12 @@ tls_hello:
 	rep	movsb
 	pop	rdi
 	or	dword [rbx+TS_FLAGS],TF_HRR
+	test	dword [rbp+HL_GOT],G_EARLY	; its 0-RTT records come before the
+	jz	@f				; second hello: skipped
+	or	dword [rbx+TS_FLAGS],TF_HRRED
+	mov	dword [rbx+TS_EDREM],0
+	mov	dword [rbx+TS_EDTOT],0
+@@:
 	mov	rdx,rdi
 	sub	rdx,r12
 	mov	eax,TH_RETRY
@@ -2160,6 +2179,18 @@ tls_hello:
 	mov	eax,TH_MORE
 	jmp	.out
 .not_handshake:
+	cmp	byte [rsi],23			; the 0-RTT data sent with the first hello,
+	jne	.nh_alert			; before the retry: skipped (RFC 8446 4.2.10)
+	test	dword [rbx+TS_FLAGS],TF_HRRED
+	jz	.unexpected
+	test	r14d,r14d			; (not inside the second hello)
+	jnz	.unexpected
+	sub	rax,5
+	cmp	rax,rcx
+	jb	.more
+	lea	rsi,[rsi+rcx+5]
+	jmp	.record
+.nh_alert:
 	cmp	byte [rsi],21			; the client's alert: just close
 	jne	.unexpected
 	xor	edx,edx
@@ -2235,7 +2266,10 @@ FN_GCM		:= 0
 FN_NONCE	:= AEAD_SIZE
 FN_CCS		:= AEAD_SIZE + 16			; d: compatibility CCSs seen in this look
 FN_SKIP		:= AEAD_SIZE + 20			; d: early data bytes skipped in it
-FN_SIZE		:= AEAD_SIZE + 16 + 16 + 8	; rsp 16-aligned at calls
+FN_SEQ		:= AEAD_SIZE + 40			; d: records opened (the next one's sequence)
+FN_ACCN		:= AEAD_SIZE + 44			; d: bytes of the Finished so far (all said)
+FN_ACC		:= AEAD_SIZE + 48			; 64: the Finished, across records
+FN_SIZE		:= AEAD_SIZE + 120		; rsp 16-aligned at calls
 
 tls_finished:
 	test	dword [rdi+TS_FLAGS],TF_CCA
@@ -2249,10 +2283,30 @@ tls_finished:
 	sub	rsp,FN_SIZE
 	mov	dword [rsp+FN_CCS],0
 	mov	dword [rsp+FN_SKIP],0
+	mov	dword [rsp+FN_SEQ],0
+	mov	dword [rsp+FN_ACCN],0
 	mov	rbx,rdi
 	mov	r12,rsi
 	lea	r13,[rsi+rcx]
 	mov	r14,rsi
+	; a Finished begun in records opened (in place) by an earlier look: on from
+	; there, with what they held
+	mov	eax,[rbx+TS_FNOFF]
+	test	eax,eax
+	jz	.record
+	add	r14,rax
+	mov	eax,[rbx+TS_FNSEQ]
+	mov	[rsp+FN_SEQ],eax
+	mov	eax,[rbx+TS_FNACCN]
+	mov	[rsp+FN_ACCN],eax
+	mov	eax,[rbx+TS_FNCCS]
+	mov	[rsp+FN_CCS],eax
+	mov	eax,[rbx+TS_FNSKIP]
+	mov	[rsp+FN_SKIP],eax
+	lea	rsi,[rbx+TS_FNACC]
+	lea	rdi,[rsp+FN_ACC]
+	mov	ecx,64
+	rep	movsb
 .record:
 	mov	rax,r13
 	sub	rax,r14
@@ -2279,8 +2333,15 @@ tls_finished:
 	lea	rsi,[rbx+TS_CHS_KEY]
 	mov	edx,[rbx+TS_SUITE]
 	call	aead_init
+	mov	rax,[rbx+TS_CHS_IV]		; the nonce: the IV and its sequence
+	mov	[rsp+FN_NONCE],rax
+	mov	eax,[rbx+TS_CHS_IV+8]
+	mov	[rsp+FN_NONCE+8],eax
+	mov	eax,[rsp+FN_SEQ]
+	bswap	eax
+	xor	[rsp+FN_NONCE+8],eax
 	lea	rdi,[rsp+FN_GCM]
-	lea	rsi,[rbx+TS_CHS_IV]		; the first record: sequence 0
+	lea	rsi,[rsp+FN_NONCE]
 	mov	rdx,r14
 	mov	ecx,5
 	lea	r8,[r14+5]
@@ -2290,7 +2351,10 @@ tls_finished:
 	test	eax,eax
 	jnz	.opened
 	; not under the handshake key: the 0-RTT data of a client whose early data
-	; was not taken is skipped, up to a bound (RFC 8446 4.2.10); else forged
+	; was not taken is skipped, up to a bound (RFC 8446 4.2.10), until one
+	; opens (its second flight has begun); else forged
+	cmp	dword [rsp+FN_SEQ],0
+	jne	.f_mac
 	test	dword [rbx+TS_FLAGS],TF_EDSKIP
 	jz	.f_mac
 	mov	rax,r15
@@ -2301,6 +2365,7 @@ tls_finished:
 	mov	r14,r15
 	jmp	.record
 .opened:
+	inc	dword [rsp+FN_SEQ]
 	lea	rax,[r15-16]			; TLSInnerPlaintext: 2^14 + 1 at most (5.4)
 	sub	rax,r14
 	sub	rax,5
@@ -2326,9 +2391,26 @@ tls_finished:
 	je	.f_quiet
 	jmp	.f_unexpected
 @@:
+	; the Finished, whole in this record or in pieces across several (5.1)
 	sub	rdi,rsi
-	cmp	rdi,4
-	jb	.f_decode
+	jz	.f_decode			; (an empty fragment: none of a message)
+	mov	r8,rdi
+	mov	ecx,[rsp+FN_ACCN]
+	add	[rsp+FN_ACCN],r8d
+	cmp	dword [rsp+FN_ACCN],TLS_RECORD_MAX * 4
+	ja	.f_unexpected
+	mov	eax,64				; (what the buffer holds of it)
+	sub	eax,ecx
+	jbe	@f
+	cmp	r8d,eax
+	cmova	r8d,eax
+	lea	rdi,[rsp+FN_ACC+rcx]
+	mov	ecx,r8d
+	rep	movsb
+@@:
+	cmp	dword [rsp+FN_ACCN],4
+	jb	.next
+	lea	rsi,[rsp+FN_ACC]
 	cmp	byte [rsi],0			; (zeros before it: not a message)
 	je	.f_decode
 	cmp	byte [rsi],0x14			; another message than Finished
@@ -2339,10 +2421,10 @@ tls_finished:
 	cmp	[rsi],eax			; its length the hash's (else decode_error)
 	jne	.f_decode
 	mov	eax,[g_hlen]
-	lea	ecx,[rax+4]
-	cmp	rdi,rcx				; Finished, and nothing else
+	add	eax,4
+	cmp	[rsp+FN_ACCN],eax		; Finished, and nothing else
 	ja	.f_unexpected			; (more after it: a KeyUpdate, ...)
-	jb	.f_decode
+	jb	.next				; (the rest in the next record)
 	lea	rdi,[rsi+4]
 	lea	rsi,[rbx+TS_CFIN]
 	mov	edx,[g_hlen]
@@ -2353,6 +2435,24 @@ tls_finished:
 	sub	rdx,r12
 	mov	eax,TH_DONE
 	jmp	.out
+.next:
+	mov	rax,r15				; (kept: this record is plaintext now)
+	sub	rax,r12
+	mov	[rbx+TS_FNOFF],eax
+	mov	eax,[rsp+FN_SEQ]
+	mov	[rbx+TS_FNSEQ],eax
+	mov	eax,[rsp+FN_ACCN]
+	mov	[rbx+TS_FNACCN],eax
+	mov	eax,[rsp+FN_CCS]
+	mov	[rbx+TS_FNCCS],eax
+	mov	eax,[rsp+FN_SKIP]
+	mov	[rbx+TS_FNSKIP],eax
+	lea	rsi,[rsp+FN_ACC]
+	lea	rdi,[rbx+TS_FNACC]
+	mov	ecx,64
+	rep	movsb
+	mov	r14,r15
+	jmp	.record
 .ccs:
 	cmp	ecx,1
 	jne	.f_unexpected

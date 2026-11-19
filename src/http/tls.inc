@@ -250,6 +250,10 @@ http_tls_hello_in:
 	mov	edi,ebx
 	call	idle_touch
 	h_rec
+	call	http_tls_edskip			; (0-RTT records before a second hello)
+	jc	http_tls_close
+	cmp	dword [r15+H_INLEN],0
+	je	http_tls_read
 	jmp	http_tls_hello_budget		; now, or queued (hsbudget.inc)
 
 ; ebx = session, r15 = its record: the handshake on what IN holds
@@ -302,30 +306,85 @@ http_tls_hello_go:
 ; a HelloRetryRequest is out (http_send_done in HS_TLS_RETRY): the client's
 ; second ClientHello
 http_tls_retry_sent:
-	mov	dword [r15+H_INLEN],0
 	mov	dword [r15+H_STATE],HS_TLS_HELLO
-	jmp	http_tls_read
+	call	http_tls_tail			; (a CCS, 0-RTT records)
+	call	http_tls_edskip
+	jc	http_tls_close
+	cmp	dword [r15+H_INLEN],0
+	je	http_tls_read
+	jmp	http_tls_hello_budget
 
-; the flight is out (http_send_done in HS_TLS_FLIGHT): the client's turn
-http_tls_flight_sent:
-	; what the client sent after its ClientHello in the same read (a CCS, the
-	; 0-RTT data that is skipped): the start of its next flight, kept
+; r15 = the record: the 0-RTT records a client sent with its first hello, before
+; the retry (TF_HRRED), dropped from the front of IN as they come, whole or not
+; (one may be larger than IN), ED_SKIP_MAX in all. CF past that.
+http_tls_edskip:
+	mov	r8,[r15+H_BUF]
+	test	dword [r8+HB_TS+TS_FLAGS],TF_HRRED
+	jz	.ok
+.again:
+	mov	eax,[r8+HB_TS+TS_EDREM]		; what is still to come of one begun
+	test	eax,eax
+	jnz	.drop
+	cmp	dword [r15+H_INLEN],5
+	jb	.ok
+	cmp	byte [r8+HB_IN],23
+	jne	.ok
+	movzx	eax,word [r8+HB_IN+3]
+	rol	ax,8
+	add	eax,5
+	mov	ecx,[r8+HB_TS+TS_EDTOT]
+	add	ecx,eax
+	cmp	ecx,ED_SKIP_MAX
+	ja	.fail
+	mov	[r8+HB_TS+TS_EDTOT],ecx
+.drop:
+	mov	ecx,[r15+H_INLEN]
+	cmp	eax,ecx
+	cmovb	ecx,eax				; what IN has of it
+	sub	eax,ecx
+	mov	[r8+HB_TS+TS_EDREM],eax
+	mov	edx,[r15+H_INLEN]
+	sub	edx,ecx
+	mov	[r15+H_INLEN],edx
+	lea	rdi,[r8+HB_IN]
+	lea	rsi,[rdi+rcx]
+	mov	ecx,edx
+	rep	movsb
+	test	eax,eax
+	jz	.again
+.ok:
+	clc
+	ret
+.fail:
+	stc
+	ret
+
+; r15 = the record: what the client sent after its ClientHello in the same
+; read (a CCS, the 0-RTT data that is skipped), the start of its next
+; flight, moved to the front of IN and kept. ZF when there is none.
+http_tls_tail:
 	mov	rax,[r15+H_BUF]
 	mov	ecx,[rax+HB_TS+TS_CHTAIL]
 	mov	dword [rax+HB_TS+TS_CHTAIL],0
 	mov	edx,[r15+H_INLEN]
 	cmp	ecx,edx
-	ja	.none
+	jbe	@f
+	xor	ecx,ecx
+@@:
 	mov	[r15+H_INLEN],ecx
 	test	ecx,ecx
-	jz	http_tls_peek
+	jz	.out
 	lea	rdi,[rax+HB_IN]
 	lea	rsi,[rdi+rdx]
 	sub	rsi,rcx
 	rep	movsb
-	jmp	http_tls_peek
-.none:
-	mov	dword [r15+H_INLEN],0
+	cmp	dword [r15+H_INLEN],0		; (ZF clear)
+.out:
+	ret
+
+; the flight is out (http_send_done in HS_TLS_FLIGHT): the client's turn
+http_tls_flight_sent:
+	call	http_tls_tail
 ; peek at what the client sent after what IN holds
 http_tls_peek:
 	mov	dword [r15+H_STATE],HS_TLS_FIN
