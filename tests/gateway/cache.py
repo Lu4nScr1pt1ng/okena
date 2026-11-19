@@ -24,6 +24,7 @@ BASE = 13000 + os.getpid() % 90 * 8 + (4 if ENGINE == "epoll" else 0)	# ports 13
 BACK, LST, TLS, SMALL = BASE, BASE + 1, BASE + 2, BASE + 3
 fails = 0
 hits = {}
+seen = {}
 BIG = random.Random(7).randbytes(300000)
 HUGE = b"x" * (2 << 20)
 ver = {"n": 0}
@@ -138,6 +139,23 @@ class Back(http.server.BaseHTTPRequestHandler):
         elif p == "swr":
             time.sleep(0.2 if n > 1 else 0)
             self.send(c, Cache_Control="max-age=1")
+        elif p in ("etag", "lm"):
+            if p == "etag":
+                v = {"ETag": '"v1"'}
+                same = self.headers.get("if-none-match") == '"v1"'
+            else:
+                v = {"Last-Modified": "Sun, 06 Nov 1994 08:49:37 GMT"}
+                same = self.headers.get("if-modified-since") == v["Last-Modified"]
+            seen[self.path] = self.headers.get("if-none-match") or self.headers.get("if-modified-since")
+            if same:
+                self.send_response(304)
+                self.send_header("Cache-Control", "max-age=1")
+                self.send_header("X-New", f"#{n}")
+                for k, x in v.items():
+                    self.send_header(k, x)
+                self.end_headers()
+            else:
+                self.send(c, Cache_Control="max-age=1, must-revalidate", X_Old="kept", **{k.replace("-", "_"): x for k, x in v.items()})
         elif p == "strict":
             self.send(c, Cache_Control="max-age=1, must-revalidate")
         elif p == "who":
@@ -312,10 +330,19 @@ def main():
 
         # time
         get("/t/plain")
+        get("/t/etag")
+        get("/t/lm")
         check("fresh", hit(get("/t/plain")))
         time.sleep(1.2)
         r = get("/t/plain")
         check("expired: fetched again", not hit(r) and hits["/t/plain"] == 2, status_of(r))
+        for v in ("etag", "lm"):
+            path = f"/t/{v}"
+            r = get(path)
+            check(f"expired, with {v}: revalidated, a 304 serves what is kept", r[0] == 200 and r[1] == f"{path} #1".encode() and
+                  hits[path] == 2 and seen[path] and r[2].get("x-new") == "#2" and r[2].get("x-old") == "kept", (r[:2], hits.get(path), seen.get(path), r[2]))
+            r = get(path)
+            check("  and fresh again", hit(r) and hits[path] == 2 and r[2].get("x-new") == "#2", (status_of(r), hits.get(path)))
         get("/c/short")
         time.sleep(1.2)
         get("/c/short")

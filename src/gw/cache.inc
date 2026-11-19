@@ -22,7 +22,8 @@
 ; client (SF_CREF) fetches it again. Past that it is a miss.
 ;
 ; What is not kept, whatever the route says: anything but GET; status other than
-; 200, 301, 308, 404, 410; Cache-Control no-store, private, no-cache; Set-Cookie;
+; 200, 301, 308, 404, 410, unless the answer says for how long itself (max-age,
+; s-maxage, Expires: RFC 9111 3), and never 1xx, 204, 206, 304; Cache-Control no-store, private, no-cache; Set-Cookie;
 ; Vary: * or a field not in vary=; a body whose end cannot be told from a cut
 ; connection (no length, not chunked); bigger than max=. Unless shared=on, nor is a
 ; request with Cookie or Authorization, or that proved who it is, served or kept: an
@@ -104,6 +105,10 @@ HB_CST		:= HB_CPOSB			; (a hit's field: a request that goes on has none)
 ; backend fail (stale-if-error). Times it waited are far below these.
 CW_SIEM		:= 0x40000000			; + an entry of memory, pinned
 CW_SIED		:= 0x20000000			; one on disk (looked up again then)
+CW_REV		:= 0x10000000			; the memory one is revalidated: the request
+						; carries its validators, a 304 freshens it
+CW_SIEOK	:= 0x08000000			; and it is within stale-if-error too
+CW_IDX		:= CW_SIEOK - 1			; the entry
 MAX_CACHES	:= 16384
 
 bss
@@ -824,6 +829,7 @@ cache_check:
 	mov	dword [rax+HB_CW],0
 	mov	dword [g_c_sie],NIL
 	mov	dword [g_c_sied],0
+	mov	dword [g_c_rev],0
 	cmp	dword [rax+HB_CPASS],0
 	je	@f
 	mov	dword [rax+HB_CPASS],0
@@ -949,7 +955,26 @@ cache_check:
 	imul	rcx,rcx,1000000
 	add	rcx,[rax+CE_FRESH]
 	cmp	[g_qnow],rcx
-	jae	.kill_old
+	jae	@f
+	mov	dword [g_c_rev],CW_SIEOK
+@@:
+	; with a validator (ETag, Last-Modified), and a plain GET that nobody
+	; else is fetching: kept too, the request made conditional, and a 304
+	; freshens it (RFC 9111 4.3)
+	test	r13d,r13d
+	jnz	.no_rev
+	cmp	dword [g_cf_f],NIL
+	jne	.no_rev
+	mov	eax,[g_cf_r]
+	ce_ptr
+	call	ce_validators
+	jz	.no_rev
+	or	dword [g_c_rev],CW_REV
+	jmp	.kept_old
+.no_rev:
+	cmp	dword [g_c_rev],0
+	je	.kill_old
+.kept_old:
 	mov	eax,[g_cf_r]
 	mov	[g_c_sie],eax
 	mov	dword [g_cf_r],NIL
@@ -1035,6 +1060,7 @@ cache_check:
 	ce_ptr
 	inc	dword [rax+CE_PIN]
 	or	ecx,CW_SIEM
+	or	ecx,[g_c_rev]
 	mov	[rdx+HB_CW],ecx
 	jmp	.o_kept
 @@:
@@ -1626,6 +1652,8 @@ cache_status_head:
 ; a stale copy answers instead (stale-if-error: 500, 502, 503, 504). From disk, it is
 ; looked up again (and pinned) here. Keeps rbx, r12-r15.
 cache_sie_ok:
+	cmp	eax,304
+	je	.reval
 	cmp	eax,500
 	je	@f
 	cmp	eax,502
@@ -1641,7 +1669,13 @@ cache_sie_ok:
 	mov	rcx,[r15+H_BUF]
 	mov	ecx,[rcx+HB_CW]
 	test	ecx,CW_SIEM
+	jz	.disk
+	test	ecx,CW_REV			; (kept to be revalidated: past its
+	jz	.yes				; stale-if-error, not for an error)
+	test	ecx,CW_SIEOK
 	jnz	.yes
+	jmp	.no
+.disk:
 	test	ecx,CW_SIED
 	jz	.no
 	push	rax
@@ -1661,6 +1695,26 @@ cache_sie_ok:
 	ret
 .no:
 	stc
+	ret
+.reval:
+	; a 304 for the copy it revalidated: that, freshened, is the answer
+	push	rax
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_SIE
+	pop	rax
+	jz	.no
+	mov	rcx,[r15+H_BUF]
+	mov	ecx,[rcx+HB_CW]
+	test	ecx,CW_REV
+	jz	.no
+	test	ecx,CW_SIEM
+	jz	.no
+	and	ecx,CW_IDX
+	mov	edi,ecx
+	call	cache_reval_update
+	jc	.no
+	mov	dword [g_c_fwd],0
+	clc
 	ret
 
 ; after cache_sie_ok said yes (ebx, r15): the backend let go of, the stale copy as the
@@ -1689,7 +1743,7 @@ cache_sie_serve:
 	mov	dword [rax+HB_CW],0
 	test	ecx,CW_SIED
 	jnz	cd_serve
-	and	ecx,CW_SIEM - 1
+	and	ecx,CW_IDX
 	push	rcx
 	mov	eax,ecx
 	ce_ptr
@@ -1710,7 +1764,7 @@ cache_sie_drop:
 	mov	dword [rax+HB_CW],0
 	test	edi,CW_SIEM
 	jz	.none
-	and	edi,CW_SIEM - 1
+	and	edi,CW_IDX
 	mov	eax,edi
 	ce_ptr
 	dec	dword [rax+CE_PIN]
@@ -1768,6 +1822,337 @@ cache_status_emit:
 	memit_x 13,10
 .none:
 	ret
+
+; rax = an entry: its head, in one piece, in g_rv_buf (to g_rv_end). ZF clear
+; when it has a validator a request can carry: ETag or Last-Modified (of 256
+; bytes at most). Keeps rbx, r12-r15.
+ce_validators:
+	lea	rdi,[g_rv_buf]
+	mov	ecx,[rax+CE_HLEN]
+	cmp	ecx,H_UP_CAP
+	ja	.none
+	mov	eax,[rax+CE_HEAD]
+.head:
+	test	ecx,ecx
+	jz	.copied
+	mov	r8d,ecx
+	cmp	r8d,CB_SIZE
+	jbe	@f
+	mov	r8d,CB_SIZE
+@@:
+	mov	rsi,rax
+	shl	rsi,CB_SHIFT
+	add	rsi,[g_cb_base]
+	sub	ecx,r8d
+	xchg	ecx,r8d
+	rep	movsb
+	mov	ecx,r8d
+	mov	rdx,[g_cb_nexts]
+	mov	eax,[rdx+rax*4]
+	jmp	.head
+.copied:
+	mov	[g_rv_end],rdi
+	lea	r10,[g_rv_buf]
+	lea	rsi,[cond_fix.n_etag]
+	mov	edx,4
+	call	cond_fix.field
+	test	ecx,ecx
+	jz	@f
+	cmp	ecx,256
+	jbe	.yes
+@@:
+	mov	rdi,[g_rv_end]
+	lea	r10,[g_rv_buf]
+	lea	rsi,[cond_fix.n_lm]
+	mov	edx,13
+	call	cond_fix.field
+	test	ecx,ecx
+	jz	.none
+	cmp	ecx,256
+	ja	.none
+.yes:
+	or	eax,1				; (ZF clear)
+	ret
+.none:
+	xor	eax,eax				; ZF
+	ret
+
+; http_write_request_head (rdi = output, r15 = record): a request that revalidates
+; a kept copy (CW_REV) carries its validators, If-None-Match and If-Modified-Since
+; (RFC 9111 4.3.1). Keeps rbx, r8-r15.
+cache_reval_emit:
+	mov	rax,r15				; (its session: ebx counts fields here)
+	sub	rax,[g_http_base]
+	shr	rax,H_SHIFT
+	shl	rax,S_SHIFT
+	add	rax,[g_sess_base]
+	test	dword [rax+S_FLAGS],SF_SIE
+	jz	.none
+	mov	rax,[r15+H_BUF]
+	mov	ecx,[rax+HB_CW]
+	test	ecx,CW_REV
+	jz	.none
+	test	ecx,CW_SIEM
+	jz	.none
+	push	r8
+	push	r9
+	push	r10
+	push	r11
+	push	rdi
+	and	ecx,CW_IDX
+	mov	eax,ecx
+	ce_ptr
+	call	ce_validators
+	jz	.out
+	mov	rdi,[g_rv_end]
+	lea	r10,[g_rv_buf]
+	lea	rsi,[cond_fix.n_etag]
+	mov	edx,4
+	call	cond_fix.field
+	test	ecx,ecx
+	jz	@f
+	cmp	ecx,256
+	ja	@f
+	push	rsi
+	push	rcx
+	mov	rdi,[rsp+16]
+	memit_x 'If-None-Match: '
+	pop	rcx
+	pop	rsi
+	rep	movsb
+	memit_x 13,10
+	mov	[rsp],rdi
+@@:
+	mov	rdi,[g_rv_end]
+	lea	r10,[g_rv_buf]
+	lea	rsi,[cond_fix.n_lm]
+	mov	edx,13
+	call	cond_fix.field
+	test	ecx,ecx
+	jz	.out
+	cmp	ecx,256
+	ja	.out
+	push	rsi
+	push	rcx
+	mov	rdi,[rsp+16]
+	memit_x 'If-Modified-Since: '
+	pop	rcx
+	pop	rsi
+	rep	movsb
+	memit_x 13,10
+	mov	[rsp],rdi
+.out:
+	pop	rdi
+	pop	r11
+	pop	r10
+	pop	r9
+	pop	r8
+.none:
+	ret
+
+; edi = the entry a request revalidated, g_hm = the backend's 304 (ebx, r15): the
+; head kept takes the 304's fields, in place of its own of the same names (but
+; Content-Length, RFC 9111 3.2), and it is fresh again from now (4.3.4). CF: it
+; will not do any more (gone, or the 304 says it is not to be kept), and is
+; dropped. Keeps rbx, r12-r15.
+cache_reval_update:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	mov	r13d,edi
+	mov	eax,edi
+	ce_ptr
+	mov	r12,rax
+	cmp	dword [r12+CE_DEAD],0		; (replaced since)
+	jne	.fail
+	cmp	dword [r12+CE_STATE],CE_READY
+	jne	.fail
+	mov	eax,[r15+H_ACT]
+	test	eax,eax
+	jz	.fail
+	dec	eax
+	imul	rax,rax,RA_SIZE
+	mov	eax,[g_acts+rax+RA_CACHE]
+	test	eax,eax
+	jz	.fail
+	dec	eax
+	imul	r14,rax,CA_SIZE
+	lea	r14,[g_caches+r14]
+	mov	rax,r12
+	call	ce_validators			; (the head, in g_rv_buf)
+	jz	.fail
+	; its status: "HTTP/1.1 NNN"
+	lea	rsi,[g_rv_buf+9]
+	xor	eax,eax
+	mov	ecx,3
+.digit:
+	movzx	edx,byte [rsi]
+	sub	edx,'0'
+	cmp	edx,9
+	ja	.fail
+	imul	eax,eax,10
+	add	eax,edx
+	inc	rsi
+	dec	ecx
+	jnz	.digit
+	mov	[g_hm+HM_STATUS],eax
+	; its fields, those the 304 does not have after the 304's own
+	mov	ebx,[g_hm+HM_NHDR]		; (the 304's)
+	lea	rsi,[g_rv_buf]
+	mov	r11,[g_rv_end]
+.eol0:
+	cmp	rsi,r11
+	jae	.merged
+	cmp	byte [rsi],10
+	lea	rsi,[rsi+1]
+	jne	.eol0
+.line:
+	cmp	rsi,r11
+	jae	.merged
+	mov	rdi,rsi				; its name, to the colon
+@@:
+	cmp	rsi,r11
+	jae	.merged
+	cmp	byte [rsi],':'
+	je	@f
+	inc	rsi
+	jmp	@b
+@@:
+	mov	r8,rsi
+	sub	r8,rdi				; the name's length
+	inc	rsi
+@@:
+	cmp	rsi,r11
+	jae	.merged
+	cmp	byte [rsi],' '
+	jne	@f
+	inc	rsi
+	jmp	@b
+@@:
+	mov	r9,rsi				; its value, to the CR
+@@:
+	cmp	rsi,r11
+	jae	.merged
+	cmp	byte [rsi],13
+	je	@f
+	inc	rsi
+	jmp	@b
+@@:
+	mov	r10,rsi
+	sub	r10,r9				; the value's length
+	add	rsi,2				; (CR LF)
+	; Content-Length and Date go (the cache writes the first; the second is
+	; the 304's, or none: made now)
+	push	r8
+	push	rsi
+	push	rdi
+	mov	esi,r8d
+	lea	rdx,[.skip]
+	call	name_in
+	pop	rdi
+	pop	rsi
+	pop	r8				; (mem_eq_nocase takes r8)
+	jnz	.line
+	; one the 304 has: the 304's
+	xor	ecx,ecx
+.in304:
+	cmp	ecx,ebx
+	jae	.add
+	imul	rax,rcx,HF_SIZE
+	inc	ecx
+	cmp	[g_hm+HM_HDRS+rax+HF_NLEN],r8d
+	jne	.in304
+	push	r8
+	push	rcx
+	push	rsi
+	push	rdi
+	mov	rsi,[g_hm+HM_HDRS+rax+HF_NAME]
+	mov	edx,r8d
+	call	mem_eq_nocase
+	pop	rdi
+	pop	rsi
+	pop	rcx
+	pop	r8
+	test	eax,eax
+	jnz	.line
+	jmp	.in304
+.add:
+	mov	eax,[g_hm+HM_NHDR]
+	cmp	eax,HM_MAX_HEADERS
+	jae	.fail
+	inc	dword [g_hm+HM_NHDR]
+	imul	rax,rax,HF_SIZE
+	lea	rax,[g_hm+HM_HDRS+rax]
+	mov	[rax+HF_NAME],rdi
+	mov	[rax+HF_NLEN],r8d
+	mov	[rax+HF_VALUE],r9
+	mov	[rax+HF_VLEN],r10d
+	mov	dword [rax+HF_FLAGS],0
+	mov	byte [rax+HF_ID],HID_NONE
+	jmp	.line
+.merged:
+	; the head anew, read as the route reads an answer
+	mov	edi,[r12+CE_HEAD]
+	call	cb_free_chain
+	mov	eax,NIL
+	mov	[r12+CE_HEAD],eax
+	mov	[r12+CE_HTAIL],eax
+	mov	dword [r12+CE_HLEN],0
+	mov	eax,[r14+CA_TTL]
+	mov	[r12+CE_TTL],eax
+	mov	eax,[r14+CA_SWR]
+	mov	[r12+CE_SWR],eax
+	mov	eax,[r14+CA_SIE]
+	mov	[r12+CE_SIE],eax
+	mov	dword [g_c_notags],1
+	mov	dword [g_c_needx],0
+	call	cache_fields
+	mov	dword [g_c_notags],0
+	jc	.kill
+	cmp	dword [r12+CE_TTL],0
+	je	.kill
+	sub	rsp,48
+	mov	rdi,rsp
+	memit_x 'Content-Length: '
+	mov	eax,[r12+CE_BLEN]
+	call	fmt_u64
+	memit_x 13,10
+	mov	rcx,rdi
+	sub	rcx,rsp
+	mov	rsi,rsp
+	lea	r9,[r12+CE_HEAD]
+	call	cw_put
+	lea	rsp,[rsp+48]
+	jc	.kill
+	call	qs_clock
+	mov	rax,[g_qnow]
+	mov	ecx,[r12+CE_AGE0]
+	imul	rcx,rcx,1000000
+	sub	rax,rcx
+	mov	[r12+CE_BORN],rax
+	mov	ecx,[r12+CE_TTL]
+	imul	rcx,rcx,1000000
+	add	rax,rcx
+	mov	[r12+CE_FRESH],rax
+	mov	ecx,[r12+CE_SWR]
+	imul	rcx,rcx,1000000
+	add	rax,rcx
+	mov	[r12+CE_STALE],rax
+	clc
+	jmp	.out
+.kill:
+	mov	edi,r13d
+	call	ce_kill
+.fail:
+	stc
+.out:
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+.skip	db 14,'content-length',4,'date',0
 
 ; ebx = session, r15 = record: looks again, in a moment
 cache_hold:
@@ -2151,6 +2536,7 @@ cache_head:
 	jc	.no
 	jmp	.status
 .whole:
+	mov	dword [g_c_needx],0
 	mov	eax,[g_hm+HM_STATUS]
 	cmp	eax,200
 	je	.status
@@ -2161,7 +2547,20 @@ cache_head:
 	cmp	eax,404
 	je	.status
 	cmp	eax,410
-	jne	.no
+	je	.status
+	; any other final status, with a lifetime of its own (cache_fields), but a
+	; range, a 304, and a 204 (no Content-Length may go with it)
+	cmp	eax,200
+	jb	.no
+	cmp	eax,599
+	ja	.no
+	cmp	eax,204
+	je	.no
+	cmp	eax,206
+	je	.no
+	cmp	eax,304
+	je	.no
+	mov	dword [g_c_needx],1
 .status:
 	mov	eax,[r15+H_RBODY]
 	cmp	eax,BK_CHUNKED
@@ -2449,6 +2848,13 @@ cache_fields:
 	mov	[r12+CE_TTL],eax
 .no_expires:
 	add	rsp,16
+	cmp	dword [g_c_needx],0		; a status kept only with its own lifetime
+	je	@f
+	cmp	dword [g_c_ccage],0
+	jne	@f
+	cmp	qword [g_c_expp],0
+	je	.no
+@@:
 	; fresh no longer than its age already: not kept (no stale answer to keep)
 	mov	eax,[r12+CE_AGE0]
 	cmp	eax,[r12+CE_TTL]
@@ -2458,8 +2864,11 @@ cache_fields:
 	add	rsp,16
 	jmp	.no
 .aged:
+	cmp	dword [g_c_notags],0		; (a 304's freshening: they are kept)
+	jne	@f
 	call	pm_tags				; its tags, for a purge
 	jc	.no
+@@:
 	mov	[r12+CE_SWR],r14d
 	and	dword [r12+CE_SIE],0x7FFFFFFF	; (must-revalidate's lock off)
 	cmp	dword [r12+CE_HLEN],H_UP_CAP - 256
@@ -3547,6 +3956,11 @@ plan_bad_cache:
 
 bss
 	g_c_ccage	dd ?			; cache_fields: max-age or s-maxage was said
+	g_c_notags	dd ?			; cache_fields: purge tags not taken again
+	g_c_needx	dd ?			; cache_fields: kept only with max-age, s-maxage, Expires
+	g_c_rev		dd ?			; cache_check: CW_REV, CW_SIEOK for the copy kept
+	g_rv_end	dq ?			; ce_validators: the head's end in g_rv_buf
+	g_rv_buf:	rb H_UP_CAP		; a kept head, in one piece
 	g_c_expl	dd ?			; Expires: its length
 	g_c_expp	dq ?			; and value, 0 none
 	g_c_agev	dq ?			; its Age, -1 none

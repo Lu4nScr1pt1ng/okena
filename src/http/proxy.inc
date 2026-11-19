@@ -2193,6 +2193,7 @@ http_write_request_head:
 .has_host:
 	call	auth_emit
 	call	slice_range_emit
+	call	cache_reval_emit
 	call	cdnloop_emit
 	call	trace_emit
 	test	dword [r15+H_FLAGS],HX_RIDKEPT
