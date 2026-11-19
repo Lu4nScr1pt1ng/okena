@@ -93,6 +93,7 @@ supervisor_main:
 	call	fleet_rings_init
 	call	bc_init				; (bcrypt: the shared table, before workers fork)
 	call	tr_init				; (tunnels: okena-resolve's table, tunnel.inc)
+	call	mod_init_all			; (handler modules: their data, before workers fork)
 	call	stats_table_init
 	call	ll_init				; Landlock's version, said once when none
 	call	upgrade_receive

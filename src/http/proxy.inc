@@ -1058,6 +1058,8 @@ http_request:
 @@:
 	cmp	dword [g_acts+rdx+RA_CODE],0
 	jne	http_redirect
+	cmp	qword [g_acts+rdx+RA_MOD],0	; `handler`: a module answers (modules.inc)
+	jne	mod_request
 	cmp	dword [g_acts+rdx+RA_TUN],0	; `tunnel`: a CONNECT's (tunnel.inc)
 	je	@f
 	cmp	dword [g_hm_conn],0
@@ -2398,6 +2400,8 @@ http_recv_plain:
 	je	addon_body_in			; (a body an addon waits for)
 	cmp	edx,HS_FCBODY
 	je	fcgi_body_in			; (a chunked body FastCGI waits for)
+	cmp	edx,HS_MBODY
+	je	mod_body_in			; (a body a handler waits for)
 	cmp	edx,HS_ADRBODY
 	je	addon_rbody_in			; (a response's body, the same)
 	cmp	edx,HS_RESP_HEAD
@@ -5230,6 +5234,8 @@ http_phase_expired:
 	cmp	eax,HS_ADBODY
 	je	.body_408
 	cmp	eax,HS_FCBODY
+	je	.body_408
+	cmp	eax,HS_MBODY
 	je	.body_408
 	; or taking ours: no byte of the answer taken for body_idle (a slow
 	; read). Waiting for the backend instead (a stream with long gaps) is not

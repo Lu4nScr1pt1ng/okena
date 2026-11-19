@@ -134,6 +134,7 @@ include 'gw/jwks.inc'
 include 'gw/forward.inc'
 include 'gw/tunnel.inc'
 include 'core/mpush.inc'
+include 'core/modules.inc'
 include 'gw/cache.inc'
 include 'gw/match.inc'
 include 'gw/files.inc'
@@ -197,6 +198,16 @@ include 'cli_xdp.inc'
 include 'cli_xdplb.inc'
 include 'cli_fmt.inc'
 include 'cli_explain.inc'
+match =MODINC_PATH, MODINC_PATH			; `make MODULES=...` (modules.inc)
+	include '../build/modules.inc'
+else match path, MODINC_PATH			; (a test build's own list)
+	include path
+end match
+rodata
+	align 8
+	mod_handlers	dq MOD_HEAD
+	mod_inits	dq MOD_IHEAD
+end rodata
 
 start:
 	; The zero-initialised state is sized for the largest configuration, a

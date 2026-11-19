@@ -2121,6 +2121,11 @@ check_route_set:
 	call	find_child
 	test	rax,rax
 	jnz	.actions
+	mov	rdi,rbx				; and `handler` (a module's answer)
+	mov	ecx,DIR_HANDLER
+	call	find_child
+	test	rax,rax
+	jnz	.actions
 	mov	rdi,rbx				; and `tunnel` (CONNECT) with no `to`
 	mov	ecx,DIR_TUNNEL
 	call	find_child

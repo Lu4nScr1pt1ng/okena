@@ -1158,3 +1158,13 @@ both engines, routes that do not use an item unchanged.
 
 Not in this phase: an AArch64 port (okena is x86-64 assembly: a port is a
 second implementation of every hot path, not a feature).
+
+## Phase 16 — Handler modules
+
+Code assembled into okena for answers no configuration gives, as nginx's
+modules: `make MODULES=...`, `okena_handler` and `okena_init` in the module,
+`handler NAME [ARG]` on a route. **Done 2026-11-19** (src/core/modules.inc,
+tests/modules/run.py): the body read whole first (Content-Length, chunked
+undone, in pieces), keep-alive and pipelining after it, HTTP/1.1, 2 and 3,
+an init in the supervisor (the workers inherit its data; a reload reads it
+again). First user: the HttpArena benchmark's module.

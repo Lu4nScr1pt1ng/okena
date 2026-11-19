@@ -338,6 +338,7 @@ dirdef DIR_MAINTENANCE, 'maintenance', M_HTTP, 0,     F_UNIQUE, 0, 0, T_NONE, T_
 dirdef DIR_REDIRECTS, 'redirects', M_ROUTE, 0,         F_UNIQUE, 1, 1, T_ANY, T_NONE, k_rmap
 dirdef DIR_FILES, 'files',      M_ROUTE,   0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, k_files
 dirdef DIR_TUNNEL, 'tunnel',    M_ROUTE,   0,           F_UNIQUE, 0, 0, T_NONE, T_NONE, k_tunnel
+dirdef DIR_HANDLER, 'handler',  M_ROUTE,   0,           F_UNIQUE, 1, 2, T_ANY, T_ANY, 0
 dirdef DIR_PHP, 'php',          M_ROUTE,   0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, k_php
 dirdef DIR_MATCH, 'match',      M_ROUTE,   CTX_ROUTE,   F_BLOCK_REQ or F_FREE_KEYS, 0, 256, T_ANY, T_ANY, 0
 dirdef DIR_CACHE, 'cache',      M_ROUTE,   0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, k_cache

@@ -623,6 +623,7 @@ supervisor_reload:
 	call	fleet_rings_init
 	call	spawn_fleet
 	call	bc_reload			; okena-bcrypt: again, with the new plan
+	call	mod_init_reload			; handler modules: their data read again (modules.inc)
 	call	tr_reload			; okena-resolve too (tunnel.inc)
 	mov	edi,[g_xdp_pid]			; okena-xdp: again, with the new plan
 	test	edi,edi

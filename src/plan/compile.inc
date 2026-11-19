@@ -151,7 +151,10 @@ RA_LOG		:= 240		; d: `log`: 0 every exchange, -1 off, else the ten-thousandths l
 RA_RATE		:= 244		; d: `limit_rate`: bytes a second, 0 none (pace.inc)
 RA_RATEAFTER	:= 248		; d: and its after=
 RA_TUN		:= 252		; d: `tunnel`: its entry (g_tuns) + 1, 0 none (tunnel.inc)
-RA_SIZE		:= 256
+RA_MOD		:= 256		; q: `handler`: its module's function, 0 none (modules.inc)
+RA_MARG		:= 264		; q: and its ARG
+RA_MALEN	:= 272		; d
+RA_SIZE		:= 288
 MAX_TRYC	:= 32		; distinct try= values
 RESPOND_BODY_MAX := 1 shl 20	; `respond CODE BODY`
 RESPOND_INLINE	:= 4096		; up to this, in the head's write
@@ -1731,6 +1734,9 @@ compile_route_action:
 	lea	rcx,[dir_table + D_SIZE*DIR_TUNNEL]
 	cmp	rax,rcx
 	je	@f
+	lea	rcx,[dir_table + D_SIZE*DIR_HANDLER]
+	cmp	rax,rcx
+	je	@f
 	mov	rbx,[rbx+N_NEXT]
 	jmp	@b
 .listener_compress:
@@ -1773,6 +1779,7 @@ compile_route_action:
 	imul	r13,rcx,RA_SIZE
 	lea	r13,[g_acts+r13]
 	call	tun_compile			; `tunnel` (tunnel.inc)
+	call	mod_compile			; `handler` (modules.inc)
 	; limit_rate RATE [after=SIZE]: its answers paced
 	mov	rdi,r12
 	mov	ecx,DIR_RATE
@@ -6809,11 +6816,17 @@ compile_routes:
 	call	find_child
 	test	rax,rax
 	jnz	@f				; (its first pool: below)
+	mov	rdi,rbx				; `handler` with no `to`: its module answers
+	mov	ecx,DIR_HANDLER
+	call	find_child
+	test	rax,rax
+	jnz	.no_pool_unless_to
 	mov	rdi,rbx				; `tunnel` with no `to`: CONNECTs only
 	mov	ecx,DIR_TUNNEL
 	call	find_child
 	test	rax,rax
 	jz	.target
+.no_pool_unless_to:
 	mov	rdi,rbx
 	mov	ecx,DIR_TO
 	call	find_child

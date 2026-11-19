@@ -22,7 +22,23 @@ toolchain: $(FASMG)
 $(FASMG):
 	./scripts/fetch-fasm2.sh $(TOOLCHAIN)
 
-$(BIN): $(SOURCES) | $(FASMG)
+# Handler modules assembled in (src/core/modules.inc): make MODULES="a.inc b.inc"
+MODULES   ?=
+MODINC    := build/modules.inc
+$(shell mkdir -p build; m='$(foreach f,$(MODULES),include '"'"'$(abspath $(f))'"'"'\n)'; \
+	printf "; generated: make MODULES=...\n$$m" > $(MODINC).new; \
+	cmp -s $(MODINC).new $(MODINC) && rm -f $(MODINC).new || mv -f $(MODINC).new $(MODINC))
+
+# a binary with tests/modules/test.inc in it (tests/modules/run.py)
+build/okena-modtest: $(SOURCES) tests/modules/test.inc | $(FASMG)
+	@mkdir -p build
+	printf "include '%s'\n" "$(abspath tests/modules/test.inc)" > build/modtest.inc
+	INCLUDE="$(TOOLCHAIN)/include" $(FASMG) -e100 -i "Include 'fasm2.inc'" \
+		-i "MODINC_PATH equ '$(abspath build/modtest.inc)'" src/main.asm $@.tmp
+	@chmod +x $@.tmp
+	@mv -f $@.tmp $@
+
+$(BIN): $(SOURCES) $(MODINC) $(MODULES) | $(FASMG)
 	@mkdir -p build
 	INCLUDE="$(TOOLCHAIN)/include" $(FASMG) -e100 -i "Include 'fasm2.inc'" src/main.asm $@.tmp
 	@chmod +x $@.tmp
@@ -132,7 +148,7 @@ build/envoyext-test-server: $(wildcard tests/envoyext/*.go tests/envoyext/go.mod
 	@mkdir -p build
 	-command -v go >/dev/null && cd tests/envoyext && GOFLAGS=-mod=mod GOPROXY=off go build -o ../../$@ .
 
-test: $(BIN) $(HTTPH) $(KAT) $(TLSH) $(TLSC) $(TLS12S) $(TLSC12) $(ADDON_EX) build/coraza-okena $(WASM_T) build/wasm-cache/.made \
+test: $(BIN) build/okena-modtest $(HTTPH) $(KAT) $(TLSH) $(TLSC) $(TLS12S) $(TLSC12) $(ADDON_EX) build/coraza-okena $(WASM_T) build/wasm-cache/.made \
 	build/ext-okena build/envoyext-test-server build/oidc-okena build/grpcjson-okena build/grpcjson-test-server
 	python3 -I tests/run_all.py
 

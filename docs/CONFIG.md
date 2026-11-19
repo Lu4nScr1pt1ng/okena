@@ -979,6 +979,42 @@ The access log has one line per tunnel: method `CONNECT`, the target, and the
 target as its `upstream`. Other methods on a route with `tunnel` go to its
 `to`, or get 405 when it has none; a CONNECT on any other route gets 405.
 
+### Handler modules: code of your own, in okena
+
+For an answer no configuration can give (computed from the request, from data
+read at the start), okena takes modules the way nginx does: assembled into the
+binary, not run beside it.
+
+```sh
+make MODULES="/src/mymodule.inc"          # build/okena, with it
+```
+
+```nginx
+route /sum/* { handler sum }
+route /api/* { handler lookup /var/lib/mymodule/table.json }   # an ARG it is given
+```
+
+A module is a file of okena's own assembly (fasm2), included after the rest
+of okena, so it can call any of its functions. It declares what it offers:
+
+```nasm
+okena_handler 'sum', my_sum         ; `handler sum` on a route
+okena_init my_load                  ; run before the workers start, and on each reload
+```
+
+An init function runs in the supervisor and reads what the module needs into
+its own memory, which the workers inherit; returning CF stops okena (after it
+says why), and on a reload keeps what it read last. A handler runs in a
+worker for each request of its routes, over HTTP/1.1, HTTP/2 or HTTP/3: it
+gets the request (`g_hm`: method, target, fields), its body read whole
+(Content-Length or chunked, decoded; HTTP/1.1), the route's ARG and a buffer
+of `MOD_OUT_CAP` bytes, and returns a status, a body length and a
+Content-Type. It must not block. Keep-alive and pipelining go on after it,
+the body used up. The register contract is at the top of
+[src/core/modules.inc](../src/core/modules.inc), and
+[tests/modules/test.inc](../tests/modules/test.inc) is a small example. A
+binary without the module refuses `handler NAME`, saying which modules it has.
+
 ### PHP and FastCGI
 
 ```nginx
