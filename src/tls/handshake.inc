@@ -74,7 +74,8 @@ TS_TKT		:= TS_RMS + 32			; a ticket to send after it (TK_SIZE), its
 TS_TKAGE	:= TS_TKT + TK_SIZE		; d: age_add
 TS_RXSEC	:= TS_TKAGE + 4			; the client's application traffic secret (48)
 TS_TXSEC	:= TS_RXSEC + 48		; ours: KeyUpdate derives the next from each
-TS_SIZE		:= TS_TXSEC + 48
+TS_CHTAIL	:= TS_TXSEC + 48		; d: bytes read after the ClientHello (the next step's)
+TS_SIZE		:= TS_CHTAIL + 4
 
 ; QUIC (RFC 9001): the handshake without records. The caller sets TF_QUIC
 ; and TS_QT; tls_hello then takes the ClientHello message itself (from
@@ -121,6 +122,7 @@ TF_ECHHRR	:= 2048				; ECH opened before a HelloRetryRequest (its context in TS_
 TF_ECHREJ	:= 32768			; ECH not opened before it (retry_configs in the flight)
 TF_NO13		:= 131072			; set by the caller: TLS 1.3 is not taken (`versions 1.2`)
 TF_H1FIRST	:= 262144			; set by the caller: http/1.1 before h2 (`alpn http/1.1 h2`)
+TF_EDSKIP	:= 1048576			; TCP: early data offered (never taken): skipped
 TF_KUSEND	:= 524288			; the client asked for our KeyUpdate: sent before the next data
 TF_NST		:= 16384			; TS_TKT: a ticket to send once the client's flight is good				; acme-tls/1 chosen: the challenge's certificate
 
@@ -293,6 +295,9 @@ G_CCOMP		:= 67108864			; compress_certificate offers brotli (certcomp.inc)
 G_CCZLIB	:= 134217728			; or zlib
 G_OCSP		:= 33554432			; status_request (OCSP): a staple wanted (ocsp.inc)
 G_AES256	:= 268435456			; TLS_AES_256_GCM_SHA384 offered
+G_KSEXT		:= 536870912			; the key_share extension came (a share or not)
+G_SVEXT		:= 1073741824			; supported_versions came
+G_SV12		:= 2147483648			; and it lists TLS 1.2
 
 TS13_AES128	:= 0				; TS_SUITE: TLS_AES_128_GCM_SHA256
 TS13_CHACHA	:= 1				; TLS_CHACHA20_POLY1305_SHA256
@@ -417,8 +422,16 @@ tls_hello:
 	cmp	r14d,eax
 	jb	.record
 	jne	.unexpected			; something after it in the same records
+	mov	rcx,r13				; what came after its records: kept for
+	sub	rcx,rsi				; the client's next flight (http_tls_*)
+	mov	[rbx+TS_CHTAIL],ecx
 	cmp	rsi,r13
+	je	@f
+	cmp	byte [rsi],20			; (a compatibility CCS after it, in the
+	je	@f				; same read, or 0-RTT data, never taken
+	cmp	byte [rsi],23			; over TCP: skipped, RFC 8446 4.2.10)
 	jne	.unexpected
+@@:
 	mov	[rbp+HL_MLEN],eax
 	jmp	.parse
 .quic_in:
@@ -481,11 +494,11 @@ tls_hello:
 	lea	rax,[rsi+35]
 	cmp	rax,r13
 	ja	.decode
-	cmp	byte [rsi],3			; legacy_version 0x0303
-	jne	.version
-	cmp	byte [rsi+1],3
-	jb	.version
-	add	rsi,34				; and the random
+	cmp	byte [rsi],3			; legacy_version: past SSL 3.0 (RFC 8446 D.5:
+	jne	.proto				; 0x0300 or less, protocol_version); what
+	cmp	byte [rsi+1],0			; is taken is supported_versions' (4.2.1)
+	je	.proto
+	add	rsi,34
 	movzx	ecx,byte [rsi]			; legacy_session_id, echoed
 	inc	rsi
 	cmp	ecx,32
@@ -631,6 +644,7 @@ tls_hello:
 	jmp	.ext_next
 
 .versions:					; supported_versions: u8 length, u16s
+	or	dword [rbp+HL_GOT],G_SVEXT
 	test	ecx,ecx
 	jz	.decode
 	movzx	edx,byte [rsi]
@@ -648,6 +662,10 @@ tls_hello:
 	test	dword [rbx+TS_FLAGS],TF_NO13	; (`versions 1.2`: as if not offered)
 	jnz	@f
 	or	dword [rbp+HL_GOT],G_TLS13
+@@:
+	cmp	word [rsi],0x0303		; TLS 1.2
+	jne	@f
+	or	dword [rbp+HL_GOT],G_SV12
 @@:
 	add	rsi,2
 	jmp	.version_item
@@ -686,6 +704,7 @@ tls_hello:
 	jmp	.sigalg_item
 
 .key_share:					; u16 length, { u16 group, u16 length, key }
+	or	dword [rbp+HL_GOT],G_KSEXT
 	cmp	ecx,2
 	jb	.decode
 	movzx	edx,word [rsi]
@@ -721,8 +740,10 @@ tls_hello:
 	je	.ks_mlkem
 	cmp	ax,0x1700			; secp256r1
 	jne	.share_next
-	cmp	edx,65
-	jne	.share_next			; not uncompressed: ignore this share
+	cmp	edx,65				; uncompressed, the only form TLS 1.3 has
+	jne	.illegal			; (RFC 8446 4.2.8.2): else illegal_parameter
+	cmp	byte [rsi],4
+	jne	.illegal
 	lea	rdi,[rbp+HL_PEER256]
 	mov	ecx,65
 	rep	movsb
@@ -1072,7 +1093,11 @@ tls_hello:
 	mov	[rbp+HL_NOW],eax
 	jmp	.psk_check			; a ticket of ours resumes (no early data)
 .tls_alpn:
-	and	dword [rbx+TS_FLAGS],not (TF_GOT_H1 or TF_GOT_H2)
+	and	dword [rbx+TS_FLAGS],not (TF_GOT_H1 or TF_GOT_H2 or TF_EDSKIP)
+	test	eax,G_EARLY			; 0-RTT offered over TCP: not taken (no
+	jz	@f				; early_data in the flight), its records
+	or	dword [rbx+TS_FLAGS],TF_EDSKIP	; skipped (RFC 8446 4.2.10)
+@@:
 	test	dword [rbx+TS_FLAGS],TF_GOT_ACME
 	jnz	.alpn_done
 	test	dword [rbx+TS_FLAGS],TF_ALPN_H1 or TF_ALPN_H2
@@ -1937,7 +1962,10 @@ tls_hello:
 .sealed:
 	test	dword [rbp+HL_GOT],G_TICKET
 	jz	.flight_done
-	; NewSessionTicket, under the server's application key (record 0)
+	; NewSessionTicket, under the server's application key (record 0): in the
+	; flight, which RFC 8446 4.6.1 allows a server that asks for no client
+	; certificate (it computes the client's Finished itself); a client that
+	; closes right after its Finished still gets it
 	mov	rdi,r15
 	mov	dword [rdi],0x00030317
 	mov	word [rdi+3],NST_RECLEN		; the message + type + tag
@@ -2034,7 +2062,10 @@ tls_hello:
 	jmp	.alert
 
 .no_share:
-	; a group offered without its share: a HelloRetryRequest, once
+	; no key_share at all: missing_extension (RFC 8446 4.2.8, 9.2); a group
+	; offered without its share: a HelloRetryRequest, once
+	test	eax,G_KSEXT
+	jz	.missing_ext
 	test	eax,G_GROUP or G_GROUP256
 	jz	.handshake			; no group in common
 	test	dword [rbx+TS_FLAGS],TF_QUIC
@@ -2146,6 +2177,9 @@ tls_hello:
 .illegal:
 	mov	ecx,AL_ILLEGAL
 	jmp	.alert
+.proto:
+	mov	ecx,70				; protocol_version
+	jmp	.alert
 .decrypt_error:
 	mov	ecx,51				; decrypt_error
 	jmp	.alert
@@ -2155,6 +2189,12 @@ tls_hello:
 .version:
 	cmp	dword [rbp+HL_ECH],1
 	je	.illegal			; (an inner hello is TLS 1.3)
+	cmp	byte [r12+5],3			; no TLS 1.3, and below TLS 1.2: no version
+	jb	.proto				; in common (protocol_version)
+	mov	eax,[rbp+HL_GOT]		; supported_versions without 1.2 either
+	and	eax,G_SVEXT or G_SV12		; (RFC 8446 4.2.1)
+	cmp	eax,G_SVEXT
+	je	.proto
 	mov	eax,TH_TLS12			; no TLS 1.3 offered: let the caller try 1.2
 	xor	edx,edx
 	jmp	.out
@@ -2190,9 +2230,12 @@ tls_hello:
 
 ; ------------------------------------------------------------- finished
 
+ED_SKIP_MAX	:= 65536			; early data skipped, at most
 FN_GCM		:= 0
 FN_NONCE	:= AEAD_SIZE
-FN_SIZE		:= AEAD_SIZE + 16 + 8		; rsp 16-aligned at calls
+FN_CCS		:= AEAD_SIZE + 16			; d: compatibility CCSs seen in this look
+FN_SKIP		:= AEAD_SIZE + 20			; d: early data bytes skipped in it
+FN_SIZE		:= AEAD_SIZE + 16 + 16 + 8	; rsp 16-aligned at calls
 
 tls_finished:
 	test	dword [rdi+TS_FLAGS],TF_CCA
@@ -2204,6 +2247,8 @@ tls_finished:
 	push	r14
 	push	r15
 	sub	rsp,FN_SIZE
+	mov	dword [rsp+FN_CCS],0
+	mov	dword [rsp+FN_SKIP],0
 	mov	rbx,rdi
 	mov	r12,rsi
 	lea	r13,[rsi+rcx]
@@ -2243,7 +2288,19 @@ tls_finished:
 	sub	r9,r8
 	call	aead_open
 	test	eax,eax
+	jnz	.opened
+	; not under the handshake key: the 0-RTT data of a client whose early data
+	; was not taken is skipped, up to a bound (RFC 8446 4.2.10); else forged
+	test	dword [rbx+TS_FLAGS],TF_EDSKIP
 	jz	.f_mac
+	mov	rax,r15
+	sub	rax,r14
+	add	[rsp+FN_SKIP],eax
+	cmp	dword [rsp+FN_SKIP],ED_SKIP_MAX
+	ja	.f_mac
+	mov	r14,r15
+	jmp	.record
+.opened:
 	lea	rax,[r15-16]			; TLSInnerPlaintext: 2^14 + 1 at most (5.4)
 	sub	rax,r14
 	sub	rax,5
@@ -2301,6 +2358,9 @@ tls_finished:
 	jne	.f_unexpected
 	cmp	byte [r14+5],1
 	jne	.f_unexpected
+	inc	dword [rsp+FN_CCS]		; one, dropped; a second is
+	cmp	dword [rsp+FN_CCS],1		; unexpected_message (RFC 8446 5)
+	ja	.f_unexpected
 	mov	r14,r15
 	jmp	.record
 .more:

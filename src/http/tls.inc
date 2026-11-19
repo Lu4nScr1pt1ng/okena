@@ -308,6 +308,23 @@ http_tls_retry_sent:
 
 ; the flight is out (http_send_done in HS_TLS_FLIGHT): the client's turn
 http_tls_flight_sent:
+	; what the client sent after its ClientHello in the same read (a CCS, the
+	; 0-RTT data that is skipped): the start of its next flight, kept
+	mov	rax,[r15+H_BUF]
+	mov	ecx,[rax+HB_TS+TS_CHTAIL]
+	mov	dword [rax+HB_TS+TS_CHTAIL],0
+	mov	edx,[r15+H_INLEN]
+	cmp	ecx,edx
+	ja	.none
+	mov	[r15+H_INLEN],ecx
+	test	ecx,ecx
+	jz	http_tls_peek
+	lea	rdi,[rax+HB_IN]
+	lea	rsi,[rdi+rdx]
+	sub	rsi,rcx
+	rep	movsb
+	jmp	http_tls_peek
+.none:
 	mov	dword [r15+H_INLEN],0
 ; peek at what the client sent after what IN holds
 http_tls_peek:
