@@ -811,6 +811,48 @@ hp_put_str:
 	pop	rbx
 	ret
 
+; rsi = a name (lower case), edx = its length: eax = the first static entry
+; with it, 0 when none. Keeps rbx, rbp, r12-r15, rdi.
+hp_static_name:
+	push	rdi
+	push	rbx
+	push	r12
+	push	r13
+	mov	r12,rsi
+	mov	r13d,edx
+	xor	ebx,ebx
+	cmp	r13d,HP_NAME_MAX
+	ja	.out
+	movzx	eax,word [hp_bystart+r13*2]
+	lea	r11,[hp_bylen+rax]
+.search:
+	movzx	r9d,byte [r11]
+	test	r9d,r9d
+	jz	.out
+	inc	r11
+	lea	r10,[hp_static-8]
+	lea	r10,[r10+r9*8]
+	lea	rsi,[hp_pool]
+	movzx	eax,word [r10]
+	add	rsi,rax
+	mov	rdi,r12
+	mov	edx,r13d
+	push	r9
+	push	r11
+	call	mem_eq
+	pop	r11
+	pop	r9
+	test	eax,eax
+	jz	.search
+	mov	ebx,r9d
+.out:
+	mov	eax,ebx
+	pop	r13
+	pop	r12
+	pop	rbx
+	pop	rdi
+	ret
+
 ; rdi = dst, rsi = name, edx = name length, rcx = value, r8d = value
 ; length: one field (see the top). rax = dst after it.
 hpack_encode:

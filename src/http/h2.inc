@@ -99,6 +99,11 @@ C2_CHEAPN	:= 92				; cheap frames this second
 C2_CHEAPT	:= 96				; and the tick they count in
 C2_HBN		:= 100				; CONTINUATION frames in the block
 C2_AWAY		:= 104				; streams in the table away from their home slot
+; HPACK, our encoder's dynamic table (hpack_encode_dyn): the client's
+; SETTINGS_HEADER_TABLE_SIZE, the size we use + 1 (0: no block yet), entries
+; inserted and evicted (counts: an entry's index is 61 + inserted - its
+; number), their bytes as RFC 7541 4.1 counts them
+; (after the stream table: 104 on are the client's in h2u.inc)
 C2_ST		:= 128				; the stream table: H2_MAXS of S2_*
 S2_SID		:= 0
 S2_SESS		:= 4
@@ -111,6 +116,19 @@ HB_H2FLD	:= HB_H2HP + 8192		; decoded fields
 HB_H2STR	:= HB_H2FLD + H2_MAXFIELDS * HP_SIZE
 HB_H2HB		:= HB_H2STR + H2_STRCAP
 assert C2_ST + H2_MAXS * S2_SIZE <= 4096
+; the sizes of the last HT_RING entries inserted (all the decoder can hold:
+; 4096 / 32), then HT_SLOTS of them as they were, to be named again
+HT_RING		:= 128
+HT_SLOTS	:= 12
+HT_SLOT		:= 128				; d its number + 1, b name, b value lengths, them
+C2_HTPEER	:= C2_ST + H2_MAXS * S2_SIZE
+C2_HTMAX	:= C2_HTPEER + 4
+C2_HTINS	:= C2_HTPEER + 8
+C2_HTEV		:= C2_HTPEER + 12
+C2_HTSZ		:= C2_HTPEER + 16
+C2_HTSIZES	:= C2_HTPEER + 32
+C2_HTSLOT	:= C2_HTSIZES + 2 * HT_RING
+assert C2_HTSLOT + HT_SLOTS * HT_SLOT <= 4096
 assert HPD_BYTES <= 8192
 assert HB_H2HB + H2_HBCAP <= 1 shl HB_SHIFT
 
@@ -224,7 +242,8 @@ bss
 	g_h2fl_n	dd ?			; connections whose send waits for the iteration's end
 	g_h2fl:		rq H2_FLUSH_MAX		; (session, generation) each
 	g_h2tmp_es	dd ?			; h2_head_out: END_STREAM on the HEADERS
-	g_h2_cl0	dd ?			; h2_head_out: content-length: 0 among its fields
+	g_h2_cl0	dd ?
+	g_ht_save	rd 4			; h2_head_out: the encoder's table before the block			; h2_head_out: content-length: 0 among its fields
 end bss
 
 rodata
@@ -294,6 +313,7 @@ h2_start:
 	mov	dword [r13+C2_SWIN],65535
 	mov	dword [r13+C2_PINIT],65535
 	mov	dword [r13+C2_PMAXF],16384
+	mov	dword [r13+C2_HTPEER],4096
 	mov	dword [r13+C2_RWIN],H2_CONN_WIN
 	lea	rdi,[r14+HB_H2HP]
 	mov	esi,4096
@@ -1377,6 +1397,11 @@ h2_in_settings:
 	jne	@f
 	cmp	edx,1
 	ja	h2_frame_in.protocol
+	jmp	.setting
+@@:
+	cmp	eax,1				; HEADER_TABLE_SIZE: our encoder's at most
+	jne	@f
+	mov	[r13+C2_HTPEER],edx
 	jmp	.setting
 @@:
 	cmp	eax,4				; INITIAL_WINDOW_SIZE
@@ -3160,6 +3185,241 @@ h2_untable:
 ; ("HTTP/1.1 NNN reason\r\n" fields "\r\n"): a HEADERS frame from it, the
 ; pending bytes advanced past it. CF when OUT has no room for it.
 ; Connection-specific fields are dropped, names go lower case.
+; ---------------------------------------------------- HPACK dynamic table out
+
+; h2_head_out, a block's start: rdi = where it is written, r13 = connection.
+; Our table's size: the client's SETTINGS_HEADER_TABLE_SIZE up to 4096, said
+; (a size update, RFC 7541 6.3) when it is not the 4096 the decoder starts
+; with, or when the client lowered it since. rdi advanced. Keeps rsi, rbp,
+; r8-r9, r11-r15.
+ht_block_start:
+	mov	eax,[r13+C2_HTPEER]
+	cmp	eax,4096
+	jbe	@f
+	mov	eax,4096
+@@:
+	mov	ecx,[r13+C2_HTMAX]
+	test	ecx,ecx
+	jnz	.known
+	lea	ecx,[rax+1]
+	mov	[r13+C2_HTMAX],ecx
+	cmp	eax,4096
+	jne	.say
+	ret
+.known:
+	dec	ecx
+	cmp	eax,ecx
+	jae	.done				; (a larger one: ours stays)
+	lea	ecx,[rax+1]
+	mov	[r13+C2_HTMAX],ecx
+	push	rax
+	call	ht_evict_to			; eax = the bytes left at most
+	pop	rax
+.say:
+	mov	cl,5
+	mov	dl,0x20
+	call	hp_put_int
+.done:
+	ret
+
+; eax = bytes: entries evicted, oldest first, until the table holds at most
+; that many. r13 = connection. Clobbers rcx, rdx.
+ht_evict_to:
+.next:
+	cmp	[r13+C2_HTSZ],eax
+	jbe	.out
+	mov	ecx,[r13+C2_HTEV]
+	cmp	ecx,[r13+C2_HTINS]
+	jae	.out
+	and	ecx,HT_RING - 1
+	movzx	edx,word [r13+C2_HTSIZES+rcx*2]
+	sub	[r13+C2_HTSZ],edx
+	inc	dword [r13+C2_HTEV]
+	jmp	.next
+.out:
+	ret
+
+; the block did not go: the table as it was (entries written in slots since
+; are then numbered past what was inserted, so never named until written
+; again). r13 = connection. Keeps all but rax.
+ht_rollback:
+	mov	eax,[g_ht_save]
+	mov	[r13+C2_HTINS],eax
+	mov	eax,[g_ht_save+4]
+	mov	[r13+C2_HTEV],eax
+	mov	eax,[g_ht_save+8]
+	mov	[r13+C2_HTSZ],eax
+	mov	eax,[g_ht_save+12]
+	mov	[r13+C2_HTMAX],eax
+	ret
+
+; rdi = dst, rsi = name (lower case), edx = its length, rcx = value, r8d =
+; its length, r13 = the connection: one field, as hpack_encode writes it, but
+; for the fields that come again on a connection (ht_names): named by their
+; index when the table has them, else written with incremental indexing and
+; added (RFC 7541 6.1, 6.2.1). rax = dst after it.
+hpack_encode_dyn:
+	cmp	dword [r13+C2_HTMAX],1		; (no table: the client said 0)
+	jbe	hpack_encode
+	lea	eax,[rdx+r8]
+	cmp	eax,HT_SLOT - 8
+	ja	hpack_encode
+	push	rdi
+	push	rsi
+	push	rdx
+	push	rcx
+	push	r8
+	mov	rdi,rsi
+	mov	esi,edx
+	lea	rdx,[ht_names]
+	call	name_in
+	pop	r8
+	pop	rcx
+	pop	rdx
+	pop	rsi
+	pop	rdi
+	jz	hpack_encode
+	push	rbx
+	push	rbp
+	push	r12
+	push	r14
+	push	r15
+	mov	rbx,rdi
+	mov	r12,rsi
+	mov	ebp,edx
+	mov	r14,rcx
+	mov	r15d,r8d
+	; in the table?
+	lea	r11,[r13+C2_HTSLOT]
+	mov	r9d,HT_SLOTS
+.slot:
+	mov	eax,[r11]
+	test	eax,eax
+	jz	.slot_next
+	dec	eax				; its number
+	cmp	eax,[r13+C2_HTEV]
+	jb	.slot_next
+	cmp	eax,[r13+C2_HTINS]
+	jae	.slot_next
+	movzx	ecx,byte [r11+4]
+	cmp	ecx,ebp
+	jne	.slot_next
+	movzx	ecx,byte [r11+5]
+	cmp	ecx,r15d
+	jne	.slot_next
+	push	rax
+	lea	rdi,[r11+8]
+	mov	rsi,r12
+	mov	edx,ebp
+	call	mem_eq
+	test	eax,eax
+	jz	@f
+	lea	rdi,[r11+8+rbp]
+	mov	rsi,r14
+	mov	edx,r15d
+	call	mem_eq
+@@:
+	pop	rcx
+	test	eax,eax
+	jz	.slot_next
+	; indexed: 61 + inserted - its number
+	mov	eax,[r13+C2_HTINS]
+	sub	eax,ecx
+	add	eax,61
+	mov	rdi,rbx
+	mov	cl,7
+	mov	dl,0x80
+	call	hp_put_int
+	jmp	.out
+.slot_next:
+	add	r11,HT_SLOT
+	dec	r9d
+	jnz	.slot
+	; not there: written with incremental indexing (01), its name the static
+	; table's when it has it; one larger than the whole table is not (the
+	; decoder would empty it and add nothing, RFC 7541 4.4)
+	lea	eax,[rbp+r15+32]
+	mov	ecx,[r13+C2_HTMAX]
+	dec	ecx
+	cmp	eax,ecx
+	jbe	@f
+	mov	rdi,rbx
+	mov	rsi,r12
+	mov	edx,ebp
+	mov	rcx,r14
+	mov	r8d,r15d
+	call	hpack_encode
+	mov	rdi,rax
+	jmp	.out
+@@:
+	mov	rsi,r12
+	mov	edx,ebp
+	call	hp_static_name
+	mov	rdi,rbx
+	push	rax
+	mov	cl,6
+	mov	dl,0x40
+	call	hp_put_int
+	pop	rax
+	test	eax,eax
+	jnz	@f
+	mov	rsi,r12
+	mov	ecx,ebp
+	call	hp_put_str
+@@:
+	mov	rsi,r14
+	mov	ecx,r15d
+	call	hp_put_str
+	mov	rbx,rdi
+	; and added, as the decoder adds it: room made, oldest first
+	lea	eax,[rbp+r15+32]		; its size (RFC 7541 4.1)
+	push	rax
+	mov	ecx,[r13+C2_HTMAX]
+	dec	ecx
+	sub	ecx,eax
+	mov	eax,ecx
+	call	ht_evict_to
+	pop	rax
+	mov	ecx,[r13+C2_HTINS]
+	mov	edx,ecx
+	and	edx,HT_RING - 1
+	mov	[r13+C2_HTSIZES+rdx*2],ax
+	add	[r13+C2_HTSZ],eax
+	; its slot: by its number
+	mov	eax,ecx
+	xor	edx,edx
+	mov	r9d,HT_SLOTS
+	div	r9d
+	imul	edx,edx,HT_SLOT
+	lea	rdi,[r13+C2_HTSLOT+rdx]
+	inc	ecx
+	mov	[r13+C2_HTINS],ecx
+	mov	[rdi],ecx			; (its number + 1)
+	mov	[rdi+4],bpl
+	mov	[rdi+5],r15b
+	add	rdi,8
+	mov	rsi,r12
+	mov	ecx,ebp
+	rep	movsb
+	mov	rsi,r14
+	mov	ecx,r15d
+	rep	movsb
+	mov	rdi,rbx
+.out:
+	mov	rax,rdi
+	pop	r15
+	pop	r14
+	pop	r12
+	pop	rbp
+	pop	rbx
+	ret
+
+; the fields a connection's answers say again and again
+ht_names db 4,'date',12,'content-type',6,'server',16,'content-encoding',4,'vary'
+	db 13,'cache-control',13,'accept-ranges',27,'access-control-allow-origin'
+	db 22,'x-content-type-options',25,'strict-transport-security',7,'alt-svc'
+	db 13,'grpc-encoding',0
+
 ; rsi = bytes, ecx = their length: edx = where the first CR LF CR LF begins
 ; (a head's end). CF: none. Thirty-two bytes a step: every CR a candidate.
 ; Keeps all but rax, rdx, ymm0, ymm1.
@@ -3220,8 +3480,18 @@ h2_head_out:
 	lea	ebp,[rdx+4]			; ebp = the head's length
 	cmp	ebp,13
 	jb	.broken
+	; the encoder's table as it was: back to it if this block does not go
+	mov	eax,[r13+C2_HTINS]
+	mov	[g_ht_save],eax
+	mov	eax,[r13+C2_HTEV]
+	mov	[g_ht_save+4],eax
+	mov	eax,[r13+C2_HTSZ]
+	mov	[g_ht_save+8],eax
+	mov	eax,[r13+C2_HTMAX]
+	mov	[g_ht_save+12],eax
 	lea	rdi,[g_h2tmp]
 	lea	r12,[g_h2tmp+20480-512]		; the block's limit
+	call	ht_block_start
 	; :status
 	push	rsi
 	lea	rcx,[rsi+9]
@@ -3367,7 +3637,7 @@ h2_head_out:
 	mov	r8d,eax
 	pop	rsi
 	mov	rcx,r11
-	call	hpack_encode
+	call	hpack_encode_dyn
 	mov	rdi,rax
 	pop	r9
 	pop	rdx
@@ -3452,6 +3722,7 @@ h2_head_out:
 	jmp	.out
 .broken:
 	; not a head we wrote (cannot happen): the stream is reset
+	call	ht_rollback
 	mov	dword [r15+H_H2PL],0
 	or	dword [r15+H_H2F],S2F_RST
 	mov	esi,[r15+H_H2SID]
@@ -3460,6 +3731,7 @@ h2_head_out:
 	clc
 	jmp	.out
 .full:
+	call	ht_rollback
 	stc
 .out:
 	pop	rbp
