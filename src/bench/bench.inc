@@ -482,7 +482,7 @@ cli_bench:
 	jmp	exit_process
 .usage:
 	call	log_begin
-	out_lit 'usage: okena bench URL [rate=N] [conns=N] [duration=10s] [warmup=1s] [workers=N] [new=on] [proto=h1|h2] [method=GET] [header=...] [body=TEXT] [size=N] [sni=NAME] [format=text|kv]'
+	out_lit 'usage: okena bench URL [rate=N] [conns=N] [duration=10s] [warmup=1s] [workers=N] [new=on] [proto=h1|h2|h3] [method=GET] [header=...] [body=TEXT] [size=N] [sni=NAME] [format=text|kv]'
 	jmp	.fail
 .badkey:
 	call	log_begin

@@ -488,9 +488,21 @@ tls_read_val:
 	out_lit 'cannot read '
 	lea	rsi,[g_tls_path]
 	call	out_cstr
-	out_lit ' (errno '
 	pop	rax
 	neg	rax
+	cmp	eax,ENOENT
+	jne	@f
+	out_lit ': no such file'
+	jmp	tls_error_end
+@@:
+	cmp	eax,EACCES
+	jne	@f
+	out_lit ': permission denied (okena reads keys as the user it starts as)'
+	jmp	tls_error_end
+@@:
+	push	rax
+	out_lit ' (errno '
+	pop	rax
 	call	out_u64
 	out_lit ')'
 	jmp	tls_error_end

@@ -95,7 +95,7 @@ cli_ranges:
 	jmp	exit_process
 .usage:
 	call	log_begin
-	out_lit 'okena ranges NAME: the ranges okena knows by that name (cloudflare)'
+	out_lit 'usage: okena ranges NAME: the ranges okena knows by that name (cloudflare)'
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process

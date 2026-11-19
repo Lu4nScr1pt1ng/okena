@@ -8,6 +8,7 @@ syntax-misc.conf:3:1: error: `{` without a directive
 syntax-misc.conf:4:22: error: expected the end of the line after `}`
      4 | tcp :1 { to pool p } extra
        |                      ^^^^^
+       = help: start the next directive on a new line, or put `;` before it
 syntax-misc.conf:5:1: error: expected a directive name
      5 | key=value here
        | ^^^^^^^^^

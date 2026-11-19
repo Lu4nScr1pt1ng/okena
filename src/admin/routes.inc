@@ -330,6 +330,14 @@ cli_routes:
 	xor	edi,edi
 	jmp	exit_process
 .list:
+	cmp	dword [g_plan_rf],0
+	jne	@f
+	call	log_begin
+	out_lit 'no `routes FILE` in this configuration: add one to an http listener or a host block, and okena routes NAME put ... can change it'
+	call	log_end
+	mov	edi,1
+	jmp	exit_process
+@@:
 	mov	edi,1
 	call	out_select
 	xor	r12d,r12d

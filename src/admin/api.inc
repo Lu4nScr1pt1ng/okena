@@ -261,8 +261,23 @@ api_listen:
 .none:
 	ret
 .bad:
+	push	rax
 	call	log_begin
-	out_lit 'cannot listen on the `admin` path'
+	out_lit 'cannot listen on the `admin` path '
+	mov	rsi,[g_plan_api]
+	mov	edx,[g_plan_apilen]
+	call	out_str
+	pop	rax
+	neg	eax
+	cmp	eax,ENOENT
+	jne	@f
+	out_lit ': its directory does not exist (make it, or let systemd: RuntimeDirectory=okena)'
+	jmp	.said
+@@:
+	cmp	eax,EACCES
+	jne	.said
+	out_lit ': permission denied (a directory okena may write in)'
+.said:
 	call	log_end
 	mov	edi,EXIT_FATAL
 	jmp	exit_process
@@ -1293,7 +1308,11 @@ api_cli_open:
 	cmp	qword [g_plan_api],0
 	jne	@f
 	call	log_begin
-	out_lit 'this needs `admin unix:PATH` in the okena block'
+	out_lit 'okena ', 27h
+	mov	rax,[g_argv]
+	mov	rsi,[rax+8]
+	call	out_cstr
+	out_lit 27h, ' talks to the running okena through its admin socket: add `admin unix:/run/okena/admin.sock` to the okena block and restart it once (a SIGHUP reloads it meanwhile: systemctl reload okena)'
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process
@@ -1316,7 +1335,7 @@ api_call:
 	test	eax,eax
 	jnz	@f
 	call	log_begin
-	out_lit 'no okena answers on the `admin` path'
+	out_lit 'no okena answers on the `admin` path: is it running with this configuration? (okena -c FILE; -c FILE here too when it is not /etc/okena/okena.conf)'
 	call	log_end
 	mov	edi,1
 	jmp	exit_process

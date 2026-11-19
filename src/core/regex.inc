@@ -1353,6 +1353,11 @@ cli_regex:
 	mov	rax,[g_argv]
 	mov	rsi,[rax+16]
 	call	.len
+	cmp	byte [rsi],'~'			; (written as in a route: ~PATTERN)
+	jne	@f
+	inc	rsi
+	dec	ecx
+@@:
 	call	rx_compile
 	jc	.bad
 	push	rax
@@ -1416,7 +1421,7 @@ cli_regex:
 	jmp	exit_process
 .usage:
 	call	log_begin
-	out_lit 'okena regex PATTERN TEXT...: what ~PATTERN makes of each TEXT (the match, then its groups, start-end)'
+	out_lit 'usage: okena regex PATTERN TEXT...: what ~PATTERN makes of each TEXT (the match, then its groups, start-end)'
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process

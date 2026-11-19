@@ -13,7 +13,7 @@
 ; OKENA_CONFIG, when set, is configuration text and takes the place of
 ; the file.
 
-OKENA_VERSION equ '0.0.1'
+OKENA_VERSION equ '0.1.0'
 
 cstring str_cmd_check, 'check',0
 cstring str_cmd_route, 'route',0
@@ -41,6 +41,7 @@ cstring str_cmd_ech, 'ech',0
 cstring str_cmd_xdp, 'xdp',0
 cstring str_cmd_xdplb, 'xdplb',0
 cstring str_flag_help, '--help',0
+cstring str_flag_h, '-h',0
 cstring str_flag_version, '--version',0
 cstring str_flag_c, '-c',0
 cstring str_flag_host, '--host',0
@@ -247,6 +248,12 @@ cli_main:
 	mov	rax,[g_argv]
 	mov	rdi,[rax+8]
 	lea	rsi,[str_flag_help]
+	call	cstr_eq
+	test	eax,eax
+	jnz	cli_help
+	mov	rax,[g_argv]
+	mov	rdi,[rax+8]
+	lea	rsi,[str_flag_h]
 	call	cstr_eq
 	test	eax,eax
 	jnz	cli_help
@@ -463,11 +470,66 @@ cli_join_args:
 	ret
 
 cli_usage:
+	; the line of okena help for the command given, when there is one
+	cmp	qword [g_argc],2
+	jb	.generic
+	mov	rax,[g_argv]
+	mov	rdi,[rax+8]
+	lea	rbx,[cli_usages]
+.find:
+	cmp	byte [rbx],0
+	je	.generic
+	mov	rsi,rbx
+	push	rdi
+	call	cstr_eq
+	pop	rdi
+	mov	ecx,eax
+@@:
+	cmp	byte [rbx],0			; past the name
+	je	@f
+	inc	rbx
+	jmp	@b
+@@:
+	inc	rbx
+	test	ecx,ecx
+	jnz	.found
+@@:
+	cmp	byte [rbx],0			; past its usage
+	je	@f
+	inc	rbx
+	jmp	@b
+@@:
+	inc	rbx
+	jmp	.find
+.found:
+	call	log_begin
+	out_lit 'usage: '
+	mov	rsi,rbx
+	call	out_cstr
+	call	log_end
+	mov	edi,EXIT_CONFIG
+	jmp	exit_process
+.generic:
 	call	log_begin
 	out_lit 'usage: okena [run] [-c FILE] | okena check [FILE] | okena help'
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process
+
+rodata
+	; a command, and the usage cli_usage says for it
+	cli_usages	db 'fmt',0,'okena fmt [-w] FILE: FILE in canonical layout, to stdout or (-w) in place',0
+			db 'backend',0,'okena backend list | drain POOL SERVER | up POOL SERVER | weight POOL SERVER N [-c FILE]',0
+			db 'routes',0,'okena routes NAME [put ROUTE | delete HEAD] [-c FILE]',0
+			db 'run',0,'okena run [-c FILE]',0
+			db 'check',0,'okena check [FILE | -c FILE | --diff FILE | --host [FILE]]',0
+			db 'explain',0,'okena explain [FILE | -c FILE]',0
+			db 'reload',0,'okena reload [-c FILE]',0
+			db 'drain',0,'okena drain [wait] [-c FILE] | okena resume [-c FILE]',0
+			db 'top',0,'okena top [once] [-c FILE]',0
+			db 'upgrade',0,'okena upgrade -c FILE',0
+			db 0
+end rodata
 
 cli_version:
 	mov	edi,1
@@ -483,6 +545,7 @@ cli_help:
 	out_lit 'Run', 10
 	out_lit '  okena [run] [-c FILE]              serve (default /etc/okena/okena.conf)', 10
 	out_lit '  okena tcp :5432 to db:5432         the configuration itself, on the command line', 10
+	out_lit '  okena ', 27h, 'http :8080 { route /* { to 127.0.0.1:3000 } }', 27h, 10
 	out_lit '  okena upgrade -c FILE              take over from the running instance with a new binary', 10
 	out_lit 10
 	out_lit 'Configuration', 10
@@ -515,9 +578,12 @@ cli_help:
 	out_lit 10
 	out_lit 'Tools', 10
 	out_lit '  okena bench URL [rate=N] ...       open-loop load, corrected for coordinated omission', 10
-	out_lit '  okena version', 10
+	out_lit '  okena xdp IFACE [SECONDS]          the XDP path on an interface, counting packets (lab, root)', 10
+	out_lit '  okena xdplb IFACE SRC VIP PORT REAL...  the XDP balancer by hand (lab, root)', 10
+	out_lit '  okena version | help', 10
 	out_lit 10
 	out_lit 'OKENA_CONFIG, when set, holds configuration text used instead of the file.', 10
+	out_lit 'The configuration language, every directive, examples: https://github.com/Lu4nScr1pt1ng/okena/tree/main/docs', 10
 	xor	edi,edi
 	jmp	exit_process
 
@@ -638,6 +704,42 @@ cfg_parse_checked:
 	call	out_u64
 .reported:
 	call	log_end
+	cmp	ebx,ENOENT
+	jne	.hinted
+	; no such file: the default one (a first run), or a word that is no
+	; command either
+	mov	rdi,[g_cli_path]
+	lea	rsi,[str_default_conf]
+	call	cstr_eq
+	test	eax,eax
+	jz	.word
+	call	log_begin
+	out_lit 'okena needs a configuration: write ', '/etc/okena/okena.conf', ' (examples: https://github.com/Lu4nScr1pt1ng/okena/tree/main/examples),'
+	call	log_end
+	call	log_begin
+	out_lit 'give one with -c FILE, or write it on the command line: okena ', 27h, 'http :8080 { route /* { to 127.0.0.1:3000 } }', 27h, '. okena help lists the commands'
+	call	log_end
+	jmp	.hinted
+.word:
+	mov	rsi,[g_cli_path]		; a bare word (no / nor .): not a file meant
+.ch:
+	mov	al,[rsi]
+	test	al,al
+	jz	.not_file
+	cmp	al,'/'
+	je	.hinted
+	cmp	al,'.'
+	je	.hinted
+	inc	rsi
+	jmp	.ch
+.not_file:
+	call	log_begin
+	out_lit 'and `'
+	mov	rsi,[g_cli_path]
+	call	out_cstr
+	out_lit '` is no command either: okena help lists them'
+	call	log_end
+.hinted:
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process
 
@@ -654,9 +756,15 @@ cli_check:
 	call	out_count_listener
 	out_lit ', '
 	mov	eax,[g_plan_pools]		; as compiled: identical inline targets share one
+	cmp	dword [g_plan_tunpool],0	; (tunnels' hidden pool: not one written)
+	je	@f
+	dec	eax
+@@:
+	push	rax
 	call	out_u64
 	out_lit ' pool'
-	cmp	dword [g_plan_pools],1
+	pop	rax
+	cmp	eax,1
 	je	@f
 	out_lit 's'
 @@:

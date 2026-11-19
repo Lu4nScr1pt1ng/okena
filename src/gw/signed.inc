@@ -706,7 +706,7 @@ cli_sign:
 	ret
 .usage:
 	call	log_begin
-	out_lit 'okena sign KEYFILE PATH TTL [prefix=PATH] [ip=ADDRESS]: a signed link (the key: the first line of the file, 16 to 128 bytes)'
+	out_lit 'usage: okena sign KEYFILE PATH TTL [prefix=PATH] [ip=ADDRESS]: a signed link (the key: the first line of the file, 16 to 128 bytes)'
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process

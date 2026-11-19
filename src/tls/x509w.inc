@@ -1039,7 +1039,7 @@ cli_cert:
 	jmp	exit_process
 .usage:
 	call	log_begin
-	out_lit 'okena cert selfsigned DIR NAME... [days=N]: DIR/key.pem and DIR/cert.pem, a certificate for the names that signs itself (ECDSA P-256, 90 days unless said); okena cert csr DIR NAME...: DIR/key.pem and DIR/csr.pem'
+	out_lit 'usage: okena cert selfsigned DIR NAME... [days=N]: DIR/key.pem and DIR/cert.pem, a certificate for the names that signs itself (ECDSA P-256, 90 days unless said); okena cert csr DIR NAME...: DIR/key.pem and DIR/csr.pem'
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process

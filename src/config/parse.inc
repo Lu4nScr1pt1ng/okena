@@ -1264,6 +1264,9 @@ parse_block:
 	call	cfg_error
 	out_lit 'expected the end of the line after `}`'
 	call	cfg_diag_end
+	call	cfg_note
+	out_lit 'help: start the next directive on a new line, or put `;` before it'
+	call	cfg_note_end
 	call	cfg_error_limit
 	call	parse_skip_line
 	jmp	.next
