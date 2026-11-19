@@ -405,8 +405,9 @@ dist: $(BIN)
 	cp contrib/systemd/okena.service contrib/systemd/okena.socket build/dist/$(DIST)/systemd/
 	cp docker/okena.seccomp.json build/dist/$(DIST)/
 	tar -C build/dist --owner=0 --group=0 --numeric-owner --sort=name \
+		--mode='u+rwX,go+rX,go-w' --format=gnu \
 		--mtime="$$(git log -1 --format=%cI 2>/dev/null || date -u +%FT%TZ)" \
-		-czf build/dist/$(DIST).tar.gz $(DIST)
+		-cf - $(DIST) | gzip -9n > build/dist/$(DIST).tar.gz
 	cd build/dist && sha256sum $(DIST).tar.gz > $(DIST).tar.gz.sha256
 	@cat build/dist/$(DIST).tar.gz.sha256
 
