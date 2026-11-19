@@ -98,7 +98,7 @@ class Back(http.server.BaseHTTPRequestHandler):
         elif p == "cookie":
             self.send(c, Set_Cookie="s=1")
         elif p == "varyother":
-            self.send(c, Vary="x-other")
+            self.send(c + b" " + self.headers.get("x-other", "-").encode(), Vary="x-other")
         elif p == "varystar":
             self.send(c, Vary="*")
         elif p == "vary":
@@ -260,7 +260,7 @@ def main():
 
         for what, path in (("no length, so a cut cannot be told", "/c/noframe"), ("no-store", "/c/nostore"), ("private", "/c/private"),
                            ("no-cache", "/c/nocache"), ("no-store in a second field", "/c/twocc"), ("Set-Cookie", "/c/cookie"),
-                           ("Vary on a field not in the key", "/c/varyother"), ("Vary: *", "/c/varystar"), ("a 500", "/c/e500")):
+                           ("Vary: *", "/c/varystar"), ("a 500", "/c/e500")):
             x, y = get(path), get(path)
             time.sleep(1.05 if False else 0)
             check(f"{what}: not kept", not hit(y) and hits[path] == 2, (hits.get(path), y[:2]))
@@ -320,6 +320,13 @@ def main():
         a, b = get("/c/vary", Accept_Encoding="gzip"), get("/c/vary", Accept_Encoding="br")
         c = get("/c/vary", Accept_Encoding="gzip")
         check("Vary: each its own", b"gzip" in a[1] and b"br" in b[1] and not hit(b) and hit(c) and b"gzip" in c[1], (a[1], b[1], c[1]))
+        # Vary on a field vary= does not name: one variant, its values must match
+        a, b = get("/c/varyother"), get("/c/varyother")
+        c, d = get("/c/varyother", X_Other="1"), get("/c/varyother", X_Other="1")
+        e = get("/c/varyother")
+        check("Vary on a field not in the key: the same values hit, others miss", hit(b) and b[1].endswith(b" -") and
+              not hit(c) and c[1].endswith(b" 1") and hit(d) and d[1].endswith(b" 1") and not hit(e) and e[1].endswith(b" -"),
+              (b[1], status_of(b), c[1], d[1], status_of(d), e[1], status_of(e)))
         # what okena adds is the client's
         a = get("/cors/o", Origin="https://a.test")
         b = get("/cors/o", Origin="https://b.test")

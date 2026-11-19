@@ -197,6 +197,11 @@ HB_INM		:= HB_INML + 4		; and it (HB_INM_MAX)
 HB_IMSL		:= HB_INM + HB_INM_MAX	; d: If-Modified-Since: how long
 HB_IMS		:= HB_IMSL + 4		; and it (32)
 assert HB_IMS + 32 <= HB_TRAIL + CK_TRAIL_MAX
+; `cache`: the request's fields as hashes (name, value: d each), for a Vary on
+; fields vary= does not name (cache.inc), below those
+VT_MAX		:= 48
+HB_VN		:= HB_INML - 8 - 8 * VT_MAX	; d: how many
+HB_VT		:= HB_VN + 8
 Q_LEN		:= 0
 Q_OFF		:= 4
 Q_DST		:= 8				; q: a receive parked here

@@ -24,7 +24,9 @@
 ; What is not kept, whatever the route says: anything but GET; status other than
 ; 200, 301, 308, 404, 410, unless the answer says for how long itself (max-age,
 ; s-maxage, Expires: RFC 9111 3), and never 1xx, 204, 206, 304; Cache-Control no-store, private, no-cache; Set-Cookie;
-; Vary: * or a field not in vary=; a body whose end cannot be told from a cut
+; Vary: * or more than 4 fields not in vary= (a Vary on fields vary= does not name keeps
+; one variant: the request's values of them must match, else it is a miss whose answer
+; takes its place); a body whose end cannot be told from a cut
 ; connection (no length, not chunked); bigger than max=. Unless shared=on, nor is a
 ; request with Cookie or Authorization, or that proved who it is, served or kept: an
 ; answer for one person must not reach another. s-maxage and max-age say for how
@@ -77,6 +79,8 @@ CE_MTAIL	:= 132				; d
 CE_MLEN		:= 136				; d
 CE_AGE0		:= 140				; d: its age when it came (RFC 9111 4.2.3), seconds
 CE_RB		:= 144				; q: µs (wall clock) its fetch began
+CE_VDIG		:= 152				; q: Vary on fields vary= does not name: the
+						; request's values of them, hashed (0: no such Vary)
 CE_SIZE		:= 160
 
 ; `cache` of a route (plan)
@@ -550,6 +554,7 @@ ce_find:
 ; names, in that order), and the fields vary= names, Accept-Encoding as the set of
 ; br, zstd and gzip it takes. Keeps rbx, r12-r15.
 ck_make:
+	call	vt_build
 	push	rbx
 	push	r13
 	push	r14
@@ -926,6 +931,19 @@ cache_check:
 	jnc	@f
 	mov	dword [g_cf_r],NIL
 	jmp	.no_entry
+@@:
+	; fetched for other values of the fields its Vary names: a miss (what the
+	; backend says takes its place); not from disk, which keeps no variants
+	mov	eax,[g_cf_r]
+	ce_ptr
+	cmp	qword [rax+CE_VDIG],0
+	je	@f
+	mov	eax,[g_cf_r]
+	mov	rdx,r12
+	call	ce_vary_match
+	jz	@f
+	mov	dword [g_cf_r],NIL
+	jmp	.no_disk
 @@:
 	mov	eax,[g_cf_r]
 	ce_ptr
@@ -2107,6 +2125,7 @@ cache_reval_update:
 	mov	[r12+CE_SIE],eax
 	mov	dword [g_c_notags],1
 	mov	dword [g_c_needx],0
+	mov	qword [r12+CE_VDIG],0		; (its Vary read again)
 	call	cache_fields
 	mov	dword [g_c_notags],0
 	jc	.kill
@@ -2184,6 +2203,19 @@ cache_poll:
 	mov	rcx,[g_qnow]
 	cmp	rcx,[rax+CE_STALE]
 	jae	.no_entry
+	cmp	qword [rax+CE_VDIG],0		; what it waited for is another variant:
+	je	.serve				; on to the backend
+	mov	eax,[r15+H_ACT]
+	dec	eax
+	imul	rax,rax,RA_SIZE
+	mov	eax,[g_acts+rax+RA_CACHE]
+	dec	eax
+	imul	rdx,rax,CA_SIZE
+	lea	rdx,[g_caches+rdx]
+	mov	eax,[g_cf_r]
+	call	ce_vary_match
+	jnz	.late
+.serve:
 	mov	edi,[g_cf_r]
 	jmp	cache_serve
 .no_entry:
@@ -3422,18 +3454,44 @@ cache_control:
 ; r13 = a Vary field, r12 = the entry, r15 = record: CF unless all it names are in
 ; the route's vary=: it would have to be in the key.
 cache_vary:
-	push	rbx
-	push	r14
 	mov	eax,[r15+H_ACT]
 	dec	eax
 	imul	rax,rax,RA_SIZE
 	mov	eax,[g_acts+rax+RA_CACHE]
 	dec	eax
-	imul	r14,rax,CA_SIZE
-	lea	r14,[g_caches+r14]
+	imul	rax,rax,CA_SIZE
+	lea	rax,[g_caches+rax]
+	mov	[g_vroute],rax
 	mov	rsi,[r13+HF_VALUE]
-	mov	eax,[r13+HF_VLEN]
-	lea	r8,[rsi+rax]
+	mov	ecx,[r13+HF_VLEN]
+	call	vary_scan
+	jc	.bad
+	test	rax,rax
+	jz	.ok
+	cmp	qword [r12+CE_VDIG],0		; (a second Vary naming others: not kept)
+	jne	.bad
+	mov	[r12+CE_VDIG],rax
+.ok:
+	clc
+	ret
+.bad:
+	stc
+	ret
+
+; rsi/ecx = a Vary value, g_vroute = the route's `cache`, r15 = the request's
+; record (HB_VT): rax = a hash of the request's values of the fields it names
+; that vary= does not (those are in the key already), 0 when it names none
+; such. CF: `*`, or more than VARY_MAX of them. Keeps rbx, r12-r15.
+VARY_MAX	:= 4
+vary_scan:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	mov	r14,[g_vroute]
+	lea	r8,[rsi+rcx]
+	mov	r12,0xcbf29ce484222325		; (FNV-1a, over dwords)
+	xor	r13d,r13d			; how many so far
 .name:
 	cmp	rsi,r8
 	jae	.yes
@@ -3458,11 +3516,16 @@ cache_vary:
 @@:
 	mov	r10,rsi
 	sub	r10,r9
+	cmp	r10,1
+	jne	@f
+	cmp	byte [r9],'*'
+	je	.no
+@@:
 	mov	ebx,[r14+CA_VN]
 	lea	rcx,[r14+CA_V]
 .listed:
 	test	ebx,ebx
-	jz	.no				; (`*` is here too)
+	jz	.unlisted
 	dec	ebx
 	cmp	[rcx+8],r10
 	jne	.other
@@ -3485,15 +3548,164 @@ cache_vary:
 .other:
 	add	rcx,16
 	jmp	.listed
+.unlisted:
+	; one vary= does not name: its name, then the request's values of it
+	inc	r13d
+	cmp	r13d,VARY_MAX
+	ja	.no
+	push	rsi
+	mov	rsi,r9
+	mov	ecx,r10d
+	call	fnv_lower
+	pop	rsi
+	mov	edx,eax
+	call	.mix
+	mov	r11,[r15+H_BUF]
+	mov	ecx,[r11+HB_VN]
+	lea	r11,[r11+HB_VT]
+.value:
+	test	ecx,ecx
+	jz	.end
+	cmp	[r11],edx
+	jne	@f
+	push	rdx
+	mov	edx,[r11+4]
+	call	.mix
+	pop	rdx
+@@:
+	add	r11,8
+	dec	ecx
+	jmp	.value
+.end:
+	mov	edx,-1
+	call	.mix
+	jmp	.name
 .yes:
+	xor	eax,eax
+	test	r13d,r13d
+	jz	@f
+	mov	rax,r12
+	or	rax,1				; (never 0)
+@@:
 	clc
 	jmp	.out
 .no:
 	stc
 .out:
 	pop	r14
+	pop	r13
+	pop	r12
 	pop	rbx
 	ret
+.mix:						; r12 = (r12 ^ edx) * the FNV prime
+	mov	eax,edx
+	xor	r12,rax
+	mov	rax,0x100000001b3
+	imul	r12,rax
+	ret
+
+; rsi/ecx = bytes: eax = their FNV-1a hash, ASCII lower-cased. Keeps all but rax.
+fnv_lower:
+	push	rcx
+	push	rdx
+	push	rsi
+	mov	eax,0x811c9dc5
+.next:
+	test	ecx,ecx
+	jz	.out
+	movzx	edx,byte [rsi]
+	cmp	edx,'A'
+	jb	@f
+	cmp	edx,'Z'
+	ja	@f
+	or	edx,0x20
+@@:
+	xor	eax,edx
+	imul	eax,eax,0x01000193
+	inc	rsi
+	dec	ecx
+	jmp	.next
+.out:
+	pop	rsi
+	pop	rdx
+	pop	rcx
+	ret
+
+; rsi/ecx = bytes: eax = their FNV-1a hash. Keeps all but rax.
+fnv_raw:
+	push	rcx
+	push	rdx
+	push	rsi
+	mov	eax,0x811c9dc5
+.next:
+	test	ecx,ecx
+	jz	.out
+	movzx	edx,byte [rsi]
+	xor	eax,edx
+	imul	eax,eax,0x01000193
+	inc	rsi
+	dec	ecx
+	jmp	.next
+.out:
+	pop	rsi
+	pop	rdx
+	pop	rcx
+	ret
+
+; g_hm = a request, r15 = its record: its fields as hashes in HB_VT (for a Vary
+; that names fields vary= does not). Keeps all but rax, rcx, rdx, rsi, rdi.
+vt_build:
+	mov	rdi,[r15+H_BUF]
+	xor	edx,edx
+	lea	rcx,[g_hm+HM_HDRS]
+.f:
+	cmp	edx,[g_hm+HM_NHDR]
+	jae	.done
+	cmp	edx,VT_MAX
+	jae	.done
+	push	rcx
+	mov	rsi,[rcx+HF_NAME]
+	mov	ecx,[rcx+HF_NLEN]
+	call	fnv_lower
+	mov	[rdi+HB_VT+rdx*8],eax
+	mov	rcx,[rsp]
+	mov	rsi,[rcx+HF_VALUE]
+	mov	ecx,[rcx+HF_VLEN]
+	call	fnv_raw
+	mov	[rdi+HB_VT+rdx*8+4],eax
+	pop	rcx
+	add	rcx,HF_SIZE
+	inc	edx
+	jmp	.f
+.done:
+	mov	[rdi+HB_VN],edx
+	ret
+
+; eax = an entry with a Vary of its own (CE_VDIG), r15 = a request's record
+; (HB_VT), rdx = the route's `cache`: ZF when the request's values of the
+; fields it names are those it was fetched for. Keeps rbx, r12-r15.
+ce_vary_match:
+	mov	[g_vroute],rdx
+	ce_ptr
+	push	qword [rax+CE_VDIG]
+	call	ce_validators			; (its head, in g_rv_buf)
+	mov	rdi,[g_rv_end]
+	lea	r10,[g_rv_buf]
+	lea	rsi,[.n_vary]
+	mov	edx,4
+	call	cond_fix.field
+	test	ecx,ecx
+	jz	.differ
+	call	vary_scan
+	jc	.differ
+	cmp	rax,[rsp]
+	pop	rax
+	ret
+.differ:
+	pop	rax
+	or	eax,1				; (ZF clear)
+	ret
+.n_vary	db 'vary'
 
 ; rsi = body bytes passing, ecx = how many, ebx, r15. Keeps all.
 cache_tee:
@@ -3658,7 +3870,10 @@ cache_commit:
 	mov	dword [r12+CE_STATE],CE_READY
 	mov	edi,r13d
 	call	ce_lru_add
+	cmp	qword [r12+CE_VDIG],0		; (the disk keeps no variants)
+	jne	@f
 	call	cd_put				; and a copy on disk
+@@:
 	pop	r13
 	pop	r12
 .none:
@@ -3957,6 +4172,7 @@ plan_bad_cache:
 bss
 	g_c_ccage	dd ?			; cache_fields: max-age or s-maxage was said
 	g_c_notags	dd ?			; cache_fields: purge tags not taken again
+	g_vroute	dq ?			; vary_scan: the route's `cache`
 	g_c_needx	dd ?			; cache_fields: kept only with max-age, s-maxage, Expires
 	g_c_rev		dd ?			; cache_check: CW_REV, CW_SIEOK for the copy kept
 	g_rv_end	dq ?			; ce_validators: the head's end in g_rv_buf
