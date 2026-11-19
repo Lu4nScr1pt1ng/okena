@@ -96,7 +96,7 @@ def get(target):
 
 
 def main():
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-signed-", dir="/tmp"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-signed-"))
     (tmp / "key").write_bytes(KEY + b"\n")
     (tmp / "old").write_bytes(OLD + b"\n")
     threading.Thread(target=S(("127.0.0.1", BACK), H).serve_forever, daemon=True).start()

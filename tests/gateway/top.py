@@ -82,7 +82,7 @@ def status():
 
 
 def main():
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-top-", dir="/tmp"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-top-"))
     (tmp / "token").write_text(TOKEN + "\n")
     (tmp / "found.list").write_text(f"127.0.0.1:{BACK}\n")
     subprocess.run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes", "-keyout", tmp / "k.pem",

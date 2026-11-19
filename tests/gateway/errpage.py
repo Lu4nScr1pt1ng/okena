@@ -80,7 +80,7 @@ def req(path, method="GET", port=LST):
 
 
 def main():
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-errpage-", dir="/tmp"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-errpage-"))
     threading.Thread(target=S(("127.0.0.1", BACK), H).serve_forever, daemon=True).start()
     subprocess.run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes", "-keyout", tmp / "k.pem",
                     "-out", tmp / "c.pem", "-subj", "/CN=localhost", "-days", "2"], check=True, capture_output=True)

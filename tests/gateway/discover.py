@@ -103,7 +103,7 @@ def until(fn, seconds=4):
 
 
 def main():
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-disc-", dir="/tmp"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-disc-"))
     b = {n: backend(n) for n in ("a", "b", "c", "d")}
     port = {n: s.server_address[1] for n, s in b.items()}
     lst = tmp / "servers.list"

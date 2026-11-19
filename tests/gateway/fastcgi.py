@@ -123,7 +123,7 @@ class UnixServer(socketserver.ThreadingUnixStreamServer):
 
 
 def main():
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-fastcgi-", dir="/tmp"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-fastcgi-"))
     www = tmp / "www"
     (www / "blog").mkdir(parents=True)
     (www / "sub").mkdir()

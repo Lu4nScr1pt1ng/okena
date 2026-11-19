@@ -186,7 +186,7 @@ def attrs(rec):
 
 
 def main():
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-logsink-", dir="/tmp"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-logsink-"))
     run = lambda *a: subprocess.run(["openssl", *a], check=True, capture_output=True)
     run("req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes", "-keyout", tmp / "ca.key",
         "-out", tmp / "ca.crt", "-subj", "/CN=logs-ca", "-days", "2", "-addext", "basicConstraints=critical,CA:TRUE",

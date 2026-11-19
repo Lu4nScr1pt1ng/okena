@@ -67,7 +67,7 @@ def main():
     if abi <= 0:
         print(f"skip landlock {ENGINE}: this kernel has no Landlock")
         return 0
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-landlock-", dir="/tmp"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-landlock-"))
     a, b = tmp / "logs", tmp / "elsewhere"
     a.mkdir()
     b.mkdir()

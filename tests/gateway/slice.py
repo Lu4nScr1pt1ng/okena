@@ -116,7 +116,7 @@ def of(path):
 
 
 def main():
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-slice-", dir="/tmp"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-slice-"))
     (tmp / "store").mkdir()
     threading.Thread(target=Srv(("127.0.0.1", BACK), H).serve_forever, daemon=True).start()
     conf = tmp / "okena.conf"

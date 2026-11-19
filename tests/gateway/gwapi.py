@@ -303,7 +303,7 @@ def certs(d):
 
 
 def main():
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-gwapi-", dir="/tmp"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-gwapi-"))
     certs(tmp)
     tok = tmp / "token"
     tok.write_text("the-token\n")

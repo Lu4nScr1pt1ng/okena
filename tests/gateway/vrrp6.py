@@ -95,7 +95,7 @@ def body(hold):
     lla = socket.inet_pton(socket.AF_INET6, addrs("va").split(" inet6 ")[1].split("/")[0])
     link = subprocess.run(["ip", "-o", "link", "show", "va"], capture_output=True, text=True).stdout
     mac = bytes.fromhex(link.split("link/ether ")[1].split()[0].replace(":", ""))
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-vrrp6-", dir="/tmp"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-vrrp6-"))
 
     def conf(name, dev, prio, lst):
         c = tmp / f"{name}.conf"

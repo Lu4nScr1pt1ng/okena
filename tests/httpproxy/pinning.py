@@ -66,7 +66,7 @@ def run(pin, load=False):
             while time.time() - t < 3 and busy != [[0], [1]]:
                 time.sleep(0.25)
                 busy = affinities(p)
-            share = min((cpu(k) - c0[k]) / (time.time() - t) for k in ks)
+            share = [(cpu(k) - c0[k]) / (time.time() - t) for k in ks]   # each worker's
             b.wait(15)
             t = time.time()
             while time.time() - t < 6 and after != [[0, 1], [0, 1]]:
@@ -82,10 +82,15 @@ idle, busy, after, share = run(None, load=True)
 check("auto, idle: each worker may run on every CPU it was given", idle == [[0, 1], [0, 1]], idle)
 # (a host loaded by other work leaves each worker less than half its time:
 # then it stays free, which is the point)
-if share > 0.6:
-    check(f"  under load ({share:.0%} of a core each): each on a core of its own", busy == [[0], [1]], busy)
-elif share < 0.4:
-    check(f"  under load on a busy host ({share:.0%} of a core each): free still", busy == [[0, 1], [0, 1]], busy)
+# each worker on its own: one that had its core most of the time is pinned to
+# it, one that had little (a busy host, or few connections) is left free
+shares = ", ".join(f"{x:.0%}" for x in share)
+if min(share) > 0.6:
+    check(f"  under load ({shares} of a core): each on a core of its own", busy == [[0], [1]], busy)
+else:
+    want_ok = all((x > 0.6 and a == [i]) or (x < 0.4 and a == [0, 1]) or 0.4 <= x <= 0.6
+                  for i, (x, a) in enumerate(zip(share, busy)))
+    check(f"  under load on a busy host ({shares} of a core): pinned only where it had its core", want_ok, busy)
 check("  the load gone: free again", after == [[0, 1], [0, 1]], after)
 idle = run("on")[0]
 check("on: each on a core of its own from the start", idle == [[0], [1]], idle)

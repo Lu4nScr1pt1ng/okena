@@ -104,7 +104,7 @@ def start(conf, log, held, env, listen_pid="$$"):
 
 
 def main():
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-systemd-", dir="/tmp"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-systemd-"))
     threading.Thread(target=http.server.ThreadingHTTPServer(("127.0.0.1", BACK), H).serve_forever, daemon=True).start()
 
     def echo():

@@ -110,7 +110,7 @@ def get(path, host="t", method="GET", headers=None, port=LST, full=False):
 
 
 def main():
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-ckeys-", dir="/tmp"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-ckeys-"))
     (tmp / "store").mkdir()
     threading.Thread(target=S(("127.0.0.1", BACK), H).serve_forever, daemon=True).start()
     down = S(("127.0.0.1", DOWN), H)

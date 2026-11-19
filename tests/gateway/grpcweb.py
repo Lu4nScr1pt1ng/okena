@@ -166,7 +166,7 @@ def h2_post(path, body, ctype="application/grpc-web+proto"):
 
 
 def main():
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-grpcweb-", dir="/tmp"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-grpcweb-"))
     threading.Thread(target=grpc_server, args=(listening(GRPC),), daemon=True).start()
     threading.Thread(target=h1_server, args=(listening(H1B),), daemon=True).start()
     conf = tmp / "okena.conf"

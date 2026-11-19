@@ -104,7 +104,7 @@ def main():
     subprocess.run(inb + ["ip", "addr", "add", "10.9.0.2/24", "dev", "vb"], check=True)
     subprocess.run(inb + ["ip", "link", "set", "vb", "up"], check=True)
     subprocess.run(inb + ["ip", "link", "set", "lo", "up"], check=True)
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-vrrp-", dir="/tmp"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-vrrp-"))
     back_a = backend(BA)
     sb = http.server.ThreadingHTTPServer(("10.9.0.1", BB), H)      # (B's, reached over the link)
     threading.Thread(target=sb.serve_forever, daemon=True).start()

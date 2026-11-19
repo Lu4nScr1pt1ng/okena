@@ -81,7 +81,7 @@ def spread(n=60):
 
 
 def main():
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-admin-", dir="/tmp"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-admin-"))
     sock = tmp / "a.sock"
     conf = tmp / "okena.conf"
     (sa, A), (sb, B) = back("a"), back("b")

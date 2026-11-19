@@ -106,7 +106,7 @@ def get(port, path="/", **h):
 
 
 def main():
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-hash-", dir="/tmp"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-hash-"))
     conf = tmp / "okena.conf"
     names = [f"s{i}" for i in range(6)]
     web = {n: backend(n) for n in names}

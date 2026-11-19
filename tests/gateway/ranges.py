@@ -82,7 +82,7 @@ def get(port, src="127.0.0.1", xff=None):
 def main():
     for a in (CF, MINE):
         subprocess.run(["ip", "addr", "add", f"{a}/32", "dev", "lo"], check=True)
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-ranges-", dir="/tmp"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-ranges-"))
     (tmp / "mine.txt").write_text(f"# ours\n{MINE}/32\n\n192.0.2.0/24\n")
     threading.Thread(target=S(("127.0.0.1", BACK), H).serve_forever, daemon=True).start()
     conf = tmp / "okena.conf"

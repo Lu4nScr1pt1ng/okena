@@ -752,7 +752,7 @@ def main():
                  {"host": "example.amazonaws.com", "x-amz-date": "20150830T123600Z"}, "host;x-amz-date", b"",
                  "20150830T123600Z", "us-east-1", "service")
     check("(the test's SigV4 gives AWS's get-vanilla signature)", v == "5fa00fa31553b73ebf1942676e86291e8372ff2a2260956d9b8aae1d763fbf31", v)
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-acme-", dir="/tmp"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-acme-"))
     ca_k, ca_c = make_ca()
     (tmp / "ca.pem").write_bytes(ca_c.public_bytes(serialization.Encoding.PEM))
     # the CA's own HTTPS: localhost, signed by its CA

@@ -398,6 +398,11 @@ def run_cases():
     out = raw(PLAIN, preface + fr(1, 4, 1, post) + fr(0, 0, 1, b"abc") + fr(1, 5, 1, trailers))
     check("trailers with a pseudo-field: RST_STREAM PROTOCOL_ERROR", rst_code(out, 1) == 1, out[-40:])
 
+    out = raw(PLAIN, b"INVALID CONNECTION PREFACE\r\n\r\n")
+    check("a broken preface (no HTTP version either): closed, no HTTP/1.1 answer", out == b"", out[:40])
+    out = raw(PLAIN, b"GET /x HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+    check("  HTTP/1.1 on the same listener still answered", out.startswith(b"HTTP/1.1 "), out[:40])
+
     # rapid reset: HEADERS then RST_STREAM, over and over
     c = Client(PLAIN)
     for _ in range(400):

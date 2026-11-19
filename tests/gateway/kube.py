@@ -171,7 +171,7 @@ def until(fn, seconds=5):
 
 
 def main():
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-kube-", dir="/tmp"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-kube-"))
     certs(tmp, "ec")
     certs(tmp, "rsa")
     (tmp / "o").mkdir()

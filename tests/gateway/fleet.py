@@ -77,7 +77,7 @@ def resumed(ctx, sess):
 
 
 def main():
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-fleet-", dir="/tmp"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-fleet-"))
     b = S(("127.0.0.1", 0), H)
     threading.Thread(target=b.serve_forever, daemon=True).start()
     subprocess.run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes",

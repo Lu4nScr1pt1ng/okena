@@ -221,7 +221,7 @@ http 127.0.0.1:{LST} {{ route /* {{ cache 1h; to pool b }} }}
 def main():
     if not shutil.which("wrk"):
         sys.exit("wrk is needed")
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-phase8-", dir="/tmp"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-phase8-"))
     threading.Thread(target=S(("127.0.0.1", BACK), H).serve_forever, daemon=True).start()
     try:
         for engine in ("io_uring", "epoll"):

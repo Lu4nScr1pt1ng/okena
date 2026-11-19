@@ -122,7 +122,7 @@ def until(fn, seconds=4):
 
 
 def main():
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-docker-", dir="/tmp"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-docker-"))
     sock = tmp / "docker.sock"
     d = U(str(sock), Docker)
     threading.Thread(target=d.serve_forever, daemon=True).start()

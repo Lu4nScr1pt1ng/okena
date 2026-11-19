@@ -129,7 +129,7 @@ def start(conf, log, upgrade=False):
 
 
 def main():
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-cachedisk-", dir="/tmp"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-cachedisk-"))
     (tmp / "store").mkdir()
     threading.Thread(target=S(("127.0.0.1", BACK), H).serve_forever, daemon=True).start()
     conf = tmp / "okena.conf"

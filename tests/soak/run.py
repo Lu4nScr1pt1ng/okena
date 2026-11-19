@@ -230,7 +230,7 @@ def fds(pid):
 
 def main():
     inside()
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-soak-", dir="/tmp"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-soak-"))
     subprocess.run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes",
                     "-keyout", tmp / "k.pem", "-out", tmp / "c.pem", "-subj", "/CN=localhost", "-days", "30"], check=True, capture_output=True)
     for port in (B1, B2):

@@ -91,7 +91,7 @@ def until(fn, seconds=8):
 
 
 def main():
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-alerts-", dir="/tmp"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-alerts-"))
     run = lambda *a: subprocess.run(["openssl", *a], check=True, capture_output=True)
     run("req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes", "-keyout", tmp / "ca.key",
         "-out", tmp / "ca.crt", "-subj", "/CN=alerts-ca", "-days", "2", "-addext", "basicConstraints=critical,CA:TRUE",

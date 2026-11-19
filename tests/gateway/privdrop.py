@@ -115,7 +115,7 @@ def children(sup):
 
 def main():
     inside()
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-privdrop-", dir="/tmp"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-privdrop-"))
     os.chmod(tmp, 0o755)
     logs = tmp / "logs"
     logs.mkdir()

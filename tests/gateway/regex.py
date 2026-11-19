@@ -139,7 +139,7 @@ def main():
     check("  one that does not read: refused, and why", r.returncode != 0 and "no ) after it" in r.stderr, r.stderr)
 
     # routes
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-regex-", dir="/tmp"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-regex-"))
     threading.Thread(target=http.server.ThreadingHTTPServer(("127.0.0.1", BACK), Back).serve_forever, daemon=True).start()
     conf = tmp / "okena.conf"
     conf.write_text(f"""okena {{ workers 1; io_engine {ENGINE}; drain delay=0s timeout=1s }}

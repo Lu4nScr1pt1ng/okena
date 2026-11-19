@@ -77,7 +77,7 @@ def serial(port, name, cafile):
 
 
 def main():
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-acmefleet-", dir="/tmp"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-acmefleet-"))
     k, c = A.make_ca()
     st = A.CAState(k, c, CA)
     st.bad_nonce_once = False
@@ -170,7 +170,12 @@ http 127.0.0.1:{tls} {{
                         return int(x.name)
                 except OSError:                     # (gone meanwhile)
                     pass
-        acme_pid = child_named(procs[0].pid, "okena-acme")
+        acme_pid = None                             # (started again after a reload: may not be yet)
+        for _ in range(100):
+            acme_pid = child_named(procs[0].pid, "okena-acme")
+            if acme_pid:
+                break
+            time.sleep(0.05)
         os.kill(acme_pid, 9)
         check("files newer than what is served, the acme process started again: reloaded, served",
               A.until(lambda: serial(TX, "f.example.test", cafile) == fc.serial_number, 10)

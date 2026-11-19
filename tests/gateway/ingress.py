@@ -211,7 +211,7 @@ def certs(d):
 
 
 def main():
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-ingress-", dir="/tmp"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-ingress-"))
     certs(tmp)
     tok = tmp / "token"
     tok.write_text("the-token\n")

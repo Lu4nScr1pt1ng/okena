@@ -85,7 +85,7 @@ def served(sni):
 
 
 def main():
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-acmefb-", dir="/tmp"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-acmefb-"))
     k1, c1 = ca("okena test CA one")
     k2, c2 = ca("okena test CA two")
     st1 = A.CAState(k1, c1, CA1)

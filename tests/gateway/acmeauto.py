@@ -59,7 +59,7 @@ def verified(name, port, cafile):
 
 
 def main():
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-acmeauto-", dir="/tmp"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-acmeauto-"))
     k, c = A.make_ca()
     st = A.CAState(k, c, CA)
     st.bad_nonce_once = False

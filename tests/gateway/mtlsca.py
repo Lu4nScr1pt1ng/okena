@@ -90,7 +90,7 @@ def pem(*objs):
 
 
 def main():
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-mtlsca-", dir="/tmp"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-mtlsca-"))
     threading.Thread(target=http.server.ThreadingHTTPServer(("127.0.0.1", BACK), Back).serve_forever, daemon=True).start()
     sk = ec.generate_private_key(ec.SECP256R1())
     srv = cert("okena.test", sk, name("okena.test"), sk)

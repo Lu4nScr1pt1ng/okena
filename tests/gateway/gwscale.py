@@ -40,7 +40,7 @@ class Where(http.server.BaseHTTPRequestHandler):
 
 def scale():
     ip = lambda i: f"127.20.{i // 250}.{i % 250 + 1}"
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-gwscale-", dir="/tmp"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-gwscale-"))
     certs(tmp)
     tok = tmp / "token"
     tok.write_text("t\n")

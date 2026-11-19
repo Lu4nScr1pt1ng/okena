@@ -133,7 +133,7 @@ def get(port, path, tp=None, headers=None):
 
 
 def main():
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-tracing-", dir="/tmp"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-tracing-"))
     subprocess.run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes",
                     "-keyout", tmp / "k.pem", "-out", tmp / "c.pem", "-subj", "/CN=localhost", "-days", "2"],
                    check=True, capture_output=True)

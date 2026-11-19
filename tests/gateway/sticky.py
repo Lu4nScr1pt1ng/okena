@@ -124,7 +124,7 @@ def value(sc, name="srv"):
 
 
 def main():
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-sticky-", dir="/tmp"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-sticky-"))
     conf = tmp / "okena.conf"
     srv = {n: backend(n) for n in ("a", "b", "c")}
     other = backend("z")

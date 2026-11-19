@@ -83,7 +83,7 @@ def reset(*bs):
 
 
 def main():
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-max-", dir="/tmp"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-max-"))
     conf = tmp / "okena.conf"
     a, b = backend("a"), backend("b")
     f = [backend(f"f{i}") for i in range(3)]

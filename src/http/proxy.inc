@@ -1245,6 +1245,41 @@ http_request:
 	mov	edi,eax
 	cmp	eax,400
 	jne	http_error
+	; a cleartext listener that takes HTTP/2 by prior knowledge: a first line
+	; with no HTTP version is no HTTP/1.1 either (a broken preface): closed,
+	; as RFC 9113 3.4 asks, not answered in a protocol it did not speak
+	call	session_ptr
+	mov	ecx,[rax+S_LST]
+	imul	rcx,rcx,LS_SIZE
+	test	dword [g_listeners+rcx+LS_FLAGS],LSF_H2
+	jz	.parse_400
+	cmp	dword [g_listeners+rcx+LS_TLS],0
+	jne	.parse_400
+	h_rec
+	mov	rsi,[r15+H_BUF]
+	lea	rsi,[rsi+HB_IN]
+	mov	ecx,[r15+H_INLEN]
+	xor	edx,edx
+.line:
+	cmp	edx,ecx				; " HTTP/" before the line's end?
+	jae	.no_version
+	cmp	byte [rsi+rdx],10
+	je	.no_version
+	lea	eax,[rdx+6]
+	cmp	eax,ecx
+	ja	.no_version
+	cmp	dword [rsi+rdx],' HTT'
+	jne	@f
+	cmp	word [rsi+rdx+4],'P/'
+	je	.parse_400
+@@:
+	inc	edx
+	jmp	.line
+.no_version:
+	mov	edi,ebx
+	jmp	session_close
+.parse_400:
+	mov	edi,400
 	cmp	dword [g_hm+HM_MLEN],7		; CONNECT: no tunnels here (forward proxy is
 	jne	http_error			; a route's), not a malformed request
 	mov	rax,[g_hm+HM_METHOD]

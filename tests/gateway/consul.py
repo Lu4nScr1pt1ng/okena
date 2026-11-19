@@ -139,7 +139,7 @@ def asked_more(k=2):
 
 
 def main():
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-consul-", dir="/tmp"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-consul-"))
     agent = S(("127.0.0.1", AGENT), Agent)
     threading.Thread(target=agent.serve_forever, daemon=True).start()
     for name, ip, port in (("a", "127.0.0.2", 8080), ("b", "127.0.0.3", 8080), ("c", "127.0.0.4", 8080),

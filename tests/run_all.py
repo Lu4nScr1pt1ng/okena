@@ -17,9 +17,11 @@ gives its time. Exit status: 0 when every suite passed.
 """
 import os
 import pathlib
+import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
@@ -413,6 +415,11 @@ def main():
         sys.exit(128 + sig)
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
+    # the suites' temporary directories (certificates, logs, files to serve)
+    # under one of the run's, gone with it: /tmp is often memory (tmpfs), and
+    # thousands left behind are memory taken from the next runs
+    tmp_root = tempfile.mkdtemp(prefix="okena-tests.")
+    env = dict(os.environ, TMPDIR=tmp_root)
     isolate = netns_ok()
     if not isolate:
         print("note: no user namespaces here; the suites share the host network")
@@ -430,7 +437,8 @@ def main():
             argv = NETNS + argv
         # a session of its own: a suite that hangs is killed whole (its okena,
         # its backends), never left running
-        p = subprocess.Popen(argv, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
+        p = subprocess.Popen(argv, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True,
+                             env=env)
         with lock:
             running.append(p)
         try:
@@ -455,6 +463,10 @@ def main():
     for name, out in failed:
         print(f"\n===== {name} =====\n{out}")
     total = time.time() - start
+    if failed:
+        print(f"\n(the suites' files are kept in {tmp_root})")
+    else:
+        shutil.rmtree(tmp_root, ignore_errors=True)
     print(f"\n{len(chosen) - len(failed)}/{len(chosen)} suites passed in {total:.1f}s")
     sys.exit(1 if failed else 0)
 

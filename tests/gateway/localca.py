@@ -77,7 +77,7 @@ def fetch(sni, cafile):
 
 
 def main():
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-localca-", dir="/tmp"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-localca-"))
     threading.Thread(target=http.server.ThreadingHTTPServer(("127.0.0.1", BACK), Back).serve_forever, daemon=True).start()
     ca = tmp / "var" / "ca"
     conf = tmp / "okena.conf"

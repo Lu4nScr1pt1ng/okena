@@ -71,7 +71,7 @@ def hello(name, cafile=None, timeout=20):
 
 
 def main():
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-acmeod-", dir="/tmp"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-acmeod-"))
     k, c = A.make_ca()
     st = A.CAState(k, c, CA)
     st.bad_nonce_once = False

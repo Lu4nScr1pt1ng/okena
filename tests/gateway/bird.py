@@ -107,7 +107,7 @@ def last():
 
 
 def main():
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-bird-", dir="/tmp"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-bird-"))
     bird = Bird(str(tmp / "bird.ctl"))
     back = http.server.ThreadingHTTPServer(("127.0.0.1", BACK), H)
     threading.Thread(target=back.serve_forever, daemon=True).start()

@@ -123,7 +123,7 @@ def worker_fds(master):
 
 
 def main():
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-zc-", dir="/tmp"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-zc-"))
     site = tmp / "site"
     (site / "f").mkdir(parents=True)
     (site / "f" / "big.bin").write_bytes(BIG)

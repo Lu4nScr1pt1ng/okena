@@ -90,7 +90,7 @@ def metric(name, port=None):
 
 
 def main():
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-udp-", dir="/tmp"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-udp-"))
     conf = tmp / "okena.conf"
     a, b, c, d, l1 = Echo("a"), Echo("b"), Echo("c"), Echo("d", extra=4), Echo("log", silent=True)
     six = Echo("six", family=socket.AF_INET6)

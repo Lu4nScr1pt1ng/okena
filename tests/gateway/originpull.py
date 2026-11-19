@@ -121,7 +121,7 @@ def get(path):
 
 
 def main():
-    d = pathlib.Path(tempfile.mkdtemp(prefix="okena-pull-", dir="/tmp"))
+    d = pathlib.Path(tempfile.mkdtemp(prefix="okena-pull-"))
     ca(d, "srvca")
     ca(d, "clientca")
     ca(d, "otherca")

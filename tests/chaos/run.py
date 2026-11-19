@@ -217,7 +217,7 @@ def kids(sup, comm):
 
 def main():
     inside()
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-chaos-", dir="/tmp"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-chaos-"))
     disk = tmp / "disk"
     disk.mkdir()
     subprocess.run(["mount", "-t", "tmpfs", "-o", "size=256k", "tmpfs", str(disk)], check=True)

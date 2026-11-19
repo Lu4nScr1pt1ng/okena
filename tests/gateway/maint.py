@@ -72,7 +72,7 @@ def req(path, port=LST, source="127.0.0.1"):
 
 
 def main():
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-maint-", dir="/tmp"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-maint-"))
     threading.Thread(target=S(("127.0.0.1", BACK), H).serve_forever, daemon=True).start()
     (tmp / "maint.html").write_text("<h1>Back soon</h1><p>{status}, ref {request_id}</p>\n")
     conf = tmp / "okena.conf"

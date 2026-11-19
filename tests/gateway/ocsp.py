@@ -152,7 +152,7 @@ def staple(port, name, version="-tls1_3"):
 
 
 def main():
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-ocsp-", dir="/tmp"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-ocsp-"))
     threading.Thread(target=http.server.ThreadingHTTPServer(("127.0.0.1", RESP), Responder).serve_forever, daemon=True).start()
     threading.Thread(target=http.server.ThreadingHTTPServer(("127.0.0.1", BACK), Back).serve_forever, daemon=True).start()
     lines = {}

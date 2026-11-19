@@ -61,7 +61,7 @@ class H(http.server.BaseHTTPRequestHandler):
 
 
 def main():
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-certgen-", dir="/tmp"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-certgen-"))
     r = run("cert", "selfsigned", str(tmp / "a"), "a.example.test", "b.example.test", "days=30")
     t = ossl("x509", "-in", str(tmp / "a" / "cert.pem"), "-noout", "-text")
     check("selfsigned: OpenSSL reads it: v3, ECDSA SHA-256, the names, server auth",

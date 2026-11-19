@@ -116,7 +116,7 @@ def post(port, query, token=TOKEN):
 
 
 def main():
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-purge-", dir="/tmp"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-purge-"))
     (tmp / "store").mkdir()
     threading.Thread(target=S(("127.0.0.1", BACK), H).serve_forever, daemon=True).start()
     ca, cb = tmp / "a.conf", tmp / "b.conf"

@@ -83,7 +83,7 @@ def cert(tmp, name, after):
 
 
 def main():
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-certexpiry-", dir="/tmp"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-certexpiry-"))
     hook("hook", HOOK)
     near = cert(tmp, "near.test", datetime.timedelta(days=3, hours=1))
     gone = cert(tmp, "gone.test", -datetime.timedelta(days=1))
