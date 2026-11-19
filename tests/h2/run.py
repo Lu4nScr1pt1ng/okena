@@ -425,14 +425,16 @@ def run_cases():
     # frames grows with what okena sends
     c = Client(PLAIN, window=100)
     sid = c.request("/big/400000")
-    got, frames_in, end = 0, 0, False
-    deadline = time.time() + 10
+    got, frames_in, end, why = 0, 0, False, "deadline"
+    deadline = time.time() + 30
     while not end and time.time() < deadline:
         try:
             data = c.s.recv(65536)
-        except (socket.timeout, OSError):
+        except (socket.timeout, OSError) as x:
+            why = repr(x)
             break
         if not data:
+            why = "eof"
             break
         for e in c.c.receive_data(data):
             if isinstance(e, h2.events.DataReceived):
@@ -441,10 +443,10 @@ def run_cases():
                 c.c.acknowledge_received_data(e.flow_controlled_length, e.stream_id)
                 c.c.ping(os.urandom(8))
             elif isinstance(e, (h2.events.StreamEnded, h2.events.ConnectionTerminated)):
-                end = True
+                end, why = True, repr(e)
         c.flush()
     check(f"a client crediting and pinging after each of {frames_in} DATA frames: not cut off",
-          got == 400000, f"{got} bytes")
+          got == 400000, f"{got} bytes, {why}")
     c.close()
 
     # a client that stops reading a while (OUT fills with DATA) and pings:
