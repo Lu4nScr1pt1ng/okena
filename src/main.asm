@@ -172,6 +172,7 @@ include 'http/engine.inc'
 include 'http/resprw.inc'
 include 'http/pace.inc'
 include 'http/tls.inc'
+include 'http/utun.inc'		; (upgraded exchanges over user-space TLS: the relay's records)
 include 'l4/ppin.inc'
 include 'l4/pptlv.inc'
 include 'http/hsbudget.inc'

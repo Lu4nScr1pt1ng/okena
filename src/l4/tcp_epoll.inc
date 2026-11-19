@@ -1169,6 +1169,8 @@ ep_pump:
 	call	pace_l4_wait
 	jc	.out				; (pace_l4_wake pumps it then)
 .unpaced:
+	cmp	byte [g_utun+rbx],0		; a user-space TLS client: records
+	jne	.utun				; (http/utun.inc), small buffers
 	movzx	edi,byte [g_sbig+rbx]
 	and	edi,ebp				; this direction on large buffers
 	jz	.copy
@@ -1277,6 +1279,83 @@ ep_pump:
 	call	ep_flush_dir
 	jnc	.again				; written out: read more
 	jmp	.out
+.utun:
+	xor	edi,edi
+	call	ep_buf_get
+	cmp	eax,NIL
+	je	.wait
+	mov	[r12+r15],eax
+	cmp	dword [rsp],EK_CLIENT
+	jne	.ut_up
+	; from the client: what the records gathered open to first, then more
+	mov	edi,eax
+	buf_ptr rdi, edi
+	mov	esi,BUF_SIZE
+	call	ut_out
+	test	eax,eax
+	jg	.ut_opened
+	js	.ut_end
+	call	ut_room
+	mov	edx,eax
+	cmp	edx,BUF_SIZE
+	jbe	@f
+	mov	edx,BUF_SIZE
+@@:
+	ep_cap	edx
+	mov	esi,[r12+r15]
+	buf_ptr rsi, esi
+	mov	edi,r13d
+	xor	eax,eax				; SYS_read
+	syscall
+	test	rax,rax
+	jle	.no_data
+	mov	ecx,eax
+	call	ut_in				; (rsi: the buffer still)
+	jc	.ut_broke
+	mov	edi,[r12+r15]
+	buf_ptr rdi, edi
+	mov	esi,BUF_SIZE
+	call	ut_out
+	test	eax,eax
+	jg	.ut_opened
+	js	.ut_end
+	mov	edi,[r12+r15]			; no whole record yet
+	mov	dword [r12+r15],NIL
+	call	ep_buf_put
+	jmp	.again
+.ut_opened:
+	mov	eax,eax
+	jmp	.sized
+.ut_end:
+	push	rax
+	mov	edi,[r12+r15]
+	mov	dword [r12+r15],NIL
+	call	ep_buf_put
+	pop	rax
+	cmp	eax,-2
+	je	.eof				; close_notify: the client's end
+	jmp	.broke
+.ut_broke:
+	mov	edi,[r12+r15]
+	mov	dword [r12+r15],NIL
+	call	ep_buf_put
+	jmp	.broke
+.ut_up:
+	; from the backend: one record's worth, sealed where it lies
+	mov	edx,UT_SEAL_ROOM
+	ep_cap	edx
+	mov	esi,[r12+r15]
+	buf_ptr rsi, esi
+	mov	edi,r13d
+	xor	eax,eax				; SYS_read
+	syscall
+	test	rax,rax
+	jle	.no_data
+	mov	ecx,eax
+	mov	edi,[r12+r15]
+	buf_ptr rdi, edi
+	call	ut_seal
+	jmp	.sized
 .no_data:
 	push	rax
 	mov	edi,[r12+r15]

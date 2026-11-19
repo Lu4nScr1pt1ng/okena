@@ -1530,6 +1530,7 @@ session_alloc:
 	mov	edx,[rcx+S_NEXT]
 	mov	[g_sess_free],edx
 	mov	byte [g_sbig+rax],0		; (its extras start clear)
+	mov	byte [g_utun+rax],0
 	mov	qword [g_sops+rax*8],0
 	mov	dword [g_bfd_c+rax*4],0
 	mov	dword [g_bfd_u+rax*4],0
@@ -1541,6 +1542,7 @@ session_alloc:
 	jae	.none
 	inc	dword [g_sess_hwm]
 	mov	byte [g_sbig+rax],0
+	mov	byte [g_utun+rax],0
 	mov	qword [g_sops+rax*8],0
 	mov	dword [g_bfd_c+rax*4],0
 	mov	dword [g_bfd_u+rax*4],0
@@ -3089,6 +3091,27 @@ post_recv_c:
 	mov	ecx,[rdx+S_LST]			; limit_rate: a read's most
 	mov	ecx,[g_ls_rcap+rcx*8]
 	mov	[rax+SQE_LEN],ecx
+	cmp	byte [g_utun+rsi],0		; records (http/utun.inc): small buffers,
+	je	@f				; no more than HB_RXC has room for
+	mov	word [rax+SQE_BUF_GROUP],0
+	push	rax
+	push	rbx
+	mov	ebx,esi
+	call	ut_room
+	mov	ecx,eax
+	pop	rbx
+	pop	rax
+	cmp	ecx,BUF_SIZE
+	jbe	.room
+	mov	ecx,BUF_SIZE
+.room:
+	cmp	dword [rax+SQE_LEN],0		; (0: limit_rate sets none)
+	je	.set_room
+	cmp	ecx,[rax+SQE_LEN]
+	jae	@f
+.set_room:
+	mov	[rax+SQE_LEN],ecx
+@@:
 	client_sqe rdx
 	ret
 
@@ -3110,6 +3133,16 @@ post_recv_u:
 	mov	r8d,[rdx+S_LST]			; limit_rate: a read's most
 	mov	r8d,[g_ls_rcap+r8*8+4]
 	mov	[rax+SQE_LEN],r8d
+	cmp	byte [g_utun+rsi],0		; for a user-space TLS client: one record's
+	je	@f				; worth, sealed in place (http/utun.inc)
+	mov	word [rax+SQE_BUF_GROUP],0
+	test	r8d,r8d				; (0: limit_rate sets none)
+	jz	.seal_room
+	cmp	r8d,UT_SEAL_ROOM
+	jbe	@f
+.seal_room:
+	mov	dword [rax+SQE_LEN],UT_SEAL_ROOM
+@@:
 	mov	r8,[g_cnt+rsi*8]		; an HTTP body by the relay: no more than
 	test	r8,r8				; what is left of it (counted.inc: + 1)
 	jz	.out
@@ -3234,13 +3267,54 @@ on_s_recv_c:
 	mov	eax,r15d
 	shr	eax,IORING_CQE_BUFFER_SHIFT
 	mov	[r13+S_CU_BID],eax
+	cmp	byte [g_utun+rbx],0
+	jne	.records
 	mov	[r13+S_CU_LEN],r14d
 	buf_next_size 1
+.send:
 	mov	dword [r13+S_CU_OFF],0
 	mov	edi,ebx
 	call	idle_touch
 	mov	edi,ebx
 	jmp	post_send_u
+.records:
+	; records from a user-space TLS client: gathered, and what they open
+	; to goes upstream from the same buffer (http/utun.inc)
+	mov	esi,eax
+	buf_ptr rsi, esi
+	push	rsi
+	mov	ecx,r14d
+	call	ut_in
+	pop	rdi
+	jc	.records_broken
+	mov	esi,BUF_SIZE
+	call	ut_out
+	test	eax,eax
+	jg	.opened
+	push	rax
+	mov	edi,[r13+S_CU_BID]
+	mov	dword [r13+S_CU_BID],NIL
+	push	rbx
+	call	buf_release
+	pop	rbx
+	pop	rax
+	test	eax,eax
+	jz	.recv_again			; not a whole record yet
+	cmp	eax,-2
+	je	.eof				; close_notify: the client's end
+	mov	edi,ebx
+	jmp	session_close
+.opened:
+	mov	[r13+S_CU_LEN],eax
+	jmp	.send
+.records_broken:
+	mov	edi,[r13+S_CU_BID]
+	mov	dword [r13+S_CU_BID],NIL
+	push	rbx
+	call	buf_release
+	pop	rbx
+	mov	edi,ebx
+	jmp	session_close
 .end_or_error:
 	jz	.eof
 	cmp	r14,-ENOBUFS
@@ -3338,12 +3412,23 @@ on_s_recv_u:
 	shr	eax,IORING_CQE_BUFFER_SHIFT
 	mov	[r13+S_UC_BID],eax
 	mov	[r13+S_UC_LEN],r14d
+	cmp	byte [g_utun+rbx],0
+	jne	.seal
 	buf_next_size 2
+.sealed:
 	mov	dword [r13+S_UC_OFF],0
 	mov	edi,ebx
 	call	idle_touch
 	mov	edi,ebx
 	jmp	post_send_c
+.seal:
+	; to a user-space TLS client: one record, sealed where it lies
+	mov	edi,eax
+	buf_ptr rdi, edi
+	mov	ecx,r14d
+	call	ut_seal
+	mov	[r13+S_UC_LEN],eax
+	jmp	.sealed
 .end_or_error:
 	jz	.eof
 	cmp	r14,-5				; -EIO on a kTLS upstream: a control
@@ -3424,6 +3509,31 @@ on_s_send_u:
 	mov	eax,[r13+S_CU_OFF]
 	cmp	eax,[r13+S_CU_LEN]
 	jb	.partial
+	cmp	byte [g_utun+rbx],0		; records already gathered: what they open
+	je	.release			; to, in the same buffer, before a read
+	mov	edi,[r13+S_CU_BID]
+	buf_ptr rdi, edi
+	mov	esi,BUF_SIZE
+	call	ut_out
+	test	eax,eax
+	jle	.drained
+	mov	[r13+S_CU_LEN],eax
+	mov	dword [r13+S_CU_OFF],0
+	jmp	.partial
+.drained:
+	jz	.release
+	push	rax
+	mov	edi,[r13+S_CU_BID]
+	mov	dword [r13+S_CU_BID],NIL
+	push	rbx
+	call	buf_release
+	pop	rbx
+	pop	rax
+	cmp	eax,-2
+	je	on_s_recv_c.eof			; close_notify: the client's end (r13 kept)
+	mov	edi,ebx
+	jmp	session_close
+.release:
 	mov	edi,[r13+S_CU_BID]
 	mov	dword [r13+S_CU_BID],NIL
 	push	rbx

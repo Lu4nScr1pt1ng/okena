@@ -5440,6 +5440,10 @@ http_tunnel_start:
 	test	dword [rax+S_FLAGS],SF_H2S
 	jnz	http_h2tun_start		; a stream: no socket of its own to relay
 	or	dword [rax+S_FLAGS],SF_TUNNEL
+	h_rec					; a client of user-space TLS: the relay
+	cmp	dword [r15+H_UTLS],0		; opens and seals its records (utun.inc)
+	setne	byte [g_utun+rbx]
+	call	session_ptr
 	cmp	dword [g_engine],ENGINE_EPOLL
 	je	.epoll
 	jmp	start_relay

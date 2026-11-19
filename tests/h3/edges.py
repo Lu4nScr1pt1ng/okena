@@ -123,8 +123,12 @@ async def cases():
         async with connect("127.0.0.1", L, configuration=cfg, create_protocol=C) as c:
             r = await c.req("GET", "/")
             return c._quic._retry_count, r.get("status")
-    await asyncio.sleep(0.3)
-    n, st = await retries()
+    # (the flood's datagrams taken first: under load that is not at once)
+    for _ in range(20):
+        await asyncio.sleep(0.15)
+        n, st = await retries()
+        if n == 1:
+            break
     check("80 handshakes never answered: a new client goes through a Retry", n == 1 and st == b"200", (n, st))
     t0 = time.monotonic()
     while time.monotonic() - t0 < 20:

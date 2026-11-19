@@ -31,6 +31,8 @@ SUITES = [
     ("httpproxy io_uring", ["tests/httpproxy/run.py", "io_uring"]),
     ("httpproxy epoll", ["tests/httpproxy/run.py", "epoll"]),
     ("edge io_uring", ["tests/httpproxy/edge.py", "io_uring"]),
+    ("wss io_uring", ["tests/httpproxy/wss.py", "io_uring"]),
+    ("wss epoll", ["tests/httpproxy/wss.py", "epoll"]),
     ("edge epoll", ["tests/httpproxy/edge.py", "epoll"]),
     ("bigbody io_uring", ["tests/httpproxy/bigbody.py", "io_uring"]),
     ("bigbody epoll", ["tests/httpproxy/bigbody.py", "epoll"]),
