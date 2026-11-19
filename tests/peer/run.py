@@ -180,21 +180,32 @@ try:
             pass
         c.close()
     check("per_source: a 4th connection is refused, whatever the worker", extra_ok == 0, f"{extra_ok} let in")
+    def let_in(b, within=5):
+        # a place frees once the worker has seen the close: bounded, not a fixed wait
+        end = time.time() + within
+        while True:
+            c = socket.create_connection(("127.0.0.1", LIM), timeout=3)
+            try:
+                c.sendall(b)
+                if c.recv(1) == b:
+                    return c
+            except OSError:
+                pass
+            c.close()
+            if time.time() > end:
+                return None
+            time.sleep(0.02)
+
     held.pop().close()
-    time.sleep(0.2)
-    c = socket.create_connection(("127.0.0.1", LIM), timeout=3)
-    c.sendall(b"z")
-    check("per_source: a closed connection frees its place", c.recv(1) == b"z")
-    c.close()
+    c = let_in(b"z")
+    check("per_source: a closed connection frees its place", c is not None)
+    if c:
+        c.close()
     for c in held:
         c.close()
-    time.sleep(0.2)
-    n = 0
-    for _ in range(3):
-        c = socket.create_connection(("127.0.0.1", LIM), timeout=3)
-        c.sendall(b"w")
-        n += c.recv(1) == b"w"
-        held.append(c)
+    held = [let_in(b"w") for _ in range(3)]
+    n = sum(c is not None for c in held)
+    held = [c for c in held if c]
     check("per_source: back to 3 once all closed", n == 3)
     for c in held:
         c.close()
