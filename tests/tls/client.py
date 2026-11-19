@@ -64,7 +64,8 @@ def run_against(groups, port, ktls=False, cert="s.pem", key="s.key"):
                 break
             said += more
         if b"ACCEPT" not in said:
-            last[0] = "s_server did not start: " + said.decode(errors="replace")[-300:]
+            out = said.decode(errors="replace")     # (its first lines say why: kept)
+            last[0] = "s_server did not start: " + (out if len(out) <= 600 else out[:300] + " ... " + out[-300:])
             return "s_server did not start"
         r = subprocess.run([str(CLIENT)], input=struct.pack(">H", port) + bytes([1 if ktls else 0]),
                            capture_output=True, timeout=10)

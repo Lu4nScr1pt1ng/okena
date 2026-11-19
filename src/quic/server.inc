@@ -359,7 +359,7 @@ end rodata
 ; ------------------------------------------------------------- helpers
 
 ; rsi = cursor, rdx = end: rax = a varint, rsi past it; CF when truncated.
-; Keeps rdx and everything but rax, rcx, rsi.
+; Keeps rdx and everything but rax, rcx, rsi, r11.
 qv_read:
 	cmp	rsi,rdx
 	jae	.short
@@ -1289,7 +1289,9 @@ qs_datagram:
 	mov	dword [rsp+QD_NEW],0
 	qc_regs					; made for a first packet that did not
 	cmp	qword [r15+QC_PS+PS_LARGEST],-1	; open (noise, a forged Initial): gone
-	jne	.next_packet			; now, not at its idle timeout
+	jne	.next_packet			; now, not at its idle timeout; unless it
+	test	dword [r15+QC_FLAGS],QF_CLOSE	; opened and failed (a TLS alert, a bad
+	jnz	.next_packet			; frame): its CONNECTION_CLOSE goes first
 	call	qc_free
 	jmp	.out
 .next_packet:

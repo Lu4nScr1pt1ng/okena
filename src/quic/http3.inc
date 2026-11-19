@@ -82,6 +82,8 @@ QSK_REQ		:= 1
 QSK_UNI		:= 2				; a client's unidirectional stream: read, ignored
 QSK_UT		:= 3				; one whose type has not come yet
 QSK_ENC		:= 4				; its QPACK encoder stream
+QSK_CTL		:= 5				; its control stream
+QSK_DEC		:= 6				; its QPACK decoder stream
 QC_QST		:= QC_STREAMS
 assert QST_N = 128				; (QC_QSTM, QC_QREQ: two qwords each)
 
@@ -147,13 +149,30 @@ QC_QPE		:= QC_KU + QK_SIZE		; QP_MAXE * 8, by absolute index modulo
 QC_QPD		:= QC_QPE + QP_MAXE * 8		; the entries' bytes, in insertion order
 QP_DCAP		:= 4096
 QC_QPB		:= QC_QPD + QP_DCAP
-QP_BCAP		:= 4096
-QC_QDB		:= QC_QPB + QP_BCAP
+QP_BCAP		:= 4096 - 512
+QC_H3X		:= QC_QPB + QP_BCAP		; 512: the client's control stream (below)
+QC_QDB		:= QC_H3X + 512
 QD_CAP		:= 512
 assert QC_QDB + QD_CAP <= 1 shl HB_SHIFT
 QC_K0		:= QC_QDB + QD_CAP		; the client's 0-RTT keys (server.inc)
 assert QC_K0 and 15 = 0
 assert QC_K0 + QK_SIZE <= 1 shl HB_SHIFT
+; the client's control stream: which of its critical streams came (1 control,
+; 2 encoder, 4 decoder), the highest push ID it allows (+1, 0 none), its last
+; GOAWAY (+1, 0 none), and a SETTINGS or a small frame gathered
+QC_H3UNI	:= QC_H3X			; d
+QC_MAXPUSH	:= QC_H3UNI + 8			; q
+QC_GOAWAYRX	:= QC_H3UNI + 16		; q
+QC_CTLB		:= QC_H3UNI + 32
+H3_CTLB_CAP	:= 256				; a SETTINGS frame, at most (more: excessive)
+assert QC_CTLB + H3_CTLB_CAP <= QC_H3X + 512
+H3E_STREAM_CREATION := 0x103
+H3E_CLOSED_CRITICAL := 0x104
+H3E_FRAME_ERROR	:= 0x106
+H3E_ID		:= 0x108
+H3E_SETTINGS	:= 0x109
+H3E_MISSING_SETTINGS := 0x10A
+H3E_DECODER_STREAM := 0x202
 assert QP_MAXE = 64
 H3E_ENCODER_STREAM := 0x201
 
@@ -227,6 +246,9 @@ qc_established:
 	rep	stosq
 	mov	[r15+QC_RAM],rax
 	mov	[r15+QC_HBOWN],rax
+	mov	dword [r15+QC_H3UNI],eax	; (no critical stream of the client's yet)
+	mov	[r15+QC_MAXPUSH],rax
+	mov	[r15+QC_GOAWAYRX],rax
 	mov	eax,[r15+QC_QT+QT_HQ]		; the protocol ALPN chose
 	mov	[r15+QC_HQ],eax
 	; the client's parameters: initial_max_data, stream data
@@ -1017,7 +1039,13 @@ qc_stream_one:
 	mov	rcx,r14
 	call	qp_uni_bytes			; CF: an error (QC_ERR set)
 	jc	.error
-	jmp	.ok
+	cmp	dword [rsp+QI_FIN],0		; a control or QPACK stream that ends:
+	je	.ok				; H3_CLOSED_CRITICAL_STREAM
+	cmp	dword [r12+QST_KIND],QSK_ENC
+	jb	.ok
+	mov	qword [r15+QC_ERR],H3E_CLOSED_CRITICAL
+	or	dword [r15+QC_FLAGS],QF_APP_ERR
+	jmp	.error
 @@:
 	mov	eax,[rsp+QI_FIN]
 	mov	[r12+QST_FINHERE],eax
@@ -1169,6 +1197,13 @@ h3_req_bytes:
 	jne	@f
 	cmp	dword [r12+QST_PHASE],1
 	jne	.unexpected
+@@:
+	cmp	r8,0x0D				; a control stream's frames (CANCEL_PUSH,
+	je	.unexpected			; SETTINGS, PUSH_PROMISE, GOAWAY,
+	cmp	r8,9				; MAX_PUSH_ID) and HTTP/2's types: not on
+	ja	@f				; a request stream (RFC 9114 7.2)
+	cmp	r8,2
+	jae	.unexpected
 @@:
 	cmp	r8,1				; a third HEADERS
 	jne	@f
@@ -1988,6 +2023,262 @@ qd_section_ack:
 .out:
 	ret
 
+; rdi = the client's control stream, rsi = bytes in order, rcx = how many
+; (RFC 9114 6.2.1, 7.2): SETTINGS first and once, valid; GOAWAY never up,
+; MAX_PUSH_ID never down, CANCEL_PUSH only of a push it allowed; no DATA,
+; HEADERS, PUSH_PROMISE or HTTP/2 type; other frames skipped, however long,
+; never gathered. CF on an error (QC_ERR set).
+h3_ctl_bytes:
+	push	r12
+	push	r13
+	push	r14
+	mov	r12,rdi
+	mov	r13,rsi
+	lea	r14,[rsi+rcx]
+.next:
+	cmp	r13,r14
+	jae	.done
+	cmp	qword [r12+QST_FTYPE],-1
+	jne	.payload
+	mov	eax,[r12+QST_FHAVE]		; a frame header: type, length
+	cmp	eax,16
+	jae	.frame_error
+	mov	cl,[r13]
+	mov	[r12+QST_FHDR+rax],cl
+	inc	dword [r12+QST_FHAVE]
+	inc	r13
+	lea	rsi,[r12+QST_FHDR]
+	mov	edx,[r12+QST_FHAVE]
+	add	rdx,rsi
+	call	qv_read
+	jc	.next
+	mov	r8,rax
+	call	qv_read
+	jc	.next
+	mov	dword [r12+QST_FHAVE],0
+	mov	[r12+QST_FTYPE],r8
+	mov	[r12+QST_FLEFT],rax
+	mov	dword [r12+QST_HBLEN],0
+	cmp	dword [r12+QST_PHASE],0
+	jne	.later_frame
+	cmp	r8,4				; the first: SETTINGS
+	jne	.missing
+	mov	dword [r12+QST_PHASE],1
+	cmp	rax,H3_CTLB_CAP
+	ja	.excessive
+	jmp	.sized
+.later_frame:
+	cmp	r8,4				; a second SETTINGS
+	je	.unexpected
+	cmp	r8,0x0D				; MAX_PUSH_ID
+	je	.small
+	cmp	r8,9
+	ja	.sized				; another type: skipped
+	cmp	r8,3				; CANCEL_PUSH
+	je	.small
+	cmp	r8,7				; GOAWAY
+	je	.small
+	jmp	.unexpected			; DATA, HEADERS, PUSH_PROMISE, HTTP/2's
+.small:
+	cmp	rax,16				; (one varint: a frame that says more
+	ja	.excessive			; is not buffered)
+.sized:
+	test	rax,rax
+	jnz	.next
+	jmp	.frame_end
+.payload:
+	mov	rcx,r14
+	sub	rcx,r13
+	cmp	rcx,[r12+QST_FLEFT]
+	jbe	@f
+	mov	rcx,[r12+QST_FLEFT]
+@@:
+	sub	[r12+QST_FLEFT],rcx
+	mov	rax,[r12+QST_FTYPE]
+	cmp	rax,0x0D
+	je	.gather
+	cmp	rax,9
+	ja	.skip
+	cmp	rax,4
+	je	.gather
+	cmp	rax,3
+	je	.gather
+	cmp	rax,7
+	je	.gather
+.skip:
+	add	r13,rcx
+	jmp	.check_end
+.gather:
+	mov	eax,[r12+QST_HBLEN]
+	lea	rdi,[r15+QC_CTLB+rax]
+	add	[r12+QST_HBLEN],ecx
+	mov	rsi,r13
+	add	r13,rcx
+	rep	movsb
+.check_end:
+	cmp	qword [r12+QST_FLEFT],0
+	jne	.next
+.frame_end:
+	mov	rax,[r12+QST_FTYPE]
+	mov	qword [r12+QST_FTYPE],-1
+	lea	rsi,[r15+QC_CTLB]
+	mov	edx,[r12+QST_HBLEN]
+	add	rdx,rsi
+	cmp	rax,4
+	je	.settings
+	cmp	rax,0x0D
+	je	.max_push
+	cmp	rax,7
+	je	.goaway
+	cmp	rax,3
+	je	.cancel
+	jmp	.next
+.settings:
+	; identifier and value pairs: HTTP/2's (2 to 5) and one twice are
+	; SETTINGS_ERROR; one cut short FRAME_ERROR; the others are taken as
+	; they come (reserved ones too, read past)
+	mov	r9,rsi				; the first pair
+.pair:
+	cmp	rsi,rdx
+	jae	.next
+	mov	r10,rsi				; where this one begins
+	call	qv_read				; (qv_read takes r11)
+	jc	.frame_error
+	mov	r8,rax				; its identifier
+	call	qv_read
+	jc	.frame_error
+	lea	rax,[r8-2]
+	cmp	rax,3
+	jbe	.settings_error
+	push	rsi				; the next pair
+	mov	rsi,r9
+.dup:
+	cmp	rsi,r10
+	jae	.dup_done
+	call	qv_read
+	cmp	rax,r8
+	je	.dup_found
+	call	qv_read
+	jmp	.dup
+.dup_found:
+	pop	rsi
+	jmp	.settings_error
+.dup_done:
+	pop	rsi
+	jmp	.pair
+.max_push:
+	call	.one
+	jc	.frame_error
+	mov	rcx,[r15+QC_MAXPUSH]
+	test	rcx,rcx
+	jz	@f
+	dec	rcx
+	cmp	rax,rcx
+	jb	.id_error			; down
+@@:
+	inc	rax
+	mov	[r15+QC_MAXPUSH],rax
+	jmp	.next
+.goaway:
+	call	.one
+	jc	.frame_error
+	mov	rcx,[r15+QC_GOAWAYRX]
+	test	rcx,rcx
+	jz	@f
+	dec	rcx
+	cmp	rax,rcx
+	ja	.id_error			; up
+@@:
+	inc	rax
+	mov	[r15+QC_GOAWAYRX],rax
+	jmp	.next
+.cancel:
+	call	.one
+	jc	.frame_error
+	mov	rcx,[r15+QC_MAXPUSH]		; a push it never allowed
+	test	rcx,rcx
+	jz	.id_error
+	cmp	rax,rcx
+	jae	.id_error
+	jmp	.next
+; rsi..rdx: one varint and nothing after it: rax, CF otherwise
+.one:
+	call	qv_read
+	jc	.one_out
+	cmp	rsi,rdx
+	je	.one_out			; (CF clear: equal)
+	stc
+.one_out:
+	ret
+.done:
+	clc
+	jmp	.out
+.missing:
+	mov	eax,H3E_MISSING_SETTINGS
+	jmp	.fail
+.unexpected:
+	mov	eax,H3E_FRAME_UNEXPECTED
+	jmp	.fail
+.excessive:
+	mov	eax,H3E_EXCESSIVE
+	jmp	.fail
+.frame_error:
+	mov	eax,H3E_FRAME_ERROR
+	jmp	.fail
+.settings_error:
+	mov	eax,H3E_SETTINGS
+	jmp	.fail
+.id_error:
+	mov	eax,H3E_ID
+.fail:
+	mov	[r15+QC_ERR],rax
+	or	dword [r15+QC_FLAGS],QF_APP_ERR
+	stc
+.out:
+	pop	r14
+	pop	r13
+	pop	r12
+	ret
+
+; rdi = the client's QPACK decoder stream, rsi = bytes in order, rcx = how
+; many (RFC 9204 4.4): our encoder never inserts, so its instructions are
+; read past, but an Insert Count Increment of 0 is QPACK_DECODER_STREAM_ERROR.
+; QST_FHAVE: 1 inside an integer's continuation bytes. CF on an error.
+qd_dec_bytes:
+.byte:
+	test	rcx,rcx
+	jz	.ok
+	movzx	eax,byte [rsi]
+	inc	rsi
+	dec	rcx
+	cmp	dword [rdi+QST_FHAVE],0
+	jne	.more
+	test	eax,eax
+	jz	.zero				; 00 000000: Insert Count Increment 0
+	mov	edx,0x7F			; Section Acknowledgment: 7-bit prefix,
+	test	al,0x80				; the others 6
+	jnz	@f
+	mov	edx,0x3F
+@@:
+	and	eax,edx
+	cmp	eax,edx
+	jne	.byte				; whole in its first byte
+	mov	dword [rdi+QST_FHAVE],1
+	jmp	.byte
+.more:
+	test	al,0x80
+	jnz	.byte
+	mov	dword [rdi+QST_FHAVE],0
+	jmp	.byte
+.zero:
+	mov	qword [r15+QC_ERR],H3E_DECODER_STREAM
+	or	dword [r15+QC_FLAGS],QF_APP_ERR
+	stc
+	ret
+.ok:
+	clc
+	ret
+
 ; rax = a stream whose field section used the table and was not taken: Stream
 ; Cancellation (RFC 9204 4.4.2), so the client's encoder lets its references go
 qd_stream_cancel:
@@ -2019,13 +2310,61 @@ qp_uni_bytes:
 	jz	.ok
 	cmp	dword [r12+QST_KIND],QSK_ENC
 	je	.append
-	movzx	eax,byte [rsi]
+	cmp	dword [r12+QST_KIND],QSK_CTL
+	je	.ctl
+	cmp	dword [r12+QST_KIND],QSK_DEC
+	je	.dec
+	; its type, a varint (whole in its first bytes, else read and ignored):
+	; one control stream, one encoder, one decoder; no push stream from a
+	; client (RFC 9114 6.2, RFC 9204 4.2); any other type is read and ignored
+	lea	rdx,[rsi+rcx]
+	call	qv_read
+	jc	.ignored
+	mov	rcx,rdx
+	sub	rcx,rsi				; what follows it
+	test	rax,rax
+	jz	.t_ctl
+	cmp	rax,1
+	je	.creation
+	cmp	rax,2
+	je	.t_enc
+	cmp	rax,3
+	je	.t_dec
+.ignored:
 	mov	dword [r12+QST_KIND],QSK_UNI
-	cmp	eax,2
-	jne	.ok
+	jmp	.ok
+.t_ctl:
+	bts	dword [r15+QC_H3UNI],0
+	jc	.creation
+	mov	dword [r12+QST_KIND],QSK_CTL
+	mov	qword [r12+QST_FTYPE],-1
+	mov	dword [r12+QST_FHAVE],0
+	mov	dword [r12+QST_PHASE],0		; (no SETTINGS yet)
+.ctl:
+	mov	rdi,r12
+	call	h3_ctl_bytes
+	jc	.failed
+	jmp	.ok
+.t_dec:
+	bts	dword [r15+QC_H3UNI],2
+	jc	.creation
+	mov	dword [r12+QST_KIND],QSK_DEC
+	mov	dword [r12+QST_FHAVE],0
+.dec:
+	mov	rdi,r12
+	call	qd_dec_bytes
+	jc	.failed
+	jmp	.ok
+.creation:
+	mov	qword [r15+QC_ERR],H3E_STREAM_CREATION
+	or	dword [r15+QC_FLAGS],QF_APP_ERR
+.failed:
+	stc
+	jmp	.out
+.t_enc:
+	bts	dword [r15+QC_H3UNI],1
+	jc	.creation
 	mov	dword [r12+QST_KIND],QSK_ENC
-	inc	rsi
-	dec	rcx
 .append:
 	mov	eax,[r15+QC_QP_PART]
 	lea	edx,[rax+rcx]
@@ -2548,6 +2887,20 @@ h3_request_new:
 	je	.malformed
 	cmp	qword [rsp+H3N_PATH+8],0
 	je	.malformed
+	cmp	qword [rsp+H3N_AUTH],0		; :authority, or a Host field (RFC 9114
+	jne	.authority			; 4.3.1: http and https name their host)
+	xor	ecx,ecx
+.host:
+	cmp	ecx,[rsp+H3N_N]
+	jae	.malformed
+	imul	eax,ecx,HP_SIZE
+	inc	ecx
+	cmp	dword [g_h3f+rax+HP_NLEN],4
+	jne	.host
+	mov	rax,[g_h3f+rax+HP_NAME]
+	cmp	dword [rax],'host'
+	jne	.host
+.authority:
 	mov	rax,[rsp+H3N_METHOD]		; CONNECT: not over HTTP/3 (yet)
 	cmp	qword [rsp+H3N_METHOD+8],7
 	jne	@f
