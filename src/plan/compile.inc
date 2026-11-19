@@ -441,6 +441,7 @@ end bss
 plan_compile:
 	push	rbx
 	push	r12
+	call	tls_skip_missing		; (listeners whose optional certificate is not there)
 	call	ni_reset			; (the checker's entries; children are indexed again)
 	call	disc_count_init
 	mov	dword [g_hh_npend],0

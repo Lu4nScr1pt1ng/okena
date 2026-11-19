@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """`okena { reload on-change }`: an edit to the file reloads within a few
-seconds; so does a file added to an included directory, and a certificate
-and key replaced in place (the new one served, without a restart); a broken edit is
+seconds; so does a file added to an included directory, a certificate and
+key replaced in place (the new one served, without a restart), and the files
+of a listener with missing=skip coming (it opens); a broken edit is
 tried once (one rejection, not one a second), the running configuration
 serving; fixing it reloads; without it nothing is watched."""
 import os
@@ -56,12 +57,25 @@ def main():
     shutil.copy(tmp / "a.crt", tmp / "server.crt")
     shutil.copy(tmp / "a.key", tmp / "server.key")
     text = (f'okena {{ workers 1; reload on-change }}\ninclude "conf.d/*.conf"\nhttp 127.0.0.1:{L} {{ route /x {{ respond 404 }}; route /y {{ respond 404 }} }}\n'
-            f'http 127.0.0.1:{L + 1} {{ tls {{ cert {tmp}/server.crt key={tmp}/server.key }}\n route /* {{ respond 200 }} }}\n')
+            f'http 127.0.0.1:{L + 1} {{ tls {{ cert {tmp}/server.crt key={tmp}/server.key }}\n route /* {{ respond 200 }} }}\n'
+            f'http 127.0.0.1:{L + 2} {{ tls {{ cert {tmp}/opt/c.crt key={tmp}/opt/c.key missing=skip }}\n route /* {{ respond 200 }} }}\n')
     conf.write_text(text)
     log = tmp / "log"
     p = subprocess.Popen([str(BIN), "-c", str(conf)], stderr=open(log, "w"))
     try:
         check("it serves", until(lambda: code() == 404), code())
+        def opt_up():
+            try:
+                ssl.get_server_certificate(("127.0.0.1", L + 2), timeout=2)
+                return True
+            except OSError:
+                return False
+        check("missing=skip, its files not there: that listener alone not opened, said",
+              not opt_up() and "missing=skip" in log.read_text(), log.read_text()[-300:])
+        (tmp / "opt").mkdir()
+        shutil.copy(tmp / "a.key", tmp / "opt" / "c.key")
+        shutil.copy(tmp / "a.crt", tmp / "opt" / "c.crt")
+        check("  they come: opened (reload on-change)", until(opt_up), log.read_text()[-300:])
         def served():
             try:
                 return ssl.get_server_certificate(("127.0.0.1", L + 1), timeout=3)
@@ -77,7 +91,7 @@ def main():
         conf.write_text(text.replace("route /x { respond 404 }", "route /x { respond 410 }"))
         check("an edit to the file: reloaded within a few seconds", until(lambda: code() == 410), log.read_text()[-300:])
         (tmp / "conf.d" / "z.conf").write_text("pool zz { server 127.0.0.1:9 }\n")
-        check("a file added to an included directory: reloaded", until(lambda: log.read_text().count("configuration reloaded") >= 3),
+        check("a file added to an included directory: reloaded", until(lambda: log.read_text().count("configuration reloaded") >= 4),
               log.read_text()[-300:])
         conf.write_text(text.replace("route /x { respond 404 }", "route /x { respond 410 {"))
         check("a broken edit: rejected", until(lambda: "reload rejected" in log.read_text()), log.read_text()[-300:])

@@ -449,6 +449,103 @@ key_pkcs8_ed:
 
 ; ------------------------------------------------------------- compiling
 
+; plan_compile, first: a listener whose certificate says `missing=skip` and
+; whose files (the certificate, its key=) are not there is taken out of the
+; configuration, said, instead of stopping the start: not opened, until a
+; reload finds them (an optional listener, whose files only some runs mount).
+tls_skip_missing:
+	push	rbx
+	push	r12
+	push	r13
+	mov	r12,[g_cfg_root]
+	lea	r13,[r12+N_CHILD]		; the link to the node looked at
+.node:
+	mov	rbx,[r13]
+	test	rbx,rbx
+	jz	.done
+	mov	rdi,rbx
+	mov	ecx,DIR_TLS
+	call	find_child
+	test	rax,rax
+	jz	.keep
+	mov	rdi,rax
+	mov	ecx,DIR_CERT
+	call	find_child
+	test	rax,rax
+	jz	.keep
+	mov	r12,rax				; the cert line
+	mov	rdi,rax
+	lea	rsi,[.k_missing]
+	call	node_option
+	test	rax,rax
+	jz	.keep
+	cmp	dword [rax+A_VLEN],4
+	jne	.keep
+	mov	rcx,[rax+A_VAL]
+	cmp	dword [rcx],'skip'
+	jne	.keep
+	mov	rdi,[r12+N_ARGS]		; the certificate
+	call	.there
+	jc	.skip
+	mov	rdi,r12
+	lea	rsi,[.k_key]
+	call	node_option
+	test	rax,rax
+	jz	.keep
+	mov	rdi,rax				; and its key
+	call	.there
+	jnc	.keep
+.skip:
+	call	log_begin
+	out_lit 'listener on line '
+	mov	eax,[rbx+N_LINE]
+	call	out_u64
+	out_lit ' not opened: '
+	lea	rsi,[g_tls_path]
+	call	out_cstr
+	out_lit ' is not there (missing=skip)'
+	call	log_end
+	lea	rsi,[g_tls_path]		; (reload on-change: opened when it comes)
+	call	cw_tls_file
+	mov	rax,[rbx+N_NEXT]		; out of the list
+	mov	[r13],rax
+	jmp	.node
+.keep:
+	lea	r13,[rbx+N_NEXT]
+	jmp	.node
+.done:
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+; rdi = an argument (a path): CF when it cannot be opened (g_tls_path: it)
+.there:
+	mov	rsi,[rdi+A_VAL]
+	mov	ecx,[rdi+A_VLEN]
+	cmp	ecx,1000
+	ja	.not
+	lea	rdi,[g_tls_path]
+	rep	movsb
+	mov	byte [rdi],0
+	mov	edi,AT_FDCWD
+	lea	rsi,[g_tls_path]
+	mov	edx,O_RDONLY or O_CLOEXEC
+	xor	r10d,r10d
+	mov	eax,SYS_openat
+	syscall
+	test	eax,eax
+	js	.not
+	mov	edi,eax
+	mov	eax,SYS_close
+	syscall
+	clc
+	ret
+.not:
+	stc
+	ret
+cstring .k_missing, 'missing',0
+cstring .k_key, 'key',0
+
 ; rdi = a directive node with one path argument: read its file. rax =
 ; contents, rdx = end; exits with a diagnostic when it cannot be read.
 tls_read_arg:

@@ -601,6 +601,10 @@ tls {
 }
 ```
 
+* `cert FILE key=FILE missing=skip`: when the files aren't there, that
+  listener isn't opened (okena says so) instead of okena refusing to start;
+  with `reload on-change` it opens once they come (a pair only some
+  deployments mount).
 * `versions 1.3` refuses TLS 1.2 clients. HTTP/3 needs 1.3.
 * `alpn h2` offers HTTP/2 and so turns it on; with `http2 off` written, it's
   an error. `alpn h2` alone refuses clients that offer only HTTP/1.1 (one that

@@ -206,7 +206,7 @@ keysdef k_discover, 'port', T_ANY, 'max', T_COUNT, 'label', T_ANY, 'network', T_
 enumdef e_discover, 'file', 'srv', 'docker', 'kubernetes', 'consul'
 keysdef k_balance, 'key', T_ANY, 'bound', T_ANY
 keysdef k_sticky, 'cookie', T_ANY, 'ttl', T_DURATION, 'samesite', T_ANY
-keysdef k_cert, 'key', T_ANY
+keysdef k_cert, 'key', T_ANY, 'missing', T_ANY
 keysdef k_odemand, 'ask', T_ANY, 'max', T_ANY
 keysdef k_cca, 'crl', T_ANY
 keysdef k_mode, 'encap', T_ANY, 'port', T_UINT
