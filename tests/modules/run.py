@@ -70,7 +70,8 @@ def req(method, target, body=None, chunked=False, close=False):
     if chunked:
         b = body.encode()
         mid = len(b) // 2
-        enc = b"%x\r\n%s\r\n%x;ext=1\r\n%s\r\n0\r\nX-Trailer: t\r\n\r\n" % (mid, b[:mid], len(b) - mid, b[mid:])
+        parts = [x for x in (b[:mid], b[mid:]) if x]          # (an empty chunk would be the last)
+        enc = b"".join(b"%x;ext=1\r\n%s\r\n" % (len(x), x) for x in parts) + b"0\r\nX-Trailer: t\r\n\r\n"
         return (h + "Transfer-Encoding: chunked\r\n\r\n").encode() + enc
     return (h + f"Content-Length: {len(body)}\r\n\r\n").encode() + body.encode()
 
@@ -87,6 +88,9 @@ http 127.0.0.1:{LST} {{
     route /e/* {{ handler echo the-arg }}
     route /j {{ handler json }}
     route /b {{ handler broken }}
+    route /raw {{ handler raw }}
+    route /w/* {{ handler wait }}
+    route /z/* {{ handler echo; compress br gzip min=10B }}
 }}
 http 127.0.0.1:{TLS} {{
     tls {{ cert {tmp}/c.pem; key {tmp}/k.pem }}
@@ -129,9 +133,67 @@ http 127.0.0.1:{TLS} {{
         check("a status that is none: 500", r and r[0][0] == 500, r)
         r = exchange([req("HEAD", "/e/h")], is_head=True)
         check("HEAD: its length, no body", r and r[0][0] == 200 and int(r[0][1].get("content-length", 0)) > 0, r)
-        big = "9" * 20000
-        r = exchange([req("POST", "/e/big", big, close=True)])
-        check("a body past the request buffer: 413", r and r[0][0] == 413, r)
+        import random
+        rnd = random.Random(7)
+        ok = True
+        for size in (0, 1, 1024, 10240, 102400, 1000000):
+            body = "".join(rnd.choice("abcdefgh0123") for i in range(size))
+            for chunked in (False, True):
+                r = exchange([req("POST", "/raw", body, chunked=chunked)])
+                if not r or r[0][0] != 200 or r[0][2] != body:
+                    ok = False
+                    detail = (size, chunked, r[0][:2] if r else None, len(r[0][2]) if r else None)
+                    break
+            if not ok:
+                break
+        check("bodies of 0 B to 1 MB, both framings, answered from where they are", ok, None if ok else detail)
+        r = exchange([req("POST", "/raw", "x" * 300000), req("GET", "/e/after")], n=2)
+        check("  and a pipelined request after a large one", len(r) == 2 and len(r[0][2]) == 300000
+              and r[1][2] == "GET /e/after|the-arg||hello", [(x[0], len(x[2])) for x in r])
+        r = exchange([req("POST", "/raw", "9" * 1100000, close=True)])
+        check("a body past MOD_BODY_MAX: 413", r and r[0][0] == 413, r and r[0][:2])
+        t = time.time()
+        r = exchange([req("GET", "/w/150")])
+        dt = time.time() - t
+        check("held: answered after its time, not before", r and r[0][2] == "waited 150" and 0.15 <= dt < 1.0, (r, dt))
+        import concurrent.futures as cf
+        def one(ms):
+            t = time.time()
+            r = exchange([req("GET", f"/w/{ms}")])
+            return ms, r and r[0][2], time.time() - t
+        with cf.ThreadPoolExecutor(20) as ex:
+            res = list(ex.map(one, [50 + 10 * i for i in range(20)]))
+        check("  twenty at once, each its own time (the loop never waited)",
+              all(b == f"waited {ms}" and ms / 1000 <= dt < ms / 1000 + 0.5 for ms, b, dt in res), res[:3])
+        import gzip
+        long = "/z/" + "abc" * 600
+        s2 = socket.create_connection(("127.0.0.1", LST), 5)
+        s2.sendall(f"GET {long} HTTP/1.1\r\nHost: t\r\nAccept-Encoding: gzip\r\nConnection: close\r\n\r\n".encode())
+        raw = b""
+        while True:
+            d = s2.recv(65536)
+            if not d:
+                break
+            raw += d
+        head, _, body = raw.partition(b"\r\n\r\n")
+        if b"chunked" in head.lower():
+            out, rest = b"", body
+            while True:
+                n, _, rest = rest.partition(b"\r\n")
+                n = int(n, 16)
+                if n == 0:
+                    break
+                out += rest[:n]
+                rest = rest[n + 2:]
+            body = out
+        try:
+            plain = gzip.decompress(body).decode()
+        except Exception as e:
+            plain = repr(e)
+        check("a route with compress: the handler's answer compressed by okena", b"content-encoding: gzip" in head.lower()
+              and plain == f"GET {long}|||hello", head[:200])
+        r = exchange([req("GET", "/w/0")])
+        check("  0 ms: at once", r and r[0][2] == "waited 0", r)
         q = subprocess.run(["curl", "-q", "-sk", "--http2", f"https://localhost:{TLS}/e/h2"], capture_output=True, text=True)
         check("HTTP/2", q.stdout == "GET /e/h2|||hello", q.stdout)
         q = subprocess.run(["timeout", "8", str(BIN), "bench", f"https://127.0.0.1:{TLS}/e/h3", "proto=h3", "conns=1", "workers=1",

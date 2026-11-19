@@ -81,6 +81,7 @@ macro plan_regions action
 	action g_plan_zone, 4
 	action g_plan_tunpool, 4
 	action g_plan_mpush, 4
+	action g_plan_mods, 4
 	action g_plan_mpevery, 4
 	action g_tuns, TNL_SIZE * MAX_TUNS, g_plan_tuns, TNL_SIZE
 	action g_plan_qcc, 4

@@ -1009,8 +1009,13 @@ worker for each request of its routes, over HTTP/1.1, HTTP/2 or HTTP/3: it
 gets the request (`g_hm`: method, target, fields), its body read whole
 (Content-Length or chunked, decoded; HTTP/1.1), the route's ARG and a buffer
 of `MOD_OUT_CAP` bytes, and returns a status, a body length and a
-Content-Type. It must not block. Keep-alive and pipelining go on after it,
-the body used up. The register contract is at the top of
+Content-Type; or a pointer to a body of its own (the request's, say, up to
+1 MiB). It must not block: an answer that must wait (a timer, an outside
+event) returns status 0 and the microseconds to wait, and okena calls it
+again then, the request held without a thread (requests without a body). A
+body past 1 MiB is refused with 413. On a route with `compress`, its answer
+is compressed as any other. Keep-alive and pipelining go on after it, the
+body used up. The register contract is at the top of
 [src/core/modules.inc](../src/core/modules.inc), and
 [tests/modules/test.inc](../tests/modules/test.inc) is a small example. A
 binary without the module refuses `handler NAME`, saying which modules it has.

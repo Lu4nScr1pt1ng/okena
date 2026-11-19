@@ -4,10 +4,14 @@
 ;   echo   "METHOD TARGET|ARG|BODY|WORD" (WORD: what its init read)
 ;   json   201, {"ok":true}, application/json
 ;   broken a status that is none (okena answers 500)
+;   raw    the body itself, answered from where it is (rcx), any size
+;   wait   /w/MS: held MS milliseconds, then "waited MS"
 
 okena_handler 'echo', mt_echo
 okena_handler 'json', mt_json
 okena_handler 'broken', mt_broken
+okena_handler 'raw', mt_raw
+okena_handler 'wait', mt_wait
 okena_init mt_init
 
 bss
@@ -119,3 +123,64 @@ mt_broken:
 
 mt_plain	db 'text/plain; charset=utf-8',0
 mt_jtype	db 'application/json',0
+
+mt_raw:
+	mov	eax,200
+	mov	r8,rdx				; where the body is
+	mov	edx,ecx				; its length
+	mov	rcx,r8
+	test	edx,edx
+	jnz	@f
+	xor	ecx,ecx				; (none: from rdi, nothing)
+@@:
+	lea	rsi,[mt_octets]
+	ret
+
+mt_wait:
+	; the milliseconds: the path's last segment
+	mov	rsi,[g_hm+HM_TARGET]
+	mov	ecx,[g_hm+HM_PLEN]
+	lea	r11,[rsi+rcx]
+	xor	eax,eax
+@@:
+	cmp	r11,rsi
+	jbe	@f
+	movzx	edx,byte [r11-1]
+	cmp	dl,'/'
+	je	@f
+	dec	r11
+	jmp	@b
+@@:
+	lea	rcx,[rsi+rcx]
+.d:
+	cmp	r11,rcx
+	jae	.got
+	movzx	edx,byte [r11]
+	sub	edx,'0'
+	cmp	edx,9
+	ja	.got
+	imul	eax,eax,10
+	add	eax,edx
+	inc	r11
+	jmp	.d
+.got:
+	test	r10d,r10d
+	jnz	.answer
+	imul	edx,eax,1000			; held that long, then called again
+	xor	eax,eax
+	ret
+.answer:
+	mov	r8,rdi
+	mov	dword [rdi],'wait'
+	mov	word [rdi+4],'ed'
+	mov	byte [rdi+6],' '
+	add	rdi,7
+	call	fmt_u64
+	mov	rdx,rdi
+	sub	rdx,r8
+	mov	eax,200
+	xor	ecx,ecx
+	lea	rsi,[mt_plain]
+	ret
+
+mt_octets	db 'application/octet-stream',0

@@ -327,6 +327,7 @@ bss
 	g_plan_zone	dd ?		; `okena { zone NAME }`: its hash, 0 none
 	g_plan_tunpool	dd ?		; the hidden pool of `tunnel` routes + 1, 0 none
 	g_plan_mpush	dd ?		; `metrics_push`: its destination + 1, 0 none (mpush.inc)
+	g_plan_mods	dd ?		; a route has `handler` (modules.inc)
 	g_plan_mpevery	dd ?		; and its period, seconds
 	g_plan_tuns	dd ?
 	g_tuns:		rb TNL_SIZE * MAX_TUNS
