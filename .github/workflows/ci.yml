@@ -1,0 +1,40 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: make
+      - name: Smoke test
+        run: scripts/smoke.sh build/okena
+      - name: Release archive
+        run: make dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: okena-linux-x86_64
+          path: build/dist/*.tar.gz*
+
+  docker:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the image
+        run: docker build -t okena:ci .
+      - name: Run it as shipped
+        run: |
+          docker run -d --name okena -p 8080:8080 okena:ci
+          for i in $(seq 1 30); do curl -fs http://127.0.0.1:8080/ && break; sleep 0.5; done
+          curl -fs http://127.0.0.1:8080/ | grep -q 'okena is running'
+          docker logs okena
+          docker stop -t 10 okena
+          test "$(docker inspect -f '{{.State.ExitCode}}' okena)" = 0

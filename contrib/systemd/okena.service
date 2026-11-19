@@ -20,6 +20,9 @@ TimeoutStopSec=15s
 # `okena { user okena }` drops the processes that face the network to this user;
 # the supervisor stays root to read keys and bind low ports on a reload
 LimitNOFILE=1048576
+# /run/okena, for `okena { admin unix:/run/okena/admin.sock }` (okena reload, top, backend...)
+RuntimeDirectory=okena
+RuntimeDirectoryMode=0700
 # `okena upgrade` (a binary handed over in place): the new one says READY=1
 # itself, and the old one MAINPID= of the new as it leaves
 NotifyAccess=all

@@ -1,0 +1,67 @@
+name: release
+
+# A tag v0.1.0 makes the release: the archive and its checksum on GitHub, the
+# image on ghcr.io (0.1.0, 0.1 and latest).
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: The tag is the version the binary says
+        run: |
+          v="$(sed -n "s/^OKENA_VERSION equ '\(.*\)'/\1/p" src/cli.inc)"
+          test "v$v" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME, source says $v"; exit 1; }
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+      - name: Build
+        run: make
+      - name: Smoke test
+        run: scripts/smoke.sh build/okena
+      - name: Archive
+        run: make dist
+      - name: Notes from CHANGELOG.md
+        run: |
+          awk -v v="$VERSION" '$0 ~ "^## "v" " {f=1; next} f && /^## / {exit} f' CHANGELOG.md > notes.md
+          test -s notes.md
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "okena $VERSION" --notes-file notes.md \
+            build/dist/okena-$VERSION-linux-x86_64.tar.gz \
+            build/dist/okena-$VERSION-linux-x86_64.tar.gz.sha256
+
+  image:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push
+        run: |
+          img=ghcr.io/$(echo "$GITHUB_REPOSITORY_OWNER" | tr A-Z a-z)/okena
+          minor="${VERSION%.*}"
+          docker build --build-arg VERSION="$VERSION" \
+            -t "$img:$VERSION" -t "$img:$minor" -t "$img:latest" .
+          docker run -d --name okena -p 8080:8080 "$img:$VERSION"
+          for i in $(seq 1 30); do curl -fs http://127.0.0.1:8080/ && break; sleep 0.5; done
+          curl -fs http://127.0.0.1:8080/ | grep -q 'okena is running'
+          docker rm -f okena
+          docker push "$img:$VERSION"
+          docker push "$img:$minor"
+          docker push "$img:latest"

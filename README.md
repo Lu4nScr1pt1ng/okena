@@ -99,31 +99,52 @@ quarantine for requests that crash a worker.
 
 ## Getting started
 
-okena needs Linux on x86-64. io_uring is used when the kernel allows it,
-epoll otherwise.
+okena runs on Linux (6.1 or later) on x86-64. io_uring is used when the
+kernel allows it, epoll otherwise. Releases are on the
+[releases page](https://github.com/Lu4nScr1pt1ng/okena/releases).
 
-**Build from source.** The Makefile downloads the fasm2 assembler the first
-time:
+**Install the binary.** One static file, checked against its published
+SHA-256, into `/usr/local/bin`, with an example configuration in
+`/etc/okena/okena.conf` when there is none:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Lu4nScr1pt1ng/okena/main/scripts/install.sh | sh
+okena tcp :5432 to 10.0.0.11:5432 10.0.0.12:5432     # or: okena -c /etc/okena/okena.conf
+```
+
+Add `-s -- --systemd` after `sh` to install and enable the systemd service
+too. Or download `okena-VERSION-linux-x86_64.tar.gz` from the release by hand:
+it holds the binary, the examples, the systemd units and the seccomp profile.
+
+**Or run the container.** The image is `FROM scratch`, about 1 MB, and runs as
+a non-root user. With no configuration it serves a page on :8080 that says it
+runs:
+
+```sh
+docker run -p 8080:8080 ghcr.io/lu4nscr1pt1ng/okena
+docker run --network host -v ./okena.conf:/etc/okena/okena.conf:ro \
+    --security-opt seccomp=okena.seccomp.json ghcr.io/lu4nscr1pt1ng/okena
+```
+
+The seccomp profile (in the release archive, and `docker/okena.seccomp.json`
+here) is Docker's default plus io_uring; without it okena runs on epoll. Ports
+below 1024 with host networking need an extra step, described in
+[CONFIG.md](docs/CONFIG.md#docker). On Kubernetes, the Helm chart in
+[contrib/helm/okena](contrib/helm/okena) installs it as the Ingress controller.
+
+**Or build from source.** The Makefile downloads the pinned fasm2 assembler
+the first time; the result is the same binary as the release's:
 
 ```sh
 git clone https://github.com/Lu4nScr1pt1ng/okena
 cd okena
 make                              # build/okena
-build/okena tcp :5432 to 10.0.0.11:5432 10.0.0.12:5432
+sudo make install                 # /usr/local/bin/okena, /etc/okena/okena.conf
 ```
 
-**Or with Docker.** The image is `FROM scratch`, under 1 MB, and runs as a
-non-root user:
-
-```sh
-docker build -t okena .
-docker run --network host -v ./okena.conf:/etc/okena/okena.conf:ro \
-    --security-opt seccomp=docker/okena.seccomp.json okena
-```
-
-The seccomp profile is Docker's default plus io_uring; without it okena runs
-on epoll. Ports below 1024 with host networking need an extra step, described
-in [CONFIG.md](docs/CONFIG.md#docker).
+[examples/](examples) has configurations to start from: a reverse proxy,
+automatic HTTPS, a static site with an API, an API gateway, TCP and UDP, and a
+forward proxy.
 
 **A configuration file.** okena reads `/etc/okena/okena.conf`, or `-c FILE`:
 
@@ -150,7 +171,8 @@ http :443 {
 okena check okena.conf     # validate, with errors that point at the line
 okena explain okena.conf   # the main settings, with every default filled in
 okena -c okena.conf        # run
-okena reload               # apply changes without dropping a connection
+okena reload               # apply changes without dropping a connection (with `admin unix:PATH`;
+                           # a SIGHUP, or systemctl reload okena, does it too)
 ```
 
 ## Documentation
@@ -176,8 +198,10 @@ configuration language.
 
 ## Status
 
-okena is young: version 0.0.1, not yet used widely in production, and the
-configuration language may still change between versions.
+okena 0.1.0 is its first release. It is not yet used widely in production,
+and until 1.0 the configuration language may still change between minor
+versions; [CHANGELOG.md](CHANGELOG.md) says what changes and what to write
+instead.
 
 ## License
 

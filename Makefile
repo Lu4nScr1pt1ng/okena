@@ -9,7 +9,11 @@ TLSC      := build/tlsclient
 TLS12S    := build/tlsserver12
 TLSC12    := build/tlsclient12
 
-.PHONY: all toolchain test test-serial fuzz bench chaos soak image docker-test clean
+.PHONY: all toolchain test test-serial fuzz bench chaos soak image docker-test clean dist install
+
+VERSION   := $(shell sed -n "s/^OKENA_VERSION equ '\(.*\)'/\1/p" src/cli.inc)
+DIST      := okena-$(VERSION)-linux-x86_64
+PREFIX    ?= /usr/local
 
 all: $(BIN)
 
@@ -389,7 +393,29 @@ test-serial: $(BIN) $(HTTPH) $(KAT) $(TLSH)
 	python3 -I tests/gateway/jwtfuzz.py epoll 8 15000
 
 image:
-	docker build -t okena .
+	docker build --build-arg VERSION=$(VERSION) -t okena:$(VERSION) -t okena .
+
+# the release archive: the binary, its examples, systemd units, the container
+# seccomp profile and a checksum (build/dist/)
+dist: $(BIN)
+	rm -rf build/dist/$(DIST)
+	mkdir -p build/dist/$(DIST)/examples build/dist/$(DIST)/systemd
+	cp $(BIN) LICENSE README.md CHANGELOG.md build/dist/$(DIST)/
+	cp examples/*.conf build/dist/$(DIST)/examples/
+	cp contrib/systemd/okena.service contrib/systemd/okena.socket build/dist/$(DIST)/systemd/
+	cp docker/okena.seccomp.json build/dist/$(DIST)/
+	tar -C build/dist --owner=0 --group=0 --numeric-owner --sort=name \
+		--mtime="$$(git log -1 --format=%cI 2>/dev/null || date -u +%FT%TZ)" \
+		-czf build/dist/$(DIST).tar.gz $(DIST)
+	cd build/dist && sha256sum $(DIST).tar.gz > $(DIST).tar.gz.sha256
+	@cat build/dist/$(DIST).tar.gz.sha256
+
+# make install [PREFIX=/usr/local] [DESTDIR=]: the binary, and a configuration
+# to start from when there is none
+install: $(BIN)
+	install -D -m 0755 $(BIN) $(DESTDIR)$(PREFIX)/bin/okena
+	install -d -m 0755 $(DESTDIR)/etc/okena
+	test -e $(DESTDIR)/etc/okena/okena.conf || install -m 0644 examples/reverse-proxy.conf $(DESTDIR)/etc/okena/okena.conf
 
 docker-test:
 	./tests/docker.sh
