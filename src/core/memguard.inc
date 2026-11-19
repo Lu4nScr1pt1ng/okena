@@ -6,15 +6,16 @@
 ;
 ;   - new HTTP/2 streams are refused (REFUSED_STREAM: safe to send again);
 ;   - HTTP/2 connections with streams that wait for the client's window or for
-;     room are sent GOAWAY (ENHANCE_YOUR_CALM) and closed: a client that asks
-;     and never takes the answers holds memory it is not using
-;     (CVE-2019-9517, "window stall").
+;     room, or with no stream at all, are sent GOAWAY (ENHANCE_YOUR_CALM) and
+;     closed: a client that asks and never takes the answers holds memory it
+;     is not using (CVE-2019-9517, "window stall"), and an idle one may come
+;     back when there is room.
 ;
 ; Without a limit (memory.max "max", or no cgroup v2) it does nothing and costs
 ; nothing.
 
-MG_HI		:= 80			; percent of memory.max: tight from here
-MG_LO		:= 70			; and until under this
+MG_HI		:= 70			; percent of memory.max: tight from here
+MG_LO		:= 60			; and until under this
 MG_EVERY	:= 256			; new streams between looks
 
 bss
@@ -181,8 +182,11 @@ mg_tick:
 	c2_regs
 	test	dword [r13+C2_FLAGS],C2F_CLOSING or C2F_CLIENT
 	jnz	.skip
-	cmp	dword [r13+C2_BLKH],0		; streams waiting for window or room
-	je	.skip
+	cmp	dword [r13+C2_BLKH],0		; streams waiting for window or room,
+	jne	@f
+	cmp	dword [r13+C2_NSTR],0		; or none at all (idle: it may come back)
+	jne	.skip
+@@:
 	mov	edx,H2E_CALM
 	call	h2_goaway
 	call	h2_pump				; (its GOAWAY out, then closed)
