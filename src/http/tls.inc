@@ -32,6 +32,7 @@ HS_TLS_TAKE	:= 18
 HS_TLS_KTLS	:= 19
 HS_TLS_RETRY	:= 20
 HS_TLS_ALERT	:= 21
+TLS_FIN_SPILL	:= TLS_RECORD_MAX + 256 + 5 - H_IN_CAP	; a record past IN, at most
 HS_PT_HELLO	:= 22				; tls passthrough: reading the ClientHello
 HS_TLS_LAST	:= 22				; the last of them (phase expiry)
 HS_TLS_NST	:= 34				; client_ca: its ticket going out, the handshake done
@@ -43,6 +44,7 @@ KTLS_INFO	:= 40				; tls12_crypto_info_aes_gcm_128
 KTLS_INFO_CP	:= 56				; tls12_crypto_info_chacha20_poly1305
 KTLS_SLOT	:= KTLS_INFO_CP			; TX and RX slots of a TLS 1.3 connection
 HB_RXC		:= HB_TLS + 2048		; user-space records: ciphertext in
+assert HB_KTLS + 2 * KTLS_SLOT <= HB_RXC
 UTLS_RX_CAP	:= TLS_RECORD_MAX + 256 + 5 + 251	; one whole record (17 KiB)
 HB_TXC		:= HB_RXC + UTLS_RX_CAP	; and out, two records at a time
 UTLS_TX_RECS	:= 2
@@ -311,8 +313,8 @@ http_tls_flight_sent:
 http_tls_peek:
 	mov	dword [r15+H_STATE],HS_TLS_FIN
 http_tls_peek_on:
-	mov	esi,H_IN_CAP
-	sub	esi,[r15+H_INLEN]
+	mov	esi,H_IN_CAP + TLS_FIN_SPILL	; (a Finished padded to the most a record
+	sub	esi,[r15+H_INLEN]		; holds: OUT's first bytes, unused here)
 	jz	http_tls_close
 	mov	edi,[r15+H_INLEN]
 	add	rdi,[r15+H_BUF]
@@ -342,8 +344,10 @@ http_tls_fin_peeked:
 	jb	.all
 	movzx	eax,word [rsi+rcx+3]
 	rol	ax,8
+	cmp	eax,TLS_RECORD_MAX + 256	; past what a record may hold: record_overflow
+	ja	.overflow			; (RFC 8446 5.2)
 	lea	eax,[rcx+rax+5]			; its end
-	cmp	eax,H_IN_CAP
+	cmp	eax,H_IN_CAP + TLS_FIN_SPILL
 	ja	http_tls_close
 	cmp	eax,[r15+H_INLEN]		; (a client certificate takes several: taken already)
 	jbe	.past
@@ -356,6 +360,9 @@ http_tls_fin_peeked:
 .all:
 	mov	eax,edx
 	jmp	.take
+.overflow:
+	mov	edx,22
+	jmp	http_tls_alert
 .finished:
 	cmp	eax,edx
 	jbe	.take
@@ -387,9 +394,10 @@ http_tls_fin_in:
 	cmp	eax,TH_MORE
 	je	http_tls_peek
 	cmp	eax,TH_DONE
-	jne	http_tls_close			; forged, or an alert
+	jne	.refused			; forged, or an alert
 	cmp	edx,[r15+H_INLEN]
-	jne	http_tls_close
+	mov	edx,10				; (more after the Finished: unexpected_message)
+	jne	.refused
 	mov	eax,1				; TLS 1.3, done
 	call	tls_count
 	mov	rax,[r15+H_BUF]
@@ -431,6 +439,38 @@ http_tls_fin_in:
 	add	rdi,HB_OUT
 	mov	ecx,SIDE_CLIENT
 	jmp	h_send_raw
+.refused:
+	; edx = the alert it says (0: none, the client's own came): sealed under the
+	; server's application key, which the client reads with once it sent its
+	; Finished (RFC 8446 4.4.4, 6.2); then closed
+	test	edx,edx
+	jz	http_tls_close
+	jmp	http_tls_alert
+
+; ebx, r15: a fatal alert edx (RFC 8446 6.2) under the server's application
+; key, at the next sequence, then the connection closes (HS_TLS_ALERT).
+http_tls_alert:
+	push	rdx
+	mov	r8,[r15+H_BUF]
+	lea	rdi,[r8+HB_TS]
+	call	tls_records			; (the keys expanded, if they were not)
+	pop	rdx
+	mov	r8,[r15+H_BUF]
+	lea	rsi,[r8+HB_TXC]
+	mov	byte [rsi+5],2			; fatal, its description
+	mov	[rsi+6],dl
+	lea	rdi,[r8+HB_TS]
+	mov	edx,2
+	mov	ecx,21
+	call	tls_seal
+	h_rec
+	mov	dword [r15+H_STATE],HS_TLS_ALERT
+	mov	esi,eax
+	mov	rdi,[r15+H_BUF]
+	add	rdi,HB_TXC
+	mov	ecx,SIDE_CLIENT
+	jmp	h_send_raw
+
 ; (the ticket out) the keys: to the kernel, or kept here
 http_tls_fin_keys:
 
@@ -884,7 +924,7 @@ utls_rx_step:
 	cmp	eax,TH_MORE
 	je	.read
 	cmp	eax,TH_FAIL
-	je	.fail
+	je	http_tls_alert			; (edx: the alert it calls for)
 	cmp	r8d,23				; application_data
 	jne	.control
 	mov	rax,[r15+H_BUF]
@@ -929,7 +969,23 @@ utls_rx_step:
 	jmp	h_recv_raw
 .control:
 	cmp	r8d,21				; an alert: close_notify, or worse
-	jne	.fail				; post-handshake messages: not taken
+	je	.alert_in
+	cmp	r8d,22				; a handshake message after the handshake
+	jne	.unexpected			; (a CCS, an unknown type: no)
+	mov	[r15+H_PTEND],edx		; (the record, gone once read)
+	mov	dword [r15+H_PTLEN],0
+	call	utls_post_handshake		; a KeyUpdate: taken (edx: an alert, 0 none)
+	h_rec
+	test	edx,edx
+	jnz	http_tls_alert
+	call	.drop_record
+	jmp	utls_rx_step
+.unexpected:
+	mov	edx,10				; unexpected_message
+	jmp	http_tls_alert
+.alert_in:
+	cmp	ecx,2				; (an alert is two bytes: anything else is
+	jne	.unexpected			; not one)
 	xor	eax,eax				; the end of the stream
 	utls_deliver 3
 .fail:
@@ -959,6 +1015,46 @@ utls_rx_done:
 .end:
 	utls_deliver 3				; the end of the stream, or an error
 
+; ebx, r15, rsi/ecx = a handshake record's plaintext after the handshake: a
+; KeyUpdate (RFC 8446 4.6.3) is taken: the client's next keys, and ours after
+; the next data when it asks (TF_KUSEND). edx = the alert anything else calls
+; for, 0 none. A KeyUpdate ends its record (5.1); fragmented ones are refused.
+utls_post_handshake:
+	cmp	ecx,4
+	jb	.decode
+	cmp	byte [rsi],24			; KeyUpdate
+	jne	.unexpected
+	cmp	dword [rsi],0x01000018		; its length: 1
+	jne	.decode
+	cmp	ecx,5
+	jb	.decode
+	ja	.unexpected			; (more after it in the record)
+	movzx	eax,byte [rsi+4]
+	cmp	eax,1
+	ja	.illegal
+	push	rax
+	mov	rdi,[r15+H_BUF]
+	add	rdi,HB_TS
+	call	ku_rx
+	pop	rax
+	h_rec
+	test	eax,eax
+	jz	.ok
+	mov	rax,[r15+H_BUF]			; update_requested: ours before the next data
+	or	dword [rax+HB_TS+TS_FLAGS],TF_KUSEND
+.ok:
+	xor	edx,edx
+	ret
+.decode:
+	mov	edx,50				; decode_error
+	ret
+.unexpected:
+	mov	edx,10				; unexpected_message
+	ret
+.illegal:
+	mov	edx,47				; illegal_parameter
+	ret
+
 ; h_send on the client of a user-space TLS session: rdi = bytes, esi =
 ; length. Sealed into records, two at a time, and sent.
 utls_send:
@@ -974,6 +1070,23 @@ utls_tx_step:
 	mov	r12,[r15+H_BUF]
 	add	r12,HB_TXC			; r12 = the next record
 	mov	r13d,UTLS_TX_RECS
+	mov	rax,[r15+H_BUF]			; a KeyUpdate the client asked for: ours
+	test	dword [rax+HB_TS+TS_FLAGS],TF_KUSEND	; first, under the keys it knows,
+	jz	.record				; then the next ones (one data record
+	and	dword [rax+HB_TS+TS_FLAGS],not TF_KUSEND	; this time: the room)
+	mov	dword [r12+5],0x01000018	; KeyUpdate, update_not_requested
+	mov	byte [r12+9],0
+	lea	rdi,[rax+HB_TS]
+	mov	rsi,r12
+	mov	edx,5
+	mov	ecx,22
+	call	tls_seal
+	add	r12,rax
+	mov	rdi,[r15+H_BUF]
+	add	rdi,HB_TS
+	call	ku_tx
+	h_rec
+	mov	r13d,1
 .record:
 	mov	ecx,[r15+H_TXLEN]
 	cmp	ecx,TLS_RECORD_MAX

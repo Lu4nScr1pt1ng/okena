@@ -72,7 +72,9 @@ TS_TKCERT	:= TS_TKNOW + 4			; q: the certificate a ticket names
 TS_RMS		:= TS_TKCERT + 8		; the master secret, until the client's flight (32)
 TS_TKT		:= TS_RMS + 32			; a ticket to send after it (TK_SIZE), its
 TS_TKAGE	:= TS_TKT + TK_SIZE		; d: age_add
-TS_SIZE		:= TS_TKAGE + 4
+TS_RXSEC	:= TS_TKAGE + 4			; the client's application traffic secret (48)
+TS_TXSEC	:= TS_RXSEC + 48		; ours: KeyUpdate derives the next from each
+TS_SIZE		:= TS_TXSEC + 48
 
 ; QUIC (RFC 9001): the handshake without records. The caller sets TF_QUIC
 ; and TS_QT; tls_hello then takes the ClientHello message itself (from
@@ -119,6 +121,7 @@ TF_ECHHRR	:= 2048				; ECH opened before a HelloRetryRequest (its context in TS_
 TF_ECHREJ	:= 32768			; ECH not opened before it (retry_configs in the flight)
 TF_NO13		:= 131072			; set by the caller: TLS 1.3 is not taken (`versions 1.2`)
 TF_H1FIRST	:= 262144			; set by the caller: http/1.1 before h2 (`alpn http/1.1 h2`)
+TF_KUSEND	:= 524288			; the client asked for our KeyUpdate: sent before the next data
 TF_NST		:= 16384			; TS_TKT: a ticket to send once the client's flight is good				; acme-tls/1 chosen: the challenge's certificate
 
 TH_MORE		:= 0
@@ -1773,6 +1776,10 @@ tls_hello:
 	thx_tlabel [rbp+HL_TMP], [g_hlen], [rbp+HL_MS], lbl_c_ap, [rbp+HL_TH], [g_hlen]
 	thx_tlabel [rbx+TS_RX_KEY], [rbx+TS_KEYLEN], [rbp+HL_TMP], lbl_key
 	thx_tlabel [rbx+TS_RX_IV], 12, [rbp+HL_TMP], lbl_iv
+	lea	rsi,[rbp+HL_TMP]		; (kept: a KeyUpdate's next keys come from it)
+	lea	rdi,[rbx+TS_RXSEC]
+	mov	ecx,48
+	rep	movsb
 	test	dword [rbx+TS_FLAGS],TF_QUIC
 	jz	@f
 	mov	rdi,[rbx+TS_QT]
@@ -1784,6 +1791,10 @@ tls_hello:
 	thx_tlabel [rbp+HL_TMP], [g_hlen], [rbp+HL_MS], lbl_s_ap, [rbp+HL_TH], [g_hlen]
 	thx_tlabel [rbx+TS_TX_KEY], [rbx+TS_KEYLEN], [rbp+HL_TMP], lbl_key
 	thx_tlabel [rbx+TS_TX_IV], 12, [rbp+HL_TMP], lbl_iv
+	lea	rsi,[rbp+HL_TMP]
+	lea	rdi,[rbx+TS_TXSEC]
+	mov	ecx,48
+	rep	movsb
 	lea	rdi,[rbx+TS_CFIN]
 	lea	rsi,[rbp+HL_CFK]
 	mov	edx,[g_hlen]
@@ -2205,16 +2216,20 @@ tls_finished:
 	movzx	ecx,word [r14+3]
 	rol	cx,8
 	cmp	ecx,TLS_RECORD_MAX + 256
-	ja	.fail
+	ja	.f_overflow
 	lea	r15,[r14+5+rcx]			; the record's end
 	cmp	r15,r13
 	ja	.more
 	cmp	byte [r14],20			; ChangeCipherSpec, compatibility mode
 	je	.ccs
 	cmp	byte [r14],23			; application_data: an encrypted record
-	jne	.fail				; (a plaintext alert too)
+	je	@f
+	cmp	byte [r14],21			; a plaintext alert: the client's end,
+	je	.f_quiet			; not answered
+	jmp	.f_unexpected
+@@:
 	cmp	ecx,17
-	jb	.fail
+	jb	.f_mac
 	lea	rdi,[rsp+FN_GCM]
 	lea	rsi,[rbx+TS_CHS_KEY]
 	mov	edx,[rbx+TS_SUITE]
@@ -2228,52 +2243,89 @@ tls_finished:
 	sub	r9,r8
 	call	aead_open
 	test	eax,eax
-	jz	.fail
+	jz	.f_mac
+	lea	rax,[r15-16]			; TLSInnerPlaintext: 2^14 + 1 at most (5.4)
+	sub	rax,r14
+	sub	rax,5
+	cmp	rax,TLS_RECORD_MAX + 1
+	ja	.f_overflow
 	; the inner plaintext: content, its type, zero padding
 	lea	rdi,[r15-17]
 	lea	rsi,[r14+5]
 .unpad:
 	cmp	rdi,rsi
-	jb	.fail				; all zeros: no content type
+	jb	.f_unexpected			; all zeros: no content type
 	cmp	byte [rdi],0
 	jne	@f
 	dec	rdi
 	jmp	.unpad
 @@:
 	cmp	byte [rdi],22			; handshake
-	jne	.fail				; (an alert from the client)
+	je	@f
+	cmp	byte [rdi],21			; an alert from the client: not answered,
+	jne	.f_unexpected			; unless it is not one (empty, or longer);
+	sub	rdi,rsi				; application data before it, ...
+	cmp	rdi,2
+	je	.f_quiet
+	jmp	.f_unexpected
+@@:
 	sub	rdi,rsi
+	cmp	rdi,4
+	jb	.f_decode
+	cmp	byte [rsi],0			; (zeros before it: not a message)
+	je	.f_decode
+	cmp	byte [rsi],0x14			; another message than Finished
+	jne	.f_unexpected
+	mov	eax,[g_hlen]
+	shl	eax,24
+	or	eax,0x14
+	cmp	[rsi],eax			; its length the hash's (else decode_error)
+	jne	.f_decode
 	mov	eax,[g_hlen]
 	lea	ecx,[rax+4]
 	cmp	rdi,rcx				; Finished, and nothing else
-	jne	.fail
-	shl	eax,24
-	or	eax,0x14
-	cmp	[rsi],eax
-	jne	.fail
+	ja	.f_unexpected			; (more after it: a KeyUpdate, ...)
+	jb	.f_decode
 	lea	rdi,[rsi+4]
 	lea	rsi,[rbx+TS_CFIN]
 	mov	edx,[g_hlen]
 	call	ct_equal
 	test	eax,eax
-	jz	.fail
+	jz	.f_decrypt
 	mov	rdx,r15
 	sub	rdx,r12
 	mov	eax,TH_DONE
 	jmp	.out
 .ccs:
 	cmp	ecx,1
-	jne	.fail
+	jne	.f_unexpected
 	cmp	byte [r14+5],1
-	jne	.fail
+	jne	.f_unexpected
 	mov	r14,r15
 	jmp	.record
 .more:
 	xor	edx,edx
 	mov	eax,TH_MORE
 	jmp	.keep
+.f_overflow:
+	mov	edx,22				; record_overflow
+	jmp	.failed
+.f_mac:
+	mov	edx,20				; bad_record_mac
+	jmp	.failed
+.f_unexpected:
+	mov	edx,10				; unexpected_message
+	jmp	.failed
+.f_decode:
+	mov	edx,50				; decode_error
+	jmp	.failed
+.f_decrypt:
+	mov	edx,51				; decrypt_error: not the Finished expected
+	jmp	.failed
+.f_quiet:
 .fail:
-	xor	edx,edx
+	xor	edx,edx				; (no alert back)
+.failed:
 	mov	eax,TH_FAIL
 .out:
 	; the handshake keys are done with, either way
@@ -2400,10 +2452,62 @@ tls_seal:
 	pop	rbx
 	ret
 
+; rdi = ts: the next generation of the client's application keys (RFC 8446
+; 7.2: secret_N+1 = HKDF-Expand-Label(secret_N, "traffic upd", "", Hash.length)),
+; for records opened here; their sequence starts again. Keeps rbx, rbp, r12-r15.
+ku_rx:
+	push	rbx
+	mov	rbx,rdi
+	sub	rsp,64
+	call	thx_of_ts
+	thx_tlabel [rsp], [g_hlen], [rbx+TS_RXSEC], lbl_tupd
+	mov	rsi,rsp
+	lea	rdi,[rbx+TS_RXSEC]
+	mov	ecx,48
+	rep	movsb
+	thx_tlabel [rbx+TS_RX_KEY], [rbx+TS_KEYLEN], [rbx+TS_RXSEC], lbl_key
+	thx_tlabel [rbx+TS_RX_IV], 12, [rbx+TS_RXSEC], lbl_iv
+	lea	rdi,[rbx+TS_RX_GCM]
+	lea	rsi,[rbx+TS_RX_KEY]
+	mov	edx,[rbx+TS_SUITE]
+	call	aead_init
+	mov	qword [rbx+TS_RX_SEQ],0
+	mov	rdi,rsp
+	mov	ecx,64
+	call	secure_zero
+	add	rsp,64
+	pop	rbx
+	ret
+
+; rdi = ts: ours, the same way (after our KeyUpdate went under the old ones).
+ku_tx:
+	push	rbx
+	mov	rbx,rdi
+	sub	rsp,64
+	call	thx_of_ts
+	thx_tlabel [rsp], [g_hlen], [rbx+TS_TXSEC], lbl_tupd
+	mov	rsi,rsp
+	lea	rdi,[rbx+TS_TXSEC]
+	mov	ecx,48
+	rep	movsb
+	thx_tlabel [rbx+TS_TX_KEY], [rbx+TS_KEYLEN], [rbx+TS_TXSEC], lbl_key
+	thx_tlabel [rbx+TS_TX_IV], 12, [rbx+TS_TXSEC], lbl_iv
+	lea	rdi,[rbx+TS_TX_GCM]
+	lea	rsi,[rbx+TS_TX_KEY]
+	mov	edx,[rbx+TS_SUITE]
+	call	aead_init
+	mov	qword [rbx+TS_TX_SEQ],0
+	mov	rdi,rsp
+	mov	ecx,64
+	call	secure_zero
+	add	rsp,64
+	pop	rbx
+	ret
+
 ; rdi = ts, rsi = received bytes, edx = their length: the first record
 ; opened in place. eax = TH_MORE (incomplete), TH_FAIL (forged, or not a
-; record), or TH_DONE with rsi = its plaintext, ecx = the plaintext
-; length, r8d = the content type, edx = the bytes it took.
+; record: edx = the alert it calls for), or TH_DONE with rsi = its plaintext,
+; ecx = the plaintext length, r8d = the content type, edx = the bytes it took.
 tls_open:
 	test	dword [rdi+TS_FLAGS],TF_T12
 	jnz	utls12_open
@@ -2416,13 +2520,13 @@ tls_open:
 	cmp	edx,5
 	jb	.more
 	cmp	byte [rsi],23
-	jne	.fail
+	jne	.f_unexpected
 	movzx	ecx,word [rsi+3]
 	rol	cx,8
 	cmp	ecx,TLS_RECORD_MAX + 256
-	ja	.fail
+	ja	.f_overflow
 	cmp	ecx,17
-	jb	.fail
+	jb	.f_mac
 	lea	r13d,[rcx+5]			; the record's length
 	cmp	edx,r13d
 	jb	.more
@@ -2438,13 +2542,16 @@ tls_open:
 	lea	r9d,[r13-21]
 	call	aead_open
 	test	eax,eax
-	jz	.fail
+	jz	.f_mac
 	inc	qword [rbx+TS_RX_SEQ]
+	lea	eax,[r13-21]			; TLSInnerPlaintext: 2^14 + 1 at most (5.4)
+	cmp	eax,TLS_RECORD_MAX + 1
+	ja	.f_overflow
 	lea	rsi,[r12+5]
 	lea	rdi,[r12+r13-17]
 .unpad:
 	cmp	rdi,rsi
-	jb	.fail
+	jb	.f_unexpected			; (all zeros: no content type)
 	movzx	r8d,byte [rdi]
 	test	r8d,r8d
 	jnz	@f
@@ -2453,12 +2560,22 @@ tls_open:
 @@:
 	mov	rcx,rdi
 	sub	rcx,rsi
+	cmp	ecx,TLS_RECORD_MAX		; (its plaintext past 2^14)
+	ja	.f_overflow
 	mov	edx,r13d
 	mov	eax,TH_DONE
 	jmp	.out
 .more:
 	mov	eax,TH_MORE
 	jmp	.out
+.f_unexpected:
+	mov	edx,10				; TH_FAIL, edx = the alert: unexpected_message,
+	jmp	.fail
+.f_overflow:
+	mov	edx,22				; record_overflow,
+	jmp	.fail
+.f_mac:
+	mov	edx,20				; bad_record_mac
 .fail:
 	mov	eax,TH_FAIL
 .out:

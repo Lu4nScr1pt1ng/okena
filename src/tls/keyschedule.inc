@@ -22,6 +22,7 @@ rodata
 	lbl_derived		db 'derived',0
 	lbl_key			db 'key',0
 	lbl_iv			db 'iv',0
+	lbl_tupd		db 'traffic upd',0
 	lbl_finished		db 'finished',0
 	lbl_res_master		db 'res master',0
 	lbl_resumption		db 'resumption',0

@@ -135,6 +135,8 @@ SUITES = [
     ("passthrough io_uring", ["tests/tls/passthrough.py", "io_uring"]),
     ("passthrough epoll", ["tests/tls/passthrough.py", "epoll"]),
     ("tls client", ["tests/tls/client.py"]),
+    ("keyupdate io_uring", ["tests/tls/keyupdate.py", "io_uring"]),
+    ("keyupdate epoll", ["tests/tls/keyupdate.py", "epoll"]),
     ("tls 1.2 client", ["tests/tls/client12.py"]),
     ("tlsfuzzer", ["tests/tls/tlsfuzz.py"]),
     ("tls12 server", ["tests/tls/server12.py"]),
