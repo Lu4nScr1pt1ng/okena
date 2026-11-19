@@ -3562,15 +3562,8 @@ h3_head_out:
 	push	rbp
 	mov	rsi,[r12+H_H3PP]
 	mov	ecx,[r12+H_H3PL]
-	xor	edx,edx
-.find:
-	lea	eax,[rdx+4]
-	cmp	eax,ecx
-	ja	.broken
-	cmp	dword [rsi+rdx],0x0A0D0A0D
-	je	.found
-	inc	edx
-	jmp	.find
+	call	crlf2_find
+	jc	.broken
 .found:
 	lea	ebp,[rdx+4]			; the head's length
 	cmp	ebp,13

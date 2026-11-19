@@ -224,6 +224,7 @@ bss
 	g_h2fl_n	dd ?			; connections whose send waits for the iteration's end
 	g_h2fl:		rq H2_FLUSH_MAX		; (session, generation) each
 	g_h2tmp_es	dd ?			; h2_head_out: END_STREAM on the HEADERS
+	g_h2_cl0	dd ?			; h2_head_out: content-length: 0 among its fields
 end bss
 
 rodata
@@ -3159,22 +3160,63 @@ h2_untable:
 ; ("HTTP/1.1 NNN reason\r\n" fields "\r\n"): a HEADERS frame from it, the
 ; pending bytes advanced past it. CF when OUT has no room for it.
 ; Connection-specific fields are dropped, names go lower case.
+; rsi = bytes, ecx = their length: edx = where the first CR LF CR LF begins
+; (a head's end). CF: none. Thirty-two bytes a step: every CR a candidate.
+; Keeps all but rax, rdx, ymm0, ymm1.
+crlf2_find:
+	push	rbx
+	xor	edx,edx
+	vpbroadcastb ymm1,byte [.cr]
+.vec:
+	lea	eax,[rdx+32+3]
+	cmp	eax,ecx
+	ja	.tail
+	vpcmpeqb ymm0,ymm1,[rsi+rdx]
+	vpmovmskb eax,ymm0
+.bits:
+	test	eax,eax
+	jz	.next
+	tzcnt	ebx,eax
+	add	ebx,edx
+	cmp	dword [rsi+rbx],0x0A0D0A0D
+	je	.hit
+	blsr	eax,eax
+	jmp	.bits
+.next:
+	add	edx,32
+	jmp	.vec
+.tail:
+	lea	eax,[rdx+4]
+	cmp	eax,ecx
+	ja	.none
+	cmp	dword [rsi+rdx],0x0A0D0A0D
+	je	.found
+	inc	edx
+	jmp	.tail
+.hit:
+	mov	edx,ebx
+.found:
+	vzeroupper
+	pop	rbx
+	clc
+	ret
+.none:
+	vzeroupper
+	pop	rbx
+	stc
+	ret
+.cr	db 13
+
 h2_head_out:
 	push	r12
 	push	rbp
 	mov	rsi,[r15+H_H2PP]
 	mov	ecx,[r15+H_H2PL]
 	; the head's end
-	xor	edx,edx
-.find:
-	lea	eax,[rdx+4]
-	cmp	eax,ecx
-	ja	.broken
-	cmp	dword [rsi+rdx],0x0A0D0A0D
-	je	.found
-	inc	edx
-	jmp	.find
+	call	crlf2_find
+	jc	.broken
 .found:
+	mov	dword [g_h2_cl0],0
 	lea	ebp,[rdx+4]			; ebp = the head's length
 	cmp	ebp,13
 	jb	.broken
@@ -3290,6 +3332,25 @@ h2_head_out:
 	pop	rsi
 	jnc	.next_line
 @@:
+	; content-length: 0 (the name lower case by now): the stream ends with it
+	mov	eax,r8d
+	sub	eax,ecx
+	cmp	eax,14
+	jne	@f
+	mov	eax,edx
+	sub	eax,r10d
+	cmp	eax,1
+	jne	@f
+	cmp	byte [rsi+r10],'0'
+	jne	@f
+	mov	rax,qword [rsi+rcx]
+	cmp	rax,qword [.n_cl]
+	jne	@f
+	mov	rax,qword [rsi+rcx+6]
+	cmp	rax,qword [.n_cl+6]
+	jne	@f
+	mov	dword [g_h2_cl0],H2_END_STREAM
+@@:
 	cmp	rdi,r12
 	ja	.broken				; a head larger than one block
 	push	rsi
@@ -3324,7 +3385,7 @@ h2_head_out:
 	xor	eax,eax
 	cmp	r9b,'1'
 	je	@f
-	call	h2_zero_length			; rsi = head, ebp = its length
+	mov	eax,[g_h2_cl0]			; (seen among its fields)
 @@:
 	mov	[g_h2tmp_es],eax
 	mov	eax,r12d			; its frames: one when it fits (nearly
@@ -3406,53 +3467,8 @@ h2_head_out:
 	ret
 .status	db ':status'
 .s200	db '200'
+.n_cl	db 'content-length'
 
-; rsi = an HTTP/1.1 head, ebp = its length: eax = H2_END_STREAM when it
-; has "content-length: 0" (any case), else 0. Keeps everything else.
-h2_zero_length:
-	push	rcx
-	push	rdx
-	push	rdi
-	xor	ecx,ecx
-.line:
-	lea	eax,[rcx+18]
-	cmp	eax,ebp
-	jae	.no
-	cmp	word [rsi+rcx],0x0A0D
-	jne	.next
-	lea	rdi,[rsi+rcx+2]
-	xor	edx,edx
-@@:
-	movzx	eax,byte [rdi+rdx]
-	or	al,0x20
-	cmp	al,[.cl+rdx]
-	jne	.next
-	inc	edx
-	cmp	edx,15
-	jb	@b
-@@:
-	cmp	byte [rdi+rdx],' '
-	jne	@f
-	inc	edx
-	jmp	@b
-@@:
-	cmp	byte [rdi+rdx],'0'
-	jne	.next
-	cmp	word [rdi+rdx+1],0x0A0D
-	jne	.next
-	mov	eax,H2_END_STREAM
-	jmp	.out
-.next:
-	inc	ecx
-	jmp	.line
-.no:
-	xor	eax,eax
-.out:
-	pop	rdi
-	pop	rdx
-	pop	rcx
-	ret
-.cl	db 'content-length:'
 
 ; r15 = stream record whose response had trailers (HB_TRAIL, CK_TLEN
 ; bytes of "name: value\r\n"): a HEADERS frame with END_STREAM from

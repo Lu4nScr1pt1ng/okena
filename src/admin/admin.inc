@@ -711,29 +711,72 @@ fmt_label:
 
 ; rdi = output, rax = value. rdi = after it.
 fmt_u64:
-	sub	rsp,24
-	lea	rsi,[rsp+24]
-	mov	ecx,10
-@@:
-	xor	edx,edx
-	div	rcx
-	add	dl,'0'
-	dec	rsi
-	mov	[rsi],dl
-	test	rax,rax
-	jnz	@b
-	lea	rcx,[rsp+24]
-	sub	rcx,rsi
-	rep	movsb
-	add	rsp,24
+	; (no div: its digits counted, then written two at a time from the end,
+	; by a multiply for each hundred; rax, rcx, rdx, rsi clobbered as before)
+	cmp	rax,10
+	jb	.one
+	mov	ecx,1
+	lea	rsi,[fmt_p10]
+.count:
+	cmp	ecx,20
+	jae	.counted
+	cmp	rax,[rsi+rcx*8-8]
+	jb	.counted
+	inc	ecx
+	jmp	.count
+.counted:
+	add	rdi,rcx
+	mov	rsi,rdi
+.pair:
+	cmp	rax,100
+	jb	.tail
+	mov	rcx,rax
+	shr	rax,2
+	mov	rdx,0x28F5C28F5C28F5C3		; x / 100 = ((x >> 2) * this) >> 66
+	mul	rdx
+	shr	rdx,2
+	imul	rax,rdx,100
+	sub	rcx,rax
+	movzx	eax,word [fmt_d2+rcx*2]
+	sub	rsi,2
+	mov	[rsi],ax
+	mov	rax,rdx
+	jmp	.pair
+.tail:
+	cmp	eax,10
+	jb	.single
+	movzx	eax,word [fmt_d2+rax*2]
+	mov	[rsi-2],ax
 	ret
+.single:
+	add	al,'0'
+	mov	[rsi-1],al
+	ret
+.one:
+	add	al,'0'
+	mov	[rdi],al
+	inc	rdi
+	ret
+
+rodata
+	align 8
+	fmt_p10:
+	dq 10, 100, 1000, 10000, 100000, 1000000, 10000000, 100000000, 1000000000
+	dq 10000000000, 100000000000, 1000000000000, 10000000000000, 100000000000000, 1000000000000000, 10000000000000000, 100000000000000000, 1000000000000000000, 10000000000000000000
+	fmt_d2:
+	repeat 100, k:0
+		db '0' + k / 10, '0' + k mod 10
+	end repeat
+end rodata
 
 ; Append literal text at rdi (rdi = after it; rsi = its end, rax clobbered,
 ; as fmt_cstr did). Its length is known here, so the bytes are copied inline,
 ; qwords, the last one overlapping: exactly the text, no byte past it. (A
 ; call to fmt_cstr, a byte at a time to the NUL, was a few percent of a
 ; request head's writing: a dozen literals.)
-macro memcopy_const s*, n*
+macro memcopy_const s*, nn*
+	local n
+	n = nn					; (evaluated once: `s.len - 1` / 8 is not (s.len - 1) / 8)
 	if n > 32				; (long ones: rare paths, not worth the code)
 		lea	rsi,[s]
 		call	fmt_cstr

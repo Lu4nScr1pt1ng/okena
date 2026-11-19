@@ -34,7 +34,9 @@
 ; each call. It keeps rbx, rbp and r12-r15, and must not block: it runs in
 ; the event loop.
 
-MOD_OUT_CAP	:= H_OUT_CAP - 1024		; (the head's room in OUT)
+MOD_HEAD_ROOM	:= 1024				; OUT: room for the head, then the body
+MOD_OUT_CAP	:= H_OUT_CAP - MOD_HEAD_ROOM - 16	; (and HB_TAIL, at OUT's end)
+MOD_HEAD_CAP	:= 8192				; a head as written, before it goes in place
 MOD_BODY_MAX	:= 1 shl 20			; a request body a handler gets, at most
 MOD_BUFS	:= 64				; buffers for bodies past the request's own, a worker
 MOD_XH_MAX	:= 2048				; a handler's own head lines, at most
@@ -75,6 +77,7 @@ bss
 	g_mod_blen	dd ?
 	g_mod_used	dd ?			; the body's bytes as they came (framing too)
 	g_mod_out	rb MOD_OUT_CAP + 64
+	g_mod_head	rb MOD_HEAD_CAP
 	g_mod_src	dd ?			; the body: 1 after the head, 2 in a buffer
 	g_mod_bidx	dd ?
 	g_mod_resumed	dd ?
@@ -438,7 +441,8 @@ mod_request:
 	mov	dword [g_mod_xhlen],0
 	mov	rdx,[g_mod_bptr]
 	mov	ecx,[g_mod_blen]
-	lea	rdi,[g_mod_out]
+	mov	rdi,[r15+H_BUF]			; the body where it is sent from: in OUT,
+	add	rdi,HB_OUT + MOD_HEAD_ROOM	; after the head's room (no copy after)
 	mov	esi,MOD_OUT_CAP
 	push	rbx
 	push	r15
@@ -695,7 +699,8 @@ mod_answer:
 	mov	r14,rcx
 	test	r14,r14
 	jnz	@f
-	lea	r14,[g_mod_out]
+	mov	r14,[r15+H_BUF]
+	add	r14,HB_OUT + MOD_HEAD_ROOM
 @@:
 	; a route that compresses: the answer goes through the response path, as a
 	; file's does (fs_head_ready), its body compressed when the client takes it
@@ -733,20 +738,59 @@ mod_answer:
 	mov	esi,5
 	call	http_count
 	pop	rax
-	mov	rdi,[r15+H_BUF]
-	lea	rdi,[rdi+HB_OUT]
+	; the head, written aside, then put where it goes
+	lea	rdi,[g_mod_head]
 	call	status_line
 	call	.fields
 	mov	rax,[g_mod_act]			; the route's response set and add, CORS
 	mov	esi,[g_acts+rax+RA_PFIRST]
 	mov	edx,[g_acts+rax+RA_PCOUNT]
 	push	r13
-	mov	r13,[r15+H_BUF]
-	lea	r13,[r13+HB_OUT+H_OUT_CAP-512]
+	lea	r13,[g_mod_head+MOD_HEAD_CAP-512]
 	call	hdrop_emit
 	pop	r13
 	call	cors_emit
 	memit_x 13,10
+	mov	rcx,rdi
+	lea	rsi,[g_mod_head]
+	sub	rcx,rsi				; the head's length
+	mov	rax,[r15+H_BUF]
+	lea	rdx,[rax+HB_OUT+MOD_HEAD_ROOM]
+	test	dword [r15+H_FLAGS],HX_HEAD
+	jnz	.at_start			; (HEAD: its length, no body)
+	cmp	r14,rdx
+	jne	.at_start
+	cmp	ecx,MOD_HEAD_ROOM
+	ja	.aside
+	; the body where the handler wrote it, in OUT: the head just before it,
+	; and both go as they are
+	mov	rdi,rdx
+	sub	rdi,rcx
+	push	rdi
+	lea	r8,[rcx+r12]			; head and body
+	rep	movsb
+	pop	rdi
+	mov	esi,r8d
+	mov	dword [r15+H_STATE],HS_SELF_SEND
+	mov	ecx,SIDE_CLIENT
+	pop	r14
+	pop	r13
+	pop	r12
+	jmp	h_send
+.aside:
+	; (a head past its room: the body out of its way first)
+	push	rcx
+	lea	rdi,[g_mod_out]
+	mov	rsi,r14
+	mov	ecx,r12d
+	rep	movsb
+	lea	r14,[g_mod_out]
+	pop	rcx
+.at_start:
+	mov	rdi,[r15+H_BUF]
+	lea	rdi,[rdi+HB_OUT]
+	lea	rsi,[g_mod_head]
+	rep	movsb
 	mov	edx,HS_SELF_SEND
 	test	dword [r15+H_FLAGS],HX_HEAD
 	jnz	.send				; (HEAD: its length, no body)
