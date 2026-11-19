@@ -1,0 +1,29 @@
+# okena in front of two copies of an application, with Docker Compose.
+#
+#   docker compose up -d
+#   curl http://localhost:8080/          # answered by app-1 and app-2 in turn
+#   curl http://localhost:9090/metrics   # Prometheus metrics
+#
+# Backends are found by their service name: Docker's DNS gives okena the
+# address of every replica (docker compose up -d --scale app=4 is followed).
+services:
+  okena:
+    image: ghcr.io/lu4nscr1pt1ng/okena:0.1
+    ports:
+      - "8080:8080"
+      - "9090:9090"
+    volumes:
+      - ./okena.conf:/etc/okena/okena.conf:ro
+    # io_uring (faster); without this line okena runs on epoll
+    security_opt:
+      - seccomp=./okena.seccomp.json
+    healthcheck:
+      test: ["CMD", "/okena", "health"]
+      interval: 5s
+    depends_on: [app]
+    restart: unless-stopped
+
+  app:
+    image: traefik/whoami
+    deploy:
+      replicas: 2

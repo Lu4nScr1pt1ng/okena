@@ -402,6 +402,7 @@ dist: $(BIN)
 	mkdir -p build/dist/$(DIST)/examples build/dist/$(DIST)/systemd
 	cp $(BIN) LICENSE README.md CHANGELOG.md build/dist/$(DIST)/
 	cp examples/*.conf build/dist/$(DIST)/examples/
+	cp -rL examples/compose build/dist/$(DIST)/examples/
 	cp contrib/systemd/okena.service contrib/systemd/okena.socket build/dist/$(DIST)/systemd/
 	cp docker/okena.seccomp.json build/dist/$(DIST)/
 	tar -C build/dist --owner=0 --group=0 --numeric-owner --sort=name \

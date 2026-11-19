@@ -16,7 +16,7 @@ mkdir -p "$T/www"
 echo '<h1>ok</h1>' > "$T/www/index.html"
 echo "user:c0ffee:$(printf 'c0ffeepass' | sha256sum | cut -d' ' -f1)" > "$T/proxy.users"
 printf '{"keys":[{"kty":"oct","kid":"k1","alg":"HS256","k":"c2VjcmV0LXNlY3JldC1zZWNyZXQtc2VjcmV0LXNlY3JldA"}]}' > "$T/jwks.json"
-for f in examples/*.conf docker/okena.conf; do
+for f in examples/*.conf examples/compose/okena.conf docker/okena.conf; do
 	sed -e "s#/srv/www#$T/www#; s#/etc/okena/proxy.users#$T/proxy.users#; s#/etc/okena/jwks.json#$T/jwks.json#" "$f" > "$T/c.conf"
 	"$BIN" check "$T/c.conf" >/dev/null || { echo "FAIL $f"; "$BIN" check "$T/c.conf"; exit 1; }
 	echo "ok   okena check $f"

@@ -2,7 +2,7 @@ apiVersion: v2
 name: okena
 description: okena as a Kubernetes Ingress controller and Gateway API implementation
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: "0.1.0"
 home: https://github.com/Lu4nScr1pt1ng/okena
 sources:

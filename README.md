@@ -129,8 +129,14 @@ docker run --network host -v ./okena.conf:/etc/okena/okena.conf:ro \
 The seccomp profile (in the release archive, and `docker/okena.seccomp.json`
 here) is Docker's default plus io_uring; without it okena runs on epoll. Ports
 below 1024 with host networking need an extra step, described in
-[CONFIG.md](docs/CONFIG.md#docker). On Kubernetes, the Helm chart in
-[contrib/helm/okena](contrib/helm/okena) installs it as the Ingress controller.
+[CONFIG.md](docs/CONFIG.md#docker).
+
+**On Kubernetes**, the Helm chart installs it as the Ingress controller (and
+the Gateway API's, see [its README](contrib/helm/okena)):
+
+```sh
+helm install edge oci://ghcr.io/lu4nscr1pt1ng/charts/okena --namespace ingress --create-namespace
+```
 
 **Or build from source.** The Makefile downloads the pinned fasm2 assembler
 the first time; the result is the same binary as the release's:
@@ -143,8 +149,9 @@ sudo make install                 # /usr/local/bin/okena, /etc/okena/okena.conf
 ```
 
 [examples/](examples) has configurations to start from: a reverse proxy,
-automatic HTTPS, a static site with an API, an API gateway, TCP and UDP, and a
-forward proxy.
+automatic HTTPS, a static site with an API, an API gateway, TCP and UDP, a
+forward proxy, and [examples/compose](examples/compose) for Docker Compose
+(`docker compose up -d` there).
 
 **A configuration file.** okena reads `/etc/okena/okena.conf`, or `-c FILE`:
 
