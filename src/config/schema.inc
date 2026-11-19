@@ -165,7 +165,7 @@ enumdef e_gateway, 'kubernetes'
 keysdef k_acme, 'ca', T_ANY, 'email', T_ANY, 'trust', T_ANY, 'challenge', T_ANY, 'dns', T_ANY, 'dns_token', T_ANY, 'dns_api', T_ANY, 'dns_wait', T_DURATION, 'dns_trust', T_ANY, 'dns_server', T_ANY, 'dns_key', T_ANY, 'fallback', T_ANY, 'fallback_trust', T_ANY, 'eab', T_ANY, 'fallback_eab', T_ANY, 'shared', T_ANY, 'staging', T_ANY
 keysdef k_vrrp, 'vrid', T_ANY, 'priority', T_ANY, 'address', T_ANY, 'advert', T_DURATION, 'preempt', T_ANY, 'track', T_ANY
 keysdef k_cdisk, 'size', T_SIZE
-keysdef k_tracing, 'sample', T_PERCENT, 'trust', T_ANY
+keysdef k_tracing, 'sample', T_PERCENT, 'trust', T_ANY, 'propagate', T_ANY
 keysdef k_drain, 'delay', T_DURATION, 'timeout', T_DURATION
 keysdef k_idemstore, 'keys', T_COUNT, 'size', T_SIZE
 keysdef k_signed, 'key', T_ANY, 'key2', T_ANY

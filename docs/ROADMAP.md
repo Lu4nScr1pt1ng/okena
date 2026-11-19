@@ -1145,6 +1145,9 @@ both engines, routes that do not use an item unchanged.
    Proxy-Authorization and 407 for `auth basic`. EDGE_CASES made true.
 6. Metrics pushed over OTLP (beside Prometheus' pull); B3 trace headers
    beside W3C Trace Context.
+   B3: **done 2026-11-19** (src/http/trace.inc, tests/gateway/tracing.py):
+   `tracing ... propagate=w3c,b3,b3multi`, B3 read when there is no valid
+   traceparent, the client's B3 fields replaced.
 7. Directory listings for `files`.
 
 Not in this phase: an AArch64 port (okena is x86-64 assembly: a port is a

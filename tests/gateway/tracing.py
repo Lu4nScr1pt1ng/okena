@@ -22,7 +22,8 @@ ENGINE = sys.argv[1] if len(sys.argv) > 1 else "io_uring"
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BIN = ROOT / "build" / "okena"
 BASE = 7000 + os.getpid() % 90 * 20 + (10 if ENGINE == "epoll" else 0)
-L_ALL, L_NONE, L_OFF, L_HALF, L_TLS, BACK, SHADOW, COLL = (BASE + i for i in range(8))
+L_ALL, L_NONE, L_OFF, L_HALF, L_TLS, BACK, SHADOW, COLL, L_B3, L_B3W = (BASE + i for i in range(10))
+b3seen = {}
 fails = 0
 TP = re.compile(r"^00-([0-9a-f]{32})-([0-9a-f]{16})-(0[01])$")
 
@@ -51,6 +52,7 @@ def backend(store, port):
         def do_GET(self):
             mark = self.path.split("m=")[-1]
             store[mark] = self.headers.get_all("traceparent") or []
+            b3seen[mark] = {k.lower(): v for k, v in self.headers.items() if k.lower() == "b3" or k.lower().startswith("x-b3-")}
             if "slow" in self.path:
                 time.sleep(0.06)
             body = b"ok\n"
@@ -118,9 +120,12 @@ def span_of(mark):
     return [s for s in spans() if attrs(s).get("url.query") == f"m={mark}"]
 
 
-def get(port, path, tp=None):
+def get(port, path, tp=None, headers=None):
     c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-    c.request("GET", path, headers={"traceparent": tp} if tp else {})
+    h = dict(headers or {})
+    if tp:
+        h["traceparent"] = tp
+    c.request("GET", path, headers=h)
     r = c.getresponse()
     r.read()
     c.close()
@@ -154,6 +159,8 @@ def main():
                     + site(L_NONE, f"tracing otlp://127.0.0.1:{COLL} sample=0%")
                     + site(L_OFF, "")
                     + site(L_HALF, f"tracing otlp://127.0.0.1:{COLL} sample=50%")
+                    + site(L_B3, f"tracing otlp://127.0.0.1:{COLL} propagate=b3,b3multi")
+                    + site(L_B3W, f"tracing otlp://127.0.0.1:{COLL} sample=0% propagate=w3c,b3")
                     + f"""http 127.0.0.1:{L_TLS} {{
     tls {{ cert {tmp}/c.pem; key {tmp}/k.pem }}
     http2 on
@@ -214,6 +221,29 @@ def main():
         get(L_ALL, "/bad/x?m=e5")
         check("a 502: the span's status is an error", until(lambda: span_of("e5")) and span_of("e5")[0].get("status") == {"code": 2}, span_of("e5"))
 
+        # B3: in when there is no traceparent, out as asked
+        TB, SB, T64 = "4bf92f3577b34da6a3ce929d0e0e4736", "00f067aa0ba902b7", "a3ce929d0e0e4736"
+        get(L_B3, "/?m=b1", headers={"b3": f"{TB}-{SB}-1"})
+        h = b3seen.get("b1", {})
+        b3 = h.get("b3", "").split("-")
+        check("b3 in: its trace goes on, okena's span the parent, sampled", len(b3) == 3 and b3[0] == TB and b3[1] != SB
+              and b3[2] == "1" and seen.get("b1") == [] and until(lambda: span_of("b1")), h)
+        check("  b3multi out: X-B3-* with the client's span as the parent", h.get("x-b3-traceid") == TB and len(b3) == 3 and h.get("x-b3-spanid") == b3[1]
+              and h.get("x-b3-parentspanid") == SB and h.get("x-b3-sampled") == "1", h)
+        sp = span_of("b1")
+        check("  the span: that trace, that parent", sp and sp[0]["traceId"] == TB and sp[0].get("parentSpanId") == SB, sp[:1])
+        get(L_B3, "/?m=b2", headers={"X-B3-TraceId": T64, "X-B3-SpanId": SB, "X-B3-Sampled": "0"})
+        h = b3seen.get("b2", {})
+        check("X-B3-* in, a 64-bit trace id: padded; not sampled stays so", h.get("x-b3-traceid") == "0" * 16 + T64
+              and h.get("x-b3-sampled") == "0" and h.get("b3", "").endswith("-0"), h)
+        get(L_B3, "/?m=b3", headers={"b3": "nonsense", "X-B3-Flags": "1"})
+        h = b3seen.get("b3", {})
+        check("  a bad b3: a trace of okena's, and the client's B3 fields not passed on", len(h.get("x-b3-traceid", "")) == 32
+              and h.get("x-b3-traceid") != TB and "x-b3-flags" not in h and h.get("b3", "nonsense") != "nonsense", h)
+        get(L_B3W, "/?m=b4", f"00-{T}-{P}-01", headers={"b3": f"{TB}-{SB}-0"})
+        h = b3seen.get("b4", {})
+        check("traceparent first; w3c,b3: both out, the same trace", seen.get("b4", [""])[0].startswith(f"00-{T}-")
+              and h.get("b3", "").startswith(T + "-") and h.get("b3", "").endswith("-1"), (seen.get("b4"), h))
         # sampling: sample=0% keeps no new trace, but the trace is still sent on
         get(L_NONE, "/?m=n1")
         get(L_NONE, "/?m=n2", f"00-{T}-{P}-01")
@@ -269,6 +299,7 @@ def main():
     bad("tracing to a file", "tracing /tmp/x")
     bad("a share that is not one", "tracing otlp://127.0.0.1:4318 sample=half")
     bad("a share over 100%", "tracing otlp://127.0.0.1:4318 sample=150%")
+    bad("an unknown propagation", "tracing otlp://127.0.0.1:4318 propagate=jaeger")
     bad("trust= without TLS", f"tracing otlp://127.0.0.1:4318 trust={tmp}/c.pem")
     bad("twice", "tracing otlp://127.0.0.1:4318; tracing otlp://127.0.0.1:4319")
     shutil.rmtree(tmp, ignore_errors=True)

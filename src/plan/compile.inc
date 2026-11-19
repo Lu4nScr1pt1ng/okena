@@ -1461,7 +1461,63 @@ compile_tracing:
 	call	parse_percent			; (hundredths of a percent)
 	imul	eax,eax,100
 @@:
+	; propagate=w3c,b3,b3multi: what goes to backends (high bits: TSP_*)
 	push	rax
+	mov	rdi,rbx
+	cstring str_key_propagate, 'propagate',0
+	lea	rsi,[str_key_propagate]
+	call	node_option
+	test	rax,rax
+	jz	.propagated
+	mov	rsi,[rax+A_VAL]
+	mov	ecx,[rax+A_VLEN]
+	lea	rdx,[rsi+rcx]
+	mov	r8d,TSP_NOW3C			; (w3c only when named)
+.word:
+	cmp	rsi,rdx
+	jae	.words
+	mov	rcx,rsi
+@@:
+	cmp	rcx,rdx
+	jae	@f
+	cmp	byte [rcx],','
+	je	@f
+	inc	rcx
+	jmp	@b
+@@:
+	mov	r9,rcx
+	sub	r9,rsi
+	cmp	r9d,3
+	jne	@f
+	cmp	word [rsi],'w3'
+	jne	.bad_prop
+	cmp	byte [rsi+2],'c'
+	jne	.bad_prop
+	and	r8d,not TSP_NOW3C
+	jmp	.next_word
+@@:
+	cmp	r9d,2
+	jne	@f
+	cmp	word [rsi],'b3'
+	jne	.bad_prop
+	or	r8d,TSP_B3
+	jmp	.next_word
+@@:
+	cmp	r9d,7
+	jne	.bad_prop
+	cmp	dword [rsi],'b3mu'
+	jne	.bad_prop
+	cmp	dword [rsi+3],'ulti'
+	jne	.bad_prop
+	or	r8d,TSP_B3M
+.next_word:
+	lea	rsi,[rcx+1]
+	jmp	.word
+.words:
+	cmp	r8d,TSP_NOW3C
+	je	.bad_prop			; (nothing at all)
+	or	[rsp],r8d
+.propagated:
 	mov	rdi,rbx
 	call	alog_dest_node
 	lea	eax,[rsi+7]
@@ -1486,9 +1542,13 @@ compile_tracing:
 	call	log_begin
 	out_lit 'tracing: its URL and trust= path are too long together (248 bytes)'
 	jmp	.fail
+.bad_prop:
+	call	log_begin
+	out_lit 'tracing: propagate= is a list of w3c, b3 (one b3 field) and b3multi (X-B3-*)'
+	jmp	.fail
 .bad:
 	call	log_begin
-	out_lit 'tracing takes otlp://HOST[:PORT][/PATH] or otlp+https://..., with sample=PERCENT and trust=FILE'
+	out_lit 'tracing takes otlp://HOST[:PORT][/PATH] or otlp+https://..., with sample=PERCENT, trust=FILE and propagate=w3c,b3,b3multi'
 .fail:
 	call	log_end
 	mov	edi,EXIT_CONFIG

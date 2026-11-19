@@ -2058,6 +2058,20 @@ The backend always gets okena's span as parent. Sampling is parent-based, and
 `sample=` applies to new traces. For `otlp+https://`, `trust=FILE` names the
 collector's CA.
 
+**B3.** Services traced with Zipkin's headers (Brave, older Envoy and Istio
+meshes) can keep theirs: `propagate=` lists what the backend gets, `w3c`
+(`traceparent`, the default), `b3` (one `b3` field) and `b3multi`
+(`X-B3-TraceId`, `-SpanId`, `-ParentSpanId`, `-Sampled`):
+
+```nginx
+tracing otlp://collector:4318 propagate=w3c,b3multi
+```
+
+With B3 in the list, a request without a valid `traceparent` continues the
+trace of its `b3` field or `X-B3-*` fields (a 64-bit trace id is the low
+half of okena's; `X-B3-Flags: 1` samples it; no decision: `sample=`
+decides), and the client's B3 fields are replaced by okena's.
+
 ### Alerts
 
 ```nginx

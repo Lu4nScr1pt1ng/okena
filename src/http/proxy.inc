@@ -1859,7 +1859,7 @@ http_write_request_head:
 	mov	rdi,[r15+H_BUF]
 	lea	rdi,[rdi+HB_OUT]
 	mov	r13,[r15+H_BUF]	; room kept for what okena adds
-	lea	r13,[r13+HB_OUT+H_OUT_CAP-256]
+	lea	r13,[r13+HB_OUT+H_OUT_CAP-448]	; (B3's fields: up to 192 of it)
 	mov	rsi,[r12+HM_METHOD]
 	mov	ecx,[r12+HM_MLEN]
 	call	copy_small
