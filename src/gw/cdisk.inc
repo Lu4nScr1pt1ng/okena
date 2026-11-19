@@ -1229,6 +1229,7 @@ cd_put:
 	mov	eax,[r12+CE_BLEN]
 	mov	[rdi+RH_BLEN],eax
 	mov	eax,[r12+CE_TTL]
+	sub	eax,[r12+CE_AGE0]		; (as old as it came: RFC 9111 4.2.3)
 	add	eax,dword [g_cd_rnow]
 	add	eax,[r12+CE_SWR]
 	mov	[rdi+RH_SWR],eax
@@ -1275,6 +1276,7 @@ cd_put:
 	mov	rdi,r13
 	mov	esi,r15d
 	mov	eax,[r12+CE_TTL]
+	sub	eax,[r12+CE_AGE0]
 	add	rax,[g_cd_rnow]
 	mov	edx,eax				; fresh until
 	mov	ecx,[r12+CE_SWR]

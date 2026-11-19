@@ -74,6 +74,7 @@ CE_SIE		:= 124				; d: stale-if-error, seconds past fresh
 CE_META		:= 128				; d: its purge facts (purge.inc): first block
 CE_MTAIL	:= 132				; d
 CE_MLEN		:= 136				; d
+CE_AGE0		:= 140				; d: its age when it came (RFC 9111 4.2.3), seconds
 CE_RB		:= 144				; q: µs (wall clock) its fetch began
 CE_SIZE		:= 160
 
@@ -1015,6 +1016,7 @@ cache_check:
 	mov	eax,1
 	jmp	.out
 .o_method:
+	call	.invalidate
 	mov	rax,[r15+H_BUF]
 	mov	dword [rax+HB_CST],CST_METHOD
 	jmp	.origin
@@ -1048,6 +1050,40 @@ cache_check:
 	pop	r13
 	pop	r12
 	ret
+
+; an unsafe method (not GET, HEAD, OPTIONS or TRACE) on this URL: what is kept
+; of it goes (RFC 9111 4.4), as `okena purge url` takes it, from every worker
+; and the disk (at the request: an answer that fails only costs a refetch)
+cache_check.invalidate:
+	mov	rsi,[g_hm+HM_METHOD]
+	mov	eax,[g_hm+HM_MLEN]
+	cmp	eax,7
+	jne	@f
+	cmp	dword [rsi],'OPTI'
+	jne	.inv
+	cmp	dword [rsi+3],'IONS'
+	je	.inv_out
+	jmp	.inv
+@@:
+	cmp	eax,5
+	jne	.inv
+	cmp	dword [rsi],'TRAC'
+	jne	.inv
+	cmp	byte [rsi+4],'E'
+	je	.inv_out
+.inv:
+	lea	rdi,[.inv_host]
+	mov	esi,4
+	call	limit_find			; rsi/ecx = its Host
+	mov	edx,ecx
+	mov	edi,PK_URL
+	mov	rcx,[g_hm+HM_TARGET]
+	mov	r8d,[g_hm+HM_TLEN]
+	call	pr_add
+.inv_out:
+	ret
+.inv_host	db 'host'
+
 
 ; rsi/ecx = an Accept-Encoding value: al = the codings it takes, of br (1), zstd (2)
 ; and gzip (4); `*` all of them; one with q=0 none. Keeps r12-r15, rbx.
@@ -2202,7 +2238,33 @@ cache_fields:
 	push	r14
 	mov	dword [g_c_ccage],0		; (max-age or s-maxage said: Expires does not count)
 	mov	qword [g_c_expp],0
+	mov	qword [g_c_agev],-1
+	mov	qword [g_c_datep],0
 	mov	r14d,[r12+CE_SWR]
+	; CDN-Cache-Control (RFC 9213): a cache like this one takes its directives
+	; in place of Cache-Control's (which goes on downstream, unread here)
+	mov	dword [g_c_cdn],0
+	xor	ebx,ebx
+.cdn_look:
+	cmp	ebx,[g_hm+HM_NHDR]
+	jae	.cdn_done
+	imul	r13,rbx,HF_SIZE
+	lea	r13,[g_hm+HM_HDRS+r13]
+	inc	ebx
+	cmp	dword [r13+HF_NLEN],17
+	jne	.cdn_look
+	mov	rdi,[r13+HF_NAME]
+	lea	rsi,[.n_cdn]
+	mov	edx,17
+	call	.same
+	jz	.cdn_look
+	call	cdn_valid			; not a Structured Field dictionary, or a
+	jc	.cdn_look			; number that is not one: as if not there
+	mov	dword [g_c_cdn],1
+	call	cache_control
+	jc	.no
+	jmp	.cdn_look
+.cdn_done:
 	; the status line
 	sub	rsp,48
 	mov	rdi,rsp
@@ -2225,6 +2287,37 @@ cache_fields:
 	imul	r13,rbx,HF_SIZE
 	lea	r13,[g_hm+HM_HDRS+r13]
 	inc	ebx
+	test	dword [r13+HF_FLAGS],HFF_HOP	; a hop's (named in Connection too):
+	jnz	.field				; never kept (RFC 9111 3.1)
+	cmp	dword [r13+HF_NLEN],3		; Age: its value counts (RFC 9111 4.2.3)
+	jne	.not_agef
+	mov	rdi,[r13+HF_NAME]
+	lea	rsi,[.n_age]
+	mov	edx,3
+	call	.same
+	jz	.not_agef
+	cmp	qword [g_c_agev],0		; the first Age, its first value: what
+	jge	.field				; counts (RFC 9111 5.1); not a number, none
+	mov	rsi,[r13+HF_VALUE]
+	mov	ecx,[r13+HF_VLEN]
+	call	.decimal
+	jc	.field
+	mov	[g_c_agev],rax
+	jmp	.field
+.not_agef:
+	cmp	dword [r13+HF_NLEN],4		; Date: kept, and when the answer was made
+	jne	.not_date
+	mov	rdi,[r13+HF_NAME]
+	lea	rsi,[.n_date]
+	mov	edx,4
+	call	.same
+	jz	.not_date
+	mov	rax,[r13+HF_VALUE]
+	mov	[g_c_datep],rax
+	mov	eax,[r13+HF_VLEN]
+	mov	[g_c_datel],eax
+	jmp	.keep
+.not_date:
 	mov	rdi,[r13+HF_NAME]
 	mov	ecx,[r13+HF_NLEN]
 	cmp	ecx,10
@@ -2242,6 +2335,8 @@ cache_fields:
 	mov	edx,ecx
 	call	.same
 	jz	@f
+	cmp	dword [g_c_cdn],0		; (CDN-Cache-Control's said instead)
+	jne	.keep
 	call	cache_control
 	jc	.no
 	jmp	.keep
@@ -2300,8 +2395,44 @@ cache_fields:
 	jc	.no
 	jmp	.field
 .done:
-	; Expires, when no max-age or s-maxage said (RFC 9111 5.3): past, or not a
-	; date ("0" is one way of saying it), and it is not kept; ahead, for as long
+	; when it was made: its Date, else now (the wall clock, seconds)
+	sub	rsp,16
+	mov	edi,CLOCK_REALTIME
+	mov	rsi,rsp
+	mov	eax,SYS_clock_gettime
+	syscall
+	mov	rax,[rsp]
+	add	rsp,16
+	push	rax				; [rsp+8]: now
+	push	rax				; [rsp]: its Date
+	cmp	qword [g_c_datep],0
+	je	@f
+	mov	rsi,[g_c_datep]
+	mov	ecx,[g_c_datel]
+	call	http_date_parse
+	jc	@f
+	mov	[rsp],rax
+@@:
+	; its age when it came (RFC 9111 4.2.3): the larger of its Age and how
+	; long ago its Date was
+	mov	rax,[rsp+8]
+	sub	rax,[rsp]
+	jns	@f
+	xor	eax,eax
+@@:
+	mov	rcx,[g_c_agev]
+	test	rcx,rcx
+	js	@f
+	cmp	rcx,rax
+	cmova	rax,rcx
+@@:
+	mov	ecx,0x3FFFFFFF
+	cmp	rax,rcx
+	cmova	rax,rcx
+	mov	[r12+CE_AGE0],eax
+	; Expires, when no max-age or s-maxage said (RFC 9111 5.3): its lifetime
+	; is Expires less its Date (4.2.1); past, or not a date ("0" is one way of
+	; saying it), and it is not kept
 	cmp	qword [g_c_expp],0
 	je	.no_expires
 	cmp	dword [g_c_ccage],0
@@ -2309,23 +2440,24 @@ cache_fields:
 	mov	rsi,[g_c_expp]
 	mov	ecx,[g_c_expl]
 	call	http_date_parse
-	jc	.no
-	push	rax
-	sub	rsp,16				; the wall clock, seconds
-	mov	edi,CLOCK_REALTIME
-	mov	rsi,rsp
-	mov	eax,SYS_clock_gettime
-	syscall
-	mov	rax,[rsp]
-	add	rsp,16
-	pop	rcx
-	sub	rcx,rax				; seconds ahead
-	jle	.no
-	mov	eax,0x7FFFFFFF
-	cmp	rcx,rax
-	cmova	rcx,rax
-	mov	[r12+CE_TTL],ecx
+	jc	.no_dates
+	sub	rax,[rsp]			; seconds of life
+	jle	.no_dates
+	mov	ecx,0x7FFFFFFF
+	cmp	rax,rcx
+	cmova	rax,rcx
+	mov	[r12+CE_TTL],eax
 .no_expires:
+	add	rsp,16
+	; fresh no longer than its age already: not kept (no stale answer to keep)
+	mov	eax,[r12+CE_AGE0]
+	cmp	eax,[r12+CE_TTL]
+	jae	.no
+	jmp	.aged
+.no_dates:
+	add	rsp,16
+	jmp	.no
+.aged:
 	call	pm_tags				; its tags, for a purge
 	jc	.no
 	mov	[r12+CE_SWR],r14d
@@ -2346,6 +2478,48 @@ cache_fields:
 	call	mem_eq_nocase
 	test	eax,eax
 	ret
+; rsi/ecx = a field's value: rax = its first value's digits (up to a comma or
+; a blank; more than 2^31 is 2^31), CF when it is none or not all digits
+.decimal:
+	xor	eax,eax
+	xor	r8d,r8d				; digits
+.dec_next:
+	test	ecx,ecx
+	jz	.dec_end
+	movzx	edx,byte [rsi]
+	cmp	dl,','
+	je	.dec_end
+	cmp	dl,' '
+	je	.dec_end
+	cmp	dl,9
+	je	.dec_end
+	sub	edx,'0'
+	cmp	edx,9
+	ja	.nan
+	inc	r8d
+	mov	r9d,1 shl 31
+	cmp	rax,r9
+	jae	@f				; (saturated)
+	imul	rax,rax,10
+	add	rax,rdx
+@@:
+	inc	rsi
+	dec	ecx
+	jmp	.dec_next
+.dec_end:
+	test	r8d,r8d
+	jz	.nan
+	mov	ecx,1 shl 31
+	cmp	rax,rcx
+	cmova	rax,rcx
+	clc
+	ret
+.nan:
+	stc
+	ret
+.n_cdn	db 'cdn-cache-control'
+.n_age	db 'age'
+.n_date	db 'date'
 .dropped db 3,'age',14,'content-length',17,'transfer-encoding',10,'connection'
 	db 10,'keep-alive',12,'cache-status',0
 .n_setc	db 'set-cookie'
@@ -2384,6 +2558,264 @@ name_in:
 	pop	r14
 	pop	r13
 	pop	r12
+	ret
+
+; r13 = a CDN-Cache-Control field: CF unless it is a Structured Field dictionary
+; (RFC 8941 3.2: key [= bare item], comma between, parameters after ';') whose
+; max-age, s-maxage and stale-* values are integers. Keeps rbx, r12-r15.
+cdn_valid:
+	mov	rsi,[r13+HF_VALUE]
+	mov	eax,[r13+HF_VLEN]
+	lea	r8,[rsi+rax]
+	call	.ows
+	cmp	rsi,r8
+	jae	.bad				; (empty)
+.member:
+	; a key: lcalpha or *, then lcalpha, digit, _ - . *
+	mov	r9,rsi
+	call	.key
+	jc	.bad
+	mov	r10,rsi				; (its end)
+	xor	r11d,r11d			; 1: its value must be an integer
+	mov	rcx,r10
+	sub	rcx,r9
+	cmp	ecx,7
+	jne	@f
+	cmp	dword [r9],'max-'
+	jne	.not_numeric
+	cmp	word [r9+4],'ag'
+	jne	.not_numeric
+	cmp	byte [r9+6],'e'
+	jne	.not_numeric
+	mov	r11d,1
+	jmp	.not_numeric
+@@:
+	cmp	ecx,8
+	jne	@f
+	cmp	dword [r9],'s-ma'
+	jne	.not_numeric
+	cmp	dword [r9+4],'xage'
+	jne	.not_numeric
+	mov	r11d,1
+	jmp	.not_numeric
+@@:
+	cmp	ecx,6
+	jb	.not_numeric
+	cmp	dword [r9],'stal'
+	jne	.not_numeric
+	cmp	word [r9+4],'e-'
+	jne	.not_numeric
+	mov	r11d,1
+.not_numeric:
+	cmp	rsi,r8
+	jae	.params
+	cmp	byte [rsi],'='
+	jne	.params
+	inc	rsi
+	call	.bare				; eax: 1 an integer
+	jc	.bad
+	test	r11d,r11d
+	jz	.params
+	test	eax,eax
+	jz	.bad				; (max-age="10000": the wrong type)
+.params:
+	cmp	rsi,r8				; ;key[=bare item] ...
+	jae	.end
+	cmp	byte [rsi],';'
+	jne	.next
+	inc	rsi
+	call	.ows_sp
+	call	.key
+	jc	.bad
+	cmp	rsi,r8
+	jae	.end
+	cmp	byte [rsi],'='
+	jne	.params
+	inc	rsi
+	call	.bare
+	jc	.bad
+	jmp	.params
+.next:
+	call	.ows
+	cmp	rsi,r8
+	jae	.end
+	cmp	byte [rsi],','
+	jne	.bad
+	inc	rsi
+	call	.ows
+	cmp	rsi,r8
+	jae	.bad				; (a trailing comma)
+	jmp	.member
+.end:
+	clc
+	ret
+.bad:
+	stc
+	ret
+.ows:
+	cmp	rsi,r8
+	jae	@f
+	cmp	byte [rsi],' '
+	je	.ows_one
+	cmp	byte [rsi],9
+	jne	@f
+.ows_one:
+	inc	rsi
+	jmp	.ows
+@@:
+	ret
+.ows_sp:
+	cmp	rsi,r8
+	jae	@f
+	cmp	byte [rsi],' '
+	jne	@f
+	inc	rsi
+	jmp	.ows_sp
+@@:
+	ret
+; a key at rsi: past it, CF when none
+.key:
+	cmp	rsi,r8
+	jae	.key_bad
+	mov	al,[rsi]
+	cmp	al,'*'
+	je	.key_more
+	sub	al,'a'
+	cmp	al,25
+	ja	.key_bad
+.key_more:
+	inc	rsi
+	cmp	rsi,r8
+	jae	.key_ok
+	mov	al,[rsi]
+	cmp	al,'*'
+	je	.key_more
+	cmp	al,'_'
+	je	.key_more
+	cmp	al,'-'
+	je	.key_more
+	cmp	al,'.'
+	je	.key_more
+	mov	ah,al
+	sub	ah,'0'
+	cmp	ah,9
+	jbe	.key_more
+	sub	al,'a'
+	cmp	al,25
+	jbe	.key_more
+.key_ok:
+	clc
+	ret
+.key_bad:
+	stc
+	ret
+; a bare item at rsi: past it; eax = 1 for an integer; CF when not one
+.bare:
+	cmp	rsi,r8
+	jae	.key_bad
+	mov	al,[rsi]
+	cmp	al,'"'
+	je	.string
+	cmp	al,'?'
+	je	.boolean
+	cmp	al,'-'
+	je	.number
+	mov	ah,al
+	sub	ah,'0'
+	cmp	ah,9
+	jbe	.number
+	cmp	al,'*'				; a token: ALPHA or *, then tchar : /
+	je	.token
+	or	al,0x20
+	sub	al,'a'
+	cmp	al,25
+	ja	.key_bad
+.token:
+	inc	rsi
+	cmp	rsi,r8
+	jae	.not_int
+	movzx	eax,byte [rsi]
+	cmp	al,':'
+	je	.token
+	cmp	al,'/'
+	je	.token
+	lea	rcx,[http_tchar]
+	cmp	byte [rcx+rax],0
+	jne	.token
+	jmp	.not_int
+.string:
+	inc	rsi
+	cmp	rsi,r8
+	jae	.key_bad
+	mov	al,[rsi]
+	cmp	al,'"'
+	je	.string_end
+	cmp	al,'\'
+	jne	@f
+	inc	rsi
+	cmp	rsi,r8
+	jae	.key_bad
+	jmp	.string
+@@:
+	cmp	al,' '
+	jb	.key_bad
+	cmp	al,0x7E
+	ja	.key_bad
+	jmp	.string
+.string_end:
+	inc	rsi
+	jmp	.not_int
+.boolean:
+	inc	rsi
+	cmp	rsi,r8
+	jae	.key_bad
+	mov	al,[rsi]
+	cmp	al,'0'
+	je	@f
+	cmp	al,'1'
+	jne	.key_bad
+@@:
+	inc	rsi
+	jmp	.not_int
+.number:
+	xor	ecx,ecx				; digits
+	xor	edx,edx				; a '.': a decimal
+	cmp	byte [rsi],'-'
+	jne	.digit
+	inc	rsi
+.digit:
+	cmp	rsi,r8
+	jae	.number_end
+	mov	al,[rsi]
+	cmp	al,'.'
+	jne	@f
+	test	edx,edx
+	jnz	.key_bad
+	inc	edx
+	inc	rsi
+	jmp	.digit
+@@:
+	sub	al,'0'
+	cmp	al,9
+	ja	.number_end
+	inc	ecx
+	inc	rsi
+	jmp	.digit
+.number_end:
+	test	ecx,ecx
+	jz	.key_bad
+	cmp	ecx,15
+	ja	.key_bad
+	xor	eax,eax
+	test	edx,edx
+	jnz	@f
+	inc	eax				; an integer
+@@:
+	clc
+	ret
+.not_int:
+	xor	eax,eax
+	clc
 	ret
 
 ; r13 = a Cache-Control field, r12 = the entry, r14d = the stale window: CF not to
@@ -2786,6 +3218,9 @@ cache_commit:
 	jc	.drop
 	call	qs_clock
 	mov	rax,[g_qnow]
+	mov	ecx,[r12+CE_AGE0]		; as old as it came (its Age grows from it)
+	imul	rcx,rcx,1000000
+	sub	rax,rcx
 	mov	[r12+CE_BORN],rax
 	mov	ecx,[r12+CE_TTL]
 	imul	rcx,rcx,1000000
@@ -3114,6 +3549,11 @@ bss
 	g_c_ccage	dd ?			; cache_fields: max-age or s-maxage was said
 	g_c_expl	dd ?			; Expires: its length
 	g_c_expp	dq ?			; and value, 0 none
+	g_c_agev	dq ?			; its Age, -1 none
+	g_c_cdn		dd ?			; CDN-Cache-Control said: Cache-Control does not count
+	g_c_datep	dq ?			; its Date: where, 0 none
+	g_c_datel	dd ?
+	g_hd_buf	rb 32			; http_date_parse: an obsolete form, rewritten
 end bss
 
 rodata
@@ -3125,8 +3565,82 @@ end rodata
 ; included: a cache may take them as already past). Keeps rbx, r12-r15.
 http_date_parse:
 	cmp	ecx,29
+	je	.imf
+	; the obsolete forms recipients take too (RFC 9110 5.6.7), rewritten as
+	; IMF-fixdate: asctime "Sun Nov  6 08:49:37 1994", RFC 850 "Sunday,
+	; 06-Nov-94 08:49:37 GMT" (two-digit years from 1970)
+	lea	rdi,[g_hd_buf]
+	mov	dword [rdi],'Xxx,'
+	mov	byte [rdi+4],' '
+	mov	byte [rdi+7],' '
+	mov	byte [rdi+11],' '
+	mov	byte [rdi+16],' '
+	mov	dword [rdi+25],' GMT'
+	cmp	ecx,24
+	jne	.rfc850
+	cmp	byte [rsi+3],' '
 	jne	.bad
+	mov	eax,[rsi+4]			; month
+	mov	[rdi+8],ax
+	shr	eax,16
+	mov	[rdi+10],al
+	mov	ax,[rsi+8]			; day, space-padded
+	cmp	al,' '
+	jne	@f
+	mov	al,'0'
+@@:
+	mov	[rdi+5],ax
+	mov	rax,[rsi+11]			; HH:MM:SS
+	mov	[rdi+17],rax
+	mov	eax,[rsi+20]			; year
+	mov	[rdi+12],eax
+	jmp	.rewritten
+.rfc850:
+	xor	edx,edx				; its comma: after the weekday's name
+@@:
+	cmp	edx,10
+	jae	.bad
+	cmp	byte [rsi+rdx],','
+	je	@f
+	inc	edx
+	jmp	@b
+@@:
+	lea	eax,[rdx+24]			; ", DD-Mon-YY HH:MM:SS GMT"
+	cmp	eax,ecx
+	jne	.bad
+	lea	rsi,[rsi+rdx+2]
+	cmp	byte [rsi+2],'-'
+	jne	.bad
+	cmp	byte [rsi+6],'-'
+	jne	.bad
+	mov	ax,[rsi]			; day
+	mov	[rdi+5],ax
+	mov	eax,[rsi+3]			; month
+	mov	[rdi+8],ax
+	shr	eax,16
+	mov	[rdi+10],al
+	mov	ax,[rsi+7]			; year: 19YY from 70, else 20YY
+	mov	[rdi+14],ax
+	mov	word [rdi+12],'20'
+	cmp	al,'7'
+	jb	@f
+	mov	word [rdi+12],'19'
+@@:
+	mov	rax,[rsi+10]			; HH:MM:SS
+	mov	[rdi+17],rax
+	cmp	dword [rsi+18],' GMT'
+	jne	.bad
+.rewritten:
+	mov	rsi,rdi
+	mov	ecx,29
+.imf:
 	cmp	byte [rsi+3],','
+	jne	.bad
+	cmp	byte [rsi+4],' '		; (its spaces where they go: "18-Aug-2050"
+	jne	.bad				; is not one)
+	cmp	byte [rsi+7],' '
+	jne	.bad
+	cmp	byte [rsi+11],' '
 	jne	.bad
 	cmp	dword [rsi+25],' GMT'
 	jne	.bad
