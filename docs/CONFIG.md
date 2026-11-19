@@ -1970,7 +1970,7 @@ okena {
 | `busy_poll auto\|DURATION` | auto | poll instead of sleeping: `auto` polls only while events arrive within 50 µs of each other, and only on a pinned worker; `200us` always polls that long; `0us` never |
 | `watchdog DURATION` | 2s | a worker stuck this long is replaced |
 | `drain delay=T timeout=T` | 0s, 8s | on stop, reload and upgrade: wait `delay` (for load balancers to notice), then let connections finish for `timeout`; what is still open after that is closed |
-| `reload on-change\|signal` | signal | `on-change` reloads when the file or an included one changes |
+| `reload on-change\|signal` | signal | `on-change` reloads when the file, an included one, or a certificate or key it names changes (renewed in place: served without a restart) |
 | `last_good on\|off` | off | keep the last config that ran as `FILE.good` and start from it if `FILE` is broken |
 | `overload on\|off` | on | the overload manager: under pressure (full listeners, a loop that falls behind) idle connections go sooner, answers say `Connection: close`, then `priority bulk` and `normal` routes get 503. `off` when a balancer in front sheds load itself |
 | `user NAME\|UID[:GROUP]` | | drop to this user for everything that faces the network |

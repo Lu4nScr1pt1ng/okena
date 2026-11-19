@@ -471,6 +471,8 @@ tls_read_val:
 	lea	rdi,[g_tls_path]
 	rep	movsb
 	mov	byte [rdi],0
+	lea	rsi,[g_tls_path]		; (reload on-change watches it too)
+	call	cw_tls_file
 	lea	rdi,[g_tls_path]
 	lea	rsi,[g_ar_text]
 	call	read_file

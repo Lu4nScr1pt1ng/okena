@@ -1,7 +1,7 @@
 ; `okena { reload on-change }`: the supervisor looks at the configuration's
 ; files once a second (on its tick: no inotify to set up or to overflow): the
-; file, every file it included, and their directories (a file added to a
-; glob's directory changes that directory). A change seen twice in a row (its
+; file, every file it included, the certificates and keys it read, and their
+; directories (a file added to a glob's directory changes that directory). A change seen twice in a row (its
 ; writer done) reloads, as SIGHUP does; whatever came of the reload, the files
 ; as they are then are the new reference, so a broken file is tried once.
 ; Except a file written while it was being read (its time not before the
@@ -11,6 +11,7 @@
 CW_SLACK	:= 20000000	; ns
 
 CW_PATH		:= 512
+CW_TLS		:= 64		; certificate and key files watched too
 
 bss
 	g_plan_reload_watch dd ?
@@ -20,13 +21,38 @@ bss
 	g_cw_seen	dq ?		; a different one seen at the last tick, 0 none
 	g_cw_t0		dq ?		; ns (realtime) when the files were last read
 	g_cw_late	dd ?		; one of them changed since
-	g_cw_paths	rb (CFG_FILES + CFG_DIRS) * CW_PATH
+	g_cw_paths	rb (CFG_FILES + CFG_DIRS + CW_TLS) * CW_PATH
+	g_cw_ntls	dd ?		; TLS files this load read
+	g_cw_tls	rb CW_TLS * CW_PATH
 	g_cw_st		rb STAT_BYTES
 	g_cw_dir	rb CW_PATH
 end bss
 
+; tls_read_val, a file read for a certificate or a key: watched with the
+; configuration's (a renewed certificate, written in place, is reloaded).
+; rsi = its path (NUL-ended). Keeps all but rax, rcx, rsi, rdi.
+cw_tls_file:
+	mov	eax,[g_cw_ntls]
+	cmp	eax,CW_TLS
+	jae	.out
+	inc	dword [g_cw_ntls]
+	imul	edi,eax,CW_PATH
+	lea	rdi,[g_cw_tls+rdi]
+	mov	ecx,CW_PATH - 1
+@@:
+	lodsb
+	stosb
+	test	al,al
+	jz	.out
+	dec	ecx
+	jnz	@b
+	mov	byte [rdi],0
+.out:
+	ret
+
 ; Before the files are read: when.
 cw_mark:
+	mov	dword [g_cw_ntls],0
 	sub	rsp,16
 	mov	edi,CLOCK_REALTIME
 	mov	rsi,rsp
@@ -95,6 +121,22 @@ cw_snapshot:
 	inc	ecx
 	jmp	.dirs
 .dirs_done:
+	xor	ecx,ecx				; then the certificates and keys read
+.tls:
+	cmp	ecx,[g_cw_ntls]
+	jae	.tls_done
+	imul	esi,ecx,CW_PATH
+	lea	rsi,[g_cw_tls+rsi]
+	imul	edi,ebx,CW_PATH
+	lea	rdi,[g_cw_paths+rdi]
+	push	rcx
+	mov	ecx,CW_PATH / 8
+	rep	movsq
+	pop	rcx
+	inc	ebx
+	inc	ecx
+	jmp	.tls
+.tls_done:
 	mov	[g_cw_n],ebx
 	pop	rbx
 	mov	dword [g_cw_late],0
