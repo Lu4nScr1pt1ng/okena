@@ -326,7 +326,9 @@ ln_setup:
 	call	cstr_eq
 	test	eax,eax
 	jnz	.next
-	; "[traces ]URL[ trust=PATH]"
+	; "[traces |metrics ]URL[ trust=PATH]"
+	call	mp_dest_mark			; (mpush.inc)
+	je	@f
 	mov	eax,dword [ln_traces]
 	cmp	[r12],eax
 	jne	@f
@@ -349,8 +351,9 @@ ln_setup:
 	call	alog_url
 	pop	rcx
 	jc	.dead
-	cmp	dword [r14+LN_TRACES],0
-	je	@f
+	call	mp_dest_path
+	cmp	dword [r14+LN_TRACES],1
+	jne	@f
 	lea	rax,[ln_v1logs]
 	cmp	[r14+LN_PATH],rax
 	jne	@f
@@ -378,6 +381,14 @@ ln_setup:
 @@:
 	cmp	dword [r14+LN_KIND],LKS_OTLP
 	jb	.next
+	cmp	dword [r14+LN_TRACES],2
+	jne	.batch
+	call	mp_buffers			; the push's: bigger, and the admin buffer
+	test	rax,rax
+	jz	.dead
+	mov	[r14+LN_BUF],rax
+	jmp	.next
+.batch:
 	xor	edi,edi
 	mov	esi,LN_BUF_CAP
 	mov	edx,PROT_READ or PROT_WRITE
@@ -1715,6 +1726,11 @@ ln_tick:
 	mov	r12d,ecx
 	jmp	.dest
 .out:
+	call	mp_tick				; metrics_push (mpush.inc)
+	cmp	eax,r12d
+	jae	@f				; (unsigned: -1 is no limit)
+	mov	r12d,eax
+@@:
 	mov	eax,r12d
 	pop	r12
 	pop	r14

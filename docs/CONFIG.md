@@ -1933,6 +1933,9 @@ okena {
 | `overload on\|off` | on | the overload manager: under pressure (full listeners, a loop that falls behind) idle connections go sooner, answers say `Connection: close`, then `priority bulk` and `normal` routes get 503. `off` when a balancer in front sheds load itself |
 | `user NAME\|UID[:GROUP]` | | drop to this user for everything that faces the network |
 | `metrics ADDR [token=FILE]` | | Prometheus, health probes, status, dashboard |
+| `metrics_push URL [every=T]` | 15s | the same metrics pushed over OTLP |
+| `zone NAME` | | this instance's zone, for [zone-aware balancing](#zones) |
+| `ja4 on` | off | compute [JA4](#client-fingerprints-ja4) for the access log alone |
 | `admin unix:PATH` | | the socket `okena reload`, `backend`, `drain`, `top`, `purge` use |
 | `upgrade unix:PATH` | | binary upgrades without dropping connections (`okena upgrade`) |
 | `handshake_budget T wait=T` | 100us, 1s | TLS crypto per loop turn, so a handshake flood can't starve requests in flight; hellos waiting longer than `wait` are closed |
@@ -2057,6 +2060,22 @@ valid incoming `traceparent` is continued; otherwise okena starts a trace.
 The backend always gets okena's span as parent. Sampling is parent-based, and
 `sample=` applies to new traces. For `otlp+https://`, `trust=FILE` names the
 collector's CA.
+
+**Metrics pushed over OTLP.** Beside the pull from `metrics`, okena can push
+the same families to an OpenTelemetry collector (Datadog, Grafana Cloud,
+New Relic and the others take OTLP):
+
+```nginx
+okena { metrics_push otlp://collector:4318 every=15s }
+```
+
+Every `every=` (15 s by default) the logger sends one snapshot to
+`/v1/metrics` (or the URL's path) as OTLP JSON: counters and histograms as
+cumulative monotonic sums (a histogram's `_bucket`, `_sum` and `_count` each
+a metric, `le` an attribute), the rest as gauges, labels as attributes. A
+collector that is down gets the next snapshot when it is back (one not taken
+is replaced, never piled up). `otlp+https://` with `trust=FILE` as for
+`tracing`.
 
 **B3.** Services traced with Zipkin's headers (Brave, older Envoy and Istio
 meshes) can keep theirs: `propagate=` lists what the backend gets, `w3c`

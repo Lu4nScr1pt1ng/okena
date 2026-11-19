@@ -186,6 +186,7 @@ keysdef k_fault, 'abort', T_COUNT, 'percent', T_COUNT, 'delay', T_DURATION
 keysdef k_quic_sid, 'key', T_ANY, 'rotation', T_ANY
 keysdef k_server, 'weight', T_WEIGHT, 'max', T_COUNT, 'zone', T_ANY
 keysdef k_pzone, 'min', T_COUNT
+keysdef k_mpush, 'every', T_DURATION, 'trust', T_ANY
 keysdef k_tunnel, 'ports', T_ANY, 'private', e_onoff
 keysdef k_queue, 'timeout', T_DURATION
 keysdef k_retry, 'on', T_ANY
@@ -258,6 +259,7 @@ dirdef DIR_OVERLOAD, 'overload',  M_OKENA,  0,           F_UNIQUE, 1, 1, e_onoff
 dirdef DIR_PIN_WORKERS, 'pin_workers', M_OKENA, 0,        F_UNIQUE, 1, 1, e_pin, T_NONE, 0
 dirdef DIR_JA4, 'ja4',         M_OKENA,   0,           F_UNIQUE, 1, 1, e_onoff, T_NONE, 0
 dirdef DIR_ZONE, 'zone',        M_OKENA,   0,           F_UNIQUE, 1, 1, T_ANY, T_NONE, 0
+dirdef DIR_MPUSH, 'metrics_push', M_OKENA, 0,         F_UNIQUE, 1, 1, T_ANY, T_NONE, k_mpush
 dirdef DIR_WATCHDOG, 'watchdog',    M_OKENA,   0,           F_UNIQUE, 1, 1, T_DURATION, T_NONE, 0
 dirdef DIR_METRICS, 'metrics',     M_OKENA,   0,           F_UNIQUE, 1, 1, T_LISTEN, T_NONE, k_metrics
 dirdef DIR_BUSY_POLL, 'busy_poll',   M_OKENA,   0,           F_UNIQUE, 1, 1, T_DURAUTO, T_NONE, 0

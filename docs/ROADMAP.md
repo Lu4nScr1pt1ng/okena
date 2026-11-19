@@ -1148,6 +1148,9 @@ both engines, routes that do not use an item unchanged.
    B3: **done 2026-11-19** (src/http/trace.inc, tests/gateway/tracing.py):
    `tracing ... propagate=w3c,b3,b3multi`, B3 read when there is no valid
    traceparent, the client's B3 fields replaced.
+   Metrics push: **done 2026-11-19** (src/core/mpush.inc,
+   tests/admin/mpush.py): `okena { metrics_push otlp://... every= }`, the
+   logger rendering /metrics and posting it as OTLP JSON.
 7. Directory listings for `files`.
 
 Not in this phase: an AArch64 port (okena is x86-64 assembly: a port is a

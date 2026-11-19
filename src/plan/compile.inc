@@ -323,6 +323,8 @@ bss
 	g_plan_ja4	dd ?		; TLS fingerprints computed (ja4.inc)
 	g_plan_zone	dd ?		; `okena { zone NAME }`: its hash, 0 none
 	g_plan_tunpool	dd ?		; the hidden pool of `tunnel` routes + 1, 0 none
+	g_plan_mpush	dd ?		; `metrics_push`: its destination + 1, 0 none (mpush.inc)
+	g_plan_mpevery	dd ?		; and its period, seconds
 	g_plan_tuns	dd ?
 	g_tuns:		rb TNL_SIZE * MAX_TUNS
 	g_plan_qcc		dd ?		; quic_cc: 0 cubic, 1 bbr
@@ -765,6 +767,9 @@ compile_settings:
 	lea	rcx,[dir_table + D_SIZE*DIR_ZONE]
 	cmp	rax,rcx
 	je	.zone
+	lea	rcx,[dir_table + D_SIZE*DIR_MPUSH]
+	cmp	rax,rcx
+	je	.mpush
 	lea	rcx,[dir_table + D_SIZE*DIR_RELOAD]
 	cmp	rax,rcx
 	je	.reload_watch
@@ -1087,6 +1092,9 @@ compile_settings:
 	cmp	word [rax],'on'
 	sete	cl
 	mov	[g_plan_last_good],ecx
+	jmp	.advance
+.mpush:
+	call	compile_mpush			; (mpush.inc; rbx = the node)
 	jmp	.advance
 .zone:
 	mov	rax,[rbx+N_ARGS]
