@@ -86,17 +86,18 @@ def main():
     conf.write_text(f"""okena {{ drain delay=0s timeout=1s; workers 2; io_engine {ENGINE}; overload off }}
 http 127.0.0.1:{LST} {{
     route /e/* {{ handler echo the-arg }}
-    route /j {{ handler json }}
+    route /j {{ handler json; response header set x-route on }}
     route /b {{ handler broken }}
     route /raw {{ handler raw }}
     route /w/* {{ handler wait }}
-    route /z/* {{ handler echo; compress br gzip min=10B }}
+    route /z/* {{ handler echo; compress br gzip min=10B; response header set x-route z }}
 }}
 http 127.0.0.1:{TLS} {{
     tls {{ cert {tmp}/c.pem; key {tmp}/k.pem }}
     http2 on
     http3 on
     route /e/* {{ handler echo }}
+    route /raw {{ handler raw }}
 }}
 """)
     env = dict(os.environ, OKENA_MODTEST_FILE=str(tmp / "word"))
@@ -129,6 +130,8 @@ http 127.0.0.1:{TLS} {{
         r = exchange([req("GET", "/j")])
         check("its status and Content-Type", r and r[0][0] == 201 and r[0][1].get("content-type") == "application/json"
               and r[0][2] == '{"ok":true}', r)
+        check("  a head line of its own, and the route's response header set", r and r[0][1].get("x-module") == "json"
+              and r[0][1].get("x-route") == "on", r and r[0][1])
         r = exchange([req("GET", "/b")])
         check("a status that is none: 500", r and r[0][0] == 500, r)
         r = exchange([req("HEAD", "/e/h")], is_head=True)
@@ -191,11 +194,18 @@ http 127.0.0.1:{TLS} {{
         except Exception as e:
             plain = repr(e)
         check("a route with compress: the handler's answer compressed by okena", b"content-encoding: gzip" in head.lower()
+              and b"x-route: z" in head.lower()
               and plain == f"GET {long}|||hello", head[:200])
         r = exchange([req("GET", "/w/0")])
         check("  0 ms: at once", r and r[0][2] == "waited 0", r)
         q = subprocess.run(["curl", "-q", "-sk", "--http2", f"https://localhost:{TLS}/e/h2"], capture_output=True, text=True)
         check("HTTP/2", q.stdout == "GET /e/h2|||hello", q.stdout)
+        big = tmp / "big.bin"
+        big.write_bytes(os.urandom(300000))
+        for proto in ("--http2", "--http3-only"):
+            q = subprocess.run(["curl", "-q", "-sk", proto, "--data-binary", f"@{big}", f"https://localhost:{TLS}/raw"],
+                               capture_output=True)
+            check(f"  {proto}: a 300 KB body, its DATA frames read whole", q.stdout == big.read_bytes(), len(q.stdout))
         q = subprocess.run(["timeout", "8", str(BIN), "bench", f"https://127.0.0.1:{TLS}/e/h3", "proto=h3", "conns=1", "workers=1",
                             "rate=50", "duration=500ms", "warmup=0s", "format=kv"], capture_output=True, text=True,
                            stdin=subprocess.DEVNULL)

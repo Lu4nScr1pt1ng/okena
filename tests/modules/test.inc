@@ -20,6 +20,7 @@ bss
 end bss
 
 cstring mt_env, 'OKENA_MODTEST_FILE='
+cstring mt_xh, 'X-Module: json',13,10
 
 ; the supervisor: the first word of $OKENA_MODTEST_FILE, when it is set
 mt_init:
@@ -110,6 +111,9 @@ mt_json:
 	mov	rax,'{"ok":tr'
 	mov	[rdi],rax
 	mov	dword [rdi+8],'ue}'
+	lea	rax,[mt_xh]			; a line of its own in the head
+	mov	[g_mod_xh],rax
+	mov	dword [g_mod_xhlen],mt_xh.len
 	mov	edx,11
 	mov	eax,201
 	lea	rsi,[mt_jtype]

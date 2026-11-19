@@ -1007,7 +1007,7 @@ its own memory, which the workers inherit; returning CF stops okena (after it
 says why), and on a reload keeps what it read last. A handler runs in a
 worker for each request of its routes, over HTTP/1.1, HTTP/2 or HTTP/3: it
 gets the request (`g_hm`: method, target, fields), its body read whole
-(Content-Length or chunked, decoded; HTTP/1.1), the route's ARG and a buffer
+(Content-Length or chunked, decoded; DATA frames on HTTP/2 and 3), the route's ARG and a buffer
 of `MOD_OUT_CAP` bytes, and returns a status, a body length and a
 Content-Type; or a pointer to a body of its own (the request's, say, up to
 1 MiB). It must not block: an answer that must wait (a timer, an outside

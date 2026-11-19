@@ -17,8 +17,7 @@
 ;
 ;   rdi = where its body goes, esi = room there (MOD_OUT_CAP)
 ;   rdx = the request's body, ecx = its length (Content-Length or chunked,
-;         decoded, up to MOD_BODY_MAX; HTTP/1.1 only: an HTTP/2 or HTTP/3
-;         request's body is not read and ecx is 0)
+;         decoded, or an HTTP/2 or HTTP/3 stream's DATA; up to MOD_BODY_MAX)
 ;   r8  = the route's ARG, r9d = its length (0 when it has none)
 ;   r10d = 1 when the request comes back after the handler held it, else 0
 ;   g_hm = the parsed request: HM_METHOD/HM_MLEN, HM_TARGET/HM_TLEN/HM_PLEN
@@ -30,12 +29,15 @@
 ; memory: it must stay as it is until the answer is out). Or eax = 0 and edx =
 ; microseconds: the request is held that long, not answered, and the handler
 ; called again (r10d = 1) - a timer, not a wait (a request with a body cannot
-; be held). It keeps rbx, rbp and r12-r15, and must not block: it runs in
+; be held). Lines of its own for the answer's head ("Name: value" and CRLF
+; each, MOD_XH_MAX bytes at most) go in g_mod_xh/g_mod_xhlen, cleared before
+; each call. It keeps rbx, rbp and r12-r15, and must not block: it runs in
 ; the event loop.
 
 MOD_OUT_CAP	:= H_OUT_CAP - 1024		; (the head's room in OUT)
 MOD_BODY_MAX	:= 1 shl 20			; a request body a handler gets, at most
 MOD_BUFS	:= 64				; buffers for bodies past the request's own, a worker
+MOD_XH_MAX	:= 2048				; a handler's own head lines, at most
 HS_MBODY	:= 56				; H_STATE: the request's body read for a handler
 
 MOD_HEAD = 0
@@ -76,6 +78,8 @@ bss
 	g_mod_src	dd ?			; the body: 1 after the head, 2 in a buffer
 	g_mod_bidx	dd ?
 	g_mod_resumed	dd ?
+	g_mod_xhlen	dd ?
+	g_mod_xh	dq ?
 	g_mod_bbase	dq ?			; MOD_BUFS of MOD_BODY_MAX, 0 none
 	g_mod_sess	dq ?			; per session: its buffer + 1 (d), the exchange it held (d)
 	g_mod_bown	rd MOD_BUFS		; a buffer's session + 1, 0 free
@@ -349,7 +353,7 @@ mod_buf_drop:
 	ret
 
 ; http_request, a route with `handler`: ebx, r15, rdx = its action's offset in
-; g_acts. The body read first (HTTP/1.1), then the handler, then its answer.
+; g_acts. The body read first, then the handler, then its answer.
 mod_request:
 	mov	[g_mod_act],rdx
 	xor	eax,eax
@@ -380,9 +384,6 @@ mod_request:
 .fresh:
 	cmp	dword [r15+H_BODY],BK_NONE
 	je	.call
-	call	session_ptr
-	test	dword [rax+S_FLAGS],SF_H2S or SF_H3S
-	jnz	.call				; (a stream's body: not read here)
 	call	mod_buf_of
 	test	eax,eax
 	js	.in_in
@@ -432,6 +433,8 @@ mod_request:
 	mov	r8,[rax+RA_MARG]
 	mov	r9d,[rax+RA_MALEN]
 	mov	r10d,[g_mod_resumed]
+	mov	qword [g_mod_xh],0
+	mov	dword [g_mod_xhlen],0
 	mov	rdx,[g_mod_bptr]
 	mov	ecx,[g_mod_blen]
 	lea	rdi,[g_mod_out]
@@ -746,6 +749,7 @@ mod_answer:
 	lea	rdi,[rdi+HB_UP]
 	call	status_line
 	call	.fields
+	memit_x 13,10
 	mov	rsi,r14
 	mov	ecx,r12d
 	rep	movsb
@@ -769,6 +773,16 @@ mod_answer:
 	lea	rdi,[rdi+HB_OUT]
 	call	status_line
 	call	.fields
+	mov	rax,[g_mod_act]			; the route's response set and add, CORS
+	mov	esi,[g_acts+rax+RA_PFIRST]
+	mov	edx,[g_acts+rax+RA_PCOUNT]
+	push	r13
+	mov	r13,[r15+H_BUF]
+	lea	r13,[r13+HB_OUT+H_OUT_CAP-512]
+	call	hdrop_emit
+	pop	r13
+	call	cors_emit
+	memit_x 13,10
 	mov	edx,HS_SELF_SEND
 	test	dword [r15+H_FLAGS],HX_HEAD
 	jnz	.send				; (HEAD: its length, no body)
@@ -818,5 +832,12 @@ mod_answer:
 	jz	@f
 	memit_x 'Connection: close',13,10
 @@:
-	memit_x 13,10
+	mov	ecx,[g_mod_xhlen]		; the handler's own lines
+	test	ecx,ecx
+	jz	@f
+	cmp	ecx,MOD_XH_MAX
+	ja	@f
+	mov	rsi,[g_mod_xh]
+	rep	movsb
+@@:
 	ret
