@@ -180,6 +180,7 @@ include 'http/uptls.inc'
 include 'http/fastcgi.inc'
 include 'http/grpcweb.inc'
 include 'http/h2.inc'
+include 'core/memguard.inc'		; (after h2.inc: its connections, c2_regs)
 include 'http/h2u.inc'
 include 'quic/server.inc'
 include 'quic/http3.inc'

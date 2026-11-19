@@ -1964,6 +1964,18 @@ h2_block_done:
 	jnz	.refuse				; (after our GOAWAY: REFUSED_STREAM, safe to send again)
 	cmp	dword [r13+C2_NSTR],H2_MAX_OPEN
 	jae	.refuse
+	cmp	qword [g_mg_hi],0		; a cgroup memory limit: near it, refused
+	je	.mem_ok				; (memguard.inc)
+	inc	dword [g_mg_count]
+	test	dword [g_mg_count],MG_EVERY - 1
+	jnz	@f
+	push	rcx
+	call	mg_check
+	pop	rcx
+@@:
+	cmp	dword [g_mg_tight],0
+	jne	.refuse
+.mem_ok:
 	mov	edi,ecx				; how many fields
 	mov	esi,r12d
 	call	h2_stream_new

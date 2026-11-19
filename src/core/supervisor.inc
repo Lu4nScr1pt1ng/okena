@@ -40,6 +40,7 @@ end rodata
 
 supervisor_main:
 	call	cpu_discover
+	call	mg_discover			; (the cgroup's memory limit, memguard.inc)
 	call	cpu_worker_count
 	mov	[g_workers],eax
 	call	raise_nofile_limit
