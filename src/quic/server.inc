@@ -389,6 +389,118 @@ qv_read:
 	stc
 	ret
 
+; r15 = connection, its ClientHello taken: the client's transport parameters
+; (QT_TPC) as RFC 9000 18 has them. CF when one is malformed (not a whole
+; id, length and value; an integer that is not one varint filling its
+; length), one only a server sends (original_destination_connection_id,
+; stateless_reset_token, preferred_address, retry_source_connection_id),
+; one out of its range (max_udp_payload_size under 1200, ack_delay_exponent
+; over 20, max_ack_delay from 2^14, a stream count past 2^60,
+; active_connection_id_limit under 2, disable_active_migration with a
+; value), one twice, or initial_source_connection_id missing.
+; Keeps rbx, r12-r15.
+qc_tp_check:
+	push	rbx
+	push	r12
+	lea	rsi,[r15+QC_QT+QT_TPC]
+	mov	edx,[r15+QC_QT+QT_TPCLEN]
+	add	rdx,rsi
+	xor	ebx,ebx				; ids below 64 seen, a bit each
+	xor	r12d,r12d			; initial_source_connection_id seen
+.param:
+	cmp	rsi,rdx
+	jae	.end
+	call	qv_read				; id
+	jc	.bad
+	mov	r8,rax
+	call	qv_read				; length
+	jc	.bad
+	mov	r9,rax
+	lea	r10,[rsi+rax]			; the value's end
+	cmp	r10,rdx
+	ja	.bad
+	cmp	r8,64				; once each (those we know, and more)
+	jae	@f
+	bts	rbx,r8
+	jc	.bad
+@@:
+	test	r8,r8				; 0x00, 0x02, 0x0d, 0x10: a server's
+	jz	.bad
+	cmp	r8,0x02
+	je	.bad
+	cmp	r8,0x0D
+	je	.bad
+	cmp	r8,0x10
+	je	.bad
+	cmp	r8,0x0F
+	jne	@f
+	mov	r12d,1				; initial_source_connection_id
+	jmp	.next
+@@:
+	cmp	r8,0x0C				; disable_active_migration: no value
+	jne	@f
+	test	r9,r9
+	jnz	.bad
+	jmp	.next
+@@:
+	cmp	r8,0x0E				; the integers: 0x01, 0x03 to 0x0b, 0x0e
+	je	.integer
+	cmp	r8,0x01
+	je	.integer
+	cmp	r8,0x03
+	jb	.next
+	cmp	r8,0x0B
+	ja	.next				; (others, ours to ignore)
+.integer:
+	push	rdx
+	mov	rdx,r10
+	call	qv_read
+	pop	rdx
+	jc	.bad
+	cmp	rsi,r10				; one varint, all of the value
+	jne	.bad
+	cmp	r8,0x03
+	jne	@f
+	cmp	rax,1200			; max_udp_payload_size
+	jb	.bad
+@@:
+	cmp	r8,0x0A
+	jne	@f
+	cmp	rax,20				; ack_delay_exponent
+	ja	.bad
+@@:
+	cmp	r8,0x0B
+	jne	@f
+	cmp	rax,1 shl 14			; max_ack_delay
+	jae	.bad
+@@:
+	cmp	r8,0x08				; initial_max_streams_bidi, _uni
+	jb	@f
+	cmp	r8,0x09
+	ja	@f
+	mov	rcx,1 shl 60
+	cmp	rax,rcx
+	ja	.bad
+@@:
+	cmp	r8,0x0E
+	jne	.next
+	cmp	rax,2				; active_connection_id_limit
+	jb	.bad
+.next:
+	mov	rsi,r10
+	jmp	.param
+.end:
+	test	r12d,r12d
+	jz	.bad
+	clc
+	jmp	.out
+.bad:
+	stc
+.out:
+	pop	r12
+	pop	rbx
+	ret
+
 ; rdi = out, rax = value (< 2^62): its shortest varint, rdi past it.
 ; Keeps everything but rax, rcx, rdi.
 qv_write:
@@ -2647,8 +2759,20 @@ qc_packet:
 	mov	esi,[r15+QC_ODCIDLEN]
 	call	qh_del
 .frames_begin:
-	; frames
+	; opened: its reserved bits must be 0 (RFC 9000 17.2, 17.3.1: long
+	; 0x0C, short 0x18), and it carries at least one frame (12.4)
+	movzx	eax,byte [r13]
+	mov	ecx,0x0C
+	test	al,0x80
+	jnz	@f
+	mov	ecx,0x18
+@@:
+	test	eax,ecx
+	jnz	.violation
 	mov	rsi,[rsp+QP_PAY]
+	cmp	rsi,[rsp+QP_END]
+	jae	.violation
+	; frames
 .frame:
 	mov	rdx,[rsp+QP_END]
 	cmp	rsi,rdx
@@ -3231,8 +3355,8 @@ qc_crypto_in:
 	push	r14
 	sub	rsp,8				; (16-aligned at the calls)
 	mov	r12d,edi
-	cmp	r12d,QL_APP
-	je	.ok				; (post-handshake messages: none expected)
+	cmp	r12d,QL_APP			; a client has no post-handshake message
+	je	.unexpected			; over QUIC (a KeyUpdate: RFC 9001 6)
 	lea	r13,[r15+QC_CRX]
 	lea	r14,[r15+QC_CRBM]
 	mov	eax,CH_MAX
@@ -3313,6 +3437,26 @@ qc_crypto_in:
 	je	.ok
 	cmp	eax,TH_SEND
 	jne	.tls_failed
+	push	rax				; (what tls_hello said, kept)
+	push	rcx
+	push	rdx
+	push	rsi
+	push	rdi
+	push	r8
+	push	r9
+	push	r10
+	push	r11
+	call	qc_tp_check			; the client's transport parameters
+	pop	r11
+	pop	r10
+	pop	r9
+	pop	r8
+	pop	rdi
+	pop	rsi
+	pop	rdx
+	pop	rcx
+	pop	rax
+	jc	.tp_error
 	; the flight: ServerHello for Initial, the rest for Handshake; the
 	; keys of both levels from the secrets
 	mov	ecx,[r15+QC_QT+QT_SHLEN]
@@ -3409,7 +3553,14 @@ qc_crypto_in:
 	mov	qword [r15+QC_ERR],0x0D		; CRYPTO_BUFFER_EXCEEDED
 	jmp	.fail
 .bad_finished:
-	mov	qword [r15+QC_ERR],0x100 + 51	; crypto error: decrypt_error
+	add	edx,0x100			; crypto error: the alert quic_tls_finished
+	mov	[r15+QC_ERR],rdx		; said (decrypt_error, unexpected_message...)
+	jmp	.fail
+.unexpected:
+	mov	qword [r15+QC_ERR],0x100 + 10	; unexpected_message
+	jmp	.fail
+.tp_error:
+	mov	qword [r15+QC_ERR],0x08		; TRANSPORT_PARAMETER_ERROR
 	jmp	.fail
 .tls_failed:
 	movzx	eax,byte [r15+QC_TLSOUT+6]	; the alert it would have sent

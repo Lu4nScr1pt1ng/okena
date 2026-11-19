@@ -181,6 +181,8 @@ SUITES = [
     ("websocket h2 io_uring", ["tests/h2/websocket.py", "io_uring"]),
     ("websocket h2 epoll", ["tests/h2/websocket.py", "epoll"]),
     ("h3 io_uring", ["tests/h3/run.py", "io_uring"]),
+    ("h3spec io_uring", ["tests/h3/h3spec.py", "io_uring"]),
+    ("h3spec epoll", ["tests/h3/h3spec.py", "epoll"]),
     ("h3 epoll", ["tests/h3/run.py", "epoll"]),
     ("h3 steering io_uring", ["tests/h3/steer.py", "io_uring"]),
     ("h3 steering epoll", ["tests/h3/steer.py", "epoll"]),

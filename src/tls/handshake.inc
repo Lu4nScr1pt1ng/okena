@@ -2304,13 +2304,17 @@ tls_finished:
 ; from Handshake CRYPTO frames (QUIC). eax = TH_MORE, TH_DONE (edx = 36),
 ; or TH_FAIL.
 quic_tls_finished:
+	test	ecx,ecx
+	jz	.more
+	cmp	byte [rsi],0x14			; another message than Finished (an
+	jne	.unexpected			; EndOfEarlyData: none over QUIC)
 	cmp	ecx,4
 	jb	.more
 	cmp	dword [rsi],0x20000014
-	jne	.fail
+	jne	.decode
 	cmp	ecx,36
 	jb	.more
-	jne	.fail
+	jne	.unexpected			; more after it (a KeyUpdate: never in QUIC)
 	push	rdi
 	lea	rdi,[rsi+4]
 	lea	rsi,[rdi+TS_CFIN]
@@ -2328,8 +2332,16 @@ quic_tls_finished:
 	xor	edx,edx
 	mov	eax,TH_MORE
 	ret
+.unexpected:
+	mov	edx,10				; TH_FAIL, edx = the alert: unexpected_message,
+	mov	eax,TH_FAIL
+	ret
+.decode:
+	mov	edx,50				; decode_error,
+	mov	eax,TH_FAIL
+	ret
 .fail:
-	xor	edx,edx
+	mov	edx,51				; decrypt_error (its MAC is not ours)
 	mov	eax,TH_FAIL
 	ret
 

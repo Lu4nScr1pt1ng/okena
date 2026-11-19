@@ -494,17 +494,17 @@ qc_app_frame:
 	cmp	rax,0x11
 	je	.max_stream_data
 	cmp	rax,0x12
-	je	.one_value			; MAX_STREAMS: ours to open are few
+	je	.stream_count			; MAX_STREAMS: ours to open are few
 	cmp	rax,0x13
-	je	.one_value
+	je	.stream_count
 	cmp	rax,0x14
 	je	.one_value			; DATA_BLOCKED
 	cmp	rax,0x15
 	je	.two_values			; STREAM_DATA_BLOCKED
 	cmp	rax,0x16
-	je	.one_value			; STREAMS_BLOCKED
+	je	.stream_count			; STREAMS_BLOCKED
 	cmp	rax,0x17
-	je	.one_value
+	je	.stream_count
 	cmp	rax,0x18
 	je	.new_cid
 	cmp	rax,0x19
@@ -571,6 +571,9 @@ qc_app_frame:
 	call	qv_read
 	pop	rcx
 	jc	.encoding
+	mov	r8,rcx
+	call	.ours_only			; (a stream we send on, that exists)
+	jc	.state_error
 	push	rsi
 	push	rdx
 	mov	r13,rax
@@ -590,6 +593,15 @@ qc_app_frame:
 .msd_done:
 	pop	rdx
 	pop	rsi
+	jmp	.ok
+.stream_count:
+	; a count of streams past 2^60 cannot be (RFC 9000 19.11, 19.14)
+	mov	dword [r12+QP_ACKEL],1
+	call	qv_read
+	jc	.encoding
+	mov	rcx,1 shl 60
+	cmp	rax,rcx
+	ja	.encoding
 	jmp	.ok
 .two_values:
 	mov	dword [r12+QP_ACKEL],1
@@ -627,11 +639,18 @@ qc_app_frame:
 	mov	dword [r12+QP_ACKEL],1
 	call	qv_read				; sequence
 	jc	.encoding
+	mov	r8,rax
 	call	qv_read				; retire prior to
 	jc	.encoding
+	cmp	rax,r8
+	ja	.encoding			; (not past its own sequence)
 	cmp	rsi,rdx
 	jae	.encoding
-	movzx	eax,byte [rsi]			; its length, it, a reset token (16)
+	movzx	eax,byte [rsi]			; its length (1 to 20), it, a reset token (16)
+	test	eax,eax
+	jz	.encoding
+	cmp	eax,20
+	ja	.encoding
 	lea	rsi,[rsi+rax+1+16]
 	cmp	rsi,rdx
 	ja	.encoding
@@ -714,6 +733,12 @@ qc_app_frame:
 	call	qv_read				; final size
 	jc	.pop_encoding
 	pop	rax
+	mov	ecx,eax				; one we only send on, or ours that is
+	and	ecx,3				; not there: no (RFC 9000 19.4)
+	cmp	ecx,1
+	je	.state_error
+	cmp	ecx,3
+	je	.state_error
 	jmp	.stream_gone
 .stop_sending:
 	mov	dword [r12+QP_ACKEL],1
@@ -723,6 +748,9 @@ qc_app_frame:
 	call	qv_read				; error
 	jc	.pop_encoding
 	pop	rax
+	mov	r8,rax				; one we receive only, or ours not there:
+	call	.ours_only			; no (RFC 9000 19.5)
+	jc	.state_error
 .stream_gone:
 	; the client gave up on the stream: its exchange stops
 	push	rsi
@@ -730,6 +758,8 @@ qc_app_frame:
 	call	qst_find
 	test	r8,r8
 	jz	@f
+	cmp	dword [r8+QST_KIND],QSK_ENC	; its control or a QPACK stream reset:
+	jae	.critical			; H3_CLOSED_CRITICAL_STREAM
 	cmp	dword [r8+QST_KIND],QSK_REQ
 	jne	@f
 	mov	dword [r8+QST_KIND],QSK_FREE
@@ -778,6 +808,15 @@ qc_app_frame:
 	pop	rdx
 	pop	rsi
 	jmp	.ok
+.critical:
+	pop	rdx
+	pop	rsi
+	mov	qword [r15+QC_ERR],H3E_CLOSED_CRITICAL
+	or	dword [r15+QC_FLAGS],QF_APP_ERR
+	jmp	.error
+.state_error:
+	mov	qword [r15+QC_ERR],5		; STREAM_STATE_ERROR
+	jmp	.error
 .pop_encoding:
 	pop	rax
 .encoding:
@@ -793,6 +832,27 @@ qc_app_frame:
 .out:
 	pop	r13
 	pop	r12
+	ret
+; r8 = a stream ID a frame about our sending names (MAX_STREAM_DATA,
+; STOP_SENDING): CF when we cannot send on it (the client's unidirectional
+; ones) or it is ours and not open (we open no bidirectional stream, and
+; three unidirectional ones: 3, 7, 11). Keeps all but flags.
+.ours_only:
+	test	r8d,2
+	jz	@f
+	test	r8d,1
+	jz	.not_ours			; the client's unidirectional: we only read
+	cmp	r8,11
+	ja	.not_ours
+	clc
+	ret
+@@:
+	test	r8d,1
+	jnz	.not_ours			; ours, bidirectional: none
+	clc
+	ret
+.not_ours:
+	stc
 	ret
 
 bss
