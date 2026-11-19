@@ -6,3 +6,4 @@ __pycache__/
 /sdk/rust/target/
 /sdk/rust/Cargo.lock
 /tests/wasm/rust/target/
+tests/http/diff-*.bin
