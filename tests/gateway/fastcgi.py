@@ -250,7 +250,7 @@ http 127.0.0.1:{ULST} {{ route /* {{ php {www}; to pool ufpm }} }}
         st, j = chunked("/app.php", b"5\r\nhelloXX\r\n0\r\n\r\n")
         check("  malformed (a chunk longer than it says): 400", st == 400, st)
         st, j = chunked("/app.php", b"5\r\nhello\r\n0\r\n\r\n", te="gzip, chunked")
-        check("  coded otherwise too: refused (411 or 501)", st in (411, 501), st)
+        check("  coded otherwise too: refused (400, 411 or 501)", st in (400, 411, 501), st)
         c = http.client.HTTPConnection("127.0.0.1", LST, timeout=10)
         st1, j1 = chunked("/app.php", frame(b"abc" * 1000, [100]), conn=c)
         r, d = req("GET", "/app.php?after=1", conn=c)

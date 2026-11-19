@@ -80,6 +80,7 @@ bss
 	g_mod_resumed	dd ?
 	g_mod_xhlen	dd ?
 	g_mod_xh	dq ?
+	g_mod_ck	rb CK_SIZE		; a chunked body's decoder
 	g_mod_bbase	dq ?			; MOD_BUFS of MOD_BODY_MAX, 0 none
 	g_mod_sess	dq ?			; per session: its buffer + 1 (d), the exchange it held (d)
 	g_mod_bown	rd MOD_BUFS		; a buffer's session + 1, 0 free
@@ -621,103 +622,66 @@ mod_body_in:
 ; took, edx = its data's length. CF: its last chunk (and trailer) is not in
 ; yet. eax = -1: not a chunked body. Keeps rbx, r12-r15.
 mod_unchunk:
-	lea	r8,[rsi+rcx]			; the end
-	mov	r9,rsi				; its start
-	xor	edx,edx				; data so far
-.chunk:
+	push	rbx
+	push	rbp
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	mov	rbp,rsi				; its start
+	mov	r12,rsi				; where the decoder stands
+	mov	r13d,ecx			; bytes left
+	mov	r14,rdi				; where data goes (copying)
+	mov	r15d,r11d
+	xor	ebx,ebx				; data so far
 	xor	eax,eax
-	xor	ecx,ecx				; digits
-.hex:
-	cmp	rsi,r8
-	jae	.more
-	movzx	r10d,byte [rsi]
-	sub	r10d,'0'
-	cmp	r10d,9
-	jbe	.digit
-	movzx	r10d,byte [rsi]
-	or	r10d,0x20
-	sub	r10d,'a'
-	cmp	r10d,5
-	ja	.size_end
-	add	r10d,10
-.digit:
-	cmp	ecx,6
-	jae	.bad				; (no chunk of 16 MiB)
-	shl	eax,4
-	or	eax,r10d
-	inc	ecx
-	inc	rsi
-	jmp	.hex
-.size_end:
-	test	ecx,ecx
-	jz	.bad
-.ext:
-	cmp	rsi,r8
-	jae	.more
-	cmp	byte [rsi],13
-	je	.crlf
-	cmp	byte [rsi],10
-	je	.bad
-	inc	rsi				; (an extension: skipped)
-	jmp	.ext
-.crlf:
-	lea	rcx,[rsi+2]
-	cmp	rcx,r8
-	ja	.more
-	cmp	byte [rsi+1],10
-	jne	.bad
-	add	rsi,2
-	test	eax,eax
-	jz	.trailer
-	lea	rcx,[rsi+rax+2]
-	cmp	rcx,r8
-	ja	.more
-	cmp	word [rsi+rax],0x0A0D
-	jne	.bad
-	add	edx,eax
-	cmp	edx,MOD_BODY_MAX
+	mov	qword [g_mod_ck],rax
+	mov	qword [g_mod_ck+8],rax
+	mov	qword [g_mod_ck+16],rax
+	mov	qword [g_mod_ck+24],rax		; (CK_TBUF 0: trailers dropped)
+.step:
+	lea	rdi,[g_mod_ck]			; chunk.inc's decoder, as the proxy's:
+	mov	rsi,r12				; CRLF only, tokens in extensions
+	mov	edx,r13d
+	call	chunk_step
+	add	r12,rcx
+	sub	r13d,ecx
+	cmp	eax,CK_DATAOUT
+	jne	.not_data
+	add	ebx,r9d
+	cmp	ebx,MOD_BODY_MAX
 	ja	.bad
-	test	r11d,r11d
-	jz	.skip
-	mov	ecx,eax
+	test	r15d,r15d
+	jz	.step
+	mov	rdi,r14				; (never past where it is read)
+	mov	rsi,r8
+	mov	ecx,r9d
 	rep	movsb
-	jmp	.data_end
-.skip:
-	add	rsi,rax
-.data_end:
-	add	rsi,2
-	jmp	.chunk
-.trailer:
-	cmp	rsi,r8
-	jae	.more
-	cmp	byte [rsi],13
-	jne	.field
-	lea	rcx,[rsi+2]
-	cmp	rcx,r8
-	ja	.more
-	cmp	byte [rsi+1],10
+	mov	r14,rdi
+	jmp	.step
+.not_data:
+	cmp	eax,CK_END
+	je	.end
+	cmp	eax,CK_MORE
 	jne	.bad
-	add	rsi,2
-	mov	rax,rsi
-	sub	rax,r9
-	clc
-	ret
-.field:
-	cmp	rsi,r8
-	jae	.more
-	cmp	byte [rsi],10
-	je	.field_end
-	inc	rsi
-	jmp	.field
-.field_end:
-	inc	rsi
-	jmp	.trailer
-.more:
 	stc
-	ret
+	jmp	.out
 .bad:
 	mov	eax,-1
 	clc
+	jmp	.out
+.end:
+	mov	rax,r12
+	sub	rax,rbp
+	mov	edx,ebx
+	clc
+.out:
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbp
+	pop	rbx
 	ret
 
 ; the handler's answer: eax = status, edx = body length, rsi = its

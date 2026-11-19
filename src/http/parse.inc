@@ -1092,6 +1092,10 @@ hm_mark_named_hop:
 ; Request rules on top of the common ones. eax = 0 or HE_*.
 hm_request_rules:
 	call	hm_common_rules
+	cmp	eax,HE_NOT_IMPL			; a request whose last coding is not chunked
+	jne	@f				; (or a list of them): its length cannot be
+	mov	eax,HE_BAD			; told, 400 (RFC 9112 6.3), never 501
+@@:
 	test	eax,eax
 	jnz	.out
 	cmp	dword [r13+HM_VERSION],10

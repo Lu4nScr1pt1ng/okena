@@ -202,12 +202,23 @@ try:
     check("  a mark split across reads, after a head of 5 KB", h.get(("marked", HTTP_LONG)) == 1, str(h))
     check("udp send= match=: the right answer up, a wrong one and an ICMP refusal down",
           h.get(("dns", UDP_OK)) == 1 and h.get(("dns", UDP_BAD)) == 0 and h.get(("dns", UDP_NONE)) == 0, str(h))
-    seen = set()
-    for _ in range(6):
-        c = socket.create_connection(("127.0.0.1", L1), timeout=3)
-        c.sendall(b"INFO replication\r\n")
-        seen.add(b"role:master" in c.recv(256))
-        c.close()
+    # the workers follow the checker on their tick (a second at most): one that
+    # has not yet may have no server up and refuse a connection (tried again,
+    # within bounds); a wrong server's answer is what fails
+    seen, tries = [], 0
+    while len(seen) < 6 and tries < 60:
+        tries += 1
+        try:
+            c = socket.create_connection(("127.0.0.1", L1), timeout=3)
+            c.sendall(b"INFO replication\r\n")
+            got = c.recv(256)
+            c.close()
+        except OSError:
+            time.sleep(0.05)
+            continue
+        if got:
+            seen.append(b"role:master" in got)
+    seen = set(seen)
     check("traffic goes to the primary only", seen == {True}, str(seen))
     log.seek(0)
     t = log.read()

@@ -30,6 +30,15 @@ CKS_END_LF	:= 10
 CKS_DONE	:= 11
 
 CK_EXT_MAX	:= 4096
+
+; where an extension stands (CK_DIGITS, while CKS_EXT)
+CKX_NAME1	:= 0		; after ';': a name's first character
+CKX_NAME	:= 1
+CKX_VAL1	:= 2		; after '='
+CKX_TOKEN	:= 3
+CKX_QUOTED	:= 4
+CKX_ESC		:= 5		; after a backslash in quotes
+CKX_AFTERQ	:= 6		; after the closing quote
 CK_TRAIL_MAX	:= 8192
 
 CK_MORE		:= 0		; everything consumed, more bytes needed
@@ -98,11 +107,82 @@ chunk_step:
 	jmp	.next
 .ext_start:
 	mov	dword [rdi+CK_EXTRA],0
-	mov	dword [rdi+CK_STATE],CKS_EXT
+	mov	dword [rdi+CK_DIGITS],CKX_NAME1	; (the size is read: its digits' count
+	mov	dword [rdi+CK_STATE],CKS_EXT	; is where the extension stands)
 	jmp	.next
+	; chunk-ext = *( ";" name [ "=" ( token / quoted-string ) ] ): tokens,
+	; no blanks, no controls (a size with spaces after it, a bare ';', a NUL
+	; are refused, as a smuggler's ambiguity)
 .ext:
+	inc	dword [rdi+CK_EXTRA]
+	cmp	dword [rdi+CK_EXTRA],CK_EXT_MAX
+	ja	.error
+	mov	eax,[rdi+CK_DIGITS]
+	cmp	eax,CKX_QUOTED
+	je	.ext_quoted
+	cmp	eax,CKX_ESC
+	je	.ext_esc
+	cmp	eax,CKX_NAME1
+	je	.ext_tok1
+	cmp	eax,CKX_VAL1
+	je	.ext_val1
+	; CKX_NAME, CKX_TOKEN, CKX_AFTERQ: what may end one
 	cmp	r10d,13
 	je	.size_cr
+	cmp	r10d,';'
+	je	.ext_next
+	cmp	eax,CKX_AFTERQ
+	je	.error
+	cmp	eax,CKX_NAME
+	jne	.ext_tok
+	cmp	r10d,'='
+	jne	.ext_tok
+	mov	dword [rdi+CK_DIGITS],CKX_VAL1
+	jmp	.next
+.ext_next:
+	mov	dword [rdi+CK_DIGITS],CKX_NAME1
+	jmp	.next
+.ext_tok1:					; a name's first character
+	lea	rax,[http_tchar]
+	cmp	byte [rax+r10],0
+	je	.error
+	mov	dword [rdi+CK_DIGITS],CKX_NAME
+	jmp	.next
+.ext_tok:
+	lea	rax,[http_tchar]
+	cmp	byte [rax+r10],0
+	je	.error
+	jmp	.next
+.ext_val1:
+	cmp	r10d,'"'
+	je	@f
+	lea	rax,[http_tchar]
+	cmp	byte [rax+r10],0
+	je	.error
+	mov	dword [rdi+CK_DIGITS],CKX_TOKEN
+	jmp	.next
+@@:
+	mov	dword [rdi+CK_DIGITS],CKX_QUOTED
+	jmp	.next
+.ext_quoted:
+	cmp	r10d,'"'
+	je	@f
+	cmp	r10d,'\'
+	je	.ext_bs
+	cmp	r10d,9
+	je	.next
+	cmp	r10d,' '
+	jb	.error
+	cmp	r10d,0x7F
+	je	.error
+	jmp	.next
+@@:
+	mov	dword [rdi+CK_DIGITS],CKX_AFTERQ
+	jmp	.next
+.ext_bs:
+	mov	dword [rdi+CK_DIGITS],CKX_ESC
+	jmp	.next
+.ext_esc:
 	cmp	r10d,9
 	je	@f
 	cmp	r10d,' '
@@ -110,9 +190,7 @@ chunk_step:
 	cmp	r10d,0x7F
 	je	.error
 @@:
-	inc	dword [rdi+CK_EXTRA]
-	cmp	dword [rdi+CK_EXTRA],CK_EXT_MAX
-	ja	.error
+	mov	dword [rdi+CK_DIGITS],CKX_QUOTED
 	jmp	.next
 .size_cr:
 	mov	dword [rdi+CK_STATE],CKS_SIZE_LF

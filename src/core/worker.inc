@@ -519,6 +519,7 @@ on_timer:
 ; Once a second, both engines: heartbeat, idle timeouts, drain deadlines.
 tick_work:
 	inc	dword [g_tick]
+	call	date_tick			; (Date: on okena's heads)
 	call	groups_refresh
 	call	health_follow
 	call	hash_tick

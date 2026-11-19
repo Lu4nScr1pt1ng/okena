@@ -234,7 +234,12 @@ def parse_request(h):
         raise Err(505)
     m = {"version": version, "method": method, "target": target, "path": target[:path],
          "fields": fields(h, i + 10)}
-    common(m)
+    try:
+        common(m)
+    except Err as e:
+        if e.code == 501:                  # a request's coding not chunked alone: 400
+            raise Err(400)
+        raise
     fl = m["flags"]
     if version == 10:
         if "chunked" in fl:
@@ -312,6 +317,9 @@ def describe(kind, data):
     return "\n".join(out) + "\n"
 
 
+TCHAR = set(b"!#$%&'*+-.^_`|~0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz")
+
+
 def chunk_ref(b):
     out, i = bytearray(), 0
     hexd = "0123456789abcdefABCDEF"
@@ -330,14 +338,43 @@ def chunk_ref(b):
         if i >= len(b):
             return "more", out
         if b[i] == ord(";"):
+            # *( ";" name [ "=" ( token / quoted-string ) ] ), no blanks
             i += 1
-            ext = 0
-            while i < len(b) and b[i] != 13:
+            ext, st = 0, "name1"
+            while i < len(b) and not (b[i] == 13 and st in ("name", "token", "afterq")):
                 c = b[i]
-                if c != 9 and (c < 32 or c == 0x7F):
-                    return "error", out
                 ext += 1
                 if ext > 4096:
+                    return "error", out
+                if st == "quoted":
+                    if c == ord('"'):
+                        st = "afterq"
+                    elif c == ord("\\"):
+                        st = "esc"
+                    elif c != 9 and (c < 32 or c == 0x7F):
+                        return "error", out
+                elif st == "esc":
+                    if c != 9 and (c < 32 or c == 0x7F):
+                        return "error", out
+                    st = "quoted"
+                elif st == "name1":
+                    if c not in TCHAR:
+                        return "error", out
+                    st = "name"
+                elif st == "val1":
+                    if c == ord('"'):
+                        st = "quoted"
+                    elif c in TCHAR:
+                        st = "token"
+                    else:
+                        return "error", out
+                elif c == ord(";"):
+                    st = "name1"
+                elif st == "afterq":
+                    return "error", out
+                elif st == "name" and c == ord("="):
+                    st = "val1"
+                elif c not in TCHAR:
                     return "error", out
                 i += 1
             if i >= len(b):
@@ -429,9 +466,9 @@ CORPUS = [
     ("Q", b"POST / HTTP/1.1\r\n" + R + b"Content-Length: 5, 6\r\n\r\n", "error 400"),
     ("Q", b"POST / HTTP/1.1\r\n" + R + b"Content-Length: +5\r\n\r\n", "error 400"),
     ("Q", b"POST / HTTP/1.1\r\n" + R + b"Content-Length: 0x5\r\n\r\n", "error 400"),
-    ("Q", b"POST / HTTP/1.1\r\n" + R + b"Transfer-Encoding: gzip, chunked\r\n\r\n", "error 501"),
+    ("Q", b"POST / HTTP/1.1\r\n" + R + b"Transfer-Encoding: gzip, chunked\r\n\r\n", "error 400"),
     ("Q", b"POST / HTTP/1.1\r\n" + R + b"Transfer-Encoding: chunked\r\nTransfer-Encoding: chunked\r\n\r\n", "error 400"),
-    ("Q", b"POST / HTTP/1.1\r\n" + R + b"Transfer-Encoding: xchunked\r\n\r\n", "error 501"),
+    ("Q", b"POST / HTTP/1.1\r\n" + R + b"Transfer-Encoding: xchunked\r\n\r\n", "error 400"),
     ("Q", b"POST / HTTP/1.1\r\n" + R + b"Transfer-Encoding : chunked\r\n\r\n", "error 400"),
     ("Q", b"POST / HTTP/1.1\r\n" + R + b"Transfer-Encoding:\tChunked \r\n\r\n", "ok"),
     ("Q", b"POST / HTTP/1.0\r\nTransfer-Encoding: chunked\r\n\r\n", "error 400"),

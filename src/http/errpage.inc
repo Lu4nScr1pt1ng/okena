@@ -395,7 +395,9 @@ http_error_page:
 	mov	eax,r13d
 	call	http_reason
 	call	fmt_cstr
-	memit_x 13,10,'Content-Type: '
+	memit_x 13,10
+	date_emit
+	memit_x 'Content-Type: '
 	lea	rsi,[ep_types]
 	mov	eax,[r12+EP_TYPE]
 	call	st_word

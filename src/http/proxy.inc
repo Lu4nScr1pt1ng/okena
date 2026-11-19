@@ -455,13 +455,41 @@ http_next_request:
 .too_large:
 	mov	edi,431
 	cmp	eax,2
-	jne	http_error
+	jb	http_error
 	mov	edi,414				; the request line alone fills it
-	jmp	http_error
+	je	http_error
+	mov	edi,400				; and no space in it: a method that long is
+	jmp	http_error			; not one (no target to be too long)
+
+; ebx, r15: OPTIONS * (RFC 9110 9.3.7), which no route has: 200, the methods.
+options_star:
+	or	dword [r15+H_FLAGS],HX_SELF or HX_STARTED
+	mov	dword [r15+H_STATUS],200
+	mov	edi,200
+	mov	esi,5
+	call	http_count
+	mov	rdi,[r15+H_BUF]
+	lea	rdi,[rdi+HB_OUT]
+	mov	eax,200
+	call	status_line
+	memit_x 'Allow: GET, HEAD, POST, PUT, DELETE, PATCH, OPTIONS',13,10,'Content-Length: 0',13,10
+	test	dword [r15+H_FLAGS],HX_CLOSE
+	jz	@f
+	memit_x 'Connection: close',13,10
+@@:
+	memit_x 13,10
+	mov	rsi,[r15+H_BUF]
+	lea	rsi,[rsi+HB_OUT]
+	sub	rdi,rsi
+	mov	dword [r15+H_STATE],HS_SELF_SEND
+	mov	ecx,SIDE_CLIENT
+	xchg	rsi,rdi
+	jmp	h_send
 
 ; ebx, r15: a head not yet whole. eax = 1 when its first line has ended with no
 ; version after the target (HTTP/0.9, "GET /": nothing more will come to make a
-; head of it), 2 when it has not ended at all, 0 otherwise.
+; head of it), 2 when it has not ended at all (3: with no space yet), 0
+; otherwise.
 http_line_one:
 	mov	rdi,[r15+H_BUF]
 	lea	rdi,[rdi+HB_IN]
@@ -487,6 +515,10 @@ http_line_one:
 	ret
 .open:
 	mov	eax,2
+	test	edx,edx
+	jnz	@f
+	mov	eax,3				; (not even the method has ended)
+@@:
 	ret
 
 ; fault delay=: requests held, a table a worker, looked through when one is
@@ -1223,6 +1255,19 @@ http_request:
 	mov	edi,405
 	jmp	http_error
 .no_route:
+	cmp	dword [g_hm+HM_TLEN],1		; OPTIONS *: the server's, not a route's
+	jne	@f
+	mov	rax,[g_hm+HM_TARGET]
+	cmp	byte [rax],'*'
+	jne	@f
+	cmp	dword [g_hm+HM_MLEN],7
+	jne	@f
+	mov	rax,[g_hm+HM_METHOD]
+	cmp	dword [rax],'OPTI'
+	jne	@f
+	cmp	dword [rax+3],'IONS'
+	je	options_star
+@@:
 	mov	edi,404
 	jmp	http_error
 .misdirected:
@@ -3208,11 +3253,21 @@ http_write_response_head:
 	mov	word [rdi],0x0A0D
 	add	rdi,2
 	xor	ebx,ebx
+	mov	dword [g_date_saw],0
 .field:
 	cmp	ebx,[r12+HM_NHDR]
 	jae	.own
 	imul	r14,rbx,HF_SIZE
 	lea	r14,[r12+HM_HDRS+r14]
+	cmp	dword [r14+HF_NLEN],4		; a Date of its own? (else okena's)
+	jne	@f
+	mov	rax,[r14+HF_NAME]
+	mov	eax,[rax]
+	or	eax,0x20202020
+	cmp	eax,'date'
+	jne	@f
+	mov	dword [g_date_saw],1
+@@:
 	test	dword [r14+HF_FLAGS],HFF_HOP
 	jz	.e2e
 	test	dword [r15+H_FLAGS],HX_UPGRADE	; a 101 keeps its Upgrade field
@@ -3312,6 +3367,12 @@ http_write_response_head:
 	inc	ebx
 	jmp	.field
 .own:
+	cmp	dword [g_date_saw],0
+	jne	@f
+	cmp	dword [r12+HM_STATUS],200
+	jb	@f
+	date_emit
+@@:
 	cmp	dword [g_zh],0
 	je	.own_plain
 	cmp	dword [g_zh],2
@@ -5653,7 +5714,9 @@ http_error:
 	call	http_reason			; rsi = text
 	push	rsi
 	call	fmt_cstr
-	memit_x 13,10,'Content-Type: text/plain',13,10,'Connection: close',13,10,'X-Request-Id: '
+	memit_x 13,10
+	date_emit
+	memit_x 'Content-Type: text/plain',13,10,'Connection: close',13,10,'X-Request-Id: '
 	lea	rsi,[r15+H_RID]
 	mov	ecx,[r15+H_RIDLEN]
 	rep	movsb
@@ -5817,10 +5880,50 @@ macro status3
 	add	rdi,3
 end macro
 
+; the heads okena writes (its own answers, and a backend's that has none)
+; carry "Date: <IMF-fixdate>" (RFC 9110 6.6.1), formatted once a second
+DATE_LEN	:= 37
+bss
+	align 8
+	g_date_line	rb 40
+	g_date_saw	dd ?			; the head being copied has one
+end bss
+
+macro date_emit				; at rdi (40 bytes of room), rdi after it; rdx
+	mov	rdx,qword [g_date_line]
+	mov	[rdi],rdx
+	mov	rdx,qword [g_date_line+8]
+	mov	[rdi+8],rdx
+	mov	rdx,qword [g_date_line+16]
+	mov	[rdi+16],rdx
+	mov	rdx,qword [g_date_line+24]
+	mov	[rdi+24],rdx
+	mov	rdx,qword [g_date_line+32]
+	mov	[rdi+32],rdx
+	add	rdi,DATE_LEN
+end macro
+
+; tick, and a worker's start: g_date_line from the wall clock. Keeps rbx,
+; r12-r15.
+date_tick:
+	sub	rsp,16
+	mov	edi,CLOCK_REALTIME
+	mov	rsi,rsp
+	mov	eax,SYS_clock_gettime
+	syscall
+	mov	rax,[rsp]
+	add	rsp,16
+	mov	dword [g_date_line],'Date'
+	mov	word [g_date_line+4],': '
+	lea	rdi,[g_date_line+6]
+	call	fmt_http_date
+	mov	word [g_date_line+35],0x0A0D
+	ret
+
 ; eax = a status code (100 to 599), rdi = where: "HTTP/1.1 CODE REASON\r\n",
 ; made once for each code and copied after (an answer okena makes itself:
-; `respond`, a redirect, its own errors). rdi after it. Clobbers rax, rcx,
-; rdx, rsi, r8.
+; `respond`, a redirect, its own errors), and from 200 the Date line. rdi
+; after it. Clobbers rcx, rdx, rsi, r8 (rax: the status still).
 STL_MAX		:= 48
 bss
 	align 8
@@ -5844,6 +5947,10 @@ status_line:
 		mov	[rdi+q*8],rdx
 	end repeat
 	add	rdi,rcx
+	cmp	eax,200
+	jb	@f
+	date_emit
+@@:
 	ret
 .make:
 	push	rdi
@@ -5890,9 +5997,15 @@ status_line:
 	mov	byte [rdi],' '
 	inc	rdi
 	pop	rax
+	push	rax
 	call	http_reason
 	call	fmt_cstr
 	memit_x 13,10
+	pop	rax
+	cmp	eax,200
+	jb	@f
+	date_emit
+@@:
 	ret
 
 http_reason:
