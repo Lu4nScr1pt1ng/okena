@@ -3548,9 +3548,13 @@ http_resp_pump:
 	je	.read				; (gRPC-Web text: through the encoder)
 	call	pace_route			; (paced: through here, not without copies)
 	jc	.read
+	call	fm_direct			; a file kept in memory: sent from there
+	jnc	.sent_direct
 	call	zc_ok				; from a file or the disk cache: without copies?
 	jnc	zc_send
 	jmp	.read
+.sent_direct:
+	ret
 @@:
 	mov	rax,[r15+H_RREMAIN]
 	cmp	rax,rcx

@@ -1352,6 +1352,43 @@ fm_keep:
 	pop	rbx
 	ret
 
+; http_resp_pump, a body framed by length with nothing read yet (ebx, r15): a
+; file kept in memory (files_mem) goes to the client from the store itself,
+; the rest of it in one send (the store never moves nor is written over);
+; not when its bytes must pass through here (a cache filling, compression,
+; a copy). CF: not one of those.
+fm_direct:
+	call	session_ptr
+	mov	ecx,[rax+S_FLAGS]
+	test	ecx,SF_FILE
+	jz	.no
+	test	ecx,SF_CFILL or SF_ZIP or SF_MIR or SF_SLICE or SF_IDEMF
+	jnz	.no
+	mov	r8,[r15+H_BUF]
+	cmp	dword [r8+HB_FFD],-1
+	jne	.no
+	mov	rcx,[r15+H_RREMAIN]
+	test	rcx,rcx
+	jz	.no
+	mov	rax,[r8+HB_FLEFT]
+	cmp	rcx,rax
+	ja	.no				; (more said than the file has: as before)
+	mov	edi,[r8+HB_FMEM]
+	add	rdi,[g_fm_base]
+	dec	rdi
+	add	[r8+HB_FMEM],ecx
+	sub	[r8+HB_FLEFT],rcx
+	mov	qword [r15+H_RREMAIN],0
+	mov	esi,ecx
+	mov	dword [r15+H_STATE],HS_RESP_SEND
+	mov	ecx,SIDE_CLIENT
+	call	h_send
+	clc
+	ret
+.no:
+	stc
+	ret
+
 ; g_fs_*: the ETag and the date the file answers with
 fs_validators:
 	lea	rdi,[g_fs_etag]
