@@ -3142,7 +3142,10 @@ qc_on_ack:
 	push	rdx
 	mov	edi,[rsp+16+QA_LEVEL]
 	mov	rsi,[rsp+16+QA_LARGEST]
+	push	rbx				; (rbx held the ranges: the session again,
+	mov	rbx,[rsp+24+QA_SIZE+16]		; which qc_detect_lost marks dirty)
 	call	qc_detect_lost
+	pop	rbx
 	pop	rdx
 	pop	rsi
 	mov	dword [r15+QC_PTOCNT],0
