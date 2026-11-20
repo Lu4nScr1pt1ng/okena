@@ -1058,10 +1058,14 @@ fs_serve:
 
 ; --------------------------------------------------- files_mem: `memory=`
 ;
-; A worker keeps the files a `memory=` route serves, whole, in a store of its
-; own (the largest `memory=` of any route, address space reserved at the
-; start): one entry for each name and Accept-Encoding, with the variant it
-; came to, its size and date. An entry is good for FM_TTL; past that, the
+; The workers keep the files a `memory=` route serves, whole, in one store
+; they share (the largest `memory=` of any route; shared memory the supervisor
+; maps before it forks them, a fresh one for each configuration): one entry
+; for each name and Accept-Encoding, with the variant it came to, its size
+; and date. One copy of each file however many workers (in the caches as in
+; memory): a worker that has to read one claims its entry (FM_SEQ odd), takes
+; room with an atomic add, and publishes it (FM_SEQ even again); a reader
+; takes an entry only when FM_SEQ is even and the same before and after. An entry is good for FM_TTL; past that, the
 ; file is opened and looked at again, and the entry kept when it has not
 ; changed (else its new contents go in after the others). When the store is
 ; full, what is not in it is read from the file as before. Nothing is taken
@@ -1080,30 +1084,66 @@ FM_KOFF		:= 32				; d: its key in the store
 FM_KLEN		:= 36				; d
 FM_DOFF		:= 40				; d: its contents in the store + 1
 FM_ENC		:= 44				; d
+FM_SEQ		:= 48				; d: odd while a worker writes it
 FM_SIZE		:= 64
+; the shared store: its header (the room used), the entries, the contents
+FM_USED		:= 0				; q: the store's end, offsets from its base
+FM_TAB		:= 64
+FM_DATA		:= FM_TAB + FM_N * FM_SIZE
 
 bss
 	align 8
 	g_fm_cap	dq ?			; the largest memory= (the supervisor's, inherited)
-	g_fm_base	dq ?			; a worker's store, 0 none
-	g_fm_used	dq ?
+	g_fm_base	dq ?			; the store, 0 none
+	g_fm_mapcap	dq ?			; the supervisor's: what it was mapped for,
+	g_fm_mapgen	dd ?			; and the generation
 	g_fm_hash	dq ?
 	g_fm_slot	dq ?			; fm_find: the entry found, or to fill
+	g_fm_seq	dd ?			; and its FM_SEQ as it was read
 	g_fm_key	dd ?			; fm_find looked: the key is in g_fm_kbuf
 	g_fm_klen	dd ?
 	align 64
-	g_fm_tab:	rb FM_N * FM_SIZE
 	g_fm_kbuf:	rb 8192 + 600
 end bss
 
-; a worker's start: its store, address space only
+; a worker's start: the store is the supervisor's (fm_map), inherited
 fm_init:
-	mov	rsi,[g_fm_cap]
-	test	rsi,rsi
+	ret
+
+; the supervisor, before it forks a worker: the store the workers share,
+; mapped again for a new configuration (its routes, its roots: what the
+; keys name) or a new size; the workers of the last one keep theirs
+fm_map:
+	mov	rax,[g_fm_cap]
+	mov	ecx,[g_gen]
+	cmp	qword [g_fm_base],0
+	je	@f
+	cmp	rax,[g_fm_mapcap]
+	jne	@f
+	cmp	ecx,[g_fm_mapgen]
+	je	.out				; (the same: a worker started again)
+@@:
+	push	rax
+	push	rcx
+	mov	rdi,[g_fm_base]			; ours of the last one
+	test	rdi,rdi
+	jz	@f
+	mov	rsi,[g_fm_mapcap]
+	add	rsi,FM_DATA
+	mov	eax,SYS_munmap_
+	syscall
+	mov	qword [g_fm_base],0
+@@:
+	pop	rcx
+	pop	rax
+	mov	[g_fm_mapcap],rax
+	mov	[g_fm_mapgen],ecx
+	test	rax,rax
 	jz	.out
+	lea	rsi,[rax+FM_DATA]
 	xor	edi,edi
 	mov	edx,PROT_READ or PROT_WRITE
-	mov	r10d,MAP_PRIVATE or MAP_ANONYMOUS or MAP_NORESERVE
+	mov	r10d,MAP_SHARED or MAP_ANONYMOUS or MAP_NORESERVE
 	mov	r8,-1
 	xor	r9d,r9d
 	mov	eax,SYS_mmap
@@ -1111,6 +1151,7 @@ fm_init:
 	cmp	rax,-4096
 	jae	.out				; (none: files are read as before)
 	mov	[g_fm_base],rax
+	mov	qword [rax+FM_USED],FM_DATA
 .out:
 	ret
 
@@ -1162,7 +1203,12 @@ fm_find:
 	mov	eax,r9d
 	and	eax,FM_N - 1
 	shl	eax,6
-	lea	r11,[g_fm_tab+rax]
+	mov	r11,[g_fm_base]
+	lea	r11,[r11+FM_TAB+rax]
+	mov	eax,[r11+FM_SEQ]		; (being written: as if another's)
+	test	eax,1
+	jnz	.other
+	mov	[g_fm_seq],eax
 	mov	rax,[r11+FM_HASH]
 	test	rax,rax
 	jz	.empty
@@ -1198,6 +1244,9 @@ fm_find:
 	mov	[g_fs_mtime],rax
 	mov	eax,[r11+FM_DOFF]
 	mov	[g_fs_mem],eax
+	mov	eax,[r11+FM_SEQ]		; the same as before: none wrote it meanwhile
+	cmp	eax,[g_fm_seq]
+	jne	.none
 	mov	dword [g_fs_fd],-1
 	clc
 	ret
@@ -1215,7 +1264,8 @@ fm_find:
 	mov	eax,dword [g_fm_hash]
 	and	eax,FM_N - 1
 	shl	eax,6
-	lea	r11,[g_fm_tab+rax]
+	mov	r11,[g_fm_base]
+	lea	r11,[r11+FM_TAB+rax]
 	mov	[g_fm_slot],r11
 .none:
 	stc
@@ -1281,9 +1331,13 @@ fm_keep:
 	mov	rcx,[g_fs_size]
 	lea	rdx,[rax+rcx+15]
 	and	rdx,-16
-	mov	r8,[g_fm_used]
+	mov	r9,[g_fm_base]			; its room, taken at once (other workers
+	mov	r8,rdx				; take theirs alongside)
+	lock xadd [r9+FM_USED],r8
 	lea	r9,[r8+rdx]
-	cmp	r9,[g_fm_cap]
+	mov	rcx,[g_fm_cap]
+	add	rcx,FM_DATA
+	cmp	r9,rcx
 	ja	.out				; full: from the file
 	push	r8				; [rsp+8] the key's offset
 	push	rax				; [rsp]   the key's room
@@ -1318,7 +1372,16 @@ fm_keep:
 	lea	rsi,[g_fm_kbuf]
 	mov	ecx,[g_fm_klen]
 	rep	movsb
+	mov	r10,rax				; (the key's room)
 	mov	r11,[g_fm_slot]
+	mov	ecx,[r11+FM_SEQ]		; the entry: ours while we write it
+	test	ecx,1
+	jnz	.out				; (another worker's now: it is read from the file)
+	lea	edx,[rcx+1]
+	mov	eax,ecx
+	lock cmpxchg [r11+FM_SEQ],edx
+	jne	.out
+	mov	rax,r10
 	mov	[r11+FM_KOFF],r8d
 	mov	ecx,[g_fm_klen]
 	mov	[r11+FM_KLEN],ecx
@@ -1336,13 +1399,7 @@ fm_keep:
 	mov	[r11+FM_UNTIL],rax
 	mov	rax,[g_fm_hash]
 	mov	[r11+FM_HASH],rax
-	mov	eax,[g_fm_klen]			; the store grows by key and contents
-	add	eax,15
-	and	eax,-16
-	add	rax,rcx
-	add	rax,15
-	and	rax,-16
-	add	[g_fm_used],rax
+	add	dword [r11+FM_SEQ],1		; published (even again)
 .from_store:
 	mov	eax,[r11+FM_DOFF]
 	mov	[g_fs_mem],eax

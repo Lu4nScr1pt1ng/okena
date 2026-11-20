@@ -935,6 +935,7 @@ spawn_worker:
 	mov	[g_hb_seen+rbx*8],rax
 	call	monotonic_seconds
 	mov	[g_worker_born+rbx*8],rax
+	call	fm_map				; files' memory= store, shared (files.inc)
 	mov	eax,SYS_fork
 	syscall
 	test	rax,rax

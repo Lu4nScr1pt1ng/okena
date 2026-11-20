@@ -3633,6 +3633,8 @@ h3tx_put:
 	mov	rax,rsi
 	sub	rax,[g_fm_base]
 	jb	.copy
+	sub	rax,FM_DATA			; (its contents: past the header and entries)
+	jb	.copy
 	cmp	rax,[g_fm_cap]
 	jae	.copy
 	cmp	qword [g_fm_base],0
