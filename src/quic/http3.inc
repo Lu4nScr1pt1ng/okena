@@ -202,6 +202,7 @@ H3E_MESSAGE	:= 0x10E
 QPACK_DECOMPRESSION := 0x200
 
 include 'qpack_tables.inc'
+include 'qe.inc'
 
 bss
 	align 16
@@ -246,6 +247,11 @@ qc_established:
 	rep	stosq
 	mov	[r15+QC_RAM],rax
 	mov	[r15+QC_HBOWN],rax
+	call	qe_ptr				; our QPACK encoder: no table until the client
+	mov	rdi,rax				; says how large it may be
+	mov	ecx,QE_HDR / 8
+	xor	eax,eax
+	rep	stosq
 	mov	dword [r15+QC_H3UNI],eax	; (no critical stream of the client's yet)
 	mov	[r15+QC_MAXPUSH],rax
 	mov	[r15+QC_GOAWAYRX],rax
@@ -2224,6 +2230,10 @@ h3_ctl_bytes:
 	mov	r8,rax				; its identifier
 	call	qv_read
 	jc	.frame_error
+	cmp	r8,1				; QPACK_MAX_TABLE_CAPACITY: our encoder's
+	jne	@f				; table, up to QE_DCAP
+	call	qe_settings
+@@:
 	lea	rax,[r8-2]
 	cmp	rax,3
 	jbe	.settings_error
@@ -2322,6 +2332,9 @@ h3_ctl_bytes:
 ; read past, but an Insert Count Increment of 0 is QPACK_DECODER_STREAM_ERROR.
 ; QST_FHAVE: 1 inside an integer's continuation bytes. CF on an error.
 qd_dec_bytes:
+	; (QST_PHASE: 1 for an Insert Count Increment being read, its value in
+	; QST_FTYPE, the next bits' shift in QST_FLEFT: what our encoder's
+	; inserts the client has, the only references it then makes)
 .byte:
 	test	rcx,rcx
 	jz	.ok
@@ -2332,20 +2345,42 @@ qd_dec_bytes:
 	jne	.more
 	test	eax,eax
 	jz	.zero				; 00 000000: Insert Count Increment 0
+	mov	dword [rdi+QST_PHASE],0
 	mov	edx,0x7F			; Section Acknowledgment: 7-bit prefix,
 	test	al,0x80				; the others 6
 	jnz	@f
 	mov	edx,0x3F
+	test	al,0x40
+	jnz	@f
+	mov	dword [rdi+QST_PHASE],1		; 00: Insert Count Increment
 @@:
 	and	eax,edx
+	mov	[rdi+QST_FTYPE],rax
+	mov	qword [rdi+QST_FLEFT],0
 	cmp	eax,edx
-	jne	.byte				; whole in its first byte
+	jne	.whole				; whole in its first byte
 	mov	dword [rdi+QST_FHAVE],1
 	jmp	.byte
 .more:
+	mov	edx,eax
+	and	edx,0x7F
+	push	rcx
+	mov	rcx,[rdi+QST_FLEFT]
+	cmp	ecx,28
+	ja	@f
+	shl	rdx,cl
+	add	[rdi+QST_FTYPE],rdx
+@@:
+	add	qword [rdi+QST_FLEFT],7
+	pop	rcx
 	test	al,0x80
 	jnz	.byte
 	mov	dword [rdi+QST_FHAVE],0
+.whole:
+	cmp	dword [rdi+QST_PHASE],1
+	jne	.byte
+	mov	rax,[rdi+QST_FTYPE]
+	call	qe_increment
 	jmp	.byte
 .zero:
 	mov	qword [r15+QC_ERR],H3E_DECODER_STREAM
@@ -2431,7 +2466,8 @@ qp_uni_bytes:
 	mov	rdi,r12
 	call	qd_dec_bytes
 	jc	.failed
-	jmp	.ok
+	jmp	.credit				; (its window moves too: a Section
+						; Acknowledgment for each answer that used the table)
 .creation:
 	mov	qword [r15+QC_ERR],H3E_STREAM_CREATION
 	or	dword [r15+QC_FLAGS],QF_APP_ERR
@@ -3587,7 +3623,8 @@ h3_head_out:
 	jb	.broken
 	lea	rdi,[g_h3tmp+8]			; the field section (the frame header after)
 	mov	word [rdi],0			; Required Insert Count 0, Delta Base 0
-	add	rdi,2
+	add	rdi,2				; (until the table is used: qe_prefix)
+	call	qe_section
 	; :status: the static table's own line for it when it has one (200 is
 	; one byte), else by its name
 	push	rsi
@@ -3698,6 +3735,8 @@ h3_head_out:
 	lea	ecx,[rdx+2]
 	jmp	.line
 .block:
+	call	qe_prefix			; the prefix, once the references are known
+	mov	qword [g_qe],0
 	; the frame: HEADERS, its length (4-byte varint), the section
 	lea	rax,[g_h3tmp+8]
 	mov	rcx,rdi
@@ -3728,11 +3767,13 @@ h3_head_out:
 	jmp	.out
 .broken:
 	; not a head we wrote (cannot happen): dropped
+	mov	qword [g_qe],0
 	mov	dword [r12+H_H3PL],0
 	or	dword [r12+H_H3F],H3F_HEAD
 	clc
 	jmp	.out
 .full:
+	mov	qword [g_qe],0
 	stc
 .out:
 	pop	rbp
@@ -3844,6 +3885,21 @@ qp_encode:
 .next:
 	jmp	.entry
 .searched:
+	; the dynamic table (qe.inc's part): a line the client has (indexed,
+	; relative to the section's base), else kept for later
+	cmp	qword [g_qe],0
+	je	.no_dyn
+	mov	rsi,r12
+	mov	edx,r13d
+	mov	rcx,r14
+	mov	r8d,r15d
+	mov	r9d,ebx				; (its static name, -1 none)
+	mov	rdi,rbp
+	call	qe_field
+	jc	.no_dyn
+	mov	rdi,rax
+	jmp	.out
+.no_dyn:
 	cmp	ebx,-1
 	je	.literal
 	; literal with name reference, static (01 N=0 T=1 index, 4-bit prefix)
@@ -4425,6 +4481,10 @@ qc_app_write:
 	or	[r15+QC_LW_CTL],eax
 	mov	r12d,1
 .qd_done:
+	call	qe_write			; our QPACK encoder stream (id 11)
+	jnc	@f
+	mov	r12d,1
+@@:
 	; one request stream's data, the next with something after the last
 	; (the request streams there are, each once, from the one after QC_RR)
 	popcnt	r13,[r15+QC_QREQ]
@@ -4563,7 +4623,7 @@ qc_app_write:
 	; room left: the next stream's in the same packet (a datagram carries
 	; many small answers, as many as QFX_MAX past the first)
 	cmp	dword [g_qfx_n],QFX_MAX
-	jae	.done
+	jge	.done
 	mov	rax,r14
 	sub	rax,rdi
 	cmp	rax,1 + 8 + 8 + 2 + 16
@@ -4661,6 +4721,8 @@ qc_app_lost:
 .msd:
 	cmp	dword [r8+QST_KIND],QSK_REQ
 	je	.msd_again
+	cmp	dword [r8+QST_KIND],QSK_DEC
+	je	.msd_again
 	cmp	dword [r8+QST_KIND],QSK_ENC
 	jne	@f
 .msd_again:
@@ -4700,6 +4762,8 @@ qc_app_lost:
 ; rdi = a sent packet's record, or a frame of it at the record's offsets
 ; (SP_S*): its stream data and FIN go again, from the lowest offset lost
 qc_fr_lost:
+	cmp	dword [rdi+SP_SSESS],QE_MARK	; our encoder stream's bytes
+	je	qe_lost
 	mov	eax,[rdi+SP_SLEN]
 	or	eax,[rdi+SP_SFIN]
 	jz	.out
@@ -4829,6 +4893,8 @@ qc_app_acked:
 ; rdi = a sent packet's record, or a frame of it at the record's offsets
 ; (SP_S*): its stream bytes delivered
 qc_fr_acked:
+	cmp	dword [rdi+SP_SSESS],QE_MARK	; our encoder stream's bytes
+	je	qe_acked
 	mov	eax,[rdi+SP_SLEN]
 	or	eax,[rdi+SP_SFIN]
 	jz	.out
