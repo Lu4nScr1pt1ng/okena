@@ -416,7 +416,7 @@ image:
 dist: $(BIN)
 	rm -rf build/dist/$(DIST)
 	mkdir -p build/dist/$(DIST)/examples build/dist/$(DIST)/systemd
-	cp $(BIN) LICENSE README.md CHANGELOG.md build/dist/$(DIST)/
+	cp $(BIN) LICENSE NOTICE README.md CHANGELOG.md build/dist/$(DIST)/
 	cp examples/*.conf build/dist/$(DIST)/examples/
 	cp -rL examples/compose build/dist/$(DIST)/examples/
 	cp contrib/systemd/okena.service contrib/systemd/okena.socket build/dist/$(DIST)/systemd/

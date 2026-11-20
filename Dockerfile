@@ -24,11 +24,11 @@ FROM scratch
 LABEL org.opencontainers.image.title="okena" \
       org.opencontainers.image.description="L4/L7 load balancer, reverse proxy and API gateway, in x86-64 assembly" \
       org.opencontainers.image.source="https://github.com/Lu4nScr1pt1ng/okena" \
-      org.opencontainers.image.licenses="AGPL-3.0-only"
+      org.opencontainers.image.licenses="Apache-2.0"
 ARG VERSION=dev
 LABEL org.opencontainers.image.version="$VERSION"
 COPY --from=build /src/build/okena /okena
-COPY LICENSE /LICENSE
+COPY LICENSE NOTICE /
 COPY docker/okena.conf /etc/okena/okena.conf
 EXPOSE 8080 9090
 USER 65532:65532

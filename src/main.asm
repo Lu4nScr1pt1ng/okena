@@ -1,7 +1,7 @@
 ; okena: L4/L7 load balancer, reverse proxy and API gateway.
 ; x86-64 assembly (fasm2) for Linux: static ELF, no libc, raw syscalls.
 ;
-; SPDX-License-Identifier: AGPL-3.0-only
+; SPDX-License-Identifier: Apache-2.0
 
 format ELF64 executable 3
 use vex2			; VEX only: no EVEX for a shorter displacement (no AVX-512 here)
