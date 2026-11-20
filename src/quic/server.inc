@@ -205,11 +205,17 @@ QF_HELLO	:= 4				; tls_hello answered
 QF_DONE		:= 8				; the handshake is complete
 QF_HDONE	:= 16				; HANDSHAKE_DONE to send
 QF_CLOSE	:= 32				; CONNECTION_CLOSE to send
+QF_WECLOSE	:= 2048				; we closed (not the peer): a packet that still
+						; comes is answered with it again (RFC 9000 10.2.1)
+QF_CLRS_ONE	:= 1 shl 24			; those resends, counted (bits 24-27)
+QF_CLRS_MAX	:= 8
 QF_APP_ERR	:= 64				; ... of the application (0x1d)
 QF_LINKED	:= 128				; in the list and the hash (until qc_closing)
 QF_PARKED	:= 1024				; a stream waits for QC_H3HB, its bytes in QC_RA
 QF_BBR		:= 512				; BBR's its congestion control (QB_*), not CUBIC
 QF_EARLY	:= 256				; 0-RTT taken: its keys at QC_K0, the streams ready
+assert (QF_VALID or QF_INIT_GONE or QF_HELLO or QF_DONE or QF_HDONE or QF_CLOSE or QF_APP_ERR \
+	or QF_LINKED or QF_EARLY or QF_BBR or QF_PARKED) and (QF_WECLOSE or (15 * QF_CLRS_ONE)) = 0
 
 ; packet number spaces
 QC_PS		:= QC_FIELDS_END
@@ -2671,7 +2677,22 @@ qc_packet:
 	mov	[rsp+QP_HELLO0],eax
 	add	[r15+QC_RXB],r9
 	cmp	dword [r15+QC_STATE],QCS_CLOSING
-	je	.out
+	jne	.not_closing
+	; closing: a packet that still comes, when we closed, has our
+	; CONNECTION_CLOSE again (ours may have been lost), a few times at most;
+	; when the peer closed, nothing (draining)
+	test	dword [r15+QC_FLAGS],QF_WECLOSE
+	jz	.out
+	mov	eax,[r15+QC_FLAGS]
+	shr	eax,24
+	and	eax,15
+	cmp	eax,QF_CLRS_MAX
+	jae	.out
+	add	dword [r15+QC_FLAGS],QF_CLRS_ONE
+	or	dword [r15+QC_FLAGS],QF_CLOSE
+	call	qc_dirty
+	jmp	.out
+.not_closing:
 	mov	r12d,esi
 	cmp	r12d,QL_INIT
 	jne	@f
@@ -3638,7 +3659,7 @@ qc_fail:
 	cmp	dword [r15+QC_STATE],QCS_CLOSING
 	je	.out
 	mov	dword [r15+QC_STATE],QCS_CLOSING
-	or	dword [r15+QC_FLAGS],QF_CLOSE
+	or	dword [r15+QC_FLAGS],QF_CLOSE or QF_WECLOSE
 	call	qc_pto_period
 	lea	rax,[rax*2+rax]
 	add	rax,[g_qnow]
