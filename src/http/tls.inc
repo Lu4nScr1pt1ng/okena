@@ -65,6 +65,10 @@ bss
 	align 4
 	g_no_ktls	dd ?			; this worker saw the kernel refuse kTLS
 	g_no_ktls_cp	dd ?			; ... refuse ChaCha20-Poly1305 keys only
+	align 8
+	g_shc_cert	dq ?			; http_sni_host_check: the last certificate and
+	g_shc_len	dd ?			; Host (portless) found to go together: the next
+	g_shc_host	rb 64			; request on it is not looked up again
 end bss
 
 rodata
@@ -1354,19 +1358,48 @@ http_sni_host_check:
 	jne	@f
 	dec	edx
 @@:
+	cmp	rax,[g_shc_cert]		; as the last one that went together?
+	jne	.look
+	cmp	edx,[g_shc_len]
+	jne	.look
 	push	rax
+	push	rsi
+	push	rdx
+	lea	rdi,[g_shc_host]
+	call	mem_eq
+	mov	ecx,eax
+	pop	rdx
+	pop	rsi
+	pop	rax
+	test	ecx,ecx
+	jnz	.ok
+.look:
+	push	rax
+	push	rsi
+	push	rdx
 	mov	rdi,rax
 	call	tls_cert_named			; rax = the name's entry, rdx = its sibling
+	mov	r8,rdx
+	pop	rdx
+	pop	rsi
 	pop	rcx
 	cmp	rax,rcx
-	je	.ok
+	je	.keep
 	test	rax,rax
 	jz	@f
-	cmp	rdx,rcx				; dual certificates: the client got the sibling
-	je	.ok
+	cmp	r8,rcx				; dual certificates: the client got the sibling
+	je	.keep
 @@:
 	stc
 	ret
+.keep:
+	cmp	edx,64				; (remembered, when it fits)
+	ja	.ok
+	mov	[g_shc_cert],rcx
+	mov	[g_shc_len],edx
+	lea	rdi,[g_shc_host]
+	mov	ecx,edx
+	rep	movsb
 .ok:
 	clc
 	ret

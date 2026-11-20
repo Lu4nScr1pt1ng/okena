@@ -243,21 +243,29 @@ bss
 	g_h2fl_n	dd ?			; connections whose send waits for the iteration's end
 	g_h2fl:		rq H2_FLUSH_MAX		; (session, generation) each
 	g_h2tmp_es	dd ?			; h2_head_out: END_STREAM on the HEADERS
-	g_h2_cl0	dd ?
-	g_ht_save	rd 4			; h2_head_out: the encoder's table before the block			; h2_head_out: content-length: 0 among its fields
+	g_h2_cl0	dd ?			; h2_head_out: content-length: 0 among its fields
+	g_ht_save	rd 4			; h2_head_out: the encoder's table before the block
+	align 8
+	g_h2_dl		dq ?			; h2_head_out: the content-length it says, -1 none
 end bss
+; a stream's DATA bytes still to come before its END_STREAM (the final head's
+; content-length), -1 not known: the DATA frame that ends the body carries
+; END_STREAM, not an empty one after it (a frame less for the client). A
+; stream's H_TXP: user-space TLS is its connection's, never its own
+H_H2DL		:= H_TXP
 
 rodata
 	h2_preface	db 'PRI * HTTP/2.0',13,10,13,10,'SM',13,10,13,10
 	; our SETTINGS: extended CONNECT, MAX_CONCURRENT_STREAMS,
-	; INITIAL_WINDOW_SIZE, ENABLE_PUSH 0, MAX_HEADER_LIST_SIZE; then a
-	; WINDOW_UPDATE for the connection (a client's settings skip the first)
-	h2_settings	db 0,0,30, H2F_SETTINGS, 0, 0,0,0,0
+	; INITIAL_WINDOW_SIZE, ENABLE_PUSH 0; then a WINDOW_UPDATE for the
+	; connection (a client's settings skip the first). MAX_HEADER_LIST_SIZE
+	; is not said: advisory (H2_MAX_HLIST is enforced all the same), and a
+	; client that knows it measures every request against it
+	h2_settings	db 0,0,24, H2F_SETTINGS, 0, 0,0,0,0
 			db 0,8, 0,0,0,1			; ENABLE_CONNECT_PROTOCOL (RFC 8441)
 			db 0,3, 0,0,0,H2_MAX_OPEN
 			db 0,4, 0,0,H2_INIT_WIN shr 8,0
 			db 0,2, 0,0,0,0
-			db 0,6, 0,0,H2_MAX_HLIST shr 8,0
 			db 0,0,4, H2F_WINDOW, 0, 0,0,0,0
 			db (H2_CONN_WIN - 65535) shr 24, ((H2_CONN_WIN - 65535) shr 16) and 255
 			db ((H2_CONN_WIN - 65535) shr 8) and 255, (H2_CONN_WIN - 65535) and 255
@@ -2151,19 +2159,8 @@ h2_stream_new:
 	inc	ebp
 	mov	rsi,[r8+HP_VALUE]		; the value
 	mov	ecx,[r8+HP_VLEN]
-@@:
-	test	ecx,ecx
-	jz	@f
-	dec	ecx
-	movzx	eax,byte [rsi+rcx]
-	cmp	al,13
-	je	.malformed
-	cmp	al,10
-	je	.malformed
-	test	al,al
-	jz	.malformed
-	jmp	@b
-@@:
+	call	ctl_scan
+	jc	.malformed
 	mov	rsi,[r8+HP_NAME]
 	mov	ecx,[r8+HP_NLEN]
 	test	ecx,ecx
@@ -2413,6 +2410,7 @@ h2_stream_new:
 	mov	dword [r15+H_H2F],0
 	mov	dword [r15+H_H2PL],0
 	mov	dword [r15+H_H2BL],0
+	mov	qword [r15+H_H2DL],-1
 	; its queue: the request head
 	mov	rbp,[r15+H_BUF]
 	add	rbp,HB_H2Q
@@ -2677,6 +2675,61 @@ h2_stream_new:
 cstring .ws, 'upgrade: websocket',13,10,'connection: Upgrade',13,10,'sec-websocket-key: '
 .n_ws	db 20,'sec-websocket-accept',0
 .n_conn	db 10,'connection',10,'keep-alive',16,'proxy-connection',17,'transfer-encoding',7,'upgrade',0
+
+; rsi/ecx = bytes: CF when one is CR, LF or NUL. Eight at a time (a word
+; has a zero byte when (w - 0x01..) & ~w & 0x80.. is not 0; CR and LF become
+; zeros by an xor), the last eight over what came before; under eight, one
+; at a time. Keeps all but rax, rcx, rdx, r9, r10, r11.
+ctl_scan:
+	cmp	ecx,8
+	jb	.small
+	mov	r9,0x0101010101010101
+	mov	r10,0x8080808080808080
+	sub	ecx,8
+.word:
+	mov	rax,[rsi+rcx]
+	call	.zero
+	jnz	.found
+	mov	rdx,0x0A0A0A0A0A0A0A0A
+	xor	rax,rdx
+	call	.zero
+	jnz	.found
+	mov	rdx,0x0707070707070707		; (^0x0A ^0x07 = ^0x0D)
+	xor	rax,rdx
+	call	.zero
+	jnz	.found
+	test	ecx,ecx
+	jz	.clean
+	sub	ecx,8
+	jae	.word
+	xor	ecx,ecx				; the first eight, over the next
+	jmp	.word
+.zero:
+	mov	rdx,rax
+	sub	rdx,r9
+	mov	r11,rax
+	not	r11
+	and	rdx,r11
+	and	rdx,r10
+	ret
+.small:
+	test	ecx,ecx
+	jz	.clean
+	dec	ecx
+	movzx	eax,byte [rsi+rcx]
+	cmp	al,13
+	je	.found
+	cmp	al,10
+	je	.found
+	test	al,al
+	jz	.found
+	jmp	.small
+.clean:
+	clc
+	ret
+.found:
+	stc
+	ret
 
 ; rdi/esi = a name, rdx = a list of (length byte, name) ending with 0:
 ; CF clear when the name is in it
@@ -3101,9 +3154,20 @@ h2_stream_out:
 @@:
 	test	r12d,r12d
 	jle	.wait
+	xor	ecx,ecx				; the body's last bytes: END_STREAM with them
+	mov	rax,[r15+H_H2DL]		; (unless trailers follow)
+	cmp	rax,-1
+	je	.data_flags
+	sub	rax,r12
+	mov	[r15+H_H2DL],rax
+	jnz	.data_flags
+	cmp	dword [r15+H_RCK+CK_TLEN],0
+	jne	.data_flags
+	mov	cl,H2_END_STREAM
+	or	dword [r15+H_H2F],S2F_END
+.data_flags:
 	mov	esi,r12d
 	mov	dl,H2F_DATA
-	xor	ecx,ecx
 	mov	r8d,[r15+H_H2SID]
 	call	h2_frame
 	mov	rsi,[r15+H_H2PP]
@@ -3503,6 +3567,7 @@ h2_head_out:
 	jc	.broken
 .found:
 	mov	dword [g_h2_cl0],0
+	mov	qword [g_h2_dl],-1
 	lea	ebp,[rdx+4]			; ebp = the head's length
 	cmp	ebp,13
 	jb	.broken
@@ -3641,21 +3706,44 @@ h2_head_out:
 	mov	eax,r8d
 	sub	eax,ecx
 	cmp	eax,14
-	jne	@f
-	mov	eax,edx
-	sub	eax,r10d
-	cmp	eax,1
-	jne	@f
-	cmp	byte [rsi+r10],'0'
-	jne	@f
+	jne	.cl_done
 	mov	rax,qword [rsi+rcx]
 	cmp	rax,qword [.n_cl]
-	jne	@f
+	jne	.cl_done
 	mov	rax,qword [rsi+rcx+6]
 	cmp	rax,qword [.n_cl+6]
-	jne	@f
+	jne	.cl_done
+	push	rcx				; its value: digits, at most 18
+	push	r11
+	xor	eax,eax
+	mov	ecx,r10d
+.cl_digit:
+	cmp	ecx,edx
+	jae	.cl_value
+	movzx	r11d,byte [rsi+rcx]
+	sub	r11d,'0'
+	cmp	r11d,9
+	ja	.cl_bad
+	imul	rax,rax,10
+	add	rax,r11
+	inc	ecx
+	mov	r11d,ecx
+	sub	r11d,r10d
+	cmp	r11d,18
+	jbe	.cl_digit
+.cl_bad:
+	mov	rax,-1
+.cl_value:
+	cmp	ecx,r10d
+	je	.cl_bad				; (no digits)
+	mov	[g_h2_dl],rax
+	test	rax,rax
+	jnz	@f
 	mov	dword [g_h2_cl0],H2_END_STREAM
 @@:
+	pop	r11
+	pop	rcx
+.cl_done:
 	cmp	rdi,r12
 	ja	.broken				; a head larger than one block
 	push	rsi
@@ -3691,6 +3779,8 @@ h2_head_out:
 	cmp	r9b,'1'
 	je	@f
 	mov	eax,[g_h2_cl0]			; (seen among its fields)
+	mov	rdx,[g_h2_dl]			; (and the body's length, for its last DATA)
+	mov	[r15+H_H2DL],rdx
 @@:
 	mov	[g_h2tmp_es],eax
 	mov	eax,r12d			; its frames: one when it fits (nearly
