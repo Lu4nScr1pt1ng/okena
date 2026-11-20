@@ -180,6 +180,7 @@ assert QC_K0 + QK_SIZE <= 1 shl HB_SHIFT
 QC_H3UNI	:= QC_H3X			; d
 QC_MAXPUSH	:= QC_H3UNI + 8			; q
 QC_GOAWAYRX	:= QC_H3UNI + 16		; q
+QC_USEEN	:= QC_H3UNI + 24		; q: its unidirectional streams opened (bit id / 4)
 QC_CTLB		:= QC_H3UNI + 32
 H3_CTLB_CAP	:= 256				; a SETTINGS frame, at most (more: excessive)
 assert QC_CTLB + H3_CTLB_CAP <= QC_H3X + 512
@@ -272,6 +273,7 @@ qc_established:
 	mov	dword [r15+QC_H3UNI],eax	; (no critical stream of the client's yet)
 	mov	[r15+QC_MAXPUSH],rax
 	mov	[r15+QC_GOAWAYRX],rax
+	mov	[r15+QC_USEEN],rax
 	mov	eax,[r15+QC_QT+QT_HQ]		; the protocol ALPN chose
 	mov	[r15+QC_HQ],eax
 	; the client's parameters: initial_max_data, stream data
@@ -1122,15 +1124,35 @@ qc_stream_one:
 	jmp	.open
 .new_uni:
 	cmp	rax,[r15+QC_UMAX]
-	jb	.ok
+	jb	.uni_below
 	lea	rcx,[rax+4]
 	mov	[r15+QC_UMAX],rcx
+.uni_open:
+	mov	rcx,rax
+	shr	rcx,2
+	cmp	ecx,64
+	jae	@f
+	bts	[r15+QC_USEEN],rcx
+@@:
 	call	qst_new
 	test	r8,r8
 	jz	.ok				; (no room: its bytes are not needed)
 	mov	dword [r8+QST_KIND],QSK_UT
 	qst_bit	bts, r8, QC_QSTM
 	mov	qword [r8+QST_MSD],65536	; (initial_max_stream_data_uni)
+	jmp	.have
+.uni_below:
+	; below the highest: done with, or not opened yet (a higher one opened
+	; it, RFC 9000 3.2: a client's encoder stream 6 after its decoder 10,
+	; whose inserts were dropped and never acknowledged, so the client
+	; never used the table)
+	mov	rcx,rax
+	shr	rcx,2
+	cmp	ecx,64
+	jae	.ok
+	bt	[r15+QC_USEEN],rcx
+	jc	.ok
+	jmp	.uni_open
 .have:
 	mov	r12,r8
 	; in order only
@@ -3601,14 +3623,15 @@ h3s_push:
 	mov	ecx,eax
 @@:
 	push	rcx
-	mov	byte [g_h3tmp],0		; DATA
-	mov	eax,ecx
-	or	eax,0x80000000
-	bswap	eax
-	mov	[g_h3tmp+1],eax
-	lea	rsi,[g_h3tmp]
-	mov	ecx,5
+	push	rdx
+	push	rdi
+	lea	rdi,[g_h3tmp+8]
+	xor	edx,edx				; DATA
+	call	h3_fhdr
+	mov	ecx,eax
 	call	h3tx_put
+	pop	rdi
+	pop	rdx
 	pop	rcx
 	mov	rsi,[r12+H_H3PP]
 	add	[r12+H_H3PP],rcx
@@ -3905,7 +3928,7 @@ h3_head_out:
 .block:
 	call	qe_prefix			; the prefix, once the references are known
 	mov	qword [g_qe],0
-	; the frame: HEADERS, its length (4-byte varint), the section
+	; the frame: HEADERS, its length (h3_fhdr), the section
 	lea	rax,[g_h3tmp+8]
 	mov	rcx,rdi
 	sub	rcx,rax				; the section's length
@@ -3916,13 +3939,12 @@ h3_head_out:
 	lea	rax,[rcx+5]
 	cmp	rax,rdx
 	ja	.full
-	mov	byte [g_h3tmp+3],1		; HEADERS
-	mov	eax,ecx
-	or	eax,0x80000000
-	bswap	eax
-	mov	[g_h3tmp+4],eax
-	lea	rsi,[g_h3tmp+3]
-	add	ecx,5
+	push	rdi
+	lea	rdi,[g_h3tmp+8]
+	mov	edx,1				; HEADERS
+	call	h3_fhdr
+	add	ecx,eax
+	pop	rdi
 	call	h3tx_put
 	mov	rsi,[r12+H_H3PP]
 	add	[r12+H_H3PP],rbp
@@ -4223,13 +4245,12 @@ h3_trailers_out:
 	lea	rax,[rcx+5]
 	cmp	rax,rdx
 	ja	.out
-	mov	byte [g_h3tmp+3],1
-	mov	eax,ecx
-	or	eax,0x80000000
-	bswap	eax
-	mov	[g_h3tmp+4],eax
-	lea	rsi,[g_h3tmp+3]
-	add	ecx,5
+	push	rdi
+	lea	rdi,[g_h3tmp+8]
+	mov	edx,1				; HEADERS
+	call	h3_fhdr
+	add	ecx,eax
+	pop	rdi
 	call	h3tx_put
 .out:
 	pop	rbx
@@ -4457,6 +4478,40 @@ qst_sendable:
 ; rdi = where, rsi = the limit (ebx, r15 = connection): control frames,
 ; our control stream, one request stream's data. rdi past them; eax = 1
 ; when any was written.
+; A frame's type and length, the length in as few bytes as it takes (a
+; 4-byte one, always, cost each answer 6 bytes: HEADERS and DATA, read and
+; decrypted by every client): dl = the type, ecx = the payload's length, rdi
+; = where the payload starts, 5 bytes free before it. rsi = the frame's
+; start, eax = the header's length; keeps the rest.
+h3_fhdr:
+	cmp	ecx,63
+	ja	.two
+	mov	[rdi-1],cl
+	mov	[rdi-2],dl
+	lea	rsi,[rdi-2]
+	mov	eax,2
+	ret
+.two:
+	cmp	ecx,16383
+	ja	.four
+	mov	eax,ecx
+	or	eax,0x4000
+	xchg	al,ah
+	mov	[rdi-2],ax
+	mov	[rdi-3],dl
+	lea	rsi,[rdi-3]
+	mov	eax,3
+	ret
+.four:
+	mov	eax,ecx
+	or	eax,0x80000000
+	bswap	eax
+	mov	[rdi-4],eax
+	mov	[rdi-5],dl
+	lea	rsi,[rdi-5]
+	mov	eax,5
+	ret
+
 qc_app_write:
 	push	rbx
 	push	r12
