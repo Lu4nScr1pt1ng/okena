@@ -151,6 +151,10 @@ ep_main:
 	push	rbx
 	push	r12
 	call	ep_dispatch
+	cmp	dword [g_hready_head],NIL	; what it read, taken now while its bytes
+	je	@f				; are in the cache (after the whole batch
+	call	ep_http_ready			; they were not: each read put others out)
+@@:
 	pop	r12
 	pop	rbx
 	inc	ebx
