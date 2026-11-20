@@ -79,6 +79,9 @@ bss
 	g_mod_blen	dd ?
 	g_mod_used	dd ?			; the body's bytes as they came (framing too)
 	g_mod_out	rb MOD_OUT_CAP + 64
+	align 64
+	g_mod_scr	rb H_OUT_CAP			; an HTTP/2 stream's answer: head room, body
+	g_mod_base	dq ?			; where this call's body goes (OUT or g_mod_scr)
 	g_mod_head	rb MOD_HEAD_CAP
 	g_mod_src	dd ?			; the body: 1 after the head, 2 in a buffer
 	g_mod_bidx	dd ?
@@ -449,6 +452,16 @@ mod_request:
 	mov	ecx,[g_mod_blen]
 	mov	rdi,[r15+H_BUF]			; the body where it is sent from: in OUT,
 	add	rdi,HB_OUT + MOD_HEAD_ROOM	; after the head's room (no copy after)
+	push	rax				; an HTTP/2 stream: in the worker's g_mod_scr
+	push	rdi				; instead, written and taken while in the
+	call	session_ptr			; cache (each stream's own buffer is a cold
+	test	dword [rax+S_FLAGS],SF_H2S	; one; what its connection cannot take at
+	pop	rdi				; once moves there after)
+	pop	rax
+	jz	@f
+	lea	rdi,[g_mod_scr+MOD_HEAD_ROOM]
+@@:
+	mov	[g_mod_base],rdi
 	mov	esi,MOD_OUT_CAP
 	push	rbx
 	push	r15
@@ -729,8 +742,7 @@ mod_answer:
 	mov	r14,rcx
 	test	r14,r14
 	jnz	@f
-	mov	r14,[r15+H_BUF]
-	add	r14,HB_OUT + MOD_HEAD_ROOM
+	mov	r14,[g_mod_base]
 @@:
 	push	rax
 	call	mod_trailers
@@ -787,6 +799,12 @@ mod_answer:
 	mov	rcx,rdi
 	lea	rsi,[g_mod_head]
 	sub	rcx,rsi				; the head's length
+	lea	rdx,[g_mod_scr+MOD_HEAD_ROOM]
+	test	dword [r15+H_FLAGS],HX_HEAD
+	jnz	@f
+	cmp	r14,rdx
+	je	.scratch
+@@:
 	mov	rax,[r15+H_BUF]
 	lea	rdx,[rax+HB_OUT+MOD_HEAD_ROOM]
 	test	dword [r15+H_FLAGS],HX_HEAD
@@ -810,6 +828,41 @@ mod_answer:
 	pop	r13
 	pop	r12
 	jmp	h_send
+.scratch:
+	; an HTTP/2 stream's, in g_mod_scr: the head before it, the stream takes
+	; what its connection can; the rest moves to the stream's OUT
+	cmp	ecx,MOD_HEAD_ROOM
+	ja	.aside
+	mov	rdi,rdx
+	sub	rdi,rcx
+	push	rdi
+	lea	r8,[rcx+r12]
+	rep	movsb
+	pop	rdi
+	mov	esi,r8d
+	mov	dword [r15+H_STATE],HS_SELF_SEND
+	mov	ecx,SIDE_CLIENT
+	pop	r14
+	pop	r13
+	pop	r12
+	call	h_send
+	h_rec
+	mov	ecx,[r15+H_H2PL]		; all taken: done with it
+	test	ecx,ecx
+	jz	.scr_done
+	mov	rsi,[r15+H_H2PP]
+	lea	rax,[g_mod_scr]
+	cmp	rsi,rax
+	jb	.scr_done
+	add	rax,H_OUT_CAP
+	cmp	rsi,rax
+	jae	.scr_done
+	mov	rdi,[r15+H_BUF]
+	add	rdi,HB_OUT
+	mov	[r15+H_H2PP],rdi
+	rep	movsb
+.scr_done:
+	ret
 .aside:
 	; (a head past its room: the body out of its way first)
 	push	rcx
