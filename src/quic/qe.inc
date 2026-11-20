@@ -22,7 +22,10 @@ QE_CAPSENT	:= 24				; d: the stream type and Set Dynamic Table Capacity written
 QE_END		:= 32				; q: encoder stream bytes written
 QE_SENT		:= 40				; q: sent
 QE_ACK		:= 48				; q: acknowledged
-QE_HDR		:= 64
+QE_QSEND	:= 64				; 16: the request streams that may have something
+						; to send, a bit each (QC_QREQ's): set when it may,
+						; cleared when found with nothing (qsend_*)
+QE_HDR		:= 128
 QE_EMAX		:= 128				; entries, at most
 QE_ENT		:= QE_HDR			; QE_EMAX of (bytes w, name length w, value length w, w)
 QE_DATA		:= QE_ENT + QE_EMAX * 8
@@ -131,6 +134,31 @@ qe_section:
 	mov	[g_qe_base],ecx
 .out:
 	pop	r15
+	pop	rcx
+	ret
+
+; r8 = a request stream's entry, r15 = its connection: it may have something
+; to send (QE_QSEND). Keeps all but rax.
+qsend_set:
+	push	rcx
+	mov	rcx,r8
+	sub	rcx,r15
+	sub	rcx,QC_QST
+	imul	ecx,ecx,683			; / QST_SIZE (96): exact up to 127 entries
+	shr	ecx,16
+	call	qe_ptr
+	bts	[rax+QE_QSEND],rcx
+	pop	rcx
+	ret
+assert QST_SIZE = 96 & QST_N <= 128
+; every request stream may (a loss, the connection's window). Keeps all but rax.
+qsend_all:
+	push	rcx
+	call	qe_ptr
+	mov	rcx,[r15+QC_QREQ]
+	mov	[rax+QE_QSEND],rcx
+	mov	rcx,[r15+QC_QREQ+8]
+	mov	[rax+QE_QSEND+8],rcx
 	pop	rcx
 	ret
 
@@ -389,6 +417,10 @@ qe_write:
 	cmp	rax,rcx
 	jbe	@f
 	mov	rax,rcx
+@@:
+	cmp	rax,16383			; (its length in 2 bytes)
+	jbe	@f
+	mov	eax,16383
 @@:
 	mov	r10,rax				; how many
 	mov	byte [rdi],0x0E			; STREAM, OFF|LEN

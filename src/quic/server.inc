@@ -29,7 +29,7 @@ QRX_BUDGET	:= 8				; recvmmsgs a turn of the loop, then the
 						; rest waits for the next (qs_resume)
 QRX_SZ		:= 65536			; (GRO: several datagrams of a flow at once)
 QTX_N		:= 64				; datagrams a sendmmsg sends
-QTX_SZ		:= 1472
+QTX_SZ		:= 65536				; a datagram's room (a large path: loopback)
 QUIC_ACK_HOLD	:= 5000				; µs an ACK alone waits for an answer
 QUIC_DGRAM	:= 1350				; the largest datagram okena sends
 QH_BITS		:= 17				; connection ID hash: 131072 entries
@@ -225,8 +225,12 @@ PS_SIZE		:= 256
 assert PS_ACKAT + 8 <= PS_SIZE
 
 ; sent packets, a ring a space
-QC_SP		:= QC_PS + 3 * PS_SIZE
-SP_N		:= 128
+; the sent packets' records, three levels of SP_N each: in a region of their
+; own (g_qsp_base, a connection's at its session's place: qsp_lea), so that
+; as many packets may be in flight as a fast path needs (the window is not
+; held by the records: 512 x 1350 bytes)
+SP_N		:= 512
+QSP_SHIFT	:= 17
 SP_PN		:= 0				; q
 SP_TIME		:= 8				; q
 SP_FL		:= 16				; d: SPF_*
@@ -248,7 +252,19 @@ SPF_HDONE	:= 8				; it carried HANDSHAKE_DONE
 SPF_MTU		:= 16				; a path MTU probe (QC_MTU_TRY)
 SPF_RATE	:= 32				; BBR: the round's packet
 
-QC_TS		:= QC_SP + 3 * SP_N * SP_SIZE	; the TLS state (TS_SIZE)
+assert 3 * SP_N * SP_SIZE <= 1 shl QSP_SHIFT
+; dst = the record at idx's offset in r15's region (rdi may be idx; flags go)
+macro qsp_lea dst*, idx*
+	push	idx
+	mov	dst,r15
+	sub	dst,[g_hbuf_base]
+	shr	dst,HB_SHIFT
+	shl	dst,QSP_SHIFT
+	add	dst,[g_qsp_base]
+	add	dst,[rsp]
+	add	rsp,8
+end macro
+QC_TS		:= QC_PS + 3 * PS_SIZE		; the TLS state (TS_SIZE)
 QC_QT		:= QC_TS + 2048			; QUIC's TLS block (QT_SIZE)
 QC_KEYS		:= QC_QT + 2048			; 6 * QK: rx, tx a level
 QC_CRX		:= 36864			; crypto received: Initial (CH_MAX)
@@ -285,7 +301,9 @@ bss
 	g_qpace_armed	dd ?				; io_uring: its timer is set
 	g_qpace_ts	rq 2				; (that timer's timeout)
 	g_qtx_ect	dd ?				; the next datagram is marked ECT(0)
-	g_qgso_off	dd ?				; this worker's device cannot segment
+	g_qgso_off	dd ?
+	align 8
+	g_qsp_base	dq ?				; the sent packets' records (qsp_lea)				; this worker's device cannot segment
 	g_qgso_first	rd QTX_N			; a message's first datagram
 	g_qgso_fd	rd QTX_N
 	g_qgso_mm:	rb QTX_N * 64
@@ -835,8 +853,11 @@ qs_open_all:
 	syscall
 	; ECN: the marks of those that come, reported (either family: a
 	; dual-stack socket carries IPv4 too)
+	; and never fragmented here: a datagram larger than the path's MTU is
+	; refused (a probe that does not go), not cut (RFC 9000 14.3)
 	irp opt, <IPPROTO_IP,IP_RECVTOS,one_int>, <IPPROTO_IPV6,IPV6_RECVTCLASS,one_int>, \
-		 <SOL_UDP,UDP_GRO,one_int>
+		 <SOL_UDP,UDP_GRO,one_int>, <IPPROTO_IP,IP_MTU_DISCOVER,pmtu_probe_int>, \
+		 <IPPROTO_IPV6,IPV6_MTU_DISCOVER,pmtu_probe_int>
 		match lvl=,nm=,val, opt
 			mov	rdi,[rsp]
 			mov	esi,lvl
@@ -1935,6 +1956,11 @@ qc_new:
 	qc_regs
 	mov	rdi,r15				; the fields, the spaces, the logs: zero
 	mov	ecx,QC_TS / 8
+	xor	eax,eax
+	rep	stosq
+	call	qsp_of				; and the sent packets' records
+	mov	rdi,rax
+	mov	ecx,3 * SP_N * SP_SIZE / 8
 	xor	eax,eax
 	rep	stosq
 	mov	rdi,r15
@@ -3200,7 +3226,7 @@ qc_on_ack:
 @@:
 	mov	r9d,[rsp+16+8+QA_LEVEL]
 	imul	r9d,r9d,SP_N * SP_SIZE
-	lea	r9,[r15+QC_SP+r9]		; (lowest first: stream bytes arrive in order)
+	qsp_lea	r9,r9				; (lowest first: stream bytes arrive in order)
 .mark_one:
 	cmp	r10,r12
 	jg	.mark_out
@@ -3301,23 +3327,41 @@ qc_rtt_sample:
 ; and not acknowledged (crypto at Initial/Handshake, anything at 1-RTT);
 ; off when nothing is
 qc_pto_arm:
+	push	r9
+	push	r10
 	mov	qword [r15+QC_PTO_AT],0
 	xor	ecx,ecx				; level
 .level:
 	cmp	ecx,3
 	jae	.none
+	; its packets from the lowest maybe still out (QC_SPLOW) to the next
+	; (none at a level done with), the ring's window at most
+	imul	eax,ecx,PS_SIZE
+	mov	r9,[r15+QC_PS+rax+PS_NEXT]
+	mov	r10,[r15+QC_SPLOW+rcx*8]
+	mov	rax,r9
+	sub	rax,SP_N
+	jb	@f
+	cmp	r10,rax
+	jae	@f
+	mov	r10,rax
+@@:
 	mov	eax,ecx
 	imul	eax,eax,SP_N * SP_SIZE
-	lea	r8,[r15+QC_SP+rax]
-	mov	edx,SP_N
+	qsp_lea	r8,rax
 .slot:
-	mov	eax,[r8+SP_FL]
-	and	eax,SPF_SENT or SPF_ACKEL or SPF_ACKED
-	cmp	eax,SPF_SENT or SPF_ACKEL
+	cmp	r10,r9
+	jae	.level_done
+	mov	eax,r10d
+	and	eax,SP_N - 1
+	shl	eax,6				; SP_SIZE
+	mov	edx,[r8+rax+SP_FL]
+	and	edx,SPF_SENT or SPF_ACKEL or SPF_ACKED
+	cmp	edx,SPF_SENT or SPF_ACKEL
 	je	.out_there
-	add	r8,SP_SIZE
-	dec	edx
-	jnz	.slot
+	inc	r10
+	jmp	.slot
+.level_done:
 	inc	ecx
 	jmp	.level
 .out_there:
@@ -3325,6 +3369,8 @@ qc_pto_arm:
 	add	rax,[g_qnow]
 	mov	[r15+QC_PTO_AT],rax
 .none:
+	pop	r10
+	pop	r9
 	ret
 
 ; rax = the probe timeout (µs): srtt + max(4 rttvar, 1 ms) + 25 ms,
@@ -3595,6 +3641,16 @@ qc_fail:
 	mov	[r15+QC_CLOSE_AT],rax
 	jmp	qc_dirty
 .out:
+	ret
+
+; r15 = connection: rax = its sent packets' records (all three levels). Keeps
+; all but rax.
+qsp_of:
+	mov	rax,r15
+	sub	rax,[g_hbuf_base]
+	shr	rax,HB_SHIFT
+	shl	rax,QSP_SHIFT
+	add	rax,[g_qsp_base]
 	ret
 
 ; ------------------------------------------------------------- sending
@@ -3962,6 +4018,10 @@ qc_build:
 	sub	rdx,rdi
 	sub	rdx,1 + 4 + 2			; type, offset, length
 	jle	.no_crypto
+	cmp	rdx,16383			; (the length in 2 bytes)
+	jbe	@f
+	mov	edx,16383
+@@:
 	cmp	rcx,rdx
 	jbe	@f
 	mov	ecx,edx
@@ -4040,6 +4100,18 @@ qc_build:
 	and	dword [r15+QC_FLAGS],not QF_CLOSE
 	mov	dword [rsp+QB_ACKEL],0
 .frames_end:
+	; a 1-RTT packet left nearly full: the rest PADDING, so that a run of
+	; them is of one size and goes as one segmented send (qtx_send)
+	cmp	r12d,QL_APP
+	jne	@f
+	mov	rcx,r14
+	sub	rcx,rdi
+	jbe	@f
+	cmp	rcx,64
+	ja	@f
+	xor	eax,eax
+	rep	stosb
+@@:
 	; a datagram with an ack-eliciting Initial: 1200 bytes at least
 	cmp	r12d,QL_INIT
 	jne	.padded
@@ -4093,7 +4165,7 @@ qc_build:
 	shl	eax,6				; SP_SIZE
 	mov	ecx,r12d
 	imul	ecx,ecx,SP_N * SP_SIZE
-	lea	rdx,[r15+QC_SP+rcx]
+	qsp_lea	rdx,rcx
 	add	rdx,rax
 	mov	rax,[rsp+QB_PN]
 	mov	[rdx+SP_PN],rax
@@ -4142,7 +4214,10 @@ qc_build:
 	mov	edx,r12d
 	imul	edx,edx,SP_N * SP_SIZE
 	add	ecx,edx
-	mov	[r15+QC_SP+rcx+SP_BYTES],eax
+	push	rdx
+	qsp_lea	rdx,rcx
+	mov	[rdx+SP_BYTES],eax
+	pop	rdx
 	cmp	dword [rsp+8+QB_ACKEL],0
 	je	@f
 	add	[r15+QC_INFL],rax
@@ -4361,6 +4436,10 @@ qtx_send:
 	sub	eax,ebx
 	cmp	eax,QGSO_MAX
 	jae	.m_end
+	inc	eax				; and 64 KiB at most in all (large datagrams)
+	imul	eax,r14d
+	cmp	eax,65000
+	ja	.m_end
 	mov	eax,[g_qtx_fds+r13*4]
 	cmp	eax,[g_qtx_fds+rbx*4]
 	jne	.m_end
@@ -4460,6 +4539,11 @@ qtx_send:
 	add	ebx,eax
 	jmp	.s_run
 .s_err:
+	cmp	eax,-EMSGSIZE			; past the path's MTU (a probe): that one
+	jne	@f
+	inc	ebx
+	jmp	.s_run
+@@:
 	cmp	eax,-EIO
 	je	.s_off
 	cmp	eax,-EINVAL
@@ -4495,6 +4579,19 @@ qtx_send:
 	xor	r10d,r10d
 	mov	eax,SYS_sendmmsg
 	syscall				; (a full socket drops the rest: QUIC recovers)
+	test	eax,eax
+	jle	@f
+	add	ebx,eax				; part of it: the rest again, past
+	cmp	ebx,r12d			; the one that failed (a probe too large)
+	jae	.run
+	inc	ebx
+	jmp	.run
+@@:
+	cmp	eax,-EMSGSIZE
+	jne	@f
+	inc	ebx
+	jmp	.run
+@@:
 	mov	ebx,r12d
 	jmp	.run
 .done:
@@ -4669,7 +4766,7 @@ qc_on_pto:
 	jae	.done
 	mov	eax,r12d
 	imul	eax,eax,SP_N * SP_SIZE
-	lea	r8,[r15+QC_SP+rax]
+	qsp_lea	r8,rax
 	mov	ecx,SP_N
 	mov	r9d,-1				; the lowest crypto offset lost
 	xor	r10d,r10d			; anything ack-eliciting out
@@ -4737,7 +4834,7 @@ qc_flight_again:
 .level:
 	mov	eax,r12d
 	imul	eax,eax,SP_N * SP_SIZE
-	lea	r8,[r15+QC_SP+rax]
+	qsp_lea	r8,rax
 	mov	ecx,SP_N
 	mov	r9d,-1				; the lowest crypto offset lost
 .slot:
@@ -5023,12 +5120,19 @@ qc_cc_acked:
 ; r15 = connection: the next datagram size to try on this path (RFC 9000
 ; 14.3): none past what the client takes. Keeps all but rax.
 qc_mtu_next:
-	mov	eax,1350
+	push	rcx
+	xor	ecx,ecx
+.step:
+	movzx	eax,word [.sizes+rcx*2]
+	test	eax,eax
+	jz	.none_pop
+	inc	ecx
 	cmp	eax,[r15+QC_MTU]
-	ja	.have
-	mov	eax,1452
-	cmp	eax,[r15+QC_MTU]
-	ja	.have
+	jbe	.step
+	pop	rcx
+	jmp	.have
+.none_pop:
+	pop	rcx
 .none:
 	mov	dword [r15+QC_MTU_TRY],0
 	ret
@@ -5040,6 +5144,10 @@ qc_mtu_next:
 	mov	rax,[g_qnow]
 	mov	[r15+QC_MTU_AT],rax
 	ret
+; what is tried, in turn: Ethernet's, then larger (jumbo frames, loopback),
+; each only past the last one taken and up to what the client takes
+.sizes	dw 1350, 1452, 8952, 16384, 32768, 60000, 0
+assert 60000 + 64 <= QTX_SZ
 
 ; a congestion event (r15 = connection): CUBIC's reduction to 0.7 of the
 ; window, Wmax (lower when the window was still shrinking: fast
@@ -5111,7 +5219,8 @@ qc_bbr_sent:
 	mov	[r15+QB_SNAP_T],rdx
 	mov	rdx,[r15+QB_DELIV]
 	mov	[r15+QB_SNAP_D],rdx
-	or	dword [r15+QC_SP+rcx+SP_FL],SPF_RATE
+	qsp_lea	rdx,rcx
+	or	dword [rdx+SP_FL],SPF_RATE
 .out:
 	ret
 
@@ -5450,7 +5559,7 @@ qc_detect_lost:
 .slot_of:
 	mov	eax,r12d
 	imul	eax,eax,SP_N * SP_SIZE
-	lea	r8,[r15+QC_SP+rax]
+	qsp_lea	r8,rax
 	mov	eax,ecx
 	and	eax,SP_N - 1
 	shl	eax,6				; SP_SIZE
@@ -5505,7 +5614,7 @@ qc_sp_at:
 	mov	edx,r12d
 	imul	edx,edx,SP_N * SP_SIZE
 	add	eax,edx
-	lea	rdx,[r15+QC_SP+rax]
+	qsp_lea	rdx,rax
 	ret
 
 ; r8 = a record in flight, edi = its level: lost (out of flight, what it

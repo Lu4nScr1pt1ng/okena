@@ -184,6 +184,11 @@ http_worker_init:
 	cmp	rax,-4096
 	ja	.done
 	mov	[g_qfx_base],rax
+	mov	ecx,QSP_SHIFT			; and its sent packets' records
+	call	.reserve
+	cmp	rax,-4096
+	ja	.done
+	mov	[g_qsp_base],rax
 	mov	ecx,3				; the queue of freed sessions, 8 bytes each
 	call	.reserve
 	cmp	rax,-4096

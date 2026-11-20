@@ -35,6 +35,7 @@ rodata
 	sigact_ignore	dq SIG_IGN, 0, 0, 0	; handler, flags, restorer, mask
 	ts_respawn_delay dq 0, 250000000	; 250 ms
 	one_int		dd 1
+	pmtu_probe_int	dd IP_PMTUDISC_PROBE
 	zero_int	dd 0
 end rodata
 

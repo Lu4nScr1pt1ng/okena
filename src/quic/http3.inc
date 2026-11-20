@@ -462,6 +462,37 @@ qst_req_after:
 	lea	ecx,[rdx+rax]
 	ret
 
+; ecx = an entry's index: ecx = the next one after it whose QE_QSEND bit is
+; set, round the table (or the same when none other). Clobbers rax, rdx, r10, r11.
+qst_send_after:
+	push	r9
+	call	qe_ptr
+	lea	r9,[rax+QE_QSEND]
+	inc	ecx
+	and	ecx,QST_N - 1
+	mov	edx,ecx
+	shr	edx,6
+	and	ecx,63
+	mov	r10,[r9+rdx*8]
+	mov	r11,-1
+	shl	r11,cl
+	and	r10,r11
+	tzcnt	rax,r10
+	jnc	.at
+	xor	edx,1
+	tzcnt	rax,[r9+rdx*8]
+	jnc	.at
+	xor	edx,1
+	tzcnt	rax,[r9+rdx*8]
+	jnc	.at
+	xor	eax,eax				; (none at all: entry 0, found empty)
+	xor	edx,edx
+.at:
+	shl	edx,6
+	lea	ecx,[rdx+rax]
+	pop	r9
+	ret
+
 ; rax = stream id: r8 = a free entry for it (zeroed but the id), or 0
 qst_new:
 	push	rax
@@ -584,6 +615,7 @@ qc_app_frame:
 	cmp	rax,[r15+QC_MAXD_PEER]
 	jbe	.ok
 	mov	[r15+QC_MAXD_PEER],rax
+	call	qsend_all			; (the connection's window: any of them)
 	call	qc_dirty
 	jmp	.ok
 .max_stream_data:
@@ -612,6 +644,7 @@ qc_app_frame:
 	cmp	r13,[r9+HB_H3TX+TX_MAXSD]
 	jbe	.msd_done
 	mov	[r9+HB_H3TX+TX_MAXSD],r13
+	call	qsend_set
 	call	qc_dirty
 .msd_done:
 	pop	rdx
@@ -3446,6 +3479,7 @@ h3s_conn:
 	jz	.gone
 	cmp	[r8+QST_SESS],r10d
 	jne	.gone
+	call	qsend_set			; (it may have something to send now)
 	clc
 	ret
 .gone:
@@ -4188,24 +4222,39 @@ qc_app_pending:
 .no_decoder:
 	cmp	dword [r15+QC_RSTN],0
 	jne	.yes
-	xor	ecx,ecx			; the request streams' bits, a qword at a time
+	call	qe_ptr				; our encoder stream's bytes
+	mov	rcx,[rax+QE_END]
+	cmp	rcx,[rax+QE_SENT]
+	ja	.yes
+	xor	ecx,ecx			; the streams that may, a qword at a time
 .word:
-	mov	rax,[r15+QC_QREQ+rcx*8]
+	call	qe_ptr
+	mov	rax,[rax+QE_QSEND+rcx*8]
 .bit:
 	tzcnt	rdx,rax
 	jc	.next_word
 	btr	rax,rdx
 	push	rcx
 	push	rax
+	push	rdx
 	shl	ecx,6
 	add	ecx,edx
 	imul	r8,rcx,QST_SIZE
 	lea	r8,[r15+QC_QST+r8]
 	call	qst_sendable			; eax = bytes it may send, edx = FIN to send
 	or	eax,edx
+	pop	rdx
 	pop	rax
 	pop	rcx
 	jnz	.yes
+	push	rax				; nothing: its bit goes
+	call	qe_ptr
+	push	rcx
+	shl	ecx,6
+	add	ecx,edx
+	btr	[rax+QE_QSEND],rcx
+	pop	rcx
+	pop	rax
 	jmp	.bit
 .next_word:
 	inc	ecx
@@ -4487,23 +4536,27 @@ qc_app_write:
 @@:
 	; one request stream's data, the next with something after the last
 	; (the request streams there are, each once, from the one after QC_RR)
-	popcnt	r13,[r15+QC_QREQ]
-	popcnt	rax,[r15+QC_QREQ+8]
-	add	r13d,eax
+	call	qe_ptr				; (those that may have something to send)
+	popcnt	r13,[rax+QE_QSEND]
+	popcnt	rcx,[rax+QE_QSEND+8]
+	add	r13d,ecx
 	jz	.done
 	mov	ecx,[r15+QC_RR]
 .pick:
-	call	qst_req_after			; ecx = the next one's index
+	call	qst_send_after			; ecx = the next one's index
 	imul	eax,ecx,QST_SIZE
 	lea	r8,[r15+QC_QST+rax]
 	push	rcx
 	call	qst_sendable
 	pop	rcx
 	test	r9,r9
-	jz	.pick_next
+	jz	.nothing
 	mov	r10d,eax
 	or	r10d,edx
 	jnz	.write
+.nothing:
+	call	qe_ptr				; nothing to send: its bit goes
+	btr	[rax+QE_QSEND],rcx
 .pick_next:
 	dec	r13d
 	jnz	.pick
@@ -4513,7 +4566,7 @@ qc_app_write:
 	; STREAM, OFF|LEN(|FIN): id, offset (8-byte varint), length (2 bytes)
 	mov	rcx,r14
 	sub	rcx,rdi
-	sub	rcx,1 + 8 + 8 + 2
+	sub	rcx,1 + 8 + 8 + 4
 	jle	.done
 	cmp	rax,rcx
 	jbe	@f
@@ -4550,11 +4603,20 @@ qc_app_write:
 @@:
 	pop	r11
 	pop	r10
-	mov	eax,r10d
+	mov	eax,r10d			; its length: 2 bytes, 4 past 16383 (a
+	cmp	eax,16383			; large datagram)
+	ja	.len4
 	or	eax,0x4000
 	xchg	al,ah
 	mov	[rdi],ax
 	add	rdi,2
+	jmp	.len_done
+.len4:
+	or	eax,0x80000000
+	bswap	eax
+	mov	[rdi],eax
+	add	rdi,4
+.len_done:
 	; the bytes, from the ring (it may wrap); the frame kept for the packet's
 	; record: the first in QC_LW_*, the others in the frames table's pending
 	; slot (qfx_slot)
@@ -4666,8 +4728,12 @@ qc_app_sent:
 @@:
 	mov	r8d,ecx
 	mov	rax,rdi				; this record's slot
-	sub	rax,r15
-	sub	rax,QC_SP
+	push	rcx
+	mov	rcx,rax
+	call	qsp_of
+	sub	rcx,rax
+	mov	rax,rcx
+	pop	rcx
 	shr	rax,6
 	and	eax,SP_N - 1
 	call	qfx_slot
@@ -4737,8 +4803,12 @@ qc_app_lost:
 	push	rdi
 	push	rbx
 	mov	rax,rdi
-	sub	rax,r15
-	sub	rax,QC_SP
+	push	rcx
+	mov	rcx,rax
+	call	qsp_of
+	sub	rcx,rax
+	mov	rax,rcx
+	pop	rcx
 	shr	rax,6
 	and	eax,SP_N - 1
 	call	qfx_slot
@@ -4764,6 +4834,7 @@ qc_app_lost:
 qc_fr_lost:
 	cmp	dword [rdi+SP_SSESS],QE_MARK	; our encoder stream's bytes
 	je	qe_lost
+	call	qsend_all			; (what goes again: rare)
 	mov	eax,[rdi+SP_SLEN]
 	or	eax,[rdi+SP_SFIN]
 	jz	.out
@@ -4801,7 +4872,7 @@ assert QFX_SESS = SP_SSESS - SP_SSESS & QFX_SGEN = SP_SGEN - SP_SSESS & QFX_FIN 
 assert QFX_OFF = SP_SOFF - SP_SSESS & QFX_LEN = SP_SLEN - SP_SSESS
 QFX_MAX		:= 31
 QFX_SLOT	:= 8 + QFX_MAX * QFX_FR
-QFX_SHIFT	:= 17				; a connection's table: (SP_N + 1) slots
+QFX_SHIFT	:= 19				; a connection's table: (SP_N + 1) slots
 assert (SP_N + 1) * QFX_SLOT <= 1 shl QFX_SHIFT
 
 bss
@@ -4869,8 +4940,12 @@ qc_app_acked:
 	; and the frames past the first
 	push	rbx
 	mov	rax,rdi
-	sub	rax,r15
-	sub	rax,QC_SP
+	push	rcx
+	mov	rcx,rax
+	call	qsp_of
+	sub	rcx,rax
+	mov	rax,rcx
+	pop	rcx
 	shr	rax,6
 	and	eax,SP_N - 1
 	call	qfx_slot
@@ -4993,6 +5068,7 @@ tx_acked:
 	je	.base
 	cmp	ecx,TX_ACKMAX
 	jb	@f
+	call	qsend_all
 	mov	rax,[r13+TX_BASE]		; full: forgotten, so what is not known
 	mov	[r13+TX_SENT],rax		; delivered goes again (and is acknowledged)
 	ret
