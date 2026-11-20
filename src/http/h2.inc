@@ -3185,6 +3185,14 @@ h2_stream_out:
 .sent:
 	; all of it taken: the exchange hears its send completed
 	and	dword [r15+H_H2F],not S2F_SENDING
+	; END_STREAM out with it (its last DATA, a head with content-length: 0):
+	; the stream leaves the table now, as it does for the client, which
+	; opens the next at once; counted until the exchange ends, it would be
+	; refused (MAX_CONCURRENT_STREAMS)
+	test	dword [r15+H_H2F],S2F_END
+	jz	@f
+	call	h2_untable
+@@:
 	push	rbx
 	mov	ebx,ebp
 	xor	eax,eax
