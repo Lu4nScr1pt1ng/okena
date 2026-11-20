@@ -1389,6 +1389,52 @@ fm_direct:
 	stc
 	ret
 
+; http_resp_head, a head in OUT and nothing of the body read (ebx, r15): a
+; file kept in memory, to a client of user-space TLS, has its first bytes put
+; after the head, as many as make one record of the two. A small file goes
+; in one record and one write, not a record for the head and one for the
+; body (the client opens and reads one); the rest, fm_direct.
+fm_head_body:
+	cmp	dword [r15+H_UTLS],0
+	je	.no
+	call	session_ptr
+	mov	ecx,[rax+S_FLAGS]
+	test	ecx,SF_FILE
+	jz	.no
+	test	ecx,SF_CFILL or SF_ZIP or SF_MIR or SF_SLICE or SF_IDEMF or SF_H2S
+	jnz	.no
+	call	pace_route
+	jc	.no
+	mov	r8,[r15+H_BUF]
+	cmp	dword [r8+HB_FFD],-1
+	jne	.no
+	cmp	dword [r8+HB_FMEM],0
+	je	.no
+	mov	rcx,[r15+H_RREMAIN]
+	test	rcx,rcx
+	jz	.no
+	cmp	rcx,[r8+HB_FLEFT]
+	ja	.no
+	mov	eax,TLS_RECORD_MAX		; the room: one record with the head
+	sub	eax,[r15+H_OUTLEN]
+	jle	.no
+	cmp	rcx,rax
+	jbe	@f
+	mov	ecx,eax
+@@:
+	mov	eax,[r15+H_OUTLEN]
+	lea	rdi,[r8+HB_OUT+rax]
+	mov	esi,[r8+HB_FMEM]
+	add	rsi,[g_fm_base]
+	dec	rsi
+	add	[r8+HB_FMEM],ecx
+	sub	[r8+HB_FLEFT],rcx
+	sub	[r15+H_RREMAIN],rcx
+	add	[r15+H_OUTLEN],ecx
+	rep	movsb
+.no:
+	ret
+
 ; g_fs_*: the ETag and the date the file answers with
 fs_validators:
 	lea	rdi,[g_fs_etag]

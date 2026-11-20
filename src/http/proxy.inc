@@ -3241,7 +3241,7 @@ http_resp_head:
 	jnz	.send_head			; (http_resp_pump takes it from UP)
 	mov	ecx,[r15+H_UPLEN]
 	sub	ecx,[r15+H_UPOFF]
-	jz	.send_head
+	jz	.mem_body
 	mov	rax,[r15+H_RREMAIN]
 	cmp	rax,rcx
 	jae	@f
@@ -3266,6 +3266,9 @@ http_resp_head:
 	sub	[r15+H_RREMAIN],rcx
 	add	[r15+H_OUTLEN],ecx
 	rep	movsb
+	jmp	.send_head
+.mem_body:
+	call	fm_head_body			; a file kept in memory: its start with the head
 .send_head:
 	mov	dword [r15+H_STATE],HS_RESP_SEND
 	mov	ecx,SIDE_CLIENT
