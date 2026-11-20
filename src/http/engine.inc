@@ -111,6 +111,72 @@ h_send:
 	mov	edx,2
 	xor	ecx,ecx
 	jmp	hep_queue
+; ebx = an HTTP/1 client session, rdi = bytes, esi = how many: okena's own
+; answer, with another request read behind it and room, is held at HB_PIPED
+; and its send completes at once (CF). Else the bytes held go first: with
+; these when they fit, rdi/esi then being all of it (NC), or alone, these
+; sent when they are out (HS_PIPE_CHAIN, NC). Keeps rbx, ecx when NC.
+h_pipe_send:
+	h_rec
+	mov	eax,[r15+H_PIPEN]
+	cmp	dword [r15+H_UTLS],0		; (records: tls.inc writes its own)
+	jne	.as_is
+	cmp	dword [r15+H_STATE],HS_SELF_SEND
+	jne	.not_held
+	test	dword [r15+H_FLAGS],HX_CLOSE
+	jnz	.not_held
+	mov	edx,[r15+H_INLEN]
+	cmp	edx,[r15+H_INOFF]
+	jbe	.not_held			; nothing read behind it
+	lea	edx,[rax+rsi]
+	cmp	edx,PIPE_CAP
+	ja	.not_held
+	push	rsi
+	mov	ecx,esi
+	mov	rsi,rdi
+	mov	rdi,[r15+H_BUF]
+	lea	rdi,[rdi+HB_PIPED+rax]
+	rep	movsb
+	pop	rax
+	add	[r15+H_PIPEN],eax		; held: as if sent
+	mov	edx,2
+	xor	ecx,ecx
+	call	hep_queue
+	stc
+	ret
+.not_held:
+	test	eax,eax
+	jz	.as_is
+	lea	edx,[rax+rsi]
+	cmp	edx,PIPE_CAP
+	ja	.chain
+	push	rcx				; these after those held, all at once
+	mov	ecx,esi
+	mov	rsi,rdi
+	mov	rdi,[r15+H_BUF]
+	lea	rdi,[rdi+HB_PIPED+rax]
+	rep	movsb
+	pop	rcx
+	mov	rdi,[r15+H_BUF]
+	add	rdi,HB_PIPED
+	mov	esi,edx
+	mov	dword [r15+H_PIPEN],0
+	clc
+	ret
+.chain:
+	mov	rdx,[r15+H_BUF]			; those held first, these when they are out
+	mov	[rdx+HB_PIPECP],rdi
+	mov	[rdx+HB_PIPECL],esi
+	mov	esi,[r15+H_STATE]
+	mov	[rdx+HB_PIPECS],esi
+	mov	dword [r15+H_STATE],HS_PIPE_CHAIN
+	lea	rdi,[rdx+HB_PIPED]
+	mov	esi,eax
+	mov	dword [r15+H_PIPEN],0
+.as_is:
+	clc
+	ret
+
 ; the upstream side: a socket, or a stream on an HTTP/2 connection
 h_send_up:
 	call	session_ptr
@@ -128,8 +194,15 @@ h_send_up:
 	call	fcgi_active
 	test	eax,eax
 	jnz	fcgi_send			; FastCGI: in records
-; the socket itself
+; the socket itself (to the client, through h_pipe_send: answers held for
+; pipelined requests)
 h_send_raw:
+	test	ecx,ecx
+	jnz	h_send_sock
+	call	h_pipe_send
+	jnc	h_send_sock
+	ret
+h_send_sock:
 	cmp	dword [g_engine],ENGINE_EPOLL
 	je	hep_send
 	mov	eax,ebx

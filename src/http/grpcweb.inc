@@ -544,3 +544,4 @@ gweb_text_end:
 	mov	esi,str_last_chunk.len
 	mov	ecx,SIDE_CLIENT
 	jmp	h_send
+assert HB_GWT + GWT_ENC + 16 + (H_IN_CAP + 64) * 4 / 3 + 1024 <= HB_PIPE	; (an HTTP/1 session's: proxy.inc)

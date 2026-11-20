@@ -1955,3 +1955,4 @@ fcgi_replay:
 .off:
 	and	byte [g_ad_rep+rbx],not ADREP_F
 	jmp	h_recv
+assert HB_FC + FC_TX + FC_TXCAP <= HB_PIPE		; (an HTTP/1 session's: proxy.inc)

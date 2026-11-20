@@ -107,6 +107,20 @@ HS_TUNNEL_IN	:= 12		; then bytes the client sent early go to the backend
 HS_INTERIM_SEND	:= 13		; writing a 1xx (103 Early Hints...) before the final response
 HS_SELF_SEND	:= 14		; writing okena's own answer (a redirect), connection kept
 HS_SELF_TAIL	:= 52		; its head out, a body from the plan next (HB_TAIL says which)
+HS_PIPE_FLUSH	:= 57		; the answers held for pipelined requests going out, then a read
+HS_PIPE_CHAIN	:= 58		; those held going out before a send that did not fit with them
+; Pipelined requests (RFC 9112 9.3): okena's own answer to a request with
+; another already read behind it is held, not written: the answers go out
+; together, in one write, when no whole request is left to read (or before
+; a send that is not held). h_pipe_send; H_PIPEN, the bytes held (an HTTP/1
+; client session's: a stream's H_H2BL is never one of them).
+PIPE_CAP	:= 16384
+H_PIPEN		:= 508		; d
+HB_PIPE		:= (1 shl HB_SHIFT) - PIPE_CAP - 64
+HB_PIPECP	:= HB_PIPE		; q: the send that waits for those held: its bytes
+HB_PIPECL	:= HB_PIPE + 8		; d: how many
+HB_PIPECS	:= HB_PIPE + 12		; d: and its state
+HB_PIPED	:= HB_PIPE + 64		; the bytes held
 HB_TAIL		:= HB_OUT + H_OUT_CAP - 16	; q: the bytes, d: how many, d: the state after
 HS_HEDGED	:= 43		; its copy won: what it writes goes through here
 HS_FAULT	:= 42		; held by fault delay=: its head waits in IN, nothing reads
@@ -352,6 +366,7 @@ http_start:
 	add	rax,[g_hbuf_base]
 	mov	[r15+H_BUF],rax
 	mov	dword [rax+HB_CW],0		; (cache.inc: a stale copy kept, none)
+	mov	dword [r15+H_PIPEN],0
 	xor	eax,eax
 	mov	[r15+H_INLEN],eax
 	mov	[r15+H_INOFF],eax
@@ -452,6 +467,8 @@ http_next_request:
 	cmp	dword [r15+H_INLEN],H_IN_CAP
 	jae	.too_large
 .read:
+	cmp	dword [r15+H_PIPEN],0		; answers held for pipelined requests: out
+	jne	.pipe_flush			; first, the read after them
 	mov	ecx,SIDE_CLIENT
 	mov	edi,[r15+H_INLEN]
 	lea	rdi,[rdi+HB_IN]
@@ -459,6 +476,14 @@ http_next_request:
 	mov	esi,H_IN_CAP
 	sub	esi,[r15+H_INLEN]
 	jmp	h_recv
+.pipe_flush:
+	mov	dword [r15+H_STATE],HS_PIPE_FLUSH
+	mov	rdi,[r15+H_BUF]
+	add	rdi,HB_PIPED
+	xor	esi,esi
+	xchg	esi,[r15+H_PIPEN]
+	mov	ecx,SIDE_CLIENT
+	jmp	h_send_sock
 .bad:
 	mov	edi,400
 	jmp	http_error
@@ -2642,6 +2667,10 @@ http_send_plain:
 	je	.interim_sent
 	cmp	edx,HS_SELF_SEND
 	je	.self_sent
+	cmp	edx,HS_PIPE_FLUSH
+	je	http_next_request		; (now the read)
+	cmp	edx,HS_PIPE_CHAIN
+	je	.pipe_chained
 	cmp	edx,HS_SELF_TAIL
 	je	.self_tail
 	cmp	edx,HS_TLS_FLIGHT
@@ -2687,6 +2716,14 @@ http_send_plain:
 	mov	[r15+H_STATE],edx
 	mov	ecx,SIDE_CLIENT
 	jmp	h_send
+.pipe_chained:
+	mov	rax,[r15+H_BUF]			; the send that waited for them, now
+	mov	edx,[rax+HB_PIPECS]
+	mov	[r15+H_STATE],edx
+	mov	rdi,[rax+HB_PIPECP]
+	mov	esi,[rax+HB_PIPECL]
+	mov	ecx,SIDE_CLIENT
+	jmp	h_send_raw
 .self_sent:
 	test	dword [r15+H_FLAGS],HX_CLOSE
 	jnz	.error_sent			; logged, then closed
