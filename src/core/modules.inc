@@ -775,8 +775,18 @@ mod_answer:
 	or	dword [r15+H_FLAGS],HX_SELF or HX_STARTED
 	mov	[r15+H_STATUS],eax
 	push	rax
-	cmp	dword [r15+H_RIDLEN],0
-	jne	@f
+	cmp	dword [r15+H_RIDLEN],0		; an id, for what reads it: the access
+	jne	@f				; log, a trace, an addon (the answer
+	call	session_ptr			; itself carries none)
+	mov	eax,[rax+S_LST]
+	imul	rax,rax,LS_SIZE
+	cmp	dword [g_listeners+rax+LS_ALOG],0
+	jne	.rid
+	cmp	dword [g_listeners+rax+LS_TRACE],0
+	jne	.rid
+	cmp	qword [g_ad_side],0
+	je	@f
+.rid:
 	call	rid_new
 @@:
 	mov	edi,[rsp]
