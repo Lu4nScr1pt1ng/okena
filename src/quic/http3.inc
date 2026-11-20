@@ -57,7 +57,18 @@ TX_HDR		:= 256				; the header's size
 ; own: the connection's QUIC carries it), 64 KiB, and the upstream TLS and
 ; HTTP/2 area after it when its pool uses neither, 128 KiB (a power of two
 ; either way): what a stream may have in flight, a window an RTT
-TX_DATA		:= HB_TLS - HB_H3TX		; (from the header: before it)
+TX_DATA		:= HB_TLS - HB_H3TX		; (the ring in a stream's buffers)
+; The headers live with their connection, not in each stream's buffers: one
+; for each entry of its stream table (QTH_OFF in its QFX area, qth_of), so
+; that looking down the streams that may send reads lines near each other,
+; not a cold one far into each stream's 256 KiB. The ring stays in the
+; stream's buffers (TX_RING); the header says whose it is (TX_OWN, TX_OWNG)
+TX_RING		:= 256				; q: the ring (the stream's HB_TLS)
+TX_OWN		:= 264				; d: the stream session it belongs to
+TX_OWNG		:= 268				; d: and that session's generation
+QTH_SIZE	:= 320
+H_H3TXH		:= H_TXP			; a stream's: its header (user-space TLS
+						; is its connection's, never its own)
 TX_CAP		:= 65536
 assert HB_TLS + TX_CAP <= HB_UPTLS
 assert HB_TLS + TX_CAP * 2 <= HB_H3TX
@@ -646,12 +657,10 @@ qc_app_frame:
 	jne	.msd_done
 	cmp	dword [r8+QST_SESS],NIL
 	je	.msd_done			; (no request on it yet)
-	push	r8				; (h3_ptrs takes r8: the stream's entry
-	h3_ptrs	[r8+QST_SESS]			; is what qsend_set marks)
-	pop	r8
-	cmp	r13,[r9+HB_H3TX+TX_MAXSD]
+	call	qth_of				; rax = its header
+	cmp	r13,[rax+TX_MAXSD]
 	jbe	.msd_done
-	mov	[r9+HB_H3TX+TX_MAXSD],r13
+	mov	[rax+TX_MAXSD],r13
 	call	qsend_set
 	call	qc_dirty
 .msd_done:
@@ -3176,16 +3185,30 @@ h3_request_new:
 	pop	rbx
 	mov	eax,[rax+S_GEN]
 	mov	[rdi+QST_SGEN],eax
-	; its send ring: the counters (the ACK ranges are read up to TX_NACK)
-	lea	rdi,[rbp+HB_H3TX]
+	; its send ring: the header with the connection (qth_of), the counters
+	; (the ACK ranges are read up to TX_NACK), the ring in its buffers
+	push	r8
+	mov	r8,rdi
+	call	qth_of
+	pop	r8
+	mov	edx,[rdi+QST_SESS]
+	mov	ecx,[rdi+QST_SGEN]
+	mov	[rax+TX_OWN],edx
+	mov	[rax+TX_OWNG],ecx
+	mov	[r14+H_H3TXH],rax
+	lea	rdx,[rbp+HB_TLS]
+	mov	[rax+TX_RING],rdx
+	mov	rdi,rax
 	mov	ecx,TX_ACK / 8
+	push	rax
 	xor	eax,eax
 	rep	stosq
-	mov	[rbp+HB_H3TX+TX_XLO],rax
-	mov	[rbp+HB_H3TX+TX_XHI],rax
-	mov	dword [rbp+HB_H3TX+TX_CAPV],TX_CAP
+	pop	rdi
+	mov	[rdi+TX_XLO],rax
+	mov	[rdi+TX_XHI],rax
+	mov	dword [rdi+TX_CAPV],TX_CAP
 	mov	rax,[r15+QC_PSD_BIDI]
-	mov	[rbp+HB_H3TX+TX_MAXSD],rax
+	mov	[rdi+TX_MAXSD],rax
 	; its queue: the request head
 	lea	r13,[rbp+HB_H2Q]
 	xor	eax,eax
@@ -3516,8 +3539,7 @@ h3s_push:
 	push	r15
 	h_rec
 	mov	r12,r15				; the record
-	mov	r13,[r12+H_BUF]
-	add	r13,HB_H3TX			; the ring
+	mov	r13,[r12+H_H3TXH]		; its ring's header
 	test	dword [r12+H_H3F],H3F_SENDING
 	jz	.kick
 .more:
@@ -3670,14 +3692,16 @@ h3tx_put:
 	jbe	@f
 	push	rcx
 	sub	[rsp],edx
-	lea	rdi,[r13+TX_DATA+rax]
+	mov	rdi,[r13+TX_RING]
+	add	rdi,rax
 	mov	ecx,edx
 	add	[r13+TX_END],rcx
 	rep	movsb
 	pop	rcx
 	xor	eax,eax
 @@:
-	lea	rdi,[r13+TX_DATA+rax]
+	mov	rdi,[r13+TX_RING]
+	add	rdi,rax
 	add	[r13+TX_END],rcx
 	rep	movsb
 .out:
@@ -3737,14 +3761,16 @@ tx_read:
 	cmp	ecx,edx
 	jbe	@f
 	push	rcx
-	lea	rsi,[r9+TX_DATA+rax]
+	mov	rsi,[r9+TX_RING]
+	add	rsi,rax
 	mov	ecx,edx
 	sub	[rsp],rcx
 	rep	movsb
 	pop	rcx
 	xor	eax,eax
 @@:
-	lea	rsi,[r9+TX_DATA+rax]
+	mov	rsi,[r9+TX_RING]
+	add	rsi,rax
 	rep	movsb
 .out:
 	ret
@@ -4101,8 +4127,7 @@ h3s_finish:
 	push	r13
 	h_rec
 	mov	r12,r15
-	mov	r13,[r12+H_BUF]
-	add	r13,HB_H3TX
+	mov	r13,[r12+H_H3TXH]
 	or	dword [r12+H_H3F],H3F_FINISH
 	test	dword [r12+H_H3F],H3F_HQ
 	jnz	.fin				; (hq-interop has no trailers)
@@ -4391,10 +4416,8 @@ qst_sendable:
 	mov	ecx,[r11+S_GEN]
 	cmp	ecx,[r8+QST_SGEN]
 	jne	.out
-	push	r8
-	h3_ptrs	r10d				; (takes r8, r9)
-	pop	r8
-	lea	r9,[r9+HB_H3TX]
+	call	qth_of				; its header, with the connection
+	mov	r9,rax
 	mov	rax,[r9+TX_END]
 	cmp	rax,[r9+TX_MAXSD]
 	jbe	@f
@@ -5003,7 +5026,11 @@ sp_stream_ring:
 	cmp	dword [rcx+S_STATE],ST_CLOSING
 	je	.gone
 	h3_ptrs	eax
-	add	r9,HB_H3TX
+	mov	r9,[r8+H_H3TXH]			; its header: still its own (the entry
+	cmp	[r9+TX_OWN],eax			; not given to a later stream)
+	jne	.gone
+	cmp	[r9+TX_OWNG],edx
+	jne	.gone
 	clc
 	ret
 .gone:

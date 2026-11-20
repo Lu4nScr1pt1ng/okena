@@ -35,6 +35,23 @@ QE_RCAP		:= 8192				; (a power of two)
 QE_SIZE		:= QE_RING + QE_RCAP
 QE_OFF		:= ((SP_N + 1) * QFX_SLOT + 63) and not 63
 assert QE_OFF + QE_SIZE <= 1 shl QFX_SHIFT
+; the stream table's ring headers (http3.inc), past QE
+QTH_OFF		:= (QE_OFF + QE_SIZE + 63) and not 63
+assert QTH_OFF + QST_N * QTH_SIZE <= 1 shl QFX_SHIFT
+; r8 = an entry of the stream table (r15 = connection): rax = its ring's
+; header. Keeps all but rax.
+qth_of:
+	push	rcx
+	mov	rcx,r8
+	sub	rcx,r15
+	sub	rcx,QC_QST
+	imul	ecx,ecx,683			; / QST_SIZE (96): exact up to 127 entries
+	shr	ecx,16
+	imul	ecx,ecx,QTH_SIZE
+	call	qe_ptr
+	lea	rax,[rax-QE_OFF+QTH_OFF+rcx]
+	pop	rcx
+	ret
 QE_MARK		:= 0xFFFFFFF0			; a packet's frame of our encoder stream (QFX_SESS)
 QE_FIELD_MAX	:= 200				; a field inserted, name and value, at most
 
