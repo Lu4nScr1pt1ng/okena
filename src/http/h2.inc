@@ -99,6 +99,7 @@ C2_CHEAPN	:= 92				; cheap frames this second
 C2_CHEAPT	:= 96				; and the tick they count in
 C2_HBN		:= 100				; CONTINUATION frames in the block
 C2_AWAY		:= 104				; streams in the table away from their home slot
+C2_TAIL		:= 112				; OUT's tail: bytes of last DATA frames (h2_frame)
 ; HPACK, our encoder's dynamic table (hpack_encode_dyn): the client's
 ; SETTINGS_HEADER_TABLE_SIZE, the size we use + 1 (0: no block yet), entries
 ; inserted and evicted (counts: an entry's index is 61 + inserted - its
@@ -243,6 +244,7 @@ bss
 	g_h2fl_n	dd ?			; connections whose send waits for the iteration's end
 	g_h2fl:		rq H2_FLUSH_MAX		; (session, generation) each
 	g_h2tmp_es	dd ?			; h2_head_out: END_STREAM on the HEADERS
+	g_h2_totail	db ?			; h2_frame: this DATA frame to OUT's tail
 	g_h2_cl0	dd ?			; h2_head_out: content-length: 0 among its fields
 	g_ht_save	rd 4			; h2_head_out: the encoder's table before the block
 	align 8
@@ -357,7 +359,55 @@ h2_out_raw:
 ; eax = room in OUT. c2 registers.
 h2_room:
 	mov	eax,H2_OUTCAP
+	cmp	dword [r13+C2_TAIL],0
+	je	@f
+	mov	eax,H2_T0			; (the tail is in use: up to it)
+@@:
 	sub	eax,[r13+C2_OUTLEN]
+	ret
+
+; OUT's tail: a stream's last DATA frame, when small, goes at H2_T0 instead
+; of after the frames before it, and joins them before anything is sent:
+; a batch's HEADERS go first, all together, then its DATA (h2o's order). A
+; client decodes the heads in one run, then ends the streams and opens new
+; ones in another, instead of going from one to the other each answer: 6%
+; fewer of its cycles an answer (h2load, the same instructions). A stream's
+; HEADERS are always before its DATA; a frame of any other kind joins the
+; tail first, so nothing else moves. Keeps all but flags.
+H2_TAILCAP	:= 4096
+H2_CL_QUIET	:= 1024				; h2_head_out: a body this small, no content-length
+
+; hreg = a request's record: ZF when okena answers it itself (no server
+; picked for it: a handler, `respond`, files). rax goes.
+macro h_own_answer hreg
+	mov	rax,hreg
+	sub	rax,[g_http_base]
+	shr	rax,H_SHIFT
+	shl	rax,S_SHIFT
+	add	rax,[g_sess_base]
+	cmp	dword [rax+S_SERVER],NIL
+end macro
+H2_T0		:= H2_OUTCAP - H2_TAILCAP
+h2_merge:
+	cmp	dword [r13+C2_TAIL],0
+	je	.out
+	push	rax
+	push	rcx
+	push	rsi
+	push	rdi
+	mov	eax,[r13+C2_OUTLEN]
+	lea	rdi,[r14+HB_H2OUT+rax]
+	lea	rsi,[r14+HB_H2OUT+H2_T0]
+	mov	ecx,[r13+C2_TAIL]
+	add	eax,ecx
+	mov	[r13+C2_OUTLEN],eax
+	mov	dword [r13+C2_TAIL],0
+	rep	movsb				; (down: dst below src)
+	pop	rdi
+	pop	rsi
+	pop	rcx
+	pop	rax
+.out:
 	ret
 
 ; esi = length, dl = type, cl = flags, r8d = stream: a frame header at the
@@ -376,10 +426,26 @@ h2_frame:
 .credit:
 	mov	[r13+C2_CHEAPN],eax
 @@:
+	cmp	byte [g_h2_totail],0
+	jne	.tail
+	cmp	dl,H2F_HEADERS			; a head (its stream's DATA is not in the
+	je	.front				; tail), a head's continuation: OUT's end
+	cmp	dl,H2F_CONT
+	je	.front
+	call	h2_merge			; anything else after what the tail holds
+.front:
 	mov	eax,[r13+C2_OUTLEN]
 	lea	rdi,[r14+HB_H2OUT+rax]
 	lea	eax,[rax+rsi+9]
 	mov	[r13+C2_OUTLEN],eax
+	jmp	.header
+.tail:
+	mov	byte [g_h2_totail],0
+	mov	eax,[r13+C2_TAIL]
+	lea	rdi,[r14+HB_H2OUT+H2_T0+rax]
+	lea	eax,[rax+rsi+9]
+	mov	[r13+C2_TAIL],eax
+.header:
 	mov	eax,esi
 	bswap	eax
 	shr	eax,8				; 24-bit length, big endian
@@ -570,6 +636,8 @@ h2_pump:
 	jnz	.out
 	cmp	dword [r13+C2_OUTLEN],0
 	jne	.out
+	cmp	dword [r13+C2_TAIL],0
+	jne	.out
 	cmp	dword [r13+C2_CLEN],0
 	jne	.out
 	mov	edi,ebx				; the GOAWAY is out
@@ -584,6 +652,8 @@ h2_want_send:
 	test	dword [r13+C2_FLAGS],C2F_SEND or C2F_FLUSHQ
 	jnz	.out
 	cmp	dword [r13+C2_OUTLEN],0
+	jne	@f
+	cmp	dword [r13+C2_TAIL],0
 	jne	@f
 	cmp	dword [r13+C2_CLEN],0
 	je	.out
@@ -640,6 +710,7 @@ h2_flush:
 h2_send:
 	test	dword [r13+C2_FLAGS],C2F_SEND
 	jnz	.out
+	call	h2_merge
 	cmp	dword [r15+H_UTLS],0
 	jne	.sealed
 	mov	esi,[r13+C2_OUTLEN]
@@ -762,6 +833,7 @@ h2_out_now:
 	jne	.no
 	test	dword [r13+C2_FLAGS],C2F_SEND or C2F_EPOUT or C2F_CLIENT
 	jnz	.no
+	call	h2_merge
 	mov	edx,[r13+C2_OUTLEN]
 	test	edx,edx
 	jz	.no
@@ -880,6 +952,8 @@ h2_sent:
 	c2_regs					; epoll: keep writing until it would block,
 	cmp	dword [r13+C2_OUTLEN],0		; then the pump (a GOAWAY that went out
 	jne	h2_send				; closes the connection)
+	cmp	dword [r13+C2_TAIL],0
+	jne	h2_send
 	cmp	dword [r13+C2_CLEN],0
 	jne	h2_send
 	jmp	h2_pump
@@ -3280,6 +3354,16 @@ h2_stream_out:
 	mov	cl,H2_END_STREAM
 	or	dword [r15+H_H2F],S2F_END
 .data_flags:
+	test	cl,H2_END_STREAM		; the stream's last DATA, small: OUT's tail
+	jz	@f				; (h2_merge)
+	mov	eax,[r13+C2_TAIL]
+	lea	eax,[rax+r12+9]
+	cmp	eax,H2_TAILCAP
+	ja	@f
+	cmp	dword [r13+C2_OUTLEN],H2_T0
+	ja	@f
+	mov	byte [g_h2_totail],1
+@@:
 	mov	esi,r12d
 	mov	dl,H2F_DATA
 	mov	r8d,[r15+H_H2SID]
@@ -3867,6 +3951,21 @@ h2_head_out:
 @@:
 	pop	r11
 	pop	rcx
+	; a small body's length goes unsaid: it goes whole, its last DATA frame
+	; ends the stream (RFC 9113 8.1.1 makes the field optional), and a
+	; field less is work less for every client (h2load: 7% more answers a
+	; second). Said for a HEAD (the only way to know the size), a larger
+	; body (a client's progress, its buffer), and a backend's answer (a
+	; proxy passes on what it was given).
+	mov	rax,[g_h2_dl]
+	test	rax,rax
+	jle	.cl_done
+	cmp	rax,H2_CL_QUIET
+	ja	.cl_done
+	test	dword [r15+H_FLAGS],HX_HEAD
+	jnz	.cl_done
+	h_own_answer r15			; (an answer okena makes; a backend's head
+	je	.next_line			; goes on as it came)
 .cl_done:
 	cmp	rdi,r12
 	ja	.broken				; a head larger than one block
