@@ -325,6 +325,7 @@ rodata
 	sc_allow filter_worker_epoll, SYS_futex		; (wakes the cache keeper)
 	sc_allow filter_worker_epoll, SYS_epoll_wait
 	sc_allow filter_worker_epoll, SYS_epoll_ctl
+	sc_allow filter_worker_epoll, SYS_sendto		; (to sockets: not through the files' layer)
 	sc_allow filter_worker_epoll, SYS_read
 	sc_allow filter_worker_epoll, SYS_accept4
 	sc_allow filter_worker_epoll, SYS_close
@@ -386,6 +387,7 @@ rodata
 	sc_allow filter_worker_epoll_f, SYS_futex		; (wakes the cache keeper)
 	sc_allow filter_worker_epoll_f, SYS_epoll_wait
 	sc_allow filter_worker_epoll_f, SYS_epoll_ctl
+	sc_allow filter_worker_epoll_f, SYS_sendto
 	sc_allow filter_worker_epoll_f, SYS_read
 	sc_allow filter_worker_epoll_f, SYS_accept4
 	sc_allow filter_worker_epoll_f, SYS_close

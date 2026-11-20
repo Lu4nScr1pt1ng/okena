@@ -712,8 +712,17 @@ h2_send:
 	mov	edi,eax
 	lea	rsi,[g_utx_scr]
 	mov	edx,[r13+C2_CLEN]
-	mov	eax,SYS_write
+	push	r8
+	push	r9
+	push	r10
+	mov	r10d,MSG_NOSIGNAL		; send, not write (past the files' layer)
+	xor	r8d,r8d
+	xor	r9d,r9d
+	mov	eax,SYS_sendto
 	syscall
+	pop	r10
+	pop	r9
+	pop	r8
 	cmp	eax,[r13+C2_CLEN]
 	je	h2_sent
 	push	rax
@@ -769,8 +778,17 @@ h2_out_now:
 	mov	edi,eax
 	lea	rsi,[r14+HB_H2OUT]
 	mov	edx,[r13+C2_OUTLEN]
-	mov	eax,SYS_write			; (the epoll worker's seccomp allows write)
+	push	r8
+	push	r9
+	push	r10
+	mov	r10d,MSG_NOSIGNAL		; send, not write (past the files' layer)
+	xor	r8d,r8d
+	xor	r9d,r9d
+	mov	eax,SYS_sendto
 	syscall
+	pop	r10
+	pop	r9
+	pop	r8
 	pop	r11
 	pop	r10
 	pop	r9
@@ -814,8 +832,17 @@ h2_sock_send:
 	mov	edi,eax
 	pop	rdx
 	pop	rsi
-	mov	eax,SYS_write			; (the epoll worker's seccomp allows write)
+	push	r8
+	push	r9
+	push	r10
+	mov	r10d,MSG_NOSIGNAL		; send, not write (past the files' layer)
+	xor	r8d,r8d
+	xor	r9d,r9d
+	mov	eax,SYS_sendto
 	syscall
+	pop	r10
+	pop	r9
+	pop	r8
 	cmp	rax,-EAGAIN
 	je	.full
 	jmp	h2_sent

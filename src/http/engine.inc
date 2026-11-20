@@ -738,8 +738,17 @@ hep_try_send:
 	mov	edi,eax
 	mov	rsi,[r15+H_SPTR]
 	mov	edx,[r15+H_SLEN]
+	mov	r10d,MSG_NOSIGNAL		; send, not write: a socket's own call,
+	xor	r8d,r8d				; past the files' layer (its position lock,
+	xor	r9d,r9d				; its permission checks)
+	mov	eax,SYS_sendto
+	syscall
+	cmp	rax,-ENOTSOCK
+	jne	@f
+	mov	edx,[r15+H_SLEN]		; (a pipe, a file: written)
 	mov	eax,SYS_write
 	syscall
+@@:
 	cmp	rax,-EAGAIN
 	je	.wait
 	cmp	rax,-EINTR

@@ -1212,8 +1212,17 @@ utls_tx_step:
 	mov	edi,eax
 	lea	rsi,[g_utx_scr]
 	mov	edx,[rsp]
-	mov	eax,SYS_write
+	push	r8
+	push	r9
+	push	r10
+	mov	r10d,MSG_NOSIGNAL		; send, not write (past the files' layer)
+	xor	r8d,r8d
+	xor	r9d,r9d
+	mov	eax,SYS_sendto
 	syscall
+	pop	r10
+	pop	r9
+	pop	r8
 	pop	rdx
 	test	rax,rax
 	jns	@f
