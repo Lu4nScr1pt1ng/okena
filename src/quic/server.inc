@@ -336,7 +336,10 @@ bss
 	g_qtx_iov:	rb QTX_N * 16
 	g_qtx_sa:	rb QTX_N * 32
 	g_qrx_buf:	rb QRX_N * QRX_SZ
-	g_qtx_buf:	rb QTX_N * QTX_SZ
+	g_qtx_off	dq ?				; the batch's datagrams end here in g_qtx_buf
+	align 64
+	g_qtx_buf:	rb QTX_N * QTX_SZ		; (one after another: a datagram takes
+							; its length, not QTX_SZ)
 end bss
 
 rodata
@@ -897,6 +900,7 @@ qs_worker_init:
 	lea	rsi,[g_qtok_key]
 	call	gcm_init
 	mov	dword [g_qtx_n],0
+	mov	qword [g_qtx_off],0
 	xor	ebx,ebx
 .listener:
 	cmp	ebx,[g_plan_listeners]
@@ -4362,7 +4366,15 @@ qtx_slot:
 	cmp	edx,QTX_N
 	jae	.none
 @@:
-	imul	rax,rdx,QTX_SZ
+	mov	rax,[g_qtx_off]			; room for the largest there may be
+	cmp	rax,(QTX_N - 1) * QTX_SZ
+	jbe	@f
+	push	rdi
+	call	qtx_send
+	pop	rdi
+	mov	edx,[g_qtx_n]
+	xor	eax,eax
+@@:
 	lea	rax,[g_qtx_buf+rax]
 	ret
 .none:
@@ -4416,7 +4428,10 @@ qtx_commit:
 	mov	qword [r9+40],24
 .no_mark:
 	mov	dword [r9+48],0
-	imul	rax,rdx,QTX_SZ
+	mov	rax,[g_qtx_off]
+	lea	r11,[rcx+63]			; the next one after it, cache-line aligned
+	and	r11,-64
+	add	[g_qtx_off],r11
 	lea	rax,[g_qtx_buf+rax]
 	mov	[r10],rax
 	mov	[r10+8],rcx
@@ -4614,6 +4629,7 @@ qtx_send:
 	jmp	.run
 .done:
 	mov	dword [g_qtx_n],0
+	mov	qword [g_qtx_off],0
 	pop	r14
 	pop	r13
 	pop	r12
