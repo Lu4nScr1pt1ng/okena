@@ -212,6 +212,7 @@ worker_main:
 	call	h2_flush			; HTTP/2: one send a connection an iteration
 	call	qs_flush			; QUIC: the answers first,
 	call	qs_resume			; then the datagrams that came
+	call	ep_http_ready			; (their answers: with the ACK)
 	call	udp_resume
 	call	bulk_resume			; bulk directions whose turn ran out
 	call	qs_flush			; QUIC: what connections send
@@ -273,6 +274,7 @@ worker_main:
 	call	h2_flush			; HTTP/2: one send a connection an iteration
 	call	qs_flush			; QUIC: the answers first,
 	call	qs_resume			; then the datagrams that came
+	call	ep_http_ready			; (their answers: with the ACK)
 	call	udp_resume
 	call	bulk_resume			; bulk directions whose turn ran out
 	call	qs_flush			; QUIC: what connections send

@@ -171,6 +171,9 @@ ep_main:
 	call	h2_flush			; HTTP/2: one send a connection an iteration
 	call	qs_flush			; QUIC: the answers first,
 	call	qs_resume			; then the datagrams that came
+	call	ep_http_ready			; their requests' answers, made now: they go
+						; in the datagram with the ACK (else the ACK
+						; went alone, the answers in a second one)
 	call	qs_tick				; QUIC: timers, then what connections send
 	call	qs_flush
 	call	hs_drain			; hellos that waited for the budget
