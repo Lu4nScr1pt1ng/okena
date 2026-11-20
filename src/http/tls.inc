@@ -65,6 +65,8 @@ bss
 	align 4
 	g_no_ktls	dd ?			; this worker saw the kernel refuse kTLS
 	g_no_ktls_cp	dd ?			; ... refuse ChaCha20-Poly1305 keys only
+	align 64
+	g_utx_scr	rb UTLS_TX_CAP + 64	; utls_tx_step on epoll: records sealed here
 	align 8
 	g_shc_cert	dq ?			; http_sni_host_check: the last certificate and
 	g_shc_len	dd ?			; Host (portless) found to go together: the next
@@ -1149,6 +1151,10 @@ utls_tx_step:
 	push	r13
 	mov	r12,[r15+H_BUF]
 	add	r12,HB_TXC			; r12 = the next record
+	cmp	dword [g_engine],ENGINE_EPOLL	; epoll: in the worker's scratch, written at
+	jne	@f				; once (the connection's own is a cold place
+	lea	r12,[g_utx_scr]			; to write each record in and read it from)
+@@:
 	mov	r13d,UTLS_TX_RECS
 	mov	rax,[r15+H_BUF]			; a KeyUpdate the client asked for: ours
 	test	dword [rax+HB_TS+TS_FLAGS],TF_KUSEND	; first, under the keys it knows,
@@ -1189,6 +1195,51 @@ utls_tx_step:
 	dec	r13d
 	jnz	.record
 .send:
+	lea	rdi,[g_utx_scr]
+	cmp	r12,rdi
+	jb	.own
+	cmp	r12,g_utx_scr + UTLS_TX_CAP + 64
+	ja	.own
+	; from the scratch: written now; all of it, the send is done; else what
+	; is left goes to the connection's own place and waits there
+	mov	rsi,r12
+	sub	rsi,rdi
+	pop	r13
+	pop	r12
+	push	rsi				; the records' length
+	xor	ecx,ecx
+	call	hep_fd
+	mov	edi,eax
+	lea	rsi,[g_utx_scr]
+	mov	edx,[rsp]
+	mov	eax,SYS_write
+	syscall
+	pop	rdx
+	test	rax,rax
+	jns	@f
+	xor	eax,eax				; (an error: the normal path finds it)
+@@:
+	cmp	rax,rdx
+	jb	.rest
+	xor	eax,eax				; all out: as hep_try_send says it
+	mov	edx,2
+	xor	ecx,ecx
+	jmp	hep_queue
+.rest:
+	h_rec
+	mov	rdi,[r15+H_BUF]
+	add	rdi,HB_TXC
+	lea	rsi,[g_utx_scr+rax]
+	mov	ecx,edx
+	sub	ecx,eax
+	push	rdi
+	push	rcx
+	rep	movsb
+	pop	rsi
+	pop	rdi
+	xor	ecx,ecx
+	jmp	h_send_raw
+.own:
 	mov	rdi,[r15+H_BUF]
 	add	rdi,HB_TXC
 	mov	rsi,r12
