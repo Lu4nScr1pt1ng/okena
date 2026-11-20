@@ -392,6 +392,18 @@ qc_streams_close:
 
 ; rax = stream id (r15 = connection): r8 = its entry, or 0
 qst_find:
+	; its home entry first (qst_new puts it there when free: ids go up by 4)
+	mov	r8,rax
+	shr	r8,2
+	and	r8d,QST_N - 1
+	bt	[r15+QC_QSTM],r8
+	jnc	.scan
+	imul	r8,r8,QST_SIZE
+	lea	r8,[r15+QC_QST+r8]
+	cmp	[r8+QST_ID],rax
+	jne	.scan
+	ret
+.scan:
 	push	r9
 	push	r10
 	xor	r10d,r10d			; the qword
@@ -447,6 +459,11 @@ qst_req_after:
 ; rax = stream id: r8 = a free entry for it (zeroed but the id), or 0
 qst_new:
 	push	rax
+	mov	rcx,rax				; its home entry, when free (qst_find)
+	shr	rcx,2
+	and	ecx,QST_N - 1
+	bt	[r15+QC_QSTM],rcx
+	jnc	.slot
 	mov	r8,[r15+QC_QSTM]
 	not	r8
 	tzcnt	rcx,r8
@@ -3082,9 +3099,9 @@ h3_request_new:
 	pop	rbx
 	mov	eax,[rax+S_GEN]
 	mov	[rdi+QST_SGEN],eax
-	; its send ring
+	; its send ring: the counters (the ACK ranges are read up to TX_NACK)
 	lea	rdi,[rbp+HB_H3TX]
-	mov	ecx,TX_HDR / 8
+	mov	ecx,TX_ACK / 8
 	xor	eax,eax
 	rep	stosq
 	mov	dword [rbp+HB_H3TX+TX_CAPV],TX_CAP
@@ -3571,15 +3588,15 @@ h3_head_out:
 	lea	rdi,[g_h3tmp+8]			; the field section (the frame header after)
 	mov	word [rdi],0			; Required Insert Count 0, Delta Base 0
 	add	rdi,2
-	; :status: literal with static name reference 24 (01 N=0 T=1 index)
-	mov	byte [rdi],0x5F
-	mov	byte [rdi+1],24 - 15
-	mov	byte [rdi+2],3
-	mov	ax,[rsi+9]
-	mov	[rdi+3],ax
-	mov	al,[rsi+11]
-	mov	[rdi+5],al
-	add	rdi,6
+	; :status: the static table's own line for it when it has one (200 is
+	; one byte), else by its name
+	push	rsi
+	lea	rcx,[rsi+9]
+	lea	rsi,[.n_status]
+	mov	edx,7
+	mov	r8d,3
+	call	qp_encode
+	pop	rsi
 	movzx	ebx,byte [rsi+9]		; '1': an informational head
 	; the fields
 	xor	ecx,ecx
@@ -3655,22 +3672,23 @@ h3_head_out:
 	lea	rax,[g_h3tmp+20480-600]
 	cmp	rdi,rax
 	ja	.broken
-	; a literal field line, literal name
+	; a field line: by the static table when it can (qp_encode)
 	push	rsi
 	push	rcx
 	push	rdx
 	push	r8
 	push	r10
+	push	rbx
 	mov	r9d,edx
 	sub	r9d,r10d			; value length
-	lea	r8,[rsi+r10]			; value
-	mov	eax,r8d
-	lea	rax,[rsi+rcx]			; name
-	mov	edx,[rsp+8]			; name end (r8)
+	lea	rax,[rsi+r10]			; value
+	mov	edx,[rsp+16]			; name end (r8)
 	sub	edx,ecx
-	mov	rsi,rax
-	mov	ecx,edx
-	call	h3_lit
+	lea	rsi,[rsi+rcx]			; name
+	mov	rcx,rax
+	mov	r8d,r9d
+	call	qp_encode
+	pop	rbx
 	pop	r10
 	pop	r8
 	pop	rdx
@@ -3717,6 +3735,139 @@ h3_head_out:
 .full:
 	stc
 .out:
+	pop	rbp
+	pop	rbx
+	ret
+.n_status db ':status'
+
+; the static table's entries by the length of their names (qp_encode): for
+; each length its place in g_qp_bylen, a list of entries ended by 0xFF
+QP_NAME_MAX	:= 40
+bss
+	g_qp_bylen_ok	db ?
+	g_qp_bylen_at	rb QP_NAME_MAX + 1
+	g_qp_bylen	rb 99 + QP_NAME_MAX + 1
+end bss
+
+; (once, the first time) Keeps all but rax, rcx, rdx, r8, r9.
+qp_bylen_init:
+	xor	r8d,r8d				; where the next list goes
+	xor	ecx,ecx				; the length
+.len:
+	mov	[g_qp_bylen_at+rcx],r8b
+	xor	edx,edx
+.e:
+	movzx	eax,word [qp_static+rdx*8+2]
+	cmp	eax,ecx
+	jne	@f
+	mov	[g_qp_bylen+r8],dl
+	inc	r8d
+@@:
+	inc	edx
+	cmp	edx,99
+	jb	.e
+	mov	byte [g_qp_bylen+r8],0xFF
+	inc	r8d
+	inc	ecx
+	cmp	ecx,QP_NAME_MAX
+	jbe	.len
+	mov	byte [g_qp_bylen_ok],1
+	ret
+
+; rdi = out, rsi = a name (lower case), edx = its length, rcx = its value, r8d
+; = its length: one QPACK field line (RFC 9204 4.5) by the static table: the
+; whole line when the table has it (11T index: one byte for most), else its
+; name by index and the value (Huffman when shorter), else all literal. rdi
+; past it. Keeps rbx, rbp, r12-r15.
+qp_encode:
+	push	rbx
+	push	rbp
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	mov	r12,rsi
+	mov	r13d,edx
+	mov	r14,rcx
+	mov	r15d,r8d
+	mov	rbp,rdi
+	mov	ebx,-1				; the first entry with the name
+	cmp	byte [g_qp_bylen_ok],0
+	jne	@f
+	call	qp_bylen_init
+@@:
+	cmp	r13d,QP_NAME_MAX
+	ja	.searched
+	movzx	r10d,byte [g_qp_bylen_at+r13]	; the entries with names this long
+	lea	r10,[g_qp_bylen+r10]
+.entry:
+	movzx	r11d,byte [r10]
+	cmp	r11d,0xFF
+	je	.searched
+	inc	r10
+	movzx	esi,word [qp_static+r11*8]
+	lea	rsi,[qp_pool+rsi]
+	mov	rdi,r12
+	mov	edx,r13d
+	push	r10
+	push	r11
+	call	mem_eq
+	pop	r11
+	pop	r10
+	test	eax,eax
+	jz	.next
+	cmp	ebx,-1
+	jne	@f
+	mov	ebx,r11d
+@@:
+	movzx	eax,word [qp_static+r11*8+6]	; and its value?
+	cmp	eax,r15d
+	jne	.next
+	movzx	esi,word [qp_static+r11*8+4]
+	lea	rsi,[qp_pool+rsi]
+	mov	rdi,r14
+	mov	edx,r15d
+	push	r10
+	push	r11
+	call	mem_eq
+	pop	r11
+	pop	r10
+	test	eax,eax
+	jz	.next
+	; indexed field line, static (11 T=1 index, 6-bit prefix)
+	mov	rdi,rbp
+	mov	eax,r11d
+	mov	cl,6
+	mov	dl,0xC0
+	call	hp_put_int
+	jmp	.out
+.next:
+	jmp	.entry
+.searched:
+	cmp	ebx,-1
+	je	.literal
+	; literal with name reference, static (01 N=0 T=1 index, 4-bit prefix)
+	mov	rdi,rbp
+	mov	eax,ebx
+	mov	cl,4
+	mov	dl,0x50
+	call	hp_put_int
+	mov	rsi,r14
+	mov	ecx,r15d
+	call	hp_put_str			; (H, a 7-bit length: as HPACK's)
+	jmp	.out
+.literal:
+	mov	rdi,rbp
+	mov	rsi,r12
+	mov	ecx,r13d
+	mov	r8,r14
+	mov	r9d,r15d
+	call	h3_lit
+.out:
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
 	pop	rbp
 	pop	rbx
 	ret
@@ -4083,6 +4234,7 @@ qc_app_write:
 	mov	[r15+QC_LW_CTL],eax
 	mov	[r15+QC_LW_FR],eax
 	mov	dword [r15+QC_LW_SESS],NIL
+	mov	dword [g_qfx_n],-1		; (no stream frame yet: the first goes in QC_LW_*)
 	; control frames
 	mov	rax,r14
 	sub	rax,rdi
@@ -4318,7 +4470,12 @@ qc_app_write:
 	jne	@f
 	mov	r11d,1
 @@:
+	; (no offset at all for a stream's first bytes, else its shortest varint)
 	mov	al,0x0E
+	cmp	qword [r9+TX_SENT],0
+	jne	@f
+	mov	al,0x0A
+@@:
 	or	al,r11b
 	mov	[rdi],al
 	inc	rdi
@@ -4327,11 +4484,10 @@ qc_app_write:
 	mov	rax,[r8+QST_ID]
 	call	qv_write
 	mov	rax,[r9+TX_SENT]
-	mov	rcx,0xC000000000000000
-	or	rax,rcx
-	bswap	rax
-	mov	[rdi],rax
-	add	rdi,8
+	test	rax,rax
+	jz	@f
+	call	qv_write
+@@:
 	pop	r11
 	pop	r10
 	mov	eax,r10d
@@ -4339,7 +4495,11 @@ qc_app_write:
 	xchg	al,ah
 	mov	[rdi],ax
 	add	rdi,2
-	; the bytes, from the ring (it may wrap)
+	; the bytes, from the ring (it may wrap); the frame kept for the packet's
+	; record: the first in QC_LW_*, the others in the frames table's pending
+	; slot (qfx_slot)
+	cmp	dword [g_qfx_n],-1
+	jne	.extra
 	mov	rax,[r9+TX_SENT]
 	mov	[r15+QC_LW_OFF],rax
 	mov	[r15+QC_LW_LEN],r10d
@@ -4348,6 +4508,26 @@ qc_app_write:
 	mov	[r15+QC_LW_SESS],eax
 	mov	eax,[r8+QST_SGEN]
 	mov	[r15+QC_LW_SGEN],eax
+	mov	dword [g_qfx_n],0
+	jmp	.recorded
+.extra:
+	push	rdi
+	mov	eax,SP_N
+	call	qfx_slot			; rax = the pending slot
+	mov	ecx,[g_qfx_n]
+	imul	ecx,ecx,QFX_FR
+	lea	rax,[rax+8+rcx]
+	mov	ecx,[r8+QST_SESS]
+	mov	[rax+QFX_SESS],ecx
+	mov	ecx,[r8+QST_SGEN]
+	mov	[rax+QFX_SGEN],ecx
+	mov	[rax+QFX_FIN],r11d
+	mov	rcx,[r9+TX_SENT]
+	mov	[rax+QFX_OFF],rcx
+	mov	[rax+QFX_LEN],r10d
+	inc	dword [g_qfx_n]
+	pop	rdi
+.recorded:
 	mov	rcx,r10
 	mov	rax,[r9+TX_SENT]
 	mov	edx,[r9+TX_CAPV]
@@ -4380,6 +4560,16 @@ qc_app_write:
 	mov	dword [r9+TX_FINSENT],1
 @@:
 	mov	r12d,1
+	; room left: the next stream's in the same packet (a datagram carries
+	; many small answers, as many as QFX_MAX past the first)
+	cmp	dword [g_qfx_n],QFX_MAX
+	jae	.done
+	mov	rax,r14
+	sub	rax,rdi
+	cmp	rax,1 + 8 + 8 + 2 + 16
+	jb	.done
+	mov	ecx,[r15+QC_RR]			; (the one just written)
+	jmp	.pick_next
 .done:
 	mov	eax,r12d
 	pop	r14
@@ -4404,6 +4594,38 @@ qc_app_sent:
 	mov	[rdi+SP_CTL],eax
 	mov	eax,[r15+QC_LW_FR]
 	mov	[rdi+SP_FR],eax
+	; the frames past the first: from the pending slot into this record's
+	push	rdi
+	push	rsi
+	push	rcx
+	push	r8
+	mov	ecx,[g_qfx_n]
+	test	ecx,ecx
+	jg	@f
+	xor	ecx,ecx
+@@:
+	mov	r8d,ecx
+	mov	rax,rdi				; this record's slot
+	sub	rax,r15
+	sub	rax,QC_SP
+	shr	rax,6
+	and	eax,SP_N - 1
+	call	qfx_slot
+	mov	[rax],r8d			; its count
+	test	r8d,r8d
+	jz	@f
+	lea	rdi,[rax+8]
+	mov	eax,SP_N
+	call	qfx_slot
+	lea	rsi,[rax+8]
+	imul	ecx,r8d,QFX_FR
+	rep	movsb
+@@:
+	mov	dword [g_qfx_n],-1
+	pop	r8
+	pop	rcx
+	pop	rsi
+	pop	rdi
 	mov	dword [r15+QC_LW_SESS],NIL
 	mov	dword [r15+QC_LW_LEN],0
 	mov	dword [r15+QC_LW_FIN],0
@@ -4448,6 +4670,36 @@ qc_app_lost:
 	dec	ecx
 	jnz	.msd
 .streams:
+	call	qc_fr_lost
+	; and the frames past the first
+	push	rdi
+	push	rbx
+	mov	rax,rdi
+	sub	rax,r15
+	sub	rax,QC_SP
+	shr	rax,6
+	and	eax,SP_N - 1
+	call	qfx_slot
+	mov	ebx,[rax]
+	mov	dword [rax],0
+	lea	rdi,[rax+8-SP_SSESS]		; (a frame's fields at the record's offsets)
+.lost_x:
+	test	ebx,ebx
+	jle	.lost_done
+	push	rdi
+	call	qc_fr_lost
+	pop	rdi
+	add	rdi,QFX_FR
+	dec	ebx
+	jmp	.lost_x
+.lost_done:
+	pop	rbx
+	pop	rdi
+	ret
+
+; rdi = a sent packet's record, or a frame of it at the record's offsets
+; (SP_S*): its stream data and FIN go again, from the lowest offset lost
+qc_fr_lost:
 	mov	eax,[rdi+SP_SLEN]
 	or	eax,[rdi+SP_SFIN]
 	jz	.out
@@ -4468,6 +4720,43 @@ qc_app_lost:
 	jne	.out
 	mov	dword [r9+TX_FINSENT],0
 .out:
+	ret
+
+; The stream frames a packet carries past its first (QC_LW_*, SP_S*): for
+; each connection a table, a slot for each sent-packet record of the
+; application level and one being filled (SP_N), each a count then QFX_MAX
+; frames whose fields line up with the record's (rdi = the frame - SP_SSESS
+; reads one as qc_fr_acked and qc_fr_lost read a record).
+QFX_SESS	:= 0				; d
+QFX_SGEN	:= 4				; d
+QFX_FIN		:= 8				; d
+QFX_OFF		:= 12				; q
+QFX_LEN		:= 20				; d
+QFX_FR		:= 24
+assert QFX_SESS = SP_SSESS - SP_SSESS & QFX_SGEN = SP_SGEN - SP_SSESS & QFX_FIN = SP_SFIN - SP_SSESS
+assert QFX_OFF = SP_SOFF - SP_SSESS & QFX_LEN = SP_SLEN - SP_SSESS
+QFX_MAX		:= 31
+QFX_SLOT	:= 8 + QFX_MAX * QFX_FR
+QFX_SHIFT	:= 17				; a connection's table: (SP_N + 1) slots
+assert (SP_N + 1) * QFX_SLOT <= 1 shl QFX_SHIFT
+
+bss
+	align 8
+	g_qfx_base	dq ?			; the tables, a connection's at its session's place
+	g_qfx_n		dd ?			; frames in the pending slot (-1: none in the packet yet)
+end bss
+
+; eax = a slot (0..SP_N), r15 = the connection: rax = its place. Keeps all but rax.
+qfx_slot:
+	push	rcx
+	imul	eax,eax,QFX_SLOT
+	mov	rcx,r15
+	sub	rcx,[g_hbuf_base]
+	shr	rcx,HB_SHIFT
+	shl	rcx,QFX_SHIFT
+	add	rcx,[g_qfx_base]
+	add	rax,rcx
+	pop	rcx
 	ret
 
 ; rdi = a sent packet's record: r9 = its stream's ring (r8 its record);
@@ -4510,6 +4799,36 @@ qc_app_acked:
 	jbe	@f
 	mov	[r15+QC_QD_ACK],rcx
 @@:
+	push	rdi
+	call	qc_fr_acked
+	pop	rdi
+	; and the frames past the first
+	push	rbx
+	mov	rax,rdi
+	sub	rax,r15
+	sub	rax,QC_SP
+	shr	rax,6
+	and	eax,SP_N - 1
+	call	qfx_slot
+	mov	ebx,[rax]
+	mov	dword [rax],0
+	lea	rdi,[rax+8-SP_SSESS]
+.acked_x:
+	test	ebx,ebx
+	jle	.acked_done
+	push	rdi
+	call	qc_fr_acked
+	pop	rdi
+	add	rdi,QFX_FR
+	dec	ebx
+	jmp	.acked_x
+.acked_done:
+	pop	rbx
+	ret
+
+; rdi = a sent packet's record, or a frame of it at the record's offsets
+; (SP_S*): its stream bytes delivered
+qc_fr_acked:
 	mov	eax,[rdi+SP_SLEN]
 	or	eax,[rdi+SP_SFIN]
 	jz	.out

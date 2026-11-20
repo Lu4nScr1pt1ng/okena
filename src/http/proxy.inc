@@ -179,6 +179,11 @@ http_worker_init:
 	cmp	rax,-4096
 	ja	.done
 	mov	[g_hbuf_base],rax
+	mov	ecx,QFX_SHIFT			; HTTP/3: the stream frames past a packet's first
+	call	.reserve
+	cmp	rax,-4096
+	ja	.done
+	mov	[g_qfx_base],rax
 	mov	ecx,3				; the queue of freed sessions, 8 bytes each
 	call	.reserve
 	cmp	rax,-4096
