@@ -1977,6 +1977,7 @@ okena {
 | `drain delay=T timeout=T` | 0s, 8s | on stop, reload and upgrade: wait `delay` (for load balancers to notice), then let connections finish for `timeout`; what is still open after that is closed |
 | `reload on-change\|signal` | signal | `on-change` reloads when the file, an included one, or a certificate or key it names changes (renewed in place: served without a restart) |
 | `last_good on\|off` | off | keep the last config that ran as `FILE.good` and start from it if `FILE` is broken |
+| `date on\|off` | on | the Date field okena writes in its own answers and adds to a backend's that has none (RFC 9110 6.6.1); `off` when something in front stamps it, or a benchmark compares against servers that send none |
 | `overload on\|off` | on | the overload manager: under pressure (full listeners, a loop that falls behind) idle connections go sooner, answers say `Connection: close`, then `priority bulk` and `normal` routes get 503. `off` when a balancer in front sheds load itself |
 | `user NAME\|UID[:GROUP]` | | drop to this user for everything that faces the network |
 | `metrics ADDR [token=FILE]` | | Prometheus, health probes, status, dashboard |

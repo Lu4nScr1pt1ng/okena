@@ -5981,9 +5981,16 @@ bss
 	align 8
 	g_date_line	rb 40
 	g_date_saw	dd ?			; the head being copied has one
+	g_plan_date_off	dd ?			; `date off`: none written
 end bss
 
-macro date_emit				; at rdi (40 bytes of room), rdi after it; rdx
+; at rdi (40 bytes of room), rdi after it; rdx. Nothing under `date off`
+; (okena { date off }: a cache or a benchmark in front of a clock it trusts
+; more; RFC 9110 6.6.1 asks an origin with a clock for one)
+macro date_emit
+	local skip
+	cmp	dword [g_plan_date_off],0
+	jne	skip
 	mov	rdx,qword [g_date_line]
 	mov	[rdi],rdx
 	mov	rdx,qword [g_date_line+8]
@@ -5995,6 +6002,7 @@ macro date_emit				; at rdi (40 bytes of room), rdi after it; rdx
 	mov	rdx,qword [g_date_line+32]
 	mov	[rdi+32],rdx
 	add	rdi,DATE_LEN
+skip:
 end macro
 
 ; tick, and a worker's start: g_date_line from the wall clock. Keeps rbx,

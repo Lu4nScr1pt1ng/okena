@@ -395,6 +395,7 @@ dirdef DIR_MODE, 'mode',         M_TCP or M_UDP, 0,      F_UNIQUE, 1, 1, e_liste
 dirdef DIR_XDP, 'xdp',           M_OKENA,   0,           F_UNIQUE, 1, 8, T_ANY, T_ANY, 0
 dirdef DIR_XDROP, 'drop',        M_OKENA,   0,           0, 1, 64, T_ANY, T_ANY, 0
 dirdef DIR_SYN_RATE, 'syn_rate', M_OKENA,   0,           F_UNIQUE, 1, 1, T_RATE, T_NONE, k_synrate
+dirdef DIR_DATE, 'date',          M_OKENA,   0,           F_UNIQUE, 1, 1, e_onoff, T_NONE, 0
 rodata
 	dir_table_end:
 end rodata
