@@ -959,7 +959,7 @@ rsa_pss_sign:
 	lea	r8,[rsp+r13*2]			; n_le
 	mov	r9d,r13d
 	shr	r9d,3
-	call	bn_modexp
+	call	rsa_priv			; (by CRT when the caller gave the key's block)
 	; out = bn_to_be(sig_le)
 	mov	rdi,rbx
 	lea	rsi,[rsp+r13*2]
@@ -1034,7 +1034,7 @@ rsa_pkcs1_sign:
 	lea	r8,[rsp+r13*2]			; n_le
 	mov	r9d,r13d
 	shr	r9d,3
-	call	bn_modexp
+	call	rsa_priv			; (by CRT when the caller gave the key's block)
 	mov	rdi,rbx
 	lea	rsi,[rsp+r13*2]
 	add	rsi,r13				; sig_le

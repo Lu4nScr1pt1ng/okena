@@ -1171,15 +1171,13 @@ utls_tx_step:
 @@:
 	sub	[r15+H_TXLEN],ecx
 	mov	edx,ecx
-	lea	rdi,[r12+5]
-	mov	rsi,[r15+H_TXP]
+	mov	r8,[r15+H_TXP]			; (sealed from where it is)
 	add	[r15+H_TXP],rcx
-	rep	movsb
 	mov	rdi,[r15+H_BUF]
 	add	rdi,HB_TS
 	mov	rsi,r12
 	mov	ecx,23
-	call	tls_seal
+	call	tls_seal_from
 	h_rec
 	add	r12,rax
 	cmp	dword [r15+H_TXLEN],0

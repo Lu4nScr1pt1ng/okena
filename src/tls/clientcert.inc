@@ -103,6 +103,8 @@ tlsc_client_auth:
 	mov	word [r14+4],0x0708		; ed25519
 	jmp	.cv_len
 .cv_rsa:
+	lea	rax,[r15+TL_CRT]
+	mov	[g_rsa_crt],rax
 	lea	rdi,[r14+8]
 	lea	rsi,[r15+TL_RSA_N]
 	mov	edx,[r15+TL_RSA_NLEN]

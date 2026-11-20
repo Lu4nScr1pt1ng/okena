@@ -1771,6 +1771,8 @@ tls_hello:
 	mov	edx,64
 	jmp	.cv_len
 .cv_rsa:
+	lea	rax,[r15+TL_CRT]
+	mov	[g_rsa_crt],rax
 	lea	rdi,[r14+8]			; RSA-PSS signature, written in place
 	lea	rsi,[r15+TL_RSA_N]
 	mov	edx,[r15+TL_RSA_NLEN]
@@ -2614,9 +2616,10 @@ tls_seal:
 
 ; tls_seal with the plaintext elsewhere: rdi = ts, rsi = the record (5 bytes
 ; for the header, then room for the plaintext + 17), r8 = the plaintext, edx
-; its length, ecx = content type. Sealed from where it is, not copied first
-; (AES-GCM), else copied. The byte after the plaintext is borrowed for the
-; content type (and given back). eax = the record's length.
+; its length, ecx = content type. AES-GCM seals it from where it is, but its
+; last len mod 128 bytes, copied with the type after them; else it is copied
+; whole first. Nothing is written where the plaintext is. eax = the record's
+; length.
 tls_seal_from:
 	test	dword [rdi+TS_FLAGS],TF_T12
 	jnz	.copy
@@ -2631,13 +2634,23 @@ tls_seal_from:
 	mov	r12,rsi
 	mov	r13d,edx
 	mov	r14,r8
-	movzx	eax,byte [r8+rdx]		; (borrowed)
+	; the tail and the type, in the record
+	mov	eax,edx
+	and	eax,127
 	mov	[rsp+16],eax
-	mov	[r8+rdx],cl
-	lea	eax,[rdx+17]
-	mov	dword [rsi],0x00030317
-	mov	[rsi+3],ah
-	mov	[rsi+4],al
+	mov	byte [r12+5+rdx],cl
+	push	rcx
+	mov	ecx,eax
+	mov	esi,edx
+	sub	esi,eax				; where the tail starts
+	lea	rdi,[r12+5+rsi]
+	add	rsi,r14
+	rep	movsb
+	pop	rcx
+	lea	eax,[r13+17]
+	mov	dword [r12],0x00030317
+	xchg	al,ah				; (big-endian length)
+	mov	[r12+3],ax
 	mov	rdi,rsp
 	lea	rsi,[rbx+TS_TX_IV]
 	mov	rdx,[rbx+TS_TX_SEQ]
@@ -2647,6 +2660,10 @@ tls_seal_from:
 	mov	rcx,r14
 	sub	rcx,rax
 	mov	[g_gcm_sd],rcx			; plaintext - ciphertext
+	mov	ecx,r13d
+	sub	ecx,[rsp+16]
+	add	rax,rcx
+	mov	[g_gcm_lim],rax			; up to the tail
 	lea	rdi,[rbx+TS_TX_GCM]
 	mov	rsi,rsp
 	mov	rdx,r12
@@ -2655,8 +2672,6 @@ tls_seal_from:
 	lea	r9d,[r13+1]
 	call	aead_seal
 	mov	qword [g_gcm_sd],0
-	mov	eax,[rsp+16]
-	mov	[r14+r13],al
 	lea	eax,[r13+22]
 	add	rsp,24
 	pop	r14

@@ -66,6 +66,7 @@ include '../../src/crypto/chacha.inc'
 include '../../src/crypto/p256.inc'
 include '../../src/crypto/p384.inc'
 include '../../src/crypto/rsa.inc'
+include '../../src/crypto/rsacrt.inc'
 include '../../src/tls/x509.inc'
 include '../../src/tls/keyschedule.inc'
 include '../../src/quic/crypto.inc'
@@ -98,6 +99,8 @@ bss
 	g_cp:		rb CP_SIZE + 64 + PY_SIZE
 	g_gcm12:	rb 512
 	g_der:		rb 8192
+	align 64
+	g_crtblk:	rb CRT_SIZE
 	g_anchor:	rb PK_SIZE
 	g_hd:		rb HPD_BYTES
 	g_ho:		rb HPO_SIZE
@@ -247,6 +250,8 @@ start:
 	je	.rsa_key
 	cmp	al,'J'
 	je	.rsa_keysign
+	cmp	al,'*'
+	je	.rsa_crtsign
 	cmp	al,'g'
 	je	.gcm
 	cmp	al,'G'
@@ -756,6 +761,38 @@ start:
 	call	ed25519_verify
 	jmp	.counted
 .not_V:
+	cmp	r12b,'S'
+	jne	.not_S
+	mov	rsi,r14				; RSA-PSS sign: keylen(u16 le) PKCS#1 key, hash(32)
+	movzx	edx,word [rsi]
+	add	rsi,2
+	lea	rdi,[g_der+2048]
+	lea	rcx,[g_der+4096]
+	call	rsa_key_parse
+	mov	r8d,eax
+	movzx	eax,word [r14]
+	lea	r8,[r14+2+rax]
+	lea	rdi,[g_out]
+	lea	rsi,[g_der+2048]
+	movzx	edx,word [r14]
+	mov	edx,256
+	lea	rcx,[g_der+4096]
+	call	rsa_pss_sign
+	jmp	.counted
+.not_S:
+	cmp	r12b,'T'
+	jne	.not_T
+	mov	rsi,r14				; RSA-PSS sign by CRT: as 'S'
+	push	r13				; (the count)
+	call	.crt_key
+	mov	edx,r13d
+	pop	r13
+	lea	rdi,[g_out]
+	lea	rsi,[g_der+2048]
+	lea	rcx,[g_der+4096]
+	call	rsa_pss_sign
+	jmp	.counted
+.not_T:
 	cmp	r12b,'v'
 	jne	.not_v
 	mov	rdi,r14				; ECDSA P-256 verify: pubkey(65) digest(32) r(32) s(32)
@@ -1171,6 +1208,38 @@ start:
 	lea	rdi,[g_out]
 	mov	esi,r13d
 	jmp	.print
+.rsa_crtsign:				; keylen(u16 le) PKCS#1 key, hash(32) -> PKCS#1 v1.5 sig by CRT
+	call	.crt_key
+	lea	rdi,[g_out]
+	lea	rsi,[g_der+2048]
+	mov	edx,r13d
+	lea	rcx,[g_der+4096]
+	call	rsa_pkcs1_sign
+	lea	rdi,[g_out]
+	mov	esi,r13d
+	jmp	.print
+; rsi = keylen(u16 le) key, hash: n, d at g_der+2048/4096, the CRT block at
+; g_crtblk and g_rsa_crt pointing at it; r13d = nbytes, r8 = the hash
+.crt_key:
+	push	rsi
+	movzx	edx,word [rsi]
+	add	rsi,2
+	lea	rdi,[g_der+2048]
+	lea	rcx,[g_der+4096]
+	call	rsa_key_parse
+	mov	r13d,eax
+	mov	rsi,[rsp]
+	movzx	edx,word [rsi]
+	add	rsi,2
+	lea	rdi,[g_crtblk]
+	mov	ecx,r13d
+	call	rsa_crt_load
+	lea	rax,[g_crtblk]
+	mov	[g_rsa_crt],rax
+	pop	rsi
+	movzx	eax,word [rsi]
+	lea	r8,[rsi+2+rax]
+	ret
 .rsa_key:				; keylen(u16 le) key_der -> n(nbytes)|d(nbytes)
 	movzx	edx,word [rsi]			; key length
 	lea	rsi,[rsi+2]			; key der

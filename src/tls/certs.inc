@@ -978,12 +978,19 @@ compile_cert:
 	lea	rsi,[g_tls_der]
 	mov	edx,eax
 .rsa_parse:
+	push	rsi
+	push	rdx
 	lea	rdi,[r13+TL_RSA_N]
 	lea	rcx,[r13+TL_RSA_D]
 	call	rsa_key_parse
+	pop	rdx
+	pop	rsi
 	test	eax,eax
 	jz	.key_bad
 	mov	[r13+TL_RSA_NLEN],eax
+	lea	rdi,[r13+TL_CRT]		; p, q and the rest: signatures by CRT
+	mov	ecx,eax
+	call	rsa_crt_load
 	jmp	.ok_ret
 ; diagnostics: at the cert line or the key line
 macro tls_fail which*, text&

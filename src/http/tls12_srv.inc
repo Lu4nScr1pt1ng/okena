@@ -82,6 +82,8 @@ http_tls12_hello:
 	mov	[rcx+C12_RSA_NLEN],edx
 	lea	rdx,[rax+TL_RSA_D]
 	mov	[rcx+C12_RSA_D],rdx
+	lea	rdx,[rax+TL_CRT]
+	mov	[rcx+C12_RSA_CRT],rdx
 @@:
 	; ALPN as for TLS 1.3 (the listener's `alpn`, `http2`): HTTP/2 over TLS
 	; 1.2 (RFC 9113 9.2: ECDHE and AEAD, which is all this offers) or

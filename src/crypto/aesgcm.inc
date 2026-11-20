@@ -325,7 +325,8 @@ gcm_ghash:
 ; rdi = ctx, r8 = buffer, r9 = length, r10d = first counter (big-endian
 ; counter value), xmm11 = the IV in the first 12 bytes: the buffer XORed
 ; with E(K, IV | counter++), the input read g_gcm_sd bytes from where it is
-; written (0: in place). Clobbers xmm0-xmm9, rax, rcx, r8, r9.
+; written (0: in place) up to g_gcm_lim (a multiple of 128 bytes from the
+; start), in place after it. Clobbers xmm0-xmm9, rax, rcx, r8, r9.
 gcm_ctr:
 	push	r11
 	sub	rsp,16
@@ -335,6 +336,10 @@ gcm_ctr:
 .eight:
 	cmp	r9,128
 	jb	.block
+	cmp	r8,[g_gcm_lim]
+	jb	@f
+	xor	r11d,r11d
+@@:
 	repeat 8, i:0
 		movdqa	xmm#i,xmm11
 		lea	eax,[r10+i]
@@ -381,6 +386,10 @@ gcm_ctr:
 	; VAES: the eight blocks as four pairs, one ymm each
 	cmp	r9,128
 	jb	.wide_done
+	cmp	r8,[g_gcm_lim]
+	jb	@f
+	xor	r11d,r11d
+@@:
 	repeat 4, j:2
 		lea	eax,[r10+2*(j-2)]
 		bswap	eax
@@ -432,6 +441,7 @@ gcm_ctr:
 	vpxor	ymm5,ymm5,ymm5
 	vzeroupper
 .block:
+	xor	r11d,r11d			; (the tail is in place)
 	test	r9,r9
 	jz	.done
 	movdqa	xmm0,xmm11

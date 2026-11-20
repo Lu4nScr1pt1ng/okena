@@ -29,7 +29,8 @@ C12_OCSP	:= 60				; d: an OCSP answer to staple (g_oc_tmp), its length; 0 none
 C12_CERTID	:= 64				; q: 8 bytes of the certificate's key (a ticket names it)
 C12_CCA		:= 72				; d: client certificates: 0 none, 1 optional, 2 required
 C12_TS		:= 80				; q: the session's TS (anchors, who the client is), 0 none
-C12_SIZE	:= 88
+C12_RSA_CRT	:= 88				; q: the RSA key's CRT block (rsacrt.inc), 0 none
+C12_SIZE	:= 96
 
 ; TLS 1.2 session tickets (RFC 5077), sealed with the 1.3 tickets' keys (one
 ; rotation, one fleet file); their own version and size, so neither takes the
@@ -348,6 +349,8 @@ tls12_hello:
 	mov	rsi,[r15+C12_RSA_N]
 	mov	edx,[r15+C12_RSA_NLEN]
 	mov	rcx,[r15+C12_RSA_D]
+	mov	rax,[r15+C12_RSA_CRT]		; (signed by CRT when it has the block)
+	mov	[g_rsa_crt],rax
 	lea	r8,[rsp+8+112]			; digest
 	cmp	dword [rbp+T2_SIG],0x0804
 	je	.ske_pss

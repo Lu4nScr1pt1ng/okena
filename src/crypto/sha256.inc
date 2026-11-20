@@ -108,6 +108,7 @@ bss
 	g_cpu_vaes	db ?		; 1: VAES and VPCLMULQDQ on ymm (two blocks an instruction)
 	align 8
 	g_gcm_sd	dq ?		; gcm_ctr: input - output (0: in place; tls_seal_from)
+	g_gcm_lim	dq ?		; and where the output stops being read from there
 end bss
 
 ; rdi = state, rsi = data, rdx = blocks: whichever this CPU runs best.

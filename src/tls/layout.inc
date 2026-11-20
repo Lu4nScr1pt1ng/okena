@@ -14,7 +14,8 @@ TL_ALT		:= 120				; d: a sibling of the other key type in
 						; this listener (the default), or -1
 TL_RSA_N	:= 128				; RSA modulus (big-endian, up to 512)
 TL_RSA_D	:= 640				; RSA private exponent (big-endian, up to 512)
-TL_SIZE		:= 1152
+TL_CRT		:= 1152				; its CRT block (rsacrt.inc)
+TL_SIZE		:= (TL_CRT + CRT_SIZE + 63) and not 63
 TLS_DER_MAX	:= 1 shl 16			; one certificate
 TLS_CHAIN_MAX	:= 20480			; a certificate_list: the server's flight fits a session buffer
 
