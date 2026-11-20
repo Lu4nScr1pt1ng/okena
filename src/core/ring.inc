@@ -554,6 +554,12 @@ ring_reap:
 	btr	qword [g_sops+rbx*8],rax
 .dispatch:
 	call	qword [dispatch_tbl+rax*8]
+	cmp	dword [g_hready_head],NIL	; what it delivered (an HTTP/2 stream's
+	je	@f				; request, its answer), taken now while
+	push	rbp				; its bytes are in the cache: after the
+	call	ep_http_ready			; whole batch the others' had put them
+	pop	rbp				; out (as tcp_epoll.inc does per event)
+@@:
 	dec	ebp
 	jnz	.next
 	; A long batch ends here, the rest left in the queue: the loop's own work
