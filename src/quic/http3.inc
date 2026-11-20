@@ -184,6 +184,9 @@ QC_USEEN	:= QC_H3UNI + 24		; q: its unidirectional streams opened (bit id / 4)
 QC_CTLB		:= QC_H3UNI + 32
 H3_CTLB_CAP	:= 256				; a SETTINGS frame, at most (more: excessive)
 assert QC_CTLB + H3_CTLB_CAP <= QC_H3X + 512
+QC_QD_PS	:= QC_CTLB + H3_CTLB_CAP	; q: our decoder stream: a range acknowledged
+QC_QD_PE	:= QC_QD_PS + 8			; q  past a gap (its end, 0 none)
+assert QC_QD_PE + 8 <= QC_H3X + 512
 H3E_STREAM_CREATION := 0x103
 H3E_CLOSED_CRITICAL := 0x104
 H3E_FRAME_ERROR	:= 0x106
@@ -274,6 +277,8 @@ qc_established:
 	mov	[r15+QC_MAXPUSH],rax
 	mov	[r15+QC_GOAWAYRX],rax
 	mov	[r15+QC_USEEN],rax
+	mov	[r15+QC_QD_PS],rax
+	mov	[r15+QC_QD_PE],rax
 	mov	eax,[r15+QC_QT+QT_HQ]		; the protocol ALPN chose
 	mov	[r15+QC_HQ],eax
 	; the client's parameters: initial_max_data, stream data
@@ -1994,6 +1999,7 @@ bss
 	g_h3sp		dq ?
 	g_qp_ric	dq ?			; the field section's Required Insert Count
 	g_qp_big	dd ?			; the section is larger than we take
+	g_qd_wlen	dd ?			; qc_app_write: our decoder stream's bytes in the packet
 	g_qp_base	dq ?			; and Base
 	g_qptmp:	rb QP_CAPACITY
 end bss
@@ -2121,7 +2127,7 @@ qd_room:
 	jbe	.room
 	mov	rcx,[r15+QC_QD_ACK]		; forget what is acknowledged
 	sub	rcx,[r15+QC_QD_BASE]
-	jz	.full
+	jz	.stuck
 	lea	rdi,[r15+QC_QDB]
 	lea	rsi,[rdi+rcx]
 	add	[r15+QC_QD_BASE],rcx
@@ -2142,6 +2148,12 @@ qd_room:
 .ok:
 	clc
 	ret
+.stuck:
+	; full of bytes not acknowledged as far as they go (one past a gap
+	; that was not lost): all of them again, which acknowledges them in order
+	mov	rax,[r15+QC_QD_ACK]
+	mov	[r15+QC_QD_SENT],rax
+	mov	qword [r15+QC_QD_PE],0
 .full:
 	stc
 	ret
@@ -3897,6 +3909,47 @@ h3_head_out:
 	pop	rdx
 	pop	rsi
 	jnc	.next_line
+	; a small body's content-length goes unsaid, as on HTTP/2 (h2_head_out):
+	; the stream's end ends the body; said for a HEAD, a larger body, and a
+	; backend's answer
+	test	dword [r12+H_FLAGS],HX_HEAD
+	jnz	.say
+	mov	eax,r8d
+	sub	eax,ecx
+	cmp	eax,14
+	jne	.say
+	mov	rax,qword [rsi+rcx]
+	cmp	rax,qword [h2_head_out.n_cl]
+	jne	.say
+	mov	rax,qword [rsi+rcx+6]
+	cmp	rax,qword [h2_head_out.n_cl+6]
+	jne	.say
+	push	rcx
+	xor	eax,eax
+	mov	ecx,r10d
+.cl_digit:
+	cmp	ecx,edx
+	jae	.cl_value
+	movzx	r11d,byte [rsi+rcx]
+	sub	r11d,'0'
+	cmp	r11d,9
+	ja	.cl_say
+	imul	eax,eax,10
+	add	eax,r11d
+	cmp	eax,H2_CL_QUIET
+	ja	.cl_say
+	inc	ecx
+	jmp	.cl_digit
+.cl_value:
+	pop	rcx
+	test	eax,eax
+	jz	.say
+	h_own_answer r12			; (okena's own answer only)
+	je	.next_line
+	jmp	.say
+.cl_say:
+	pop	rcx
+.say:
 	lea	rax,[g_h3tmp+20480-600]
 	cmp	rdi,rax
 	ja	.broken
@@ -4524,6 +4577,7 @@ qc_app_write:
 	mov	[r15+QC_LW_FIN],eax
 	mov	[r15+QC_LW_CTL],eax
 	mov	[r15+QC_LW_FR],eax
+	mov	[g_qd_wlen],eax
 	mov	dword [r15+QC_LW_SESS],NIL
 	mov	dword [g_qfx_n],-1		; (no stream frame yet: the first goes in QC_LW_*)
 	; control frames
@@ -4711,6 +4765,7 @@ qc_app_write:
 	mov	rcx,r10
 	rep	movsb
 	add	[r15+QC_QD_SENT],r10
+	mov	[g_qd_wlen],r10d		; (its length: the record's, qc_app_sent)
 	mov	eax,dword [r15+QC_QD_SENT]	; (its record: control length, this end)
 	shl	eax,8
 	or	[r15+QC_LW_CTL],eax
@@ -4884,6 +4939,9 @@ qc_app_sent:
 	mov	[rdi+SP_SFIN],eax
 	mov	eax,[r15+QC_LW_CTL]
 	mov	[rdi+SP_CTL],eax
+	mov	eax,[g_qd_wlen]			; the decoder stream's bytes in it: their
+	shl	eax,16				; length, past the flags (its start: the
+	or	[rdi+SP_FL],eax			; end in SP_CTL less it)
 	mov	eax,[r15+QC_LW_FR]
 	mov	[rdi+SP_FR],eax
 	; the frames past the first: from the pending slot into this record's
@@ -4936,9 +4994,19 @@ qc_app_lost:
 	jz	@f
 	mov	dword [r15+QC_CTL_SENT],0
 @@:
-	test	dword [rdi+SP_CTL],not 0xFF	; the decoder stream's: from what is known
-	jz	@f
+	test	dword [rdi+SP_CTL],not 0xFF	; the decoder stream's: from where its
+	jz	@f				; bytes in it began (what is acknowledged
+	mov	eax,[rdi+SP_CTL]		; is contiguous, so they are still held)
+	shr	eax,8
+	mov	ecx,[rdi+SP_FL]
+	shr	ecx,16
+	sub	rax,rcx
+	cmp	rax,[r15+QC_QD_ACK]
+	jae	.qd_from
 	mov	rax,[r15+QC_QD_ACK]
+.qd_from:
+	cmp	rax,[r15+QC_QD_SENT]
+	jae	@f
 	mov	[r15+QC_QD_SENT],rax
 @@:
 	mov	eax,[rdi+SP_FR]
@@ -5105,9 +5173,51 @@ qc_app_acked:
 @@:
 	shr	ecx,8				; the decoder stream's end in it
 	cmp	rcx,[r15+QC_QD_ACK]
-	jbe	@f
+	jbe	.qd_acked
+	; acknowledged as far as it goes on from what is (a packet acknowledged
+	; past a lost one moved it beyond the lost bytes: never sent again, the
+	; stream had a hole, and none of our acknowledgments after it reached
+	; the client's QPACK: it stopped using its table for good)
+	mov	edx,[rdi+SP_FL]
+	shr	edx,16
+	mov	rax,rcx
+	sub	rax,rdx				; its start
+	cmp	rax,[r15+QC_QD_ACK]
+	ja	.qd_gap
 	mov	[r15+QC_QD_ACK],rcx
+	mov	rax,[r15+QC_QD_PE]		; and the range past the gap, when this
+	cmp	rax,rcx				; reaches it
+	jbe	.qd_pend_gone
+	mov	rdx,[r15+QC_QD_PS]
+	cmp	rdx,rcx
+	ja	.qd_acked
+	mov	[r15+QC_QD_ACK],rax
+.qd_pend_gone:
+	mov	qword [r15+QC_QD_PE],0
+	jmp	.qd_acked
+.qd_gap:
+	mov	rdx,[r15+QC_QD_PE]		; past a gap: kept (one range; joined to
+	test	rdx,rdx				; it when they touch, else the lower)
+	jz	.qd_pend_new
+	cmp	rax,rdx
+	ja	.qd_pend_far
+	cmp	rcx,[r15+QC_QD_PS]
+	jb	.qd_pend_new
+	cmp	rax,[r15+QC_QD_PS]
+	jae	@f
+	mov	[r15+QC_QD_PS],rax
 @@:
+	cmp	rcx,rdx
+	jbe	.qd_acked
+	mov	[r15+QC_QD_PE],rcx
+	jmp	.qd_acked
+.qd_pend_far:
+	cmp	rax,[r15+QC_QD_PS]
+	jae	.qd_acked
+.qd_pend_new:
+	mov	[r15+QC_QD_PS],rax
+	mov	[r15+QC_QD_PE],rcx
+.qd_acked:
 	push	rdi
 	call	qc_fr_acked
 	pop	rdi
