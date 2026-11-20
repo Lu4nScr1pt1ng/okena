@@ -4,6 +4,7 @@ lines of a file, followed as it changes, and kept when it goes wrong; a source
 with no max= that grows past its slots is given more by a reload, one with
 max= stays there."""
 import collections
+import concurrent.futures
 import http.client
 import http.server
 import os
@@ -90,6 +91,14 @@ def get(port=LST, path="/"):
 
 def spread(n=40, port=LST):
     return collections.Counter(get(port)[1] for i in range(n))
+
+
+def spread_par(n=16, port=LST):
+    """spread, the requests 8 at a time: their connections reach every
+    worker (one after the other, an idle listener's go to the first worker
+    waiting, and a worker that has not taken a change yet is not seen)"""
+    with concurrent.futures.ThreadPoolExecutor(8) as ex:
+        return collections.Counter(r[1] for r in ex.map(lambda i: get(port), range(n)))
 
 
 def until(fn, seconds=4):
@@ -201,7 +210,7 @@ http 127.0.0.1:{GROW} {{ route /* {{ to pool g }} }}
         # a request in flight on a server that goes: its connection is not kept
         # for the address that takes its slot
         write(lst, f"127.0.0.1:{port['a']}\n")
-        until(lambda: set(spread(10)) == {"a"})
+        until(lambda: set(spread_par(16)) == {"a"})
         slow = []
         ts = [threading.Thread(target=lambda: slow.append(get(LST, "/?s=2.5"))) for i in range(4)]
         for x in ts:
