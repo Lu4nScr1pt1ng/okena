@@ -324,10 +324,12 @@ gcm_ghash:
 
 ; rdi = ctx, r8 = buffer, r9 = length, r10d = first counter (big-endian
 ; counter value), xmm11 = the IV in the first 12 bytes: the buffer XORed
-; with E(K, IV | counter++) in place. Clobbers xmm0-xmm9, rax, rcx, r8,
-; r9.
+; with E(K, IV | counter++), the input read g_gcm_sd bytes from where it is
+; written (0: in place). Clobbers xmm0-xmm9, rax, rcx, r8, r9.
 gcm_ctr:
+	push	r11
 	sub	rsp,16
+	mov	r11,[g_gcm_sd]
 	cmp	byte [g_cpu_vaes],0
 	jne	.eight_wide
 .eight:
@@ -368,7 +370,7 @@ gcm_ctr:
 	movdqu	xmm8,[rdi+rax]
 	repeat 8, i:0
 		aesenclast xmm#i,xmm8
-		movdqu	xmm9,[r8+i*16]
+		movdqu	xmm9,[r8+r11+i*16]
 		pxor	xmm9,xmm#i
 		movdqu	[r8+i*16],xmm9
 	end repeat
@@ -417,7 +419,7 @@ gcm_ctr:
 	vbroadcasti128 ymm8,xword [rdi+rax]
 	repeat 4, j:2
 		vaesenclast ymm#j,ymm#j,ymm8
-		vpxor	ymm#j,ymm#j,[r8+(j-2)*32]
+		vpxor	ymm#j,ymm#j,[r8+r11+(j-2)*32]
 		vmovdqu	[r8+(j-2)*32],ymm#j
 	end repeat
 	add	r8,128
@@ -440,7 +442,7 @@ gcm_ctr:
 	call	gcm_encrypt_block		; keystream
 	cmp	r9,16
 	jb	.partial
-	movdqu	xmm2,[r8]
+	movdqu	xmm2,[r8+r11]
 	pxor	xmm2,xmm0
 	movdqu	[r8],xmm2
 	add	r8,16
@@ -450,8 +452,10 @@ gcm_ctr:
 	movdqu	[rsp],xmm0
 	xor	ecx,ecx
 @@:
-	mov	al,[rsp+rcx]
-	xor	[r8+rcx],al
+	lea	rax,[r8+r11]
+	mov	al,[rax+rcx]
+	xor	al,[rsp+rcx]
+	mov	[r8+rcx],al
 	inc	ecx
 	cmp	rcx,r9
 	jb	@b
@@ -462,6 +466,7 @@ gcm_ctr:
 		pxor	xmm#i,xmm#i
 	end repeat
 	add	rsp,16
+	pop	r11
 	ret
 
 ; Common to seal and open: rdi ctx, rsi iv, rdx aad, ecx aad length,

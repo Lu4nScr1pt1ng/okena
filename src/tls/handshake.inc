@@ -2612,6 +2612,73 @@ tls_seal:
 	pop	rbx
 	ret
 
+; tls_seal with the plaintext elsewhere: rdi = ts, rsi = the record (5 bytes
+; for the header, then room for the plaintext + 17), r8 = the plaintext, edx
+; its length, ecx = content type. Sealed from where it is, not copied first
+; (AES-GCM), else copied. The byte after the plaintext is borrowed for the
+; content type (and given back). eax = the record's length.
+tls_seal_from:
+	test	dword [rdi+TS_FLAGS],TF_T12
+	jnz	.copy
+	cmp	dword [rdi+TS_TX_GCM+AEAD_TYPE],AEAD_CHACHA
+	je	.copy
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	sub	rsp,24
+	mov	rbx,rdi
+	mov	r12,rsi
+	mov	r13d,edx
+	mov	r14,r8
+	movzx	eax,byte [r8+rdx]		; (borrowed)
+	mov	[rsp+16],eax
+	mov	[r8+rdx],cl
+	lea	eax,[rdx+17]
+	mov	dword [rsi],0x00030317
+	mov	[rsi+3],ah
+	mov	[rsi+4],al
+	mov	rdi,rsp
+	lea	rsi,[rbx+TS_TX_IV]
+	mov	rdx,[rbx+TS_TX_SEQ]
+	call	tls_nonce
+	inc	qword [rbx+TS_TX_SEQ]
+	lea	rax,[r12+5]
+	mov	rcx,r14
+	sub	rcx,rax
+	mov	[g_gcm_sd],rcx			; plaintext - ciphertext
+	lea	rdi,[rbx+TS_TX_GCM]
+	mov	rsi,rsp
+	mov	rdx,r12
+	mov	ecx,5
+	lea	r8,[r12+5]
+	lea	r9d,[r13+1]
+	call	aead_seal
+	mov	qword [g_gcm_sd],0
+	mov	eax,[rsp+16]
+	mov	[r14+r13],al
+	lea	eax,[r13+22]
+	add	rsp,24
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+.copy:
+	push	rdi
+	push	rsi
+	push	rdx
+	push	rcx
+	lea	rdi,[rsi+5]
+	mov	rsi,r8
+	mov	ecx,edx
+	rep	movsb
+	pop	rcx
+	pop	rdx
+	pop	rsi
+	pop	rdi
+	jmp	tls_seal
+
 ; rdi = ts: the next generation of the client's application keys (RFC 8446
 ; 7.2: secret_N+1 = HKDF-Expand-Label(secret_N, "traffic upd", "", Hash.length)),
 ; for records opened here; their sequence starts again. Keeps rbx, rbp, r12-r15.

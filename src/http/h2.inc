@@ -644,45 +644,49 @@ h2_send:
 	jne	.cipher				; sealed bytes still to go
 	cmp	dword [r13+C2_OUTLEN],0
 	je	.out
-	; seal up to two records of OUT into HB_TXC
+	; seal up to two records of OUT into HB_TXC; what is left of OUT moves to
+	; its start once, after them
 	push	r12
+	push	rbp
 	lea	r12,[r14+HB_TXC]
+	xor	ebp,ebp				; OUT's bytes sealed
 	mov	ecx,UTLS_TX_RECS
 .rec:
 	push	rcx
 	mov	edx,[r13+C2_OUTLEN]
+	sub	edx,ebp
 	cmp	edx,TLS_RECORD_MAX
 	jbe	@f
 	mov	edx,TLS_RECORD_MAX
 @@:
 	push	rdx
-	lea	rdi,[r12+5]
-	lea	rsi,[r14+HB_H2OUT]
-	mov	ecx,edx
-	rep	movsb
-	mov	rdx,[rsp]
+	lea	r8,[r14+HB_H2OUT+rbp]		; (sealed from OUT, not copied first)
 	lea	rdi,[r14+HB_TS]
 	mov	rsi,r12
 	mov	ecx,23
-	call	tls_seal
+	call	tls_seal_from
 	add	r12,rax
-	pop	rdx				; OUT loses what was sealed
-	mov	ecx,[r13+C2_OUTLEN]
-	sub	ecx,edx
-	mov	[r13+C2_OUTLEN],ecx
-	lea	rdi,[r14+HB_H2OUT]
-	lea	rsi,[rdi+rdx]
-	rep	movsb
+	pop	rdx
+	add	ebp,edx
 	pop	rcx
-	cmp	dword [r13+C2_OUTLEN],0
-	je	.sealed_all
+	cmp	ebp,[r13+C2_OUTLEN]
+	jae	.sealed_all
 	dec	ecx
 	jnz	.rec
 .sealed_all:
+	mov	ecx,[r13+C2_OUTLEN]		; OUT loses what was sealed
+	sub	ecx,ebp
+	mov	[r13+C2_OUTLEN],ecx
+	jz	@f
+	lea	rdi,[r14+HB_H2OUT]
+	lea	rsi,[rdi+rbp]
+	rep	movsb
+@@:
 	lea	rax,[r14+HB_TXC]
 	sub	r12,rax
 	mov	[r13+C2_CLEN],r12d
 	mov	dword [r13+C2_COFF],0
+	pop	rbp
 	pop	r12
 .cipher:
 	mov	eax,[r13+C2_COFF]
@@ -2984,12 +2988,19 @@ h2_unblock:
 	test	dword [r13+C2_FLAGS],C2F_CLIENT
 	jnz	h2u_unblock
 	push	r12
+	push	rbp
 	mov	r12d,[r13+C2_BLKH]
+	mov	ebp,[r13+C2_BLKT]		; (the walk's last, + 1)
 	mov	dword [r13+C2_BLKH],0
 	mov	dword [r13+C2_BLKT],0
 .next:
 	test	r12d,r12d
 	jz	.done
+	; OUT nearly full: the rest wait, in their order, ahead of those that
+	; went back to waiting (each one tried would only find no room)
+	call	h2_room
+	cmp	eax,H2_CTRL + 2048
+	jb	.stop
 	dec	r12d				; (the list keeps index + 1)
 	mov	edi,r12d
 	call	h2_ptrs
@@ -3013,7 +3024,21 @@ h2_unblock:
 .skip:
 	pop	r12
 	jmp	.next
+.stop:
+	mov	eax,[r13+C2_BLKH]
+	test	eax,eax
+	jnz	@f
+	mov	[r13+C2_BLKH],r12d		; none went back: the list as it was
+	mov	[r13+C2_BLKT],ebp
+	jmp	.done
+@@:
+	lea	edi,[rbp-1]			; else the rest, then those
+	call	h2_ptrs
+	mov	ecx,[r13+C2_BLKH]
+	mov	[rax+H_H2BL],ecx
+	mov	[r13+C2_BLKH],r12d
 .done:
+	pop	rbp
 	pop	r12
 	ret
 
@@ -3489,6 +3514,15 @@ h2_head_out:
 	mov	[g_ht_save+8],eax
 	mov	eax,[r13+C2_HTMAX]
 	mov	[g_ht_save+12],eax
+	; room for it first (the block is never larger than the text plus a few
+	; bytes a field, with its frame headers): a stream that waits for room
+	; does not encode its head again each time it is tried
+	call	h2_room
+	mov	ecx,ebp
+	shr	ecx,3
+	lea	ecx,[rcx+rbp+2*9+H2_CTRL+64]
+	cmp	eax,ecx
+	jb	.full
 	lea	rdi,[g_h2tmp]
 	lea	r12,[g_h2tmp+20480-512]		; the block's limit
 	call	ht_block_start
