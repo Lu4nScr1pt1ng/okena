@@ -499,6 +499,11 @@ macro gcm_tag_of_ciphertext
 	mov	rsi,[rsp+GS_BUF]
 	mov	rdx,[rsp+GS_LEN]
 	call	gcm_ghash
+	gcm_tag_lengths
+end macro
+
+; X over the AAD and the ciphertext in xmm10: the tag in xmm0
+macro gcm_tag_lengths
 	; lengths in bits, big endian: len(A) | len(C)
 	mov	rax,[rsp+GS_ALEN]
 	shl	rax,3
@@ -521,6 +526,109 @@ macro gcm_tag_of_ciphertext
 	pxor	xmm0,xmm10
 end macro
 
+;-------------------------------------------------------------- stitched
+; gcm_seal without VAES, two blocks of 128 bytes or more: one pass, not
+; two. Each 128 bytes' AES rounds run with GHASH of the 128 before them (a
+; block of it after each round, the products summed unreduced and reduced
+; once): the AES units and the carry-less multiplier work side by side
+; instead of the whole message twice. The usual AES-NI and PCLMULQDQ (the
+; AVX encoding for three operands): any x86-64-v3 CPU.
+;
+; rdi = ctx, r8 = buffer, r9 = length (>= 256), r10d = first counter,
+; xmm11 = IV, xmm10 = X (the AAD's GHASH): r9 rounded down to 128 bytes
+; encrypted (the input g_gcm_sd from where it goes up to g_gcm_lim, as
+; gcm_ctr), all of them but the last 128 into X. r8 after them, r9 what is
+; left, rsi = the last 128's start. Clobbers xmm0-xmm9, xmm12-xmm15, rax,
+; rcx.
+gcm_ctr_stitch:
+	push	r11
+	mov	r11,[g_gcm_sd]
+	xor	ecx,ecx				; 0: the first 128, nothing to hash yet
+.chunk:
+	cmp	r8,[g_gcm_lim]
+	jb	@f
+	xor	r11d,r11d
+@@:
+	repeat 8, i:0
+		movdqa	xmm#i,xmm11
+		lea	eax,[r10+i]
+		bswap	eax
+		pinsrd	xmm#i,eax,3
+	end repeat
+	add	r10d,8
+	movdqu	xmm8,[rdi+GCM_RK]
+	repeat 8, i:0
+		pxor	xmm#i,xmm8
+	end repeat
+	vpxor	xmm12,xmm12,xmm12
+	vpxor	xmm13,xmm13,xmm13
+	vpxor	xmm14,xmm14,xmm14
+	repeat 9, r:1
+		movdqu	xmm8,[rdi+GCM_RK+r*16]
+		repeat 8, i:0
+			aesenc	xmm#i,xmm8
+		end repeat
+		if r <= 8
+			; the 128 before: its block r-1 times H^(9-r)
+			test	ecx,ecx
+			jz	@f
+			vmovdqu	xmm9,[r8-128+(r-1)*16]
+			vpshufb	xmm9,xmm9,xword [gcm_bswap]
+			if r = 1
+				vpxor	xmm9,xmm9,xmm10
+			end if
+			vpclmulqdq xmm15,xmm9,xword [rdi+GCM_HP+(8-r)*16],0x00
+			vpxor	xmm12,xmm12,xmm15
+			vpclmulqdq xmm15,xmm9,xword [rdi+GCM_HP+(8-r)*16],0x11
+			vpxor	xmm13,xmm13,xmm15
+			vpclmulqdq xmm15,xmm9,xword [rdi+GCM_HP+(8-r)*16],0x10
+			vpxor	xmm14,xmm14,xmm15
+			vpclmulqdq xmm15,xmm9,xword [rdi+GCM_HP+(8-r)*16],0x01
+			vpxor	xmm14,xmm14,xmm15
+		@@:
+		end if
+	end repeat
+	mov	eax,GCM_RK+160
+	cmp	dword [rdi+GCM_K256],0
+	je	@f
+	movdqu	xmm8,[rdi+GCM_RK+160]
+	repeat 8, i:0
+		aesenc	xmm#i,xmm8
+	end repeat
+	repeat 3, r:0
+		movdqu	xmm8,[rdi+GCM_RK11+r*16]
+		repeat 8, i:0
+			aesenc	xmm#i,xmm8
+		end repeat
+	end repeat
+	mov	eax,GCM_RK11+48
+@@:
+	movdqu	xmm8,[rdi+rax]
+	repeat 8, i:0
+		aesenclast xmm#i,xmm8
+		movdqu	xmm9,[r8+r11+i*16]
+		pxor	xmm9,xmm#i
+		movdqu	[r8+i*16],xmm9
+	end repeat
+	test	ecx,ecx				; the 128 before, folded into X
+	jz	@f
+	vpslldq	xmm3,xmm14,8
+	vpxor	xmm3,xmm3,xmm12
+	vpsrldq	xmm6,xmm14,8
+	vpxor	xmm6,xmm6,xmm13
+	call	gcm_reduce
+	movdqa	xmm10,xmm0
+@@:
+	mov	ecx,1
+	add	r8,128
+	sub	r9,128
+	cmp	r9,128
+	jae	.chunk
+	lea	rsi,[r8-128]
+	vpxor	xmm15,xmm15,xmm15		; (no keystream or data left behind)
+	pop	r11
+	ret
+
 gcm_seal:
 	sub	rsp,GS_SIZE
 	mov	[rsp+GS_AAD],rdx
@@ -531,8 +639,34 @@ gcm_seal:
 	movq	xmm11,[rsi]
 	pinsrd	xmm11,[rsi+8],2
 	mov	r10d,2				; data counters start at J0 + 1
+	cmp	byte [g_cpu_vaes],0
+	jne	.two_pass
+	cmp	r9,256
+	jb	.two_pass
+	; the AAD first, then the message encrypted and hashed in one pass, then
+	; what is left (its last 128 and a tail) as before
+	pxor	xmm10,xmm10
+	mov	rsi,[rsp+GS_AAD]
+	mov	rdx,[rsp+GS_ALEN]
+	call	gcm_ghash
+	mov	r8,[rsp+GS_BUF]
+	mov	r9,[rsp+GS_LEN]
+	call	gcm_ctr_stitch
+	push	rsi
+	push	rsi
+	call	gcm_ctr				; the tail (under 128 bytes)
+	pop	rsi
+	pop	rsi
+	mov	rdx,[rsp+GS_BUF]
+	add	rdx,[rsp+GS_LEN]
+	sub	rdx,rsi
+	call	gcm_ghash
+	gcm_tag_lengths
+	jmp	.tagged
+.two_pass:
 	call	gcm_ctr
 	gcm_tag_of_ciphertext
+.tagged:
 	mov	rax,[rsp+GS_BUF]
 	add	rax,[rsp+GS_LEN]
 	movdqu	[rax],xmm0			; the tag after the ciphertext
