@@ -706,6 +706,53 @@ h2_send:
 .out:
 	ret
 
+; OUT full while a stream has more (c2 registers): on epoll, a client's
+; cleartext connection with no send in flight writes what OUT holds now and
+; the stream goes on, its answer taken while it is in the cache, instead of
+; waiting for the iteration's flush (and moving to its own buffer, a cold
+; one). CF: nothing went (a send in flight, TLS, a full socket, io_uring).
+; Keeps all but rax, rcx, rdx, rsi, rdi.
+h2_out_now:
+	cmp	dword [g_engine],ENGINE_EPOLL
+	jne	.no
+	test	dword [r13+C2_FLAGS],C2F_SEND or C2F_EPOUT or C2F_CLIENT
+	jnz	.no
+	mov	edx,[r13+C2_OUTLEN]
+	test	edx,edx
+	jz	.no
+	mov	eax,ebx				; (the connection's record: user-space TLS?)
+	shl	rax,H_SHIFT
+	add	rax,[g_http_base]
+	cmp	dword [rax+H_UTLS],0
+	jne	.no
+	push	r8
+	push	r9
+	push	r10
+	push	r11
+	call	h2_fd
+	mov	edi,eax
+	lea	rsi,[r14+HB_H2OUT]
+	mov	edx,[r13+C2_OUTLEN]
+	mov	eax,SYS_write			; (the epoll worker's seccomp allows write)
+	syscall
+	pop	r11
+	pop	r10
+	pop	r9
+	pop	r8
+	test	rax,rax
+	jle	.no				; (full, or gone: the flush sees it)
+	mov	ecx,[r13+C2_OUTLEN]		; what went leaves OUT
+	sub	ecx,eax
+	mov	[r13+C2_OUTLEN],ecx
+	lea	rdi,[r14+HB_H2OUT]
+	lea	rsi,[rdi+rax]
+	rep	movsb
+	clc
+	ret
+.no:
+	stc
+	ret
+
 ; rdi = bytes, esi = length: to the client socket (c2 registers)
 h2_sock_send:
 	or	dword [r13+C2_FLAGS],C2F_SEND
@@ -3153,7 +3200,11 @@ h2_stream_out:
 	mov	r12d,eax
 @@:
 	test	r12d,r12d
-	jle	.wait
+	jg	.data_room
+	call	h2_out_now			; (no room: OUT written at once, if it may)
+	jc	.wait
+	jmp	.chunk
+.data_room:
 	xor	ecx,ecx				; the body's last bytes: END_STREAM with them
 	mov	rax,[r15+H_H2DL]		; (unless trailers follow)
 	cmp	rax,-1
@@ -3180,6 +3231,8 @@ h2_stream_out:
 	jmp	.chunk
 .head:
 	call	h2_head_out			; HEADERS from the HTTP/1.1 head
+	jnc	.chunk
+	call	h2_out_now
 	jc	.wait
 	jmp	.chunk
 .sent:
