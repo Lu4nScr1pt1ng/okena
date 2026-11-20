@@ -658,6 +658,10 @@ h2_send:
 	push	r12
 	push	rbp
 	lea	r12,[r14+HB_TXC]
+	cmp	dword [g_engine],ENGINE_EPOLL	; epoll: sealed in the worker's scratch
+	jne	@f				; and written at once (tls.inc's g_utx_scr)
+	lea	r12,[g_utx_scr]
+@@:
 	xor	ebp,ebp				; OUT's bytes sealed
 	mov	ecx,UTLS_TX_RECS
 .rec:
@@ -691,6 +695,38 @@ h2_send:
 	lea	rsi,[rdi+rbp]
 	rep	movsb
 @@:
+	lea	rax,[g_utx_scr]
+	cmp	r12,rax
+	jb	.own_place
+	cmp	r12,g_utx_scr + UTLS_TX_CAP + 64
+	ja	.own_place
+	; from the scratch: written now (all of it: sent, as h2_sock_send would
+	; say); what did not go moves to HB_TXC and goes on from there
+	sub	r12,rax
+	mov	[r13+C2_CLEN],r12d
+	mov	dword [r13+C2_COFF],0
+	pop	rbp
+	pop	r12
+	or	dword [r13+C2_FLAGS],C2F_SEND
+	call	h2_fd
+	mov	edi,eax
+	lea	rsi,[g_utx_scr]
+	mov	edx,[r13+C2_CLEN]
+	mov	eax,SYS_write
+	syscall
+	cmp	eax,[r13+C2_CLEN]
+	je	h2_sent
+	push	rax
+	lea	rdi,[r14+HB_TXC]
+	lea	rsi,[g_utx_scr]
+	mov	ecx,[r13+C2_CLEN]
+	rep	movsb
+	pop	rax
+	cmp	rax,-EAGAIN
+	jne	h2_sent				; (part of it, or an error)
+	or	dword [r13+C2_FLAGS],C2F_EPOUT	; again when it is writable
+	ret
+.own_place:
 	lea	rax,[r14+HB_TXC]
 	sub	r12,rax
 	mov	[r13+C2_CLEN],r12d
