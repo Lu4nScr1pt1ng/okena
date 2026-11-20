@@ -31,7 +31,9 @@
 ; called again (r10d = 1) - a timer, not a wait (a request with a body cannot
 ; be held). Lines of its own for the answer's head ("Name: value" and CRLF
 ; each, MOD_XH_MAX bytes at most) go in g_mod_xh/g_mod_xhlen, cleared before
-; each call. It keeps rbx, rbp and r12-r15, and must not block: it runs in
+; each call; lines for trailers, the same way, in g_mod_tr/g_mod_trlen (sent
+; after the body over HTTP/2, as gRPC's grpc-status must be; MOD_TR_MAX at
+; most; not over HTTP/1.1 or HTTP/3, where the answer has none). It keeps rbx, rbp and r12-r15, and must not block: it runs in
 ; the event loop.
 
 MOD_HEAD_ROOM	:= 1024				; OUT: room for the head, then the body
@@ -83,6 +85,8 @@ bss
 	g_mod_resumed	dd ?
 	g_mod_xhlen	dd ?
 	g_mod_xh	dq ?
+	g_mod_trlen	dd ?
+	g_mod_tr	dq ?
 	g_mod_ck	rb CK_SIZE		; a chunked body's decoder
 	g_mod_bbase	dq ?			; MOD_BUFS of MOD_BODY_MAX, 0 none
 	g_mod_sess	dq ?			; per session: its buffer + 1 (d), the exchange it held (d)
@@ -439,6 +443,8 @@ mod_request:
 	mov	r10d,[g_mod_resumed]
 	mov	qword [g_mod_xh],0
 	mov	dword [g_mod_xhlen],0
+	mov	qword [g_mod_tr],0
+	mov	dword [g_mod_trlen],0
 	mov	rdx,[g_mod_bptr]
 	mov	ecx,[g_mod_blen]
 	mov	rdi,[r15+H_BUF]			; the body where it is sent from: in OUT,
@@ -690,6 +696,30 @@ mod_unchunk:
 
 ; the handler's answer: eax = status, edx = body length, rsi = its
 ; Content-Type or 0, rcx = where its body is (0: g_mod_out). ebx, r15.
+; mod_answer: the handler's trailers, on an HTTP/2 stream, where its
+; response's trailers go (HB_TRAIL, CK_TLEN: h2_trailers_out sends them)
+MOD_TR_MAX	:= CK_TRAIL_MAX - 256		; (HB_TRAIL's end holds a request's validators)
+mod_trailers:
+	call	session_ptr
+	test	dword [rax+S_FLAGS],SF_H2S
+	jz	.out
+	mov	ecx,[g_mod_trlen]
+	cmp	ecx,MOD_TR_MAX
+	jbe	@f
+	xor	ecx,ecx
+@@:
+	mov	[r15+H_RCK+CK_TLEN],ecx
+	test	ecx,ecx
+	jz	.out
+	push	rsi
+	mov	rsi,[g_mod_tr]
+	mov	rdi,[r15+H_BUF]
+	add	rdi,HB_TRAIL
+	rep	movsb
+	pop	rsi
+.out:
+	ret
+
 mod_answer:
 	push	r12
 	push	r13
@@ -702,6 +732,9 @@ mod_answer:
 	mov	r14,[r15+H_BUF]
 	add	r14,HB_OUT + MOD_HEAD_ROOM
 @@:
+	push	rax
+	call	mod_trailers
+	pop	rax
 	; a route that compresses: the answer goes through the response path, as a
 	; file's does (fs_head_ready), its body compressed when the client takes it
 	mov	rcx,[g_mod_act]
