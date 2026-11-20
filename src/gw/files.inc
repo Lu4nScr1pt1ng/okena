@@ -31,7 +31,8 @@ FI_CC		:= 40				; q: Cache-Control's value, 0 none
 FI_CCLEN	:= 48				; d
 FI_PHP		:= 56				; d: `php`'s (fastcgi.inc)
 FI_BROWSE	:= 60				; d: `browse=on`: a directory without its index listed
-FI_SIZE		:= 64
+FI_MEM		:= 64				; q: `memory=`: bytes of file contents a worker keeps
+FI_SIZE		:= 72
 
 FE_BR		:= 1
 FE_ZST		:= 2
@@ -71,6 +72,7 @@ bss
 	g_fs_from	dq ?			; the range
 	g_fs_to		dq ?
 	g_fs_fd		dd ?
+	g_fs_mem	dd ?			; the answer's body kept in memory: its offset + 1, 0 not
 	g_fs_enc	dd ?			; FE_*, 0 none
 	g_fs_plen	dd ?
 	g_fs_range	dd ?			; 1 a range, 2 none satisfiable
@@ -93,6 +95,7 @@ end rodata
 files_init:
 	cmp	dword [g_plan_files],0
 	je	ll_confine_none			; (no file at all: none to read)
+	call	fm_init
 	push	rbx
 	push	r12
 	xor	ebx,ebx
@@ -242,8 +245,15 @@ files_answer:
 .method_ok:
 	mov	dword [g_fs_enc],0
 	mov	dword [g_fs_range],0
+	mov	dword [g_fs_mem],0
+	mov	dword [g_fm_key],0
 	call	fs_path
 	jc	.missing
+	cmp	qword [r12+FI_MEM],0		; kept in memory?
+	je	@f
+	call	fm_find
+	jnc	fs_serve
+@@:
 	lea	rdi,[g_fs_path]
 	mov	eax,[g_fs_plen]
 	add	rdi,rax
@@ -316,6 +326,9 @@ files_answer:
 	mov	rax,[g_fs_stat+ST_MTIME]
 	mov	[g_fs_mtime],rax
 	call	fs_precompressed
+	cmp	dword [g_fm_key],0		; (looked for in memory: kept there now)
+	je	fs_serve
+	call	fm_keep
 	jmp	fs_serve
 .h405	db 'HTTP/1.1 405 Method Not Allowed',13,10,'Allow: GET, HEAD',13,10,'Content-Length: 0',13,10
 .h405_len := $ - .h405
@@ -970,7 +983,16 @@ fs_serve:
 	mov	r8,[r15+H_BUF]
 	mov	[r8+HB_FLEFT],r14
 	pop	r14
-	; where it reads from
+	; where it reads from: memory (files_mem), or the file
+	mov	eax,[g_fs_mem]
+	test	eax,eax
+	jz	.from_file
+	add	rax,[g_fs_from]
+	mov	rcx,[r15+H_BUF]
+	mov	[rcx+HB_FMEM],eax		; (its offset in the worker's store + 1)
+	mov	dword [rcx+HB_FFD],-1
+	jmp	.source_set
+.from_file:
 	mov	rsi,[g_fs_from]
 	test	rsi,rsi
 	jz	@f
@@ -984,6 +1006,8 @@ fs_serve:
 	mov	rax,[r15+H_BUF]
 	mov	ecx,[g_fs_fd]
 	mov	[rax+HB_FFD],ecx
+.source_set:
+	mov	rax,[r15+H_BUF]
 	mov	dword [rax+HB_ZCP],0		; (no pipe yet: zc.inc)
 	push	rdi
 	call	session_ptr
@@ -1005,6 +1029,8 @@ fs_serve:
 	call	fmt_u64
 	memit_x 13,10,'Content-Length: 0',13,10,13,10
 .no_body:
+	cmp	dword [g_fs_mem],0		; (from memory: no descriptor)
+	jne	fs_head_ready
 	push	rdi
 	call	fs_close
 	pop	rdi
@@ -1029,6 +1055,302 @@ fs_serve:
 	mov	esi,PH_RESPONSE
 	call	ph_arm
 	jmp	http_resp_head
+
+; --------------------------------------------------- files_mem: `memory=`
+;
+; A worker keeps the files a `memory=` route serves, whole, in a store of its
+; own (the largest `memory=` of any route, address space reserved at the
+; start): one entry for each name and Accept-Encoding, with the variant it
+; came to, its size and date. An entry is good for FM_TTL; past that, the
+; file is opened and looked at again, and the entry kept when it has not
+; changed (else its new contents go in after the others). When the store is
+; full, what is not in it is read from the file as before. Nothing is taken
+; out while a body may be read from it.
+
+FM_N		:= 1024				; entries (a power of two)
+FM_PROBE	:= 8
+FM_TTL		:= 1000000			; µs
+FM_FILE_MAX	:= 4 shl 20			; a file kept, at most
+FM_MAX		:= 1 shl 31			; `memory=`, at most (offsets are dwords)
+FM_HASH		:= 0				; q
+FM_UNTIL	:= 8				; q: µs it is good until
+FM_FSIZE	:= 16				; q
+FM_MTIME	:= 24				; q
+FM_KOFF		:= 32				; d: its key in the store
+FM_KLEN		:= 36				; d
+FM_DOFF		:= 40				; d: its contents in the store + 1
+FM_ENC		:= 44				; d
+FM_SIZE		:= 64
+
+bss
+	align 8
+	g_fm_cap	dq ?			; the largest memory= (the supervisor's, inherited)
+	g_fm_base	dq ?			; a worker's store, 0 none
+	g_fm_used	dq ?
+	g_fm_hash	dq ?
+	g_fm_slot	dq ?			; fm_find: the entry found, or to fill
+	g_fm_key	dd ?			; fm_find looked: the key is in g_fm_kbuf
+	g_fm_klen	dd ?
+	align 64
+	g_fm_tab:	rb FM_N * FM_SIZE
+	g_fm_kbuf:	rb 8192 + 600
+end bss
+
+; a worker's start: its store, address space only
+fm_init:
+	mov	rsi,[g_fm_cap]
+	test	rsi,rsi
+	jz	.out
+	xor	edi,edi
+	mov	edx,PROT_READ or PROT_WRITE
+	mov	r10d,MAP_PRIVATE or MAP_ANONYMOUS or MAP_NORESERVE
+	mov	r8,-1
+	xor	r9d,r9d
+	mov	eax,SYS_mmap
+	syscall
+	cmp	rax,-4096
+	jae	.out				; (none: files are read as before)
+	mov	[g_fm_base],rax
+.out:
+	ret
+
+; files_answer, a memory= route (r12, r13d), the name in g_fs_path: CF unless
+; the store has it, good: then g_fs_enc, g_fs_size, g_fs_mtime, g_fs_mem are
+; its own (no descriptor). Either way the key is kept for fm_keep.
+fm_find:
+	cmp	qword [g_fm_base],0
+	je	.none
+	; the key: the root, the name, a NUL, the request's Accept-Encoding
+	lea	rdi,[g_fm_kbuf]
+	mov	[rdi],r13d
+	add	rdi,4
+	lea	rsi,[g_fs_path]
+	mov	ecx,[g_fs_plen]
+	rep	movsb
+	mov	byte [rdi],0
+	inc	rdi
+	push	rdi
+	lea	rdi,[fs_precompressed.ae]
+	mov	esi,15
+	call	limit_find
+	pop	rdi
+	cmp	ecx,512
+	ja	.none
+	rep	movsb
+	lea	rax,[g_fm_kbuf]
+	sub	rdi,rax
+	mov	[g_fm_klen],edi
+	mov	dword [g_fm_key],1
+	; its hash (FNV-1a), its slots
+	lea	rsi,[g_fm_kbuf]
+	mov	ecx,edi
+	mov	rax,0xcbf29ce484222325
+	mov	rdx,0x100000001b3
+@@:
+	movzx	r8d,byte [rsi]
+	xor	rax,r8
+	imul	rax,rdx
+	inc	rsi
+	dec	ecx
+	jnz	@b
+	or	rax,1				; (0: an empty entry)
+	mov	[g_fm_hash],rax
+	mov	r9,rax
+	mov	qword [g_fm_slot],0
+	mov	r10d,FM_PROBE
+.probe:
+	mov	eax,r9d
+	and	eax,FM_N - 1
+	shl	eax,6
+	lea	r11,[g_fm_tab+rax]
+	mov	rax,[r11+FM_HASH]
+	test	rax,rax
+	jz	.empty
+	cmp	rax,[g_fm_hash]
+	jne	.other
+	mov	eax,[r11+FM_KLEN]
+	cmp	eax,[g_fm_klen]
+	jne	.other
+	mov	edi,[r11+FM_KOFF]
+	add	rdi,[g_fm_base]
+	lea	rsi,[g_fm_kbuf]
+	mov	edx,eax
+	push	r9
+	push	r10
+	push	r11
+	call	mem_eq
+	pop	r11
+	pop	r10
+	pop	r9
+	test	eax,eax
+	jz	.other
+	mov	[g_fm_slot],r11
+	call	qs_clock			; (a system call: r11 goes)
+	mov	r11,[g_fm_slot]
+	mov	rax,[g_qnow]
+	cmp	rax,[r11+FM_UNTIL]
+	jae	.none				; (to be looked at again)
+	mov	eax,[r11+FM_ENC]
+	mov	[g_fs_enc],eax
+	mov	rax,[r11+FM_FSIZE]
+	mov	[g_fs_size],rax
+	mov	rax,[r11+FM_MTIME]
+	mov	[g_fs_mtime],rax
+	mov	eax,[r11+FM_DOFF]
+	mov	[g_fs_mem],eax
+	mov	dword [g_fs_fd],-1
+	clc
+	ret
+.empty:
+	cmp	qword [g_fm_slot],0
+	jne	.none
+	mov	[g_fm_slot],r11
+	jmp	.none
+.other:
+	inc	r9
+	dec	r10d
+	jnz	.probe
+	cmp	qword [g_fm_slot],0		; all taken: the home one is replaced
+	jne	.none
+	mov	eax,dword [g_fm_hash]
+	and	eax,FM_N - 1
+	shl	eax,6
+	lea	r11,[g_fm_tab+rax]
+	mov	[g_fm_slot],r11
+.none:
+	stc
+	ret
+
+; files_answer, after fm_find missed: g_fs_fd open on what is served
+; (g_fs_size, g_fs_mtime, g_fs_enc): kept in the store, or its entry made good
+; again when it has not changed, and the answer then comes from there.
+fm_keep:
+	push	rbx
+	mov	r11,[g_fm_slot]
+	test	r11,r11
+	jz	.out
+	; the name asked for, not an index or a fallback it came to (whose
+	; type is not the name's)
+	mov	eax,[g_fm_klen]
+	sub	eax,5
+	cmp	eax,[g_fs_plen]
+	jb	.out
+	mov	edx,[g_fs_plen]
+	cmp	byte [g_fm_kbuf+4+rdx],0
+	jne	.out
+	lea	rdi,[g_fs_path]
+	lea	rsi,[g_fm_kbuf+4]
+	call	mem_eq
+	test	eax,eax
+	jz	.out
+	mov	r11,[g_fm_slot]
+	mov	rax,[g_fs_size]
+	cmp	rax,FM_FILE_MAX
+	ja	.out
+	cmp	rax,[r12+FI_MEM]
+	ja	.out
+	call	qs_clock
+	mov	r11,[g_fm_slot]
+	; the same entry, the same file: good again
+	mov	rax,[r11+FM_HASH]
+	cmp	rax,[g_fm_hash]
+	jne	.new
+	mov	eax,[r11+FM_KLEN]
+	cmp	eax,[g_fm_klen]
+	jne	.new
+	mov	eax,[r11+FM_ENC]
+	cmp	eax,[g_fs_enc]
+	jne	.new
+	mov	rax,[r11+FM_FSIZE]
+	cmp	rax,[g_fs_size]
+	jne	.new
+	mov	rax,[r11+FM_MTIME]
+	cmp	rax,[g_fs_mtime]
+	jne	.new
+	cmp	dword [r11+FM_DOFF],0
+	je	.new
+	mov	rax,[g_qnow]
+	add	rax,FM_TTL
+	mov	[r11+FM_UNTIL],rax
+	jmp	.from_store
+.new:
+	; room for the key and the contents (16-aligned)
+	mov	eax,[g_fm_klen]
+	add	eax,15
+	and	eax,-16
+	mov	rcx,[g_fs_size]
+	lea	rdx,[rax+rcx+15]
+	and	rdx,-16
+	mov	r8,[g_fm_used]
+	lea	r9,[r8+rdx]
+	cmp	r9,[g_fm_cap]
+	ja	.out				; full: from the file
+	push	r8				; [rsp+8] the key's offset
+	push	rax				; [rsp]   the key's room
+	; the contents, read whole (from the page cache, nearly always)
+	mov	rbx,[g_fm_base]
+	lea	rsi,[rbx+r8]
+	add	rsi,rax				; where they go
+	xor	r10d,r10d			; read so far
+.read:
+	mov	rdx,[g_fs_size]
+	sub	rdx,r10
+	jz	.read_all
+	push	rsi
+	push	r10
+	mov	edi,[g_fs_fd]
+	add	rsi,r10
+	mov	eax,SYS_pread64
+	syscall
+	pop	r10
+	pop	rsi
+	test	rax,rax
+	jle	.read_fail			; (shorter than it said: not kept)
+	add	r10,rax
+	jmp	.read
+.read_fail:
+	add	rsp,16
+	jmp	.out
+.read_all:
+	pop	rax				; the key's room
+	pop	r8				; its offset
+	lea	rdi,[rbx+r8]			; the key
+	lea	rsi,[g_fm_kbuf]
+	mov	ecx,[g_fm_klen]
+	rep	movsb
+	mov	r11,[g_fm_slot]
+	mov	[r11+FM_KOFF],r8d
+	mov	ecx,[g_fm_klen]
+	mov	[r11+FM_KLEN],ecx
+	lea	rcx,[r8+rax+1]
+	mov	[r11+FM_DOFF],ecx
+	mov	eax,[g_fs_enc]
+	mov	[r11+FM_ENC],eax
+	mov	rax,[g_fs_size]
+	mov	[r11+FM_FSIZE],rax
+	mov	rcx,rax
+	mov	rax,[g_fs_mtime]
+	mov	[r11+FM_MTIME],rax
+	mov	rax,[g_qnow]
+	add	rax,FM_TTL
+	mov	[r11+FM_UNTIL],rax
+	mov	rax,[g_fm_hash]
+	mov	[r11+FM_HASH],rax
+	mov	eax,[g_fm_klen]			; the store grows by key and contents
+	add	eax,15
+	and	eax,-16
+	add	rax,rcx
+	add	rax,15
+	and	rax,-16
+	add	[g_fm_used],rax
+.from_store:
+	mov	eax,[r11+FM_DOFF]
+	mov	[g_fs_mem],eax
+	call	fs_close
+	mov	dword [g_fs_fd],-1
+.out:
+	pop	rbx
+	ret
 
 ; g_fs_*: the ETag and the date the file answers with
 fs_validators:
@@ -1549,6 +1871,8 @@ file_recv:
 	jz	.end
 	sub	[r8+HB_FLEFT],rcx
 	mov	r9d,[r8+HB_FFD]
+	cmp	r9d,-1
+	je	.memory
 	cmp	dword [g_engine],ENGINE_EPOLL
 	je	.epoll
 	push	rdi
@@ -1573,6 +1897,16 @@ file_recv:
 	mov	eax,SYS_read
 	syscall
 	jmp	.done
+.memory:
+	; kept in the worker's store (files_mem): copied, done at once
+	mov	esi,[r8+HB_FMEM]
+	add	[r8+HB_FMEM],ecx
+	add	rsi,[g_fm_base]
+	dec	rsi
+	push	rcx
+	call	copy_small			; (rax goes)
+	pop	rax				; the bytes
+	jmp	.done
 .end:
 	xor	eax,eax
 .done:
@@ -1586,8 +1920,11 @@ file_done:
 	and	dword [rax+S_FLAGS],not SF_FILE
 	mov	rax,[r15+H_BUF]
 	mov	edi,[rax+HB_FFD]
+	cmp	edi,-1				; (from memory)
+	je	@f
 	mov	eax,SYS_close
 	syscall
+@@:
 	and	dword [r15+H_FLAGS],not HX_UPKEEP
 	ret
 
@@ -1727,6 +2064,24 @@ compile_files:
 	cmp	rcx,r15
 	jb	.pre
 .no_pre:
+	; memory=: file contents kept in each worker (files_mem), up to that much
+	mov	rdi,rbx
+	lea	rsi,[.k_mem]
+	call	node_option
+	test	rax,rax
+	jz	@f
+	mov	rdi,[rax+A_VAL]
+	mov	esi,[rax+A_VLEN]
+	call	parse_size
+	jc	plan_bad_files
+	mov	rcx,FM_MAX
+	cmp	rax,rcx
+	ja	plan_bad_files
+	mov	[r13+FI_MEM],rax
+	cmp	rax,[g_fm_cap]
+	jbe	@f
+	mov	[g_fm_cap],rax
+@@:
 	; cache=immutable, or a time
 	mov	rdi,rbx
 	lea	rsi,[.k_cache]
@@ -1778,6 +2133,7 @@ cstring .k_index, 'index',0
 cstring .k_fallback, 'fallback',0
 cstring .k_pre, 'precompressed',0
 cstring .k_cache, 'cache',0
+cstring .k_mem, 'memory',0
 cstring .immutable, 'immutable',0
 .index_html	db 'index.html'
 .cc_imm		db 'public, max-age=31536000, immutable'
@@ -1787,7 +2143,7 @@ cstring .immutable, 'immutable',0
 
 plan_bad_files:
 	call	log_begin
-	out_lit 'files needs an absolute directory that exists; fallback= an absolute path; precompressed= from br, zst, gz; cache= a time or immutable; at most 64'
+	out_lit 'files needs an absolute directory that exists; fallback= an absolute path; precompressed= from br, zst, gz; cache= a time or immutable; memory= a size up to 2GiB; at most 64'
 	call	log_end
 	mov	edi,EXIT_CONFIG
 	jmp	exit_process

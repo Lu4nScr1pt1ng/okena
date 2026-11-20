@@ -160,7 +160,12 @@ zc_ok:
 	test	ecx,SF_ZIP or SF_H2S or SF_H3S or SF_HSTRM or SF_MIR or SF_SLICE
 	jnz	.no
 	test	ecx,SF_FILE
-	jnz	.source
+	jz	@f
+	mov	rax,[r15+H_BUF]			; (a file kept in memory: copied)
+	cmp	dword [rax+HB_FFD],-1
+	je	.no
+	jmp	.source
+@@:
 	test	ecx,SF_CACHED
 	jz	.no
 	mov	rax,[r15+H_BUF]

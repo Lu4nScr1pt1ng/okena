@@ -932,6 +932,7 @@ The request's whole path is looked up under the directory:
 | `fallback=/PATH` | served instead of a 404 |
 | `precompressed=br,zst,gz` | serve `file.br`, `.zst` or `.gz` next to the file when the client accepts it |
 | `cache=T` or `cache=immutable` | `Cache-Control: public, max-age=...` |
+| `memory=SIZE` | each worker keeps the files it serves here (up to 4 MiB each) in memory, up to SIZE (2 GiB at most): no open, read or close per request; a file is looked at again once a second and read again when it changed |
 
 GET and HEAD, ETag and Last-Modified, conditional requests and single byte
 ranges are handled. Dotfiles are not served, except `.well-known`. Symlinks
