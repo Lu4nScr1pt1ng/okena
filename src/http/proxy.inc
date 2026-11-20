@@ -3306,6 +3306,10 @@ http_resp_head:
 	jmp	.send_head
 .mem_body:
 	call	fm_head_body			; a file kept in memory: its start with the head
+	jnc	.send_head
+	mov	dword [r15+H_STATE],HS_RESP_SEND	; (from the worker's scratch)
+	mov	ecx,SIDE_CLIENT
+	jmp	h_send
 .send_head:
 	mov	dword [r15+H_STATE],HS_RESP_SEND
 	mov	ecx,SIDE_CLIENT

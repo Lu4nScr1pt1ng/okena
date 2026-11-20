@@ -1450,7 +1450,14 @@ fm_direct:
 ; file kept in memory, to a client of user-space TLS, has its first bytes put
 ; after the head, as many as make one record of the two. A small file goes
 ; in one record and one write, not a record for the head and one for the
-; body (the client opens and reads one); the rest, fm_direct.
+; body (the client opens and reads one); the rest, fm_direct. Head and bytes
+; go in the worker's g_fhb_scr, not the connection's OUT (a cold place for
+; each connection): the record is sealed from there at once (utls_send seals
+; what it is given before it returns, a record or two). CF: rdi/esi there.
+bss
+	align 64
+	g_fhb_scr	rb TLS_RECORD_MAX + 64
+end bss
 fm_head_body:
 	cmp	dword [r15+H_UTLS],0
 	je	.no
@@ -1479,8 +1486,12 @@ fm_head_body:
 	jbe	@f
 	mov	ecx,eax
 @@:
-	mov	eax,[r15+H_OUTLEN]
-	lea	rdi,[r8+HB_OUT+rax]
+	push	rcx				; the head, from OUT (just written)
+	lea	rdi,[g_fhb_scr]
+	lea	rsi,[r8+HB_OUT]
+	mov	ecx,[r15+H_OUTLEN]
+	rep	movsb
+	pop	rcx				; then the bytes, from the store
 	mov	esi,[r8+HB_FMEM]
 	add	rsi,[g_fm_base]
 	dec	rsi
@@ -1489,7 +1500,12 @@ fm_head_body:
 	sub	[r15+H_RREMAIN],rcx
 	add	[r15+H_OUTLEN],ecx
 	rep	movsb
+	lea	rdi,[g_fhb_scr]
+	mov	esi,[r15+H_OUTLEN]
+	stc
+	ret
 .no:
+	clc
 	ret
 
 ; g_fs_*: the ETag and the date the file answers with
