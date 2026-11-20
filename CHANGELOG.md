@@ -4,6 +4,79 @@ okena follows [semantic versioning](https://semver.org). Until 1.0 the
 configuration language may still change between minor versions; each change
 is listed here, with what to write instead.
 
+## 0.2.0 — 2026-11-20
+
+Much faster over TLS, HTTP/2 and HTTP/3, handler modules, files kept in
+memory, and the fixes the external conformance suites (tlsfuzzer, h2spec,
+h3spec, RFC 9111 cache tests) asked for. No configuration from 0.1.0 has to
+change.
+
+### Install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Lu4nScr1pt1ng/okena/v0.2.0/scripts/install.sh | sh
+docker run -p 8080:8080 ghcr.io/lu4nscr1pt1ng/okena:0.2.0
+```
+
+Or download `okena-0.2.0-linux-x86_64.tar.gz` below and check it against its
+`.sha256`.
+
+### New
+
+- **Handler modules:** code assembled into okena itself
+  (`make MODULES="a.inc b.inc"`, `route ... { handler NAME }`), as nginx's
+  modules are compiled into nginx: request bodies up to 1 MiB over HTTP/1.1,
+  HTTP/2 and HTTP/3, answers held on okena's timers, the route's compression,
+  head lines and trailers of the handler's own (gRPC's `grpc-status`).
+- **`files ... memory=SIZE`:** the files a route serves kept in memory, one
+  store shared by every worker (one copy however many CPUs), sent from there
+  without a copy, a small file in the same TLS record as its head.
+- **`okena { date on|off }`:** the Date field okena writes (on by default, as
+  RFC 9110 asks).
+- **Cache:** a stale copy with a validator is revalidated (304 freshens it);
+  `Vary` on fields `vary=` does not name keeps one variant; Age, Date and
+  Expires as RFC 9111 counts them; invalidation; `CDN-Cache-Control`.
+- **TLS:** `cert ... missing=skip` (a listener opened only when its files are
+  there); `reload on-change` watches certificates and keys too.
+- **Memory guard:** near the cgroup's memory limit, new streams are refused
+  and idle connections closed before the kernel's OOM killer acts.
+
+### Faster
+
+- **HTTP/1.1:** answers to pipelined requests go out together, one write
+  (16 at a time: 6x); a read is handled right after its event, while its
+  bytes are in the cache.
+- **HTTP/2:** HPACK's dynamic table on the way out; END_STREAM on the body's
+  last DATA frame; on epoll a full connection buffer is written at once and
+  the stream goes on; handler answers written in a per-worker area.
+- **HTTP/3:** QPACK's dynamic table on the way out; many answers in a
+  datagram; large datagrams where the path takes them (path MTU probing up
+  to 60000 bytes), segmented sends of one size; a send batch's datagrams one
+  after another; a stream's send state kept with its connection; bodies from
+  the memory store not copied into the send ring.
+- **TLS:** RSA signatures by CRT with a fixed window (4x); records sealed in
+  a per-worker area and written at once on epoll; AES-GCM sealing in one
+  pass (AES and GHASH interleaved) on CPUs without VAES.
+
+### Fixed
+
+- **QUIC:** a worker could crash under load when loss detection followed an
+  ACK; transport parameters, frames and TLS messages checked as RFC 9000 and
+  9001 ask; HTTP/3 control, QPACK and request stream rules (h3spec 85/85).
+- **TLS:** alerts where RFC 8446 asks for them (protocol_version,
+  missing_extension, illegal_parameter...), a client's KeyUpdate,
+  compress_certificate checked, 0-RTT before a HelloRetryRequest skipped, a
+  Finished arriving in pieces, P-256 key shares checked (tlsfuzzer).
+- **HTTP:** Date on okena's own heads, strict chunk extensions, 400 for
+  request content codings; WebSocket over an https listener; a broken h2c
+  preface closed.
+
+### License
+
+okena is now under the **Apache License 2.0** (`Apache-2.0`), from AGPL-3.0-only:
+use, modify and embed it anywhere, commercially too, with an explicit patent
+grant. 0.1.0 stays as it was published (AGPL-3.0-only).
+
 ## 0.1.0 — 2026-11-19
 
 The first release: one static binary of about 1 MB for Linux on x86-64, no

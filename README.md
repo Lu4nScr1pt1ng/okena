@@ -205,13 +205,15 @@ configuration language.
 
 ## Status
 
-okena 0.1.0 is its first release. It is not yet used widely in production,
+okena 0.2.0 is its second release. It is not yet used widely in production,
 and until 1.0 the configuration language may still change between minor
 versions; [CHANGELOG.md](CHANGELOG.md) says what changes and what to write
 instead.
 
 ## License
 
-[GNU Affero General Public License v3.0 only](LICENSE) (`AGPL-3.0-only`).
+[Apache License 2.0](LICENSE) (`Apache-2.0`): use, modify and ship okena
+anywhere, commercially too, with the license's patent grant. Releases before
+0.2.0 were published under AGPL-3.0-only.
 If you run a modified okena as a network service, you must offer its source to
 the users of that service.
