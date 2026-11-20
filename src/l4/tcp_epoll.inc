@@ -28,14 +28,19 @@ ENGINE_URING	:= 0
 ENGINE_EPOLL	:= 1
 
 EP_EVENTS	:= 256
-ACCEPT_BATCH	:= 4		; accepts a wake-up: every worker waits on the one
-				; socket and the idle one wakes first; 64 at a
-				; time let one worker take most keep-alive clients
+ACCEPT_BATCH	:= 4		; accepts a wake-up of a lone worker (a burst is
+				; taken in few turns). With more, every worker
+				; waits on the one socket (exclusive: an arrival
+				; wakes one idle worker) and takes the connection
+				; it was woken for: 4 let the first ones woken take
+				; a batch each (391 to 601 keep-alive clients a
+				; worker, 64 let one take most)
 
 bss
 	align 8
 	g_engine	dd ?
 	g_epfd		dd ?
+	g_ep_acc_sid	dd ?			; ep_accept's socket (ep_lrotate)
 	g_now_ms	dq ?
 	g_next_tick_ms	dq ?
 	g_buf_top	dd ?		; free buffer stack
@@ -341,7 +346,11 @@ ep_add_socket:
 	call	listener_fd
 	pop	rdx
 	mov	edi,eax
-	mov	esi,EPOLLIN			; level-triggered: accept in batches
+	; level-triggered (accept in batches), and exclusive: an arrival wakes
+	; one worker waiting on the socket, not every one (64 workers waiting,
+	; idle on their CPUs, all woke for each connection and all but one
+	; found nothing: short-lived connections at a third of their rate)
+	mov	esi,EPOLLIN or EPOLLEXCLUSIVE
 	jmp	ep_add
 
 ; Drain: stop watching the listeners (connections wait in the kernel queue).
@@ -357,6 +366,25 @@ ep_del_socket:
 	xor	r10d,r10d
 	mov	eax,SYS_epoll_ctl
 	syscall
+	ret
+
+; A worker with no room on the listener goes to the end of its queue: an
+; arrival wakes the first idle worker waiting (exclusive), and a worker
+; registered again waits behind all the others. Those with room are woken
+; first; when none has, the first refuses, as each did. Without it the
+; first in the queue, idle, took each new client of a quiet listener
+; until full, then refused them while the others had room. A lone worker
+; or a draining one stays as it is. Keeps rbx, r12-r15.
+ep_lrotate:
+	cmp	dword [g_workers],1
+	jbe	.out
+	cmp	dword [g_draining],0
+	jne	.out
+	mov	edi,[g_ep_acc_sid]
+	call	ep_del_socket
+	mov	edi,[g_ep_acc_sid]
+	call	ep_add_socket
+.out:
 	ret
 
 ; edi = events, rsi = data.
@@ -455,9 +483,13 @@ ep_accept:
 	push	r15
 	call	listener_fd
 	mov	r15d,eax
+	mov	[g_ep_acc_sid],edi
 	and	edi,SID_LISTENER
 	mov	r13d,edi			; listener
 	mov	r12d,ACCEPT_BATCH
+	cmp	dword [g_workers],1
+	jbe	.next
+	mov	r12d,1
 .next:
 	dec	r12d
 	js	.done
@@ -487,6 +519,11 @@ ep_accept:
 	inc	dword [g_ls_active+r13*4]
 	inc	qword [g_st_l_accepted+r13*8]
 	inc	dword [g_active]
+	mov	eax,[g_ls_active+r13*4]		; full now: behind the others
+	cmp	eax,[g_ls_cap+r13*4]
+	jb	@f
+	call	ep_lrotate
+@@:
 	call	session_ptr
 	mov	dword [rax+S_STATE],ST_CONNECTING
 	mov	dword [rax+S_FLAGS],0
@@ -575,6 +612,7 @@ ep_accept:
 	mov	edi,r14d
 	mov	eax,SYS_close
 	syscall
+	call	ep_lrotate			; (woken while full: the others first)
 	jmp	.next
 .done:
 	pop	r15
