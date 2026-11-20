@@ -3777,8 +3777,26 @@ qc_build:
 	mov	rax,[g_qnow]
 	cmp	rax,[r15+QC_MTU_AT]
 	jb	.mtu_wants_done
-	cmp	dword [r15+QC_MTU_N],3
+	movzx	eax,byte [r15+QC_MTU_N]
+	cmp	eax,3
 	jb	@f
+	; not taken three times: again later (a burst may have dropped them),
+	; 0.1 s, 0.2 s ... 6.4 s on; after six rounds, this size is too much. The
+	; rounds: QC_MTU_N past its low byte
+	mov	ecx,[r15+QC_MTU_N]
+	shr	ecx,8
+	cmp	ecx,6
+	jae	.mtu_give_up
+	inc	ecx
+	mov	eax,ecx
+	shl	eax,8
+	mov	[r15+QC_MTU_N],eax
+	mov	eax,50000
+	shl	rax,cl
+	add	rax,[g_qnow]
+	mov	[r15+QC_MTU_AT],rax
+	jmp	.mtu_wants_done
+.mtu_give_up:
 	mov	dword [r15+QC_MTU_TRY],0	; not taken: this size is too much
 	jmp	.mtu_wants_done
 @@:

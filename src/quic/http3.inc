@@ -44,7 +44,13 @@ TX_FINSENT	:= 44				; d
 TX_FINACKED	:= 48				; d
 TX_NACK		:= 52				; d: acknowledged ranges past the base
 TX_ACK		:= 56				; TX_ACKMAX of (lo q, hi q)
-TX_ACKMAX	:= 12
+TX_ACKMAX	:= 10
+; bytes the ring does not hold: a body in files' memory store (it never
+; moves nor is written over), read from there to send and to send again
+TX_XPTR		:= 216				; q: where stream offset TX_XLO is
+TX_XLO		:= 224				; q: the offsets it covers (TX_XLO = TX_XHI: none)
+TX_XHI		:= 232				; q
+assert TX_ACK + TX_ACKMAX * 16 <= TX_XPTR
 TX_CAPV		:= 248				; d: the ring's size (TX_CAP, or twice that)
 TX_HDR		:= 256				; the header's size
 ; the bytes: the downstream TLS area (a stream session has no TLS of its
@@ -640,7 +646,9 @@ qc_app_frame:
 	jne	.msd_done
 	cmp	dword [r8+QST_SESS],NIL
 	je	.msd_done			; (no request on it yet)
-	h3_ptrs	[r8+QST_SESS]
+	push	r8				; (h3_ptrs takes r8: the stream's entry
+	h3_ptrs	[r8+QST_SESS]			; is what qsend_set marks)
+	pop	r8
 	cmp	r13,[r9+HB_H3TX+TX_MAXSD]
 	jbe	.msd_done
 	mov	[r9+HB_H3TX+TX_MAXSD],r13
@@ -836,9 +844,9 @@ qc_app_frame:
 	pop	r15
 	pop	rbx
 	inc	qword [r15+QC_SDONE]
-	mov	rax,[r15+QC_MAXS_OURS]		; (MAX_STREAMS: when half are used)
-	sub	rax,[r15+QC_SDONE]
-	cmp	rax,50
+	mov	rax,[r15+QC_MAXS_OURS]		; (MAX_STREAMS: every tenth done, so
+	sub	rax,[r15+QC_SDONE]		; that a client keeps 90 open)
+	cmp	rax,90
 	jge	.maxs_kept
 	or	dword [r15+QC_FL2],QF2_MAXS
 .maxs_kept:
@@ -3173,6 +3181,8 @@ h3_request_new:
 	mov	ecx,TX_ACK / 8
 	xor	eax,eax
 	rep	stosq
+	mov	[rbp+HB_H3TX+TX_XLO],rax
+	mov	[rbp+HB_H3TX+TX_XHI],rax
 	mov	dword [rbp+HB_H3TX+TX_CAPV],TX_CAP
 	mov	rax,[r15+QC_PSD_BIDI]
 	mov	[rbp+HB_H3TX+TX_MAXSD],rax
@@ -3614,10 +3624,40 @@ h3s_push:
 	pop	rbx
 	ret
 
-; rsi = bytes, ecx = length (room checked): at the ring's end (r13)
+; rsi = bytes, ecx = length (room checked): at the ring's end (r13). From
+; the memory store: not copied, the ring's external bytes (TX_X*) grow
+; (they start afresh once those before are acknowledged)
 h3tx_put:
 	test	ecx,ecx
 	jz	.out
+	mov	rax,rsi
+	sub	rax,[g_fm_base]
+	jb	.copy
+	cmp	rax,[g_fm_cap]
+	jae	.copy
+	cmp	qword [g_fm_base],0
+	je	.copy
+	mov	rax,[r13+TX_XHI]
+	cmp	rax,[r13+TX_END]
+	jne	.fresh
+	sub	rax,[r13+TX_XLO]		; on from the last: the same bytes?
+	add	rax,[r13+TX_XPTR]
+	cmp	rax,rsi
+	je	.grow
+.fresh:
+	mov	rax,[r13+TX_XHI]		; those before all acknowledged?
+	cmp	rax,[r13+TX_BASE]
+	ja	.copy
+	mov	rax,[r13+TX_END]
+	mov	[r13+TX_XLO],rax
+	mov	[r13+TX_XHI],rax
+	mov	[r13+TX_XPTR],rsi
+.grow:
+	add	[r13+TX_XHI],rcx
+	add	[r13+TX_END],rcx
+	add	rsi,rcx
+	ret
+.copy:
 	mov	rax,[r13+TX_END]
 	mov	edx,[r13+TX_CAPV]
 	dec	edx
@@ -3637,6 +3677,72 @@ h3tx_put:
 @@:
 	lea	rdi,[r13+TX_DATA+rax]
 	add	[r13+TX_END],rcx
+	rep	movsb
+.out:
+	ret
+
+; r9 = a stream's ring, rax = stream offset, rcx = length, rdi = where:
+; its bytes copied (rdi past them), from the ring or the external bytes.
+; Keeps all but rax, rcx, rdx, rsi.
+tx_read:
+	test	rcx,rcx
+	jz	.out
+	mov	rdx,[r9+TX_XHI]
+	cmp	rdx,[r9+TX_XLO]
+	je	.ring				; none outside
+	cmp	rax,rdx
+	jae	.ring				; past them
+	mov	rsi,[r9+TX_XLO]
+	cmp	rax,rsi
+	jae	.outside
+	push	rcx				; before them: up to where they start
+	sub	rsi,rax
+	cmp	rcx,rsi
+	jbe	@f
+	mov	rcx,rsi
+@@:
+	sub	[rsp],rcx
+	push	rax
+	push	rcx
+	call	.ring_part
+	pop	rcx
+	pop	rax
+	add	rax,rcx
+	pop	rcx
+	jmp	tx_read
+.outside:
+	push	rcx
+	sub	rdx,rax				; within them
+	cmp	rcx,rdx
+	jbe	@f
+	mov	rcx,rdx
+@@:
+	sub	[rsp],rcx
+	mov	rsi,rax
+	sub	rsi,[r9+TX_XLO]
+	add	rsi,[r9+TX_XPTR]
+	add	rax,rcx
+	rep	movsb
+	pop	rcx
+	jmp	tx_read
+.ring:
+.ring_part:
+	mov	edx,[r9+TX_CAPV]		; rax, rcx from the ring (it may wrap)
+	dec	edx
+	and	eax,edx
+	inc	edx
+	sub	edx,eax
+	cmp	ecx,edx
+	jbe	@f
+	push	rcx
+	lea	rsi,[r9+TX_DATA+rax]
+	mov	ecx,edx
+	sub	[rsp],rcx
+	rep	movsb
+	pop	rcx
+	xor	eax,eax
+@@:
+	lea	rsi,[r9+TX_DATA+rax]
 	rep	movsb
 .out:
 	ret
@@ -4116,9 +4222,9 @@ h3s_closing:
 	qst_bit	btr, r8, QC_QSTM
 	qst_bit	btr, r8, QC_QREQ
 	inc	qword [r15+QC_SDONE]
-	mov	rax,[r15+QC_MAXS_OURS]		; (MAX_STREAMS: when half are used: a
-	sub	rax,[r15+QC_SDONE]		; packet each answer otherwise)
-	cmp	rax,50
+	mov	rax,[r15+QC_MAXS_OURS]		; (MAX_STREAMS: every tenth done, so
+	sub	rax,[r15+QC_SDONE]		; that a client keeps 90 open; it goes
+	cmp	rax,90				; with the answers)
 	jge	.maxs_kept
 	or	dword [r15+QC_FL2],QF2_MAXS
 .maxs_kept:
@@ -4652,23 +4758,7 @@ qc_app_write:
 .recorded:
 	mov	rcx,r10
 	mov	rax,[r9+TX_SENT]
-	mov	edx,[r9+TX_CAPV]
-	dec	edx
-	and	eax,edx
-	inc	edx
-	sub	edx,eax
-	cmp	ecx,edx
-	jbe	@f
-	push	rcx
-	lea	rsi,[r9+TX_DATA+rax]
-	mov	ecx,edx
-	sub	[rsp],rcx
-	rep	movsb
-	pop	rcx
-	xor	eax,eax
-@@:
-	lea	rsi,[r9+TX_DATA+rax]
-	rep	movsb
+	call	tx_read
 	add	[r9+TX_SENT],r10
 	mov	rax,[r9+TX_SENT]
 	sub	rax,[r9+TX_HIGH]
