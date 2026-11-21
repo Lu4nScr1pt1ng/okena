@@ -813,10 +813,21 @@ assert MAX_LISTENERS <= SID_LISTENER + 1
 
 ; edi = listener, esi = workers: eax = the sockets it is opened with.
 listener_nsocks:
+	; UDP: one a worker. TCP: one for all on io_uring (an accept waits on it
+	; for each worker, completed only when a connection is there), one a
+	; worker with `io_engine epoll` (SO_REUSEPORT: the kernel shares the
+	; connections out; a socket every worker watched put each arrival in
+	; every busy worker's ready list, and all of them tried accept on one
+	; contended queue: 64 workers spent their time there)
 	imul	rax,rdi,LS_SIZE
 	cmp	dword [g_listeners+rax+LS_KIND],LK_UDP
+	je	.each
+	cmp	dword [g_plan_engine],2
+	je	.each
 	mov	eax,1
-	cmove	eax,esi
+	ret
+.each:
+	mov	eax,esi
 	ret
 
 ; edi = socket id. eax = its fd.
@@ -841,7 +852,12 @@ for_each_socket:
 .listener:
 	cmp	ebx,[g_plan_listeners]
 	jae	.done
-	xor	r12d,r12d			; socket index: all of them
+	xor	r12d,r12d			; socket index: all of them, or on epoll
+	cmp	dword [g_engine],ENGINE_EPOLL	; with a socket a worker, this
+	jne	.socket				; worker's (its id, then a worker count
+	cmp	dword [g_lsocks+rbx*4],1	; on, as udp_each_socket: more sockets
+	jbe	.socket				; than workers after a reload)
+	mov	r12d,[g_worker_id]
 .socket:
 	cmp	r12d,[g_lsocks+rbx*4]
 	jae	.next
@@ -853,6 +869,12 @@ for_each_socket:
 	or	edi,ebx
 	call	r13
 	inc	r12d
+	cmp	dword [g_engine],ENGINE_EPOLL
+	jne	.socket
+	cmp	dword [g_lsocks+rbx*4],1
+	jbe	.socket
+	dec	r12d
+	add	r12d,[g_workers]
 	jmp	.socket
 .next:
 	inc	ebx

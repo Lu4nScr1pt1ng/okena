@@ -441,6 +441,10 @@ ep_del_socket:
 ep_lrotate:
 	cmp	dword [g_workers],1
 	jbe	.out
+	mov	eax,[g_ep_acc_sid]		; (a socket of its own: nobody to go behind)
+	and	eax,SID_LISTENER
+	cmp	dword [g_lsocks+rax*4],1
+	ja	.out
 	cmp	dword [g_draining],0
 	jne	.out
 	mov	edi,[g_ep_acc_sid]
@@ -550,8 +554,10 @@ ep_accept:
 	and	edi,SID_LISTENER
 	mov	r13d,edi			; listener
 	mov	r12d,ACCEPT_BATCH
-	cmp	dword [g_workers],1
-	jbe	.next
+	cmp	dword [g_workers],1		; a socket of its own (or a lone worker):
+	jbe	.next				; a batch; one every worker waits on: the
+	cmp	dword [g_lsocks+r13*4],1	; one it was woken for
+	ja	.next
 	mov	r12d,1
 .next:
 	dec	r12d
