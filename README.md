@@ -205,7 +205,7 @@ configuration language.
 
 ## Status
 
-okena 0.2.0 is its second release. It is not yet used widely in production,
+okena 0.3.0 is its third release. It is not yet used widely in production,
 and until 1.0 the configuration language may still change between minor
 versions; [CHANGELOG.md](CHANGELOG.md) says what changes and what to write
 instead.

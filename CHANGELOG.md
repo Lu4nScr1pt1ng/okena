@@ -4,19 +4,63 @@ okena follows [semantic versioning](https://semver.org). Until 1.0 the
 configuration language may still change between minor versions; each change
 is listed here, with what to write instead.
 
-## Unreleased
+## 0.3.0 — 2026-11-21
+
+Faster HTTP/2 and HTTP/3 for clients that repeat their requests, HTTP/3
+clients that no longer stall, short-lived connections on many cores, gzip
+twice as fast, and fixes for request bodies and mirrors. No configuration
+from 0.2.0 has to change.
+
+### Install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Lu4nScr1pt1ng/okena/v0.3.0/scripts/install.sh | sh
+docker run -p 8080:8080 ghcr.io/lu4nscr1pt1ng/okena:0.3.0
+```
+
+Or download `okena-0.3.0-linux-x86_64.tar.gz` below and check it against its
+`.sha256`.
 
 ### Faster
 
+- **HTTP/2 and HTTP/3:** each connection keeps what its last request head
+  turned into at each step (the header block's fields, the HTTP/1.1 head
+  made of them, its parse) and what its last answer head was encoded to; the
+  same input again gets the kept result, made by the same checks. Nothing
+  is kept from a block that changed a compression table or a head that
+  failed its checks. A repeated request costs 44% less of the server on
+  HTTP/2 (below h2o's) and 30% less on HTTP/3.
+- **HTTP/3:** a client's Initial is acknowledged at once, before the
+  handshake's signature (RFC 9000 13.2.1): its first RTT sample no longer
+  holds its pacing at our signing time for the whole connection (ngtcp2
+  clients stalled ~1 ms at a time when handshakes waited for one worker);
+  MAX_STREAMS counts a stream done when its answer is complete, as HTTP/2
+  does, so a client never waits for the acknowledgement of answers it has
+  (256 stream entries a connection). baseline-h3: 1.29M -> 1.47M req/s on
+  8 cores.
+- **HTTP/2, HTTP/3:** a request's path 16% shorter in instructions; a
+  repeated Huffman string (a client's :path, which encoders never index)
+  copied, not decoded; static tables looked up by hash.
+- **HTTP/1.1:** the strict parser checks the method, the target and field
+  names 32 bytes at a time.
+- **epoll:** a listening socket for each worker (SO_REUSEPORT): on 64 cores
+  short-lived connections had every worker try one contended accept queue;
+  a read of the client that came short is not followed by one that can only
+  say EAGAIN; held requests (handler holds, `fault delay=`) answered on time,
+  waits to the microsecond with epoll_pwait2 (Linux 5.11+).
 - **gzip:** about twice as fast for the same output: the hash is no longer
   cleared for each answer, matches are compared eight bytes at a time, codes
-  come from tables and go out in one write, the places inside a long match
-  are not hashed (as zlib's fastest levels), CRC-32 eight bytes a step.
-- **epoll:** a read of the client that came short is not followed by one
-  that can only say EAGAIN (one system call less a request); held requests
-  (handler holds, `fault delay=`) answered on time: waits to the µs with
-  epoll_pwait2 (Linux 5.11+, epoll_wait before), and their table looked
-  through no more often than every 200 µs.
+  come from tables and go out in one write, CRC-32 eight bytes a step.
+
+### Fixed
+
+- **epoll:** a request body that came while its backend was connecting was
+  never read: the request hung until the client gave up.
+- **mirror:** a copy whose shadow was still connecting lost the body that
+  came meanwhile.
+- **QUIC:** answers batched with a path MTU probe larger than the path were
+  lost until the loss timer found them (a 10 ms stall a few times a second);
+  timers to the microsecond.
 
 ## 0.2.0 — 2026-11-20
 

@@ -13,7 +13,7 @@
 ; OKENA_CONFIG, when set, is configuration text and takes the place of
 ; the file.
 
-OKENA_VERSION equ '0.2.0'
+OKENA_VERSION equ '0.3.0'
 
 cstring str_cmd_check, 'check',0
 cstring str_cmd_route, 'route',0
