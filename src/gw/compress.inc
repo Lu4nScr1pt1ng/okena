@@ -19,6 +19,7 @@ SF_ZIP		:= 67108864			; S_FLAGS: it goes out compressed
 Z_N		:= 64
 Z_WINCAP	:= 1 shl 17
 Z_HBITS		:= 14
+Z_INSERT_MAX	:= 4				; zip_block: a match this long or less puts its places in the hash
 Z_NEXT		:= 0				; d: free list
 Z_POS		:= 4				; d: in the window: what comes next
 Z_END		:= 8				; d: what is there
@@ -48,7 +49,9 @@ bss
 	g_z_lit		rd 288			; code | bits << 16, as the writer wants them
 	g_z_dist	rb 32
 	g_z_lcode	rw 259			; a length's symbol, its extra bits in the top byte
-	g_z_crc		rd 256
+	g_z_crc		rd 256 * 8		; CRC-32 by slicing-by-8: T0 (bytewise) .. T7
+	g_z_lput	rd 259			; a length's code and extra bits: bits | count << 16
+	g_z_dsym	rb 512			; a distance's symbol: [d - 1], past 256 [256 + (d - 1) >> 7]
 end bss
 
 rodata
@@ -201,6 +204,67 @@ zip_tables:
 	inc	ecx
 	cmp	ecx,256
 	jb	.c
+	; slicing-by-8: T(k)[i] = T(k-1)[i] >> 8 ^ T0[T(k-1)[i] & 255]
+	mov	ecx,256
+.c8:
+	mov	eax,[g_z_crc+rcx*4-256*4]
+	movzx	edx,al
+	shr	eax,8
+	xor	eax,[g_z_crc+rdx*4]
+	mov	[g_z_crc+rcx*4],eax
+	inc	ecx
+	cmp	ecx,256 * 8
+	jb	.c8
+	; a length's code with its extra bits, put at once
+	mov	ecx,3
+.lp:
+	movzx	eax,word [g_z_lcode+rcx*2]
+	movzx	ebx,al				; symbol
+	mov	r12d,eax
+	shr	r12d,8				; extra bits
+	mov	edx,[g_z_lit+257*4+rbx*4]
+	mov	r8d,edx
+	shr	r8d,16				; the code's bits
+	and	edx,0xFFFF
+	movzx	eax,word [z_lbase+rbx*2]
+	mov	r9d,ecx
+	sub	r9d,eax				; the extra value
+	push	rcx
+	mov	ecx,r8d
+	shl	r9d,cl
+	pop	rcx
+	or	edx,r9d
+	add	r8d,r12d
+	shl	r8d,16
+	or	edx,r8d
+	mov	[g_z_lput+rcx*4],edx
+	inc	ecx
+	cmp	ecx,258
+	jbe	.lp
+	; a distance's symbol (as zlib's _dist_code)
+	xor	ecx,ecx
+.ds:
+	lea	edx,[rcx+1]			; d: i + 1, then past 256 (i - 256) * 128 + 1
+	cmp	ecx,256
+	jb	@f
+	lea	edx,[rcx-256]
+	shl	edx,7
+	inc	edx
+@@:
+	xor	ebx,ebx
+.dscan:
+	cmp	ebx,29
+	jae	.dput
+	movzx	eax,word [z_dbase+rbx*2+2]
+	cmp	edx,eax
+	jb	.dput
+	inc	ebx
+	jmp	.dscan
+.dput:
+	mov	[g_z_dsym+rcx],bl
+	inc	ecx
+	cmp	ecx,512
+	jb	.ds
 	pop	r12
 	pop	rbx
 .done:
@@ -386,7 +450,6 @@ zip_head:
 	mov	dword [rax+Z_ISIZE],0
 	mov	dword [rax+Z_DONE],0
 	mov	dword [rax+Z_HEAD],0
-	mov	dword [rax+Z_ABS],0
 	mov	ecx,[g_z_kind]
 	mov	[rax+Z_KIND],ecx
 	test	ecx,ecx
@@ -394,10 +457,10 @@ zip_head:
 	mov	dword [rax+Z_NBITS],0		; (br: nothing waits)
 	mov	qword [rax+Z_BITS],0
 @@:
-	lea	rdi,[rax+Z_HASH]
-	mov	ecx,1 shl Z_HBITS
-	xor	eax,eax
-	rep	stosd
+	; the hash is not cleared (64 KiB an answer): Z_ABS goes on from the last
+	; answer, so what that one left is farther back than this window starts
+	; and is passed over; and a match is the window's own bytes compared,
+	; so even a stale place cannot make a wrong one
 	call	session_ptr
 	or	dword [rax+S_FLAGS],SF_ZIP
 	mov	eax,[g_z_kind]
@@ -446,14 +509,7 @@ zip_feed:
 	mov	eax,[r12+Z_CRC]
 	mov	rsi,r8
 	mov	ecx,r9d
-.crc:
-	movzx	edx,byte [rsi]
-	xor	dl,al
-	shr	eax,8
-	xor	eax,[g_z_crc+rdx*4]
-	inc	rsi
-	dec	ecx
-	jnz	.crc
+	call	z_crc32
 	mov	[r12+Z_CRC],eax
 	call	z_window
 	call	zip_block
@@ -464,6 +520,53 @@ zip_feed:
 	pop	r12
 	pop	rbp
 	pop	rbx
+	ret
+
+; eax = a CRC-32 so far (inverted), rsi/ecx = bytes: eax = it over them too. Eight
+; bytes a step (slicing-by-8), the rest one at a time. rax-rdx, rsi, rdi go.
+z_crc32:
+	cmp	ecx,8
+	jb	.tail
+	push	rbx
+.eight:
+	xor	eax,[rsi]
+	mov	ebx,[rsi+4]
+	movzx	edx,al
+	mov	edi,[g_z_crc+7*1024+rdx*4]
+	movzx	edx,ah
+	xor	edi,[g_z_crc+6*1024+rdx*4]
+	shr	eax,16
+	movzx	edx,al
+	xor	edi,[g_z_crc+5*1024+rdx*4]
+	movzx	edx,ah
+	xor	edi,[g_z_crc+4*1024+rdx*4]
+	movzx	edx,bl
+	xor	edi,[g_z_crc+3*1024+rdx*4]
+	movzx	edx,bh
+	xor	edi,[g_z_crc+2*1024+rdx*4]
+	shr	ebx,16
+	movzx	edx,bl
+	xor	edi,[g_z_crc+1*1024+rdx*4]
+	movzx	edx,bh
+	xor	edi,[g_z_crc+rdx*4]
+	mov	eax,edi
+	add	rsi,8
+	sub	ecx,8
+	cmp	ecx,8
+	jae	.eight
+	pop	rbx
+.tail:
+	test	ecx,ecx
+	jz	.out
+.one:
+	movzx	edx,byte [rsi]
+	xor	dl,al
+	shr	eax,8
+	xor	eax,[g_z_crc+rdx*4]
+	inc	rsi
+	dec	ecx
+	jnz	.one
+.out:
 	ret
 
 ; r12 = context, r8/r9d = a piece: into the window, sliding it when it would not
@@ -606,16 +709,15 @@ zip_close:
 ; r12 = context, rbp = out, the window filled: its LZ77 in fixed codes, from Z_POS
 ; to Z_END, out (Z_BITS, Z_NBITS kept). rax-r11, r13, r14 and rbx are free.
 zip_block:
-	; rbx = the place, r13 = the end, r14 = what is on r10/r11: the bits
+	; rbx = the place, r13 = the end, r10/r11 = the bits waiting, rbp = out
 	mov	ebx,[r12+Z_POS]
 	mov	r13d,[r12+Z_END]
 	mov	r10,[r12+Z_BITS]
 	mov	r11d,[r12+Z_NBITS]
 .next:
-	cmp	ebx,r13d
-	jae	.fed
 	mov	eax,r13d
 	sub	eax,ebx
+	jbe	.fed
 	cmp	eax,3
 	jb	.literal
 	; the hash of three bytes
@@ -635,73 +737,88 @@ zip_block:
 	ja	.literal
 	cmp	edx,ebx
 	ja	.literal			; (not in the window)
-	; how long
-	mov	esi,ebx
-	sub	esi,edx
+	; how long: eight bytes at a time, the first that differs found by bsf
 	mov	eax,r13d
 	sub	eax,ebx
 	cmp	eax,258
 	jbe	@f
 	mov	eax,258
 @@:
-	xor	ecx,ecx				; the length
+	mov	esi,ebx
+	sub	esi,edx
 	lea	r8,[r12+Z_WIN+rsi]
 	lea	r9,[r12+Z_WIN+rbx]
-.same:
+	xor	ecx,ecx
+.eight:
+	lea	r14d,[rcx+8]
+	cmp	r14d,eax
+	ja	.ones
+	mov	r14,[r8+rcx]
+	xor	r14,[r9+rcx]
+	jnz	.differ
+	add	ecx,8
+	jmp	.eight
+.differ:
+	bsf	r14,r14
+	shr	r14d,3
+	add	ecx,r14d
+	jmp	.measured
+.ones:
 	cmp	ecx,eax
 	jae	.measured
-	mov	sil,[r8+rcx]
-	cmp	sil,[r9+rcx]
+	mov	r14b,[r8+rcx]
+	cmp	r14b,[r9+rcx]
 	jne	.measured
 	inc	ecx
-	jmp	.same
+	jmp	.ones
 .measured:
 	cmp	ecx,3
 	jb	.literal
-	; the length: symbol and extra bits
 	mov	r9d,ecx				; the length, for after
-	movzx	eax,word [g_z_lcode+rcx*2]
-	movzx	esi,al				; the symbol, 0..28
+	; the length's code and extra bits (one entry), then the distance's
+	; symbol (a table, as zlib's), its 5-bit code and extra bits: one put
+	mov	eax,[g_z_lput+rcx*4]
 	mov	r8d,eax
-	shr	r8d,8				; extra bits
-	push	rdx
-	mov	eax,[g_z_lit+257*4+rsi*4]
-	call	z_put_code
-	test	r8d,r8d
-	jz	@f
-	movzx	eax,word [z_lbase+rsi*2]
-	mov	ecx,r9d
-	sub	ecx,eax
-	mov	eax,ecx
-	mov	ecx,r8d
-	call	z_put
-@@:
-	pop	rdx
-	; the distance
-	xor	esi,esi
-@@:
-	cmp	esi,29
-	jae	@f
-	movzx	eax,word [z_dbase+rsi*2+2]
-	cmp	edx,eax
+	shr	r8d,16				; their bits
+	and	eax,0xFFFF
+	lea	ecx,[rdx-1]
+	cmp	ecx,256
 	jb	@f
-	inc	esi
-	jmp	@b
+	shr	ecx,7
+	add	ecx,256
 @@:
-	movzx	eax,byte [g_z_dist+rsi]
-	mov	ecx,5
-	call	z_put
-	movzx	ecx,byte [z_dext+rsi]
-	test	ecx,ecx
-	jz	@f
-	movzx	eax,word [z_dbase+rsi*2]
-	sub	edx,eax
-	mov	eax,edx
-	call	z_put
+	movzx	ecx,byte [g_z_dsym+rcx]
+	movzx	r14d,word [z_dbase+rcx*2]
+	sub	edx,r14d			; the distance's extra value
+	movzx	r14d,byte [z_dext+rcx]
+	shl	edx,5
+	movzx	esi,byte [g_z_dist+rcx]
+	or	edx,esi
+	mov	ecx,r8d
+	shl	rdx,cl
+	or	rax,rdx
+	lea	r8d,[r8+r14+5]			; all the bits
+	mov	ecx,r11d
+	shl	rax,cl
+	or	r10,rax
+	add	r11d,r8d
+	cmp	r11d,32
+	jb	@f
+	mov	[rbp],r10d
+	add	rbp,4
+	shr	r10,32
+	sub	r11d,32
 @@:
-	; the places it covers go in the hash, while there are three bytes
+	; the places it covers go in the hash, while there are three bytes, for
+	; a short match only (as zlib's fastest levels: a long one's places are
+	; most of the work and rarely what a later match needs)
 	mov	ecx,r9d
 	add	[r12+Z_ABS],ecx
+	cmp	r9d,Z_INSERT_MAX
+	jbe	@f
+	add	ebx,r9d
+	jmp	.next
+@@:
 	inc	ebx
 	dec	r9d
 	mov	edx,[r12+Z_ABS]
@@ -727,7 +844,20 @@ zip_block:
 .literal:
 	movzx	eax,byte [r12+Z_WIN+rbx]
 	mov	eax,[g_z_lit+rax*4]
-	call	z_put_code
+	mov	r8d,eax
+	shr	r8d,16
+	and	eax,0xFFFF
+	mov	ecx,r11d
+	shl	rax,cl
+	or	r10,rax
+	add	r11d,r8d
+	cmp	r11d,32
+	jb	@f
+	mov	[rbp],r10d
+	add	rbp,4
+	shr	r10,32
+	sub	r11d,32
+@@:
 	inc	ebx
 	inc	dword [r12+Z_ABS]
 	jmp	.next
