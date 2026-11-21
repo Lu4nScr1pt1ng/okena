@@ -31,6 +31,9 @@ H3F_SENDING	:= 2				; an h_send is pending
 H3F_FINISH	:= 4				; the exchange is over: FIN after the ring
 H3F_ENDED	:= 8				; the client ended its request
 H3F_HQ		:= 16				; hq-interop: the body alone, no frames
+H3F_TM		:= S2F_TM			; its head was its connection's H3Q text when
+						; made (the parse memo compares it all the same)
+assert H3F_TM > H3F_HQ
 
 ; its send ring, in its buffers past the HTTP/2 upstream area
 HB_H3TX		:= 196864
@@ -2968,6 +2971,126 @@ qpack_decode:
 
 ; ------------------------------------------------------ the request
 
+; The last request section a connection decoded and the head made of it
+; (its checks passed): the same bytes, with the decoder's table as it was
+; (only the client's inserts change it), are the same head. A section that
+; used the table is acknowledged again (RFC 9204 4.4.1); 0-RTT is not kept.
+H3Q_VALID	:= 0				; d
+H3Q_BLEN	:= 4				; d
+H3Q_INS		:= 8				; q: QC_QP_INS
+H3Q_DROP	:= 16				; q: QC_QP_DROP
+H3Q_CAP		:= 24				; d: QC_QP_CAP
+H3Q_FIN		:= 28				; d: QST_FINHERE (its framing)
+H3Q_RIC		:= 32				; d: it used the dynamic table
+H3Q_LEN		:= 36				; d: the head's length
+H3Q_CHUNKED	:= 40				; d
+H3Q_CLEN	:= 48				; q
+H3Q_BLOCK	:= 64
+H3Q_BCAP	:= 512
+H3Q_TEXT	:= H3Q_BLOCK + H3Q_BCAP
+H3Q_TCAP	:= 512
+H3Q_SIZE	:= H3Q_TEXT + H3Q_TCAP
+assert QM_H3Q + H3Q_SIZE <= 1 shl QFX_SHIFT
+
+; h3_request_new: rdi = the entry, its section in g_h3tmp (QST_HBLEN), r15 =
+; connection. CF clear when it is H3Q's: rax = H3Q. CF set otherwise, the
+; section staged in H3Q (when it may be kept) for h3_rq_keep. Keeps rdi.
+h3_rq_same:
+	mov	dword [g_h3q_staged],0
+	cmp	dword [rdi+QST_EARLY],0
+	jne	.no
+	call	qe_ptr
+	add	rax,QM_H3Q - QE_OFF
+	mov	ecx,[rdi+QST_HBLEN]
+	cmp	ecx,H3Q_BCAP
+	ja	.no
+	cmp	dword [rax+H3Q_VALID],0
+	je	.stage
+	cmp	ecx,[rax+H3Q_BLEN]
+	jne	.stage
+	mov	rdx,[r15+QC_QP_INS]
+	cmp	rdx,[rax+H3Q_INS]
+	jne	.stage
+	mov	rdx,[r15+QC_QP_DROP]
+	cmp	rdx,[rax+H3Q_DROP]
+	jne	.stage
+	mov	edx,[r15+QC_QP_CAP]
+	cmp	edx,[rax+H3Q_CAP]
+	jne	.stage
+	mov	edx,[rdi+QST_FINHERE]
+	cmp	edx,[rax+H3Q_FIN]
+	jne	.stage
+	push	rdi
+	push	rax
+	lea	rsi,[g_h3tmp]
+	lea	rdi,[rax+H3Q_BLOCK]
+	call	mem_same
+	pop	rax
+	pop	rdi
+	jne	.stage
+	clc
+	ret
+.stage:
+	mov	dword [rax+H3Q_VALID],0
+	mov	[rax+H3Q_BLEN],ecx
+	mov	rdx,[r15+QC_QP_INS]
+	mov	[rax+H3Q_INS],rdx
+	mov	rdx,[r15+QC_QP_DROP]
+	mov	[rax+H3Q_DROP],rdx
+	mov	edx,[r15+QC_QP_CAP]
+	mov	[rax+H3Q_CAP],edx
+	mov	edx,[rdi+QST_FINHERE]
+	mov	[rax+H3Q_FIN],edx
+	push	rdi
+	lea	rsi,[g_h3tmp]
+	lea	rdi,[rax+H3Q_BLOCK]
+	rep	movsb
+	pop	rdi
+	mov	dword [g_h3q_staged],1
+.no:
+	stc
+	ret
+
+; h3_request_new, its head written (Q_LEN, Q_CLEN, Q_CHUNKED at r13), r15 =
+; connection: kept with the section staged, when the table is as it was.
+; Keeps all but rax, rcx, rdx, rsi, flags.
+h3_rq_keep:
+	cmp	dword [g_h3q_staged],0
+	je	.out
+	mov	dword [g_h3q_staged],0
+	mov	ecx,[r13+Q_LEN]
+	cmp	ecx,H3Q_TCAP
+	ja	.out
+	call	qe_ptr
+	add	rax,QM_H3Q - QE_OFF
+	mov	rdx,[r15+QC_QP_INS]
+	cmp	rdx,[rax+H3Q_INS]
+	jne	.out
+	mov	rdx,[r15+QC_QP_DROP]
+	cmp	rdx,[rax+H3Q_DROP]
+	jne	.out
+	mov	[rax+H3Q_LEN],ecx
+	mov	edx,[r13+Q_CHUNKED]
+	mov	[rax+H3Q_CHUNKED],edx
+	mov	rdx,[r13+Q_CLEN]
+	mov	[rax+H3Q_CLEN],rdx
+	mov	edx,[g_h3q_ric]
+	mov	[rax+H3Q_RIC],edx
+	push	rdi
+	lea	rsi,[r13+Q_DATA]
+	lea	rdi,[rax+H3Q_TEXT]
+	rep	movsb
+	pop	rdi
+	mov	dword [rax+H3Q_VALID],1
+	or	dword [r14+H_H3F],H3F_TM
+.out:
+	ret
+
+bss
+	g_h3q_staged	dd ?			; h3_rq_same staged the section
+	g_h3q_ric	dd ?			; its decode used the dynamic table
+end bss
+
 ; rdi = the stream's entry, its HEADERS payload in g_h3tmp (QST_HBLEN):
 ; decoded, checked (RFC 9114 4.3), written as an HTTP/1.1 head into a
 ; new session's queue, whose exchange starts. CF on a connection error;
@@ -2980,6 +3103,7 @@ H3N_AUTH	:= 48
 H3N_SCHEME	:= 64
 H3N_CLEN	:= 80				; q
 H3N_SESS	:= 88				; d
+H3N_TM		:= 92				; d: 1 when its head is H3Q's
 H3N_SIZE	:= 104
 h3_request_new:
 	push	rbx
@@ -2990,6 +3114,9 @@ h3_request_new:
 	push	r15
 	sub	rsp,H3N_SIZE
 	mov	[rsp+H3N_ENTRY],rdi
+	mov	dword [rsp+H3N_TM],0
+	call	h3_rq_same			; the same section as the last: its head
+	jnc	.same_head
 	lea	rsi,[g_h3tmp]
 	mov	edx,[rdi+QST_HBLEN]
 	call	qpack_decode
@@ -2998,6 +3125,8 @@ h3_request_new:
 	cmp	eax,-2
 	je	.too_big
 	mov	[rsp+H3N_N],eax
+	mov	rax,[g_qp_ric]			; (the memo's: a section ack again on a hit)
+	mov	[g_h3q_ric],eax
 	cmp	qword [g_qp_ric],0		; the dynamic table used: the client hears
 	je	@f
 	mov	rax,[rsp+H3N_ENTRY]
@@ -3193,6 +3322,7 @@ h3_request_new:
 	cmp	dword [rax+3],'IONS'
 	jne	.too_early
 .safe:
+.alloc:
 	; a session for it
 	call	session_alloc
 	cmp	eax,NIL
@@ -3315,6 +3445,19 @@ h3_request_new:
 	mov	qword [r13+Q_GOT],0
 	mov	rax,[rsp+H3N_CLEN]
 	mov	[r13+Q_CLEN],rax
+	cmp	dword [rsp+H3N_TM],0
+	je	.head_new
+	call	qe_ptr				; H3Q's head
+	lea	rsi,[rax+QM_H3Q-QE_OFF+H3Q_TEXT]
+	mov	ecx,[rax+QM_H3Q-QE_OFF+H3Q_LEN]
+	mov	[r13+Q_LEN],ecx
+	mov	edx,[rax+QM_H3Q-QE_OFF+H3Q_CHUNKED]
+	mov	[r13+Q_CHUNKED],edx
+	lea	rdi,[r13+Q_DATA]
+	rep	movsb
+	or	dword [r14+H_H3F],H3F_TM
+	jmp	.head_done
+.head_new:
 	lea	rdi,[r13+Q_DATA]
 	lea	r11,[r13+Q_DATA+H_IN_CAP-8]
 	mov	rsi,[rsp+H3N_METHOD]
@@ -3441,6 +3584,8 @@ h3_request_new:
 	lea	rax,[r13+Q_DATA]
 	sub	rdi,rax
 	mov	[r13+Q_LEN],edi
+	call	h3_rq_keep			; (the section it was made of staged: kept)
+.head_done:
 	push	rbx
 	mov	ebx,[rsp+8+H3N_SESS]
 	call	http_next_request		; reads its head from the queue
@@ -3484,6 +3629,17 @@ h3_request_new:
 	call	qst_refuse
 	clc
 	jmp	.out
+.same_head:
+	; rax = H3Q: the head made of these bytes (its checks passed)
+	mov	rdx,[rax+H3Q_CLEN]
+	mov	[rsp+H3N_CLEN],rdx
+	mov	dword [rsp+H3N_TM],1
+	cmp	dword [rax+H3Q_RIC],0
+	je	.alloc
+	mov	rax,[rsp+H3N_ENTRY]		; it used the table: acknowledged again
+	mov	rax,[rax+QST_ID]
+	call	qd_section_ack
+	jmp	.alloc
 .decompression:
 	mov	qword [r15+QC_ERR],QPACK_DECOMPRESSION
 	or	dword [r15+QC_FLAGS],QF_APP_ERR
@@ -3870,6 +4026,176 @@ tx_read:
 .out:
 	ret
 
+; r12 = a stream's record: rax = its connection's memos (QM_OFF in its
+; QFX area), 0 when the connection is not the stream's any more. Keeps all
+; but rax.
+h3_qm:
+	push	rcx
+	push	rdx
+	push	r15
+	mov	eax,[r12+H_H3C]
+	mov	ecx,eax
+	shl	rcx,S_SHIFT
+	add	rcx,[g_sess_base]
+	mov	edx,[rcx+S_GEN]
+	cmp	edx,[r12+H_H3CG]
+	jne	.gone
+	test	dword [rcx+S_FLAGS],SF_QC
+	jz	.gone
+	mov	r15d,eax
+	shl	r15,HB_SHIFT
+	add	r15,[g_hbuf_base]
+	call	qe_ptr
+	add	rax,QM_OFF - QE_OFF
+	jmp	.out
+.gone:
+	xor	eax,eax
+.out:
+	pop	r15
+	pop	rdx
+	pop	rcx
+	ret
+
+; h3_head_out's memo (QM_H3R, H2RM_* as HTTP/2's): rsi = the head, ebp = its
+; length, r12 = stream. CF clear on a hit: the section in g_h3tmp+8, rdi past
+; it, bl its status' first character. CF set otherwise, the text kept aside
+; with the encoder's state for h3_rm_keep. Keeps rsi, rbp, r12-r15.
+h3_rm_look:
+	mov	dword [g_rm_staged],0
+	call	h3_qm
+	test	rax,rax
+	jz	.miss
+	lea	rdx,[rax+QM_H3R-QM_OFF]
+	xor	r9d,r9d				; the key: HEAD, okena's own answer
+	test	dword [r12+H_FLAGS],HX_HEAD
+	jz	@f
+	or	r9d,2
+@@:
+	push	rax
+	h_own_answer r12
+	pop	rax
+	jne	@f
+	or	r9d,4
+@@:
+	mov	[g_rm_key],r9d
+	; the encoder's state: capacity, inserts, known, size, its stream's bytes
+	sub	rax,QM_OFF - QE_OFF
+	mov	ecx,[rax+QE_CAP]
+	mov	[g_h3rm_qe],ecx
+	mov	ecx,[rax+QE_INS]
+	mov	[g_h3rm_qe+4],ecx
+	mov	ecx,[rax+QE_KRC]
+	mov	[g_h3rm_qe+8],ecx
+	mov	ecx,[rax+QE_USED]
+	mov	[g_h3rm_qe+12],ecx
+	mov	ecx,dword [rax+QE_END]
+	mov	[g_h3rm_qe+16],ecx
+	mov	[g_h3rm_qe_at],rax
+	cmp	ebp,H2RM_TCAP
+	ja	.miss
+	cmp	dword [rdx+H2RM_VALID],0
+	je	.stage
+	cmp	ebp,[rdx+H2RM_TLEN]
+	jne	.stage
+	cmp	r9d,[rdx+H2RM_KEY]
+	jne	.stage
+	mov	ecx,5
+@@:
+	mov	eax,[g_h3rm_qe+rcx*4-4]
+	cmp	eax,[rdx+H2RM_HT+rcx*4-4]
+	jne	.stage
+	dec	ecx
+	jnz	@b
+	push	rsi
+	push	rdi
+	lea	rdi,[rdx+H2RM_TEXT]
+	mov	ecx,ebp
+	call	mem_same
+	pop	rdi
+	pop	rsi
+	jne	.stage
+	push	rsi
+	lea	rsi,[rdx+H2RM_BLOCK]
+	lea	rdi,[g_h3tmp+8]
+	mov	ecx,[rdx+H2RM_BLEN]
+	rep	movsb
+	pop	rsi
+	movzx	ebx,byte [rdx+H2RM_ST]
+	mov	qword [g_qe],0
+	clc
+	ret
+.stage:
+	mov	dword [rdx+H2RM_VALID],0
+	push	rsi
+	lea	rdi,[rdx+H2RM_TEXT]
+	mov	ecx,ebp
+	rep	movsb
+	pop	rsi
+	mov	[rdx+H2RM_TLEN],ebp
+	mov	[g_h3rm_at],rdx
+	mov	dword [g_rm_staged],1
+.miss:
+	stc
+	ret
+
+; h3_head_out, the section done (g_h3tmp+8 to rdi), bl its status: kept with
+; the text h3_rm_look set aside when encoding it inserted nothing and wrote
+; nothing on our encoder stream. Keeps all but rax, rcx, rdx, flags.
+h3_rm_keep:
+	cmp	dword [g_rm_staged],0
+	je	.out
+	mov	dword [g_rm_staged],0
+	mov	rax,[g_h3rm_qe_at]
+	mov	ecx,[rax+QE_INS]
+	cmp	ecx,[g_h3rm_qe+4]
+	jne	.out
+	mov	ecx,dword [rax+QE_END]
+	cmp	ecx,[g_h3rm_qe+16]
+	jne	.out
+	mov	ecx,[rax+QE_CAP]
+	cmp	ecx,[g_h3rm_qe]
+	jne	.out
+	mov	ecx,[rax+QE_KRC]
+	cmp	ecx,[g_h3rm_qe+8]
+	jne	.out
+	mov	ecx,[rax+QE_USED]
+	cmp	ecx,[g_h3rm_qe+12]
+	jne	.out
+	lea	rcx,[g_h3tmp+8]
+	mov	rax,rdi
+	sub	rax,rcx				; its length
+	cmp	eax,H2RM_BCAP
+	ja	.out
+	mov	rdx,[g_h3rm_at]
+	mov	[rdx+H2RM_BLEN],eax
+	mov	ecx,5
+@@:
+	mov	eax,[g_h3rm_qe+rcx*4-4]
+	mov	[rdx+H2RM_HT+rcx*4-4],eax
+	dec	ecx
+	jnz	@b
+	mov	eax,[g_rm_key]
+	mov	[rdx+H2RM_KEY],eax
+	mov	[rdx+H2RM_ST],bl
+	push	rsi
+	push	rdi
+	lea	rsi,[g_h3tmp+8]
+	lea	rdi,[rdx+H2RM_BLOCK]
+	mov	ecx,[rdx+H2RM_BLEN]
+	rep	movsb
+	pop	rdi
+	pop	rsi
+	mov	dword [rdx+H2RM_VALID],1
+.out:
+	ret
+
+bss
+	align 8
+	g_h3rm_qe_at	dq ?			; h3_rm_look: the connection's encoder state,
+	g_h3rm_at	dq ?			; its memo,
+	g_h3rm_qe	rd 5			; and that state as the section began
+end bss
+
 ; r12 = stream record, r13 = its ring: the HTTP/1.1 head at H_H3PP into a
 ; HEADERS frame (QPACK: :status by static name, the fields literal, no
 ; Huffman). CF when the ring has no room for it yet.
@@ -3884,6 +4210,8 @@ h3_head_out:
 	lea	ebp,[rdx+4]			; the head's length
 	cmp	ebp,13
 	jb	.broken
+	call	h3_rm_look			; the same head as the last: its section
+	jnc	.frame
 	lea	rdi,[g_h3tmp+8]			; the field section (the frame header after)
 	mov	word [rdi],0			; Required Insert Count 0, Delta Base 0
 	add	rdi,2				; (until the table is used: qe_prefix)
@@ -3999,6 +4327,8 @@ h3_head_out:
 .block:
 	call	qe_prefix			; the prefix, once the references are known
 	mov	qword [g_qe],0
+	call	h3_rm_keep
+.frame:
 	; the frame: HEADERS, its length (h3_fhdr), the section
 	lea	rax,[g_h3tmp+8]
 	mov	rcx,rdi

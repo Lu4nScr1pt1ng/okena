@@ -2206,7 +2206,8 @@ h2_hb_add:
 ; stream whose head was made from its connection's H2T (S2F_TM), and whose
 ; text is the head the connection last had parsed (H2P), is given that
 ; parse, its pointers moved to this head; a successful parse of such a head
-; is kept. Anything else is parsed.
+; is kept (an HTTP/3 stream likewise: H3F_TM, its connection's QM_H3P).
+; Anything else is parsed.
 http_parse_head:
 	test	dword [r15+H_H2F],S2F_TM
 	jz	http_parse_request
@@ -2225,11 +2226,23 @@ http_parse_head:
 	cmp	ecx,[r15+H_H2CG]
 	jne	.parse_plain
 	test	dword [rax+S_FLAGS],SF_H2C
+	jnz	.on_h2
+	test	dword [rax+S_FLAGS],SF_QC	; an HTTP/3 stream (H_H3C = H_H2C)
 	jz	.parse_plain
+	push	r15
+	mov	r15d,ebx
+	shl	r15,HB_SHIFT
+	add	r15,[g_hbuf_base]
+	call	qe_ptr
+	pop	r15
+	lea	r14,[rax+QM_H3P-QE_OFF]		; r14 = its H2P
+	jmp	.memo
+.on_h2:
 	mov	r14d,ebx
 	shl	r14,HB_SHIFT
 	add	r14,[g_hbuf_base]
 	add	r14,HB_H2P			; r14 = H2P
+.memo:
 	cmp	dword [r14+H2P_VALID],0
 	je	.parse_keep
 	cmp	r13d,[r14+H2P_TLEN]

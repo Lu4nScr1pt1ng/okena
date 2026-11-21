@@ -38,6 +38,13 @@ assert QE_OFF + QE_SIZE <= 1 shl QFX_SHIFT
 ; the stream table's ring headers (http3.inc), past QE
 QTH_OFF		:= (QE_OFF + QE_SIZE + 63) and not 63
 assert QTH_OFF + QST_N * QTH_SIZE <= 1 shl QFX_SHIFT
+; past them, what a connection's request and answer heads turn into
+; (http3.inc: H3P the parse, H3R the answer's section, H3Q the request's
+; head), as HTTP/2 keeps them (h2.inc: H2P, H2RM, H2T)
+QM_OFF		:= (QTH_OFF + QST_N * QTH_SIZE + 63) and not 63
+QM_H3P		:= QM_OFF
+QM_H3R		:= (QM_H3P + H2P_SIZE + 63) and not 63
+QM_H3Q		:= (QM_H3R + H2RM_SIZE + 63) and not 63
 ; r8 = an entry of the stream table (r15 = connection): rax = its ring's
 ; header. Keeps all but rax.
 qth_of:
