@@ -2864,6 +2864,34 @@ cstring .ws, 'upgrade: websocket',13,10,'connection: Upgrade',13,10,'sec-websock
 ; zeros by an xor), the last eight over what came before; under eight, one
 ; at a time. Keeps all but rax, rcx, rdx, r9, r10, r11.
 ctl_scan:
+	cmp	ecx,16
+	jb	.words
+	; sixteen at a time (the last sixteen over what came before): NUL, LF, CR
+	vpxor	xmm0,xmm0,xmm0
+	mov	eax,0x0A0A0A0A
+	vmovd	xmm1,eax
+	vpshufd	xmm1,xmm1,0
+	mov	eax,0x0D0D0D0D
+	vmovd	xmm2,eax
+	vpshufd	xmm2,xmm2,0
+	sub	ecx,16
+.vec:
+	vmovdqu	xmm3,[rsi+rcx]
+	vpcmpeqb xmm4,xmm3,xmm0
+	vpcmpeqb xmm5,xmm3,xmm1
+	vpor	xmm4,xmm4,xmm5
+	vpcmpeqb xmm5,xmm3,xmm2
+	vpor	xmm4,xmm4,xmm5
+	vpmovmskb eax,xmm4
+	test	eax,eax
+	jnz	.found
+	test	ecx,ecx
+	jz	.clean
+	sub	ecx,16
+	jae	.vec
+	xor	ecx,ecx
+	jmp	.vec
+.words:
 	cmp	ecx,8
 	jb	.small
 	mov	r9,0x0101010101010101

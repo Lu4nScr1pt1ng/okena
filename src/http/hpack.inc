@@ -39,7 +39,16 @@ HPD_DLEN		:= 16				; d: bytes of HPD_DATA in use
 HPD_ENT		:= 32				; entries, oldest first: offset, name length, value length (d each)
 HPD_ESIZE	:= 12
 HPD_DATA		:= HPD_ENT + HPD_ENTRIES_MAX * HPD_ESIZE	; their strings, name then value, oldest first
-HPD_BYTES	:= HPD_DATA + HPACK_TABLE_MAX
+; the last Huffman string decoded and what it gave: the same bytes again (a
+; client's :path, which encoders do not index, the same request after
+; request) are copied, not decoded again
+HPD_HC		:= HPD_DATA + HPACK_TABLE_MAX
+HPD_HCLEN	:= HPD_HC			; d: its coded length, 0 none
+HPD_HCDLEN	:= HPD_HC + 4			; d: its decoded length
+HPC_MAX		:= 64				; coded bytes kept at most
+HPD_HCENC	:= HPD_HC + 8			; HPC_MAX
+HPD_HCDEC	:= HPD_HCENC + HPC_MAX		; HPC_MAX * 8 / 5 rounded up: 103 at most
+HPD_BYTES	:= HPD_HCDEC + 104
 
 ; where a block is decoded to
 HPO_FIELDS	:= 0				; q: HP_* entries
@@ -79,6 +88,7 @@ hpack_init:
 	mov	[rdi+HPD_SIZE],eax
 	mov	[rdi+HPD_COUNT],eax
 	mov	[rdi+HPD_DLEN],eax
+	mov	[rdi+HPD_HCLEN],eax
 	ret
 
 ; ----------------------------------------------------------------- decode
@@ -312,6 +322,35 @@ hpack_decode:
 	jmp	.copy
 .str_huff:
 	mov	ecx,eax
+	; the same coded bytes as the last: what they gave, copied
+	cmp	dword [r14+HPO_OVER],0
+	jne	.str_huff_again
+	test	ecx,ecx
+	jz	.str_huff_again
+	cmp	ecx,[rbx+HPD_HCLEN]
+	jne	.str_huff_again
+	xor	edx,edx
+@@:
+	lea	eax,[rdx+8]
+	cmp	eax,ecx
+	ja	.hc_tail
+	mov	rax,[rsi+rdx]
+	cmp	rax,[rbx+HPD_HCENC+rdx]
+	jne	.str_huff_again
+	add	edx,8
+	jmp	@b
+.hc_tail:
+	cmp	edx,ecx
+	jae	.hc_same
+	mov	al,[rsi+rdx]
+	cmp	al,[rbx+HPD_HCENC+rdx]
+	jne	.str_huff_again
+	inc	edx
+	jmp	.hc_tail
+.hc_same:
+	mov	r8d,[rbx+HPD_HCDLEN]
+	lea	rcx,[rbx+HPD_HCDEC]
+	jmp	.copy
 .str_huff_again:
 	push	rsi
 	push	rcx
@@ -340,11 +379,34 @@ hpack_decode:
 	ret
 .str_huff_ok:
 	cmp	dword [r14+HPO_OVER],0
-	je	@f
+	je	.hc_keep
 	mov	r8,rax
 	sub	r8,rdx
 	sub	[r14+HPO_FMAX],r8d
 	js	.copy_bomb
+	jmp	@f
+.hc_keep:
+	; kept for the next time the same bytes come (rsi/ecx coded, rdx..rax decoded)
+	cmp	ecx,HPC_MAX
+	ja	@f
+	push	rax
+	push	rcx
+	push	rdi
+	push	rsi
+	mov	r8,rax
+	sub	r8,rdx				; decoded length (at most 103 for 64 coded)
+	mov	[rbx+HPD_HCLEN],ecx
+	mov	[rbx+HPD_HCDLEN],r8d
+	lea	rdi,[rbx+HPD_HCENC]
+	rep	movsb
+	mov	rsi,rdx
+	mov	ecx,r8d
+	lea	rdi,[rbx+HPD_HCDEC]
+	rep	movsb
+	pop	rsi
+	pop	rdi
+	pop	rcx
+	pop	rax
 @@:
 	mov	rcx,rax				; the end
 	sub	rcx,[r14+HPO_BUF]

@@ -676,15 +676,40 @@ write_all:
 
 ; rdi = output, rsi = NUL-terminated text. rdi = after it.
 fmt_cstr:
-@@:
+	; eight bytes at a time while a load stays in its page and has no NUL
+	; (a word has a zero byte when (w - 0x01..) & ~w & 0x80.. is not 0)
+	push	rcx
+	push	rdx
+.word:
+	mov	eax,esi
+	and	eax,4095
+	cmp	eax,4096 - 8
+	ja	.byte
+	mov	rax,[rsi]
+	mov	rcx,0x0101010101010101
+	mov	rdx,rax
+	sub	rdx,rcx
+	not	rax
+	and	rdx,rax
+	not	rax
+	mov	rcx,0x8080808080808080
+	test	rdx,rcx
+	jnz	.byte
+	mov	[rdi],rax
+	add	rdi,8
+	add	rsi,8
+	jmp	.word
+.byte:
 	mov	al,[rsi]
 	test	al,al
-	jz	@f
+	jz	.done
 	mov	[rdi],al
 	inc	rdi
 	inc	rsi
-	jmp	@b
-@@:
+	jmp	.byte
+.done:
+	pop	rdx
+	pop	rcx
 	ret
 
 ; rdi = output, rsi/edx = text as a label value (" and \ escaped).
