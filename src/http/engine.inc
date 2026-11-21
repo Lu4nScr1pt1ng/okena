@@ -29,6 +29,9 @@ h_recv:
 	jmp	h_recv_raw
 ; the upstream side: a socket, or a stream on an HTTP/2 connection
 h_recv_up:
+	xor	eax,eax				; an answer's first read (g_up_first),
+	xchg	eax,[g_up_first]		; taken here whatever reads it
+	mov	[g_up_cur],eax
 	test	byte [g_ad_rep+rbx],ADREP_P
 	jnz	addon_replay
 	call	session_ptr
@@ -43,6 +46,16 @@ h_recv_up:
 	call	fcgi_active
 	test	eax,eax
 	jnz	fcgi_recv			; FastCGI: records, read back as HTTP/1.1
+	; from the socket: on epoll, an answer's first read waits for its event
+	; (the request has just gone: a read now would say EAGAIN)
+	cmp	dword [g_up_cur],0
+	je	h_recv_raw
+	cmp	dword [g_engine],ENGINE_EPOLL
+	jne	h_recv_raw
+	mov	eax,ebx
+	shl	rax,H_SHIFT
+	add	rax,[g_http_base]
+	or	dword [rax+H_EPPEEK],HEP_UPWAIT
 ; the socket itself, whatever TLS is above it
 h_recv_raw:
 	cmp	dword [g_engine],ENGINE_EPOLL
@@ -357,12 +370,9 @@ h_connect:
 	jmp	h_sqe_fd
 .epoll_reuse:
 	mov	[r12+S_UPFD],eax
-	; its epoll registration still names the session that parked it
+	; its owner, in memory (registered once: EK_UPFD)
 	mov	edi,eax
-	mov	edx,EK_UPSTREAM
-	call	ep_session_data
-	mov	esi,EPOLLIN or EPOLLOUT or EPOLLRDHUP or EPOLLET
-	call	ep_mod
+	call	upfd_own_session
 	pop	r13
 	pop	r12
 	jmp	http_connected
@@ -600,6 +610,9 @@ H_RESULT	:= 168		; q
 H_RNEXT		:= 176		; d: ready queue link
 H_EPPEEK	:= 392		; d: MSG_PEEK for the waiting receive, or 0; HEP_DRY
 HEP_DRY		:= 0x80000000	; H_EPPEEK: the client's last read came short (hep_recv)
+HEP_UPWAIT	:= 1 shl 30	; H_EPPEEK: the request has just gone: its answer cannot be
+				; there yet; its first bytes bring an event (registered once,
+				; edge-triggered) and that reads (hep_event)
 H_RGEN		:= 180		; d: generation when queued
 assert H_RCK + CK_SIZE <= H_EPOP
 
@@ -618,6 +631,8 @@ bss
 						; shedding)
 	g_force_server	dd ?		; NIL, or the server the next connect uses
 	g_h_peek	dd ?		; MSG_PEEK for the next h_recv, once
+	g_up_first	dd ?		; the next h_recv_up is an answer's first read
+	g_up_cur	dd ?		; (h_recv_up: this one is)
 end bss
 
 ; edi = fd, esi = events, rdx = data: change a registration.
@@ -651,9 +666,14 @@ hep_recv:
 	test	eax,eax
 	jnz	.try
 	test	ecx,ecx				; (SIDE_CLIENT)
-	jnz	.try
+	jz	@f
+	btr	dword [r15+H_EPPEEK],30		; HEP_UPWAIT: the answer, once it comes
+	jc	.wait_event
+	jmp	.try
+@@:
 	test	dword [r15+H_EPPEEK],HEP_DRY
 	jz	.try
+.wait_event:
 	; the client's last read took all there was (it came short): this one
 	; would only say EAGAIN - the next bytes bring an event (edge-triggered),
 	; and that tries it (hep_event). One call less a request.
@@ -682,7 +702,7 @@ hep_try_recv:
 	mov	rsi,[r15+H_EPBUF]
 	mov	edx,[r15+H_EPLEN]
 	mov	r10d,[r15+H_EPPEEK]
-	and	r10d,not HEP_DRY
+	and	r10d,not (HEP_DRY or HEP_UPWAIT)
 	xor	r8d,r8d
 	xor	r9d,r9d
 	mov	eax,SYS_recvfrom		; a read, or a peek

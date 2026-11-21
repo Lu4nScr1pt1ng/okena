@@ -37,7 +37,16 @@ bss
 	g_hd_watched	rb UPSLOT_MAX		; io_uring: 1 while a watch is posted
 	g_take_peek	db ?			; pool_take: the one taken had none (h_connect peeks)
 	g_hd_server	rd UPSLOT_MAX		; pooled handle -> its server
+	g_upfd_own	rq UPSLOT_MAX		; epoll: an upstream descriptor's owner (UPFD_*)
 end bss
+; epoll: an upstream descriptor is registered once (EK_UPFD, its number) and
+; whose it is lives here: a session (UPFD_SESS, its generation and number as
+; ep_session_data puts them) or a pool (UPFD_POOL). It goes from one to the
+; other in memory: the registration's data changing (EPOLL_CTL_MOD) was two
+; system calls a request through a pool (a third of HTTP/1.1's rate).
+UPFD_SESS	:= 1 shl 62
+UPFD_POOL	:= 1 shl 61
+UPFD_MASK	:= (1 shl 56) - 1
 
 ; An idle connection is watched while it sits in a pool: when the
 ; backend closes it or sends anything, it leaves the pool at once
@@ -55,7 +64,7 @@ end bss
 ;   and another taken, so the request (even with a body) never meets it.
 ;   `connect warm=` ones are watched at once (their connect's outcome comes
 ;   through it), and so are TLS ones (a kTLS socket may hold a ticket).
-;   epoll: the descriptor's registration names the pool (EK_POOL).
+;   epoll: the descriptor's owner is the pool (g_upfd_own: UPFD_POOL).
 
 EK_POOL		:= 4
 
@@ -81,17 +90,14 @@ pool_watch:
 	mov	[rax+SQE_USER_DATA],rcx
 	ret
 .epoll:
-	mov	edi,esi
-	mov	edx,esi
-	mov	rcx,EK_POOL shl 56
-	or	rdx,rcx
-	mov	esi,EPOLLIN or EPOLLRDHUP or EPOLLET
-	jmp	ep_mod
+	mov	rax,UPFD_POOL
+	mov	[g_upfd_own+rsi*8],rax
+	ret
 
 ; eax = handle just taken from a pool: stop watching it.
 pool_unwatch:
 	cmp	dword [g_engine],ENGINE_EPOLL
-	je	.done				; the session's ep_mod replaces it
+	je	.done				; the session takes it in g_upfd_own
 	push	rax
 	mov	ecx,eax
 	inc	dword [g_us_wgen+rcx*4]		; a late completion is now stale
@@ -570,10 +576,12 @@ warm_one:
 	cmp	eax,-EINPROGRESS
 	jne	.e_close
 @@:
-	mov	edi,r12d			; registered as a pooled one (EK_POOL)
-	mov	esi,EPOLLIN or EPOLLRDHUP or EPOLLET
+	mov	rax,UPFD_POOL			; registered once (EK_UPFD), the pool's
+	mov	[g_upfd_own+r12*8],rax
+	mov	edi,r12d
+	mov	esi,EPOLLIN or EPOLLOUT or EPOLLRDHUP or EPOLLET
 	mov	edx,r12d
-	mov	rcx,EK_POOL shl 56
+	mov	rcx,EK_UPFD shl 56
 	or	rdx,rcx
 	call	ep_add
 	mov	[g_hd_server+r12*4],ebx

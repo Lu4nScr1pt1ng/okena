@@ -23,6 +23,7 @@ EK_CLIENT	:= 0
 EK_UPSTREAM	:= 1
 EK_LISTENER	:= 2
 EK_SIGNAL	:= 3
+EK_UPFD		:= 8				; an upstream descriptor: its owner in g_upfd_own
 
 ENGINE_URING	:= 0
 ENGINE_EPOLL	:= 1
@@ -458,6 +459,8 @@ ep_lrotate:
 ep_dispatch:
 	mov	rax,rsi
 	shr	rax,56
+	cmp	eax,EK_UPFD
+	je	.upfd
 	cmp	eax,EK_LISTENER
 	je	.listener
 	cmp	eax,EK_SIGNAL
@@ -541,6 +544,24 @@ ep_dispatch:
 	; an idle pooled connection: the backend closed it or sent something
 	mov	edi,esi
 	jmp	pool_drop_handle
+.upfd:
+	; an upstream descriptor: the event is its owner's now
+	mov	eax,esi
+	mov	rcx,[g_upfd_own+rax*8]
+	bt	rcx,62
+	jc	.upfd_session
+	bt	rcx,61
+	jnc	.stale				; (none: not one of ours any more)
+	test	edi,EPOLLIN or EPOLLRDHUP or EPOLLHUP or EPOLLERR
+	jz	.stale				; (writable while idle: nothing to do)
+	mov	edi,eax
+	jmp	pool_drop_handle
+.upfd_session:
+	mov	rsi,UPFD_MASK
+	and	rsi,rcx
+	mov	rcx,EK_UPSTREAM shl 56
+	or	rsi,rcx
+	jmp	ep_dispatch
 .signal:
 	sub	rsp,8
 	mov	edi,[g_sigfd]
@@ -718,6 +739,21 @@ ep_session_data:
 	or	rdx,rax
 	ret
 
+; edi = an upstream descriptor, ebx = session: the session owns it now
+; (g_upfd_own). Keeps all but rax, rcx, rdx.
+upfd_own_session:
+	push	rdi
+	mov	edx,EK_UPSTREAM
+	call	ep_session_data			; (EK_UPSTREAM, its generation, its number)
+	pop	rdi
+	mov	rcx,UPFD_MASK
+	and	rdx,rcx
+	mov	rcx,UPFD_SESS
+	or	rdx,rcx
+	mov	eax,edi
+	mov	[g_upfd_own+rax*8],rdx
+	ret
+
 ; edi = session: connect to a server of its pool.
 ep_connect:
 	push	rbx
@@ -777,9 +813,11 @@ ep_connect:
 	syscall
 @@:
 	mov	edi,[r12+S_UPFD]
+	call	upfd_own_session		; (registered once: its owner changes in memory)
 	mov	esi,EPOLLIN or EPOLLOUT or EPOLLRDHUP or EPOLLET
-	mov	edx,EK_UPSTREAM
-	call	ep_session_data
+	mov	edx,edi
+	mov	rcx,EK_UPFD shl 56
+	or	rdx,rcx
 	call	ep_add
 	; the pool's `source`: bound to the next address, the port left to the
 	; connect (so a port is free per destination, not per host)

@@ -3104,6 +3104,7 @@ http_start_response:
 	call	hints_inject
 	test	eax,eax
 	jnz	http_resp_head
+	mov	dword [g_up_first],1		; (its answer's first read: h_recv_up)
 	mov	ecx,SIDE_UP
 	mov	rdi,[r15+H_BUF]
 	lea	rdi,[rdi+HB_UP]
