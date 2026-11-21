@@ -19,8 +19,8 @@ def check(name, ok, detail=""):
     fails += not ok
 
 
-MESSY = '\n\n# top comment\nokena {   workers 1   \n      }\npool p {\nserver 127.0.0.1:9   # the one\n  }\n\n\n\nhttp :8080 {\n route /v1/* { rewrite path /v1/{*} -> /{*}; to pool p }\n    route /x {\n respond 200 "a { b # c"\n}\n  }\n\n'
-WANT = '# top comment\nokena {   workers 1\n}\npool p {\n    server 127.0.0.1:9   # the one\n}\n\nhttp :8080 {\n    route /v1/* { rewrite path /v1/{*} -> /{*}; to pool p }\n    route /x {\n        respond 200 "a { b # c"\n    }\n}\n'
+MESSY = '\n\n# top comment\nokena { overload off;   workers 1   \n      }\npool p {\nserver 127.0.0.1:9   # the one\n  }\n\n\n\nhttp :8080 {\n route /v1/* { rewrite path /v1/{*} -> /{*}; to pool p }\n    route /x {\n respond 200 "a { b # c"\n}\n  }\n\n'
+WANT = '# top comment\nokena { overload off;   workers 1\n}\npool p {\n    server 127.0.0.1:9   # the one\n}\n\nhttp :8080 {\n    route /v1/* { rewrite path /v1/{*} -> /{*}; to pool p }\n    route /x {\n        respond 200 "a { b # c"\n    }\n}\n'
 
 with tempfile.TemporaryDirectory() as d:
     f = pathlib.Path(d) / "okena.conf"

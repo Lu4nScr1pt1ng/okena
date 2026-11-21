@@ -179,7 +179,7 @@ def main():
     listen(B2, keep)
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-upstream-"))
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 1; io_engine {ENGINE} }}
+    conf.write_text(f"""okena {{ overload off; workers 1; io_engine {ENGINE} }}
 pool b {{ server 127.0.0.1:{B} }}
 pool k {{ server 127.0.0.1:{B2} }}
 http 127.0.0.1:{L} {{

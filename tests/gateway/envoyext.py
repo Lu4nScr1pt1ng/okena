@@ -83,7 +83,7 @@ def main():
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     g = subprocess.Popen([str(SRV), f"127.0.0.1:{G}"])
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s }}
+    conf.write_text(f"""okena {{ overload off; workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s }}
 addon authz {{
     run {EXT} -authz 127.0.0.1:{G}
     timeout 1s

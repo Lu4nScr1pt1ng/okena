@@ -64,7 +64,7 @@ rf = tmp / "api.conf"
 hf = tmp / "shop.conf"
 conf = tmp / "okena.conf"
 conf.write_text(f"""
-okena {{ workers 1; io_engine {ENGINE}; admin unix:{tmp}/admin.sock; last_good on; drain delay=0s timeout=1s }}
+okena {{ overload off; workers 1; io_engine {ENGINE}; admin unix:{tmp}/admin.sock; last_good on; drain delay=0s timeout=1s }}
 pool a {{ server 127.0.0.1:{BA} }}
 pool b {{ server 127.0.0.1:{BB} }}
 http 127.0.0.1:{L} {{

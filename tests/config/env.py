@@ -58,7 +58,7 @@ threading.Thread(target=s.serve_forever, daemon=True).start()
 tmp = pathlib.Path(tempfile.mkdtemp())
 conf = tmp / "okena.conf"
 text = f"""
-okena {{ workers 1; io_engine {ENGINE}; admin unix:{tmp}/admin.sock; last_good on; drain delay=0s timeout=1s }}
+okena {{ overload off; workers 1; io_engine {ENGINE}; admin unix:{tmp}/admin.sock; last_good on; drain delay=0s timeout=1s }}
 pool p {{ server ${{env:OK_BACKEND}} }}
 http 127.0.0.1:${{env:OK_PORT}} {{
     route /hi {{ respond 200 "${{env:OK_GREETING:-hello}}, ${{env:OK_WHO}}" }}

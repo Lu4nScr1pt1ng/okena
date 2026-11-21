@@ -212,7 +212,7 @@ def main():
            "-addext", f"subjectAltName={san}", "-days", "2", "-out", f"{n}.pem")
     threading.Thread(target=backend, daemon=True).start()
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 2; io_engine {ENGINE} }}
+    conf.write_text(f"""okena {{ overload off; workers 2; io_engine {ENGINE} }}
 http 127.0.0.1:{LST} {{
     tls {{ cert {tmp / 'leaf.pem'}; key {tmp / 'leaf.key'} }}
     route /* {{ to 127.0.0.1:{BACK} }}
@@ -382,7 +382,7 @@ http 127.0.0.1:{DLST} {{
 
     # no kTLS (OKENA_KTLS=off): the 1.2 records sealed and opened by okena itself
     uconf = tmp / "u.conf"
-    uconf.write_text(f"""okena {{ workers 1; io_engine {ENGINE} }}
+    uconf.write_text(f"""okena {{ overload off; workers 1; io_engine {ENGINE} }}
 http 127.0.0.1:{ULST} {{
     tls {{
         cert {tmp / 'leaf.pem'} key={tmp / 'leaf.key'}

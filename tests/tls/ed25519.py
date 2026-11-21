@@ -63,7 +63,7 @@ def main():
     sh("openssl", "genpkey", "-algorithm", "ed25519", "-out", "other.key")
     route = "route /* { redirect 302 https://okena.test/x }"
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 2; io_engine {ENGINE} }}
+    conf.write_text(f"""okena {{ overload off; workers 2; io_engine {ENGINE} }}
 http 127.0.0.1:{ED} {{
     tls {{ cert {tmp}/ed.pem; key {tmp}/ed.key }}
     {route}

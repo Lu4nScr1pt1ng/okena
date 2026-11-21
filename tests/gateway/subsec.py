@@ -95,7 +95,7 @@ backend(FAST, 0)
 tmp = pathlib.Path(tempfile.mkdtemp())
 conf = tmp / "okena.conf"
 conf.write_text(f"""
-okena {{ workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s }}
+okena {{ overload off; workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s }}
 pool slow {{ server 127.0.0.1:{SLOW} }}
 pool slowfast {{ balance first; server 127.0.0.1:{SLOW}; server 127.0.0.1:{FAST} }}
 pool slow2 {{ balance round-robin; server 127.0.0.1:{SLOW}; server 127.0.0.1:{SLOW2} }}

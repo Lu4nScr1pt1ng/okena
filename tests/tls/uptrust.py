@@ -88,7 +88,7 @@ tls_server(SELF, "self.pem", "self.key")
 
 conf = tmp / "okena.conf"
 conf.write_text(f"""
-okena {{ workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s }}
+okena {{ overload off; workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s }}
 pool bundle {{ server 127.0.0.1:{CHAINED}; host api.backend.test; tls {{ trust {tmp}/bundle.pem }} }}
 pool system {{ server 127.0.0.1:{CHAINED}; host api.backend.test; tls {{ trust system }} }}
 pool wrong {{ server 127.0.0.1:{CHAINED}; host api.backend.test; tls {{ trust {tmp}/other.pem }} }}

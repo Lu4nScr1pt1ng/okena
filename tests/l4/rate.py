@@ -83,7 +83,7 @@ threading.Thread(target=backend, daemon=True).start()
 tmp = pathlib.Path(tempfile.mkdtemp())
 conf = tmp / "okena.conf"
 conf.write_text(f"""
-okena {{ workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s }}
+okena {{ overload off; workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s }}
 tcp 127.0.0.1:{LP} {{ limit_rate 200KiB upload=100KiB; to 127.0.0.1:{BACK} }}
 tcp 127.0.0.1:{LA} {{ limit_rate 200KiB after=200KiB; to 127.0.0.1:{BACK} }}
 tcp 127.0.0.1:{LF} {{ to 127.0.0.1:{BACK} }}

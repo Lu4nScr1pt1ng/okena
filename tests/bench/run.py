@@ -240,7 +240,7 @@ def main():
                     tmp / "k.pem"], check=True, capture_output=True)
     subprocess.run(["openssl", "req", "-new", "-x509", "-key", tmp / "k.pem", "-subj", "/CN=localhost",
                     "-days", "2", "-out", tmp / "c.pem"], check=True, capture_output=True)
-    conf = (f"okena {{ workers 1 }}\nhttp 127.0.0.1:{HTTPS} {{\n    http2 on\n"
+    conf = (f"okena {{ overload off; workers 1 }}\nhttp 127.0.0.1:{HTTPS} {{\n    http2 on\n"
             f"    tls {{ cert {tmp / 'c.pem'}; key {tmp / 'k.pem'} }}\n"
             f"    route /* {{ to 127.0.0.1:{BACK} }}\n}}\n"
             f"http 127.0.0.1:{H2P} {{\n    http2 on\n    route /* {{ to 127.0.0.1:{BACK} }}\n}}\n")

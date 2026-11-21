@@ -161,7 +161,7 @@ def main():
     listen(B_BIG, big)
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-failures-"))
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 1; io_engine {ENGINE} }}
+    conf.write_text(f"""okena {{ overload off; workers 1; io_engine {ENGINE} }}
 pool ok {{ server 127.0.0.1:{B_OK} }}
 pool dead {{ server 127.0.0.1:{B_DEAD} }}
 pool flaky {{ server 127.0.0.1:{B_FLAKY} }}

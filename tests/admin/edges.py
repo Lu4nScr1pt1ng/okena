@@ -61,7 +61,7 @@ def main():
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-admedges-"))
     (tmp / "tok").write_bytes(TOKEN + b"\n")
     conf = tmp / "okena.conf"
-    conf.write_text(f"okena {{ workers 1; metrics 127.0.0.1:{M} token={tmp}/tok }}\n"
+    conf.write_text(f"okena {{ overload off; workers 1; metrics 127.0.0.1:{M} token={tmp}/tok }}\n"
                     f"http 127.0.0.1:{L} {{ route /* {{ respond 404 }} }}\n")
     log = tmp / "log"
     p = subprocess.Popen([str(BIN), "-c", str(conf)], stderr=open(log, "w"))

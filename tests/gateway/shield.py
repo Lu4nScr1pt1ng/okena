@@ -79,7 +79,7 @@ def get(port, path, headers=None):
 def main():
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-shield-"))
     threading.Thread(target=S(("127.0.0.1", ORIGIN), H).serve_forever, daemon=True).start()
-    base = f"okena {{ workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s; cdn_loop examplecdn }}\n"
+    base = f"okena {{ overload off; workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s; cdn_loop examplecdn }}\n"
     one = base.replace("workers 2", "workers 1")      # (a shield: one memory, so a hit is a hit)
     confs = {
         "s1": one + f"pool o {{ server 127.0.0.1:{ORIGIN} }}\nhttp 127.0.0.1:{S1} {{ route /* {{ cache 1h; response header set x-shield s1; to pool o }} }}\n",

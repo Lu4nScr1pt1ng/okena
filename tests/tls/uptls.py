@@ -203,7 +203,7 @@ def main():
     threading.Thread(target=tls13_backend, args=(BACKED, "ed.pem", "ed.key"), daemon=True).start()
     threading.Thread(target=dribble_relay, args=(DRIB, BACK), daemon=True).start()
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 2; io_engine {ENGINE} }}
+    conf.write_text(f"""okena {{ overload off; workers 2; io_engine {ENGINE} }}
 http 127.0.0.1:{LST}    {{ route /* {{ to pool good }} }}
 http 127.0.0.1:{LST_BAD}  {{ route /* {{ to pool badanchor }} }}
 http 127.0.0.1:{LST_HOST} {{ route /* {{ to pool plain }} }}

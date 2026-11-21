@@ -103,7 +103,7 @@ def main():
     dead.close()
     sock = tmp / "admin.sock"
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 2; io_engine {ENGINE}; metrics 127.0.0.1:{METRICS} token={tmp}/token; admin unix:{sock} }}
+    conf.write_text(f"""okena {{ overload off; workers 2; io_engine {ENGINE}; metrics 127.0.0.1:{METRICS} token={tmp}/token; admin unix:{sock} }}
 pool api {{ health tcp every=200ms fall=1 rise=1; server 127.0.0.1:{BACK}; server localhost:{BACK}; server 127.0.0.1:{dport} }}
 pool found {{ discover file {tmp}/found.list }}
 pool echo {{ server 127.0.0.1:{ECHO} }}
@@ -303,14 +303,14 @@ http 127.0.0.1:{TLSL} {{
     def bad(what, token):
         (tmp / "t2").write_text(token)
         g = tmp / "bad.conf"
-        g.write_text(f"okena {{ metrics 127.0.0.1:1 token={tmp}/t2 }}\npool b {{ server 127.0.0.1:1 }}\nhttp 127.0.0.1:2 {{ route /* {{ to pool b }} }}\n")
+        g.write_text(f"okena {{ overload off; metrics 127.0.0.1:1 token={tmp}/t2 }}\npool b {{ server 127.0.0.1:1 }}\nhttp 127.0.0.1:2 {{ route /* {{ to pool b }} }}\n")
         r = subprocess.run([str(BIN), "check", str(g)], capture_output=True, text=True, timeout=10)
         check(f"{what}: refused", r.returncode != 0, r.stderr[-200:])
     bad("a token too short to guard", "short\n")
     bad("a token with a space", "this has a space in it, too long\n")
     bad("an empty file", "")
     g = tmp / "bad.conf"
-    g.write_text(f"okena {{ metrics 127.0.0.1:1 token={tmp}/nothing }}\npool b {{ server 127.0.0.1:1 }}\nhttp 127.0.0.1:2 {{ route /* {{ to pool b }} }}\n")
+    g.write_text(f"okena {{ overload off; metrics 127.0.0.1:1 token={tmp}/nothing }}\npool b {{ server 127.0.0.1:1 }}\nhttp 127.0.0.1:2 {{ route /* {{ to pool b }} }}\n")
     check("a token file that is not there: refused", subprocess.run([str(BIN), "check", str(g)], capture_output=True).returncode != 0)
     shutil.rmtree(tmp, ignore_errors=True)
     print(f"top {ENGINE}: {'all passed' if not fails else f'{fails} failed'}")

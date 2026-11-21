@@ -5,7 +5,7 @@ wildcard's skipped with HTTP-01), one order each, verified; a plain http request
 for such a name answered 308 to https://NAME:PORT/the-target (no port for 443,
 case and the Host's port ignored, an `acme NAME` line's names too); other names
 and `redirect off` blocks' go on to the routes; the challenges still answered.
-Without okena { acme }: Let's Encrypt and /var/lib/okena/acme, as okena certs
+Without okena { overload off; acme }: Let's Encrypt and /var/lib/okena/acme, as okena certs
 and okena check say."""
 import datetime
 import http.client
@@ -78,7 +78,7 @@ def main():
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     threading.Thread(target=http.server.ThreadingHTTPServer(("127.0.0.1", BACK), A.Back).serve_forever, daemon=True).start()
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 1; io_engine {ENGINE}; drain delay=0s timeout=1s
+    conf.write_text(f"""okena {{ overload off; workers 1; io_engine {ENGINE}; drain delay=0s timeout=1s
     acme {tmp}/acme ca=https://localhost:{CA}/dir trust={tmp}/ca.pem }}
 pool b {{ server 127.0.0.1:{BACK} }}
 http 127.0.0.1:{PLAIN} {{ route /* {{ to pool b }} }}
@@ -126,7 +126,7 @@ http 127.0.0.1:{TLS3} {{
             p.wait(10)
         except subprocess.TimeoutExpired:
             p.kill()
-    # no okena { acme }: Let's Encrypt, /var/lib/okena/acme (compiled only)
+    # no okena { overload off; acme }: Let's Encrypt, /var/lib/okena/acme (compiled only)
     conf2 = tmp / "le.conf"
     conf2.write_text(f"""pool b {{ server 127.0.0.1:{BACK} }}
 http 127.0.0.1:{TLS} {{
@@ -135,7 +135,7 @@ http 127.0.0.1:{TLS} {{
 }}
 """)
     r = subprocess.run([str(BIN), "certs", "-c", str(conf2)], capture_output=True, text=True, timeout=20)
-    check("no okena { acme }: auto all the same (okena certs)",
+    check("no okena { overload off; acme }: auto all the same (okena certs)",
           r.returncode == 0 and any(l.startswith("le.auto.test") and "acme" in l for l in r.stdout.splitlines()),
           r.stdout + r.stderr)
     r = subprocess.run([str(BIN), "check", "-c", str(conf2)], capture_output=True, text=True, timeout=20)

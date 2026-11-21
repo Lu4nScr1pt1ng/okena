@@ -90,7 +90,7 @@ def main():
     d1, d2 = backend("d1", 503), backend("d2", 503)
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-outlier-"))
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 1; io_engine {ENGINE} }}
+    conf.write_text(f"""okena {{ overload off; workers 1; io_engine {ENGINE} }}
 pool e {{ balance round-robin; server {good}; server {bad}; outlier errors=2 eject=2s }}
 pool z {{ balance round-robin; server {z1}; server {z2}; outlier errors=0; retry_budget 0% min=1/s }}
 pool m {{ balance round-robin; server {m1}; server {m2}; outlier errors=1 eject=30s max_ejected=50%; retry_budget 0% min=1/s }}

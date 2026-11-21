@@ -112,7 +112,7 @@ def main():
     back = http.server.ThreadingHTTPServer(("127.0.0.1", BACK), H)
     threading.Thread(target=back.serve_forever, daemon=True).start()
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 1; io_engine {ENGINE}; drain delay=3s timeout=1s; admin unix:{tmp}/a.sock
+    conf.write_text(f"""okena {{ overload off; workers 1; io_engine {ENGINE}; drain delay=3s timeout=1s; admin unix:{tmp}/a.sock
     bird {tmp}/bird.ctl protocol=anycast pool=web }}
 pool web {{ server 127.0.0.1:{BACK}; health tcp every=200ms fall=1 rise=1 }}
 http 127.0.0.1:{LST} {{ route /* {{ to pool web }} }}

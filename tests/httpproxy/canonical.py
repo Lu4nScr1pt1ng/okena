@@ -48,7 +48,7 @@ def ask(port, host, target="/a/b?x=1", body=b""):
 def main():
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-canon-"))
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 1; io_engine {ENGINE} }}
+    conf.write_text(f"""okena {{ overload off; workers 1; io_engine {ENGINE} }}
 http 127.0.0.1:{LA} {{ canonical example.com; route /* {{ respond 200 "here" }} }}
 http 127.0.0.1:{LW} {{ canonical www.example.org; route /* {{ respond 200 "here" }} }}
 tcp 127.0.0.1:{BASE + 2} {{ to 127.0.0.1:9 }}

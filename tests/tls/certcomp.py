@@ -157,7 +157,7 @@ def main():
     run("x509", "-req", "-in", "leaf.csr", "-CA", "ca.crt", "-CAkey", "ca.key", "-CAcreateserial", "-out", "leaf.crt", "-days", "1", "-extfile", "ext")
     (tmp / "chain.crt").write_text((tmp / "leaf.crt").read_text() + (tmp / "ca.crt").read_text())
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 1; io_engine {ENGINE} }}
+    conf.write_text(f"""okena {{ overload off; workers 1; io_engine {ENGINE} }}
 http 127.0.0.1:{ONE} {{
     tls {{ cert {tmp}/leaf.crt; key {tmp}/leaf.key }}
     route /* {{ respond 404 }}

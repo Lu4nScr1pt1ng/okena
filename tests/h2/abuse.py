@@ -131,7 +131,7 @@ def main():
     threading.Thread(target=S(("127.0.0.1", B), H).serve_forever, daemon=True).start()
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-h2abuse-"))
     conf = tmp / "okena.conf"
-    conf.write_text(f"okena {{ workers 1; io_engine {ENGINE} }}\npool b {{ server 127.0.0.1:{B} }}\n"
+    conf.write_text(f"okena {{ overload off; workers 1; io_engine {ENGINE} }}\npool b {{ server 127.0.0.1:{B} }}\n"
                     f"http 127.0.0.1:{L} {{ http2 on; timeout {{ body_idle 1s }}; route /* {{ to pool b }} }}\n")
     log = tmp / "log"
     p = subprocess.Popen([str(BIN), "-c", str(conf)], stderr=open(log, "w"))

@@ -85,7 +85,7 @@ def get(path, method="GET", body=None, headers=None, conn=None):
     return r, b
 
 
-CONF = """okena {{ drain delay=0s timeout=1s; workers 2; io_engine {engine}; watchdog 5s }}
+CONF = """okena {{ overload off; drain delay=0s timeout=1s; workers 2; io_engine {engine}; watchdog 5s }}
 pool two {{ server 127.0.0.1:{fast}; server 127.0.0.1:{slow} }}
 pool withbad {{ server 127.0.0.1:{slow}; server 127.0.0.1:{bad} }}
 pool one {{ server 127.0.0.1:{slow} }}

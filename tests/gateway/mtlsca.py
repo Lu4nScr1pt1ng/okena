@@ -125,7 +125,7 @@ def main():
     (tmp / "crl.pem").write_bytes(pem(crl(c1, k1, [clients["revoked"]], later), crl(c2, k2, [cj], later)))
     (tmp / "old.pem").write_bytes(pem(crl(c1, k1, [], NOW - datetime.timedelta(hours=1))))
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 1; io_engine {ENGINE}; drain delay=0s timeout=1s }}
+    conf.write_text(f"""okena {{ overload off; workers 1; io_engine {ENGINE}; drain delay=0s timeout=1s }}
 pool b {{ server 127.0.0.1:{BACK} }}
 http 127.0.0.1:{REQ} {{
     tls {{ cert {tmp}/srv.pem; key {tmp}/srv.key; client_ca {tmp}/cas.pem crl={tmp}/crl.pem }}

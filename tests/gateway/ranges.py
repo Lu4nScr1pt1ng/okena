@@ -86,7 +86,7 @@ def main():
     (tmp / "mine.txt").write_text(f"# ours\n{MINE}/32\n\n192.0.2.0/24\n")
     threading.Thread(target=S(("127.0.0.1", BACK), H).serve_forever, daemon=True).start()
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 1; io_engine {ENGINE}; drain delay=0s timeout=1s }}
+    conf.write_text(f"""okena {{ overload off; workers 1; io_engine {ENGINE}; drain delay=0s timeout=1s }}
 pool b {{ server 127.0.0.1:{BACK} }}
 http 127.0.0.1:{TRUST} {{ trusted_proxies cloudflare; route /* {{ to pool b }} }}
 http 127.0.0.1:{GATE} {{ route /* {{ allow cloudflare; to pool b }} }}

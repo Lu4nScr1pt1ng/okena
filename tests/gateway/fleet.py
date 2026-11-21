@@ -87,7 +87,7 @@ def main():
     k1, k2 = key(), key()
     keys.write_text(k1 + "\n")
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 2; io_engine {ENGINE}; admin unix:{tmp}/a.sock; metrics 127.0.0.1:{MET}; ticket_keys {keys} }}
+    conf.write_text(f"""okena {{ overload off; workers 2; io_engine {ENGINE}; admin unix:{tmp}/a.sock; metrics 127.0.0.1:{MET}; ticket_keys {keys} }}
 pool p {{ server 127.0.0.1:{b.server_address[1]} }}
 http 127.0.0.1:{LST} {{ route /* {{ to pool p }} }}
 http 127.0.0.1:{TLS} {{ tls {{ cert {tmp}/c.pem; key {tmp}/k.pem }}; route /* {{ to pool p }} }}

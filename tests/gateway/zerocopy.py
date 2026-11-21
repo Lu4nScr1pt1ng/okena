@@ -135,7 +135,7 @@ def main():
     routes = f"""route /f/* {{ files {site} }}
     route /c/* {{ cache 1h max=1MiB; to pool b }}"""
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s; metrics 127.0.0.1:{MET}
+    conf.write_text(f"""okena {{ overload off; workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s; metrics 127.0.0.1:{MET}
     cache_memory 1MiB; cache_disk {tmp}/store size=16MiB }}
 pool b {{ server 127.0.0.1:{BACK} }}
 http 127.0.0.1:{LST} {{

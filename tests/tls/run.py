@@ -109,7 +109,7 @@ for name, block, want in [
     else:
         check(f"tls refused: {name}", r.returncode != 0 and want in out, out.splitlines()[0] if out else "")
 
-# okena { ticket_keys FILE }: one key a line, 32 bytes of base64, at most two
+# okena { overload off; ticket_keys FILE }: one key a line, 32 bytes of base64, at most two
 import base64, os
 good = tmp / "tickets.key"
 good.write_text(base64.b64encode(os.urandom(32)).decode() + "\n" + base64.b64encode(os.urandom(32)).decode() + "\n")
@@ -123,7 +123,7 @@ for name, text, want in [
     f = tmp / "tk.key"
     f.write_text(text)
     c = tmp / "tk.conf"
-    c.write_text(f"okena {{ ticket_keys {f} }}\nhttp 127.0.0.1:18443 {{\n    tls {{ cert {tmp / 'ec.pem'}; key {tmp / 'ec.key'} }}\n"
+    c.write_text(f"okena {{ overload off; ticket_keys {f} }}\nhttp 127.0.0.1:18443 {{\n    tls {{ cert {tmp / 'ec.pem'}; key {tmp / 'ec.key'} }}\n"
                  "    route /* { to 127.0.0.1:1 }\n}\n")
     r = subprocess.run([str(BIN), "check", str(c)], capture_output=True, text=True)
     out = (r.stdout + r.stderr).strip()

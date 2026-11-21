@@ -98,7 +98,7 @@ def main():
     bad.write_bytes(b"\0asm not really")
     rust = RUSTP.exists()
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s }}
+    conf.write_text(f"""okena {{ overload off; workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s }}
 addon plug {{
     run {HOST} -plugin {GOP} -config hello-config -cluster authsvc=127.0.0.1:{A} -instances 2 -cache {CACHE}
     timeout 2s

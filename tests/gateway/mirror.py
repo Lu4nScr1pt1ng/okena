@@ -91,7 +91,7 @@ def wait(n, secs=2):
     return False
 
 
-CONF = """okena {{ workers 2; io_engine {engine}; {metrics} }}
+CONF = """okena {{ overload off; workers 2; io_engine {engine}; {metrics} }}
 pool main {{ server 127.0.0.1:{main} }}
 pool shadow {{ server 127.0.0.1:{shadow} }}
 pool shadow2 {{ server 127.0.0.1:{shadow} }}
@@ -226,7 +226,7 @@ def main():
     fast = subprocess.Popen(["timeout", "--foreground", "20", str(tmp / "l4bench"), "http", str(FAST), "2"],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     few = tmp / "few.conf"
-    few.write_text(f"""okena {{ workers 2; io_engine {ENGINE} }}
+    few.write_text(f"""okena {{ overload off; workers 2; io_engine {ENGINE} }}
 pool fast {{ server 127.0.0.1:{FAST} }}
 http 127.0.0.1:{FEW} {{
     route /copied {{ to pool fast; mirror pool fast }}

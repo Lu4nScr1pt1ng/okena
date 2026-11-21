@@ -121,13 +121,13 @@ def main():
     threading.Thread(target=S(("127.0.0.1", BACK), H).serve_forever, daemon=True).start()
     ca, cb = tmp / "a.conf", tmp / "b.conf"
     (tmp / "token").write_text(TOKEN + "\n")
-    ca.write_text(f"""okena {{ workers 4; io_engine {ENGINE}; drain delay=0s timeout=1s; admin unix:{tmp}/a.sock
+    ca.write_text(f"""okena {{ overload off; workers 4; io_engine {ENGINE}; drain delay=0s timeout=1s; admin unix:{tmp}/a.sock
     metrics 127.0.0.1:{MA} token={tmp}/token; fleet 127.0.0.1:{MB}
     cache_memory 1MiB; cache_disk {tmp}/store size=8MiB }}
 pool b {{ server 127.0.0.1:{BACK} }}
 http 127.0.0.1:{LA} {{ route /* {{ cache 1h; to pool b }} }}
 """)
-    cb.write_text(f"""okena {{ workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s; admin unix:{tmp}/b.sock
+    cb.write_text(f"""okena {{ overload off; workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s; admin unix:{tmp}/b.sock
     metrics 127.0.0.1:{MB} token={tmp}/token }}
 pool b {{ server 127.0.0.1:{BACK} }}
 http 127.0.0.1:{LB} {{ route /* {{ cache 1h; to pool b }} }}

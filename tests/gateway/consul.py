@@ -154,7 +154,7 @@ def main():
     token = tmp / "token"
     token.write_text("secret-one\n")
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ drain delay=0s timeout=1s; workers 2; io_engine {ENGINE} }}
+    conf.write_text(f"""okena {{ overload off; drain delay=0s timeout=1s; workers 2; io_engine {ENGINE} }}
 pool web {{ balance round-robin; discover consul service=web api=127.0.0.1:{AGENT} token={token} }}
 pool api {{ discover consul service=api dc=dc2 tag=v2 api=127.0.0.1:{AGENT} port=7000 }}
 http 127.0.0.1:{LST} {{ route /* {{ to pool web }} }}

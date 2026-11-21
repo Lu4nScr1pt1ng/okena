@@ -81,7 +81,7 @@ def main():
     threading.Thread(target=http.server.ThreadingHTTPServer(("127.0.0.1", BACK), Back).serve_forever, daemon=True).start()
     ca = tmp / "var" / "ca"
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 1; io_engine {ENGINE}; drain delay=0s timeout=1s; local_ca {ca} }}
+    conf.write_text(f"""okena {{ overload off; workers 1; io_engine {ENGINE}; drain delay=0s timeout=1s; local_ca {ca} }}
 pool b {{ server 127.0.0.1:{BACK} }}
 http 127.0.0.1:{TLS} {{
     tls {{ local localhost app.test *.app.test 127.0.0.1 }}

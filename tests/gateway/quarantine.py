@@ -105,7 +105,7 @@ def main():
     threading.Thread(target=backend, daemon=True).start()
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-qz-"))
     conf = tmp / "okena.conf"
-    conf.write_text(f"okena {{ workers 1; io_engine {ENGINE} }}\nhttp 127.0.0.1:{L} {{ route /* {{ to 127.0.0.1:{B} }} }}\n")
+    conf.write_text(f"okena {{ overload off; workers 1; io_engine {ENGINE} }}\nhttp 127.0.0.1:{L} {{ route /* {{ to 127.0.0.1:{B} }} }}\n")
     log = tmp / "log"
     p = subprocess.Popen([str(BIN), "-c", str(conf)], stderr=open(log, "w"))
     try:

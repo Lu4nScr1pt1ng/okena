@@ -124,7 +124,7 @@ udp_server(UDP_BAD, b"nope")
 tmp = pathlib.Path(tempfile.mkdtemp())
 conf = tmp / "okena.conf"
 conf.write_text(f"""
-okena {{ workers 1; metrics 127.0.0.1:{METRICS}; drain delay=0s timeout=1s }}
+okena {{ overload off; workers 1; metrics 127.0.0.1:{METRICS}; drain delay=0s timeout=1s }}
 pool redis {{
     server 127.0.0.1:{PRIMARY}
     server 127.0.0.1:{REPLICA}

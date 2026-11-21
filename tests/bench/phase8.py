@@ -126,7 +126,7 @@ def zero_copy(tmp, engine):
     store = tmp / f"store-{engine}"
     store.mkdir()
     def conf(name, mem, disk=True):
-        (tmp / name).write_text(f"""okena {{ workers 2; io_engine {engine}; drain delay=0s timeout=1s
+        (tmp / name).write_text(f"""okena {{ overload off; workers 2; io_engine {engine}; drain delay=0s timeout=1s
     metrics 127.0.0.1:{MET}; cache_memory {mem}{f"; cache_disk {store} size=256MiB" if disk else ""} }}
 pool b {{ server 127.0.0.1:{BACK} }}
 http 127.0.0.1:{LST} {{
@@ -179,7 +179,7 @@ def storm(tmp):
     store = tmp / "pstore"
     store.mkdir()
     conf = tmp / "storm.conf"
-    conf.write_text(f"""okena {{ workers 2; drain delay=0s timeout=1s; metrics 127.0.0.1:{MET}; admin unix:{tmp}/a.sock
+    conf.write_text(f"""okena {{ overload off; workers 2; drain delay=0s timeout=1s; metrics 127.0.0.1:{MET}; admin unix:{tmp}/a.sock
     cache_memory 64MiB; cache_disk {store} size=64MiB }}
 pool b {{ server 127.0.0.1:{BACK} }}
 http 127.0.0.1:{LST} {{ route /* {{ cache 1h; to pool b }} }}

@@ -116,7 +116,7 @@ def main():
                     "-keyout", tmp / "k.pem", "-out", tmp / "c.pem", "-subj", "/CN=a.test",
                     "-addext", "subjectAltName=DNS:a.test", "-days", "2"], check=True, capture_output=True)
     conf = tmp / "okena.conf"
-    conf.write_text(f"okena {{ workers 1; io_engine {ENGINE} }}\n"
+    conf.write_text(f"okena {{ overload off; workers 1; io_engine {ENGINE} }}\n"
                     f"http 127.0.0.1:{L} {{ tls {{ cert {tmp}/c.pem; key {tmp}/k.pem }}; route /* {{ respond 404 }} }}\n")
     log = tmp / "log"
     p = subprocess.Popen([str(BIN), "-c", str(conf)], stderr=open(log, "w"))

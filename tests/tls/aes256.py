@@ -121,7 +121,7 @@ def main():
     run("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", "rk.pem", "-out", "rc.pem", "-subj", "/CN=a.test", "-days", "2")
     run("req", "-x509", "-newkey", "ed25519", "-nodes", "-keyout", "dk.pem", "-out", "dc.pem", "-subj", "/CN=a.test", "-days", "2")
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 1; io_engine {ENGINE} }}
+    conf.write_text(f"""okena {{ overload off; workers 1; io_engine {ENGINE} }}
 pool b {{ server 127.0.0.1:{B} }}
 http 127.0.0.1:{LE} {{ tls {{ cert {tmp}/ec.pem; key {tmp}/ek.pem; ktls on }}; route /* {{ to pool b }} }}
 http 127.0.0.1:{LR} {{ tls {{ cert {tmp}/rc.pem; key {tmp}/rk.pem; ktls on }}; route /* {{ to pool b }} }}

@@ -274,7 +274,7 @@ def main():
     servers = tmp / "servers.list"
     servers.write_text(f"127.0.0.1:{B1}\n127.0.0.1:{B2}\n")
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 3; io_engine {ENGINE}; watchdog 2s; drain delay=0s timeout=2s; metrics 127.0.0.1:{MET}
+    conf.write_text(f"""okena {{ overload off; workers 3; io_engine {ENGINE}; watchdog 2s; drain delay=0s timeout=2s; metrics 127.0.0.1:{MET}
     acme {tmp}/acme ca=https://localhost:{CAP}/dir trust={tmp}/ca.pem }}
 pool web {{ health tcp every=300ms fall=2 rise=1; discover file {servers} }}
 pool named {{ server api.chaos.test:{B1} }}

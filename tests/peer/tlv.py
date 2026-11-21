@@ -98,7 +98,7 @@ alog = tmp / "access.log"
 l4log = tmp / "l4.log"
 conf = tmp / "okena.conf"
 conf.write_text(f"""
-okena {{ workers 1; io_engine {ENGINE}; drain delay=0s timeout=1s }}
+okena {{ overload off; workers 1; io_engine {ENGINE}; drain delay=0s timeout=1s }}
 http 127.0.0.1:{L} {{
     proxy_protocol accept
     http2 on

@@ -124,7 +124,7 @@ def main():
                    check=True, capture_output=True)
     threading.Thread(target=backend, daemon=True).start()
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 1; io_engine {ENGINE} }}
+    conf.write_text(f"""okena {{ overload off; workers 1; io_engine {ENGINE} }}
 pool echo {{ server 127.0.0.1:{BACK} }}
 http 127.0.0.1:{PLAIN} {{ route /* {{ to pool echo }} }}
 http 127.0.0.1:{TLS} {{

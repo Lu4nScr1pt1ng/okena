@@ -79,7 +79,7 @@ def main():
     f, a = backend(0.6), backend(0.01)
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-cc-"))
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 1; io_engine {ENGINE} }}
+    conf.write_text(f"""okena {{ overload off; workers 1; io_engine {ENGINE} }}
 pool f {{ server 127.0.0.1:{f.server_address[1]}; concurrency 2 }}
 pool a {{ server 127.0.0.1:{a.server_address[1]}; concurrency adaptive min=2 max=200 }}
 http 127.0.0.1:{LF} {{ route /* {{ to pool f }} }}

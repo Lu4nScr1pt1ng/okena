@@ -107,7 +107,7 @@ def main():
         backend(t, port)
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-routing-"))
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 1; io_engine {ENGINE} }}
+    conf.write_text(f"""okena {{ overload off; workers 1; io_engine {ENGINE} }}
 pool pa {{ server 127.0.0.1:{PORTS['A']} }}
 pool pb {{ server 127.0.0.1:{PORTS['B']} }}
 pool pc {{ server 127.0.0.1:{PORTS['C']} }}

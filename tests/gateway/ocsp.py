@@ -165,7 +165,7 @@ def main():
                                                           serialization.NoEncryption()))
         lines[name] = f"cert {tmp}/{name}.pem key={tmp}/{name}.key"
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s }}
+    conf.write_text(f"""okena {{ overload off; workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s }}
 pool b {{ server 127.0.0.1:{BACK} }}
 http 127.0.0.1:{TLS} {{
     tls {{

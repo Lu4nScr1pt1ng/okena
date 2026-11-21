@@ -127,7 +127,7 @@ def main():
             except OSError:
                 return
     conf = tmp / "okena.conf"
-    good = f"""okena {{ drain delay=0s timeout=1s; workers 2; io_engine {ENGINE} }}
+    good = f"""okena {{ overload off; drain delay=0s timeout=1s; workers 2; io_engine {ENGINE} }}
 pool b {{ server 127.0.0.1:{BACK} }}
 pool e {{ server 127.0.0.1:{ECHO} }}
 http 127.0.0.1:{HTTP} {{ route /* {{ to pool b }} }}

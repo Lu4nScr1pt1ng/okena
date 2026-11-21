@@ -79,7 +79,7 @@ def main():
 SecRule RESPONSE_BODY "@contains BEGIN RSA PRIVATE KEY" "id:9002,phase:4,deny,status:502,log,msg:'a key in the body'"
 """)
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s }}
+    conf.write_text(f"""okena {{ overload off; workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s }}
 addon waf {{
     run {WAF} -workers 2
     timeout 500ms

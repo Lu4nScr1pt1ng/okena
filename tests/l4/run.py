@@ -143,7 +143,7 @@ def main() -> int:
     closing_backend(c0, b"c0")
     closing_backend(c1, b"c1")
     ok = Okena(f"""
-okena {{
+okena {{ overload off
     workers 2
     io_engine {engine}
     drain delay=0s timeout=3s

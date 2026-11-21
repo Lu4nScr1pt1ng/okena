@@ -102,7 +102,7 @@ tmp = pathlib.Path(tempfile.mkdtemp())
 (tmp / "deny.txt").write_text("# who may not\n127.0.0.3\n")
 conf = tmp / "okena.conf"
 conf.write_text(f"""
-okena {{ workers 2; io_engine {ENGINE}; metrics 127.0.0.1:{METRICS}; drain delay=0s timeout=1s }}
+okena {{ overload off; workers 2; io_engine {ENGINE}; metrics 127.0.0.1:{METRICS}; drain delay=0s timeout=1s }}
 tcp 127.0.0.1:{TALLOW} {{
     to 127.0.0.1:{BACK}
     allow 127.0.0.0/30

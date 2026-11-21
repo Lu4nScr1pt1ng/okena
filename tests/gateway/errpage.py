@@ -91,7 +91,7 @@ def main():
     large = "<h1>{status}</h1><p>{request_id}</p>" + "z" * 300000 + "the end\n"
     (tmp / "large.html").write_text(large)
     conf = tmp / "okena.conf"
-    good = f"""okena {{ drain delay=0s timeout=1s; workers 2; io_engine {ENGINE} }}
+    good = f"""okena {{ overload off; drain delay=0s timeout=1s; workers 2; io_engine {ENGINE} }}
 pool gone {{ server 127.0.0.1:1 }}
 pool b {{ server 127.0.0.1:{BACK} }}
 http 127.0.0.1:{LST} {{

@@ -138,7 +138,7 @@ def main():
         c = f"; cert {d}/{cert}.pem; key {d}/{cert}.key" if cert else ""
         return f"pool {name} {{ server 127.0.0.1:{port}; tls {{ trust {d}/srvca.pem; sni localhost{c} }} }}\n"
     conf = d / "okena.conf"
-    conf.write_text(f"""okena {{ workers 1; io_engine {ENGINE}; drain delay=0s timeout=1s }}
+    conf.write_text(f"""okena {{ overload off; workers 1; io_engine {ENGINE}; drain delay=0s timeout=1s }}
 {pool("ec", REQ, "cl_ec")}{pool("rsa", REQ, "cl_rsa")}{pool("ed", REQ, "cl_ed")}{pool("anon", REQ)}
 {pool("other", REQ, "cl_other")}{pool("opt", OPT)}{pool("none", NONE_, "cl_ec")}
 http 127.0.0.1:{LST} {{

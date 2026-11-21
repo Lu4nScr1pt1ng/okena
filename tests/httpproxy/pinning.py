@@ -48,7 +48,7 @@ def affinities(p):
 def run(pin, load=False):
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-pin-"))
     conf = tmp / "okena.conf"
-    conf.write_text(f"okena {{ workers 2{'; pin_workers ' + pin if pin else ''} }}\n"
+    conf.write_text(f"okena {{ overload off; workers 2{'; pin_workers ' + pin if pin else ''} }}\n"
                     f"http 127.0.0.1:{PORT} {{ route /* {{ respond 200 \"ok\" }} }}\n")
     p = subprocess.Popen(["taskset", "-c", "0,1", str(BIN), "-c", str(conf)], stderr=subprocess.DEVNULL)
     try:

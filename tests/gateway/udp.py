@@ -96,7 +96,7 @@ def main():
     six = Echo("six", family=socket.AF_INET6)
     many = Echo("m", extra=39)                   # 40 answers to each datagram
 
-    text = f"""okena {{ workers 2; io_engine {ENGINE}; metrics 127.0.0.1:{MET}; upgrade {tmp}/u.sock; admin unix:{tmp}/a.sock }}
+    text = f"""okena {{ overload off; workers 2; io_engine {ENGINE}; metrics 127.0.0.1:{MET}; upgrade {tmp}/u.sock; admin unix:{tmp}/a.sock }}
 pool dns {{ balance round-robin; server {a.addr}; server {b.addr} }}
 pool game {{ server {c.addr} }}
 pool logs {{ server {l1.addr} }}

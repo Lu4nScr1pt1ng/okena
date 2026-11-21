@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""`okena { last_good on }`: a start writes FILE.good, its includes written
+"""`okena { overload off; last_good on }`: a start writes FILE.good, its includes written
 into it; a reload that fails keeps the running configuration and the copy; a
 start with FILE broken runs on the copy, and says so; once FILE is fixed a
 reload reads it again (and the copy follows); without last_good nothing is
@@ -51,7 +51,7 @@ def main():
     (tmp / "conf.d").mkdir()
     (tmp / "conf.d" / "a.conf").write_text("pool p { server 127.0.0.1:9 }\n")
     conf, good = tmp / "okena.conf", tmp / "okena.conf.good"
-    ok_text = f'okena {{ workers 1; last_good on }}\ninclude "conf.d/*.conf"\nhttp 127.0.0.1:{L} {{ route /x {{ respond 404 }}; route /* {{ to pool p }} }}\n'
+    ok_text = f'okena {{ overload off; workers 1; last_good on }}\ninclude "conf.d/*.conf"\nhttp 127.0.0.1:{L} {{ route /x {{ respond 404 }}; route /* {{ to pool p }} }}\n'
     conf.write_text(ok_text)
     log = tmp / "log"
     p = subprocess.Popen([str(BIN), "-c", str(conf)], stderr=open(log, "w"))

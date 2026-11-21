@@ -183,6 +183,7 @@ srv["_many._tcp.srv.test"] = [(10, 1, 7000, f"n{i}.srv.test") for i in range(40)
 conf = tmp / "okena.conf"
 conf.write_text("""
 okena {
+    overload off
     workers 2
     metrics 127.0.0.1:9464
 }

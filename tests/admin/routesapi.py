@@ -90,7 +90,7 @@ sock = tmp / "routes.sock"
 (tmp / "token").write_text(TOKEN + "\n")
 conf = tmp / "okena.conf"
 conf.write_text(f"""
-okena {{ workers 1; io_engine {ENGINE}; admin unix:{tmp}/admin.sock; drain delay=0s timeout=1s }}
+okena {{ overload off; workers 1; io_engine {ENGINE}; admin unix:{tmp}/admin.sock; drain delay=0s timeout=1s }}
 pool a {{ server 127.0.0.1:{BA} }}
 http 127.0.0.1:{L} {{
     routes {rf}

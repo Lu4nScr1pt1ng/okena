@@ -105,7 +105,7 @@ def main():
     logs = []
     for i, (plain, tls) in enumerate(((PX, TX), (PY, TY))):
         conf = tmp / f"okena{i}.conf"
-        conf.write_text(f"""okena {{ workers 1; io_engine {ENGINE}; drain delay=0s timeout=1s
+        conf.write_text(f"""okena {{ overload off; workers 1; io_engine {ENGINE}; drain delay=0s timeout=1s
     acme {d} ca=https://localhost:{CA}/dir trust={tmp}/ca.pem shared=on }}
 pool b {{ server 127.0.0.1:{BACK} }}
 http 127.0.0.1:{plain} {{ route /* {{ to pool b }} }}

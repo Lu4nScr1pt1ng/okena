@@ -57,7 +57,7 @@ def get(path, headers=None):
     return b, r
 
 
-CONF = """okena {{ drain delay=0s timeout=1s; workers 2; io_engine {engine} }}
+CONF = """okena {{ overload off; drain delay=0s timeout=1s; workers 2; io_engine {engine} }}
 pool stable {{ server 127.0.0.1:{one} }}
 pool canary {{ server 127.0.0.1:{two} }}
 {many_pools}

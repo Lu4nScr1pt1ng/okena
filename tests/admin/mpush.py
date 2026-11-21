@@ -94,7 +94,7 @@ def main():
     for port, h in ((BACK, Back), (COLL, Coll)):
         threading.Thread(target=S(("127.0.0.1", port), h).serve_forever, daemon=True).start()
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{
+    conf.write_text(f"""okena {{ overload off
     drain delay=0s timeout=1s; workers 2; io_engine {ENGINE}
     metrics 127.0.0.1:{MET}
     metrics_push otlp://127.0.0.1:{COLL} every=1s
@@ -151,7 +151,7 @@ http 127.0.0.1:{LST} {{ route /* {{ to pool b }} }}
     check("no process died", "killed" not in t and "restarting" not in t, t[-400:])
     for what, bad in (("not OTLP", "metrics_push syslog://127.0.0.1:514"), ("a period of 0", f"metrics_push otlp://127.0.0.1:{COLL} every=0s")):
         c = tmp / "bad.conf"
-        c.write_text(f"okena {{ {bad} }}\nhttp 127.0.0.1:{LST} {{ route /* {{ respond 200 }} }}\n")
+        c.write_text(f"okena {{ overload off; {bad} }}\nhttp 127.0.0.1:{LST} {{ route /* {{ respond 200 }} }}\n")
         q = subprocess.run([str(BIN), "check", str(c)], capture_output=True, text=True, timeout=10)
         q2 = subprocess.run(["timeout", "5", str(BIN), "-c", str(c)], capture_output=True, text=True)
         check(f"{what}: refused", q2.returncode not in (0, 124) and "metrics_push" in q2.stderr, q2.stderr[-200:])

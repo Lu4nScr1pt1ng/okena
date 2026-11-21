@@ -91,7 +91,7 @@ tls_backend(TB)
 tls_backend(TBPP, pp=True)
 conf = tmp / "okena.conf"
 conf.write_text(f"""
-okena {{ workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s }}
+okena {{ overload off; workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s }}
 pool sec {{ server 127.0.0.1:{TB}; tls {{ trust {tmp}/ca.pem; sni b.test }} }}
 pool untrusted {{ server 127.0.0.1:{TB}; tls {{ trust {tmp}/other.pem; sni b.test }} }}
 pool wrongname {{ server 127.0.0.1:{TB}; tls {{ trust {tmp}/ca.pem; sni c.test }} }}

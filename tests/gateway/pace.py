@@ -69,7 +69,7 @@ subprocess.run(["openssl", "req", "-new", "-x509", "-key", "l.key", "-subj", "/C
                check=True, capture_output=True, cwd=tmp)
 conf = tmp / "okena.conf"
 conf.write_text(f"""
-okena {{ workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s }}
+okena {{ overload off; workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s }}
 http 127.0.0.1:{L} {{
     route /paced {{ limit_rate 200KiB; to 127.0.0.1:{BACK} }}
     route /after {{ limit_rate 200KiB after=200KiB; to 127.0.0.1:{BACK} }}

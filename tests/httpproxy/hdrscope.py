@@ -60,7 +60,7 @@ def main():
     B = s.server_address[1]
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-hdrscope-"))
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 1; io_engine {ENGINE} }}
+    conf.write_text(f"""okena {{ overload off; workers 1; io_engine {ENGINE} }}
 http 127.0.0.1:{L} {{
     header set x-from listener
     response header set strict-transport-security "max-age=60"

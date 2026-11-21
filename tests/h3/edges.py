@@ -149,7 +149,7 @@ def main():
                     "-keyout", tmp / "k.pem", "-out", tmp / "c.pem", "-subj", "/CN=h3.test",
                     "-addext", "subjectAltName=DNS:h3.test", "-days", "2"], check=True, capture_output=True)
     conf = tmp / "okena.conf"
-    conf.write_text(f"okena {{ workers 1; io_engine {ENGINE} }}\npool b {{ server 127.0.0.1:{B} }}\n"
+    conf.write_text(f"okena {{ overload off; workers 1; io_engine {ENGINE} }}\npool b {{ server 127.0.0.1:{B} }}\n"
                     f"http 127.0.0.1:{L} {{ http3 on; limits {{ body_size 1KiB }}; tls {{ cert {tmp}/c.pem; key {tmp}/k.pem }}; "
                     f"route /* {{ to pool b }} }}\n")
     log = tmp / "log"

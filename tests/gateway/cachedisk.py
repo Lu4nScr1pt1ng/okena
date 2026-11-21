@@ -112,7 +112,7 @@ def disk_counters():
 
 
 def conf_text(tmp, size="8MiB", workers=4):
-    return f"""okena {{ workers {workers}; io_engine {ENGINE}; drain delay=0s timeout=1s; upgrade {tmp}/up.sock; metrics 127.0.0.1:{MET}
+    return f"""okena {{ overload off; workers {workers}; io_engine {ENGINE}; drain delay=0s timeout=1s; upgrade {tmp}/up.sock; metrics 127.0.0.1:{MET}
     cache_memory 1MiB; cache_disk {tmp}/store size={size} }}
 pool b {{ server 127.0.0.1:{BACK} }}
 http 127.0.0.1:{LST} {{

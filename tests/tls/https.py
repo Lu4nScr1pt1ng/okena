@@ -185,7 +185,7 @@ def main():
            f"    }}\n    route /* {{ to 127.0.0.1:{BACK} }}\n}}\n")
     conf = tmp / "okena.conf"
     plain_default = f"http 127.0.0.1:{DEFL} {{\n    {tls}\n    route /* {{ to 127.0.0.1:{BACK} }}\n}}\n"
-    text = (sni + f"""okena {{ workers 2; io_engine {ENGINE} }}
+    text = (sni + f"""okena {{ overload off; workers 2; io_engine {ENGINE} }}
 http 127.0.0.1:{LST} {{
     {tls}
     timeout {{ header 1s }}
@@ -603,7 +603,7 @@ http 127.0.0.1:{DLST} {{
         # not after two
         rconf = tmp / "rotate.conf"
         RL = BASE + 4
-        rconf.write_text(f"""okena {{ workers 2; io_engine {ENGINE} }}
+        rconf.write_text(f"""okena {{ overload off; workers 2; io_engine {ENGINE} }}
 http 127.0.0.1:{RL} {{
     {tls}
     route /* {{ to 127.0.0.1:{BACK} }}
@@ -644,7 +644,7 @@ http 127.0.0.1:{RL} {{
         fleet = []
         for i, port in enumerate((BASE + 6, BASE + 7)):
             fc = tmp / f"fleet{i}.conf"
-            fc.write_text(f"""okena {{ workers 1; io_engine {ENGINE}; ticket_keys {keyfile} }}
+            fc.write_text(f"""okena {{ overload off; workers 1; io_engine {ENGINE}; ticket_keys {keyfile} }}
 http 127.0.0.1:{port} {{
     {tls}
     route /* {{ to 127.0.0.1:{BACK} }}

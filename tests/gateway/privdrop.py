@@ -125,7 +125,7 @@ def main():
     os.chmod(tmp / "k.pem", 0o600)                          # root's alone
     threading.Thread(target=http.server.HTTPServer(("127.0.0.1", BACK), H).serve_forever, daemon=True).start()
     conf = tmp / "okena.conf"
-    good = f"""okena {{ drain delay=0s timeout=1s; workers 2; io_engine {ENGINE}; user {UID}:{GID} }}
+    good = f"""okena {{ overload off; drain delay=0s timeout=1s; workers 2; io_engine {ENGINE}; user {UID}:{GID} }}
 pool b {{ health tcp every=500ms; server 127.0.0.1:{BACK} }}
 http 127.0.0.1:{LST} {{ access_log {logs}/access.log; route /* {{ to pool b }} }}
 http 127.0.0.1:{TLSL} {{ tls {{ cert {tmp}/c.pem; key {tmp}/k.pem }}; route /* {{ to pool b }} }}
@@ -179,7 +179,7 @@ http 127.0.0.1:{TLSL} {{ tls {{ cert {tmp}/c.pem; key {tmp}/k.pem }}; route /* {
 
     def bad(what, line, as_user=False):
         g = tmp / "bad.conf"
-        g.write_text(f"okena {{ drain delay=0s timeout=1s; {line} }}\npool b {{ server 127.0.0.1:1 }}\nhttp 127.0.0.1:{BASE + 9} {{ route /* {{ to pool b }} }}\n")
+        g.write_text(f"okena {{ overload off; drain delay=0s timeout=1s; {line} }}\npool b {{ server 127.0.0.1:1 }}\nhttp 127.0.0.1:{BASE + 9} {{ route /* {{ to pool b }} }}\n")
         os.chmod(g, 0o644)
         if as_user and not (tmp / "okena").exists():
             shutil.copy(BIN, tmp / "okena")       # (the user may not reach the build's directory)
@@ -193,7 +193,7 @@ http 127.0.0.1:{TLSL} {{ tls {{ cert {tmp}/c.pem; key {tmp}/k.pem }}; route /* {
     bad("a group that is no group's", "user 4242:nosuchgroup-okena")
     r = bad("not root, and another user named", "user 0", as_user=True)
     check("  saying why", "okena is not root here, so it cannot become uid 0" in r.stderr, r.stderr[-200:])
-    (tmp / "nobody.conf").write_text("okena { user nobody }\npool b { server 127.0.0.1:1 }\nhttp 127.0.0.1:1 { route /* { to pool b } }\n")
+    (tmp / "nobody.conf").write_text("okena { overload off; user nobody }\npool b { server 127.0.0.1:1 }\nhttp 127.0.0.1:1 { route /* { to pool b } }\n")
     r = subprocess.run([str(BIN), "check", str(tmp / "nobody.conf")], capture_output=True, text=True, timeout=10)
     check("a name from /etc/passwd: taken", r.returncode == 0, r.stderr[-200:])
     shutil.rmtree(tmp, ignore_errors=True)

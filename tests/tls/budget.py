@@ -143,13 +143,13 @@ def main():
        "-addext", "subjectAltName=DNS:okena.test", "-days", "2", "-out", "c.pem")
     route = "route /* { redirect 302 https://okena.test/x }"
     a = tmp / "a.conf"
-    a.write_text(f"""okena {{ workers 1; io_engine {ENGINE}; metrics 127.0.0.1:{MET}; handshake_budget 100us }}
+    a.write_text(f"""okena {{ overload off; workers 1; io_engine {ENGINE}; metrics 127.0.0.1:{MET}; handshake_budget 100us }}
 http 127.0.0.1:{LST} {{ tls {{ cert {tmp}/c.pem; key {tmp}/k.pem }}
     {route}
 }}
 """)
     b = tmp / "b.conf"
-    b.write_text(f"""okena {{ workers 1; io_engine {ENGINE}; metrics 127.0.0.1:{MET2}; handshake_budget 1us wait=1ms }}
+    b.write_text(f"""okena {{ overload off; workers 1; io_engine {ENGINE}; metrics 127.0.0.1:{MET2}; handshake_budget 1us wait=1ms }}
 http 127.0.0.1:{LST2} {{ tls {{ cert {tmp}/c.pem; key {tmp}/k.pem }}
     {route}
 }}

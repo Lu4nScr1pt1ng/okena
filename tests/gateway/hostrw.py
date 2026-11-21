@@ -82,7 +82,7 @@ threading.Thread(target=ths.serve_forever, daemon=True).start()
 
 conf = tmp / "okena.conf"
 conf.write_text(f"""
-okena {{
+okena {{ overload off
     workers 2
     io_engine {ENGINE}
     drain delay=0s timeout=1s

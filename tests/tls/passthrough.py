@@ -98,7 +98,7 @@ def main():
     for port, name, pp in ((A, "a", False), (B, "b", False), (C, "c", True)):
         threading.Thread(target=backend, args=(port, name, pp), daemon=True).start()
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 2; io_engine {ENGINE} }}
+    conf.write_text(f"""okena {{ overload off; workers 2; io_engine {ENGINE} }}
 tcp 127.0.0.1:{LST} {{
     tls passthrough {{
         sni a.test to pool pa

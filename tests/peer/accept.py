@@ -192,7 +192,7 @@ subprocess.run(["openssl", "req", "-new", "-x509", "-key", "pp.key", "-subj", "/
                check=True, capture_output=True, cwd=tmp)
 conf = tmp / "okena.conf"
 conf.write_text(f"""
-okena {{
+okena {{ overload off
     workers 4
     io_engine {ENGINE}
     drain delay=0s timeout=1s

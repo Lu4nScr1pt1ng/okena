@@ -74,7 +74,7 @@ for i in range(3):
     key = tmp / ("other.key" if i == 2 else "fleet.key")
     conf = tmp / f"okena{i}.conf"
     conf.write_text(f"""
-okena {{
+okena {{ overload off
     workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s
     fleet_limits bind=127.0.0.1:{SYNC[i]} peers={peers} key={key} interval=20ms
 }}

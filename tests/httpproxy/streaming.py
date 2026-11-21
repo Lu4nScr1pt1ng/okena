@@ -96,7 +96,7 @@ def main():
     threading.Thread(target=backend, daemon=True).start()
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-streaming-"))
     conf = tmp / "okena.conf"
-    conf.write_text(f"okena {{ workers 1; io_engine {ENGINE}; drain delay=0s timeout=2s }}\npool b {{ server 127.0.0.1:{B} }}\n"
+    conf.write_text(f"okena {{ overload off; workers 1; io_engine {ENGINE}; drain delay=0s timeout=2s }}\npool b {{ server 127.0.0.1:{B} }}\n"
                     f"http 127.0.0.1:{L} {{ timeout {{ idle 2s; body_idle 1s; response 1s }}; route /* {{ to pool b }} }}\n")
     log = tmp / "log"
     p = subprocess.Popen([str(BIN), "-c", str(conf)], stderr=open(log, "w"))

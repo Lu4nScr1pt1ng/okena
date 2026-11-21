@@ -120,7 +120,7 @@ def main():
     (tmp / "store").mkdir()
     threading.Thread(target=Srv(("127.0.0.1", BACK), H).serve_forever, daemon=True).start()
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s; admin unix:{tmp}/a.sock
+    conf.write_text(f"""okena {{ overload off; workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s; admin unix:{tmp}/a.sock
     cache_memory 16MiB; cache_disk {tmp}/store size=32MiB }}
 pool b {{ server 127.0.0.1:{BACK} }}
 http 127.0.0.1:{LST} {{

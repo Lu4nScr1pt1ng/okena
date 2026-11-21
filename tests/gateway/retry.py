@@ -90,7 +90,7 @@ def main():
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-retry-"))
     conf = tmp / "okena.conf"
     pools = lambda n, xs: f"pool {n} {{ balance round-robin; outlier errors=0; retry_budget 100% min=100/s; " + "".join(f"server {x}; " for x in xs) + "}\n"
-    conf.write_text(f"""okena {{ workers 1; io_engine {ENGINE} }}
+    conf.write_text(f"""okena {{ overload off; workers 1; io_engine {ENGINE} }}
 {pools("four", f + [ok])}{pools("two", [f[0], ok])}{pools("five", [e500, ok2])}{pools("slow", [slow, ok3])}
 http 127.0.0.1:{L} {{
     route /none {{ to pool two; retry 0 }}

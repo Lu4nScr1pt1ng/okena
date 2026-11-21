@@ -40,7 +40,7 @@ def mss(port):
 
 
 def conf(path, a, b):
-    path.write_text(f"""okena {{ workers 2; io_engine {ENGINE} }}
+    path.write_text(f"""okena {{ overload off; workers 2; io_engine {ENGINE} }}
 http 127.0.0.1:{LH} {{ mss {a}; route /* {{ respond 404 }} }}
 tcp 127.0.0.1:{LT} {{ mss {b}; to 127.0.0.1:{B} }}
 http 127.0.0.1:{LN} {{ route /* {{ respond 404 }} }}

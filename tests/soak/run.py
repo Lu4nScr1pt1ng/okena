@@ -242,7 +242,7 @@ def main():
         # each generation changes something real: weights, a route, the worker count
         w = 1 + gen % 3
         extra = f"    route /gen{gen}/* {{ to pool web }}\n" if gen % 2 else ""
-        return f"""okena {{ workers {2 + gen % 2}; io_engine {ENGINE}; upgrade {tmp}/up.sock; metrics 127.0.0.1:{MET}; drain delay=0s timeout=5s }}
+        return f"""okena {{ overload off; workers {2 + gen % 2}; io_engine {ENGINE}; upgrade {tmp}/up.sock; metrics 127.0.0.1:{MET}; drain delay=0s timeout=5s }}
 pool web {{ health tcp every=1s; server 127.0.0.1:{B1} weight={w}; server 127.0.0.1:{B2} }}
 pool echo {{ server 127.0.0.1:{ECHO} }}
 http 127.0.0.1:{LST} {{

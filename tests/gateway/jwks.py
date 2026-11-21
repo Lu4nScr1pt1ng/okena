@@ -257,7 +257,7 @@ def main():
         **{f"forged{i}": f"https://localhost:{port}/x {tr} refresh=1s" for i, port in enumerate(FORGED)},
         **{f"bad-{tag}": f"https://localhost:{GOOD}/bad-{tag} {tr} refresh=1s" for _, tag in BADS},
     }
-    text = f"okena {{ drain delay=0s timeout=1s; workers 2; io_engine {ENGINE} }}\npool b {{ server 127.0.0.1:{BACK} }}\n" \
+    text = f"okena {{ overload off; drain delay=0s timeout=1s; workers 2; io_engine {ENGINE} }}\npool b {{ server 127.0.0.1:{BACK} }}\n" \
            f"http 127.0.0.1:{LST} {{\n"
     for r, u in routes.items():
         text += f"    route /{r} {{ to pool b; auth jwt {{ jwks {u} }} }}\n"

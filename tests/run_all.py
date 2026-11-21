@@ -425,6 +425,9 @@ def main():
     # under one of the run's, gone with it: /tmp is often memory (tmpfs), and
     # thousands left behind are memory taken from the next runs
     tmp_root = tempfile.mkdtemp(prefix="okena-tests.")
+    # passable by other users (not listable): a suite whose okena drops to
+    # another uid (privdrop) has it write its own directory below this one
+    os.chmod(tmp_root, 0o711)
     env = dict(os.environ, TMPDIR=tmp_root)
     isolate = netns_ok()
     if not isolate:

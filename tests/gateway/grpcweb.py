@@ -170,7 +170,7 @@ def main():
     threading.Thread(target=grpc_server, args=(listening(GRPC),), daemon=True).start()
     threading.Thread(target=h1_server, args=(listening(H1B),), daemon=True).start()
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 1; io_engine {ENGINE}; drain delay=0s timeout=1s }}
+    conf.write_text(f"""okena {{ overload off; workers 1; io_engine {ENGINE}; drain delay=0s timeout=1s }}
 pool grpc {{ server 127.0.0.1:{GRPC}; protocol h2 }}
 pool web {{ server 127.0.0.1:{H1B} }}
 http 127.0.0.1:{LST} {{

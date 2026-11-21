@@ -79,7 +79,7 @@ backend()
 tmp = pathlib.Path(tempfile.mkdtemp())
 conf = tmp / "okena.conf"
 conf.write_text(f"""
-okena {{
+okena {{ overload off
     workers 2
     io_engine {ENGINE}
     metrics 127.0.0.1:{MET}

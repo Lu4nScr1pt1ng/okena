@@ -92,7 +92,7 @@ def main():
     backend(cutb, cut=True)
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-bigbody-"))
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 2; io_engine {ENGINE} }}
+    conf.write_text(f"""okena {{ overload off; workers 2; io_engine {ENGINE} }}
 pool b {{ server 127.0.0.1:{b} }}
 pool cut {{ server 127.0.0.1:{cutb} }}
 http 127.0.0.1:{lst} {{

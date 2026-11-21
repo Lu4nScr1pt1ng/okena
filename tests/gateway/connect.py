@@ -99,7 +99,7 @@ def main():
     dead.close()                               # nothing listens there
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-connect-"))
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 1; io_engine {ENGINE} }}
+    conf.write_text(f"""okena {{ overload off; workers 1; io_engine {ENGINE} }}
 pool w {{ server 127.0.0.1:{w.port}; connect warm=3 }}
 pool m {{ server 127.0.0.1:{m.port}; connect max=0 }}
 pool i {{ server 127.0.0.1:{i.port}; connect idle=1s }}

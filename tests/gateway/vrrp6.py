@@ -99,7 +99,7 @@ def body(hold):
 
     def conf(name, dev, prio, lst):
         c = tmp / f"{name}.conf"
-        c.write_text(f"""okena {{ workers 1; io_engine {ENGINE}; drain delay=1s timeout=1s; admin unix:{tmp}/{name}.sock }}
+        c.write_text(f"""okena {{ overload off; workers 1; io_engine {ENGINE}; drain delay=1s timeout=1s; admin unix:{tmp}/{name}.sock }}
 vrrp {dev} vrid=52 priority={prio} address={VIP}/64 advert=100ms
 http {lst} {{ route /* {{ respond 404 }} }}
 """)

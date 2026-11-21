@@ -37,30 +37,30 @@ def explain(text):
 
 
 base = "pool p { server 127.0.0.1:9 }\nhttp 127.0.0.1:9000 { route /* { to pool p } }\n"
-o = explain("okena { workers 1; profile latency }\n" + base)
+o = explain("okena { overload off; workers 1; profile latency }\n" + base)
 check("profile latency: busy_poll 50us", "profile latency" in o and "busy_poll 50us" in o, o[:300])
-o = explain("okena { workers 1; profile latency; busy_poll 10us }\n" + base)
+o = explain("okena { overload off; workers 1; profile latency; busy_poll 10us }\n" + base)
 check("  a busy_poll of its own wins", "busy_poll 10us" in o, o[:300])
-o = explain("okena { workers 1; profile memory-lean }\n" + base)
+o = explain("okena { overload off; workers 1; profile memory-lean }\n" + base)
 check("profile memory-lean: 32 idle connections a server", "max=32 " in o and "busy_poll 0s" in o, o)
-o = explain("okena { workers 1; profile memory-lean }\npool p { server 127.0.0.1:9; connect max=100 }\nhttp 127.0.0.1:9000 { route /* { to pool p } }\n")
+o = explain("okena { overload off; workers 1; profile memory-lean }\npool p { server 127.0.0.1:9; connect max=100 }\nhttp 127.0.0.1:9000 { route /* { to pool p } }\n")
 check("  a pool's own max= wins", "max=100 " in o, o)
-o = explain("okena { workers 1 }\n" + base)
+o = explain("okena { overload off; workers 1 }\n" + base)
 check("no profile: balanced, busy_poll auto", "profile balanced" in o and "max=512 " in o and "busy_poll auto" in o, o[:300])
-o = explain("okena { workers 1; busy_poll 0us }\n" + base)
+o = explain("okena { overload off; workers 1; busy_poll 0us }\n" + base)
 check("  busy_poll 0us: off", "busy_poll 0s" in o, o[:300])
-o = explain("okena { workers 1; profile throughput }\n" + base)
+o = explain("okena { overload off; workers 1; profile throughput }\n" + base)
 check("profile throughput: no polling", "busy_poll 0s" in o, o[:300])
-o = explain("okena { workers 1; profile latency; busy_poll auto }\n" + base)
+o = explain("okena { overload off; workers 1; profile latency; busy_poll auto }\n" + base)
 check("busy_poll auto, written: auto whatever the profile", "busy_poll auto" in o, o[:300])
-o = explain("okena { }\n" + base)
+o = explain("okena { overload off; }\n" + base)
 check("workers auto: what this host gives, never 0", "workers 0\n" not in o and "workers " in o, o[:100])
 
 # explain is a view, not all of a file (no route filters, no certificates,
 # inline pools as `pool (inline N)`), but what it prints of a configuration
 # with named pools and no filters is configuration again: it checks, and
 # explaining it gives it back (every default it writes out can be written)
-full = """okena { workers 2; profile latency; busy_poll auto }
+full = """okena { overload off; workers 2; profile latency; busy_poll auto }
 pool api { server 127.0.0.1:3000; health http HEAD /healthz expect=200..204 host=api.internal }
 pool g { server 127.0.0.1:9000; protocol h2; health grpc my.Svc }
 pool t { server 127.0.0.1:5000; health tcp every=1s }

@@ -222,7 +222,7 @@ tmp = pathlib.Path(tempfile.mkdtemp())
 (tmp / "key").write_text(os.urandom(32).hex() + "\n")
 conf = tmp / "okena.conf"
 conf.write_text(f"""
-okena {{ workers 1; io_engine {ENGINE}; drain delay=0s timeout=1s }}
+okena {{ overload off; workers 1; io_engine {ENGINE}; drain delay=0s timeout=1s }}
 addon oidc {{
     run {ADDON} -issuer {ISS} -client-id app -client-secret-file {tmp}/secret -cookie-key-file {tmp}/key -redirect-url http://127.0.0.1:{L}/oauth2/callback -allow-domain example.com -insecure-cookie -refresh-every 400ms -access-token-header x-access-token
     phases request_headers response_headers

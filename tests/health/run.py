@@ -71,7 +71,7 @@ b1 = Backend(B1, b"b1")
 tmp = pathlib.Path(tempfile.mkdtemp())
 conf = tmp / "okena.conf"
 conf.write_text(f"""
-okena {{ workers 2 }}
+okena {{ overload off; workers 2 }}
 pool web {{
     server 127.0.0.1:{B0}
     server 127.0.0.1:{B1}
@@ -225,7 +225,7 @@ http_backend(H0, b"h0", h0)
 http_backend(H1, b"h1", {"status": 200, "mode": "http"})
 conf2 = tmp / "okena-http.conf"
 conf2.write_text(f"""
-okena {{ workers 2 }}
+okena {{ overload off; workers 2 }}
 pool app {{
     server 127.0.0.1:{H0}
     server 127.0.0.1:{H1}
@@ -359,7 +359,7 @@ else:
     grpc_backend(G1, b"g1", {"status": {"app.Svc": 1}})
     conf3 = tmp / "okena-grpc.conf"
     conf3.write_text(f"""
-okena {{ workers 2 }}
+okena {{ overload off; workers 2 }}
 pool rpc {{
     protocol h2
     server 127.0.0.1:{G0}

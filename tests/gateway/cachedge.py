@@ -92,7 +92,7 @@ def main():
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-cachedge-"))
     (tmp / "store").mkdir()
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 1; io_engine {ENGINE}; cache_disk {tmp}/store size=16MiB }}
+    conf.write_text(f"""okena {{ overload off; workers 1; io_engine {ENGINE}; cache_disk {tmp}/store size=16MiB }}
 pool b {{ server 127.0.0.1:{B} }}
 http 127.0.0.1:{L} {{ route /* {{ cache 1h; to pool b }} }}
 """)
@@ -130,7 +130,7 @@ http 127.0.0.1:{L} {{ route /* {{ cache 1h; to pool b }} }}
         check("HEAD with the tag: 304 too", st == 304, (st, h))
         # from disk: a second okena on the same store, its memory empty
         conf2 = tmp / "okena2.conf"
-        conf2.write_text(f"""okena {{ workers 1; io_engine {ENGINE}; cache_disk {tmp}/store size=16MiB }}
+        conf2.write_text(f"""okena {{ overload off; workers 1; io_engine {ENGINE}; cache_disk {tmp}/store size=16MiB }}
 pool b {{ server 127.0.0.1:{B} }}
 http 127.0.0.1:{LD} {{ route /* {{ cache 1h; to pool b }} }}
 """)

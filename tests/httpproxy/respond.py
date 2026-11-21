@@ -55,7 +55,7 @@ LARGE = "".join(chr(97 + i % 26) for i in range(200000))
 def main():
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-respond-"))
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 1; io_engine {ENGINE} }}
+    conf.write_text(f"""okena {{ overload off; workers 1; io_engine {ENGINE} }}
 http 127.0.0.1:{L} {{
     http2 on
     route /healthz {{ respond 200 "ok" }}

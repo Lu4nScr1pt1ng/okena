@@ -116,7 +116,7 @@ def main():
     down = S(("127.0.0.1", DOWN), H)
     threading.Thread(target=down.serve_forever, daemon=True).start()
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 4; io_engine {ENGINE}; drain delay=0s timeout=1s
+    conf.write_text(f"""okena {{ overload off; workers 4; io_engine {ENGINE}; drain delay=0s timeout=1s
     cache_memory 1MiB; cache_disk {tmp}/store size=8MiB }}
 pool b {{ server 127.0.0.1:{BACK} }}
 pool d {{ server 127.0.0.1:{DOWN} }}

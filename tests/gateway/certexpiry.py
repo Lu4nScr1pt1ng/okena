@@ -89,7 +89,7 @@ def main():
     gone = cert(tmp, "gone.test", -datetime.timedelta(days=1))
     far = cert(tmp, "far.test", datetime.timedelta(days=200))
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 1; io_engine {ENGINE}; drain delay=0s timeout=1s; metrics 127.0.0.1:{MET} }}
+    conf.write_text(f"""okena {{ overload off; workers 1; io_engine {ENGINE}; drain delay=0s timeout=1s; metrics 127.0.0.1:{MET} }}
 alerts {{
     webhook http://127.0.0.1:{HOOK}/
     on certificate

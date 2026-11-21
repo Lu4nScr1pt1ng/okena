@@ -52,7 +52,7 @@ def get(path):
     return r.status, r.reason
 
 
-CONF = """okena {{ workers 1; io_engine {engine}; drain delay=0s timeout=1s }}
+CONF = """okena {{ overload off; workers 1; io_engine {engine}; drain delay=0s timeout=1s }}
 http 127.0.0.1:{tls} {{
     http2 on
     http3 on

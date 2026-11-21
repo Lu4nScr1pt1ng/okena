@@ -117,7 +117,7 @@ plain_backend(BACK + 9)
 tmp = pathlib.Path(tempfile.mkdtemp())
 conf = tmp / "okena.conf"
 conf.write_text(f"""
-okena {{
+okena {{ overload off
     workers 4
     io_engine {ENGINE}
 }}

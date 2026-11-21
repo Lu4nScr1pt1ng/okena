@@ -61,7 +61,7 @@ def get(path="/", port=LST):
     return r.status, b
 
 
-CONF = """okena {{ workers {workers}; io_engine {engine}; upgrade {tmp}/up.sock; metrics 127.0.0.1:{met} }}
+CONF = """okena {{ overload off; workers {workers}; io_engine {engine}; upgrade {tmp}/up.sock; metrics 127.0.0.1:{met} }}
 pool b {{ server 127.0.0.1:{back} }}
 http 127.0.0.1:{lst} {{ route /* {{ to pool b }} }}
 """
@@ -102,7 +102,7 @@ def main():
         time.sleep(0.3)
 
         # one that cannot start
-        conf.write_text("okena { nonsense }\n")
+        conf.write_text("okena { overload off; nonsense }\n")
         q = subprocess.run(["timeout", "5", str(BIN), "upgrade", "-c", str(conf)], capture_output=True, text=True, timeout=8)
         check("a bad configuration: it does not start", q.returncode not in (0, 124) and q.stderr != "", q.stderr[-100:])
         conf.write_text(CONF.format(**args))

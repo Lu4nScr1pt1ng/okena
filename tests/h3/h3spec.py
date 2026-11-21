@@ -27,7 +27,7 @@ def main():
                     "-keyout", tmp / "k.pem", "-out", tmp / "c.pem", "-subj", "/CN=localhost", "-days", "2"],
                    check=True, capture_output=True)
     conf = tmp / "okena.conf"
-    conf.write_text(f"okena {{ workers 1; io_engine {ENGINE} }}\n"
+    conf.write_text(f"okena {{ overload off; workers 1; io_engine {ENGINE} }}\n"
                     f"http 127.0.0.1:{PORT} {{\n tls {{ cert {tmp}/c.pem key={tmp}/k.pem }}\n http2 on\n http3 on\n"
                     f" route /* {{ respond 200 \"ok\" }}\n}}\n")
     p = subprocess.Popen([str(BIN), "-c", str(conf)], stderr=open(tmp / "log", "w"))

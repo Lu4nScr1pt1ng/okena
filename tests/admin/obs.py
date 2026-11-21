@@ -68,7 +68,7 @@ tmp = pathlib.Path(tempfile.mkdtemp())
 (tmp / "keys").write_text("app:secret-key-1\n")
 conf = tmp / "okena.conf"
 conf.write_text(f"""
-okena {{ workers 2; io_engine {ENGINE}; metrics 127.0.0.1:{M}; drain delay=0s timeout=1s }}
+okena {{ overload off; workers 2; io_engine {ENGINE}; metrics 127.0.0.1:{M}; drain delay=0s timeout=1s }}
 pool b {{ server 127.0.0.1:{BACK} }}
 http 127.0.0.1:{L} {{
     route /api/* {{ metrics api; to pool b }}

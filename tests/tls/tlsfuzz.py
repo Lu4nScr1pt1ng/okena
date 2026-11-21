@@ -158,7 +158,7 @@ def main():
        "-addext", "subjectAltName=DNS:localhost", "-days", "2", "-out", "s.pem")
     threading.Thread(target=backend, args=(BACK,), daemon=True).start()
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 2 }}
+    conf.write_text(f"""okena {{ overload off; workers 2 }}
 http 127.0.0.1:{LST} {{
     tls {{ cert {tmp / 's.pem'}; key {tmp / 's.key'} }}
     route /* {{ to 127.0.0.1:{BACK} }}

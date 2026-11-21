@@ -118,7 +118,7 @@ def main():
 
     def text(skip=()):
         lines = lambda d: "".join(f" server {a};" for n, a in d.items() if n not in skip)
-        return f"""okena {{ workers 4; io_engine {ENGINE}; admin unix:{tmp}/a.sock }}
+        return f"""okena {{ overload off; workers 4; io_engine {ENGINE}; admin unix:{tmp}/a.sock }}
 pool mag {{ balance maglev key=header:x-user;{lines(web)} }}
 pool ring {{ balance ring-hash key=header:x-user;{lines(web)} }}
 pool paths {{ balance ring-hash key=path;{lines(web)} }}

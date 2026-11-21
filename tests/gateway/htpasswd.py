@@ -88,7 +88,7 @@ lines.append(f"old:{salt}:" + hashlib.sha256(salt.encode() + b"oldpass").hexdige
 (tmp / "users").write_text("# htpasswd -B\n" + "\n".join(lines) + "\n")
 conf = tmp / "okena.conf"
 conf.write_text(f"""
-okena {{ workers 1; io_engine {ENGINE}; admin unix:{tmp}/admin.sock; drain delay=0s timeout=1s }}
+okena {{ overload off; workers 1; io_engine {ENGINE}; admin unix:{tmp}/admin.sock; drain delay=0s timeout=1s }}
 http 127.0.0.1:{L} {{
     route /private/* {{ auth basic users={tmp}/users realm=t; to 127.0.0.1:{BACK} }}
     route /open {{ respond 200 "open" }}

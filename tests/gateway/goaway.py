@@ -124,7 +124,7 @@ def main():
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-goaway-"))
     threading.Thread(target=S(("127.0.0.1", BACK), H).serve_forever, daemon=True).start()
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 1; io_engine {ENGINE}; admin unix:{tmp}/admin.sock; drain delay=0s timeout=20s }}
+    conf.write_text(f"""okena {{ overload off; workers 1; io_engine {ENGINE}; admin unix:{tmp}/admin.sock; drain delay=0s timeout=20s }}
 pool b {{ server 127.0.0.1:{BACK} }}
 http 127.0.0.1:{LST} {{ http2 on; route /* {{ to pool b }} }}
 """)

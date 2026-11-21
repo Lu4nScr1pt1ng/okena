@@ -102,7 +102,7 @@ def main():
 
     def conf(name, acme):
         c = tmp / f"{name}.conf"
-        c.write_text(f"""okena {{ workers 1; io_engine {ENGINE}; drain delay=0s timeout=1s
+        c.write_text(f"""okena {{ overload off; workers 1; io_engine {ENGINE}; drain delay=0s timeout=1s
     acme {tmp}/{name} {acme} }}
 pool b {{ server 127.0.0.1:{BACK} }}
 http 127.0.0.1:{PLAIN} {{ route /* {{ to pool b }} }}

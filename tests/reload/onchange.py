@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""`okena { reload on-change }`: an edit to the file reloads within a few
+"""`okena { overload off; reload on-change }`: an edit to the file reloads within a few
 seconds; so does a file added to an included directory, a certificate and
 key replaced in place (the new one served, without a restart), and the files
 of a listener with missing=skip coming (it opens); a broken edit is
@@ -56,7 +56,7 @@ def main():
                         "-out", tmp / f"{n}.crt", "-subj", f"/CN=pair-{n}", "-days", "2"], check=True, capture_output=True)
     shutil.copy(tmp / "a.crt", tmp / "server.crt")
     shutil.copy(tmp / "a.key", tmp / "server.key")
-    text = (f'okena {{ workers 1; reload on-change }}\ninclude "conf.d/*.conf"\nhttp 127.0.0.1:{L} {{ route /x {{ respond 404 }}; route /y {{ respond 404 }} }}\n'
+    text = (f'okena {{ overload off; workers 1; reload on-change }}\ninclude "conf.d/*.conf"\nhttp 127.0.0.1:{L} {{ route /x {{ respond 404 }}; route /y {{ respond 404 }} }}\n'
             f'http 127.0.0.1:{L + 1} {{ tls {{ cert {tmp}/server.crt key={tmp}/server.key }}\n route /* {{ respond 200 }} }}\n'
             f'http 127.0.0.1:{L + 2} {{ tls {{ cert {tmp}/opt/c.crt key={tmp}/opt/c.key missing=skip }}\n route /* {{ respond 200 }} }}\n')
     conf.write_text(text)

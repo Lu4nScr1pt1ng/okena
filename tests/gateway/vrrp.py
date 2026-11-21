@@ -111,7 +111,7 @@ def main():
 
     def conf(name, dev, prio, back, lst):
         c = tmp / f"{name}.conf"
-        c.write_text(f"""okena {{ workers 1; io_engine {ENGINE}; drain delay=1s timeout=1s; admin unix:{tmp}/{name}.sock }}
+        c.write_text(f"""okena {{ overload off; workers 1; io_engine {ENGINE}; drain delay=1s timeout=1s; admin unix:{tmp}/{name}.sock }}
 vrrp {dev} vrid=51 priority={prio} address={VIP}/24 advert=100ms track=web
 pool web {{ server {back}; health tcp every=200ms fall=1 rise=1 }}
 http {lst} {{ route /* {{ to pool web }} }}

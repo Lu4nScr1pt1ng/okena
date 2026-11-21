@@ -326,7 +326,7 @@ def main():
     check("  never over a file", q2.returncode != 0)
     run("genpkey", "-algorithm", "X25519", "-out", "ech2.key")
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{
+    conf.write_text(f"""okena {{ overload off
     workers 1; io_engine {ENGINE}
     ech public.test {tmp}/ech1.key {tmp}/ech2.key
 }}

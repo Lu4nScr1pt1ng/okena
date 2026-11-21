@@ -73,7 +73,7 @@ def pool_net(p):
 
 
 def config(bport, gen, page="/dev/null"):
-    out = [f"okena {{ workers 2; io_engine {ENGINE}; drain delay=0s timeout=2s }}"]
+    out = [f"okena {{ overload off; workers 2; io_engine {ENGINE}; drain delay=0s timeout=2s }}"]
     for p in range(NP):
         srv = " ".join(f"server {pool_net(p)}{s + 1}:{bport};" for s in range(PER))
         out.append(f"pool p{p} {{ {srv} }}")

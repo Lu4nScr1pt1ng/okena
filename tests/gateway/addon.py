@@ -165,7 +165,7 @@ def main():
         ghello = pathlib.Path("/bin/false")
     if not rbuilt:
         rhello = pathlib.Path("/bin/false")
-    base = f"""okena {{ workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s; metrics 127.0.0.1:{M} }}
+    base = f"""okena {{ overload off; workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s; metrics 127.0.0.1:{M} }}
 addon chello {{
     run {hello}
     timeout 150ms
@@ -181,13 +181,14 @@ addon rhello {{
 }}
 addon tagger {{
     run {run}
-    timeout 150ms
+    timeout 500ms                   # ("at once" and "after the timeout" told apart
+                                    # with room even when the suites load the machine)
     on_error allow
     breaker errors=1000 open=2s     # (the circuit has an addon of its own, brk: a call
 }}                                  # past its time under load must not open this one)
 addon strict {{
     run {run} strict
-    timeout 150ms
+    timeout 500ms
 }}
 addon piler {{
     run {run} piler
@@ -201,7 +202,7 @@ addon flaky {{
 }}
 addon brk {{
     run {run} brk
-    timeout 100ms
+    timeout 300ms
     on_error allow
     breaker errors=3 open=5s
 }}
@@ -290,13 +291,13 @@ http 127.0.0.1:{L} {{
         check("what the addon is told: client, method, target, host", s == 200 and h.get("x-client") == ["127.0.0.1"]
               and h.get("x-method") == ["GET"] and h.get("x-target") == ["/a/info"] and h.get("x-host") == ["t"], h)
         s, d, b = timed("/a/none")
-        check("no answer: on_error allow after the timeout", s == 200 and 0.12 < d < 1.0 and b"GET /a/none" in b, (s, d))
+        check("no answer: on_error allow after the timeout", s == 200 and 0.45 < d < 2.0 and b"GET /a/none" in b, (s, d))
         s, d, b = timed("/s/none")
-        check("no answer: on_error deny is 503", s == 503 and 0.12 < d < 1.0, (s, d))
+        check("no answer: on_error deny is 503", s == 503 and 0.45 < d < 2.0, (s, d))
         s, d, b = timed("/a/fail")
-        check("the addon says it cannot decide: on_error allow at once", s == 200 and d < 0.1 and b"GET /a/fail" in b, (s, d))
+        check("the addon says it cannot decide: on_error allow at once", s == 200 and d < 0.25 and b"GET /a/fail" in b, (s, d))
         s, d, b = timed("/s/fail")
-        check("  and deny: 503 at once", s == 503 and d < 0.1, (s, d))
+        check("  and deny: 503 at once", s == 503 and d < 0.25, (s, d))
         s, h, b = get("/a/bad")
         check("a bad answer (a field that is not one): on_error allow", s == 200 and b"bad name" not in b, (s, b))
         s, h, b = get("/s/bad")
@@ -549,11 +550,11 @@ http 127.0.0.1:{L} {{
                 d += k.recv(65536)
             took.append(time.monotonic() - t)
         k.close()
-        check("the circuit opens after errors=3: the next call ends at once", all(x > 0.09 for x in took[:3]) and took[3] < 0.05, took)
+        check("the circuit opens after errors=3: the next call ends at once", all(x > 0.29 for x in took[:3]) and took[3] < 0.15, took)
         # a crash: on_error at once, then started again
         pid0 = get("/a/pid")[1].get("x-addon-pid")
         s, d, b = timed("/a/crash")
-        check("an addon that crashes: its call ends at once, on_error allow", s == 200 and d < 0.14, (s, d))
+        check("an addon that crashes: its call ends at once, on_error allow", s == 200 and d < 0.25, (s, d))
         s, d, b = timed("/s/crash")
         check("  and on_error deny: 503", s == 503, s)
         end = time.time() + 5
@@ -638,7 +639,7 @@ http 127.0.0.1:{L} {{
     # okena started with no addon: a reload that brings one is refused (the
     # launcher can only be made at the start), and okena serves on
     conf2 = tmp / "none.conf"
-    conf2.write_text(f"""okena {{ workers 1; io_engine {ENGINE}; drain delay=0s timeout=1s }}
+    conf2.write_text(f"""okena {{ overload off; workers 1; io_engine {ENGINE}; drain delay=0s timeout=1s }}
 pool echo {{ server 127.0.0.1:{B} }}
 http 127.0.0.1:{L} {{ route /* {{ to pool echo }} }}
 """)

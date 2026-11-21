@@ -67,7 +67,7 @@ tmp = pathlib.Path(tempfile.mkdtemp())
 alog = tmp / "l4.log"
 conf = tmp / "okena.conf"
 conf.write_text(f"""
-okena {{ workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s }}
+okena {{ overload off; workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s }}
 tcp 127.0.0.1:{T} {{
     to 127.0.0.1:{BACK}
     deny 127.0.0.5

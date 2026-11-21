@@ -787,7 +787,7 @@ def main():
     (adir / "c.example.test" / "key.pem").write_bytes(ok_.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.TraditionalOpenSSL, serialization.NoEncryption()))
 
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s
+    conf.write_text(f"""okena {{ overload off; workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s
     acme {adir} ca=https://localhost:{CA}/dir email=ops@example.test trust={tmp}/ca.pem }}
 pool b {{ server 127.0.0.1:{BACK} }}
 http 127.0.0.1:{PLAIN} {{ route /* {{ to pool b }} }}
@@ -861,7 +861,7 @@ http 127.0.0.1:{TLS} {{
         # TLS-ALPN-01: only a TLS port, no http listener (no port 80 needed)
         n0 = len(ST.log)
         conf2 = tmp / "okena2.conf"
-        conf2.write_text(f"""okena {{ workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s
+        conf2.write_text(f"""okena {{ overload off; workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s
     acme {tmp}/acme2 ca=https://localhost:{CA}/dir trust={tmp}/ca.pem challenge=tls-alpn-01 }}
 pool b {{ server 127.0.0.1:{BACK} }}
 http 127.0.0.1:{TLS2} {{
@@ -891,7 +891,7 @@ http 127.0.0.1:{TLS2} {{
         n0 = len(ST.log)
         (tmp / "cf.token").write_text(CF_TOKEN + "\n")
         conf3 = tmp / "okena3.conf"
-        conf3.write_text(f"""okena {{ workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s
+        conf3.write_text(f"""okena {{ overload off; workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s
     acme {tmp}/acme3 ca=https://localhost:{CA}/dir trust={tmp}/ca.pem challenge=dns-01 dns=cloudflare dns_token={tmp}/cf.token dns_api=https://localhost:{CF}/client/v4 dns_wait=100ms dns_trust={tmp}/ca.pem }}
 pool b {{ server 127.0.0.1:{BACK} }}
 http 127.0.0.1:{TLS3} {{
@@ -918,7 +918,7 @@ http 127.0.0.1:{TLS3} {{
         check("  and removed after", until(lambda: not CFS["records"], 3)
               and sum(1 for m, _ in calls if m == "DELETE") == 2, CFS["records"])
         bad = tmp / "bad.conf"
-        bad.write_text(f"okena {{ acme {tmp}/x ca=https://localhost:{CA}/dir }}\npool b {{ server 127.0.0.1:{BACK} }}\n"
+        bad.write_text(f"okena {{ overload off; acme {tmp}/x ca=https://localhost:{CA}/dir }}\npool b {{ server 127.0.0.1:{BACK} }}\n"
                        f"http 127.0.0.1:{TLS3} {{\n    tls {{ acme *.w.example.test }}\n    route /* {{ to pool b }}\n}}\n")
         r = subprocess.run([str(BIN), "check", "-c", str(bad)], capture_output=True, text=True, timeout=10)
         check("a wildcard without dns-01: refused", r.returncode != 0 and "wildcard" in r.stderr, r.stderr)
@@ -939,7 +939,7 @@ http 127.0.0.1:{TLS3} {{
         n0 = len(ST.log)
         (tmp / "tsig.key").write_text(f"hmac-sha256:{DNSS['key']}:{base64.b64encode(DNSS['secret']).decode()}\n")
         conf4 = tmp / "okena4.conf"
-        conf4.write_text(f"""okena {{ workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s
+        conf4.write_text(f"""okena {{ overload off; workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s
     acme {tmp}/acme4 ca=https://localhost:{CA}/dir trust={tmp}/ca.pem challenge=dns-01 dns=rfc2136 dns_server=127.0.0.1:{DNS} dns_key={tmp}/tsig.key dns_wait=100ms }}
 pool b {{ server 127.0.0.1:{BACK} }}
 http 127.0.0.1:{TLS4} {{
@@ -982,7 +982,7 @@ http 127.0.0.1:{TLS4} {{
         n0 = len(ST.log)
         (tmp / "aws.key").write_text(f"{R53['akid']}:{R53['secret']}:{R53['token']}\n")
         conf6 = tmp / "okena6.conf"
-        conf6.write_text(f"""okena {{ workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s
+        conf6.write_text(f"""okena {{ overload off; workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s
     acme {tmp}/acme6 ca=https://localhost:{CA}/dir trust={tmp}/ca.pem challenge=dns-01 dns=route53 dns_key={tmp}/aws.key dns_api=https://localhost:{R53_PORT} dns_wait=100ms dns_trust={tmp}/ca.pem }}
 pool b {{ server 127.0.0.1:{BACK} }}
 http 127.0.0.1:{TLS5} {{

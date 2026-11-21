@@ -93,7 +93,7 @@ n = EC.public_key().public_numbers()
 J = f"jwks {tmp}/jwks.json"
 conf = tmp / "okena.conf"
 conf.write_text(f"""
-okena {{ workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s }}
+okena {{ overload off; workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s }}
 http 127.0.0.1:{LST} {{
     route /admin {{ auth jwt {{ {J}; require scope admin }}; to 127.0.0.1:{BACK} }}
     route /rw {{ auth jwt {{ {J}; require scope read; require scope write }}; to 127.0.0.1:{BACK} }}

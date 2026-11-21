@@ -88,7 +88,7 @@ def main():
 
     def write(servers, extra=""):
         lines = "".join(f"    server {s}\n" for s in servers)
-        conf.write_text(f"""okena {{ workers 2; io_engine {ENGINE}; admin unix:{sock}; metrics 127.0.0.1:{MET}; upgrade {tmp}/u.sock; watchdog 2s }}
+        conf.write_text(f"""okena {{ overload off; workers 2; io_engine {ENGINE}; admin unix:{sock}; metrics 127.0.0.1:{MET}; upgrade {tmp}/u.sock; watchdog 2s }}
 pool p {{
     balance round-robin
 {lines}}}
@@ -255,7 +255,7 @@ http 127.0.0.1:{LST} {{
     check("no request stalled", not STALLS, len(STALLS))
     check("no process died", "killed" not in text.replace("okena-admin", ""), text[-300:])
     bad = tmp / "bad.conf"
-    bad.write_text(f"okena {{ admin /tmp/x.sock }}\npool p {{ server {A} }}\nhttp 127.0.0.1:{LST} {{ route /* {{ to pool p }} }}\n")
+    bad.write_text(f"okena {{ overload off; admin /tmp/x.sock }}\npool p {{ server {A} }}\nhttp 127.0.0.1:{LST} {{ route /* {{ to pool p }} }}\n")
     r = subprocess.run([str(BIN), "check", str(bad)], capture_output=True, text=True, timeout=10)
     check("admin needs unix:", r.returncode != 0, r)
     shutil.rmtree(tmp, ignore_errors=True)

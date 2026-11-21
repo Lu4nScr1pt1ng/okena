@@ -134,7 +134,7 @@ def main():
     sock = tmp / "fpm.sock"
     threading.Thread(target=UnixServer(str(sock), FPMHandler).serve_forever, daemon=True).start()
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 1; io_engine {ENGINE}; drain delay=0s timeout=1s }}
+    conf.write_text(f"""okena {{ overload off; workers 1; io_engine {ENGINE}; drain delay=0s timeout=1s }}
 pool fpm {{ server 127.0.0.1:{FPM}; protocol fastcgi }}
 pool ufpm {{ server unix:{sock}; protocol fastcgi }}
 http 127.0.0.1:{LST} {{

@@ -104,7 +104,7 @@ def main():
     # okena serving what okena made
     threading.Thread(target=http.server.ThreadingHTTPServer(("127.0.0.1", BACK), H).serve_forever, daemon=True).start()
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 1; io_engine {ENGINE}; drain delay=0s timeout=1s }}
+    conf.write_text(f"""okena {{ overload off; workers 1; io_engine {ENGINE}; drain delay=0s timeout=1s }}
 pool b {{ server 127.0.0.1:{BACK} }}
 http 127.0.0.1:{TLS} {{
     tls {{ cert {tmp}/a/cert.pem; key {tmp}/a/key.pem }}

@@ -71,7 +71,7 @@ def main():
     threading.Thread(target=serve, daemon=True).start()
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-source-"))
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 1; io_engine {ENGINE} }}
+    conf.write_text(f"""okena {{ overload off; workers 1; io_engine {ENGINE} }}
 pool p {{ server 127.0.0.1:{B}; source 127.0.0.2 ::1 127.0.0.3 }}
 pool x {{ server 127.0.0.1:{B}; source 192.0.2.77 }}
 http 127.0.0.1:{LH} {{ route /* {{ to pool p }} }}

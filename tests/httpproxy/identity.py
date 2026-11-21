@@ -94,7 +94,7 @@ def main():
     threading.Thread(target=backend, daemon=True).start()
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-identity-"))
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 1; io_engine {ENGINE} }}
+    conf.write_text(f"""okena {{ overload off; workers 1; io_engine {ENGINE} }}
 pool b {{ server 127.0.0.1:{B} }}
 http 127.0.0.1:{LU} {{
     route /r/* {{ redirect 302 "https://{{host}}{{path}}" }}

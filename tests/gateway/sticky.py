@@ -128,7 +128,7 @@ def main():
     conf = tmp / "okena.conf"
     srv = {n: backend(n) for n in ("a", "b", "c")}
     other = backend("z")
-    conf.write_text(f"""okena {{ workers 4; io_engine {ENGINE}; admin unix:{tmp}/a.sock }}
+    conf.write_text(f"""okena {{ overload off; workers 4; io_engine {ENGINE}; admin unix:{tmp}/a.sock }}
 pool p {{ sticky cookie=srv ttl=1h; {''.join(f'server {a}; ' for s, a in srv.values())}}}
 pool q {{ sticky cookie=srv samesite=none; server {other[1]} }}
 http 127.0.0.1:{LST} {{ route /x {{ to pool p }} }}

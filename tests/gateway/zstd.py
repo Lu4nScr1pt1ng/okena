@@ -160,7 +160,7 @@ def main():
     subprocess.run(["openssl", "req", "-new", "-x509", "-key", tmp / "k.pem", "-subj", "/CN=localhost", "-days", "2",
                     "-out", tmp / "c.pem"], check=True, capture_output=True)
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ drain delay=0s timeout=1s; workers 1; io_engine {ENGINE} }}
+    conf.write_text(f"""okena {{ overload off; drain delay=0s timeout=1s; workers 1; io_engine {ENGINE} }}
 pool b {{ server 127.0.0.1:{BACK} }}
 http 127.0.0.1:{LST} {{
     compress zstd br gzip min=64B

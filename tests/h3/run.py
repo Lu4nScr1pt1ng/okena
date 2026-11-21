@@ -819,7 +819,7 @@ def main():
                    check=True, capture_output=True)
     threading.Thread(target=backend, daemon=True).start()
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 1; io_engine {ENGINE}; drain delay=0s timeout=8s }}
+    conf.write_text(f"""okena {{ overload off; workers 1; io_engine {ENGINE}; drain delay=0s timeout=8s }}
 http 127.0.0.1:{LST} {{
     http2 on
     http3 on

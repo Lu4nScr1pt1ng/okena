@@ -106,7 +106,7 @@ def main():
     (brw / "withindex").mkdir()
     (brw / "withindex" / "index.html").write_text("its index")
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ drain delay=0s timeout=1s; workers 2; io_engine {ENGINE} }}
+    conf.write_text(f"""okena {{ overload off; drain delay=0s timeout=1s; workers 2; io_engine {ENGINE} }}
 http 127.0.0.1:{LST} {{
     route /spa/* {{ files {tmp}/spa2 fallback=/index.html }}
     route /browse/* {{ files {tmp}/brw browse=on }}

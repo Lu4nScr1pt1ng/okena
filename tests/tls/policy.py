@@ -46,7 +46,7 @@ def main():
                     "-keyout", "k.pem", "-out", "c.pem", "-subj", "/CN=a.test", "-days", "2"], check=True, capture_output=True, cwd=tmp)
     t = f"cert {tmp}/c.pem; key {tmp}/k.pem"
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 1; io_engine {ENGINE} }}
+    conf.write_text(f"""okena {{ overload off; workers 1; io_engine {ENGINE} }}
 http 127.0.0.1:{L13} {{ tls {{ {t}; versions 1.3 }}; route /* {{ respond 404 }} }}
 http 127.0.0.1:{L12} {{ tls {{ {t}; versions 1.2 }}; route /* {{ respond 404 }} }}
 http 127.0.0.1:{LH1} {{ tls {{ {t}; alpn http/1.1 h2 }}; route /* {{ respond 404 }} }}

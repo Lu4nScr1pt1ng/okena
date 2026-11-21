@@ -127,7 +127,7 @@ def main():
     serve(d, sender)
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-bulk-"))
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 2; io_engine {ENGINE} }}
+    conf.write_text(f"""okena {{ overload off; workers 2; io_engine {ENGINE} }}
 tcp 127.0.0.1:{lst} {{ to 127.0.0.1:{e} }}
 tcp 127.0.0.1:{lst + 1} {{ to 127.0.0.1:{s} }}
 tcp 127.0.0.1:{lst + 2} {{ to 127.0.0.1:{w} }}

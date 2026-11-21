@@ -196,7 +196,7 @@ def hit(r):
     return "hit" in status_of(r)
 
 
-CONF = """okena {{ workers 1; io_engine {engine}; drain delay=0s timeout=1s }}
+CONF = """okena {{ overload off; workers 1; io_engine {engine}; drain delay=0s timeout=1s }}
 pool b {{ server 127.0.0.1:{back} }}
 http 127.0.0.1:{lst} {{
     route /c/* {{ cache 60s vary=accept-encoding; to pool b }}
@@ -414,7 +414,7 @@ def main():
 
     # little memory, much to keep
     small = tmp / "small.conf"
-    small.write_text(f"""okena {{ workers 1; io_engine {ENGINE}; cache_memory 1MiB }}
+    small.write_text(f"""okena {{ overload off; workers 1; io_engine {ENGINE}; cache_memory 1MiB }}
 pool b {{ server 127.0.0.1:{BACK} }}
 http 127.0.0.1:{SMALL} {{ route /e/* {{ cache 60s; to pool b }} }}
 """)

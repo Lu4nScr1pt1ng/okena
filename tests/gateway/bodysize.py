@@ -95,7 +95,7 @@ threading.Thread(target=srv.serve_forever, daemon=True).start()
 tmp = pathlib.Path(tempfile.mkdtemp())
 conf = tmp / "okena.conf"
 conf.write_text(f"""
-okena {{ workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s }}
+okena {{ overload off; workers 2; io_engine {ENGINE}; drain delay=0s timeout=1s }}
 http 127.0.0.1:{L} {{
     limits {{ body_size 1KiB }}
     host big.test {{

@@ -65,7 +65,7 @@ def scale():
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     gwdir = tmp / "gw"
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{
+    conf.write_text(f"""okena {{ overload off
     drain delay=0s timeout=1s; workers 2; io_engine {ENGINE}
     gateway kubernetes dir={gwdir} api=127.0.0.1:{API} ca={tmp}/ca.crt token={tok}
 }}

@@ -90,7 +90,7 @@ subprocess.run([str(SERVER), "-write", str(tmp / "api.pb")], check=True)
 gs = subprocess.Popen([str(SERVER), "-listen", f"127.0.0.1:{G}"])
 conf = tmp / "okena.conf"
 conf.write_text(f"""
-okena {{ workers 1; io_engine {ENGINE}; drain delay=0s timeout=1s }}
+okena {{ overload off; workers 1; io_engine {ENGINE}; drain delay=0s timeout=1s }}
 addon grpcjson {{
     run {ADDON} -descriptors {tmp}/api.pb -backend 127.0.0.1:{G}
     phases request_body

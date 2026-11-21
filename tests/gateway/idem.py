@@ -99,7 +99,7 @@ def post(path, key=None, method="POST", body=b"x", port=None, **hdr):
     return r.status, b, {k.lower(): v for k, v in r.getheaders()}
 
 
-CONF = """okena {{ drain delay=0s timeout=1s; workers 2; io_engine {engine} }}
+CONF = """okena {{ overload off; drain delay=0s timeout=1s; workers 2; io_engine {engine} }}
 pool b {{ server 127.0.0.1:{back} }}
 pool gone {{ server 127.0.0.1:1 }}
 http 127.0.0.1:{lst} {{
@@ -246,7 +246,7 @@ def main():
         p.terminate()
         p.wait(10)
     # a store of one's own: 1024 keys of 1 MiB
-    conf.write_text(f"""okena {{ drain delay=0s timeout=1s; workers 2; io_engine {ENGINE}; idempotency_store keys=1000 size=1MiB }}
+    conf.write_text(f"""okena {{ overload off; drain delay=0s timeout=1s; workers 2; io_engine {ENGINE}; idempotency_store keys=1000 size=1MiB }}
 http 127.0.0.1:{LST2} {{ route /* {{ idempotency header=idempotency-key; to 127.0.0.1:{BACK} }} }}
 """)
     p = subprocess.Popen([str(BIN), "-c", str(conf)], stderr=open(log, "w"))
@@ -276,7 +276,7 @@ http 127.0.0.1:{LST2} {{ route /* {{ idempotency header=idempotency-key; to 127.
         q = subprocess.run(["timeout", "5", str(BIN), "-c", str(c)], capture_output=True, text=True, timeout=8)
         check(f"{what}: refused", q.returncode not in (0, 124) and q.stderr != "", f"{q.returncode} {q.stderr[-140:]}")
     for what, line in (("keys past 64M", "keys=100000000"), ("size past 16 MiB", "size=32MiB"), ("over 1 TiB", "keys=67108864 size=1MiB")):
-        c.write_text(f"okena {{ idempotency_store {line} }}\nhttp 127.0.0.1:{LST} {{ route /* {{ respond 200 }} }}\n")
+        c.write_text(f"okena {{ overload off; idempotency_store {line} }}\nhttp 127.0.0.1:{LST} {{ route /* {{ respond 200 }} }}\n")
         q = subprocess.run(["timeout", "5", str(BIN), "-c", str(c)], capture_output=True, text=True, timeout=8)
         check(f"idempotency_store {what}: refused", q.returncode not in (0, 124) and "idempotency_store" in q.stderr, f"{q.returncode} {q.stderr[-140:]}")
     print(f"idem {ENGINE}: " + ("all passed" if not fails else f"{fails} failed"))

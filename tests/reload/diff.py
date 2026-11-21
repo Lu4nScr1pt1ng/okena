@@ -27,7 +27,7 @@ def check(name, ok, detail=""):
 def main():
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-diff-"))
     conf = tmp / "okena.conf"
-    text = f"""okena {{ workers 1; admin unix:{tmp}/admin.sock }}
+    text = f"""okena {{ overload off; workers 1; admin unix:{tmp}/admin.sock }}
 pool p {{ server 127.0.0.1:9 }}
 http 127.0.0.1:{L} {{ route /a {{ to pool p }} }}
 """

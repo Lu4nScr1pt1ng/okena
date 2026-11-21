@@ -67,7 +67,7 @@ def main():
     slow, slow2, fast = backend(4, b"slow"), backend(4, b"slow2"), backend(0, b"fast")
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="okena-rtimeout-"))
     conf = tmp / "okena.conf"
-    conf.write_text(f"""okena {{ workers 1; io_engine {ENGINE} }}
+    conf.write_text(f"""okena {{ overload off; workers 1; io_engine {ENGINE} }}
 pool s {{ server 127.0.0.1:{slow} }}
 pool sf {{ balance first; server 127.0.0.1:{slow2}; server 127.0.0.1:{fast} }}
 http 127.0.0.1:{L} {{

@@ -39,7 +39,7 @@ threading.Thread(target=http.server.ThreadingHTTPServer(("127.0.0.1", BACK), H).
 good, n, errs = 0, 5, []
 for i in range(n):
     tmp = pathlib.Path(tempfile.mkdtemp())
-    (tmp / "c").write_text(f"okena {{ workers 1; io_engine {ENGINE}; drain delay=0s timeout=1s }}\n"
+    (tmp / "c").write_text(f"okena {{ overload off; workers 1; io_engine {ENGINE}; drain delay=0s timeout=1s }}\n"
                            f"http 127.0.0.1:{L} {{ route /* {{ to 127.0.0.1:{BACK} }} }}\n")
     p = subprocess.Popen([str(BIN), "-c", str(tmp / "c")], stderr=subprocess.DEVNULL)
     c = None

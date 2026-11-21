@@ -176,7 +176,7 @@ def main():
     threading.Thread(target=S(("127.0.0.1", BACK), Back).serve_forever, daemon=True).start()
     conf = tmp / "okena.conf"
     alog = tmp / "access.log"
-    conf.write_text(f"""okena {{ drain delay=0s timeout=1s; workers 1; io_engine {ENGINE} }}
+    conf.write_text(f"""okena {{ overload off; drain delay=0s timeout=1s; workers 1; io_engine {ENGINE} }}
 pool b {{ server 127.0.0.1:{BACK} }}
 http 127.0.0.1:{TLS} {{
     tls {{ cert {tmp}/c.pem; key {tmp}/k.pem }}
@@ -250,7 +250,7 @@ http 127.0.0.1:{PLAIN} {{ route /* {{ header set x-ja4 "[${{tls.ja4}}]"; to pool
         p.terminate()
         p.wait(10)
         # nothing uses it: nothing computed (no record, the variable empty)
-        conf.write_text(f"""okena {{ drain delay=0s timeout=1s; workers 1; io_engine {ENGINE} }}
+        conf.write_text(f"""okena {{ overload off; drain delay=0s timeout=1s; workers 1; io_engine {ENGINE} }}
 pool b {{ server 127.0.0.1:{BACK} }}
 http 127.0.0.1:{BARE} {{
     tls {{ cert {tmp}/c.pem; key {tmp}/k.pem }}
@@ -282,7 +282,7 @@ http 127.0.0.1:{BARE} {{
                 time.sleep(0.1)
         mine2 = fetch(BARE, "/x")[0]
         lines = log_lines(alog)
-        check("okena { ja4 on }: in the log", any(x.get("ja4") == mine2 for x in lines), lines[:1])
+        check("okena { overload off; ja4 on }: in the log", any(x.get("ja4") == mine2 for x in lines), lines[:1])
     finally:
         if p:
             p.terminate()

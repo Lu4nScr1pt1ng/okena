@@ -85,7 +85,7 @@ b1 = Backend(B1, b"b1")
 tmp = pathlib.Path(tempfile.mkdtemp())
 conf = tmp / "okena.conf"
 conf.write_text(f"""
-okena {{ workers 1 }}
+okena {{ overload off; workers 1 }}
 pool slow {{
     server 127.0.0.1:{B0}
     server 127.0.0.1:{B1}
@@ -190,7 +190,7 @@ http_backend(H1, b"h1", 0.02)
 http_backend(H2, b"h1", 0.1)          # (peak-ewma's slow one: far slower than a loaded machine's stalls)
 conf2 = tmp / "okena-ewma.conf"
 conf2.write_text(f"""
-okena {{ workers 1 }}
+okena {{ overload off; workers 1 }}
 pool ewma {{
     balance peak-ewma
     server 127.0.0.1:{H0}
