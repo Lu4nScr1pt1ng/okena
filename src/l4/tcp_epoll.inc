@@ -28,6 +28,7 @@ ENGINE_URING	:= 0
 ENGINE_EPOLL	:= 1
 
 EP_EVENTS	:= 256
+ACCEPT_TURN	:= 8		; accepts, then the worker goes behind the others
 ACCEPT_BATCH	:= 4		; accepts a wake-up of a lone worker (a burst is
 				; taken in few turns). With more, every worker
 				; waits on the one socket (exclusive: an arrival
@@ -41,6 +42,7 @@ bss
 	g_engine	dd ?
 	g_epfd		dd ?
 	g_ep_acc_sid	dd ?			; ep_accept's socket (ep_lrotate)
+	g_ep_acc_n	rd MAX_LISTENERS	; accepts since this worker went to the queue's end
 	g_now_ms	dq ?
 	g_next_tick_ms	dq ?
 	g_buf_top	dd ?		; free buffer stack
@@ -524,7 +526,12 @@ ep_accept:
 	inc	dword [g_active]
 	mov	eax,[g_ls_active+r13*4]		; full now: behind the others
 	cmp	eax,[g_ls_cap+r13*4]
-	jb	@f
+	jae	.rotate
+	inc	dword [g_ep_acc_n+r13*4]	; and every ACCEPT_TURN: the first worker
+	cmp	dword [g_ep_acc_n+r13*4],ACCEPT_TURN	; waiting is woken for each
+	jb	@f				; arrival, so a quiet listener's clients
+.rotate:					; would all be its (and stay its when the
+	mov	dword [g_ep_acc_n+r13*4],0	; load comes): they go round the workers
 	call	ep_lrotate
 @@:
 	call	session_ptr
