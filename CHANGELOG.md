@@ -4,6 +4,20 @@ okena follows [semantic versioning](https://semver.org). Until 1.0 the
 configuration language may still change between minor versions; each change
 is listed here, with what to write instead.
 
+## Unreleased
+
+### Faster
+
+- **gzip:** about twice as fast for the same output: the hash is no longer
+  cleared for each answer, matches are compared eight bytes at a time, codes
+  come from tables and go out in one write, the places inside a long match
+  are not hashed (as zlib's fastest levels), CRC-32 eight bytes a step.
+- **epoll:** a read of the client that came short is not followed by one
+  that can only say EAGAIN (one system call less a request); held requests
+  (handler holds, `fault delay=`) answered on time: waits to the µs with
+  epoll_pwait2 (Linux 5.11+, epoll_wait before), and their table looked
+  through no more often than every 200 µs.
+
 ## 0.2.0 — 2026-11-20
 
 Much faster over TLS, HTTP/2 and HTTP/3, handler modules, files kept in
