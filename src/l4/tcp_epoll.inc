@@ -42,6 +42,10 @@ bss
 	g_engine	dd ?
 	g_epfd		dd ?
 	g_ep_acc_sid	dd ?			; ep_accept's socket (ep_lrotate)
+	g_ep_nopw2	dd ?			; 1: no epoll_pwait2 (before Linux 5.11)
+	align 8
+	g_ep_wait_us	dq ?			; ep_wait_timeout: the wait, in µs
+	g_ep_ts		rq 2			; (as a timespec)
 	g_ep_acc_n	rd MAX_LISTENERS	; accepts since this worker went to the queue's end
 	g_now_ms	dq ?
 	g_next_tick_ms	dq ?
@@ -131,13 +135,52 @@ ep_main:
 	jz	@f
 	xor	edx,edx				; it came: no sleep
 @@:
+	; the wait: to the µs when the kernel has epoll_pwait2 (a request held for
+	; 10 ms was answered after 11 to 12: milliseconds rounded up, one more)
+	imul	rax,rdx,1000
+	mov	rcx,[g_ep_wait_us]
+	cmp	rcx,rax
+	cmova	rcx,rax
+	mov	rax,rcx
+	xor	edx,edx
+	mov	ecx,1000000
+	div	rcx
+	mov	[g_ep_ts],rax			; seconds
+	imul	rdx,rdx,1000
+	mov	[g_ep_ts+8],rdx			; nanoseconds
+	imul	rax,[g_ep_ts],1000		; (and in ms, for epoll_wait)
+	mov	r10,[g_ep_ts+8]
+	add	r10,999999
+	push	rax
+	mov	rax,r10
+	xor	edx,edx
+	mov	ecx,1000000
+	div	rcx
+	pop	r10
+	add	r10,rax
+	pin_wait_begin
+	cmp	dword [g_ep_nopw2],0
+	jne	.old_wait
+	push	r10
 	mov	edi,[g_epfd]
 	lea	rsi,[g_ep_events]
-	mov	r10d,edx
-	pin_wait_begin
+	mov	edx,EP_EVENTS
+	lea	r10,[g_ep_ts]
+	xor	r8d,r8d
+	xor	r9d,r9d
+	mov	eax,SYS_epoll_pwait2
+	syscall
+	pop	r10
+	cmp	rax,-ENOSYS
+	jne	.waited
+	mov	dword [g_ep_nopw2],1
+.old_wait:
+	mov	edi,[g_epfd]
+	lea	rsi,[g_ep_events]
 	mov	edx,EP_EVENTS
 	mov	eax,SYS_epoll_wait
 	syscall
+.waited:
 	mov	r12,rax
 	pin_wait_end
 	call	ep_clock
@@ -301,6 +344,13 @@ ep_wait_timeout:
 	mov	rdx,[g_fd_next]			; or a request fault delay= holds
 	test	rdx,rdx
 	jz	.one_clock
+	push	rax				; (µs from now: the clock read now, not
+	push	rcx				; when something last read it - held
+	push	rdx				; requests answered milliseconds late)
+	call	qs_clock
+	pop	rdx
+	pop	rcx
+	pop	rax
 	test	rcx,rcx
 	jz	.fault_clock
 	cmp	rdx,rcx
@@ -312,16 +362,24 @@ ep_wait_timeout:
 	jz	@f
 	sub	rcx,[g_qnow]
 	jle	.pace_now
-	add	rcx,999
-	shr	rcx,10				; (µs to about ms, rounded up)
-	cmp	rcx,rax
+	imul	rdx,rax,1000
+	cmp	rcx,rdx
 	jae	@f
+	mov	[g_ep_wait_us],rcx		; that clock, to the µs (epoll_pwait2)
+	add	rcx,999
+	shr	rcx,10				; (µs to about ms, rounded up: epoll_wait)
 	lea	eax,[rcx+1]
-	jmp	@f
+	mov	edx,eax
+	ret
 .pace_now:
 	mov	eax,1
+	mov	qword [g_ep_wait_us],0
+	mov	edx,eax
+	ret
 @@:
 	mov	edx,eax
+	imul	rax,rax,1000
+	mov	[g_ep_wait_us],rax
 	ret
 
 ; edi = fd, esi = events, rdx = data.

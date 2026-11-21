@@ -561,6 +561,7 @@ http_line_one:
 ; were read, so they are parsed again; no read is posted meanwhile: a client
 ; that goes is seen after.
 FD_MAX		:= 1024
+FD_GRAIN	:= 200				; µs: looks through the table no more often
 FD_AT		:= 0				; q: µs
 FD_SESS		:= 8				; d
 FD_GEN		:= 12				; d
@@ -699,7 +700,20 @@ fault_flush:
 	jmp	.next
 .looked:
 	; the earliest of those left, and of what was made due or added meanwhile
-	; (an entry made due behind i is not looked at again in this turn)
+	; (an entry made due behind i is not looked at again in this turn). The
+	; next look is FD_GRAIN away at least: the table is looked through whole,
+	; and with many held (a thousand requests each waiting 10 ms) a look every
+	; turn of the loop was most of the work; one now and then takes all that
+	; came due meanwhile, late by FD_GRAIN at most, never early. What is made
+	; due at once (a time of 1) still goes on the next turn.
+	test	r13,r13
+	jz	@f
+	mov	rax,[g_qnow]
+	add	rax,FD_GRAIN
+	cmp	r13,rax
+	jae	@f
+	mov	r13,rax
+@@:
 	mov	rax,[g_fd_next]
 	test	rax,rax
 	jz	@f

@@ -212,6 +212,7 @@ SYS_madvise_	= 28
 SYS_shutdown	= 48
 SYS_getsockopt	= 55
 SYS_epoll_wait	= 232
+SYS_epoll_pwait2 = 441
 SYS_epoll_ctl	= 233
 SYS_accept4	= 288
 SYS_epoll_create1 = 291

@@ -223,6 +223,7 @@ rodata
 	sc_allow filter_supervisor, SYS_epoll_create1
 	sc_allow filter_supervisor, SYS_epoll_ctl
 	sc_allow filter_supervisor, SYS_epoll_wait
+	sc_allow filter_supervisor, SYS_epoll_pwait2	; (the workers' wait: they inherit this filter)
 	sc_allow filter_supervisor, SYS_accept4
 	sc_allow filter_supervisor, SYS_getsockopt
 	sc_allow filter_supervisor, SYS_shutdown
@@ -324,6 +325,7 @@ rodata
 	sc_allow filter_worker_epoll, SYS_msync
 	sc_allow filter_worker_epoll, SYS_futex		; (wakes the cache keeper)
 	sc_allow filter_worker_epoll, SYS_epoll_wait
+	sc_allow filter_worker_epoll, SYS_epoll_pwait2
 	sc_allow filter_worker_epoll, SYS_epoll_ctl
 	sc_allow filter_worker_epoll, SYS_sendto		; (to sockets: not through the files' layer)
 	sc_allow filter_worker_epoll, SYS_read
@@ -386,6 +388,7 @@ rodata
 	sc_allow filter_worker_epoll_f, SYS_msync
 	sc_allow filter_worker_epoll_f, SYS_futex		; (wakes the cache keeper)
 	sc_allow filter_worker_epoll_f, SYS_epoll_wait
+	sc_allow filter_worker_epoll_f, SYS_epoll_pwait2
 	sc_allow filter_worker_epoll_f, SYS_epoll_ctl
 	sc_allow filter_worker_epoll_f, SYS_sendto
 	sc_allow filter_worker_epoll_f, SYS_read
