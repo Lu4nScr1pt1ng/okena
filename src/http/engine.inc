@@ -598,7 +598,8 @@ H_READY		:= 156		; d: queued result's kind (1 recv, 2 send), 0 none
 H_RSIDE		:= 160
 H_RESULT	:= 168		; q
 H_RNEXT		:= 176		; d: ready queue link
-H_EPPEEK	:= 392		; d: MSG_PEEK for the waiting receive, or 0
+H_EPPEEK	:= 392		; d: MSG_PEEK for the waiting receive, or 0; HEP_DRY
+HEP_DRY		:= 0x80000000	; H_EPPEEK: the client's last read came short (hep_recv)
 H_RGEN		:= 180		; d: generation when queued
 assert H_RCK + CK_SIZE <= H_EPOP
 
@@ -647,6 +648,22 @@ hep_fd:
 hep_recv:
 	h_rec
 	mov	eax,[g_h_peek]
+	test	eax,eax
+	jnz	.try
+	test	ecx,ecx				; (SIDE_CLIENT)
+	jnz	.try
+	test	dword [r15+H_EPPEEK],HEP_DRY
+	jz	.try
+	; the client's last read took all there was (it came short): this one
+	; would only say EAGAIN - the next bytes bring an event (edge-triggered),
+	; and that tries it (hep_event). One call less a request.
+	mov	dword [r15+H_EPPEEK],0
+	mov	dword [r15+H_EPOP],1
+	mov	[r15+H_EPSIDE],ecx
+	mov	[r15+H_EPBUF],rdi
+	mov	[r15+H_EPLEN],esi
+	ret
+.try:
 	mov	[r15+H_EPPEEK],eax
 	mov	dword [g_h_peek],0
 	mov	dword [r15+H_EPOP],1
@@ -665,6 +682,7 @@ hep_try_recv:
 	mov	rsi,[r15+H_EPBUF]
 	mov	edx,[r15+H_EPLEN]
 	mov	r10d,[r15+H_EPPEEK]
+	and	r10d,not HEP_DRY
 	xor	r8d,r8d
 	xor	r9d,r9d
 	mov	eax,SYS_recvfrom		; a read, or a peek
@@ -675,6 +693,17 @@ hep_try_recv:
 	je	hep_try_recv
 	cmp	rax,-5				; -EIO: a kTLS control record is next
 	je	.control
+	; a client's read that came short took all the socket had (hep_recv)
+	and	dword [r15+H_EPPEEK],not HEP_DRY
+	test	rax,rax
+	jle	.result
+	cmp	dword [r15+H_EPSIDE],SIDE_CLIENT
+	jne	.result
+	cmp	dword [r15+H_EPPEEK],0
+	jne	.result
+	cmp	eax,[r15+H_EPLEN]
+	jae	.result
+	mov	dword [r15+H_EPPEEK],HEP_DRY
 .result:
 	mov	dword [r15+H_EPOP],0
 	mov	edx,1
@@ -910,6 +939,12 @@ ep_http_ready:
 ; ep_dispatch, for a session of an http listener: edi = events, r8d = side.
 hep_event:
 	h_rec
+	test	r8d,r8d				; the client's bytes came: its last read
+	jnz	@f				; being short says nothing now (hep_recv)
+	test	edi,EPOLLIN or EPOLLRDHUP or EPOLLHUP or EPOLLERR
+	jz	@f
+	and	dword [r15+H_EPPEEK],not HEP_DRY
+@@:
 	cmp	dword [r15+H_STATE],HS_H2
 	je	h2_ep_event			; an HTTP/2 connection reads and writes at once
 	test	dword [r15+H_FLAGS],HX_TSEND	; WebSocket over a stream: the backend's
