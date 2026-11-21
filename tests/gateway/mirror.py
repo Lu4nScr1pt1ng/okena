@@ -94,6 +94,7 @@ def wait(n, secs=2):
 CONF = """okena {{ workers 2; io_engine {engine}; {metrics} }}
 pool main {{ server 127.0.0.1:{main} }}
 pool shadow {{ server 127.0.0.1:{shadow} }}
+pool shadow2 {{ server 127.0.0.1:{shadow} }}
 pool slow {{ server 127.0.0.1:{slow} }}
 pool nobody {{ server 127.0.0.1:1 }}
 pool deaf {{ server 127.0.0.1:{deaf} }}
@@ -106,6 +107,7 @@ http 127.0.0.1:{tls} {{
 http 127.0.0.1:{lst} {{
     access_log {tmp}/access.log
     route /all {{ to pool main; mirror pool shadow }}
+    route /fresh {{ to pool main; mirror pool shadow2 }}
     route /tenth {{ to pool main; mirror pool shadow 10% }}
     route /slow {{ to pool main; mirror pool slow }}
     route /down {{ to pool main; mirror pool nobody }}
@@ -152,6 +154,10 @@ def main():
         check("POST: its body too", wait(1) and got[0][3] == b"hello body" and s[0] == 200, str(got[:1]))
         got.clear()
         mid = bytes(range(256)) * 160
+        s = call("POST", "/fresh", mid)
+        check("a copy that connects while the body comes (no idle connection): every byte",
+              s[0] == 200 and wait(1) and got[0][3] == mid, "%s %s" % (s[0], [(g[1], len(g[3])) for g in got]))
+        got.clear()
         s = call("POST", "/all", mid)
         check("40 KB coming after the head: teed, every byte", s[0] == 200 and wait(1) and got[0][3] == mid,
               f"{s[0]} {[len(g[3]) for g in got]}")

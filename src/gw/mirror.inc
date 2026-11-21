@@ -223,8 +223,10 @@ mirror_tee:
 	jne	.gone
 	test	dword [rax+S_FLAGS],SF_MIR
 	jz	.gone
-	cmp	dword [rax+S_STATE],ST_OPEN
-	jne	.gone
+	cmp	dword [rax+S_STATE],ST_CLOSING	; (connecting to its backend is alive:
+	je	.gone				; a copy with no idle connection there lost
+	cmp	dword [rax+S_STATE],ST_FREE	; every piece that came meanwhile)
+	je	.gone
 	h_rec
 	mov	r8,[r15+H_BUF]
 	add	r8,HB_H2Q
