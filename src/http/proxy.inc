@@ -822,7 +822,7 @@ http_request:
 	lea	rdi,[rdi+HB_IN]
 	mov	esi,[rsp]
 	lea	rdx,[g_hm]
-	call	http_parse_request
+	call	http_parse_head			; (an HTTP/2 stream's: maybe as parsed before)
 	pop	rcx
 	test	eax,eax
 	jnz	.parse_error

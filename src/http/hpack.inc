@@ -36,6 +36,9 @@ HPD_MAX		:= 4				; d: the table's maximum now
 HPD_SIZE		:= 8				; d: its size (strings + 32 an entry)
 HPD_COUNT	:= 12				; d: entries
 HPD_DLEN		:= 16				; d: bytes of HPD_DATA in use
+HPD_GEN		:= 20				; d: one more at each change of the table (an
+						; insert, a size update): a block decoded with
+						; it unchanged decodes the same way again
 HPD_ENT		:= 32				; entries, oldest first: offset, name length, value length (d each)
 HPD_ESIZE	:= 12
 HPD_DATA		:= HPD_ENT + HPD_ENTRIES_MAX * HPD_ESIZE	; their strings, name then value, oldest first
@@ -89,6 +92,7 @@ hpack_init:
 	mov	[rdi+HPD_COUNT],eax
 	mov	[rdi+HPD_DLEN],eax
 	mov	[rdi+HPD_HCLEN],eax
+	mov	[rdi+HPD_GEN],eax
 	ret
 
 ; ----------------------------------------------------------------- decode
@@ -190,6 +194,7 @@ hpack_decode:
 	mov	dword [rsp+32],0
 	call	.emit
 	jc	.err
+	inc	dword [rbx+HPD_GEN]
 	mov	rdi,rbx				; and into the table
 	mov	rsi,[rsp]
 	mov	edx,[rsp+8]
@@ -206,6 +211,7 @@ hpack_decode:
 	cmp	eax,[rbx+HPD_LIMIT]
 	ja	.bad
 	mov	[rbx+HPD_MAX],eax
+	inc	dword [rbx+HPD_GEN]
 	mov	rdi,rbx
 	xor	esi,esi
 	call	hd_evict

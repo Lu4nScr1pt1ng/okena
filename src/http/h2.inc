@@ -132,6 +132,61 @@ C2_HTSLOT	:= C2_HTSIZES + 2 * HT_RING
 assert C2_HTSLOT + HT_SLOTS * HT_SLOT <= 4096
 assert HPD_BYTES <= 8192
 assert HB_H2HB + H2_HBCAP <= 1 shl HB_SHIFT
+; The last answer head h2_head_out encoded, and its block: the same head again
+; (the same flags, the encoder's table as it was then, a block that changed
+; nothing in it) is the same block, copied, not parsed and encoded again
+HB_H2RM		:= HB_H2HB + H2_HBCAP
+H2RM_VALID	:= 0				; d
+H2RM_TLEN		:= 4				; d: the head's length
+H2RM_BLEN		:= 8				; d: the block's
+H2RM_KEY		:= 12				; d: 1 WebSocket, 2 HEAD, 4 okena's own answer
+H2RM_HT		:= 16				; 5 d: C2_HTPEER, HTMAX, HTINS, HTEV, HTSZ
+H2RM_CL0		:= 36				; d: g_h2_cl0
+H2RM_ST		:= 40				; d: the status' first two characters (r9d)
+H2RM_DL		:= 48				; q: g_h2_dl
+H2RM_TEXT		:= 64
+H2RM_TCAP		:= 512
+H2RM_BLOCK	:= H2RM_TEXT + H2RM_TCAP
+H2RM_BCAP		:= 512
+H2RM_SIZE		:= H2RM_BLOCK + H2RM_BCAP
+assert HB_H2RM + H2RM_SIZE <= 1 shl HB_SHIFT
+; The last request header block decoded (a client's next is often the same
+; bytes): when it changed nothing in the decoder's table (HPD_GEN) and the
+; table has not changed since, the same bytes decode to the fields still in
+; HB_H2FLD, HB_H2STR, which nothing else writes on a server's connection
+HB_H2RQ		:= HB_H2RM + H2RM_SIZE
+H2Q_VALID	:= 0				; d
+H2Q_BLEN		:= 4				; d
+H2Q_GEN		:= 8				; d: the decoder's HPD_GEN after it
+H2Q_NF		:= 12				; d: its fields
+H2Q_BLOCK	:= 64
+H2Q_BCAP		:= 512
+H2Q_SIZE		:= H2Q_BLOCK + H2Q_BCAP
+assert HB_H2RQ + H2Q_SIZE <= 1 shl HB_SHIFT
+; The HTTP/1.1 head h2_stream_new wrote from the fields of H2Q's block (their
+; checks passed): the same block again is the same head, copied
+HB_H2T		:= HB_H2RQ + H2Q_SIZE
+H2T_VALID	:= 0				; d: valid while H2Q's block is what it was made of
+H2T_LEN		:= 4				; d
+H2T_HBEND	:= 8				; d: C2_HBEND it was made with (its framing)
+H2T_CHUNKED	:= 12				; d: Q_CHUNKED
+H2T_CLEN	:= 16				; q: Q_CLEN
+H2T_TEXT	:= 64
+H2T_TCAP	:= 512
+H2T_SIZE	:= H2T_TEXT + H2T_TCAP
+assert HB_H2T + H2T_SIZE <= 1 shl HB_SHIFT
+; The last head a stream of the connection had parsed (http_parse_request: a
+; function of the text alone) and what it gave, pointers as offsets into the
+; text: the same text again is the same message
+HB_H2P		:= HB_H2T + H2T_SIZE
+H2P_VALID	:= 0				; d
+H2P_TLEN	:= 4				; d
+H2P_HMAX	:= 16				; fields kept at most
+H2P_HM		:= 64				; HM_HDRS + H2P_HMAX fields
+H2P_TEXT	:= H2P_HM + HM_HDRS + H2P_HMAX * HF_SIZE
+H2P_TCAP	:= 512
+H2P_SIZE	:= H2P_TEXT + H2P_TCAP
+assert HB_H2P + H2P_SIZE <= 1 shl HB_SHIFT
 
 C2F_RECV	:= 1				; a receive in flight
 C2F_SEND	:= 2				; a send in flight
@@ -164,6 +219,8 @@ S2F_FINISH	:= 16				; END_STREAM waits for room
 S2F_CREDIT	:= 32				; stream credit waits for room
 S2F_SENDING	:= 64				; an h_send is pending
 S2F_WS		:= 128				; extended CONNECT for WebSocket (RFC 8441)
+S2F_TM		:= 256				; its head was the connection's H2T text when made
+						; (a hint: its parse memo still compares the text)
 SF_H2C		:= 4096				; S_FLAGS: an HTTP/2 connection
 SF_H2S		:= 8192				; S_FLAGS: a stream of one
 
@@ -247,6 +304,8 @@ bss
 	g_h2_totail	db ?			; h2_frame: this DATA frame to OUT's tail
 	g_h2_cl0	dd ?			; h2_head_out: content-length: 0 among its fields
 	g_ht_save	rd 4			; h2_head_out: the encoder's table before the block
+	g_rm_key	dd ?			; h2_head_out: this head's H2RM_KEY
+	g_rm_staged	dd ?			; its text in H2RM_TEXT, to keep with its block
 	align 8
 	g_h2_dl		dq ?			; h2_head_out: the content-length it says, -1 none
 end bss
@@ -2142,11 +2201,274 @@ h2_hb_add:
 	stc
 	ret
 
+; http_parse_request for http_request (same registers: rdi = the head, esi =
+; its length, rdx = the message; eax = 0 or HE_*), ebx/r15 the session. A
+; stream whose head was made from its connection's H2T (S2F_TM), and whose
+; text is the head the connection last had parsed (H2P), is given that
+; parse, its pointers moved to this head; a successful parse of such a head
+; is kept. Anything else is parsed.
+http_parse_head:
+	test	dword [r15+H_H2F],S2F_TM
+	jz	http_parse_request
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	push	rbp
+	mov	r12,rdi
+	mov	r13d,esi
+	mov	rbp,rdx
+	; the connection's buffer, when it is still the stream's
+	mov	ebx,[r15+H_H2C]
+	call	session_ptr
+	mov	ecx,[rax+S_GEN]
+	cmp	ecx,[r15+H_H2CG]
+	jne	.parse_plain
+	test	dword [rax+S_FLAGS],SF_H2C
+	jz	.parse_plain
+	mov	r14d,ebx
+	shl	r14,HB_SHIFT
+	add	r14,[g_hbuf_base]
+	add	r14,HB_H2P			; r14 = H2P
+	cmp	dword [r14+H2P_VALID],0
+	je	.parse_keep
+	cmp	r13d,[r14+H2P_TLEN]
+	jne	.parse_keep
+	mov	rsi,r12
+	lea	rdi,[r14+H2P_TEXT]
+	mov	ecx,r13d
+	call	mem_same
+	jne	.parse_keep
+	; the same text: its message, moved here
+	lea	rsi,[r14+H2P_HM]
+	mov	rdi,rbp
+	mov	ecx,[rsi+HM_NHDR]
+	shl	ecx,5				; (HF_SIZE)
+	add	ecx,HM_HDRS
+	rep	movsb
+	add	[rbp+HM_METHOD],r12
+	add	[rbp+HM_TARGET],r12
+	mov	ecx,[rbp+HM_NHDR]
+	lea	rdx,[rbp+HM_HDRS]
+@@:
+	test	ecx,ecx
+	jz	@f
+	add	[rdx+HF_NAME],r12
+	add	[rdx+HF_VALUE],r12
+	add	rdx,HF_SIZE
+	dec	ecx
+	jmp	@b
+@@:
+	xor	eax,eax
+	jmp	.out
+.parse_keep:
+	mov	dword [r14+H2P_VALID],0
+	mov	rdi,r12
+	mov	esi,r13d
+	mov	rdx,rbp
+	push	rbp
+	push	rbp				; (16-aligned)
+	call	http_parse_request
+	pop	rbp
+	pop	rbp
+	test	eax,eax
+	jnz	.out
+	cmp	r13d,H2P_TCAP
+	ja	.out
+	mov	ecx,[rbp+HM_NHDR]
+	cmp	ecx,H2P_HMAX
+	ja	.out
+	; every pointer in the text: kept as offsets
+	lea	r8,[r12+r13]
+	mov	rax,[rbp+HM_METHOD]
+	call	.within
+	jc	.out
+	mov	rax,[rbp+HM_TARGET]
+	call	.within
+	jc	.out
+	lea	rdx,[rbp+HM_HDRS]
+@@:
+	test	ecx,ecx
+	jz	@f
+	mov	rax,[rdx+HF_NAME]
+	call	.within
+	jc	.out
+	mov	rax,[rdx+HF_VALUE]
+	call	.within
+	jc	.out
+	add	rdx,HF_SIZE
+	dec	ecx
+	jmp	@b
+@@:
+	mov	rsi,rbp
+	lea	rdi,[r14+H2P_HM]
+	mov	ecx,[rbp+HM_NHDR]
+	shl	ecx,5
+	add	ecx,HM_HDRS
+	rep	movsb
+	sub	[r14+H2P_HM+HM_METHOD],r12
+	sub	[r14+H2P_HM+HM_TARGET],r12
+	mov	ecx,[rbp+HM_NHDR]
+	lea	rdx,[r14+H2P_HM+HM_HDRS]
+@@:
+	test	ecx,ecx
+	jz	@f
+	sub	[rdx+HF_NAME],r12
+	sub	[rdx+HF_VALUE],r12
+	add	rdx,HF_SIZE
+	dec	ecx
+	jmp	@b
+@@:
+	mov	rsi,r12
+	lea	rdi,[r14+H2P_TEXT]
+	mov	ecx,r13d
+	rep	movsb
+	mov	[r14+H2P_TLEN],r13d
+	mov	dword [r14+H2P_VALID],1
+	xor	eax,eax
+	jmp	.out
+.parse_plain:
+	mov	rdi,r12
+	mov	esi,r13d
+	mov	rdx,rbp
+	call	http_parse_request
+.out:
+	pop	rbp
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+; rax in [r12, r8]: CF clear
+.within:
+	cmp	rax,r12
+	jb	.outside
+	cmp	rax,r8
+	ja	.outside
+	clc
+	ret
+.outside:
+	stc
+	ret
+
+; h2_block_done's memo (HB_H2RQ), a server's connection: CF clear when the
+; block (HB_H2HB, C2_HBLEN) is the last one decoded and the decoder's table is
+; as that left it: ecx = its fields (in HB_H2FLD still). c2 registers. Keeps
+; all but rax, rcx, rdx, rsi, rdi, flags.
+h2_rq_same:
+	test	dword [r13+C2_FLAGS],C2F_CLIENT
+	jnz	.no
+	lea	rdx,[r14+HB_H2RQ]
+	cmp	dword [rdx+H2Q_VALID],0
+	je	.no
+	mov	ecx,[r13+C2_HBLEN]
+	cmp	ecx,[rdx+H2Q_BLEN]
+	jne	.no
+	mov	eax,[r14+HB_H2HP+HPD_GEN]
+	cmp	eax,[rdx+H2Q_GEN]
+	jne	.no
+	lea	rsi,[r14+HB_H2HB]
+	lea	rdi,[rdx+H2Q_BLOCK]
+	call	mem_same
+	jne	.no
+	mov	ecx,[rdx+H2Q_NF]
+	clc
+	ret
+.no:
+	stc
+	ret
+
+; after a decode: eax = hpack_decode's result, ecx = the fields, edx = the
+; decoder's HPD_GEN before it. The block kept when it decoded whole and
+; changed nothing in the table; otherwise the memo no longer says what
+; HB_H2FLD holds. Keeps eax, ecx.
+h2_rq_keep:
+	push	rax
+	push	rcx
+	push	rsi
+	push	rdi
+	lea	rdi,[r14+HB_H2RQ]
+	mov	dword [rdi+H2Q_VALID],0
+	mov	dword [r14+HB_H2T+H2T_VALID],0	; (its head was made of the fields before)
+	test	dword [r13+C2_FLAGS],C2F_CLIENT
+	jnz	.out
+	test	eax,eax
+	jnz	.out
+	cmp	edx,[r14+HB_H2HP+HPD_GEN]
+	jne	.out
+	mov	eax,[r13+C2_HBLEN]
+	cmp	eax,H2Q_BCAP
+	ja	.out
+	mov	[rdi+H2Q_BLEN],eax
+	mov	[rdi+H2Q_GEN],edx
+	mov	[rdi+H2Q_NF],ecx
+	mov	ecx,eax
+	lea	rsi,[r14+HB_H2HB]
+	push	rdi
+	add	rdi,H2Q_BLOCK
+	rep	movsb
+	pop	rdi
+	mov	dword [rdi+H2Q_VALID],1
+.out:
+	pop	rdi
+	pop	rsi
+	pop	rcx
+	pop	rax
+	ret
+
+; rsi, rdi = two areas of ecx bytes: ZF set when they are the same. 32 at a
+; time (the last 32 over what came before). Clobbers rax, rcx.
+mem_same:
+	push	rdx
+	xor	edx,edx
+	cmp	ecx,32
+	jb	.small
+.v:
+	lea	eax,[rdx+32]
+	cmp	eax,ecx
+	jbe	@f
+	mov	edx,ecx
+	sub	edx,32
+@@:
+	vmovdqu	ymm0,[rsi+rdx]
+	vpcmpeqb ymm0,ymm0,[rdi+rdx]
+	vpmovmskb eax,ymm0
+	cmp	eax,-1
+	jne	.diff
+	add	edx,32
+	cmp	edx,ecx
+	jb	.v
+	vzeroupper
+	xor	eax,eax				; ZF
+	pop	rdx
+	ret
+.diff:
+	vzeroupper
+	pop	rdx
+	ret				; ZF clear
+.small:
+	cmp	edx,ecx
+	jae	.eq
+	mov	al,[rsi+rdx]
+	cmp	al,[rdi+rdx]
+	jne	.ne
+	inc	edx
+	jmp	.small
+.eq:
+	xor	eax,eax
+	pop	rdx
+	ret
+.ne:
+	pop	rdx
+	ret
+
 ; eax = stream: its header block is complete. Decoded (always, for the
 ; table's sake); a new stream, or trailers of an open one.
 h2_block_done:
 	push	r12
 	mov	r12d,eax			; the stream id
+	call	h2_rq_same			; the same block as the last: decoded already
+	jnc	.decoded
 	sub	rsp,HPO_SIZE
 	lea	rax,[r14+HB_H2FLD]		; where it decodes to
 	mov	[rsp+HPO_FIELDS],rax
@@ -2158,9 +2480,12 @@ h2_block_done:
 	lea	rsi,[r14+HB_H2HB]
 	mov	edx,[r13+C2_HBLEN]
 	mov	rcx,rsp
+	push	qword [r14+HB_H2HP+HPD_GEN]	; (the table before it)
 	call	hpack_decode
+	pop	rdx
 	mov	ecx,[rsp+HPO_COUNT]
 	add	rsp,HPO_SIZE
+	call	h2_rq_keep
 	cmp	eax,HPE_COMPRESSION
 	je	.compression
 	test	dword [r13+C2_FLAGS],C2F_CLIENT
@@ -2311,6 +2636,7 @@ H2N_CLEN	:= 80				; q
 H2N_PROTO	:= 96				; q, then its length at +104
 H2N_WS		:= 112				; d: 1 for WebSocket over the stream
 H2N_KEY		:= 120				; 16 bytes: its Sec-WebSocket-Key
+H2N_TM		:= 136				; d: 1 when its head is H2T's
 H2N_SIZE	:= 144
 h2_stream_new:
 	push	rbx
@@ -2331,6 +2657,20 @@ h2_stream_new:
 	mov	[rsp+H2N_PROTO],rax
 	mov	[rsp+H2N_WS],eax
 	mov	qword [rsp+H2N_CLEN],-1
+	mov	[rsp+H2N_TM],eax
+	; the fields of the last head made (H2T): checked then, the same head
+	cmp	dword [r14+HB_H2RQ+H2Q_VALID],0
+	je	.fields_new
+	cmp	dword [r14+HB_H2T+H2T_VALID],0
+	je	.fields_new
+	mov	eax,[r13+C2_HBEND]
+	cmp	eax,[r14+HB_H2T+H2T_HBEND]
+	jne	.fields_new
+	mov	rax,[r14+HB_H2T+H2T_CLEN]
+	mov	[rsp+H2N_CLEN],rax
+	mov	dword [rsp+H2N_TM],1
+	jmp	.alloc
+.fields_new:
 	; the fields: pseudo ones first, each once, names lower case, no
 	; connection-specific ones, values without CR, LF or NUL
 	xor	ebp,ebp				; index
@@ -2512,6 +2852,7 @@ h2_stream_new:
 	cmp	qword [rsp+H2N_PROTO],0
 	jne	.malformed			; :protocol goes with CONNECT only
 @@:
+.alloc:
 	; a session for it
 	call	session_alloc
 	cmp	eax,NIL
@@ -2615,6 +2956,18 @@ h2_stream_new:
 	mov	rax,[rsp+H2N_CLEN]
 	mov	[rbp+Q_CLEN],rax
 	mov	qword [rbp+Q_GOT],0
+	cmp	dword [rsp+H2N_TM],0
+	je	.head_new
+	lea	rsi,[r14+HB_H2T+H2T_TEXT]	; H2T's head
+	lea	rdi,[rbp+Q_DATA]
+	mov	ecx,[r14+HB_H2T+H2T_LEN]
+	mov	[rbp+Q_LEN],ecx
+	rep	movsb
+	mov	eax,[r14+HB_H2T+H2T_CHUNKED]
+	mov	[rbp+Q_CHUNKED],eax
+	or	dword [r15+H_H2F],S2F_TM
+	jmp	.head_done
+.head_new:
 	lea	rdi,[rbp+Q_DATA]
 	lea	r11,[rbp+Q_DATA+H_IN_CAP-8]	; a head must fit IN
 	mov	rsi,[rsp+H2N_METHOD]
@@ -2769,7 +3122,27 @@ h2_stream_new:
 	cmp	dword [rsp+H2N_WS],0
 	je	@f
 	or	dword [r15+H_H2F],S2F_WS
+	jmp	.head_done
 @@:
+	; made of H2Q's fields (they decoded whole): kept, for the same block
+	cmp	dword [r14+HB_H2RQ+H2Q_VALID],0
+	je	.head_done
+	cmp	edi,H2T_TCAP
+	ja	.head_done
+	lea	rsi,[rbp+Q_DATA]
+	lea	rdi,[r14+HB_H2T+H2T_TEXT]
+	mov	ecx,[rbp+Q_LEN]
+	mov	[r14+HB_H2T+H2T_LEN],ecx
+	rep	movsb
+	mov	eax,[r13+C2_HBEND]
+	mov	[r14+HB_H2T+H2T_HBEND],eax
+	mov	eax,[rbp+Q_CHUNKED]
+	mov	[r14+HB_H2T+H2T_CHUNKED],eax
+	mov	rax,[rbp+Q_CLEN]
+	mov	[r14+HB_H2T+H2T_CLEN],rax
+	mov	dword [r14+HB_H2T+H2T_VALID],1
+	or	dword [r15+H_H2F],S2F_TM
+.head_done:
 	; into the table (its home slot when free), and its exchange starts
 	mov	r8d,[rsp+H2N_SID]
 	shr	r8d,1
@@ -3935,6 +4308,162 @@ h_conn_field:
 	stc
 	ret
 
+; h2_head_out's memo (HB_H2RM). rsi = the head, ebp = its length, r15 =
+; stream, r13 = connection. CF clear on a hit: the block in g_h2tmp, rdi
+; past it, r9d, g_h2_cl0, g_h2_dl as encoding it gave. CF set otherwise, the
+; head's text kept aside (when it fits) for h2_rm_keep. Keeps rsi, rbp.
+h2_rm_look:
+	xor	r9d,r9d				; the key
+	test	dword [r15+H_H2F],S2F_WS
+	jz	@f
+	or	r9d,1
+@@:
+	test	dword [r15+H_FLAGS],HX_HEAD
+	jz	@f
+	or	r9d,2
+@@:
+	h_own_answer r15
+	jne	@f
+	or	r9d,4
+@@:
+	mov	[g_rm_key],r9d
+	mov	dword [g_rm_staged],0
+	cmp	ebp,H2RM_TCAP
+	ja	.miss
+	lea	rdx,[r13+HB_H2RM-HB_H2]
+	cmp	dword [rdx+H2RM_VALID],0
+	je	.stage
+	cmp	ebp,[rdx+H2RM_TLEN]
+	jne	.stage
+	cmp	r9d,[rdx+H2RM_KEY]
+	jne	.stage
+	mov	eax,[r13+C2_HTPEER]
+	cmp	eax,[rdx+H2RM_HT]
+	jne	.stage
+	mov	eax,[r13+C2_HTMAX]
+	cmp	eax,[rdx+H2RM_HT+4]
+	jne	.stage
+	mov	eax,[r13+C2_HTINS]
+	cmp	eax,[rdx+H2RM_HT+8]
+	jne	.stage
+	mov	eax,[r13+C2_HTEV]
+	cmp	eax,[rdx+H2RM_HT+12]
+	jne	.stage
+	mov	eax,[r13+C2_HTSZ]
+	cmp	eax,[rdx+H2RM_HT+16]
+	jne	.stage
+	; the text, 32 bytes at a time, the last 32 over what came before
+	xor	ecx,ecx
+	cmp	ebp,32
+	jb	.cmp_small
+.cmp32:
+	lea	eax,[rcx+32]
+	cmp	eax,ebp
+	jbe	@f
+	mov	ecx,ebp
+	sub	ecx,32
+@@:
+	vmovdqu	ymm0,[rsi+rcx]
+	vpcmpeqb ymm0,ymm0,[rdx+H2RM_TEXT+rcx]
+	vpmovmskb eax,ymm0
+	cmp	eax,-1
+	jne	.stage_vz
+	add	ecx,32
+	cmp	ecx,ebp
+	jb	.cmp32
+	vzeroupper
+	jmp	.hit
+.cmp_small:
+	cmp	ecx,ebp
+	jae	.hit
+	mov	al,[rsi+rcx]
+	cmp	al,[rdx+H2RM_TEXT+rcx]
+	jne	.stage
+	inc	ecx
+	jmp	.cmp_small
+.hit:
+	push	rsi
+	lea	rsi,[rdx+H2RM_BLOCK]
+	lea	rdi,[g_h2tmp]
+	mov	ecx,[rdx+H2RM_BLEN]
+	rep	movsb
+	pop	rsi
+	mov	r9d,[rdx+H2RM_ST]
+	mov	eax,[rdx+H2RM_CL0]
+	mov	[g_h2_cl0],eax
+	mov	rax,[rdx+H2RM_DL]
+	mov	[g_h2_dl],rax
+	clc
+	ret
+.stage_vz:
+	vzeroupper
+.stage:
+	; kept aside as it is now (the encoding lowers names in place)
+	mov	dword [rdx+H2RM_VALID],0
+	push	rsi
+	lea	rdi,[rdx+H2RM_TEXT]
+	mov	ecx,ebp
+	rep	movsb
+	pop	rsi
+	mov	[rdx+H2RM_TLEN],ebp
+	mov	dword [g_rm_staged],1
+.miss:
+	stc
+	ret
+
+; h2_head_out at its block: r12d = its length, r9d, g_h2_cl0, g_h2_dl. Kept
+; with the text h2_rm_look set aside when encoding it changed nothing in the
+; table (then the same head encodes the same way while the table stays).
+; Keeps all but rax, rcx, rdx, flags.
+h2_rm_keep:
+	cmp	dword [g_rm_staged],0
+	je	.out
+	mov	dword [g_rm_staged],0
+	cmp	r12d,H2RM_BCAP
+	ja	.out
+	mov	eax,[r13+C2_HTMAX]		; nothing changed in the table
+	cmp	eax,[g_ht_save+12]
+	jne	.out
+	mov	eax,[r13+C2_HTINS]
+	cmp	eax,[g_ht_save]
+	jne	.out
+	mov	eax,[r13+C2_HTEV]
+	cmp	eax,[g_ht_save+4]
+	jne	.out
+	mov	eax,[r13+C2_HTSZ]
+	cmp	eax,[g_ht_save+8]
+	jne	.out
+	lea	rdx,[r13+HB_H2RM-HB_H2]
+	mov	eax,[r13+C2_HTPEER]
+	mov	[rdx+H2RM_HT],eax
+	mov	eax,[r13+C2_HTMAX]
+	mov	[rdx+H2RM_HT+4],eax
+	mov	eax,[r13+C2_HTINS]
+	mov	[rdx+H2RM_HT+8],eax
+	mov	eax,[r13+C2_HTEV]
+	mov	[rdx+H2RM_HT+12],eax
+	mov	eax,[r13+C2_HTSZ]
+	mov	[rdx+H2RM_HT+16],eax
+	mov	eax,[g_rm_key]
+	mov	[rdx+H2RM_KEY],eax
+	mov	[rdx+H2RM_ST],r9d
+	mov	eax,[g_h2_cl0]
+	mov	[rdx+H2RM_CL0],eax
+	mov	rax,[g_h2_dl]
+	mov	[rdx+H2RM_DL],rax
+	mov	[rdx+H2RM_BLEN],r12d
+	push	rsi
+	push	rdi
+	lea	rsi,[g_h2tmp]
+	lea	rdi,[rdx+H2RM_BLOCK]
+	mov	ecx,r12d
+	rep	movsb
+	pop	rdi
+	pop	rsi
+	mov	dword [rdx+H2RM_VALID],1
+.out:
+	ret
+
 h2_head_out:
 	push	r12
 	push	rbp
@@ -3967,6 +4496,9 @@ h2_head_out:
 	lea	ecx,[rcx+rbp+2*9+H2_CTRL+64]
 	cmp	eax,ecx
 	jb	.full
+	; the same head as the last one encoded: its block again
+	call	h2_rm_look
+	jnc	.block
 	lea	rdi,[g_h2tmp]
 	lea	r12,[g_h2tmp+20480-512]		; the block's limit
 	call	ht_block_start
@@ -4125,6 +4657,7 @@ h2_head_out:
 	lea	rax,[g_h2tmp]
 	sub	rdi,rax
 	mov	r12d,edi			; its length
+	call	h2_rm_keep			; (a block that changed nothing: kept)
 	; a final head that says content-length: 0 ends the stream itself (a
 	; gRPC Trailers-Only answer must)
 	xor	eax,eax
