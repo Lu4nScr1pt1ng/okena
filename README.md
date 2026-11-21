@@ -24,9 +24,9 @@ tuned by its own documentation. Requests per second, higher is better:
 |---|---|---|---|---|---|---|
 | HTTP/1.1 | **151,974** | 100,434 | 97,071 | 35,352 | 36,118 | 27,799 |
 | HTTPS, TLS 1.3 | **152,437** | 82,825 | 73,579 | 33,380 | 32,673 | 24,442 |
-| HTTP/2 | **241,365** | 104,350 | 73,102 | 40,448 | 24,527 | 20,837 |
+| HTTP/2 | **251,581** | 104,350 | 73,102 | 40,448 | 24,527 | 20,837 |
 | gRPC unary calls | **155,925** | 55,450 | 34,959 | 51,396 | 19,728 | 19,438 |
-| HTTP/3 | **192,004** | 132,061 | 101,657 | | | |
+| HTTP/3 | **206,190** | 129,719 | 98,666 | | | |
 | JWT-authenticated requests | **103,084** | 23,498 | | 26,319 | | |
 
 And the latency that comes with it, HTTP/1.1 at 30,000 requests a second, p99:
@@ -40,7 +40,7 @@ More of it, with the method and the cases where okena is *not* first:
 
 * **L4:** 102.1 Gbit/s of TCP bulk transfer on two cores, against Envoy's
   39.1 and HAProxy's 20.7.
-* **Large responses:** 1 MB bodies at 78.9 Gbit/s, against Envoy's 34.0 and
+* **Large responses:** 1 MB bodies at 93.8 Gbit/s, against Envoy's 34.0 and
   HAProxy's 26.3.
 * **XDP:** 2.30 M packets a second on one core, against Katran's 2.13 M.
 * **Memory:** 100,000 idle keep-alive connections in 73 MiB, against
