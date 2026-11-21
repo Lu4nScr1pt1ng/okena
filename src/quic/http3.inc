@@ -4029,76 +4029,21 @@ h3_head_out:
 	ret
 .n_status db ':status'
 
-; the static table's entries by the length of their names (qp_encode): for
-; each length its place in g_qp_bylen, a list of entries ended by 0xFF
-QP_NAME_MAX	:= 40
+; QPACK's static table by hash (sthash.inc)
+rodata
+	align 8
+	qp_sd	dq qp_static, qp_pool
+		dd 99, 0
+		dq g_qph_name, g_qph_pair, g_qph_nid, g_qph_ok
+end rodata
 bss
-	g_qp_bylen_ok	db ?
-	g_qp_bylen_at	rb QP_NAME_MAX + 1
-	g_qp_bylen	rb 99 + QP_NAME_MAX + 1
-	g_qp_same	rb 99			; 1: its name is the one before it in its list
+	align 8
+	g_qph_name	rw ST_SLOTS
+	g_qph_pair	rw ST_SLOTS
+	g_qph_nid	rb 99
+	align 4
+	g_qph_ok	dd ?
 end bss
-
-; (once, the first time) Keeps all but rax, rcx, rdx, r8, r9.
-qp_bylen_init:
-	xor	r8d,r8d				; where the next list goes
-	xor	ecx,ecx				; the length
-.len:
-	mov	[g_qp_bylen_at+rcx],r8b
-	xor	edx,edx
-.e:
-	movzx	eax,word [qp_static+rdx*8+2]
-	cmp	eax,ecx
-	jne	@f
-	mov	[g_qp_bylen+r8],dl
-	inc	r8d
-@@:
-	inc	edx
-	cmp	edx,99
-	jb	.e
-	mov	byte [g_qp_bylen+r8],0xFF
-	inc	r8d
-	inc	ecx
-	cmp	ecx,QP_NAME_MAX
-	jbe	.len
-	; the entries whose name is the one before them in their list (eleven
-	; content-types, seven :status): qp_encode compares such a name once
-	push	rdi
-	push	rsi
-	push	r10
-	push	r11
-	mov	r11d,r8d			; the lists' bytes
-	xor	r8d,r8d
-	mov	r9d,0xFF			; the entry before (0xFF: a list begins)
-.same:
-	cmp	r8d,r11d
-	jae	.same_done
-	movzx	r10d,byte [g_qp_bylen+r8]
-	inc	r8d
-	cmp	r10d,0xFF
-	je	.same_list
-	cmp	r9d,0xFF
-	je	.same_next
-	movzx	esi,word [qp_static+r9*8]
-	lea	rsi,[qp_pool+rsi]
-	movzx	edi,word [qp_static+r10*8]
-	lea	rdi,[qp_pool+rdi]
-	movzx	edx,word [qp_static+r10*8+2]	; (one length in a list)
-	call	mem_eq
-	mov	[g_qp_same+r10],al
-.same_next:
-	mov	r9d,r10d
-	jmp	.same
-.same_list:
-	mov	r9d,0xFF
-	jmp	.same
-.same_done:
-	pop	r11
-	pop	r10
-	pop	rsi
-	pop	rdi
-	mov	byte [g_qp_bylen_ok],1
-	ret
 
 ; rdi = out, rsi = a name (lower case), edx = its length, rcx = its value, r8d
 ; = its length: one QPACK field line (RFC 9204 4.5) by the static table: the
@@ -4117,63 +4062,18 @@ qp_encode:
 	mov	r14,rcx
 	mov	r15d,r8d
 	mov	rbp,rdi
-	mov	ebx,-1				; the first entry with the name
-	cmp	byte [g_qp_bylen_ok],0
-	jne	@f
-	call	qp_bylen_init
-@@:
-	cmp	r13d,QP_NAME_MAX
-	ja	.searched
-	movzx	r10d,byte [g_qp_bylen_at+r13]	; the entries with names this long
-	lea	r10,[g_qp_bylen+r10]
-	xor	r9d,r9d				; the last name compared: equal?
-.entry:
-	movzx	r11d,byte [r10]
-	cmp	r11d,0xFF
+	; the static table: the whole line, else the first entry with the name
+	lea	r11,[qp_sd]
+	call	st_find
+	mov	ebx,edx
+	cmp	eax,-1
 	je	.searched
-	inc	r10
-	cmp	byte [g_qp_same+r11],0
-	jne	.named				; the same name as the one before
-	movzx	esi,word [qp_static+r11*8]
-	lea	rsi,[qp_pool+rsi]
-	mov	rdi,r12
-	mov	edx,r13d
-	push	r10
-	push	r11
-	call	mem_eq
-	pop	r11
-	pop	r10
-	mov	r9d,eax
-.named:
-	test	r9d,r9d
-	jz	.next
-	cmp	ebx,-1
-	jne	@f
-	mov	ebx,r11d
-@@:
-	movzx	eax,word [qp_static+r11*8+6]	; and its value?
-	cmp	eax,r15d
-	jne	.next
-	movzx	esi,word [qp_static+r11*8+4]
-	lea	rsi,[qp_pool+rsi]
-	mov	rdi,r14
-	mov	edx,r15d
-	push	r10
-	push	r11
-	call	mem_eq
-	pop	r11
-	pop	r10
-	test	eax,eax
-	jz	.next
 	; indexed field line, static (11 T=1 index, 6-bit prefix)
 	mov	rdi,rbp
-	mov	eax,r11d
 	mov	cl,6
 	mov	dl,0xC0
 	call	hp_put_int
 	jmp	.out
-.next:
-	jmp	.entry
 .searched:
 	; the dynamic table (qe.inc's part): a line the client has (indexed,
 	; relative to the section's base), else kept for later

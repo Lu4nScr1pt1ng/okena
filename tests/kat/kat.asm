@@ -82,6 +82,7 @@ tlsc_client_auth:
 include '../../src/tls/tls12.inc'
 include '../../src/http/hpack_tables.inc'
 include '../../src/http/hpack.inc'
+include '../../src/http/sthash.inc'
 
 INPUT_MAX := 1 shl 22
 

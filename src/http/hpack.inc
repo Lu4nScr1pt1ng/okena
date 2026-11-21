@@ -834,43 +834,45 @@ hp_put_str:
 ; with it, 0 when none. Keeps rbx, rbp, r12-r15, rdi.
 hp_static_name:
 	push	rdi
-	push	rbx
+	push	r11
 	push	r12
 	push	r13
+	push	r14
+	push	r15
 	mov	r12,rsi
 	mov	r13d,edx
-	xor	ebx,ebx
-	cmp	r13d,HP_NAME_MAX
-	ja	.out
-	movzx	eax,word [hp_bystart+r13*2]
-	lea	r11,[hp_bylen+rax]
-.search:
-	movzx	r9d,byte [r11]
-	test	r9d,r9d
-	jz	.out
-	inc	r11
-	lea	r10,[hp_static-8]
-	lea	r10,[r10+r9*8]
-	lea	rsi,[hp_pool]
-	movzx	eax,word [r10]
-	add	rsi,rax
-	mov	rdi,r12
-	mov	edx,r13d
-	push	r9
-	push	r11
-	call	mem_eq
-	pop	r11
-	pop	r9
-	test	eax,eax
-	jz	.search
-	mov	ebx,r9d
-.out:
-	mov	eax,ebx
+	mov	r14,rsi				; (only the name is asked for: its
+	xor	r15d,r15d			; value, any)
+	lea	r11,[hp_sd]
+	call	st_find
+	mov	eax,edx				; the first with the name, or 0
+	cmp	eax,-1
+	jne	@f
+	xor	eax,eax
+@@:
+	pop	r15
+	pop	r14
 	pop	r13
 	pop	r12
-	pop	rbx
+	pop	r11
 	pop	rdi
 	ret
+
+; HPACK's static table by hash (sthash.inc)
+rodata
+	align 8
+	hp_sd	dq hp_static, hp_pool
+		dd 61, 1
+		dq g_hph_name, g_hph_pair, g_hph_nid, g_hph_ok
+end rodata
+bss
+	align 8
+	g_hph_name	rw ST_SLOTS
+	g_hph_pair	rw ST_SLOTS
+	g_hph_nid	rb 61
+	align 4
+	g_hph_ok	dd ?
+end bss
 
 ; rdi = dst, rsi = name, edx = name length, rcx = value, r8d = value
 ; length: one field (see the top). rax = dst after it.
@@ -886,52 +888,18 @@ hpack_encode:
 	mov	r13d,edx
 	mov	r14,rcx
 	mov	r15d,r8d
-	xor	ebp,ebp				; a static index with this name, 0 = none
-	; the static entries whose names have this length (hp_bylen), not all 61
-	cmp	r13d,HP_NAME_MAX
-	ja	.searched
-	movzx	eax,word [hp_bystart+r13*2]
-	lea	r11,[hp_bylen+rax]
-.search:
-	movzx	r9d,byte [r11]
-	test	r9d,r9d
-	jz	.searched
-	inc	r11
-	lea	r10,[hp_static-8]
-	lea	r10,[r10+r9*8]
-	lea	rsi,[hp_pool]
-	movzx	eax,word [r10]
-	add	rsi,rax
-	mov	rdi,r12
-	mov	edx,r13d
-	push	r9
-	push	r10
-	push	r11
-	call	mem_eq
-	pop	r11
-	pop	r10
-	pop	r9
-	test	eax,eax
-	jz	.search
-	test	ebp,ebp
-	jnz	@f
-	mov	ebp,r9d				; the first with this name
+	; the static table: the whole field (indexed), else the first entry
+	; with its name (ebp, 0 none)
+	lea	r11,[hp_sd]
+	call	st_find
+	xor	ebp,ebp
+	cmp	edx,-1
+	je	@f
+	mov	ebp,edx
 @@:
-	movzx	eax,word [r10+6]		; and its value too?
-	cmp	eax,r15d
-	jne	.search
-	lea	rsi,[hp_pool]
-	movzx	eax,word [r10+4]
-	add	rsi,rax
-	mov	rdi,r14
-	mov	edx,r15d
-	push	r9
-	push	r11
-	call	mem_eq
-	pop	r11
-	pop	r9
-	test	eax,eax
-	jz	.search
+	mov	r9d,eax
+	cmp	eax,-1
+	je	.searched
 .indexed:
 	mov	rdi,rbx
 	mov	eax,r9d
