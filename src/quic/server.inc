@@ -4595,6 +4595,18 @@ qtx_send:
 .s_err:
 	cmp	eax,-EMSGSIZE			; past the path's MTU (a probe): that one
 	jne	@f
+	; a message of several datagrams (GSO) fails whole when one of them
+	; is too large: the others, the answers that went with a probe, are
+	; sent each alone (the probe fails alone, as the probe it is; they were
+	; lost before, found so only by the loss timer: 10 ms an answer late)
+	mov	rax,rbx
+	shl	rax,6
+	mov	rdx,[g_qgso_mm+rax+24]		; its datagrams
+	cmp	rdx,2
+	jb	.s_skip
+	mov	ecx,[g_qgso_first+rbx*4]
+	call	qtx_send_each
+.s_skip:
 	inc	ebx
 	jmp	.s_run
 @@:
@@ -4653,6 +4665,40 @@ qtx_send:
 	mov	qword [g_qtx_off],0
 	pop	r14
 	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+
+; ecx = the first of edx datagrams of g_qtx_mm on one socket: each alone,
+; one that fails as too large skipped (sendmmsg stops at it). Keeps rbx,
+; r12-r15.
+qtx_send_each:
+	push	rbx
+	push	r12
+	mov	ebx,ecx				; the next
+	lea	r12d,[rcx+rdx]			; past the last
+.next:
+	cmp	ebx,r12d
+	jae	.done
+	mov	edi,[g_qtx_fds+rbx*4]
+	mov	rsi,rbx
+	shl	rsi,6
+	lea	rsi,[g_qtx_mm+rsi]
+	mov	edx,r12d
+	sub	edx,ebx
+	xor	r10d,r10d
+	mov	eax,SYS_sendmmsg
+	syscall
+	test	eax,eax
+	jle	.failed
+	add	ebx,eax
+	jmp	.next
+.failed:
+	cmp	eax,-EMSGSIZE
+	jne	.done				; (a full socket: QUIC recovers)
+	inc	ebx
+	jmp	.next
+.done:
 	pop	r12
 	pop	rbx
 	ret
@@ -4795,10 +4841,20 @@ qs_tick:
 @@:
 	mov	rax,[r15+QC_PTO_AT]
 	test	rax,rax
-	jz	.next
+	jz	.timers
 	cmp	rax,[g_qnow]
-	ja	.next
+	ja	.timers
 	call	qc_on_pto
+.timers:
+	; its timers to come, to the µs: the worker wakes for the earliest, as
+	; for pacing (by this tick alone a loss was found up to 10 ms late, an
+	; ACK held past its time)
+	mov	rax,[r15+QC_LOSS_AT]
+	call	.earliest
+	mov	rax,[r15+QC_PTO_AT]
+	call	.earliest
+	mov	rax,[r15+QC_PS+QL_APP*PS_SIZE+PS_ACKAT]
+	call	.earliest
 	jmp	.next
 .done:
 	pop	r15
@@ -4806,6 +4862,23 @@ qs_tick:
 	pop	rbx
 	call	qs_flush
 .out:
+	ret
+; rax = a timer (µs, 0 none, -1 none yet): into g_qpace_next when it is to come
+.earliest:
+	test	rax,rax
+	jz	@f
+	cmp	rax,-1
+	je	@f
+	cmp	rax,[g_qnow]
+	jbe	@f
+	mov	rcx,[g_qpace_next]
+	test	rcx,rcx
+	jz	.earliest_set
+	cmp	rax,rcx
+	jae	@f
+.earliest_set:
+	mov	[g_qpace_next],rax
+@@:
 	ret
 
 ; ebx, r15 = connection: its probe timer went off. What was sent and not
