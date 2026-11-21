@@ -518,7 +518,18 @@ ep_dispatch:
 	jmp	ep_pump
 .connecting:
 	cmp	r8d,EK_UPSTREAM
-	jne	.stale				; client bytes wait until connected
+	je	.connecting_up
+	; client bytes wait until connected; their event is this one (edge-
+	; triggered: no other comes for them), so the client's last read being
+	; short says nothing now: the next one reads (HEP_DRY, hep_recv)
+	test	edi,EPOLLIN or EPOLLRDHUP or EPOLLHUP or EPOLLERR
+	jz	.stale
+	mov	eax,ebx
+	shl	rax,H_SHIFT
+	add	rax,[g_http_base]
+	and	dword [rax+H_EPPEEK],not HEP_DRY
+	jmp	.stale
+.connecting_up:
 	test	edi,EPOLLOUT or EPOLLERR or EPOLLHUP
 	jz	.stale
 	mov	edi,ebx

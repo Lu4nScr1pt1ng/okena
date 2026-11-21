@@ -374,6 +374,8 @@ http_start:
 	mov	[r15+H_RETRIES],eax
 	mov	[r15+H_UTLS],eax
 	mov	[r15+H_SNICERT],rax
+	mov	[r15+H_EPPEEK],eax		; (HEP_DRY: another connection's last read)
+	mov	[r15+H_EPOP],eax
 	mov	edi,ebx
 	mov	esi,PH_HEAD
 	call	ph_arm
