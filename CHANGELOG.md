@@ -46,11 +46,21 @@ Or download `okena-0.2.0-linux-x86_64.tar.gz` below and check it against its
 - **HTTP/1.1:** answers to pipelined requests go out together, one write
   (16 at a time: 6x); a read is handled right after its event, while its
   bytes are in the cache.
+- **epoll:** a new connection wakes one worker instead of every idle one (64
+  workers: short-lived connections were at a third of their rate); sockets
+  written with send, past the files' layer.
+- **io_uring:** what a completion delivers is taken at once, not after the
+  whole batch (HTTP/2: up to 19% more).
 - **HTTP/2:** HPACK's dynamic table on the way out; END_STREAM on the body's
-  last DATA frame; on epoll a full connection buffer is written at once and
-  the stream goes on; handler answers written in a per-worker area.
-- **HTTP/3:** QPACK's dynamic table on the way out; many answers in a
-  datagram; large datagrams where the path takes them (path MTU probing up
+  last DATA frame; a batch's HEADERS first, then its DATA (a client decodes
+  them in one run: 6% fewer of its cycles an answer); a small body okena
+  answers itself goes without content-length (RFC 9113 8.1.1), kept for a
+  HEAD, a larger body and a backend's answer; on epoll a full connection
+  buffer is written at once and the stream goes on; handler answers written
+  in a per-worker area.
+- **HTTP/3:** QPACK's dynamic table on the way out; the answers in the
+  datagram that carries the ACK (half the datagrams); frame lengths in as
+  few bytes as they take; many answers in a datagram; large datagrams where the path takes them (path MTU probing up
   to 60000 bytes), segmented sends of one size; a send batch's datagrams one
   after another; a stream's send state kept with its connection; bodies from
   the memory store not copied into the send ring.
@@ -61,7 +71,11 @@ Or download `okena-0.2.0-linux-x86_64.tar.gz` below and check it against its
 ### Fixed
 
 - **QUIC:** a worker could crash under load when loss detection followed an
-  ACK; transport parameters, frames and TLS messages checked as RFC 9000 and
+  ACK; CONNECTION_CLOSE sent again to a packet that comes while closing;
+  a lost packet of the QPACK decoder stream sent again (after one loss the
+  client stopped using its table for the rest of the connection); a
+  client's unidirectional stream opened after a higher one is read (its
+  QPACK inserts were dropped); transport parameters, frames and TLS messages checked as RFC 9000 and
   9001 ask; HTTP/3 control, QPACK and request stream rules (h3spec 85/85).
 - **TLS:** alerts where RFC 8446 asks for them (protocol_version,
   missing_extension, illegal_parameter...), a client's KeyUpdate,
