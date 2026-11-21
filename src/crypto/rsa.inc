@@ -29,6 +29,14 @@ bn_n0inv:
 ; rdi = out, rsi = a, rdx = b, rcx = mod, r8 = n0inv, r9d = n (limbs).
 ; out = a*b*R^-1 mod mod (CIOS). Needs a, b < mod.
 bn_mont_mul:
+	cmp	r9d,16				; 1024 bits (RSA-2048's CRT halves), with
+	jne	@f				; mulx, adcx, adox: unrolled (mont16.inc)
+	cmp	byte [g_cpu_adx],0
+	je	@f
+	cmp	rsi,rdx
+	je	mont16_sqr			; (a square: its own, a quarter less work)
+	jmp	mont16_mul
+@@:
 	push	rbx
 	push	rbp
 	push	r12

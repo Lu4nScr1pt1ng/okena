@@ -65,7 +65,11 @@ crypto_init:
 	xor	ecx,ecx
 	cpuid
 	mov	eax,ebx
-	shr	eax,19				; ADX (adcx, adox)
+	shr	eax,19				; ADX (adcx, adox), with BMI2 (mulx) beside it
+	and	eax,1
+	mov	edx,ebx
+	shr	edx,8
+	and	eax,edx
 	and	al,1
 	mov	[g_cpu_adx],al
 	shr	ebx,29				; SHA extensions

@@ -580,6 +580,20 @@ try:
             ok = False
         check(f"rsa pkcs1 sign {bits}: verifies with a reference", ok, True)
 
+    # RSASSA-PKCS1-v1_5 by CRT (rsa_crt_load, rsa_priv: what a handshake signs
+    # with), byte for byte against a reference (PKCS#1 v1.5 is deterministic);
+    # 2048 takes the 16-limb products (mont16.inc), 3072 and 4096 the generic
+    from cryptography.hazmat.primitives import serialization as _ser1
+    for bits in (2048, 2048, 3072, 4096):
+        k = _rsa.generate_private_key(public_exponent=65537, key_size=bits)
+        der = k.private_bytes(_ser1.Encoding.DER, _ser1.PrivateFormat.TraditionalOpenSSL,
+                              _ser1.NoEncryption())
+        for i in range(3):
+            msg = b"okena crt sign " + bytes([bits & 0xff, i])
+            want = k.sign(msg, _pad.PKCS1v15(), _hashes.SHA256())
+            got = run(b"*", _struct.pack("<H", len(der)) + der + _hl.sha256(msg).digest())
+            check(f"rsa pkcs1 sign by CRT {bits} #{i}: the reference's bytes", got, want.hex())
+
     # RSA private key parsing (PKCS#1 RSAPrivateKey): modulus and private exponent
     from cryptography.hazmat.primitives import serialization as _ser2
     for bits in (2048, 3072):

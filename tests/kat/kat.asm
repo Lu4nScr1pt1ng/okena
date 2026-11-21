@@ -21,7 +21,7 @@
 ;   'M' mont_mul mod p, 'a' mod_add, 'b' mod_sub: a, b (4 limbs each, little endian)
 ;   'I' mod_inv mod p: a (4 limbs, Montgomery form); 'D' G + G (projective, raw)
 ;   'u' x25519_base: scalar (32) -> the public key, as x25519(scalar, 9)
-;   'B' benchmark: op ('x', 'u', 'E', 'v' ECDSA verify, ...), count (4, LE), the op's input -> ns per op
+;   'B' benchmark: op ('x', 'u', 'E', 'v' ECDSA verify, 'G' RSA CRT sign, 'Q' 'M' 1024-bit Montgomery square, product, ...), count (4, LE), the op's input -> ns per op
 ;   'd' HPACK decode: table limit (4, LE), then blocks (length (4, LE), bytes),
 ;       one context: per field name length (2, LE), name, value length (2,
 ;       LE), value; FFFF after a block; FFFE and the error code at the first
@@ -67,6 +67,7 @@ include '../../src/crypto/p256.inc'
 include '../../src/crypto/p384.inc'
 include '../../src/crypto/rsa.inc'
 include '../../src/crypto/rsacrt.inc'
+include '../../src/crypto/mont16.inc'
 include '../../src/tls/x509.inc'
 include '../../src/tls/keyschedule.inc'
 include '../../src/quic/crypto.inc'
@@ -102,6 +103,9 @@ bss
 	g_der:		rb 8192
 	align 64
 	g_crtblk:	rb CRT_SIZE
+	g_bench_crt	dd ?		; 'G': the key loaded (its modulus' bytes)
+	align 8
+	g_bench_hash	dq ?
 	g_anchor:	rb PK_SIZE
 	g_hd:		rb HPD_BYTES
 	g_ho:		rb HPO_SIZE
@@ -718,6 +722,49 @@ start:
 	call	fe_mul
 	jmp	.counted
 .not_m:
+	cmp	r12b,'Q'
+	jne	.not_Q
+	mov	rdi,r14				; 1024-bit Montgomery square, in place: a (16
+	mov	rsi,r14				; limbs), mod (16 limbs, odd), n0 (8)
+	lea	rcx,[r14+128]
+	mov	r8,[r14+256]
+	call	mont16_sqr
+	jmp	.counted
+.not_Q:
+	cmp	r12b,'M'
+	jne	.not_M
+	mov	rdi,r14				; the same, a product: a a
+	mov	rsi,r14
+	lea	rdx,[r14+384]
+	lea	rcx,[r14+128]
+	mov	r8,[r14+256]
+	call	mont16_mul
+	jmp	.counted
+.not_M:
+	cmp	r12b,'G'
+	jne	.not_G
+	push	r13				; RSA PKCS#1 v1.5 sign by CRT: keylen (u16) key, hash
+	push	r13				; (the key loaded once, as a certificate's is)
+	cmp	dword [g_bench_crt],0
+	jne	@f
+	mov	rsi,r14
+	call	.crt_key			; (r13d: the modulus' bytes, r8: the hash)
+	mov	[g_bench_crt],r13d
+	mov	[g_bench_hash],r8
+@@:
+	mov	r13d,[g_bench_crt]
+	mov	r8,[g_bench_hash]
+	lea	rax,[g_crtblk]			; (rsa_priv takes it once: a handshake sets it)
+	mov	[g_rsa_crt],rax
+	lea	rdi,[g_out]
+	lea	rsi,[g_der+2048]
+	mov	edx,r13d
+	lea	rcx,[g_der+4096]
+	call	rsa_pkcs1_sign
+	pop	r13
+	pop	r13
+	jmp	.counted
+.not_G:
 	cmp	r12b,'q'
 	jne	.not_q
 	mov	rdi,r14
