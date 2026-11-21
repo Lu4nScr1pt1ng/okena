@@ -420,6 +420,55 @@ qc_streams_close:
 	pop	r12
 	ret
 
+; rsi = a field value, ecx = its length: CF when it has a CR, LF or NUL
+; (RFC 9114 4.1.2: malformed). Sixteen bytes a compare once it is that long
+; (the last sixteen over what came before). Clobbers rax, rcx, rdx, xmm0-xmm4.
+field_value_ok:
+	cmp	ecx,16
+	jb	.bytes
+	vpbroadcastb xmm1,byte [.cr]
+	vpbroadcastb xmm2,byte [.lf]
+	vpxor	xmm3,xmm3,xmm3
+	lea	edx,[rcx-16]			; the last block's start
+	xor	eax,eax
+.block:
+	cmp	eax,edx
+	cmova	eax,edx
+	vmovdqu	xmm0,[rsi+rax]
+	vpcmpeqb xmm4,xmm0,xmm1
+	vpcmpeqb xmm0,xmm0,xmm2
+	vpor	xmm4,xmm4,xmm0
+	vmovdqu	xmm0,[rsi+rax]
+	vpcmpeqb xmm0,xmm0,xmm3
+	vpor	xmm4,xmm4,xmm0
+	vpmovmskb ecx,xmm4
+	test	ecx,ecx
+	jnz	.bad
+	cmp	eax,edx
+	je	.ok
+	add	eax,16
+	jmp	.block
+.bytes:
+	test	ecx,ecx
+	jz	.ok
+	dec	ecx
+	movzx	eax,byte [rsi+rcx]
+	cmp	al,13
+	je	.bad
+	cmp	al,10
+	je	.bad
+	test	al,al
+	jz	.bad
+	jmp	.bytes
+.ok:
+	clc
+	ret
+.bad:
+	stc
+	ret
+.cr	db 13
+.lf	db 10
+
 ; rax = stream id (r15 = connection): r8 = its entry, or 0
 qst_find:
 	; its home entry first (qst_new puts it there when free: ids go up by 4)
@@ -1076,10 +1125,19 @@ qc_stream_one:
 	je	.state_error			; ours: never data from the client
 	cmp	eax,3
 	je	.state_error
+	; one at or past the highest opened of its kind is in no entry: not
+	; looked for (each new request's first frame would look at them all)
 	mov	rax,r8
+	lea	rcx,[r15+QC_SMAX]
+	lea	rdx,[r15+QC_UMAX]
+	test	eax,2
+	cmovnz	rcx,rdx
+	cmp	rax,[rcx]
+	jae	.new
 	call	qst_find
 	test	r8,r8
 	jnz	.have
+.new:
 	; a new stream: above every one seen of its kind
 	mov	rax,[rsp+QI_ID]
 	test	eax,2
@@ -2951,19 +3009,8 @@ h3_request_new:
 	inc	ebp
 	mov	rsi,[r8+HP_VALUE]
 	mov	ecx,[r8+HP_VLEN]
-@@:
-	test	ecx,ecx
-	jz	@f
-	dec	ecx
-	movzx	eax,byte [rsi+rcx]
-	cmp	al,13
-	je	.malformed
-	cmp	al,10
-	je	.malformed
-	test	al,al
-	jz	.malformed
-	jmp	@b
-@@:
+	call	field_value_ok
+	jc	.malformed
 	mov	rsi,[r8+HP_NAME]
 	mov	ecx,[r8+HP_NLEN]
 	test	ecx,ecx
@@ -3173,7 +3220,7 @@ h3_request_new:
 	call	peer_ptr
 	mov	rsi,rax
 	mov	ecx,P_SIZE
-	rep	movsb
+	call	copy_small
 	mov	edi,[rsp+8+H3N_SESS]		; (access log: TLS 1.3)
 	call	alx_h3
 	mov	edi,[rsp+8+H3N_SESS]		; (its TLS fingerprint: the connection's)
@@ -3474,7 +3521,7 @@ h3s_take:
 	push	rcx
 	lea	rsi,[r14+Q_DATA+rax]
 	add	[r14+Q_OFF],ecx
-	rep	movsb
+	call	copy_small
 	mov	eax,[r14+Q_OFF]
 	cmp	eax,[r14+Q_LEN]
 	jne	.deliver
@@ -3731,14 +3778,14 @@ h3tx_put:
 	add	rdi,rax
 	mov	ecx,edx
 	add	[r13+TX_END],rcx
-	rep	movsb
+	call	copy_small
 	pop	rcx
 	xor	eax,eax
 @@:
 	mov	rdi,[r13+TX_RING]
 	add	rdi,rax
 	add	[r13+TX_END],rcx
-	rep	movsb
+	call	copy_small			; (an answer's few bytes: no rep movsb start-up)
 .out:
 	ret
 
@@ -3851,59 +3898,17 @@ h3_head_out:
 	lea	eax,[rcx+2]
 	cmp	eax,ebp
 	jae	.block
-	mov	edx,ecx
-@@:
-	cmp	byte [rsi+rdx],':'
-	je	@f
-	cmp	byte [rsi+rdx],13
-	je	.broken
-	inc	edx
-	jmp	@b
-@@:
-	mov	r8d,edx				; the name's end
-	inc	edx
-@@:
-	cmp	byte [rsi+rdx],' '
-	jne	@f
-	inc	edx
-	jmp	@b
-@@:
-	mov	r10d,edx			; the value's start
-@@:
-	cmp	word [rsi+rdx],0x0A0D
-	je	@f
-	inc	edx
-	jmp	@b
-@@:
-	; lower case the name in place
-	push	rcx
-@@:
-	cmp	ecx,r8d
-	jae	@f
-	movzx	eax,byte [rsi+rcx]
-	lea	r11d,[rax-'A']
-	cmp	r11d,25
-	ja	.lc
-	or	byte [rsi+rcx],0x20
-.lc:
-	inc	ecx
-	jmp	@b
-@@:
-	pop	rcx
+	call	head_line			; r8d name end, r10d value, edx its end
+	jc	.broken
 	; skip connection-specific fields
 	push	rsi
 	push	rdx
 	push	rcx
 	push	rdi
-	push	r8
-	push	r10
 	lea	rdi,[rsi+rcx]
 	mov	esi,r8d
 	sub	esi,ecx
-	lea	rdx,[h2_stream_new.n_conn]
-	call	h2_name_in
-	pop	r10
-	pop	r8
+	call	h_conn_field
 	pop	rdi
 	pop	rcx
 	pop	rdx
@@ -4031,6 +4036,7 @@ bss
 	g_qp_bylen_ok	db ?
 	g_qp_bylen_at	rb QP_NAME_MAX + 1
 	g_qp_bylen	rb 99 + QP_NAME_MAX + 1
+	g_qp_same	rb 99			; 1: its name is the one before it in its list
 end bss
 
 ; (once, the first time) Keeps all but rax, rcx, rdx, r8, r9.
@@ -4055,6 +4061,42 @@ qp_bylen_init:
 	inc	ecx
 	cmp	ecx,QP_NAME_MAX
 	jbe	.len
+	; the entries whose name is the one before them in their list (eleven
+	; content-types, seven :status): qp_encode compares such a name once
+	push	rdi
+	push	rsi
+	push	r10
+	push	r11
+	mov	r11d,r8d			; the lists' bytes
+	xor	r8d,r8d
+	mov	r9d,0xFF			; the entry before (0xFF: a list begins)
+.same:
+	cmp	r8d,r11d
+	jae	.same_done
+	movzx	r10d,byte [g_qp_bylen+r8]
+	inc	r8d
+	cmp	r10d,0xFF
+	je	.same_list
+	cmp	r9d,0xFF
+	je	.same_next
+	movzx	esi,word [qp_static+r9*8]
+	lea	rsi,[qp_pool+rsi]
+	movzx	edi,word [qp_static+r10*8]
+	lea	rdi,[qp_pool+rdi]
+	movzx	edx,word [qp_static+r10*8+2]	; (one length in a list)
+	call	mem_eq
+	mov	[g_qp_same+r10],al
+.same_next:
+	mov	r9d,r10d
+	jmp	.same
+.same_list:
+	mov	r9d,0xFF
+	jmp	.same
+.same_done:
+	pop	r11
+	pop	r10
+	pop	rsi
+	pop	rdi
 	mov	byte [g_qp_bylen_ok],1
 	ret
 
@@ -4084,11 +4126,14 @@ qp_encode:
 	ja	.searched
 	movzx	r10d,byte [g_qp_bylen_at+r13]	; the entries with names this long
 	lea	r10,[g_qp_bylen+r10]
+	xor	r9d,r9d				; the last name compared: equal?
 .entry:
 	movzx	r11d,byte [r10]
 	cmp	r11d,0xFF
 	je	.searched
 	inc	r10
+	cmp	byte [g_qp_same+r11],0
+	jne	.named				; the same name as the one before
 	movzx	esi,word [qp_static+r11*8]
 	lea	rsi,[qp_pool+rsi]
 	mov	rdi,r12
@@ -4098,7 +4143,9 @@ qp_encode:
 	call	mem_eq
 	pop	r11
 	pop	r10
-	test	eax,eax
+	mov	r9d,eax
+.named:
+	test	r9d,r9d
 	jz	.next
 	cmp	ebx,-1
 	jne	@f

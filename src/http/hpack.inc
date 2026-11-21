@@ -594,6 +594,25 @@ huff_decode:
 .fill:
 	cmp	ebx,56
 	ja	.look
+	; eight bytes or more left: as many whole bytes as fit below the bits,
+	; one load (the next one's first bits come along: the same bits it
+	; puts there itself later)
+	mov	rax,r12
+	sub	rax,rsi
+	cmp	rax,8
+	jb	.fill_byte
+	mov	rax,[rsi]
+	bswap	rax
+	mov	ecx,ebx
+	shr	rax,cl
+	or	r11,rax
+	mov	ecx,64
+	sub	ecx,ebx
+	shr	ecx,3
+	add	rsi,rcx
+	lea	ebx,[rbx+rcx*8]
+	jmp	.look
+.fill_byte:
 	cmp	rsi,r12
 	jae	.look
 	movzx	eax,byte [rsi]

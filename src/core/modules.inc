@@ -829,7 +829,7 @@ mod_answer:
 	sub	rdi,rcx
 	push	rdi
 	lea	r8,[rcx+r12]			; head and body
-	rep	movsb
+	call	copy_small			; (a few dozen bytes: no rep movsb start-up)
 	pop	rdi
 	mov	esi,r8d
 	mov	dword [r15+H_STATE],HS_SELF_SEND
@@ -847,7 +847,7 @@ mod_answer:
 	sub	rdi,rcx
 	push	rdi
 	lea	r8,[rcx+r12]
-	rep	movsb
+	call	copy_small
 	pop	rdi
 	mov	esi,r8d
 	mov	dword [r15+H_STATE],HS_SELF_SEND

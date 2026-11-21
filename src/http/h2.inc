@@ -2842,8 +2842,7 @@ h2_stream_new:
 	mov	rcx,rax
 	inc	rcx				; one past: the check sees it
 @@:
-	rep	movsb
-	ret
+	jmp	copy_small			; (rep movsb's start-up: most of a short copy)
 .put_none:
 	inc	rdi
 	ret
@@ -3765,6 +3764,149 @@ crlf2_find:
 	ret
 .cr	db 13
 
+; A field line of a text head okena wrote (h2_head_out, h3_head_out turn it
+; into a field section): rsi = the head, ecx = the line's start, ebp = the
+; head's length. r8d = the name's end (its ':'), r10d = the value's start
+; (past the spaces), edx = its end (the line's CRLF); the name lower case
+; in place. CF when a CR comes before any ':'. A line whose ':' and CR lie in
+; the 32 bytes from its start, and inside the head, is one compare of them
+; all (most of them: a byte at a time, 150-odd instructions a line).
+; Keeps all but rax, rdx, r8, r10, r11, ymm0-ymm3, flags.
+head_line:
+	cmp	ebp,32
+	jb	.slow
+	; the 32 bytes from the line's start, or the head's last 32 (the line's
+	; bytes then their tail: from o in them)
+	mov	eax,ebp
+	sub	eax,32
+	cmp	eax,ecx
+	cmova	eax,ecx				; where the 32 begin
+	mov	r10d,ecx
+	sub	r10d,eax			; o
+	vmovdqu	ymm0,[rsi+rax]
+	vpbroadcastb ymm1,byte [.colon]
+	vpcmpeqb ymm1,ymm1,ymm0
+	vpmovmskb r8d,ymm1
+	vpbroadcastb ymm1,byte [crlf2_find.cr]
+	vpcmpeqb ymm1,ymm1,ymm0
+	vpmovmskb edx,ymm1
+	shrx	r8d,r8d,r10d			; from the line's start
+	shrx	edx,edx,r10d
+	tzcnt	r8d,r8d				; (32: none)
+	tzcnt	edx,edx
+	cmp	r8d,edx
+	jae	.slow_z				; no ':' before the first CR here
+	; the name's capitals ('A' - 1 < b < 'Z' + 1, o - 1 < i < o + name), or 0x20
+	vpbroadcastb ymm1,byte [.a1]
+	vpcmpgtb ymm1,ymm0,ymm1
+	vpbroadcastb ymm2,byte [.z1]
+	vpcmpgtb ymm2,ymm2,ymm0
+	vpand	ymm1,ymm1,ymm2
+	lea	r11d,[r10+r8]
+	vmovd	xmm2,r11d
+	vpbroadcastb ymm2,xmm2
+	vpcmpgtb ymm2,ymm2,yword [.index]
+	vpand	ymm1,ymm1,ymm2
+	lea	r11d,[r10-1]
+	vmovd	xmm2,r11d
+	vpbroadcastb ymm2,xmm2
+	vmovdqu	ymm3,yword [.index]
+	vpcmpgtb ymm2,ymm3,ymm2
+	vpand	ymm1,ymm1,ymm2
+	vptest	ymm1,ymm1
+	jz	@f
+	vpbroadcastb ymm2,byte [.bit5]
+	vpand	ymm1,ymm1,ymm2
+	vpor	ymm0,ymm0,ymm1
+	vmovdqu	[rsi+rax],ymm0
+@@:
+	vzeroupper
+	add	r8d,ecx				; the ':'
+	add	edx,ecx				; the first CR seen, or past the 32
+	lea	r10d,[r8+1]
+@@:
+	cmp	byte [rsi+r10],' '
+	jne	@f
+	inc	r10d
+	jmp	@b
+@@:
+	; the value's end: the CRLF, from the CR seen or past the 32
+	cmp	word [rsi+rdx],0x0A0D
+	je	@f
+	inc	edx
+	jmp	@b
+@@:
+	clc
+	ret
+.slow_z:
+	vzeroupper
+.slow:
+	; a byte at a time: the name to ':', the spaces, the value to CRLF
+	mov	edx,ecx
+@@:
+	cmp	byte [rsi+rdx],':'
+	je	@f
+	cmp	byte [rsi+rdx],13
+	je	.broken
+	inc	edx
+	jmp	@b
+@@:
+	mov	r8d,edx
+	inc	edx
+@@:
+	cmp	byte [rsi+rdx],' '
+	jne	@f
+	inc	edx
+	jmp	@b
+@@:
+	mov	r10d,edx
+@@:
+	cmp	word [rsi+rdx],0x0A0D
+	je	@f
+	inc	edx
+	jmp	@b
+@@:
+	mov	eax,ecx
+.lc:
+	cmp	eax,r8d
+	jae	.lc_done
+	movzx	r11d,byte [rsi+rax]
+	sub	r11d,'A'
+	cmp	r11d,25
+	ja	@f
+	or	byte [rsi+rax],0x20
+@@:
+	inc	eax
+	jmp	.lc
+.lc_done:
+	clc
+	ret
+.broken:
+	stc
+	ret
+.colon	db ':'
+.a1	db 'A' - 1
+.z1	db 'Z' + 1
+.bit5	db 0x20
+.index	db 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+	db 16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31
+
+; rdi = a field name (lower case), esi = its length: CF clear when it is a
+; connection-specific one (RFC 9113 8.2.2, RFC 9114 4.2), which HTTP/2 and
+; HTTP/3 do not carry. Their lengths first: most names have none of them.
+; Clobbers rax, rcx, rdx.
+h_conn_field:
+	cmp	esi,17
+	ja	.no
+	mov	eax,(1 shl 7) or (1 shl 10) or (1 shl 16) or (1 shl 17)
+	bt	eax,esi
+	jnc	.no
+	lea	rdx,[h2_stream_new.n_conn]
+	jmp	h2_name_in
+.no:
+	stc
+	ret
+
 h2_head_out:
 	push	r12
 	push	rbp
@@ -3832,61 +3974,20 @@ h2_head_out:
 	lea	eax,[rcx+2]
 	cmp	eax,ebp
 	jae	.block				; the empty line
-	; name: to ':'
-	mov	edx,ecx
-@@:
-	cmp	byte [rsi+rdx],':'
-	je	@f
-	cmp	byte [rsi+rdx],13
-	je	.broken
-	inc	edx
-	jmp	@b
-@@:
-	mov	r8d,edx				; the name's end
-	inc	edx
-@@:
-	cmp	byte [rsi+rdx],' '
-	jne	@f
-	inc	edx
-	jmp	@b
-@@:
-	mov	r10d,edx			; the value's start
-@@:
-	cmp	word [rsi+rdx],0x0A0D
-	je	@f
-	inc	edx
-	jmp	@b
-@@:
-	; lower case the name in place (the buffer is the exchange's, sent once)
-	push	rcx
-	push	rdx
-@@:
-	cmp	ecx,r8d
-	jae	@f
-	movzx	eax,byte [rsi+rcx]
-	lea	r11d,[rax-'A']
-	cmp	r11d,25
-	ja	.lc_next
-	or	byte [rsi+rcx],0x20
-.lc_next:
-	inc	ecx
-	jmp	@b
-@@:
-	pop	rdx
-	pop	rcx
+	; the name (lower case in place: the buffer is the exchange's, sent
+	; once), the value
+	call	head_line			; r8d name end, r10d value, edx its end
+	jc	.broken
 	push	rsi
 	push	rdx
 	push	rcx
-	push	r9
 	lea	rax,[rsi+rcx]			; skip connection-specific fields
 	push	rdi
 	mov	rdi,rax
 	mov	esi,r8d
 	sub	esi,ecx
-	lea	rdx,[h2_stream_new.n_conn]
-	call	h2_name_in
+	call	h_conn_field
 	pop	rdi
-	pop	r9
 	pop	rcx
 	pop	rdx
 	pop	rsi

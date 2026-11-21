@@ -206,11 +206,12 @@ qe_field:
 	call	name_in
 	jz	.no
 	mov	r11,[g_qe]
-	; in the table?
-	xor	r10d,r10d
+	; in the table? the newest first: a field that changes (the date, each
+	; second) is there once a value, its current one last
+	mov	r10d,[r11+QE_INS]
 .find:
-	cmp	r10d,[r11+QE_INS]
-	jae	.absent
+	sub	r10d,1
+	jb	.absent
 	movzx	eax,word [r11+QE_ENT+r10*8+2]
 	cmp	eax,r13d
 	jne	.find_next
@@ -241,7 +242,6 @@ qe_field:
 	test	eax,eax
 	jnz	.found
 .find_next:
-	inc	r10d
 	jmp	.find
 .found:
 	cmp	r10d,[g_qe_base]
