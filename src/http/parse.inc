@@ -61,30 +61,97 @@ HE_TOO_LARGE	:= 431		; too many fields
 HE_VERSION	:= 505		; HTTP version not supported
 HE_NOT_IMPL	:= 501		; a transfer coding we do not take
 
+; the two character sets as tests (one definition: the byte tables below
+; and the nibble tables of the 32-byte checks are both made from them)
+macro tchar_test c
+	if (c >= '0' & c <= '9') | (c >= 'A' & c <= 'Z') | (c >= 'a' & c <= 'z') | \
+	   c = '!' | c = '#' | c = '$' | c = '%' | c = '&' | c = "'" | c = '*' | \
+	   c = '+' | c = '-' | c = '.' | c = '^' | c = '_' | c = '`' | c = '|' | c = '~'
+		cls_in = 1
+	else
+		cls_in = 0
+	end if
+end macro
+macro target_test c
+	if c > 0x20 & c < 0x7F & c <> '#' & c <> '"' & c <> '<' & c <> '>' & c <> '\' & \
+	   c <> '^' & c <> '`' & c <> '{' & c <> '|' & c <> '}'
+		cls_in = 1
+	else
+		cls_in = 0
+	end if
+end macro
+; a set's 32-byte check (http_cls): byte b is in it when lo[b & 15] and
+; hi[b >> 4] share a bit, a bit for each high nibble 2 to 7 (both sets lie
+; in 0x21-0x7E: asserted), both tables twice (vpshufb looks in each half)
+macro cls_table test
+	repeat 32, i:0
+		cls_v = 0
+		repeat 6, k:2
+			test k * 16 + (i and 15)
+			if cls_in
+				cls_v = cls_v or (1 shl (k - 2))
+			end if
+		end repeat
+		db cls_v
+	end repeat
+	repeat 256, c:0
+		test c
+		assert cls_in = 0 | (c >= 0x20 & c < 0x80)
+	end repeat
+end macro
+
+
+; ymm0 = 32 bytes: dst = 0xFF where one is outside the set of lo (its
+; http_cls_* table in a register); ymm8 = http_cls_hi, ymm9 = 0x0F each,
+; ymm10 = 0; t scratch
+macro http_cls_out dst, t, lo
+	vpsrlw	t,ymm0,4
+	vpand	t,t,ymm9
+	vpshufb	t,ymm8,t
+	vpand	dst,ymm0,ymm9
+	vpshufb	dst,lo,dst
+	vpand	dst,dst,t
+	vpcmpeqb dst,dst,ymm10
+end macro
+
+; the registers http_cls_out reads, and lo for the given set
+macro http_cls_load lo, table
+	vmovdqu	ymm8,yword [http_cls_hi]
+	vmovdqu	ymm9,yword [http_cls_lo4]
+	vpxor	ymm10,ymm10,ymm10
+	vmovdqu	lo,yword [table]
+end macro
+
 rodata
 	align 8
 	; tchar (RFC 9110 5.6.2): token characters, for methods and field names
 	http_tchar:
 	repeat 256, c:0
-		if (c >= '0' & c <= '9') | (c >= 'A' & c <= 'Z') | (c >= 'a' & c <= 'z') | \
-		   c = '!' | c = '#' | c = '$' | c = '%' | c = '&' | c = "'" | c = '*' | \
-		   c = '+' | c = '-' | c = '.' | c = '^' | c = '_' | c = '`' | c = '|' | c = '~'
-			db 1
-		else
-			db 0
-		end if
+		tchar_test c
+		db cls_in
 	end repeat
 	; bytes allowed in a request target (no controls, no space, no DEL, no
 	; '#'; RFC 3986 characters and '%')
 	http_target_ok:
 	repeat 256, c:0
-		if c > 0x20 & c < 0x7F & c <> '#' & c <> '"' & c <> '<' & c <> '>' & c <> '\' & \
-		   c <> '^' & c <> '`' & c <> '{' & c <> '|' & c <> '}'
-			db 1
+		target_test c
+		db cls_in
+	end repeat
+	align 32
+	http_cls_hi:
+	repeat 32, i:0
+		if (i and 15) >= 2 & (i and 15) <= 7
+			db 1 shl ((i and 15) - 2)
 		else
 			db 0
 		end if
 	end repeat
+	http_cls_tchar:
+	cls_table tchar_test
+	http_cls_target:
+	cls_table target_test
+	http_cls_lo4:
+	db 32 dup 0x0F
 end rodata
 
 ; rdi = data, esi = length. eax = length of the head through the empty
@@ -166,9 +233,29 @@ http_parse_request:
 	mov	r12d,esi
 	mov	r13,rdx
 	call	hm_reset
+	; 32 bytes a check while they lie in the head: the first byte outside
+	; the set must be the SP that ends the method, the target (a byte at a
+	; time near the head's end)
+	http_cls_load ymm11, http_cls_tchar
+	vmovdqu	ymm12,yword [http_cls_target]
+	vpbroadcastb ymm13,byte [.qmark]
 	; method: tokens up to SP
 	xor	ecx,ecx
 .method:
+	lea	eax,[rcx+32]
+	cmp	eax,r12d
+	ja	.method_b
+	vmovdqu	ymm0,[rbx+rcx]
+	http_cls_out ymm1, ymm2, ymm11
+	vpmovmskb eax,ymm1
+	tzcnt	eax,eax
+	add	ecx,eax
+	cmp	eax,32
+	jae	.method
+	cmp	byte [rbx+rcx],' '
+	je	.method_end
+	jmp	.bad
+.method_b:
 	cmp	ecx,r12d
 	jae	.bad
 	movzx	eax,byte [rbx+rcx]
@@ -177,7 +264,7 @@ http_parse_request:
 	cmp	byte [http_tchar+rax],0
 	je	.bad
 	inc	ecx
-	jmp	.method
+	jmp	.method_b
 .method_end:
 	test	ecx,ecx
 	jz	.bad
@@ -190,6 +277,31 @@ http_parse_request:
 	mov	r14d,ecx			; target start
 	mov	dword [r13+HM_PLEN],-1
 .target:
+	lea	eax,[rcx+32]
+	cmp	eax,r12d
+	ja	.target_b
+	vmovdqu	ymm0,[rbx+rcx]
+	http_cls_out ymm1, ymm2, ymm12
+	vpmovmskb r9d,ymm1
+	tzcnt	r9d,r9d				; the first outside (32: none)
+	cmp	dword [r13+HM_PLEN],-1
+	jne	@f
+	vpcmpeqb ymm1,ymm0,ymm13
+	vpmovmskb eax,ymm1
+	tzcnt	eax,eax				; the first '?', before it: the path's end
+	cmp	eax,r9d
+	jae	@f
+	lea	edx,[rcx+rax]
+	sub	edx,r14d
+	mov	[r13+HM_PLEN],edx
+@@:
+	add	ecx,r9d
+	cmp	r9d,32
+	jae	.target
+	cmp	byte [rbx+rcx],' '
+	je	.target_end
+	jmp	.bad
+.target_b:
 	cmp	ecx,r12d
 	jae	.bad
 	movzx	eax,byte [rbx+rcx]
@@ -206,7 +318,7 @@ http_parse_request:
 	cmp	byte [http_target_ok+rax],0
 	je	.bad
 	inc	ecx
-	jmp	.target
+	jmp	.target_b
 .target_end:
 	mov	edx,ecx
 	sub	edx,r14d
@@ -294,6 +406,7 @@ http_parse_request:
 .error:
 	mov	[r13+HM_ERROR],eax
 .out:
+	vzeroupper
 	mov	[r13+HM_HEADLEN],r12d
 	pop	r15
 	pop	r14
@@ -301,6 +414,7 @@ http_parse_request:
 	pop	r12
 	pop	rbx
 	ret
+.qmark	db '?'
 
 ; Parse a response head. Same registers. eax = 0 or HE_*.
 http_parse_response:
@@ -422,6 +536,7 @@ hm_fields:
 	vpbroadcastb ymm5,byte [.c20]
 	vpbroadcastb ymm6,byte [.c7f]
 	vpxor	ymm7,ymm7,ymm7
+	http_cls_load ymm11, http_cls_tchar	; and the names, a tchar set
 .line:
 	; the last line is the empty one
 	cmp	word [rbx+rcx],0x0A0D
@@ -443,13 +558,29 @@ hm_fields:
 	mov	dword [r14+HF_FLAGS],0
 	mov	r15d,ecx			; name start
 .name:
+	; 32 bytes a check inside the head: the first byte not a tchar must be
+	; the ':' (a byte at a time near the head's end)
+	lea	eax,[rcx+32]
+	cmp	eax,r12d
+	ja	.name_b
+	vmovdqu	ymm0,[rbx+rcx]
+	http_cls_out ymm1, ymm2, ymm11
+	vpmovmskb eax,ymm1
+	tzcnt	eax,eax
+	add	ecx,eax
+	cmp	eax,32
+	jae	.name
+	cmp	byte [rbx+rcx],':'
+	je	.name_end
+	jmp	.bad
+.name_b:
 	movzx	eax,byte [rbx+rcx]
 	cmp	al,':'
 	je	.name_end
 	cmp	byte [http_tchar+rax],0
 	je	.bad				; also whitespace before the colon
 	inc	ecx
-	jmp	.name
+	jmp	.name_b
 .name_end:
 	mov	eax,ecx
 	sub	eax,r15d
