@@ -80,7 +80,7 @@ QC_DSENT	:= 248				; q: new stream data sent
 QC_DRECV	:= 256				; q: stream data received (highest offsets)
 QC_MAXD_OURS	:= 264				; q: what we allow (MAX_DATA)
 QC_MAXS_OURS	:= 272				; q: bidi streams we allow (MAX_STREAMS)
-QC_SDONE	:= 280				; q: request streams done
+QC_SDONE	:= 280				; q: request streams done (their entries free)
 QC_PSD_BIDI	:= 288				; q: the client's initial_max_stream_data_bidi_local
 QC_PSD_UNI	:= 296				; q
 QC_FL2		:= 304				; d: QF2_*
@@ -159,12 +159,14 @@ QC_ALT_MAX	:= 1032				; d: at most this answers it (3x, RFC 9000 8.2.1)
 QC_ALT_CNT	:= 1036				; d: answered in this second,
 QC_ALT_WIN	:= 1040				; q: which began then
 QC_HDR_TICK	:= 1048				; d: g_tick at the last look for late heads
-QC_QSTM		:= 1088				; 16: stream entries in use, a bit each (http3.inc)
-QC_QREQ		:= 1104				; 16: and those of requests
-QC_SPLOW	:= 1120				; 3 q: a level's lowest packet number maybe still
+QC_QSTM		:= 1088				; 32: stream entries in use, a bit each (http3.inc)
+QC_QREQ		:= 1120				; 32: and those of requests
+QC_SPLOW	:= 1152				; 3 q: a level's lowest packet number maybe still
 						; out (qc_detect_lost looks from there)
-QC_RAM		:= 1144				; q: QC_RA's entries in use, a bit each (http3.inc)
-QC_FIELDS_END	:= 1152
+QC_RAM		:= 1176				; q: QC_RA's entries in use, a bit each (http3.inc)
+QC_SCRED	:= 1184				; q: request streams whose answer is complete (or
+						; that ended without one): MAX_STREAMS counts from them
+QC_FIELDS_END	:= 1216
 ; BBR (qc_bbr_acked), in CUBIC's fields where it can: a connection has one
 QB_BW		:= QC_WMAX			; q: bytes/s, the best sample of these rounds
 QB_BW2		:= QC_EPOCH			; q: and of the rounds before
@@ -281,7 +283,8 @@ QC_CRBM_HS	:= QC_CRBM + CH_MAX / 8
 QC_TLSOUT	:= 65536			; tls_hello's out: ServerHello | the flight
 QC_TLSROOM	:= 65536
 QC_STREAMS	:= 131072			; streams (http3.inc)
-assert QC_KEYS + 6 * QK_SIZE <= QC_CRX
+QC_QSTAB	:= 12288			; the stream table (http3.inc's QC_QST)
+assert QC_KEYS + 6 * QK_SIZE <= QC_QSTAB
 assert QC_CRBM_HS + QC_CRX_HSCAP / 8 <= QC_TLSOUT
 assert TS_SIZE <= 2048
 assert QT_SIZE <= 2048
@@ -381,6 +384,7 @@ rodata
 			db 0x08,2, 0x40,100
 			db 0x09,1, 16
 	qtp_fixed.len = $ - qtp_fixed
+assert H3_MAXS = 100			; (initial_max_streams_bidi above: 0x40,100)
 end rodata
 
 ; ------------------------------------------------------------- helpers
@@ -2890,6 +2894,23 @@ qc_packet:
 	cmp	rcx,rdx
 	ja	.encoding
 	push	rcx
+	cmp	dword [rsp+8+QP_LEVEL],QL_INIT	; the client's hello: its packet taken
+	jne	.crypto_in			; now, so that qc_hello_ack can say so
+	test	dword [r15+QC_FLAGS],QF_HELLO	; before the handshake's work
+	jnz	.crypto_in
+	push	rax
+	push	rsi
+	push	rdx
+	push	r8
+	mov	edi,QL_INIT
+	mov	rsi,[rsp+40+QP_PN]
+	call	qc_received
+	inc	dword [r15+QC_PS+QL_INIT*PS_SIZE+PS_ACKQ]
+	pop	r8
+	pop	rdx
+	pop	rsi
+	pop	rax
+.crypto_in:
 	mov	edi,[rsp+8+QP_LEVEL]
 	mov	rdx,rax				; length
 	mov	rcx,r8				; offset
@@ -3027,6 +3048,8 @@ qc_received:
 	cmp	rsi,r10
 	je	.extend_hi			; just above it
 	ja	.insert				; above it, with a gap: a new range before
+	cmp	rsi,[r8+8]
+	jae	.done				; in it already (qc_hello_ack took it)
 	mov	r10,[r8+8]			; lo
 	dec	r10
 	cmp	rsi,r10
@@ -3422,6 +3445,68 @@ qc_pto_period:
 ; edi = level, rsi = the bytes, rdx = their length, rcx = their offset
 ; (r15 = connection, ebx = session). Reassembled; complete messages go
 ; to the handshake. CF when the connection fails (QC_ERR set).
+; rdx = the ClientHello so far, ecx = how much of it (ebx, r15 = the
+; connection, its Initial packets taken): once it is whole (its version
+; settled, qc_compat_vn), an ACK of its Initial packets goes at once, in a
+; packet of its own, before tls_hello's work (a signature, ~1 ms; more
+; when several handshakes wait for one worker). A client's first RTT
+; sample comes from it (RFC 9000 13.2.1: Initial packets acknowledged
+; without delay): one taken past our signing would hold its pacing at
+; that rate as long as it never fills its window (an HTTP/3 load
+; generator with a fixed number of streams). Not ack-eliciting: no
+; padding, a few bytes of the amplification limit. Keeps all registers.
+qc_hello_ack:
+	cmp	ecx,4
+	jb	.out
+	push	rax
+	mov	eax,[rdx]
+	bswap	eax
+	and	eax,0xFFFFFF			; the message's length
+	add	eax,4
+	cmp	eax,ecx
+	pop	rax
+	ja	.out				; not whole yet
+	cmp	dword [r15+QC_PS+QL_INIT*PS_SIZE+PS_ACKQ],0
+	je	.out
+	push	rax
+	push	rcx
+	push	rdx
+	push	rsi
+	push	rdi
+	push	r8
+	push	r9
+	push	r10
+	push	r11
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	push	rbx
+	push	rbp				; (15: 16-aligned at the calls)
+	mov	ecx,QL_INIT
+	call	qc_build
+	cmp	dword [g_qtx_n],0
+	je	@f
+	call	qtx_send
+@@:
+	pop	rbp
+	pop	rbx
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	r11
+	pop	r10
+	pop	r9
+	pop	r8
+	pop	rdi
+	pop	rsi
+	pop	rdx
+	pop	rcx
+	pop	rax
+.out:
+	ret
+
 qc_crypto_in:
 	push	rbx
 	push	r12
@@ -3503,6 +3588,7 @@ qc_crypto_in:
 	pop	rdx
 	pop	rdi
 	pop	rsi
+	call	qc_hello_ack			; its Initial acknowledged before the work
 	lea	r8,[r15+QC_TLSOUT]
 	mov	r9d,QC_TLSROOM
 	call	tls_hello

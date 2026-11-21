@@ -22,7 +22,7 @@ QE_CAPSENT	:= 24				; d: the stream type and Set Dynamic Table Capacity written
 QE_END		:= 32				; q: encoder stream bytes written
 QE_SENT		:= 40				; q: sent
 QE_ACK		:= 48				; q: acknowledged
-QE_QSEND	:= 64				; 16: the request streams that may have something
+QE_QSEND	:= 64				; 32: the request streams that may have something
 						; to send, a bit each (QC_QREQ's): set when it may,
 						; cleared when found with nothing (qsend_*)
 QE_HDR		:= 128
@@ -45,7 +45,7 @@ qth_of:
 	mov	rcx,r8
 	sub	rcx,r15
 	sub	rcx,QC_QST
-	imul	ecx,ecx,683			; / QST_SIZE (96): exact up to 127 entries
+	imul	ecx,ecx,683			; / QST_SIZE (96): exact for entries below 2048
 	shr	ecx,16
 	imul	ecx,ecx,QTH_SIZE
 	call	qe_ptr
@@ -161,21 +161,26 @@ qsend_set:
 	mov	rcx,r8
 	sub	rcx,r15
 	sub	rcx,QC_QST
-	imul	ecx,ecx,683			; / QST_SIZE (96): exact up to 127 entries
+	imul	ecx,ecx,683			; / QST_SIZE (96): exact for entries below 2048
 	shr	ecx,16
 	call	qe_ptr
 	bts	[rax+QE_QSEND],rcx
 	pop	rcx
 	ret
-assert QST_SIZE = 96 & QST_N <= 128
+assert QST_SIZE = 96 & QST_N <= 2048 & QE_QSEND + QST_W * 8 <= QE_HDR
 ; every request stream may (a loss, the connection's window). Keeps all but rax.
 qsend_all:
 	push	rcx
 	call	qe_ptr
-	mov	rcx,[r15+QC_QREQ]
-	mov	[rax+QE_QSEND],rcx
-	mov	rcx,[r15+QC_QREQ+8]
-	mov	[rax+QE_QSEND+8],rcx
+	push	rdx
+	xor	edx,edx
+@@:
+	mov	rcx,[r15+QC_QREQ+rdx*8]
+	mov	[rax+QE_QSEND+rdx*8],rcx
+	inc	edx
+	cmp	edx,QST_W
+	jb	@b
+	pop	rdx
 	pop	rcx
 	ret
 

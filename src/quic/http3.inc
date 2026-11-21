@@ -76,7 +76,9 @@ assert TX_HDR <= 256
 assert HB_U2Q + Q_DATA + Q_CAP <= HB_H3TX
 
 ; the connection's stream table
-QST_N		:= 128
+QST_N		:= 256				; (what a client opens, MAX_STREAMS 100, and the
+						; answers done but not yet acknowledged)
+QST_W		:= QST_N / 64			; qwords of a bit each
 QST_ID		:= 0				; q
 QST_KIND	:= 8				; d: QSK_*
 QST_SESS	:= 12				; d: the request's session
@@ -101,12 +103,13 @@ QSK_UT		:= 3				; one whose type has not come yet
 QSK_ENC		:= 4				; its QPACK encoder stream
 QSK_CTL		:= 5				; its control stream
 QSK_DEC		:= 6				; its QPACK decoder stream
-QC_QST		:= QC_STREAMS
-assert QST_N = 128				; (QC_QSTM, QC_QREQ: two qwords each)
+QC_QST		:= QC_QSTAB			; (in the room before the crypto streams)
+assert QC_QST + QST_N * QST_SIZE <= QC_CRX
+assert QST_W = 4				; (QC_QSTM, QC_QREQ, QE_QSEND: 32 bytes each)
 
 ; Which entries are in use, and which hold a request, as bits (QC_QSTM,
 ; QC_QREQ), kept with every QST_KIND change: a lookup or a send looks at the
-; streams there are, not at the table's 128 entries (12 KiB a look, several
+; streams there are, not at the table's 256 entries (24 KiB a look, several
 ; times a packet, was a quarter of a worker's own time under HTTP/3).
 ; reg = an entry of r15's table; mask = QC_QSTM or QC_QREQ. Keeps all but flags.
 macro qst_bit op*, reg*, mask*
@@ -125,7 +128,7 @@ macro qst_bit op*, reg*, mask*
 	pop	rdx
 	pop	rax
 end macro
-QC_H3HB		:= QC_QST + QST_N * QST_SIZE	; a HEADERS frame split across packets
+QC_H3HB		:= QC_STREAMS			; a HEADERS frame split across packets
 ; request stream data that came ahead of what is missing, held (and so
 ; acknowledged) until the gap is filled
 QC_RA		:= QC_H3HB + H3_HEADERS_MAX
@@ -211,6 +214,11 @@ H3_HEADERS_MAX	:= 16384			; a HEADERS frame (gathered in HB_OUT)
 H3_FIELDS_MAX	:= 128
 
 H3_RST_BUDGET	:= 200				; requests a client may cancel in a second
+H3_MAXS		:= 100				; requests a client has going at once (its
+						; initial_max_streams_bidi, server.inc)
+H3_UNI_ROOM	:= 24				; stream entries kept for its unidirectional
+						; streams (initial_max_streams_uni 16)
+assert QST_N - H3_UNI_ROOM >= 2 * H3_MAXS	; (H3_MAXS going, as many answered)
 QUIC_ALT_BUDGET	:= 16				; probes from other paths answered in a second
 H3E_NO_ERROR	:= 0x100
 H3E_GENERAL	:= 0x101
@@ -249,16 +257,15 @@ end macro
 qc_established:
 	push	r12
 	mov	qword [r15+QC_MAXD_OURS],QC_WINDOW
-	mov	qword [r15+QC_MAXS_OURS],100
+	mov	qword [r15+QC_MAXS_OURS],H3_MAXS
 	mov	qword [r15+QC_ACIDL],2		; (the default when it says nothing)
 	mov	qword [r15+QC_PMAX],65527
 	mov	dword [r15+QC_CTL_SENT],0
 	mov	dword [r15+QC_CTL_ACKED],0
 	xor	eax,eax
-	mov	[r15+QC_QSTM],rax
-	mov	[r15+QC_QSTM+8],rax
-	mov	[r15+QC_QREQ],rax
-	mov	[r15+QC_QREQ+8],rax
+	lea	rdi,[r15+QC_QSTM]		; (QC_QREQ right after it)
+	mov	ecx,QST_W * 2
+	rep	stosq
 	lea	rdi,[r15+QC_QST]		; no streams yet
 	mov	ecx,QST_N * QST_SIZE / 8
 	xor	eax,eax
@@ -504,7 +511,7 @@ qst_find:
 	ret
 .next_word:
 	inc	r10d
-	cmp	r10d,2
+	cmp	r10d,QST_W
 	jb	.word
 	xor	r8d,r8d
 	pop	r10
@@ -514,22 +521,37 @@ qst_find:
 ; ecx = an entry's index: ecx = the next request stream's after it, round
 ; the table (one there must be: QC_QREQ not empty). Clobbers rax, rdx, r10, r11.
 qst_req_after:
+	push	r9
+	lea	r9,[r15+QC_QREQ]
+	call	qst_bit_after
+	pop	r9
+	ret
+
+; r9 = a bitmap of QST_W qwords (one bit set at least), ecx = an index: ecx
+; = the next set bit's after it, round the table (it again when the only
+; one). Clobbers rax, rdx, r10, r11.
+qst_bit_after:
 	inc	ecx
 	and	ecx,QST_N - 1
 	mov	edx,ecx
 	shr	edx,6				; its qword
 	and	ecx,63
-	mov	r10,[r15+QC_QREQ+rdx*8]
+	mov	r10,[r9+rdx*8]
 	mov	r11,-1
 	shl	r11,cl
 	and	r10,r11				; from it on
 	tzcnt	rax,r10
 	jnc	.at
-	xor	edx,1				; the other qword, whole
-	tzcnt	rax,[r15+QC_QREQ+rdx*8]
+	mov	r11d,QST_W			; the others whole, then this one again
+.word:
+	inc	edx
+	and	edx,QST_W - 1
+	tzcnt	rax,[r9+rdx*8]
 	jnc	.at
-	xor	edx,1				; this one's bits before it
-	tzcnt	rax,[r15+QC_QREQ+rdx*8]
+	dec	r11d
+	jnz	.word
+	xor	eax,eax				; (none at all: entry 0)
+	xor	edx,edx
 .at:
 	shl	edx,6
 	lea	ecx,[rdx+rax]
@@ -541,28 +563,7 @@ qst_send_after:
 	push	r9
 	call	qe_ptr
 	lea	r9,[rax+QE_QSEND]
-	inc	ecx
-	and	ecx,QST_N - 1
-	mov	edx,ecx
-	shr	edx,6
-	and	ecx,63
-	mov	r10,[r9+rdx*8]
-	mov	r11,-1
-	shl	r11,cl
-	and	r10,r11
-	tzcnt	rax,r10
-	jnc	.at
-	xor	edx,1
-	tzcnt	rax,[r9+rdx*8]
-	jnc	.at
-	xor	edx,1
-	tzcnt	rax,[r9+rdx*8]
-	jnc	.at
-	xor	eax,eax				; (none at all: entry 0, found empty)
-	xor	edx,edx
-.at:
-	shl	edx,6
-	lea	ecx,[rdx+rax]
+	call	qst_bit_after			; (none at all: entry 0, found empty)
 	pop	r9
 	ret
 
@@ -574,15 +575,22 @@ qst_new:
 	and	ecx,QST_N - 1
 	bt	[r15+QC_QSTM],rcx
 	jnc	.slot
-	mov	r8,[r15+QC_QSTM]
+	push	rdx
+	xor	edx,edx				; else the first free
+.free_word:
+	mov	r8,[r15+QC_QSTM+rdx*8]
 	not	r8
 	tzcnt	rcx,r8
-	jnc	.slot
-	mov	r8,[r15+QC_QSTM+8]
-	not	r8
-	tzcnt	rcx,r8
-	jc	.none
-	add	ecx,64
+	jnc	.free_at
+	inc	edx
+	cmp	edx,QST_W
+	jb	.free_word
+	pop	rdx
+	jmp	.none
+.free_at:
+	shl	edx,6
+	add	ecx,edx
+	pop	rdx
 .slot:
 	imul	r8,rcx,QST_SIZE
 	lea	r8,[r15+QC_QST+r8]
@@ -894,27 +902,29 @@ qc_app_frame:
 	mov	dword [r8+QST_KIND],QSK_FREE
 	qst_bit	btr, r8, QC_QSTM
 	qst_bit	btr, r8, QC_QREQ
+	inc	qword [r15+QC_SDONE]		; its entry free: MAX_STREAMS counts it
 	mov	edi,[r8+QST_SESS]
 	cmp	edi,NIL
-	je	@f				; (opened, no request on it yet)
+	je	.gone_unanswered		; (opened, no request on it yet)
 	mov	eax,edi
 	shl	rax,S_SHIFT
 	add	rax,[g_sess_base]
 	mov	ecx,[rax+S_GEN]
 	cmp	ecx,[r8+QST_SGEN]
-	jne	@f
+	jne	.gone_unanswered
+	mov	eax,edi				; its answer complete: counted then
+	shl	rax,H_SHIFT			; (h3s_finish)
+	add	rax,[g_http_base]
+	test	dword [rax+H_H3F],H3F_FINISH
+	jnz	.gone_counted
+	inc	qword [r15+QC_SCRED]
+.gone_counted:
+	call	qc_maxs_check
 	push	rbx
 	push	r15
-	call	session_close
+	call	session_close			; (h3s_closing: not in the table any more)
 	pop	r15
 	pop	rbx
-	inc	qword [r15+QC_SDONE]
-	mov	rax,[r15+QC_MAXS_OURS]		; (MAX_STREAMS: every tenth done, so
-	sub	rax,[r15+QC_SDONE]		; that a client keeps 90 open)
-	cmp	rax,90
-	jge	.maxs_kept
-	or	dword [r15+QC_FL2],QF2_MAXS
-.maxs_kept:
 	; a request opened and cancelled costs a backend request each: past
 	; H3_RST_BUDGET a second, the connection goes (as HTTP/2's rapid reset)
 	mov	rax,[g_qnow]
@@ -933,6 +943,9 @@ qc_app_frame:
 	mov	qword [r15+QC_ERR],H3E_EXCESSIVE
 	or	dword [r15+QC_FLAGS],QF_APP_ERR
 	jmp	.error
+.gone_unanswered:
+	inc	qword [r15+QC_SCRED]		; (no answer to count it done)
+	call	qc_maxs_check
 @@:
 	pop	rdx
 	pop	rsi
@@ -4147,9 +4160,11 @@ h3_lit:
 h3s_finish:
 	push	r12
 	push	r13
+	push	r14
 	h_rec
 	mov	r12,r15
 	mov	r13,[r12+H_H3TXH]
+	push	qword [r12+H_H3F]		; (finished before: counted then)
 	or	dword [r12+H_H3F],H3F_FINISH
 	test	dword [r12+H_H3F],H3F_HQ
 	jnz	.fin				; (hq-interop has no trailers)
@@ -4158,16 +4173,53 @@ h3s_finish:
 	call	h3_trailers_out
 .fin:
 	mov	dword [r13+TX_FIN],1
-	pop	r13
-	pop	r12
+	pop	r14
 	push	rbx
 	push	r15
-	call	h3s_conn
+	call	h3s_conn			; (keeps r14)
 	jc	@f
+	test	r14d,H3F_FINISH
+	jnz	.dirty
+	inc	qword [r15+QC_SCRED]		; its answer complete: done for
+	call	qc_maxs_check			; MAX_STREAMS, as HTTP/2 counts a stream
+.dirty:						; whose END_STREAM is written
 	call	qc_dirty
 @@:
 	pop	r15
 	pop	rbx
+	pop	r14
+	pop	r13
+	pop	r12
+	ret
+
+; r15 = connection: rax = the MAX_STREAMS (bidi) we allow: H3_MAXS past
+; the streams whose answer is complete, so that a client never waits for
+; the acknowledgement of answers it already has before it opens more; as
+; far as the stream table holds them meanwhile (their entries go when
+; acknowledged; room kept for the unidirectional ones); never less than
+; already allowed. Keeps all but rax.
+qc_maxs_value:
+	push	rcx
+	mov	rax,[r15+QC_SCRED]
+	add	rax,H3_MAXS
+	mov	rcx,[r15+QC_SDONE]
+	add	rcx,QST_N - H3_UNI_ROOM
+	cmp	rax,rcx
+	cmova	rax,rcx
+	cmp	rax,[r15+QC_MAXS_OURS]
+	cmovb	rax,[r15+QC_MAXS_OURS]
+	pop	rcx
+	ret
+
+; r15 = connection: a MAX_STREAMS to send once it allows ten more (it goes
+; with the answers). Keeps all but rax.
+qc_maxs_check:
+	call	qc_maxs_value
+	sub	rax,[r15+QC_MAXS_OURS]
+	cmp	rax,10
+	jb	@f
+	or	dword [r15+QC_FL2],QF2_MAXS
+@@:
 	ret
 
 ; r12 = record, r13 = ring: the response's trailers (HB_TRAIL lines) as a
@@ -4269,13 +4321,12 @@ h3s_closing:
 	mov	dword [r8+QST_KIND],QSK_FREE
 	qst_bit	btr, r8, QC_QSTM
 	qst_bit	btr, r8, QC_QREQ
-	inc	qword [r15+QC_SDONE]
-	mov	rax,[r15+QC_MAXS_OURS]		; (MAX_STREAMS: every tenth done, so
-	sub	rax,[r15+QC_SDONE]		; that a client keeps 90 open; it goes
-	cmp	rax,90				; with the answers)
-	jge	.maxs_kept
-	or	dword [r15+QC_FL2],QF2_MAXS
-.maxs_kept:
+	inc	qword [r15+QC_SDONE]		; its entry free (h3s_finish counted it
+	test	r12d,H3F_FINISH			; done when its answer was complete)
+	jnz	@f
+	inc	qword [r15+QC_SCRED]
+@@:
+	call	qc_maxs_check
 	test	r12d,H3F_FINISH
 	jnz	.done
 	mov	ecx,[r15+QC_RSTN]		; cut short: RESET_STREAM
@@ -4412,7 +4463,7 @@ qc_app_pending:
 	jmp	.bit
 .next_word:
 	inc	ecx
-	cmp	ecx,2
+	cmp	ecx,QST_W
 	jb	.word
 .none:
 	xor	eax,eax
@@ -4546,8 +4597,7 @@ qc_app_write:
 	jz	@f
 	mov	byte [rdi],0x12			; MAX_STREAMS (bidi)
 	inc	rdi
-	mov	rax,[r15+QC_SDONE]
-	add	rax,100
+	call	qc_maxs_value			; (lost: sent again, at least as much)
 	mov	[r15+QC_MAXS_OURS],rax
 	call	qv_write
 	and	dword [r15+QC_FL2],not QF2_MAXS
@@ -4725,9 +4775,15 @@ qc_app_write:
 	; one request stream's data, the next with something after the last
 	; (the request streams there are, each once, from the one after QC_RR)
 	call	qe_ptr				; (those that may have something to send)
-	popcnt	r13,[rax+QE_QSEND]
-	popcnt	rcx,[rax+QE_QSEND+8]
+	xor	r13d,r13d
+	xor	edx,edx
+@@:
+	popcnt	rcx,[rax+QE_QSEND+rdx*8]
 	add	r13d,ecx
+	inc	edx
+	cmp	edx,QST_W
+	jb	@b
+	test	r13d,r13d
 	jz	.done
 	mov	ecx,[r15+QC_RR]
 .pick:
