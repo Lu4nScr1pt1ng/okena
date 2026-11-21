@@ -200,8 +200,7 @@ worker_main:
 	mov	eax,[g_reaped]
 	mov	[g_reaped_mark],eax
 	call	addon_bells
-	xor	edi,edi
-	call	ring_enter
+	call	ring_poke			; (only when something waits in the kernel)
 	call	ep_clock			; (g_now_ms: the phase clocks)
 	call	ph_fine
 	call	pace_run			; (limit_rate)

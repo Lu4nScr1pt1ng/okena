@@ -4,6 +4,9 @@
 ; Setup flags:
 ;   SINGLE_ISSUER + DEFER_TASKRUN  completions are processed only when we ask,
 ;                                  on our own thread, without IPIs
+;   TASKRUN_FLAG                   and the kernel says so in sq_flags
+;                                  (IORING_SQ_TASKRUN): a busy poll looks there,
+;                                  and enters only when something waits
 ;   SUBMIT_ALL                     a failing SQE does not stall the ones after it
 ;   NO_SQARRAY                     SQ tail indexes the SQE array directly
 ;   CQSIZE                         completion queue 4x the submission queue
@@ -14,6 +17,7 @@ bss
 	align 8
 	g_sq_head_ptr	dq ?
 	g_sq_tail_ptr	dq ?
+	g_sq_flags_ptr	dq ?		; IORING_SQ_TASKRUN: completions wait for an enter
 	g_sqes		dq ?
 	g_cq_head_ptr	dq ?
 	g_cq_tail_ptr	dq ?
@@ -50,7 +54,7 @@ ring_init:
 	xor	eax,eax
 	mov	ecx,UP_SIZE/8
 	rep	stosq
-	mov	dword [g_uparams+UP_FLAGS],IORING_SETUP_SINGLE_ISSUER or IORING_SETUP_DEFER_TASKRUN or IORING_SETUP_SUBMIT_ALL or IORING_SETUP_NO_SQARRAY or IORING_SETUP_CQSIZE or IORING_SETUP_CLAMP or IORING_SETUP_R_DISABLED
+	mov	dword [g_uparams+UP_FLAGS],IORING_SETUP_SINGLE_ISSUER or IORING_SETUP_DEFER_TASKRUN or IORING_SETUP_TASKRUN_FLAG or IORING_SETUP_SUBMIT_ALL or IORING_SETUP_NO_SQARRAY or IORING_SETUP_CQSIZE or IORING_SETUP_CLAMP or IORING_SETUP_R_DISABLED
 	mov	eax,CQ_ENTRIES
 	mov	ecx,r13d
 	shr	eax,cl
@@ -124,6 +128,9 @@ ring_init:
 	mov	eax,[g_uparams+UP_SQ_MASK]
 	mov	eax,[r12+rax]
 	mov	[g_sq_mask],eax
+	mov	eax,[g_uparams+UP_SQ_FLAGS]
+	add	rax,r12
+	mov	[g_sq_flags_ptr],rax
 	mov	eax,[g_uparams+UP_CQ_HEAD]
 	add	rax,r12
 	mov	[g_cq_head_ptr],rax
@@ -409,6 +416,20 @@ ring_enter_tick:
 	xor	edi,edi				; due already: no wait
 
 ; Submit pending SQEs and wait for at least edi completions.
+; A busy poll's turn: into the kernel only when something waits there - SQEs
+; to submit, completions it holds for us (DEFER_TASKRUN: IORING_SQ_TASKRUN,
+; TASKRUN_FLAG), a full CQ - not once a turn for nothing (each a system call:
+; most of a TLS handshake's kernel time when polling).
+ring_poke:
+	mov	eax,[g_sq_tail]
+	cmp	eax,[g_sq_flushed]
+	jne	.enter
+	mov	rax,[g_sq_flags_ptr]
+	test	dword [rax],IORING_SQ_TASKRUN or IORING_SQ_CQ_OVERFLOW
+	jnz	.enter
+	ret
+.enter:
+	xor	edi,edi
 ring_enter:
 	mov	r10d,[g_enter_flags]
 	xor	r8d,r8d
