@@ -480,11 +480,25 @@ field_value_ok:
 .lf	db 10
 
 ; rax = stream id (r15 = connection): r8 = its entry, or 0
+; reg = a stream id's home entry: id / 4, each of the four kinds (id mod 4)
+; in its own quarter of the table, so the long-lived unidirectional streams
+; (control, QPACK: 2, 6, 10 and 3, 7, 11) never sit in the requests' homes (a
+; QPACK decoder stream away from home was a scan of the table a request).
+; reg32 = reg's low half, t a dword register it uses.
+macro qst_home reg*, reg32*, id*, t*
+	mov	reg,id
+	mov	t,reg32
+	and	t,3
+	shl	t,6
+	shr	reg,2
+	xor	reg32,t
+	and	reg32,QST_N - 1
+end macro
+assert QST_N = 256
+
 qst_find:
 	; its home entry first (qst_new puts it there when free: ids go up by 4)
-	mov	r8,rax
-	shr	r8,2
-	and	r8d,QST_N - 1
+	qst_home r8, r8d, rax, ecx
 	bt	[r15+QC_QSTM],r8
 	jnc	.scan
 	imul	r8,r8,QST_SIZE
@@ -573,9 +587,7 @@ qst_send_after:
 ; rax = stream id: r8 = a free entry for it (zeroed but the id), or 0
 qst_new:
 	push	rax
-	mov	rcx,rax				; its home entry, when free (qst_find)
-	shr	rcx,2
-	and	ecx,QST_N - 1
+	qst_home rcx, ecx, rax, r8d		; its home entry, when free (qst_find)
 	bt	[r15+QC_QSTM],rcx
 	jnc	.slot
 	push	rdx
