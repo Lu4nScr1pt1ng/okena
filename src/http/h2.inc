@@ -2258,7 +2258,7 @@ http_parse_head:
 	mov	ecx,[rsi+HM_NHDR]
 	shl	ecx,5				; (HF_SIZE)
 	add	ecx,HM_HDRS
-	rep	movsb
+	call	copy_small
 	add	[rbp+HM_METHOD],r12
 	add	[rbp+HM_TARGET],r12
 	mov	ecx,[rbp+HM_NHDR]

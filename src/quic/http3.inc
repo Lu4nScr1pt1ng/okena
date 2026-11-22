@@ -603,12 +603,10 @@ qst_new:
 	xor	r8d,r8d
 	ret
 .take:
-	push	rdi
-	mov	rdi,r8
-	mov	ecx,QST_SIZE / 8
-	xor	eax,eax
-	rep	stosq
-	pop	rdi
+	xor	eax,eax			; (stores: rep stosq starts slowly without FSRM)
+	repeat QST_SIZE / 8, k:0
+		mov	[r8+k*8],rax
+	end repeat
 	pop	rax
 	mov	[r8+QST_ID],rax
 	mov	qword [r8+QST_FTYPE],-1
@@ -1492,7 +1490,7 @@ h3_req_bytes:
 	add	[r12+QST_HBLEN],ecx
 	mov	rsi,r13
 	add	r13,rcx
-	rep	movsb
+	call	copy_small
 	jmp	.check_end
 .hb_busy:
 	mov	rcx,r14				; (all it has: the frame goes on past it)
@@ -3423,11 +3421,10 @@ h3_request_new:
 	lea	rdx,[rbp+HB_TLS]
 	mov	[rax+TX_RING],rdx
 	mov	rdi,rax
-	mov	ecx,TX_ACK / 8
-	push	rax
 	xor	eax,eax
-	rep	stosq
-	pop	rdi
+	repeat TX_ACK / 8, k:0
+		mov	[rdi+k*8],rax
+	end repeat
 	mov	[rdi+TX_XLO],rax
 	mov	[rdi+TX_XHI],rax
 	mov	dword [rdi+TX_CAPV],TX_CAP
@@ -3454,7 +3451,7 @@ h3_request_new:
 	mov	edx,[rax+QM_H3Q-QE_OFF+H3Q_CHUNKED]
 	mov	[r13+Q_CHUNKED],edx
 	lea	rdi,[r13+Q_DATA]
-	rep	movsb
+	call	copy_small
 	or	dword [r14+H_H3F],H3F_TM
 	jmp	.head_done
 .head_new:
@@ -3999,7 +3996,9 @@ tx_read:
 	sub	rsi,[r9+TX_XLO]
 	add	rsi,[r9+TX_XPTR]
 	add	rax,rcx
-	rep	movsb
+	push	rax
+	call	copy_small
+	pop	rax
 	pop	rcx
 	jmp	tx_read
 .ring:
@@ -4016,13 +4015,15 @@ tx_read:
 	add	rsi,rax
 	mov	ecx,edx
 	sub	[rsp],rcx
-	rep	movsb
+	call	copy_small
 	pop	rcx
 	xor	eax,eax
 @@:
 	mov	rsi,[r9+TX_RING]
 	add	rsi,rax
-	rep	movsb
+	push	rax
+	call	copy_small
+	pop	rax
 .out:
 	ret
 
@@ -4118,7 +4119,7 @@ h3_rm_look:
 	lea	rsi,[rdx+H2RM_BLOCK]
 	lea	rdi,[g_h3tmp+8]
 	mov	ecx,[rdx+H2RM_BLEN]
-	rep	movsb
+	call	copy_small
 	pop	rsi
 	movzx	ebx,byte [rdx+H2RM_ST]
 	mov	qword [g_qe],0
@@ -4129,7 +4130,7 @@ h3_rm_look:
 	push	rsi
 	lea	rdi,[rdx+H2RM_TEXT]
 	mov	ecx,ebp
-	rep	movsb
+	call	copy_small
 	pop	rsi
 	mov	[rdx+H2RM_TLEN],ebp
 	mov	[g_h3rm_at],rdx
