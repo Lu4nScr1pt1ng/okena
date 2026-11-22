@@ -4357,10 +4357,9 @@ http_count:
 	ret
 .counted:
 	push	rax
-	mov	eax,edi
-	xor	edx,edx
-	mov	ecx,100
-	div	ecx
+	mov	eax,edi				; / 100 as (x 41) >> 12: exact below 1099,
+	imul	rax,rax,41			; and above it past 4 either way
+	shr	rax,12
 	dec	eax				; 1xx -> 0 ... 5xx -> 4
 	cmp	eax,4
 	jbe	@f
@@ -5127,12 +5126,13 @@ ph_arm:
 	mov	[g_ph_head+rcx*4],edi
 	push	rax				; (the session, as ph_arm leaves it)
 	call	ph_list_ms
-	push	rax				; (whole seconds? a divide: an empty list
-	xor	edx,edx				; is a quiet one, this is cheap there)
-	push	rcx
-	mov	ecx,1000
-	div	ecx
-	pop	rcx
+	push	rax				; (whole seconds? ms mod 1000, by the
+	mov	edx,eax				; exact 32-bit reciprocal: no divide)
+	imul	rdx,rdx,0x10624DD3
+	shr	rdx,38
+	imul	edx,edx,1000
+	neg	edx
+	add	edx,eax
 	pop	rax
 	test	edx,edx
 	jz	.whole
