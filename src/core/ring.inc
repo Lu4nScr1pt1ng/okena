@@ -547,6 +547,35 @@ ring_reap:
 	mov	r15d,[rdx+CQE_FLAGS]
 	inc	ecx
 	mov	[rax],ecx			; release the CQE before handling it
+	; the next completion's session (its state, its HTTP state) on its way
+	; to the cache while this one runs (as tcp_epoll.inc does per event)
+	mov	rdx,[g_cq_tail_ptr]
+	cmp	ecx,[rdx]
+	je	@f
+	mov	edx,ecx
+	and	edx,[g_cq_mask]
+	shl	edx,4
+	add	rdx,[g_cqes]
+	mov	rdx,[rdx+CQE_USER_DATA]
+	mov	rax,rdx
+	shr	rax,56
+	cmp	eax,OP_S_SOCKET
+	jb	@f
+	cmp	eax,OP_COUNT
+	jae	@f
+	mov	eax,edx
+	cmp	eax,[g_sessions]
+	jae	@f
+	mov	rdx,rax
+	shl	rdx,S_SHIFT
+	add	rdx,[g_sess_base]
+	prefetcht0 [rdx]
+	prefetcht0 [rdx+64]
+	shl	rax,H_SHIFT
+	add	rax,[g_http_base]
+	prefetcht0 [rax]
+	prefetcht0 [rax+64]
+@@:
 	mov	rax,rbx
 	shr	rax,56
 	mov	r12,rbx
