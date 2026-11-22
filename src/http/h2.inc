@@ -2193,7 +2193,7 @@ h2_hb_add:
 	lea	rdi,[r14+HB_H2HB+rdx]
 	mov	ecx,esi
 	mov	rsi,r12
-	rep	movsb
+	call	copy_rep
 	pop	rcx
 	clc
 	ret
@@ -2419,7 +2419,7 @@ h2_rq_keep:
 	lea	rsi,[r14+HB_H2HB]
 	push	rdi
 	add	rdi,H2Q_BLOCK
-	rep	movsb
+	call	copy_rep
 	pop	rdi
 	mov	dword [rdi+H2Q_VALID],1
 .out:
@@ -2975,7 +2975,7 @@ h2_stream_new:
 	lea	rdi,[rbp+Q_DATA]
 	mov	ecx,[r14+HB_H2T+H2T_LEN]
 	mov	[rbp+Q_LEN],ecx
-	rep	movsb
+	call	copy_rep
 	mov	eax,[r14+HB_H2T+H2T_CHUNKED]
 	mov	[rbp+Q_CHUNKED],eax
 	or	dword [r15+H_H2F],S2F_TM
@@ -3146,7 +3146,7 @@ h2_stream_new:
 	lea	rdi,[r14+HB_H2T+H2T_TEXT]
 	mov	ecx,[rbp+Q_LEN]
 	mov	[r14+HB_H2T+H2T_LEN],ecx
-	rep	movsb
+	call	copy_rep
 	mov	eax,[r13+C2_HBEND]
 	mov	[r14+HB_H2T+H2T_HBEND],eax
 	mov	eax,[rbp+Q_CHUNKED]
@@ -3498,7 +3498,7 @@ h2s_copy:
 	push	rcx
 	lea	rsi,[r14+Q_DATA+rax]
 	add	[r14+Q_OFF],ecx
-	rep	movsb
+	call	copy_rep
 	mov	eax,[r14+Q_OFF]
 	cmp	eax,[r14+Q_LEN]
 	jne	.out
@@ -3783,7 +3783,7 @@ h2_stream_out:
 	call	h2_frame
 	mov	rsi,[r15+H_H2PP]
 	mov	ecx,r12d
-	rep	movsb
+	call	copy_rep
 	add	[r15+H_H2PP],r12
 	sub	[r15+H_H2PL],r12d
 	sub	[r13+C2_SWIN],r12d
@@ -4399,7 +4399,7 @@ h2_rm_look:
 	lea	rsi,[rdx+H2RM_BLOCK]
 	lea	rdi,[g_h2tmp]
 	mov	ecx,[rdx+H2RM_BLEN]
-	rep	movsb
+	call	copy_rep
 	pop	rsi
 	mov	r9d,[rdx+H2RM_ST]
 	mov	eax,[rdx+H2RM_CL0]
@@ -4416,7 +4416,7 @@ h2_rm_look:
 	push	rsi
 	lea	rdi,[rdx+H2RM_TEXT]
 	mov	ecx,ebp
-	rep	movsb
+	call	copy_rep
 	pop	rsi
 	mov	[rdx+H2RM_TLEN],ebp
 	mov	dword [g_rm_staged],1
@@ -4727,7 +4727,7 @@ h2_head_out:
 	mov	rsi,r11
 	add	r11,rcx
 	sub	r12d,ecx
-	rep	movsb
+	call	copy_rep
 	mov	r10b,H2F_CONT
 	test	r12d,r12d
 	jnz	.frame

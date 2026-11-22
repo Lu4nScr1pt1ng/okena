@@ -34,6 +34,65 @@ ct_equal:
 	movzx	eax,al
 	ret
 
+; rep movsb for short copies on CPUs without FSRM (Zen 2: tens of cycles to
+; start one): rdi, rsi = after, rcx = 0, rax kept, only general registers
+; (crypto and TLS code keep vector state around it); the flags clobbered.
+; Not for overlapping buffers (a load can come after a store over it); past
+; 256 bytes, rep movsb itself.
+copy_rep:
+	cmp	rcx,256
+	ja	.rep
+	push	rax
+	cmp	ecx,16
+	ja	.long
+	cmp	ecx,8
+	jb	.lt8
+	mov	rax,[rsi]
+	mov	[rdi],rax
+	mov	rax,[rsi+rcx-8]
+	mov	[rdi+rcx-8],rax
+	jmp	.done
+.lt8:
+	cmp	ecx,4
+	jb	.lt4
+	mov	eax,[rsi]
+	mov	[rdi],eax
+	mov	eax,[rsi+rcx-4]
+	mov	[rdi+rcx-4],eax
+	jmp	.done
+.lt4:
+	test	ecx,ecx
+	jz	.out
+	mov	al,[rsi]
+	mov	[rdi],al
+	cmp	ecx,1
+	je	.done
+	mov	ax,[rsi+rcx-2]
+	mov	[rdi+rcx-2],ax
+	jmp	.done
+.long:
+	mov	rax,[rsi]
+	mov	[rdi],rax
+	add	rsi,8
+	add	rdi,8
+	sub	ecx,8
+	cmp	ecx,8
+	jae	.long
+	test	ecx,ecx
+	jz	.out
+	mov	rax,[rsi+rcx-8]			; (the last, over what came before)
+	mov	[rdi+rcx-8],rax
+.done:
+	add	rsi,rcx
+	add	rdi,rcx
+	xor	ecx,ecx
+.out:
+	pop	rax
+	ret
+.rep:
+	rep	movsb
+	ret
+
 ; rdi = buffer, ecx = length. Wipes secrets from memory; in assembly there
 ; is no optimizer that could drop the stores. 16 bytes a store (rep stosb
 ; costs more to start than these small frames take to clear); the last

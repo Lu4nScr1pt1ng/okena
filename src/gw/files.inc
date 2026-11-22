@@ -1490,7 +1490,7 @@ fm_head_body:
 	lea	rdi,[g_fhb_scr]
 	lea	rsi,[r8+HB_OUT]
 	mov	ecx,[r15+H_OUTLEN]
-	rep	movsb
+	call	copy_rep
 	pop	rcx				; then the bytes, from the store
 	mov	esi,[r8+HB_FMEM]
 	add	rsi,[g_fm_base]
@@ -1499,7 +1499,7 @@ fm_head_body:
 	sub	[r8+HB_FLEFT],rcx
 	sub	[r15+H_RREMAIN],rcx
 	add	[r15+H_OUTLEN],ecx
-	rep	movsb
+	call	copy_rep
 	lea	rdi,[g_fhb_scr]
 	mov	esi,[r15+H_OUTLEN]
 	stc
@@ -1578,7 +1578,7 @@ fmt_http_date:
 	div	rcx
 	lea	rsi,[fi_days+rdx*2+rdx]
 	mov	ecx,3
-	rep	movsb
+	call	copy_rep
 	mov	word [rdi],', '
 	add	rdi,2
 	; civil from days (H. Hinnant)
@@ -1664,7 +1664,7 @@ fmt_http_date:
 	push	rsi
 	lea	rsi,[fi_months+rax*2+rax]
 	mov	ecx,3
-	rep	movsb
+	call	copy_rep
 	pop	rsi
 	mov	byte [rdi],' '
 	inc	rdi
@@ -1878,11 +1878,11 @@ fs_common:
 	memit_x 'ETag: '
 	lea	rsi,[g_fs_etag]
 	mov	ecx,[g_fs_elen]
-	rep	movsb
+	call	copy_rep
 	memit_x 13,10,'Last-Modified: '
 	lea	rsi,[g_fs_date]
 	mov	ecx,29
-	rep	movsb
+	call	copy_rep
 	memit_x 13,10,'Accept-Ranges: bytes',13,10
 	cmp	dword [r12+FI_PRE],0
 	je	@f
@@ -1903,7 +1903,7 @@ fs_common:
 	je	.enc
 	lea	rsi,[fs_accepts.gz]
 .enc:
-	rep	movsb
+	call	copy_rep
 	memit_x 13,10
 @@:
 	mov	ecx,[r12+FI_CCLEN]
@@ -1912,12 +1912,12 @@ fs_common:
 	memit_x 'Cache-Control: '
 	mov	ecx,[r12+FI_CCLEN]
 	mov	rsi,[r12+FI_CC]
-	rep	movsb
+	call	copy_rep
 	memit_x 13,10
 @@:
 	memit_x 'Content-Type: '
 	call	fs_type
-	rep	movsb
+	call	copy_rep
 	memit_x 13,10
 	ret
 

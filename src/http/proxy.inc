@@ -3356,7 +3356,7 @@ http_write_response_head:
 	inc	rdi
 	mov	rsi,[r12+HM_TARGET]		; the reason phrase
 	mov	ecx,[r12+HM_TLEN]
-	rep	movsb
+	call	copy_rep
 	mov	word [rdi],0x0A0D
 	add	rdi,2
 	xor	ebx,ebx
@@ -3462,12 +3462,12 @@ http_write_response_head:
 	ja	.full
 	mov	rsi,[r14+HF_NAME]
 	mov	ecx,[r14+HF_NLEN]
-	rep	movsb
+	call	copy_rep
 	mov	word [rdi],': '
 	add	rdi,2
 	mov	rsi,[r14+HF_VALUE]
 	mov	ecx,[r14+HF_VLEN]
-	rep	movsb
+	call	copy_rep
 	mov	word [rdi],0x0A0D
 	add	rdi,2
 .skip:

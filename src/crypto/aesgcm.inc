@@ -302,7 +302,7 @@ gcm_ghash:
 	mov	rcx,rdx
 	push	rdi
 	lea	rdi,[rsp+8]
-	rep	movsb
+	call	copy_rep
 	pop	rdi
 	movdqu	xmm0,[rsp]
 	xor	edx,edx

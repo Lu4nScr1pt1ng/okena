@@ -2645,7 +2645,7 @@ tls_seal_from:
 	sub	esi,eax				; where the tail starts
 	lea	rdi,[r12+5+rsi]
 	add	rsi,r14
-	rep	movsb
+	call	copy_rep
 	pop	rcx
 	lea	eax,[r13+17]
 	mov	dword [r12],0x00030317
@@ -2687,7 +2687,7 @@ tls_seal_from:
 	lea	rdi,[rsi+5]
 	mov	rsi,r8
 	mov	ecx,edx
-	rep	movsb
+	call	copy_rep
 	pop	rcx
 	pop	rdx
 	pop	rsi

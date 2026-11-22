@@ -1029,7 +1029,7 @@ utls_rx_step:
 	add	[r15+H_PTOFF],ecx
 	sub	[r15+H_PTLEN],ecx
 	mov	eax,ecx
-	rep	movsb
+	call	copy_rep
 	push	rax
 	cmp	dword [r15+H_PTLEN],0
 	jne	@f
