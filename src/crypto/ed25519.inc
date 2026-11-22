@@ -201,6 +201,8 @@ ed25519_base:
 	push	rbx
 	push	r12
 	push	r13
+	push	r14
+	push	r15
 	sub	rsp,XB_SIZE
 	mov	[rsp+XB_OUT],rdi
 	lea	rdi,[rsp+XB_K]
@@ -215,6 +217,8 @@ ed25519_base:
 	mov	ecx,XB_OUT
 	call	secure_zero
 	add	rsp,XB_SIZE
+	pop	r15
+	pop	r14
 	pop	r13
 	pop	r12
 	pop	rbx

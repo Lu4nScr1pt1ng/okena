@@ -836,6 +836,8 @@ XB_QD		:= 384				; 2dxy
 XB_T0		:= 416
 XB_K		:= 448				; the clamped scalar
 XB_OUT		:= 480
+XB_IDX		:= 488				; d: the digit (xb_mult_body)
+XB_CNT		:= 492				; d: the doublings left
 XB_SIZE		:= 496
 
 ; f out, a[, b] on frame offsets
@@ -852,9 +854,9 @@ end macro
 xb_madd:
 	xb_op	fe_add, XB_RX, XB_Y, XB_X
 	xb_op	fe_sub, XB_RY, XB_Y, XB_X
-	xb_op	fe_mul, XB_RZ, XB_RX, XB_QP
-	xb_op	fe_mul, XB_RY, XB_RY, XB_QM
-	xb_op	fe_mul, XB_RT, XB_QD, XB_T
+	xb_op	fe_mul_l, XB_RZ, XB_RX, XB_QP
+	xb_op	fe_mul_l, XB_RY, XB_RY, XB_QM
+	xb_op	fe_mul_l, XB_RT, XB_QD, XB_T
 	xb_op	fe_add, XB_T0, XB_Z, XB_Z
 	xb_op	fe_sub, XB_RX, XB_RZ, XB_RY
 	xb_op	fe_add, XB_RY, XB_RZ, XB_RY
@@ -862,30 +864,31 @@ xb_madd:
 	xb_op	fe_sub, XB_RT, XB_T0, XB_RT
 ; completed R to the extended sum
 xb_to_p3:
-	xb_op	fe_mul, XB_T, XB_RX, XB_RY
+	xb_op	fe_mul_l, XB_T, XB_RX, XB_RY
 xb_to_p2:
-	xb_op	fe_mul, XB_X, XB_RX, XB_RT
-	xb_op	fe_mul, XB_Y, XB_RY, XB_RZ
-	xb_op	fe_mul, XB_Z, XB_RZ, XB_RT
+	xb_op	fe_mul_l, XB_X, XB_RX, XB_RT
+	xb_op	fe_mul_l, XB_Y, XB_RY, XB_RZ
+	xb_op	fe_mul_l, XB_Z, XB_RZ, XB_RT
 	ret
 
 ; the sum (X : Y : Z) doubled into the completed R
 xb_dbl:
-	xb_op	fe_sq, XB_RX, XB_X
-	xb_op	fe_sq, XB_RZ, XB_Y
-	xb_op	fe_sq, XB_RT, XB_Z
+	xb_op	fe_sq_core, XB_RX, XB_X
+	xb_op	fe_sq_core, XB_RZ, XB_Y
+	xb_op	fe_sq_core, XB_RT, XB_Z
 	xb_op	fe_add, XB_RT, XB_RT, XB_RT
 	xb_op	fe_add, XB_RY, XB_X, XB_Y
-	xb_op	fe_sq, XB_T0, XB_RY
+	xb_op	fe_sq_core, XB_T0, XB_RY
 	xb_op	fe_add, XB_RY, XB_RZ, XB_RX
 	xb_op	fe_sub, XB_RZ, XB_RZ, XB_RX
 	xb_op	fe_sub, XB_RX, XB_T0, XB_RY
 	xb_op	fe_sub, XB_RT, XB_RT, XB_RZ
 	ret
 
-; r12d = digit index: XB_Q* = e * (row i/2's base), i = r12d. Reads the
-; whole row.
+; [XB_IDX] = digit index i: XB_Q* = e * (row i/2's base). Reads the whole
+; row.
 xb_select:
+	mov	r12d,[rsp+8+XB_IDX]
 	movsx	ecx,byte [rsp+8+XB_E+r12]
 	mov	edx,ecx
 	sar	edx,31				; all ones when negative
@@ -975,27 +978,28 @@ macro xb_mult_body
 	rep	stosq
 	mov	qword [rsp+XB_Y],1
 	mov	qword [rsp+XB_Z],1
-	mov	r12d,1				; the odd digits
+	; (the field cores take rbx and r12-r15: the counters live in the frame)
+	mov	dword [rsp+XB_IDX],1		; the odd digits
 .odd:
 	call	xb_select
 	call	xb_madd
-	add	r12d,2
-	cmp	r12d,64
+	add	dword [rsp+XB_IDX],2
+	cmp	dword [rsp+XB_IDX],64
 	jb	.odd
-	mov	r13d,3				; times 16
+	mov	dword [rsp+XB_CNT],3		; times 16
 .times16:
 	call	xb_dbl
 	call	xb_to_p2
-	dec	r13d
+	dec	dword [rsp+XB_CNT]
 	jnz	.times16
 	call	xb_dbl
 	call	xb_to_p3
-	xor	r12d,r12d			; the even digits
+	mov	dword [rsp+XB_IDX],0		; the even digits
 .even:
 	call	xb_select
 	call	xb_madd
-	add	r12d,2
-	cmp	r12d,64
+	add	dword [rsp+XB_IDX],2
+	cmp	dword [rsp+XB_IDX],64
 	jb	.even
 end macro
 
@@ -1003,6 +1007,8 @@ x25519_base:
 	push	rbx
 	push	r12
 	push	r13
+	push	r14
+	push	r15
 	sub	rsp,XB_SIZE
 	mov	[rsp+XB_OUT],rdi
 	lea	rdi,[rsp+XB_K]
@@ -1038,6 +1044,8 @@ x25519_base:
 	mov	ecx,XB_OUT
 	call	secure_zero
 	add	rsp,XB_SIZE
+	pop	r15
+	pop	r14
 	pop	r13
 	pop	r12
 	pop	rbx
