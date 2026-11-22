@@ -252,8 +252,9 @@ mem_eq_cstr:
 ; rep movsb for the short copies of a request's head (a method, a header's
 ; name or value: a few to a few dozen bytes), where its start-up is most of
 ; the work: rdi, rsi = after, rcx = 0, exactly rcx bytes written (overlapping
-; loads and stores, never a byte past either end); rax clobbered. Past 256
-; bytes, rep movsb itself.
+; loads and stores, never a byte past either end); rax, xmm14 and xmm15
+; clobbered (no code outside crypto/ keeps anything there). Past 256 bytes,
+; rep movsb itself.
 copy_small:
 	cmp	rcx,16
 	ja	.long
@@ -288,20 +289,30 @@ copy_small:
 .out:
 	ret
 .long:
+	cmp	rcx,32
+	ja	.gt32
+	vmovdqu	xmm14,[rsi]			; 17..32: two 16s, overlapping
+	vmovdqu	xmm15,[rsi+rcx-16]
+	vmovdqu	[rdi],xmm14
+	vmovdqu	[rdi+rcx-16],xmm15
+	jmp	.done
+.gt32:
 	cmp	rcx,256
 	ja	.rep
-.qword:
-	mov	rax,[rsi]
-	mov	[rdi],rax
-	add	rsi,8
-	add	rdi,8
-	sub	rcx,8
-	cmp	rcx,8
-	jae	.qword
-	test	rcx,rcx
-	jz	.out
-	mov	rax,[rsi+rcx-8]			; (the last, over what came before)
-	mov	[rdi+rcx-8],rax
+.block:						; 32 a round, then the last 32
+	vmovdqu	xmm14,[rsi]			; (over what came before)
+	vmovdqu	xmm15,[rsi+16]
+	vmovdqu	[rdi],xmm14
+	vmovdqu	[rdi+16],xmm15
+	add	rsi,32
+	add	rdi,32
+	sub	rcx,32
+	cmp	rcx,32
+	ja	.block
+	vmovdqu	xmm14,[rsi+rcx-32]
+	vmovdqu	xmm15,[rsi+rcx-16]
+	vmovdqu	[rdi+rcx-32],xmm14
+	vmovdqu	[rdi+rcx-16],xmm15
 	jmp	.done
 .rep:
 	rep	movsb
