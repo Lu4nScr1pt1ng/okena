@@ -49,12 +49,16 @@ MK_DK		:= MK_SS + 8		; q: dk (decapsulation)
 MK_M2		:= MK_DK + 8		; m' (decapsulation)
 MK_KBAR		:= MK_M2 + 32		; J(z | c)
 MK_CT2		:= MK_KBAR + 32		; c' (1088), then z | c for J (1120)
-MK_A		:= MK_CT2 + 32 + MLKEM_CT	; a row of the matrix (three polynomials)
-MK_E		:= MK_A + 3 * 1024		; noise: e1[0..2] and e2, or e[0..2]
+MK_A		:= MK_CT2 + 32 + MLKEM_CT	; the matrix: a row (three polynomials), or
+						; all nine (encapsulation: mlkem_sample9h)
+MK_E		:= MK_A + 9 * 1024		; noise: e1[0..2] and e2, or e[0..2]
 MK_X4		:= MK_E + 4 * 1024		; four Keccak states (KECCAK_X4)
 MK_L4		:= MK_X4 + KECCAK_X4		; their lanes 4 (4 x 8)
 MK_CNT		:= MK_L4 + 32			; SampleNTT: coefficients so far (3 x 4)
-MK_SIZE		:= (MK_CNT + 16 + 31) and not 31
+MK_HB		:= MK_CNT + 16			; H(ek)'s blocks absorbed (sample9h)
+MK_AFULL	:= MK_HB + 4			; d: 1 when MK_A holds the whole matrix
+MK_AROW		:= MK_AFULL + 4			; q: the row's three entries
+MK_SIZE		:= (MK_AROW + 8 + 31) and not 31
 
 
 ; r (a dword register) = r mod q, for r < 2^26. Uses edx.
@@ -188,6 +192,36 @@ rodata
 			dd 1143, 2186, 2775, 554, 2150, 1179, 886, 2443
 			dd 1722, 1607, 1874, 1455, 1212, 2117, 1029, 2300
 			dd 2110, 1219, 885, 2444, 2935, 394, 2154, 1175
+end rodata
+
+
+rodata
+	align 32
+	; ByteDecode12 / SampleNTT: per dword k, the two bytes holding it (12 bits
+	; at 0 for even k, at 4 for odd), from a 16-byte load in both lanes
+	mk_d12_shuf	db 0,1,-1,-1, 1,2,-1,-1, 3,4,-1,-1, 4,5,-1,-1
+			db 6,7,-1,-1, 7,8,-1,-1, 9,10,-1,-1, 10,11,-1,-1
+	mk_d12_shuf4	db 4,5,-1,-1, 5,6,-1,-1, 7,8,-1,-1, 8,9,-1,-1
+			db 10,11,-1,-1, 11,12,-1,-1, 13,14,-1,-1, 14,15,-1,-1
+	mk_d12_shift	dd 0, 4, 0, 4, 0, 4, 0, 4
+	mk_m12		dd 0xFFF
+	align 16
+	mk_c55		db 16 dup 0x55
+	mk_c03		db 16 dup 0x03
+	; SampleNTT: for each 8-bit mask, the set bits' indices first
+	mk_pack:
+	repeat 256, m:0
+		mk_n = 0
+		repeat 8, b:0
+			if (m shr b) and 1
+				db b
+				mk_n = mk_n + 1
+			end if
+		end repeat
+		repeat 8 - mk_n
+			db 0
+		end repeat
+	end repeat
 end rodata
 
 ; ymm15 = q, ymm14 = 5039
@@ -450,70 +484,98 @@ mlkem_add:
 	ret
 
 ; rdi = polynomial, rsi = 128 bytes: SamplePolyCBD with eta = 2 (algorithm
-; 8). Each nibble is two pairs of bits: (b0 + b1) - (b2 + b3).
+; 8). Each nibble is two pairs of bits: (b0 + b1) - (b2 + b3). AVX2, 16
+; bytes (32 coefficients) a round: the pairs' sums in each byte's 2-bit
+; fields, the nibbles' differences as signed bytes, interleaved low / high,
+; widened to dwords, q added and taken off again by an unsigned min. No
+; branch: the noise is secret.
 mlkem_cbd2:
-	push	rbx
-	xor	r8d,r8d				; the word
-.word:
-	mov	eax,[rsi+r8*4]
-	mov	edx,eax
-	shr	edx,1
-	and	eax,0x55555555
-	and	edx,0x55555555
-	add	eax,edx				; 2-bit sums
-	xor	ecx,ecx
-.nib:
-	mov	ebx,eax
-	and	ebx,3
-	mov	edx,eax
-	shr	edx,2
-	and	edx,3
-	sub	ebx,edx
-	add	ebx,MLKEM_Q			; in [q - 2, q + 2]
-	mk_csub	ebx,edx
-	lea	edx,[r8*8+rcx]
-	mov	[rdi+rdx*4],ebx
-	shr	eax,4
-	inc	ecx
-	cmp	ecx,8
-	jb	.nib
-	inc	r8d
-	cmp	r8d,32
-	jb	.word
-	pop	rbx
+	mov	eax,MLKEM_Q
+	vmovd	xmm15,eax
+	vpbroadcastd ymm15,xmm15
+	vmovdqa	xmm13,dqword [mk_c55]
+	vmovdqa	xmm12,dqword [mk_c03]
+	mov	ecx,8
+.round:
+	vmovdqu	xmm0,[rsi]
+	vpsrlw	xmm1,xmm0,1
+	vpand	xmm0,xmm0,xmm13
+	vpand	xmm1,xmm1,xmm13
+	vpaddb	xmm0,xmm0,xmm1			; the four 2-bit sums of each byte
+	vpand	xmm1,xmm0,xmm12
+	vpsrlw	xmm2,xmm0,2
+	vpand	xmm2,xmm2,xmm12
+	vpsrlw	xmm3,xmm0,4
+	vpand	xmm3,xmm3,xmm12
+	vpsrlw	xmm4,xmm0,6
+	vpand	xmm4,xmm4,xmm12
+	vpsubb	xmm1,xmm1,xmm2			; low nibbles: coefficients 2j
+	vpsubb	xmm3,xmm3,xmm4			; high: 2j + 1
+	vpunpcklbw xmm2,xmm1,xmm3		; 0..15
+	vpunpckhbw xmm4,xmm1,xmm3		; 16..31
+	vpmovsxbd ymm0,xmm2
+	vpsrldq	xmm2,xmm2,8
+	vpmovsxbd ymm1,xmm2
+	vpmovsxbd ymm2,xmm4
+	vpsrldq	xmm4,xmm4,8
+	vpmovsxbd ymm3,xmm4
+	irp r, ymm0,ymm1,ymm2,ymm3
+		vpaddd	r,r,ymm15		; in [q - 2, q + 2]
+		vpsubd	ymm4,r,ymm15
+		vpminud	r,r,ymm4
+	end irp
+	vmovdqu	[rdi],ymm0
+	vmovdqu	[rdi+32],ymm1
+	vmovdqu	[rdi+64],ymm2
+	vmovdqu	[rdi+96],ymm3
+	add	rsi,16
+	add	rdi,128
+	dec	ecx
+	jnz	.round
+	vpxor	xmm0,xmm0,xmm0
+	vpxor	xmm1,xmm1,xmm1
+	vpxor	xmm2,xmm2,xmm2
+	vpxor	xmm3,xmm3,xmm3
+	vzeroupper
 	ret
 
 ; rdi = polynomial, rsi = 384 bytes: ByteDecode12. eax = 1, or 0 when a
 ; coefficient is not below q (the modulus check). No branch on the values:
-; it decodes the secret key too.
+; it decodes the secret key too. AVX2: 12 bytes, 8 coefficients a round (the
+; last round reads its 12 from 4 bytes earlier: nothing past the 384).
 mlkem_decode12:
-	push	rbx
-	xor	ecx,ecx				; coefficient pair
-	xor	r8d,r8d				; any out of range
-.pair:
-	movzx	eax,word [rsi]
-	movzx	edx,byte [rsi+2]
-	shl	edx,16
-	or	eax,edx				; 24 bits
-	mov	edx,eax
-	and	eax,0xFFF
-	shr	edx,12
-	cmp	eax,MLKEM_Q
-	setae	bl
-	or	r8b,bl
-	cmp	edx,MLKEM_Q
-	setae	bl
-	or	r8b,bl
-	mov	[rdi+rcx*8],eax
-	mov	[rdi+rcx*8+4],edx
-	add	rsi,3
-	inc	ecx
-	cmp	ecx,128
-	jb	.pair
+	mov	eax,MLKEM_Q - 1
+	vmovd	xmm15,eax
+	vpbroadcastd ymm15,xmm15
+	vmovdqa	ymm13,yword [mk_d12_shuf]
+	vmovdqa	ymm12,yword [mk_d12_shift]
+	vpbroadcastd ymm11,dword [mk_m12]
+	vpxor	xmm10,xmm10,xmm10		; any above q - 1
+	mov	ecx,31
+.round:
+	vbroadcasti128 ymm0,[rsi]
+	vpshufb	ymm0,ymm0,ymm13
+	vpsrlvd	ymm0,ymm0,ymm12
+	vpand	ymm0,ymm0,ymm11
+	vpcmpgtd ymm1,ymm0,ymm15
+	vpor	ymm10,ymm10,ymm1
+	vmovdqu	[rdi],ymm0
+	add	rsi,12
+	add	rdi,32
+	dec	ecx
+	jnz	.round
+	vbroadcasti128 ymm0,[rsi-4]
+	vpshufb	ymm0,ymm0,yword [mk_d12_shuf4]
+	vpsrlvd	ymm0,ymm0,ymm12
+	vpand	ymm0,ymm0,ymm11
+	vpcmpgtd ymm1,ymm0,ymm15
+	vpor	ymm10,ymm10,ymm1
+	vmovdqu	[rdi],ymm0
 	xor	eax,eax
-	test	r8b,r8b
+	vptest	ymm10,ymm10
 	sete	al
-	pop	rbx
+	vpxor	xmm0,xmm0,xmm0
+	vzeroupper
 	ret
 
 ; rdi = out (384), rsi = polynomial (coefficients below q): ByteEncode12.
@@ -658,11 +720,44 @@ mlkem_compress4:
 
 ; rdi = polynomial, ebx = its coefficients so far, rsi = a SHAKE128 block
 ; (56 triples): SampleNTT's rejection sampling (algorithm 7) on it. ebx =
-; the coefficients now (256 when done). Public data.
+; the coefficients now (256 when done). Public data. AVX2: 8 candidates (12
+; bytes) a round, the ones below q packed to the front by vpermd (indices
+; from a table by the comparison's mask) and stored at once; the last few
+; coefficients one by one, so that nothing is written past the 256th.
 mlkem_parse:
 	lea	r9,[rsi+SHAKE128_RATE]
+	mov	eax,MLKEM_Q
+	vmovd	xmm15,eax
+	vpbroadcastd ymm15,xmm15
+	vmovdqa	ymm13,yword [mk_d12_shuf]
+	vmovdqa	ymm12,yword [mk_d12_shift]
+	vpbroadcastd ymm11,dword [mk_m12]
+	lea	r8,[mk_pack]
+.round:
+	cmp	ebx,256 - 8
+	ja	.tail
+	lea	rax,[rsi+12]
+	cmp	rax,r9
+	ja	.tail				; (the block's last 12 bytes: its own load)
+	vbroadcasti128 ymm0,[rsi]
+	vpshufb	ymm0,ymm0,ymm13
+	vpsrlvd	ymm0,ymm0,ymm12
+	vpand	ymm0,ymm0,ymm11
+	vpcmpgtd ymm1,ymm15,ymm0		; below q
+	vmovmskps eax,ymm1
+	vpmovzxbd ymm2,qword [r8+rax*8]
+	vpermd	ymm0,ymm2,ymm0
+	vmovdqu	[rdi+rbx*4],ymm0
+	popcnt	eax,eax
+	add	ebx,eax
+	add	rsi,12
+	jmp	.round
+.tail:
+	vzeroupper
 .triple:
 	cmp	ebx,256
+	jae	.done
+	cmp	rsi,r9
 	jae	.done
 	movzx	eax,word [rsi]
 	movzx	edx,byte [rsi+2]
@@ -680,12 +775,10 @@ mlkem_parse:
 	jae	.done
 @@:
 	cmp	edx,MLKEM_Q
-	jae	@f
+	jae	.triple
 	mov	[rdi+rbx*4],edx
 	inc	ebx
-@@:
-	cmp	rsi,r9
-	jb	.triple
+	jmp	.triple
 .done:
 	ret
 
@@ -745,6 +838,150 @@ mlkem_sample3:
 	pop	r13
 	pop	r12
 	pop	rbx
+	ret
+
+; rbp = workspace (MK_EK): all nine matrix entries, row i's three (the
+; transposed A[j][i] = SampleNTT(rho | i | j), j = 0..2) at MK_A + (3 i + j)
+; * 1024, a row at a time on lanes 0-2 of the four-way Keccak; and H(ek) =
+; SHA3-256 on lane 3 meanwhile, one of its 9 blocks absorbed before each
+; permutation (none of it depends on the other), into MK_IN + 32. The
+; matrix always takes 9 permutations at least (a row needs 3 blocks: two
+; give 224 candidates, fewer than 256), so H is always done by its end.
+mlkem_sample9h:
+	push	rbx
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	lea	rdi,[rbp+MK_X4]
+	xor	eax,eax
+	mov	ecx,KECCAK_X4 / 8
+	rep	stosq
+	mov	[rbp+MK_HB],eax
+	mov	[rbp+MK_AFULL],eax		; (H not given out yet)
+	xor	r15d,r15d			; the row
+.row:
+	lea	rdi,[rbp+MK_X4]
+	mov	rsi,[rbp+MK_EK]
+	add	rsi,3 * 384			; rho
+	vpxor	xmm1,xmm1,xmm1
+	repeat 25, w:0				; lanes 0-2 zeroed, lane 3 (H) kept
+		vpblendd ymm0,ymm1,[rdi+w*32],0xC0
+		vmovdqu	[rdi+w*32],ymm0
+	end repeat
+	vzeroupper
+	repeat 4, w:0
+		mov	rax,[rsi+w*8]
+		mov	[rdi+w*32],rax
+		mov	[rdi+w*32+8],rax
+		mov	[rdi+w*32+16],rax
+	end repeat
+	repeat 3, k:0				; rho | i | j, SHAKE's domain bits
+		lea	eax,[r15+(k shl 8)+(KECCAK_SHAKE shl 16)]
+		mov	[rdi+4*32+k*8],rax
+		mov	dword [rbp+MK_CNT+k*4],0
+	end repeat
+	mov	rax,0x8000000000000000		; the rate's last lane
+	mov	[rdi+(SHAKE128_RATE / 8 - 1)*32],rax
+	mov	[rdi+(SHAKE128_RATE / 8 - 1)*32+8],rax
+	mov	[rdi+(SHAKE128_RATE / 8 - 1)*32+16],rax
+	call	.perm
+.blocks:
+	xor	r13d,r13d			; which entry
+	xor	r14d,r14d			; any still short
+.entry:
+	mov	ebx,[rbp+MK_CNT+r13*4]
+	cmp	ebx,256
+	jae	.next
+	lea	rdi,[rbp+MK_X4]
+	mov	esi,r13d
+	lea	rdx,[rbp+MK_XOF]
+	mov	ecx,SHAKE128_RATE
+	call	keccak_x4_extract
+	imul	rdi,r15,3
+	add	rdi,r13
+	shl	rdi,10
+	lea	rdi,[rbp+MK_A+rdi]
+	lea	rsi,[rbp+MK_XOF]
+	call	mlkem_parse
+	mov	[rbp+MK_CNT+r13*4],ebx
+	cmp	ebx,256
+	adc	r14d,0
+.next:
+	inc	r13d
+	cmp	r13d,3
+	jb	.entry
+	test	r14d,r14d
+	jz	.rowdone
+	call	.perm
+	jmp	.blocks
+.rowdone:
+	inc	r15d
+	cmp	r15d,3
+	jb	.row
+.done:
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbx
+	ret
+; lane 3 takes H's next block (while any), the four permuted, H given out
+; after its last
+.perm:
+	mov	eax,[rbp+MK_HB]
+	cmp	eax,9
+	jae	@f
+	lea	rdi,[rbp+MK_X4+24]
+	mov	edx,32
+	call	.absorb
+@@:
+	lea	rdi,[rbp+MK_X4]
+	call	keccak_f1600_x4
+	cmp	dword [rbp+MK_HB],9
+	jne	@f
+	cmp	dword [rbp+MK_AFULL],0
+	jne	@f
+	mov	dword [rbp+MK_AFULL],1
+	lea	rsi,[rbp+MK_X4+24]
+	mov	edx,32
+	call	.hout
+@@:
+	ret
+; eax = the block, rdi = H's lane 0 in the four states, edx = their stride:
+; block eax of ek XORed in (the last one padded), MK_HB + 1
+.absorb:
+	mov	rsi,[rbp+MK_EK]
+	imul	ecx,eax,SHA3_256_RATE
+	add	rsi,rcx
+	mov	r8d,SHA3_256_RATE / 8
+	cmp	eax,MLKEM_EK / SHA3_256_RATE
+	jb	@f
+	mov	r8d,(MLKEM_EK mod SHA3_256_RATE) / 8
+@@:
+	mov	r9,rdi
+.aw:
+	mov	rcx,[rsi]
+	xor	[r9],rcx
+	add	rsi,8
+	add	r9,rdx
+	dec	r8d
+	jnz	.aw
+	cmp	eax,MLKEM_EK / SHA3_256_RATE
+	jb	@f
+	xor	byte [r9],KECCAK_SHA3		; the domain bits after the message
+	imul	ecx,edx,SHA3_256_RATE / 8 - 1
+	xor	byte [rdi+rcx+7],0x80		; the rate's last bit
+@@:
+	inc	dword [rbp+MK_HB]
+	ret
+; rsi = H's state (lane 0), edx = the stride: its first 32 bytes, H(ek)
+.hout:
+	repeat 4, w:0
+		mov	rax,[rsi]
+		mov	[rbp+MK_IN+32+w*8],rax
+		add	rsi,rdx
+	end repeat
 	ret
 
 ; rbp = workspace, rsi = the 32-byte seed (r or sigma), edx = the first N,
@@ -824,10 +1061,8 @@ mlkem768_encaps:
 	lea	rdi,[rbp+MK_IN]
 	mov	ecx,32
 	rep	movsb
-	lea	rdi,[rbp+MK_IN+32]
-	mov	rsi,[rbp+MK_EK]
-	mov	edx,MLKEM_EK
-	call	sha3_256
+	call	mlkem_sample9h			; the matrix, and H(ek) beside it
+	mov	dword [rbp+MK_AFULL],1
 	lea	rdi,[rbp+MK_KR]
 	lea	rsi,[rbp+MK_IN]
 	mov	edx,64
@@ -868,6 +1103,11 @@ mlkem_encrypt:
 	; u[i] = NTT^-1(sum_j A[j][i] y[j]) + e1[i], A[j][i] = SampleNTT(rho | i | j)
 	xor	r12d,r12d			; i
 .u:
+	imul	rax,r12,3 * 1024		; the row, sampled already
+	lea	rax,[rbp+MK_A+rax]
+	mov	[rbp+MK_AROW],rax
+	cmp	dword [rbp+MK_AFULL],0
+	jne	.sampled
 	mov	eax,r12d			; the row's seeds: i, then j = 0, 1, 2
 	mov	[rbp+MK_IN],ax
 	or	eax,1 shl 8
@@ -875,17 +1115,19 @@ mlkem_encrypt:
 	xor	eax,(1 shl 8) xor (2 shl 8)
 	mov	[rbp+MK_IN+4],ax
 	lea	rdi,[rbp+MK_A]
+	mov	[rbp+MK_AROW],rdi
 	mov	rsi,[rbp+MK_EK]
 	add	rsi,3 * 384
 	lea	rdx,[rbp+MK_IN]
 	call	mlkem_sample3
+.sampled:
 	lea	rdi,[rbp+MK_ACC]
 	call	mlkem_zero
 	xor	r13d,r13d			; j
 .uj:
 	lea	rdi,[rbp+MK_ACC]
 	imul	rsi,r13,1024
-	lea	rsi,[rbp+MK_A+rsi]
+	add	rsi,[rbp+MK_AROW]
 	imul	rdx,r13,1024
 	add	rdx,rbp
 	call	mlkem_basemul_acc
@@ -1173,6 +1415,7 @@ mlkem768_decaps:
 	mov	rax,[rbp+MK_DK]
 	add	rax,3 * 384
 	mov	[rbp+MK_EK],rax
+	mov	dword [rbp+MK_AFULL],0
 	call	mlkem_encrypt
 	; c == c'? in constant time; then K' or K-bar by mask
 	xor	eax,eax
