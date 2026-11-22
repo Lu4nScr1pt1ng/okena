@@ -195,6 +195,29 @@ ep_main:
 .event:
 	cmp	rbx,r12
 	jae	.timers
+	; the next event's session (its state and its HTTP state) on its way to
+	; the cache while this one runs: with thousands of connections they are
+	; cold, and each would be a miss when its turn came
+	lea	rcx,[rbx+1]
+	cmp	rcx,r12
+	jae	@f
+	imul	rax,rcx,EPOLL_EVENT
+	mov	rdx,[g_ep_events+rax+4]
+	mov	rax,rdx
+	shr	rax,56
+	cmp	eax,1				; a session's side (client or backend)
+	ja	@f
+	mov	eax,edx
+	mov	rcx,rax
+	shl	rcx,S_SHIFT
+	add	rcx,[g_sess_base]
+	prefetcht0 [rcx]
+	prefetcht0 [rcx+64]
+	shl	rax,H_SHIFT
+	add	rax,[g_http_base]
+	prefetcht0 [rax]
+	prefetcht0 [rax+64]
+@@:
 	imul	rax,rbx,EPOLL_EVENT
 	lea	rax,[g_ep_events+rax]
 	mov	edi,[rax]			; events
