@@ -14,6 +14,7 @@ bss
 	g_tsc_ns_mul	dq ?		; 1000 * 2^40 / g_tsc_per_us (tsc_ns)
 	g_spin_ticks	dq ?		; `busy_poll` set: how long, in TSC ticks
 	g_spin_until	dq ?
+	g_spin_n	dd ?		; polling turns (every 64th: the clocks, the bells)
 	g_bp_auto	dd ?		; `busy_poll` not set: polls when events come close
 	g_bp_max	dq ?		; BP_AUTO_US in ticks
 	g_bp_gap	dq ?		; the recent gap between events (moving average)
@@ -199,6 +200,35 @@ worker_main:
 	add	rax,rcx
 	mov	[g_spin_until],rax
 .spin:
+	; an idle turn costs a look: nothing waiting in the kernel or the
+	; completion queue, nothing the turn before left queued, and not one
+	; of the 64th turns (clocks, addons' bells): straight to the pause.
+	; Running the whole turn each time (the clocks, the flushes, the QUIC
+	; queues) was most of what a polling worker spent.
+	inc	dword [g_spin_n]
+	test	dword [g_spin_n],63
+	jz	.spin_work
+	mov	eax,[g_sq_tail]
+	cmp	eax,[g_sq_flushed]
+	jne	.spin_work
+	mov	rax,[g_sq_flags_ptr]
+	test	dword [rax],IORING_SQ_TASKRUN or IORING_SQ_CQ_OVERFLOW
+	jnz	.spin_work
+	mov	rax,[g_cq_head_ptr]
+	mov	ecx,[rax]
+	mov	rax,[g_cq_tail_ptr]
+	cmp	ecx,[rax]
+	jne	.spin_work
+	cmp	dword [g_hready_head],NIL
+	jne	.spin_work
+	mov	eax,[g_hs_count]
+	or	eax,[g_h2fl_n]
+	or	eax,[g_qs_pend]
+	or	eax,[g_ud_pend]
+	or	eax,[g_bk_pn]
+	jnz	.spin_work
+	jmp	.spin_idle
+.spin_work:
 	mov	eax,[g_reaped]
 	mov	[g_reaped_mark],eax
 	call	addon_bells
@@ -222,6 +252,7 @@ worker_main:
 	cmp	eax,[g_reaped_mark]
 	jne	.spin_hit			; progress: restart the window
 	call	tick_due
+.spin_idle:
 	pause
 	rdtsc
 	shl	rdx,32

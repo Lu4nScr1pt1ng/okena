@@ -100,6 +100,8 @@ C2_CHEAPT	:= 96				; and the tick they count in
 C2_HBN		:= 100				; CONTINUATION frames in the block
 C2_AWAY		:= 104				; streams in the table away from their home slot
 C2_TAIL		:= 112				; OUT's tail: bytes of last DATA frames (h2_frame)
+C2_CBASE	:= 120				; q: where the C2_CLEN sealed bytes are (HB_TXC,
+						; or an arena slot: tls.inc's txa_take)
 ; HPACK, our encoder's dynamic table (hpack_encode_dyn): the client's
 ; SETTINGS_HEADER_TABLE_SIZE, the size we use + 1 (0: no block yet), entries
 ; inserted and evicted (counts: an entry's index is 61 + inserted - its
@@ -789,9 +791,15 @@ h2_send:
 	push	rbp
 	lea	r12,[r14+HB_TXC]
 	cmp	dword [g_engine],ENGINE_EPOLL	; epoll: sealed in the worker's scratch
-	jne	@f				; and written at once (tls.inc's g_utx_scr)
+	jne	.arena				; and written at once (tls.inc's g_utx_scr)
 	lea	r12,[g_utx_scr]
+	jmp	@f
+.arena:
+	call	txa_take			; io_uring: a slot of the send arena (the
+	jc	@f				; connection's own area is a cold one)
+	mov	r12,rax
 @@:
+	mov	[r13+C2_CBASE],r12
 	xor	ebp,ebp				; OUT's bytes sealed
 	mov	ecx,UTLS_TX_RECS
 .rec:
@@ -857,6 +865,7 @@ h2_send:
 	je	h2_sent
 	push	rax
 	lea	rdi,[r14+HB_TXC]
+	mov	[r13+C2_CBASE],rdi
 	lea	rsi,[g_utx_scr]
 	mov	ecx,[r13+C2_CLEN]
 	rep	movsb
@@ -866,15 +875,15 @@ h2_send:
 	or	dword [r13+C2_FLAGS],C2F_EPOUT	; again when it is writable
 	ret
 .own_place:
-	lea	rax,[r14+HB_TXC]
-	sub	r12,rax
+	sub	r12,[r13+C2_CBASE]		; (HB_TXC, or an arena slot)
 	mov	[r13+C2_CLEN],r12d
 	mov	dword [r13+C2_COFF],0
 	pop	rbp
 	pop	r12
 .cipher:
 	mov	eax,[r13+C2_COFF]
-	lea	rdi,[r14+HB_TXC+rax]
+	mov	rdi,[r13+C2_CBASE]
+	add	rdi,rax
 	mov	esi,[r13+C2_CLEN]
 	sub	esi,eax
 	jmp	h2_sock_send
@@ -988,7 +997,7 @@ h2_sock_send:
 h2_sent:
 	and	dword [r13+C2_FLAGS],not (C2F_SEND or C2F_EPOUT)
 	test	rax,rax
-	js	.gone
+	js	.gone_free
 	cmp	dword [r15+H_UTLS],0
 	jne	.cipher
 	mov	ecx,[r13+C2_OUTLEN]		; plain: what went out leaves OUT
@@ -1004,6 +1013,7 @@ h2_sent:
 	cmp	ecx,[r13+C2_CLEN]
 	jb	.more
 	mov	dword [r13+C2_CLEN],0
+	call	h2_txa_free			; (its arena slot, if it had one)
 .more:
 	call	h2_unblock			; room again: the streams waiting
 	cmp	dword [g_engine],ENGINE_EPOLL
@@ -1018,8 +1028,21 @@ h2_sent:
 	cmp	dword [r13+C2_CLEN],0
 	jne	h2_send
 	jmp	h2_pump
+.gone_free:
+	call	h2_txa_free
 .gone:
 	jmp	h2_drop
+
+; c2 registers: the sealed bytes' arena slot freed (none: no effect), and
+; C2_CBASE no longer names it
+h2_txa_free:
+	push	rdi
+	mov	rdi,[r13+C2_CBASE]
+	call	txa_release
+	lea	rdi,[r14+HB_TXC]
+	mov	[r13+C2_CBASE],rdi
+	pop	rdi
+	ret
 
 ; the next receive, unless one is in flight (c2 registers)
 h2_recv:
@@ -1260,6 +1283,8 @@ on_h2_send:
 	c2_regs
 	jmp	h2_sent
 .closing:
+	c2_regs					; a send in flight held its arena slot
+	call	h2_txa_free
 	mov	edi,ebx
 	jmp	session_maybe_free
 .out:

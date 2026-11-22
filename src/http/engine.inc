@@ -588,6 +588,17 @@ on_h_send_u:
 	mov	rax,-1
 	jmp	http_send_done
 .closing:
+	mov	r8d,ebx				; a TLS send in flight: its arena slot
+	shl	r8,H_SHIFT			; (H_SPTR names one only while its send
+	add	r8,[g_http_base]		; runs: utls_tx_done clears it)
+	cmp	dword [r8+H_SSIDE],SIDE_CLIENT
+	jne	@f
+	cmp	dword [r8+H_UTLS],0
+	je	@f
+	mov	rdi,[r8+H_SPTR]
+	call	txa_release
+	mov	qword [r8+H_SPTR],0
+@@:
 	mov	edi,ebx
 	jmp	session_maybe_free
 .out:

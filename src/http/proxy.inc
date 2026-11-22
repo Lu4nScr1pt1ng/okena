@@ -183,6 +183,7 @@ end bss
 ; come with use). eax = 0 or -errno.
 http_worker_init:
 	call	fcgi_worker_init
+	call	txa_init			; (io_uring's send arena, tls.inc)
 	mov	ecx,H_SHIFT
 	call	.reserve
 	cmp	rax,-4096

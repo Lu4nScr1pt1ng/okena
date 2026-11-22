@@ -68,6 +68,12 @@ bss
 	align 64
 	g_utx_scr	rb UTLS_TX_CAP + 64	; utls_tx_step on epoll: records sealed here
 	align 8
+	g_txa_base	dq ?			; io_uring: the send arena (txa_take), -1 none
+	g_utx_start	dq ?			; utls_tx_step: where its records start
+	g_txa_nfree	dd ?
+	g_txa_free	rd TXA_N		; free slots, the last freed on top
+	g_txa_used	rb TXA_N
+	align 8
 	g_shc_cert	dq ?			; http_sni_host_check: the last certificate and
 	g_shc_len	dd ?			; Host (portless) found to go together: the next
 	g_shc_host	rb 64			; request on it is not looked up again
@@ -1137,6 +1143,98 @@ utls_post_handshake:
 	mov	edx,47				; illegal_parameter
 	ret
 
+; io_uring's send arena: on epoll a connection's records are sealed in the
+; worker's scratch and written at once; io_uring's send reads them later, so
+; they were sealed in the connection's own area (HB_TXC), a cold place to
+; write each record in and for the kernel to read it from (static-h2 on
+; io_uring 0.64x epoll, static-tls 0.89x). Slots of the arena take them
+; instead, the last freed one first (the one still in the cache). A slot is
+; held from the seal until its send is done: whatever points into it names
+; it (a send of up to UTLS_TX_CAP bytes never reaches the slot's end). No
+; slot free: the connection's own area, as before.
+TXA_N		:= 64
+TXA_SHIFT	:= 18			; 256 KiB a slot: up to TXA_RECS records
+TXA_RECS	:= ((1 shl TXA_SHIFT) - 64) / (TLS_RECORD_MAX + 29)
+assert UTLS_TX_CAP + 64 <= 1 shl TXA_SHIFT
+
+; Worker start (before seccomp): the arena's address space (pages come with
+; use), its slots all free. No room: g_txa_base -1, no arena.
+txa_init:
+	xor	edi,edi
+	mov	esi,TXA_N shl TXA_SHIFT
+	mov	edx,PROT_READ or PROT_WRITE
+	mov	r10d,MAP_PRIVATE or MAP_ANONYMOUS or MAP_NORESERVE
+	mov	r8,-1
+	xor	r9d,r9d
+	mov	eax,SYS_mmap
+	syscall
+	cmp	rax,-4096
+	jb	@f
+	mov	rax,-1
+@@:
+	mov	[g_txa_base],rax
+	xor	ecx,ecx
+@@:
+	mov	edx,TXA_N - 1
+	sub	edx,ecx
+	mov	[g_txa_free+rcx*4],edx		; slot 0 on top
+	mov	byte [g_txa_used+rcx],0
+	inc	ecx
+	cmp	ecx,TXA_N
+	jb	@b
+	mov	dword [g_txa_nfree],TXA_N
+	ret
+
+; rax = a slot (UTLS_TX_CAP bytes), CF when none. Keeps all but rax.
+txa_take:
+	mov	rax,[g_txa_base]
+	test	rax,rax
+	jle	.none				; (0: not started; -1: none)
+	push	rcx
+	mov	ecx,[g_txa_nfree]
+	test	ecx,ecx
+	jz	.empty
+	dec	ecx
+	mov	[g_txa_nfree],ecx
+	mov	ecx,[g_txa_free+rcx*4]
+	mov	byte [g_txa_used+rcx],1
+	shl	rcx,TXA_SHIFT
+	add	rax,rcx
+	pop	rcx
+	clc
+	ret
+.empty:
+	pop	rcx
+.none:
+	stc
+	ret
+
+; rdi = a pointer: its slot freed, when it is one held (anything else: no
+; effect). Keeps everything.
+txa_release:
+	push	rax
+	push	rcx
+	mov	rcx,[g_txa_base]
+	test	rcx,rcx
+	jle	.out				; (none yet, or none at all)
+	mov	rax,rdi
+	sub	rax,rcx
+	jb	.out
+	cmp	rax,TXA_N shl TXA_SHIFT
+	jae	.out
+	shr	rax,TXA_SHIFT
+	cmp	byte [g_txa_used+rax],0
+	je	.out
+	mov	byte [g_txa_used+rax],0
+	mov	ecx,[g_txa_nfree]
+	mov	[g_txa_free+rcx*4],eax
+	inc	ecx
+	mov	[g_txa_nfree],ecx
+.out:
+	pop	rcx
+	pop	rax
+	ret
+
 ; h_send on the client of a user-space TLS session: rdi = bytes, esi =
 ; length. Sealed into records, two at a time, and sent.
 utls_send:
@@ -1152,10 +1250,24 @@ utls_tx_step:
 	mov	r12,[r15+H_BUF]
 	add	r12,HB_TXC			; r12 = the next record
 	cmp	dword [g_engine],ENGINE_EPOLL	; epoll: in the worker's scratch, written at
-	jne	@f				; once (the connection's own is a cold place
+	jne	.arena				; once (the connection's own is a cold place
 	lea	r12,[g_utx_scr]			; to write each record in and read it from)
+	jmp	@f
+.arena:
+	call	txa_take			; io_uring: a slot of the send arena
+	jc	@f
+	mov	r12,rax
 @@:
+	mov	[g_utx_start],r12
 	mov	r13d,UTLS_TX_RECS
+	cmp	r12,[g_txa_base]		; an arena slot holds more of them a send
+	jb	@f				; (the connection's own area two): fewer
+	mov	rax,[g_txa_base]		; turns, each its data cold again
+	add	rax,TXA_N shl TXA_SHIFT
+	cmp	r12,rax
+	jae	@f
+	mov	r13d,TXA_RECS
+@@:
 	mov	rax,[r15+H_BUF]			; a KeyUpdate the client asked for: ours
 	test	dword [rax+HB_TS+TS_FLAGS],TF_KUSEND	; first, under the keys it knows,
 	jz	.record				; then the next ones (one data record
@@ -1249,8 +1361,7 @@ utls_tx_step:
 	xor	ecx,ecx
 	jmp	h_send_raw
 .own:
-	mov	rdi,[r15+H_BUF]
-	add	rdi,HB_TXC
+	mov	rdi,[g_utx_start]		; (HB_TXC, or an arena slot)
 	mov	rsi,r12
 	sub	rsi,rdi
 	pop	r13
@@ -1261,8 +1372,12 @@ utls_tx_step:
 	xor	eax,eax
 	utls_deliver 4
 
-; records went out (http_send_done on the client side): rax = 0 or < 0
+; records went out (http_send_done on the client side): rax = 0 or < 0.
+; Their arena slot, if they had one, is free now.
 utls_tx_done:
+	mov	rdi,[r15+H_SPTR]
+	call	txa_release
+	mov	qword [r15+H_SPTR],0		; (nothing left that names it)
 	test	rax,rax
 	jns	utls_tx_step
 	utls_deliver 4
