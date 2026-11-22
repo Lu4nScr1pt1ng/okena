@@ -249,6 +249,19 @@ mem_eq_cstr:
 	xor	eax,eax
 	ret
 
+; TSC ticks to time without a 64-bit divide (tens of cycles each, a request
+; or a wait): a product by the reciprocal tsc_calibrate keeps, 2^40 scaled
+; (128-bit product, so no range is lost). rax = ticks: rax = µs, or ns.
+; rdx clobbered.
+macro tsc_us
+	mul	qword [g_tsc_us_mul]
+	shrd	rax,rdx,40
+end macro
+macro tsc_ns
+	mul	qword [g_tsc_ns_mul]
+	shrd	rax,rdx,40
+end macro
+
 ; rep movsb for the short copies of a request's head (a method, a header's
 ; name or value: a few to a few dozen bytes), where its start-up is most of
 ; the work: rdi, rsi = after, rcx = 0, exactly rcx bytes written (overlapping

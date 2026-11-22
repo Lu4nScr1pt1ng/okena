@@ -3835,8 +3835,7 @@ http_latency_sample:
 	shl	rdx,32
 	or	rax,rdx
 	sub	rax,rcx
-	xor	edx,edx
-	div	qword [g_tsc_per_us]
+	tsc_us
 	mov	rsi,rax
 	call	session_ptr
 	push	rsi

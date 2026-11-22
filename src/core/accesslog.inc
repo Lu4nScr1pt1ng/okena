@@ -867,14 +867,14 @@ lat_record:
 	or	rax,rdx
 	sub	rax,rcx
 	jb	.none
-	xor	edx,edx
-	div	qword [g_tsc_per_us]		; µs
+	tsc_us
 	mov	[g_lat_us],rax			; (obs_count: the same duration)
 	push	rax
 	call	session_ptr
 	mov	ecx,[rax+S_LST]
 	pop	rax
 	add	[g_st_l_latsum+rcx*8],rax
+	push	rcx				; (the listener, for the bucket)
 	mov	ecx,eax
 	cmp	rax,16
 	jb	@f				; (one a µs)
@@ -891,10 +891,8 @@ lat_record:
 .last:
 	mov	ecx,LAT_B - 1
 @@:
-	push	rcx
-	call	session_ptr
-	pop	rcx
-	imul	eax,[rax+S_LST],LAT_B
+	pop	rax
+	imul	eax,eax,LAT_B
 	add	eax,ecx
 	inc	qword [g_st_l_lat+rax*8]
 	cmp	dword [r15+H_LMLEN],0		; (a logged one's clock goes on to its line)
@@ -981,9 +979,7 @@ wall_ns:
 	shl	rdx,32
 	or	rax,rdx
 	sub	rax,[g_alog_base_tsc]
-	imul	rax,rax,1000
-	xor	edx,edx
-	div	qword [g_tsc_per_us]
+	tsc_ns
 	add	rax,[g_alog_base_ns]
 	ret
 
@@ -1009,9 +1005,7 @@ alog_fmt_time:
 	shl	rdx,32
 	or	rax,rdx
 	sub	rax,[g_alog_base_tsc]
-	imul	rax,rax,1000
-	xor	edx,edx
-	div	qword [g_tsc_per_us]		; ns since the tick
+	tsc_ns					; ns since the tick
 	add	rax,[g_alog_base_ns]
 .ns:
 	xor	edx,edx
@@ -1148,8 +1142,7 @@ alog_fmt_duration:
 	shl	rdx,32
 	or	rax,rdx
 	sub	rax,rcx
-	xor	edx,edx
-	div	qword [g_tsc_per_us]		; microseconds
+	tsc_us					; microseconds
 	xor	edx,edx
 	mov	ecx,1000
 	div	rcx

@@ -258,8 +258,7 @@ alx_fields:
 	jb	.no_upstream
 	cmp	qword [g_tsc_per_us],0
 	je	.no_upstream
-	xor	edx,edx
-	div	qword [g_tsc_per_us]		; µs
+	tsc_us
 	xor	edx,edx
 	mov	ecx,1000
 	div	rcx

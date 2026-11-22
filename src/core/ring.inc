@@ -369,8 +369,7 @@ ring_enter_tick:
 	sub	rcx,rax
 	jbe	.due
 	mov	rax,rcx
-	xor	edx,edx
-	div	qword [g_tsc_per_us]		; µs to the tick
+	tsc_us					; µs to the tick
 	inc	rax				; (never early)
 	mov	rcx,[g_ph_due]			; a phase clock of a fraction of a second,
 	mov	rdx,[g_pc_due]			; or limit_rate's wheel: the earlier

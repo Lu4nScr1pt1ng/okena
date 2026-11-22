@@ -245,8 +245,7 @@ pin_after_wait:
 	jb	.done_check			; (not a whole spell yet)
 	sub	r9,[g_busy_cpu]			; CPU ns used
 	mov	qword [g_busy_cpu],0
-	xor	edx,edx
-	div	qword [g_tsc_per_us]		; us elapsed
+	tsc_us					; us elapsed
 	imul	rax,rax,1000 * PIN_BUSY_SHARE / 100	; ns it should have run
 	cmp	r9,rax
 	jb	.done_check			; a busy host: free still

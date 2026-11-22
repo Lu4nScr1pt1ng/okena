@@ -1865,8 +1865,7 @@ tsc_now_us:
 	rdtsc
 	shl	rdx,32
 	or	rax,rdx
-	xor	edx,edx
-	div	qword [g_tsc_per_us]
+	tsc_us
 	ret
 
 ; edi = server, rsi = sample in us (0: just let time pass). rax = the
@@ -1934,8 +1933,7 @@ sv_connect_sample:
 	shl	rdx,32
 	or	rax,rdx
 	sub	rax,rsi
-	xor	edx,edx
-	div	qword [g_tsc_per_us]
+	tsc_us
 	mov	rsi,rax
 	pop	rdx
 	mov	edi,[rdx+S_SERVER]

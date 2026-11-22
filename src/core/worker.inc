@@ -10,6 +10,8 @@ bss
 	g_sig_buf:	rb SIGINFO_SIZE
 	align 8
 	g_tsc_per_us	dq ?
+	g_tsc_us_mul	dq ?		; 2^40 / g_tsc_per_us (tsc_us)
+	g_tsc_ns_mul	dq ?		; 1000 * 2^40 / g_tsc_per_us (tsc_ns)
 	g_spin_ticks	dq ?		; `busy_poll` set: how long, in TSC ticks
 	g_spin_until	dq ?
 	g_bp_auto	dd ?		; `busy_poll` not set: polls when events come close
@@ -406,6 +408,15 @@ tsc_calibrate:
 	mul	rdx				; ticks * 1000
 	div	rcx				; / ns
 	mov	[g_tsc_per_us],rax
+	mov	rcx,rax				; the reciprocals (tsc_us, tsc_ns)
+	xor	edx,edx
+	mov	rax,1 shl 40
+	div	rcx
+	mov	[g_tsc_us_mul],rax
+	xor	edx,edx
+	mov	rax,1000 shl 40
+	div	rcx
+	mov	[g_tsc_ns_mul],rax
 	pop	r13
 	pop	r12
 	pop	rbx
