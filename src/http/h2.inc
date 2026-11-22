@@ -953,6 +953,8 @@ h2_sock_send:
 	mov	byte [rax+SQE_OPCODE],IORING_OP_SEND
 	mov	[rax+SQE_ADDR],rdi
 	mov	[rax+SQE_LEN],esi
+	mov	esi,esi
+	add	[g_sq_sbytes],rsi		; (ring_get_sqe: submitted while hot)
 	mov	dword [rax+SQE_OP_FLAGS],MSG_NOSIGNAL
 	call	h2_side
 	jmp	h_sqe_fd

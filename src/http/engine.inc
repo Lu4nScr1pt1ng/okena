@@ -247,6 +247,7 @@ h_send_more:
 	mov	[rax+SQE_ADDR],rsi
 	mov	esi,[r8+H_SLEN]
 	mov	[rax+SQE_LEN],esi
+	add	[g_sq_sbytes],rsi		; (ring_get_sqe: submitted while hot)
 	mov	dword [rax+SQE_OP_FLAGS],MSG_NOSIGNAL
 
 ; rax = SQE, rdx = session, ecx = side: the descriptor and its flags.

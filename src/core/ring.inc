@@ -20,6 +20,7 @@ bss
 	g_sq_flags_ptr	dq ?		; IORING_SQ_TASKRUN: completions wait for an enter
 	g_sqes		dq ?
 	g_cq_head_ptr	dq ?
+	g_sq_sbytes	dq ?		; bytes of sends queued since the last submit
 	g_cq_tail_ptr	dq ?
 	g_cqes		dq ?
 	g_ring_fd	dd ?
@@ -305,8 +306,24 @@ ring_lockdown:
 .done:
 	ret
 
-; rax = zeroed SQE. Flushes the queue when it is full.
+; rax = zeroed SQE. Flushes the queue when it is full, or when the sends
+; queued since the last submit add up to RING_SEND_FLUSH bytes: a batch of
+; completions writes the answers of many connections (static-h2: tens of KiB
+; of ciphertext each), and held until the batch's end they had left the
+; cache before the kernel copied them (io_uring 260k vs epoll 430k static-h2,
+; epoll writing each at once). The SQEs before this one are whole here.
+RING_SEND_FLUSH	:= 128 * 1024
 ring_get_sqe:
+	cmp	qword [g_sq_sbytes],RING_SEND_FLUSH
+	jb	@f
+	irp r, rsi,rdi,r8,r9,r10,r11		; (its usual path keeps all but rax,
+		push	r			; rcx, rdx: callers count on it)
+	end irp
+	call	ring_flush
+	irp r, r11,r10,r9,r8,rdi,rsi
+		pop	r
+	end irp
+@@:
 	mov	eax,[g_sq_tail]
 	mov	rdx,[g_sq_head_ptr]
 	mov	ecx,eax
@@ -345,6 +362,7 @@ ring_get_sqe:
 
 ; Submit pending SQEs without waiting.
 ring_flush:
+	mov	qword [g_sq_sbytes],0
 	xor	edi,edi
 	jmp	ring_enter
 
