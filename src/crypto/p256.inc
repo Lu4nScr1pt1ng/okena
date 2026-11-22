@@ -944,80 +944,45 @@ mod_sub:
 	mov	[rdi+24],r11
 	ret
 
-; rdi = out, rsi = a (Montgomery), rcx = modulus: a^(m-2) = 1/a, by 4-bit
-; windows over the public exponent: a^1..a^15 first, then four squarings
-; and at most one multiplication per nibble.
-MI_POW		:= 0				; a^1 .. a^15 (a^j at (j - 1) * 32)
-MI_R		:= 15 * 32
-MI_SIZE		:= 16 * 32
+; rdi = out, rsi = a (Montgomery, below 2m), rcx = modulus (p256_p or
+; p256_n): 1/a, Montgomery: divsteps on a R (minv, constant time) give
+; 1 / (a R), times R^3 / R. out may be a.
 mod_inv:
 	push	rbx
 	push	r12
 	push	r13
-	push	r14
-	push	r15
-	sub	rsp,MI_SIZE
+	sub	rsp,32
 	mov	r12,rdi
-	mov	r14,rcx
-	lea	rdi,[rsp+MI_POW]
-	mov	ecx,4
-	rep	movsq				; a^1
-	mov	ebx,1
-.powers:
-	lea	rdi,[rsp+MI_POW+rbx*8]		; (rbx * 32 below)
-	imul	rdi,rbx,32
-	lea	rdi,[rsp+MI_POW+rdi]
-	lea	rsi,[rdi-32]
-	lea	rdx,[rsp+MI_POW]
-	mov	rcx,r14
-	call	mont_mul			; a^(j+1) = a^j * a
-	inc	ebx
-	cmp	ebx,15
-	jb	.powers
-	; r = 1 (Montgomery)
-	lea	rsi,[r14+MOD_ONE]
-	lea	rdi,[rsp+MI_R]
-	mov	ecx,4
-	rep	movsq
-	mov	r15d,63				; nibble, from the top
-.nibble:
-	mov	ebx,4
-.square:
-	lea	rdi,[rsp+MI_R]
-	mov	rsi,rdi
-	mov	rcx,r14
-	call	mont_sqr
-	dec	ebx
-	jnz	.square
-	mov	eax,r15d
-	shr	eax,4				; limb
-	mov	rax,[r14+MOD_E+rax*8]
-	mov	ecx,r15d
-	and	ecx,15
-	shl	ecx,2
-	shr	rax,cl
-	and	eax,15				; the exponent's nibble (public)
-	jz	.next
-	dec	eax
-	shl	eax,5
-	lea	rdi,[rsp+MI_R]
-	mov	rsi,rdi
-	lea	rdx,[rsp+MI_POW+rax]
-	mov	rcx,r14
-	call	mont_mul
-.next:
-	dec	r15d
-	jns	.nibble
-	mov	rdi,r12
-	lea	rsi,[rsp+MI_R]
-	mov	ecx,4
-	rep	movsq
+	mov	rbx,rcx
+	mov	rax,[rsi]
+	mov	[rsp],rax
+	mov	rax,[rsi+8]
+	mov	[rsp+8],rax
+	mov	rax,[rsi+16]
+	mov	[rsp+16],rax
+	mov	rax,[rsi+24]
+	mov	[rsp+24],rax
 	mov	rdi,rsp
-	mov	ecx,MI_SIZE
+	mov	rsi,rbx
+	call	mod_reduce_once
+	lea	r13,[minv_p256n]
+	lea	rax,[p256_p]
+	lea	rdx,[minv_p256p]
+	cmp	rbx,rax
+	cmove	r13,rdx
+	mov	rdi,r12
+	mov	rsi,rsp
+	mov	rdx,r13
+	call	minv
+	mov	rdi,r12
+	mov	rsi,r12
+	lea	rdx,[r13+MNV_R3]
+	mov	rcx,rbx
+	call	mont_mul
+	mov	rdi,rsp
+	mov	ecx,32
 	call	secure_zero
-	add	rsp,MI_SIZE
-	pop	r15
-	pop	r14
+	add	rsp,32
 	pop	r13
 	pop	r12
 	pop	rbx
@@ -2886,203 +2851,14 @@ rfc6979_k:
 	call	hmac_sha256
 	ret
 
-; rdi = out, rsi = a (0 < a < n, plain): 1/a mod n by the binary
-; extended Euclid. Variable time: only for values that tell nothing about
-; a secret (the blinded nonce).
-IVT_X1		:= 0
-IVT_X2		:= 32
-IVT_SIZE	:= 64
-macro ivt_halve x*, m*
-	; x / 2 mod m: x + n first when x is odd (five limbs), then a shift
-	local even
-	test	byte [rsp+x],1
-	mov	eax,0
-	jz	even
-	mov	rax,[m]
-	add	[rsp+x],rax
-	mov	rax,[m+8]
-	adc	[rsp+x+8],rax
-	mov	rax,[m+16]
-	adc	[rsp+x+16],rax
-	mov	rax,[m+24]
-	adc	[rsp+x+24],rax
-	setc	al
-	movzx	eax,al
-even:
-	mov	rdx,[rsp+x+8]
-	shrd	[rsp+x],rdx,1
-	mov	rdx,[rsp+x+16]
-	shrd	[rsp+x+8],rdx,1
-	mov	rdx,[rsp+x+24]
-	shrd	[rsp+x+16],rdx,1
-	shrd	[rsp+x+24],rax,1
-end macro
-macro ivt_divpow x*, m*
-	; x / 2^t mod m, t = cl (1..63), x < m: x + q m with q = x m' mod 2^t
-	; (m' = -1/m mod 2^64, the Montgomery constant) is a multiple of 2^t,
-	; and below 2^t m, so the quotient is below m. Keeps r8-r15.
-	mov	rdx,[rsp+x]
-	imul	rdx,[m+MOD_N0]
-	bzhi	rdx,rdx,rcx			; q
-	mulx	rsi,rax,[m]
-	mulx	rbp,rbx,[m+8]
-	add	rbx,rsi
-	mulx	rsi,rdi,[m+16]
-	adc	rdi,rbp
-	mulx	rdx,rbp,[m+24]
-	adc	rbp,rsi
-	adc	rdx,0				; q m in rdx:rbp:rdi:rbx:rax
-	add	[rsp+x],rax
-	adc	[rsp+x+8],rbx
-	adc	[rsp+x+16],rdi
-	adc	[rsp+x+24],rbp
-	adc	rdx,0				; the fifth limb
-	mov	rax,[rsp+x+8]
-	shrd	[rsp+x],rax,cl
-	mov	rax,[rsp+x+16]
-	shrd	[rsp+x+8],rax,cl
-	mov	rax,[rsp+x+24]
-	shrd	[rsp+x+16],rax,cl
-	shrd	[rsp+x+24],rdx,cl
-end macro
-macro ivt_sub x*, y*, m*
-	; x = x - y mod m
-	local done
-	mov	rax,[rsp+y]
-	sub	[rsp+x],rax
-	mov	rax,[rsp+y+8]
-	sbb	[rsp+x+8],rax
-	mov	rax,[rsp+y+16]
-	sbb	[rsp+x+16],rax
-	mov	rax,[rsp+y+24]
-	sbb	[rsp+x+24],rax
-	jnc	done
-	mov	rax,[m]
-	add	[rsp+x],rax
-	mov	rax,[m+8]
-	adc	[rsp+x+8],rax
-	mov	rax,[m+16]
-	adc	[rsp+x+16],rax
-	mov	rax,[m+24]
-	adc	[rsp+x+24],rax
-done:
-end macro
-; rdi = 4 limbs, rsi = 4 limbs (below the modulus, not 0): its inverse, in
-; variable time (binary extended Euclid): only for values blinded first.
-macro mod_inv_vartime_for name*, m*
-name:
-	push	rbx
-	push	rbp
-	push	r12
-	push	r13
-	push	r14
-	push	r15
-	sub	rsp,IVT_SIZE
-	push	rdi
-	; a = r8..r11, b = n = r12..r15, x1 = 1, x2 = 0
-	mov	r8,[rsi]
-	mov	r9,[rsi+8]
-	mov	r10,[rsi+16]
-	mov	r11,[rsi+24]
-	mov	r12,[m]
-	mov	r13,[m+8]
-	mov	r14,[m+16]
-	mov	r15,[m+24]
-	xor	eax,eax
-	repeat 4, q:0
-		mov	[rsp+8+IVT_X1+q*8],rax
-		mov	[rsp+8+IVT_X2+q*8],rax
-	end repeat
-	mov	byte [rsp+8+IVT_X1],1
-.loop:
-	; a even: all its trailing zeros at once (and x1 divided as many times)
-	test	r8b,1
-	jnz	.a_odd
-	tzcnt	rcx,r8
-	mov	eax,63
-	cmp	ecx,eax
-	cmova	ecx,eax				; (a's low limb all zeros: 63 now, more later)
-	shrd	r8,r9,cl
-	shrd	r9,r10,cl
-	shrd	r10,r11,cl
-	shr	r11,cl
-	ivt_divpow 8+IVT_X1, m
-.a_odd:
-	test	r12b,1
-	jnz	.both_odd
-	tzcnt	rcx,r12
-	mov	eax,63
-	cmp	ecx,eax
-	cmova	ecx,eax
-	shrd	r12,r13,cl
-	shrd	r13,r14,cl
-	shrd	r14,r15,cl
-	shr	r15,cl
-	ivt_divpow 8+IVT_X2, m
-	jmp	.loop
-.both_odd:
-	; done when a or b is 1
-	cmp	r8,1
-	jne	@f
-	mov	rax,r9
-	or	rax,r10
-	or	rax,r11
-	jz	.got_x1
-@@:
-	cmp	r12,1
-	jne	@f
-	mov	rax,r13
-	or	rax,r14
-	or	rax,r15
-	jz	.got_x2
-@@:
-	; the larger loses the smaller
-	cmp	r11,r15
-	jne	@f
-	cmp	r10,r14
-	jne	@f
-	cmp	r9,r13
-	jne	@f
-	cmp	r8,r12
-@@:
-	jb	.b_larger
-	sub	r8,r12
-	sbb	r9,r13
-	sbb	r10,r14
-	sbb	r11,r15
-	ivt_sub 8+IVT_X1, 8+IVT_X2, m
-	jmp	.loop
-.b_larger:
-	sub	r12,r8
-	sbb	r13,r9
-	sbb	r14,r10
-	sbb	r15,r11
-	ivt_sub 8+IVT_X2, 8+IVT_X1, m
-	jmp	.loop
-.got_x2:
-	lea	rsi,[rsp+8+IVT_X2]
-	jmp	.out
-.got_x1:
-	lea	rsi,[rsp+8+IVT_X1]
-.out:
-	pop	rdi
-	mov	ecx,4
-	rep	movsq
-	mov	rdi,rsp
-	mov	ecx,IVT_SIZE
-	call	secure_zero
-	add	rsp,IVT_SIZE
-	pop	r15
-	pop	r14
-	pop	r13
-	pop	r12
-	pop	rbp
-	pop	rbx
-	ret
-end macro
-
-mod_inv_vartime_for mod_inv_n_vartime, p256_n
-mod_inv_vartime_for mod_inv_p_vartime, p256_p
+; rdi = out, rsi = a (0 < a < n, or p, plain): 1/a by divsteps (minv).
+; Constant time, and faster than the binary extended Euclid these were.
+mod_inv_n_vartime:
+	lea	rdx,[minv_p256n]
+	jmp	minv
+mod_inv_p_vartime:
+	lea	rdx,[minv_p256p]
+	jmp	minv
 
 ; rdi = rs[64], rsi = d[32], rdx = digest[32]. eax = 1, or 0 when d is
 ; not in [1, n).

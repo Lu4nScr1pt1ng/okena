@@ -60,6 +60,7 @@ include '../../src/crypto/mlkem.inc'
 include '../../src/crypto/hmac.inc'
 include '../../src/crypto/hkdf.inc'
 include '../../src/crypto/x25519.inc'
+include '../../src/crypto/modinv.inc'
 include '../../src/crypto/ed25519.inc'
 include '../../src/crypto/aesgcm.inc'
 include '../../src/crypto/chacha.inc'
@@ -275,6 +276,8 @@ start:
 	je	.bench
 	cmp	al,'~'
 	je	.v37
+	cmp	al,'['
+	je	.minv62
 	cmp	al,'I'
 	je	.minv
 	cmp	al,'a'
@@ -877,6 +880,69 @@ start:
 	call	p256_verify
 	jmp	.counted
 .not_v:
+	cmp	r12b,'['
+	jne	.not_minv
+	movzx	eax,byte [r14]			; minv: as the op '['
+	lea	rdx,[minv_p25519]
+	imul	eax,eax,minv_p256p - minv_p25519
+	add	rdx,rax
+	lea	rsi,[r14+1]
+	lea	rdi,[g_out]
+	call	minv
+	jmp	.counted
+.not_minv:
+	cmp	r12b,'#'
+	jne	.not_aead
+						; AES-GCM seal, the key set once (as a
+	cmp	byte [g_bench_v37],0		; connection's): key bytes (1: 16 or 32),
+	jne	@f				; length (2), key, IV (12), aad (13)
+	mov	byte [g_bench_v37],1
+	lea	rdi,[g_gcm]
+	lea	rsi,[r14+3]
+	cmp	byte [r14],32
+	je	.gk256
+	call	gcm_init
+	jmp	@f
+.gk256:
+	call	gcm_init256
+@@:
+	movzx	eax,byte [r14]
+	lea	rsi,[r14+rax+3]			; IV
+	lea	rdi,[g_gcm]
+	lea	rdx,[rsi+12]			; aad
+	mov	ecx,13
+	lea	r8,[g_out+64]
+	movzx	r9d,word [r14+1]
+	call	gcm_seal
+	jmp	.counted
+.not_aead:
+	cmp	r12b,'$'
+	jne	.not_cpl
+						; ChaCha20-Poly1305 seal, the key set
+	cmp	byte [g_bench_v37],0		; once: length (2), key (32), IV (12),
+	jne	@f				; aad (13)
+	mov	byte [g_bench_v37],1
+	lea	rdi,[g_cp]
+	lea	rsi,[r14+2]
+	call	cp_init
+@@:
+	lea	rdi,[g_cp]
+	lea	rsi,[r14+34]
+	lea	rdx,[r14+46]
+	mov	ecx,13
+	lea	r8,[g_out+64]
+	movzx	r9d,word [r14]
+	call	cp_seal
+	jmp	.counted
+.not_cpl:
+	cmp	r12b,'&'
+	jne	.not_sha
+	movzx	edx,word [r14]			; SHA-256: length (2), data
+	lea	rsi,[r14+2]
+	lea	rdi,[g_label]
+	call	sha256
+	jmp	.counted
+.not_sha:
 	cmp	r12b,'p'
 	jne	.not_p
 	lea	rdi,[g_cp]			; ChaCha20-Poly1305 seal of 16 KiB in place
@@ -987,6 +1053,18 @@ start:
 	add	rax,[rsp+8]
 	add	rsp,16
 	ret
+.minv62:
+	; which modulus (0 p25519, 1 P-256 p, 2 P-256 n), x (4 limbs, below it):
+	; 1/x by divsteps (minv)
+	movzx	eax,byte [rsi]
+	lea	rdx,[minv_p25519]
+	imul	eax,eax,minv_p256p - minv_p25519
+	add	rdx,rax
+	inc	rsi
+	lea	rdi,[g_out]
+	call	minv
+	mov	esi,32
+	jmp	.print
 .v37:
 	; a, b (17 limbs each, below 2^1036), q (16 limbs, odd), -q^-1 mod 2^64:
 	; a b / 2^1036 mod q, below 2q (17 limbs), by v37_mul

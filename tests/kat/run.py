@@ -614,6 +614,19 @@ try:
         ok = o >= 0 and o < 2 * q and o % q == a * b * pow(1 << 1036, -1, q) % q
         check(f"v37_mul #{t}: a b / 2^1036 mod q, below 2q", ok, True)
 
+    # Modular inversion by divsteps (minv): p25519, P-256's p and n, edges
+    # (0 gives 0, 1, 2, m - 1, m - 2) and random values
+    _mods = [2**255 - 19,
+             0xFFFFFFFF00000001000000000000000000000000FFFFFFFFFFFFFFFFFFFFFFFF,
+             0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551]
+    for t in range(90):
+        w = t % 3
+        m = _mods[w]
+        x = [0, 1, 2, m - 1, m - 2][t // 3] if t < 15 else _r.randrange(m)
+        got = run(b"[", bytes([w]) + x.to_bytes(32, "little"))
+        want = (pow(x, -1, m) if x else 0).to_bytes(32, "little").hex()
+        check(f"minv mod #{w} of {x:#x}", got, want)
+
     # RSA private key parsing (PKCS#1 RSAPrivateKey): modulus and private exponent
     from cryptography.hazmat.primitives import serialization as _ser2
     for bits in (2048, 3072):

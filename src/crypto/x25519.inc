@@ -11,8 +11,8 @@
 ; Multiplication: in registers with mulx and the two carry chains of
 ; adcx/adox where the CPU has ADX (all since Broadwell / Zen), else with
 ; mul in memory. Squaring has its own routine (6 cross products doubled
-; plus 4 squares) on mulx alone. The inversion is the usual addition
-; chain for 2^255 - 21: 254 squarings and 11 multiplications.
+; plus 4 squares) on mulx alone. The inversion goes by Bernstein-Yang
+; divsteps (modinv.inc).
 
 FE_SIZE		:= 32
 
@@ -456,80 +456,30 @@ fe_canon:
 	mov	[rdi+24],r9
 	ret
 
-; rdi = out, rsi = a: a^(p-2) = 1/a, by the addition chain for 2^255 - 21
-; (254 squarings, 11 multiplications).
-IV_Z2		:= 0
-IV_Z9		:= 32
-IV_Z11		:= 64
-IV_T		:= 96				; 2^5-1, 2^10-1, ... as the chain goes
-IV_U		:= 128
-IV_A		:= 160
-IV_Z50		:= 192
-IV_Z10		:= 224
-IV_SIZE		:= 256
-macro iv_op op*, d*, a*, b
-	lea	rdi,[rsp+d]
-	lea	rsi,[rsp+a]
-	match any, b
-		lea	rdx,[rsp+b]
-	end match
-	call	op
-end macro
-macro iv_copy d*, a*
-	lea	rdi,[rsp+d]
-	lea	rsi,[rsp+a]
-	mov	ecx,4
-	rep	movsq
-end macro
-macro iv_sqn d*, n*
-	lea	rdi,[rsp+d]
-	mov	ecx,n
-	call	fe_sqn
-end macro
+; rdi = out, rsi = a (below 2^256): 1/a mod p by divsteps (minv, constant
+; time) on its canonical value.
 fe_inv:
 	push	r12
-	push	r13
-	sub	rsp,IV_SIZE
+	sub	rsp,32
 	mov	r12,rdi
-	lea	rdi,[rsp+IV_A]
-	mov	ecx,4
-	rep	movsq				; a
-	iv_op fe_sq, IV_Z2, IV_A		; z^2
-	iv_op fe_sq, IV_T, IV_Z2		; z^4
-	iv_op fe_sq, IV_T, IV_T			; z^8
-	iv_op fe_mul, IV_Z9, IV_T, IV_A		; z^9
-	iv_op fe_mul, IV_Z11, IV_Z9, IV_Z2	; z^11
-	iv_op fe_sq, IV_T, IV_Z11		; z^22
-	iv_op fe_mul, IV_T, IV_T, IV_Z9		; z^(2^5 - 1)
-	iv_copy IV_U, IV_T
-	iv_sqn IV_U, 5
-	iv_op fe_mul, IV_Z10, IV_U, IV_T	; 2^10 - 1
-	iv_copy IV_U, IV_Z10
-	iv_sqn IV_U, 10
-	iv_op fe_mul, IV_T, IV_U, IV_Z10	; 2^20 - 1
-	iv_copy IV_U, IV_T
-	iv_sqn IV_U, 20
-	iv_op fe_mul, IV_U, IV_U, IV_T		; 2^40 - 1
-	iv_sqn IV_U, 10
-	iv_op fe_mul, IV_Z50, IV_U, IV_Z10	; 2^50 - 1
-	iv_copy IV_U, IV_Z50
-	iv_sqn IV_U, 50
-	iv_op fe_mul, IV_T, IV_U, IV_Z50	; 2^100 - 1
-	iv_copy IV_U, IV_T
-	iv_sqn IV_U, 100
-	iv_op fe_mul, IV_U, IV_U, IV_T		; 2^200 - 1
-	iv_sqn IV_U, 50
-	iv_op fe_mul, IV_U, IV_U, IV_Z50	; 2^250 - 1
-	iv_sqn IV_U, 5				; 2^255 - 2^5
-	mov	rdi,r12
-	lea	rsi,[rsp+IV_U]
-	lea	rdx,[rsp+IV_Z11]
-	call	fe_mul				; 2^255 - 21
+	mov	rax,[rsi]
+	mov	[rsp],rax
+	mov	rax,[rsi+8]
+	mov	[rsp+8],rax
+	mov	rax,[rsi+16]
+	mov	[rsp+16],rax
+	mov	rax,[rsi+24]
+	mov	[rsp+24],rax
 	mov	rdi,rsp
-	mov	ecx,IV_SIZE
+	call	fe_canon
+	mov	rdi,r12
+	mov	rsi,rsp
+	lea	rdx,[minv_p25519]
+	call	minv
+	mov	rdi,rsp
+	mov	ecx,32
 	call	secure_zero
-	add	rsp,IV_SIZE
-	pop	r13
+	add	rsp,32
 	pop	r12
 	ret
 
