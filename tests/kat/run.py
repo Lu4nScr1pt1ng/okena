@@ -582,7 +582,7 @@ try:
 
     # RSASSA-PKCS1-v1_5 by CRT (rsa_crt_load, rsa_priv: what a handshake signs
     # with), byte for byte against a reference (PKCS#1 v1.5 is deterministic);
-    # 2048 takes the 16-limb products (mont16.inc), 3072 and 4096 the generic
+    # 2048 takes the AVX2 products (vmont.inc), 3072 and 4096 the generic
     from cryptography.hazmat.primitives import serialization as _ser1
     for bits in (2048, 2048, 3072, 4096):
         k = _rsa.generate_private_key(public_exponent=65537, key_size=bits)
@@ -593,6 +593,26 @@ try:
             want = k.sign(msg, _pad.PKCS1v15(), _hashes.SHA256())
             got = run(b"*", _struct.pack("<H", len(der)) + der + _hl.sha256(msg).digest())
             check(f"rsa pkcs1 sign by CRT {bits} #{i}: the reference's bytes", got, want.hex())
+
+    # 1024-bit almost Montgomery products on AVX2 (v37_mul, R = 2^1036): a, b
+    # below 2q in, a b / R mod q below 2q out (edges: 2q - 1, 0, 1, moduli
+    # near 2^1023 and 2^1024)
+    import random as _rnd
+    _r = _rnd.Random(37)
+    for t in range(40):
+        q = _r.getrandbits(1024) | (1 << 1023) | 1
+        if t % 4 == 1:
+            q = (1 << 1023) | 1 | (_r.getrandbits(32) << 1)
+        if t % 4 == 2:
+            q = ((1 << 1024) - 1) ^ (_r.getrandbits(32) << 1)
+        a = [_r.randrange(2 * q), 2 * q - 1, 0, 1][t % 4] if t >= 4 else 2 * q - 1
+        b = _r.randrange(2 * q) if t % 3 else 2 * q - 1
+        n0 = (-pow(q, -1, 1 << 64)) % (1 << 64)
+        got = run(b"~", a.to_bytes(136, "little") + b.to_bytes(136, "little")
+                  + q.to_bytes(128, "little") + n0.to_bytes(8, "little"))
+        o = int.from_bytes(bytes.fromhex(got), "little") if len(got) == 272 else -1
+        ok = o >= 0 and o < 2 * q and o % q == a * b * pow(1 << 1036, -1, q) % q
+        check(f"v37_mul #{t}: a b / 2^1036 mod q, below 2q", ok, True)
 
     # RSA private key parsing (PKCS#1 RSAPrivateKey): modulus and private exponent
     from cryptography.hazmat.primitives import serialization as _ser2

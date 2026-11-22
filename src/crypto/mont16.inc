@@ -31,31 +31,9 @@ macro m16_step par*, src*, acc*, dst*
 end macro
 M16_T		:= (M16 + 2) * 8		; the accumulator's bytes
 
-; rdi = out, rsi = a, rdx = b, rcx = mod, r8 = -mod^-1 mod 2^64: out = a b /
-; 2^1024 mod mod (a, b < mod; out may be a or b). Keeps rbx, rbp, r12-r15.
-mont16_mul:
-	push	rbx
-	push	rbp
-	push	r12
-	push	r13
-	push	r14
-	push	r15
-	sub	rsp,M16_T + 8			; (16-aligned)
-	mov	rbx,rdi				; out
-	mov	r12,rsi				; a
-	mov	r13,rdx				; b
-	mov	r14,rcx				; mod
-	mov	r15,r8				; n0
-	mov	rbp,rsp				; T
-	vpxor	xmm0,xmm0,xmm0
-	vmovdqu	[rbp],ymm0
-	vmovdqu	[rbp+32],ymm0
-	vmovdqu	[rbp+64],ymm0
-	vmovdqu	[rbp+96],ymm0
-	vmovdqu	[rbp+128],xmm0
-	vzeroupper
-	mov	ecx,M16				; rows
-.row:
+; a row of mont16_mul: T (rbp, 18 limbs) = (T + a b[i] + m mod) / 2^64, a in
+; r12, b[i] at r13 (moved on), mod r14, n0 r15
+macro m16_mul_row
 	; T += a * b[i]: low halves on CF into T[j], high halves on OF into T[j+1]
 	mov	rdx,[r13]
 	add	r13,8
@@ -91,6 +69,34 @@ mont16_mul:
 	adox	r8,rax
 	mov	[rbp+M16*8],r8
 	mov	qword [rbp+M16*8+8],0
+end macro
+
+; rdi = out, rsi = a, rdx = b, rcx = mod, r8 = -mod^-1 mod 2^64: out = a b /
+; 2^1024 mod mod (a, b < mod; out may be a or b). Keeps rbx, rbp, r12-r15.
+mont16_mul:
+	push	rbx
+	push	rbp
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	sub	rsp,M16_T + 8			; (16-aligned)
+	mov	rbx,rdi				; out
+	mov	r12,rsi				; a
+	mov	r13,rdx				; b
+	mov	r14,rcx				; mod
+	mov	r15,r8				; n0
+	mov	rbp,rsp				; T
+	vpxor	xmm0,xmm0,xmm0
+	vmovdqu	[rbp],ymm0
+	vmovdqu	[rbp+32],ymm0
+	vmovdqu	[rbp+64],ymm0
+	vmovdqu	[rbp+96],ymm0
+	vmovdqu	[rbp+128],xmm0
+	vzeroupper
+	mov	ecx,M16				; rows
+.row:
+	m16_mul_row
 	dec	ecx
 	jnz	.row
 	call	mont16_final
@@ -130,26 +136,9 @@ mont16_final:
 ; mod mod (a < mod; out may be a). Each cross product a[i] a[j] (i < j) once,
 ; then doubled with the squares added (adcx doubling, adox adding), then the
 ; 32 limbs reduced a row at a time (SOS): 392 mulx where a product takes 512.
-M16_P		:= (2 * M16 + 2) * 8		; the double-width accumulator's bytes
-mont16_sqr:
-	push	rbx
-	push	rbp
-	push	r12
-	push	r13
-	push	r14
-	push	r15
-	sub	rsp,M16_P + 8			; (16-aligned)
-	mov	rbx,rdi				; out
-	mov	r12,rsi				; a
-	mov	r14,rcx				; mod
-	mov	r15,r8				; n0
-	mov	rbp,rsp				; P, 34 limbs
-	vpxor	xmm0,xmm0,xmm0
-	repeat 8, k:0
-		vmovdqu	[rbp+k*32],ymm0
-	end repeat
-	vmovdqu	[rbp+256],xmm0
-	vzeroupper
+; mont16_sqr's work: P (rbp, 34 limbs, zeroed) = a (r12) squared, reduced by
+; mod (r14, n0 r15) into P[16..32]
+macro m16_sqr_body
 	; the cross products: row i adds a[i] a[j], j > i, at P[i+j] (low halves
 	; on CF) and P[i+j+1] (high halves on OF); its last carry is P[i+16],
 	; untouched before (the rows so far fit below 2^(64 (i+17)))
@@ -205,6 +194,29 @@ mont16_sqr:
 		adox	r11,rax
 	end repeat
 	mov	[rbp+2*M16*8],r11		; the top limb
+end macro
+
+M16_P		:= (2 * M16 + 2) * 8		; the double-width accumulator's bytes
+mont16_sqr:
+	push	rbx
+	push	rbp
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	sub	rsp,M16_P + 8			; (16-aligned)
+	mov	rbx,rdi				; out
+	mov	r12,rsi				; a
+	mov	r14,rcx				; mod
+	mov	r15,r8				; n0
+	mov	rbp,rsp				; P, 34 limbs
+	vpxor	xmm0,xmm0,xmm0
+	repeat 8, k:0
+		vmovdqu	[rbp+k*32],ymm0
+	end repeat
+	vmovdqu	[rbp+256],xmm0
+	vzeroupper
+	m16_sqr_body
 	add	rbp,M16*8			; T = P[16..32]
 	call	mont16_final
 	add	rsp,M16_P + 8

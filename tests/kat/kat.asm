@@ -21,7 +21,7 @@
 ;   'M' mont_mul mod p, 'a' mod_add, 'b' mod_sub: a, b (4 limbs each, little endian)
 ;   'I' mod_inv mod p: a (4 limbs, Montgomery form); 'D' G + G (projective, raw)
 ;   'u' x25519_base: scalar (32) -> the public key, as x25519(scalar, 9)
-;   'B' benchmark: op ('x', 'u', 'E', 'v' ECDSA verify, 'G' RSA CRT sign, 'Q' 'M' 1024-bit Montgomery square, product, ...), count (4, LE), the op's input -> ns per op
+;   'B' benchmark: op ('x', 'u', 'E', 'v' ECDSA verify, 'G' RSA CRT sign, 'Q' 'M' 1024-bit Montgomery square, product, '~' the same on AVX2, ...), count (4, LE), the op's input -> ns per op
 ;   'd' HPACK decode: table limit (4, LE), then blocks (length (4, LE), bytes),
 ;       one context: per field name length (2, LE), name, value length (2,
 ;       LE), value; FFFF after a block; FFFE and the error code at the first
@@ -68,6 +68,7 @@ include '../../src/crypto/p384.inc'
 include '../../src/crypto/rsa.inc'
 include '../../src/crypto/rsacrt.inc'
 include '../../src/crypto/mont16.inc'
+include '../../src/crypto/vmont.inc'
 include '../../src/tls/x509.inc'
 include '../../src/tls/keyschedule.inc'
 include '../../src/quic/crypto.inc'
@@ -106,6 +107,9 @@ bss
 	g_bench_crt	dd ?		; 'G': the key loaded (its modulus' bytes)
 	align 8
 	g_bench_hash	dq ?
+	align 32
+	g_v37:		rb 3 * V37_SZ + V37_MB
+	g_bench_v37	db ?
 	g_anchor:	rb PK_SIZE
 	g_hd:		rb HPD_BYTES
 	g_ho:		rb HPO_SIZE
@@ -269,6 +273,8 @@ start:
 	je	.msqr
 	cmp	al,'B'
 	je	.bench
+	cmp	al,'~'
+	je	.v37
 	cmp	al,'I'
 	je	.minv
 	cmp	al,'a'
@@ -722,6 +728,27 @@ start:
 	call	fe_mul
 	jmp	.counted
 .not_m:
+	cmp	r12b,'~'
+	jne	.not_v37
+	cmp	byte [g_bench_v37],0		; 1024-bit Montgomery product on AVX2: a, b
+	jne	@f				; (V37 each), q (16 limbs), -q^-1 mod 2^64
+	mov	byte [g_bench_v37],1		; (set up once, aligned)
+	lea	rdi,[g_v37]
+	mov	rsi,r14
+	mov	ecx,2*V37_SZ
+	rep	movsb
+	lea	rdi,[g_v37+3*V37_SZ]
+	lea	rsi,[r14+2*V37_SZ]
+	mov	rdx,[r14+2*V37_SZ+128]
+	call	v37_modblock
+@@:
+	lea	rdi,[g_v37+2*V37_SZ]
+	lea	rsi,[g_v37]
+	lea	rdx,[g_v37+V37_SZ]
+	lea	rcx,[g_v37+3*V37_SZ]
+	call	v37_mul
+	jmp	.counted
+.not_v37:
 	cmp	r12b,'Q'
 	jne	.not_Q
 	mov	rdi,r14				; 1024-bit Montgomery square, in place: a (16
@@ -960,6 +987,31 @@ start:
 	add	rax,[rsp+8]
 	add	rsp,16
 	ret
+.v37:
+	; a, b (17 limbs each, below 2^1036), q (16 limbs, odd), -q^-1 mod 2^64:
+	; a b / 2^1036 mod q, below 2q (17 limbs), by v37_mul
+	mov	rbx,rsi
+	lea	rdi,[g_v37]
+	mov	edx,17
+	call	v37_from
+	lea	rdi,[g_v37+V37_SZ]
+	lea	rsi,[rbx+136]
+	mov	edx,17
+	call	v37_from
+	lea	rdi,[g_v37+3*V37_SZ]
+	lea	rsi,[rbx+272]
+	mov	rdx,[rbx+400]
+	call	v37_modblock
+	lea	rdi,[g_v37+2*V37_SZ]
+	lea	rsi,[g_v37]
+	lea	rdx,[g_v37+V37_SZ]
+	lea	rcx,[g_v37+3*V37_SZ]
+	call	v37_mul
+	lea	rdi,[g_out]
+	lea	rsi,[g_v37+2*V37_SZ]
+	call	v37_to
+	mov	esi,136
+	jmp	.print
 .msqr:
 	lea	rdi,[g_out]
 	lea	rcx,[p256_p]

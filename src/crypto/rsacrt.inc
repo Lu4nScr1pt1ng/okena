@@ -273,6 +273,8 @@ rsa_priv:
 ; Frame: the 32 powers, the result, a scratch, the base. Keeps rbx, rbp,
 ; r12-r15.
 crt_half:
+	cmp	dword [rcx+CRT_H],16		; 1024-bit primes: vectors (vmont.inc)
+	je	crt_half_v
 	push	rbx
 	push	rbp
 	push	r12
